@@ -58,14 +58,17 @@ function updateLastBubble(text, extraClass, imageUrl) {
 
 function sendMessage() {
   const text = app.chatInput.value.trim();
-  if (!text || app.isProcessing) return;
+  if (!text) return;
   app.chatInput.value = '';
   app.chatSend.disabled = true;
 
   addChatBubble('user', text);
-  addChatBubble('agent', '…', 'streaming');
-  app.isProcessing = true;
-  app.chatSend.disabled = true;
+
+  if (!app.isProcessing) {
+    addChatBubble('agent', '…', 'streaming');
+    app.isProcessing = true;
+    app.chatSend.disabled = true;
+  }
 
   const msg = JSON.stringify({
     message: text,
@@ -95,7 +98,7 @@ export function initChat() {
     }
   });
   app.chatInput.addEventListener('input', () => {
-    app.chatSend.disabled = !app.chatInput.value.trim() || app.isProcessing;
+    app.chatSend.disabled = !app.chatInput.value.trim();
   });
 
   app.chatClear.addEventListener('click', () => {

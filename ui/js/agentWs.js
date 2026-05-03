@@ -90,6 +90,18 @@ export function connectAgent() {
         app.chatSend.disabled = false;
         break;
 
+      case 'interrupted':
+        // Agent task was cancelled due to new user message (steering/interruption).
+        // Mark the current streaming bubble and reset the buffer so the new
+        // response starts fresh.
+        app.updateLastBubble('(interrupted)', 'interrupted');
+        app.agentBuffer = '';
+        break;
+
+      case 'interrupt_ack':
+        // Acknowledgment that streaming stopped. No UI action needed.
+        break;
+
       case 'tool_call':
       case 'tool_result':
         break;

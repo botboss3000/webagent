@@ -176,6 +176,12 @@
     display: block;
     margin-bottom: 4px;
   }
+  .chat-bubble.interrupted {
+    border: 1px solid #e0af68;
+    color: #e0af68;
+    align-self: flex-start;
+    font-style: italic;
+  }
 
   #chat-input-area {
     display: flex;
