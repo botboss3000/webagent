@@ -6,7 +6,7 @@ and retrieve database stats. Used by the Cloud/Local toggle in the terminal UI.
 """
 
 from fastapi import APIRouter, HTTPException
-from msgspec import Struct
+from pydantic import BaseModel
 from app.db import get_mode, set_db_mode, get_db_stats
 import logging
 
@@ -14,11 +14,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/db", tags=["admin-db"])
 
 
-class SetModeRequest(Struct):
+class SetModeRequest(BaseModel):
     mode: str  # "cloud" or "local"
 
 
-class ModeStatusResponse(Struct):
+class ModeStatusResponse(BaseModel):
     mode: str
     backend: str
     tables: dict

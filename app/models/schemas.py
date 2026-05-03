@@ -2,7 +2,7 @@
 Pydantic models for agent data structures.
 """
 
-from msgspec import Struct
+from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -10,7 +10,7 @@ from datetime import datetime
 # ── Existing models ──────────────────────────────────────────────────────────
 
 
-class ContextDocumentPayload(Struct):
+class ContextDocumentPayload(BaseModel):
     """Context slice forwarded from the Web Portal (doc_type matches DB context_type values)."""
 
     doc_type: str
@@ -18,12 +18,12 @@ class ContextDocumentPayload(Struct):
     content: str
 
 
-class HistoryMessagePayload(Struct):
+class HistoryMessagePayload(BaseModel):
     role: str
     content: str
 
 
-class ChatRequest(Struct):
+class ChatRequest(BaseModel):
     """Request model for POST /chat"""
 
     user_id: str
@@ -33,7 +33,7 @@ class ChatRequest(Struct):
     history: Optional[List[HistoryMessagePayload]] = None
 
 
-class ChatResponse(Struct):
+class ChatResponse(BaseModel):
     """Response model for POST /chat (response mirrors Next.js client expectation)."""
 
     reply: str
@@ -41,7 +41,7 @@ class ChatResponse(Struct):
     session_id: str
 
 
-class DocumentCreate(Struct):
+class DocumentCreate(BaseModel):
     """Request model for creating a context row"""
 
     context_type: str
@@ -50,7 +50,7 @@ class DocumentCreate(Struct):
     tags: Optional[List[str]] = None
 
 
-class DocumentResponse(Struct):
+class DocumentResponse(BaseModel):
     """Row shape for public.context"""
 
     id: str
@@ -63,7 +63,7 @@ class DocumentResponse(Struct):
     updated_at: datetime
 
 
-class InteractionRecord(Struct):
+class InteractionRecord(BaseModel):
     """Internal representation of an interactions row
     
     Each interaction is a single atomic unit:
@@ -84,7 +84,7 @@ class InteractionRecord(Struct):
     created_at: datetime
 
 
-class SeedDocsRequest(Struct):
+class SeedDocsRequest(BaseModel):
     """Request model for POST /seed-docs"""
 
     user_id: str
@@ -93,7 +93,7 @@ class SeedDocsRequest(Struct):
 # ── New models for tool system ────────────────────────────────────────────────
 
 
-class ToolRecord(Struct):
+class ToolRecord(BaseModel):
     """Representation of a tool in the tools table."""
 
     id: str
@@ -108,7 +108,7 @@ class ToolRecord(Struct):
     updated_at: datetime
 
 
-class ToolExecutionRecord(Struct):
+class ToolExecutionRecord(BaseModel):
     """Representation of a tool execution in the tool_executions table."""
 
     id: str
@@ -124,7 +124,7 @@ class ToolExecutionRecord(Struct):
     created_at: datetime
 
 
-class CredentialRecord(Struct):
+class CredentialRecord(BaseModel):
     """Representation of a credential in the agent_credentials table."""
 
     id: str
@@ -143,7 +143,7 @@ class CredentialRecord(Struct):
     updated_at: datetime
 
 
-class CreateToolRequest(Struct):
+class CreateToolRequest(BaseModel):
     """Request model for creating/updating a tool."""
 
     name: str
@@ -153,7 +153,7 @@ class CreateToolRequest(Struct):
     change_summary: Optional[str] = None
 
 
-class ReviewToolRequest(Struct):
+class ReviewToolRequest(BaseModel):
     """Request model for reviewing/approving a tool."""
 
     tool_id: str
@@ -161,7 +161,7 @@ class ReviewToolRequest(Struct):
     reason: Optional[str] = None  # Required for reject
 
 
-class ToolValidationResult(Struct):
+class ToolValidationResult(BaseModel):
     """Structured result from tool-call validation (same fields as prior dataclass)."""
 
     is_valid: bool

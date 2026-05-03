@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 from fastapi import APIRouter
-from msgspec import Struct
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/settings", tags=["admin"])
@@ -29,7 +29,7 @@ async def is_metadata_enabled() -> bool:
     return METADATA_FLAG.exists()
 
 
-class MetadataSetting(Struct):
+class MetadataSetting(BaseModel):
     enabled: bool
 
 

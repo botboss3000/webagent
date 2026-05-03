@@ -22,7 +22,7 @@ android {
                 install "uvicorn"
                 install "httpx"
                 install "supabase==2.6.0"
-                install "msgspec"
+                install "pydantic<2"
                 install "python-dotenv"
                 install "python-multipart"
                 install "openai"
