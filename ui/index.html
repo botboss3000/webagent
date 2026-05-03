@@ -13,12 +13,13 @@
 
 <!-- Status bar -->
 <div id="status-bar">
-  <div id="control-host-toggle" title="Switch between Cloud (Supabase) and Local (SQLite) database">
+    <div id="control-host-toggle" title="Switch between Cloud (Supabase) and Local (SQLite) database">
     <span class="ch-label">Control</span>
     <div class="segment-track" role="group" aria-label="Cloud or local control (UI preview)">
       <button type="button" id="seg-cloud" aria-pressed="false">Cloud</button>
       <button type="button" id="seg-local" class="active" aria-pressed="true">Local</button>
     </div>
+    <button id="settings-btn" title="Settings" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:16px;margin-left:6px;vertical-align:middle;">⚙️</button>
   </div>
 
   <div class="status-group tab-btn-group">
@@ -113,7 +114,6 @@
       </span>
       <div class="actions">
         <button id="chat-clear" title="Clear conversation">🗑️</button>
-        <button id="settings-btn" title="Settings" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:16px;margin-left:4px;">⚙️</button>
       </div>
     </div>
     <div id="chat-messages">
