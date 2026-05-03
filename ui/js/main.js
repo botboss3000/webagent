@@ -3,18 +3,17 @@
 import { app, bindDom } from './state.js';
 import { initDbModeUi } from './dbMode.js';
 import { initTerminal, connectTerminal } from './terminal.js';
-import { initToolLog } from './toolLog.js';
 import { initChat } from './chat.js';
 import { initReconnect } from './reconnect.js';
 import { connectAgent } from './agentWs.js';
 import { initTabs } from './tabs.js';
+import { initStream } from './stream.js';
 import { initDbViewer } from './db/index.js';
 import { registerSessionApi, initSessions } from './sessions.js';
 
 bindDom();
 initDbModeUi();
 initTerminal();
-initToolLog();
 initChat();
 initReconnect();
 registerSessionApi();
@@ -27,6 +26,7 @@ try {
 }
 
 initTabs();
+initStream();
 initDbViewer();
 initSessions();
 

@@ -62,6 +62,9 @@ export const app = {
   cellPopupData: null,
 
   stopAutoRefresh: null,
+
+  streamEntryCount: 0,
+  streamStartTime: null,
 };
 
 export function bindDom() {

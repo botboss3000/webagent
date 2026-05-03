@@ -136,7 +136,7 @@ async def agent_websocket(websocket: WebSocket):
         except json.JSONDecodeError:
             await websocket.send_text(json.dumps({
                 "type": "error",
-                "message": "Invalid JSON received. Please send {"message": "..."}",
+                "message": "Invalid JSON received. Please send {\"message\": \"...\"}",
             }, default=_json_default_serializer))
         except Exception as e:
             logger.error(f"Agent WS reader error: {e}", exc_info=True)
@@ -379,12 +379,12 @@ async def agent_websocket(websocket: WebSocket):
             # Start the agent's processing in a new, non-blocking task
             agent_processing_task = asyncio.create_task(
                 run_agent_stream_wrapper(
-                    user_id=user_id, 
-                    session_id=session_id, 
-                    user_message=msg, 
-                    system_prompt=system_prompt, 
-                    history=history[:-1], # history passed without the current user message (which might be handled internally by LLM)
-                    parent_interaction_id=parent_id
+                    user_id,
+                    session_id,
+                    msg,
+                    system_prompt,
+                    history[:-1],  # history passed without the current user message (which might be handled internally by LLM)
+                    parent_id
                 )
             )
             # The main loop *does not* await agent_processing_task here.

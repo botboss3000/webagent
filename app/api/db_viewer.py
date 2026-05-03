@@ -171,6 +171,44 @@ async def get_session_messages(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/stream/interactions")
+async def stream_interactions(
+    since: str = Query("", description="ISO timestamp — return rows with created_at > since"),
+    db: str = Query("local_webagent.db", description="Database filename"),
+):
+    """Return new interactions created after `since`. Used by the Stream tab.
+    Returns sender (role), content, created_at, and other fields.
+    """
+    db_path = _get_db_path(db)
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='interactions'")
+        if not cur.fetchone():
+            conn.close()
+            return {"interactions": [], "db": db}
+
+        if since:
+            cur.execute(
+                'SELECT id, session_id, role, content, tool_name, created_at '
+                'FROM interactions WHERE created_at > ? ORDER BY created_at ASC',
+                (since,)
+            )
+        else:
+            cur.execute(
+                'SELECT id, session_id, role, content, tool_name, created_at '
+                'FROM interactions ORDER BY created_at ASC LIMIT 50'
+            )
+
+        rows = [dict(row) for row in cur.fetchall()]
+        conn.close()
+        return {"interactions": rows, "db": db}
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 class UpdateRowRequest(BaseModel):
     """Request body for updating a row."""
     db: str = "local_webagent.db"
