@@ -2,7 +2,6 @@
 
 export const app = {
   container: null,
-  loadingOverlay: null,
   tDot: null,
   tStat: null,
   aDot: null,
@@ -67,7 +66,6 @@ export const app = {
 
 export function bindDom() {
   app.container = document.getElementById('terminal-container');
-  app.loadingOverlay = document.getElementById('loading-overlay');
   app.tDot = document.getElementById('terminal-dot');
   app.tStat = document.getElementById('terminal-status');
   app.aDot = document.getElementById('agent-dot');

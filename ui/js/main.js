@@ -22,15 +22,9 @@ registerSessionApi();
 try {
   connectTerminal();
   connectAgent();
-  app.loadingOverlay.classList.add('hidden');
 } catch (e) {
   document.title = 'JS ERROR: ' + e.message;
-  app.loadingOverlay.classList.add('hidden');
 }
-
-setTimeout(() => {
-  app.loadingOverlay.classList.add('hidden');
-}, 3000);
 
 initTabs();
 initDbViewer();
