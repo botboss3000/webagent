@@ -39,6 +39,12 @@ def _get_client():
     return _client
 
 
+async def _check_interrupt(interrupt_event: Optional[asyncio.Event]):
+    """Checks the interrupt_event and raises CancelledError if it's set."""
+    if interrupt_event and interrupt_event.is_set():
+        raise asyncio.CancelledError("Agent interrupted by new user message.")
+
+
 async def validate_tool_call(name: str, args: dict, tools: Dict[str, Any]) -> Optional[dict]:
     """
     Validate a tool call before execution.
@@ -77,6 +83,7 @@ async def stream_agent_events(
     system_prompt: str,
     history: Optional[List[Dict[str, str]]] = None,
     parent_interaction_id: str | None = None,
+    interrupt_event: Optional[asyncio.Event] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Run the agent loop and yield structured events.
@@ -98,8 +105,10 @@ async def stream_agent_events(
     turn_count = 0
     max_turns = 10
 
-    while turn_count < max_turns:
-        turn_count += 1
+    try:
+        while turn_count < max_turns:
+            await _check_interrupt(interrupt_event)
+            turn_count += 1
 
         # Build tool definitions from loaded tools
         tool_definitions = []
@@ -130,6 +139,8 @@ async def stream_agent_events(
         def _build_input() -> str:
             return json.dumps(messages)
 
+        await _check_interrupt(interrupt_event)
+
         # ── Stream the LLM response ──
         model = os.environ.get("OPENROUTER_MODEL", "deepseek/deepseek-v3.2")
         try:
@@ -150,6 +161,7 @@ async def stream_agent_events(
         collected_tool_calls: Dict[int, Any] = {}
 
         async for chunk in stream:
+            await _check_interrupt(interrupt_event)
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
@@ -210,6 +222,7 @@ async def stream_agent_events(
             # 1. Validate ALL tool calls before any execution
             valid_calls: List[Any] = []
             for idx, tc in sorted(collected_tool_calls.items()):
+                await _check_interrupt(interrupt_event)
                 tool_name = tc.function.name
                 try:
                     tool_args = json.loads(tc.function.arguments) if tc.function.arguments else {}
@@ -242,6 +255,8 @@ async def stream_agent_events(
                 else:
                     valid_calls.append((idx, tc, tool_name, tool_args))
 
+            await _check_interrupt(interrupt_event)
+
             # 2. Execute valid tools concurrently
             if valid_calls:
                 async def execute_one(name: str, args: dict, tc_id: str) -> dict:
@@ -266,6 +281,7 @@ async def stream_agent_events(
 
                 # 3. Emit results in original order
                 for (idx, tc, tool_name, tool_args), result in zip(valid_calls, results):
+                    await _check_interrupt(interrupt_event)
                     success = result["success"]
                     te = result.get("error")
 
@@ -346,3 +362,10 @@ async def stream_agent_events(
         "type": "response",
         "content": "I've reached the maximum number of turns. What would you like to do next?",
     }
+except asyncio.CancelledError:
+    logger.info(f"stream_agent_events for session {session_id} cancelled by interrupt.")
+    return
+except Exception as e:
+    logger.error(f"stream_agent_events error: {e}", exc_info=True)
+    yield {"type": "error", "message": f"Unexpected error in agent loop: {e}"}
+    return
