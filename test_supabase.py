@@ -1,0 +1,1 @@
+["x for x in dir(supabase) if not x.startswith('_')])"]

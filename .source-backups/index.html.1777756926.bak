@@ -1,0 +1,1538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>webAgent</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm/css/xterm.css">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a2f0a;
+    color: #c0caf5;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── Split layout ── */
+  #app-container {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ── Left: Terminal ── */
+  #terminal-side {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    position: relative;
+  }
+
+  #terminal-container {
+    flex: 1;
+    background: #0d0d1a;
+  }
+  #terminal-container .xterm { height: 100%; padding: 4px; }
+  #terminal-container .xterm-viewport { scrollbar-width: thin; scrollbar-color: #2a2a4a transparent; }
+  #terminal-container .xterm-viewport::-webkit-scrollbar { width: 6px; }
+  #terminal-container .xterm-viewport::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+
+  /* ── Tool call log (overlay in terminal side) ── */
+  #tool-log-toggle {
+    position: absolute;
+    bottom: 12px;
+    left: 12px;
+    background: #1a1a2ee0;
+    border: 1px solid #2a2a4a;
+    color: #7dcfff;
+    padding: 4px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 11px;
+    z-index: 50;
+    backdrop-filter: blur(6px);
+  }
+  #tool-log-toggle:hover { border-color: #7dcfff; }
+
+  #tool-log-panel {
+    position: absolute;
+    bottom: 44px;
+    left: 12px;
+    right: 12px;
+    max-height: 40%;
+    background: #1a1a2ee8;
+    border: 1px solid #2a2a4a;
+    border-radius: 10px;
+    display: none;
+    flex-direction: column;
+    z-index: 50;
+    backdrop-filter: blur(10px);
+    overflow: hidden;
+  }
+  #tool-log-panel.open { display: flex; }
+  #tool-log-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 14px;
+    border-bottom: 1px solid #2a2a4a;
+    font-size: 12px;
+    font-weight: 600;
+    color: #a9b1d6;
+    flex-shrink: 0;
+  }
+  #tool-log-header button {
+    background: none; border: none; color: #565f89; cursor: pointer; font-size: 14px;
+  }
+  #tool-log-header button:hover { color: #f7768e; }
+  #tool-log-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 14px;
+    font-family: 'Cascadia Code', 'Fira Code', Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  #tool-log-content .tl-entry { padding: 3px 0; }
+  #tool-log-content .tl-call  { color: #7dcfff; }
+  #tool-log-content .tl-ok   { color: #9ece6a; }
+  #tool-log-content .tl-err  { color: #f7768e; }
+  #tool-log-content .tl-dur  { color: #565f89; font-size: 11px; }
+  #tool-log-content .tl-think { color: #e0af68; font-style: italic; }
+
+  /* ── Right: Chat panel ── */
+  #chat-side {
+    width: 380px;
+    min-width: 300px;
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid #2a2a4a;
+    background: #13132a;
+    flex-shrink: 0;
+  }
+
+  #chat-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    border-bottom: 1px solid #2a2a4a;
+    font-size: 13px;
+    font-weight: 600;
+    color: #c0caf5;
+    flex-shrink: 0;
+  }
+  #chat-header .sub { color: #565f89; font-weight: 400; font-size: 11px; }
+  #chat-header .actions { display: flex; gap: 8px; }
+  #chat-header button {
+    background: none; border: none; color: #565f89; cursor: pointer; font-size: 13px;
+  }
+  #chat-header button:hover { color: #7dcfff; }
+
+  #chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    scrollbar-width: thin;
+    scrollbar-color: #2a2a4a transparent;
+  }
+
+  .chat-bubble {
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-size: 13px;
+    line-height: 1.5;
+    max-width: 90%;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+  }
+  .chat-bubble.user {
+    background: #7dcfff15;
+    border: 1px solid #7dcfff30;
+    color: #c0caf5;
+    align-self: flex-end;
+    border-bottom-right-radius: 4px;
+  }
+  .chat-bubble.agent {
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    color: #a9b1d6;
+    align-self: flex-start;
+    border-bottom-left-radius: 4px;
+  }
+  .chat-bubble.agent.streaming { border-color: #7dcfff50; }
+  .chat-bubble.error {
+    background: #f7768e15;
+    border: 1px solid #f7768e40;
+    color: #f7768e;
+    align-self: flex-start;
+  }
+  .chat-bubble .label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #565f89;
+    display: block;
+    margin-bottom: 4px;
+  }
+
+  #chat-input-area {
+    display: flex;
+    padding: 10px 12px;
+    border-top: 1px solid #2a2a4a;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  #chat-input {
+    flex: 1;
+    background: #0d0d1a;
+    border: 1px solid #2a2a4a;
+    border-radius: 8px;
+    padding: 10px 14px;
+    color: #c0caf5;
+    font-size: 13px;
+    outline: none;
+    font-family: inherit;
+    resize: none;
+  }
+  #chat-input:focus { border-color: #7dcfff; }
+  #chat-input::placeholder { color: #3b4261; }
+  #chat-send {
+    background: #7dcfff;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 20px;
+    color: #0d0d1a;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 13px;
+    align-self: flex-end;
+    transition: 0.15s;
+  }
+  #chat-send:hover { background: #89ddff; }
+  #chat-send:disabled { opacity: 0.4; cursor: default; }
+
+  /* ── Status bar ── */
+  #status-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 16px;
+    background: #1a1a2e;
+    border-bottom: 1px solid #2a2a4a;
+    font-size: 11px;
+    color: #565f89;
+    flex-shrink: 0;
+  }
+  .status-dot {
+    width: 7px; height: 7px; border-radius: 50%; display: inline-block;
+  }
+  .status-dot.green { background: #7dcfff; box-shadow: 0 0 4px #7dcfff; }
+  .status-dot.yellow { background: #e0af68; animation: pulse 1s infinite; }
+  .status-dot.red { background: #f7768e; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  .status-group { display: flex; align-items: center; gap: 6px; }
+  #status-right { margin-left: auto; display: flex; gap: 16px; align-items: center; }
+  .status-btn {
+    background: #2a2a4a;
+    border: 1px solid #3b4261;
+    color: #a9b1d6;
+    padding: 2px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+    font-family: inherit;
+    transition: 0.15s;
+  }
+  .status-btn:hover { background: #3b4261; border-color: #7dcfff; color: #c0caf5; }
+  .status-btn:active { background: #565f89; }
+  .status-btn.restarting { opacity: 0.5; pointer-events: none; }
+
+  /* Cloud / Local — UI only (no backend routing) */
+  #control-host-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-right: 8px;
+    padding-right: 12px;
+    border-right: 1px solid #2a2a4a;
+    flex-shrink: 0;
+  }
+  #control-host-toggle .ch-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #565f89;
+    font-weight: 600;
+  }
+  #control-host-toggle .segment-track {
+    display: flex;
+    background: #0d0d1a;
+    border: 1px solid #2a2a4a;
+    border-radius: 7px;
+    padding: 2px;
+    gap: 0;
+  }
+  #control-host-toggle .segment-track button {
+    border: none;
+    background: transparent;
+    color: #565f89;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  #control-host-toggle .segment-track button:hover:not(.active) { color: #a9b1d6; }
+  #control-host-toggle .segment-track button.active {
+    background: #2a2a4a;
+    color: #c0caf5;
+  }
+  #control-host-toggle .segment-track button:focus-visible {
+    outline: 2px solid #7dcfff;
+    outline-offset: 1px;
+  }
+
+  /* ── Loading ── */
+  #loading-overlay {
+    position: fixed; inset: 0; background: #0d0d1a; display: flex;
+    flex-direction: column; align-items: center; justify-content: center;
+    z-index: 200; color: #565f89; font-size: 13px; gap: 16px;
+    transition: opacity 0.3s;
+  }
+  #loading-overlay.hidden { opacity: 0; pointer-events: none; }
+  .spinner { width: 22px; height: 22px; border: 2px solid #2a2a4a; border-top: 2px solid #7dcfff; border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Responsive ── */
+  @media (max-width: 800px) {
+    #app-container { flex-direction: column; }
+    #chat-side { width: 100%; min-width: 0; border-left: none; border-top: 1px solid #2a2a4a; max-height: 40vh; }
+    #terminal-side { min-height: 40vh; }
+  }
+
+  /* ── Tab bar ── */
+  #tab-bar {
+    display: flex;
+    background: #0d0d1a;
+    border-bottom: 1px solid #2a2a4a;
+    flex-shrink: 0;
+  }
+  .tab-btn {
+    background: none;
+    border: none;
+    color: #565f89;
+    padding: 8px 18px;
+    font-size: 12px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: 0.15s;
+    font-family: inherit;
+  }
+  .tab-btn:hover { color: #a9b1d6; }
+  .tab-btn.active {
+    color: #7dcfff;
+    border-bottom-color: #7dcfff;
+  }
+  .tab-content { display: none; flex: 1; min-height: 0; }
+  .tab-content.active { display: flex; flex-direction: column; }
+
+  /* ── Database viewer ── */
+  #db-viewer {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: #0d0d1a;
+    font-size: 12px;
+    min-height: 0;
+  }
+  #db-toolbar {
+    display: flex;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid #2a2a4a;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  #db-toolbar select {
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    color: #c0caf5;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    outline: none;
+    font-family: inherit;
+  }
+  #db-toolbar select:focus { border-color: #7dcfff; }
+  #db-refresh {
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    color: #c0caf5;
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-family: inherit;
+  }
+  #db-refresh:hover { border-color: #7dcfff; color: #7dcfff; }
+  #db-panel {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    overflow: hidden;
+  }
+  #db-table-list {
+    width: 180px;
+    min-width: 140px;
+    border-right: 1px solid #2a2a4a;
+    overflow-y: auto;
+    padding: 4px 0;
+    flex-shrink: 0;
+  }
+  .db-table-item {
+    padding: 6px 14px;
+    cursor: pointer;
+    color: #a9b1d6;
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+  }
+  .db-table-item:hover { background: #1a1a2e; }
+  .db-table-item.active { background: #7dcfff15; color: #7dcfff; }
+  .db-table-item .count {
+    color: #565f89;
+    font-size: 11px;
+  }
+  #db-table-view {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  #db-table-header {
+    padding: 6px 12px;
+    border-bottom: 1px solid #2a2a4a;
+    color: #565f89;
+    font-size: 11px;
+    flex-shrink: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #db-table-data {
+    flex: 1;
+    overflow: auto;
+    padding: 0;
+  }
+  .db-hint {
+    color: #565f89;
+    text-align: center;
+    padding: 40px 20px;
+    font-size: 13px;
+  }
+  .db-table {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    font-size: 12px;
+    font-family: 'Cascadia Code', 'Fira Code', Menlo, monospace;
+  }
+  .db-table th {
+    background: #1a1a2e;
+    color: #7dcfff;
+    padding: 6px 10px;
+    text-align: left;
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+    border-bottom: 1px solid #2a2a4a;
+    white-space: nowrap;
+  }
+  .db-table td {
+    padding: 4px 10px;
+    border-bottom: 1px solid #1a1a2e;
+    color: #c0caf5;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .db-table tr:hover td { background: #1a1a2e55; }
+  .db-table .col-pk { color: #e0af68; }
+  .db-table .col-null { color: #565f89; font-style: italic; }
+  .db-cell { cursor: pointer; }
+  .db-cell:hover { outline: 1px solid #7dcfff55; }
+  .db-table td, .db-table th {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .db-th { position: relative; user-select: none; }
+  .th-text { overflow: hidden; text-overflow: ellipsis; display: block; }
+  .th-resize {
+    position: absolute;
+    top: 0; right: 0;
+    width: 5px;
+    height: 100%;
+    cursor: col-resize;
+    z-index: 10;
+  }
+  .th-resize:hover, .th-resize.resizing { background: #7dcfff55; }
+  .db-table .resize-line {
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 1px;
+    background: #7dcfff;
+    z-index: 20;
+    pointer-events: none;
+  }
+  .db-edit-input {
+    background: #0d0d1a;
+    border: 1px solid #7dcfff;
+    color: #c0caf5;
+    padding: 2px 6px;
+    font-size: 12px;
+    font-family: 'Cascadia Code', 'Fira Code', Menlo, monospace;
+    width: 100%;
+    box-sizing: border-box;
+    outline: none;
+    border-radius: 2px;
+  }
+</style>
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div id="loading-overlay">
+  <div class="spinner"></div>
+  <span>Connecting...</span>
+</div>
+
+<!-- Status bar -->
+<div id="status-bar">
+  <div id="control-host-toggle" title="Switch between Cloud (Supabase) and Local (SQLite) database">
+    <span class="ch-label">Control</span>
+    <div class="segment-track" role="group" aria-label="Cloud or local control (UI preview)">
+      <button type="button" id="seg-cloud" aria-pressed="false">Cloud</button>
+      <button type="button" id="seg-local" class="active" aria-pressed="true">Local</button>
+    </div>
+  </div>
+  <div class="status-group">
+    <span class="status-dot yellow" id="terminal-dot"></span>
+    <span id="terminal-status">Terminal...</span>
+  </div>
+  <div class="status-group">
+    <span class="status-dot yellow" id="agent-dot"></span>
+    <span id="agent-status">Agent...</span>
+  </div>
+  <span id="status-right">
+    <span id="user-label">User: <span id="user-id-display">—</span></span>
+    <span id="session-label">Session: <span id="session-id-display">—</span></span>
+    <button id="btn-reconnect" class="status-btn" title="Reconnect WebSockets">🔄 Reconnect</button>
+    <button id="btn-restart" class="status-btn" title="Restart the Python agent server">⏻ Restart</button>
+  </span>
+</div>
+
+<!-- Split container -->
+<div id="app-container">
+
+  <!-- Terminal side -->
+  <div id="terminal-side">
+    <!-- Tab bar -->
+    <div id="tab-bar">
+      <button class="tab-btn" data-tab="terminal">⌘ Terminal</button>
+      <button class="tab-btn active" data-tab="database">\U0001f4ca Database</button>
+    </div>
+    <!-- Tab content -->
+    <div id="tab-terminal" class="tab-content">
+      <div id="terminal-container"></div>
+    </div>
+    <div id="tab-database" class="tab-content active">
+      <div id="db-viewer">
+        <div id="db-toolbar">
+          <select id="db-select">
+            <option value="local_webagent.db">local_webagent.db</option>
+            <option value="local_botboss.db">local_botboss.db</option>
+          </select>
+          <select id="db-sort-col">
+            <option value="created_at">Sort: created_at</option>
+          </select>
+          <select id="db-sort-dir">
+            <option value="DESC">▼ Desc</option>
+            <option value="ASC">▲ Asc</option>
+          </select>
+          <button id="db-refresh">↻ Refresh</button>
+          <span id="db-auto-status" style="margin-left:auto;color:#565f89;font-size:11px;"></span>
+        </div>
+        <div id="db-panel">
+          <div id="db-table-list"></div>
+          <div id="db-table-view">
+            <div id="db-table-header"></div>
+            <div id="db-table-data">
+              <div class="db-hint">Select a table to view its contents</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tool call log overlay -->
+    <button id="tool-log-toggle">📋 Log</button>
+    <div id="tool-log-panel">
+      <div id="tool-log-header">
+        <span>⚙️ Agent Activity</span>
+        <button id="tool-log-close">✕</button>
+      </div>
+      <div id="tool-log-content"></div>
+    </div>
+  </div>
+
+  <!-- Chat side -->
+  <div id="chat-side">
+    <div id="chat-header">
+      <span>🤖 Bot Boss <span class="sub">— Terminal Agent</span></span>
+      <div class="actions">
+        <button id="chat-clear" title="Clear conversation">🗑️</button>
+      </div>
+    </div>
+    <div id="chat-messages">
+      <div class="chat-bubble agent">
+        <span class="label">Assistant</span>
+        Terminal agent ready. Ask me anything — I'll show tool calls in the terminal log.
+      </div>
+    </div>
+    <div id="chat-input-area">
+      <textarea id="chat-input" rows="2" placeholder="Ask the agent... (Enter to send, Shift+Enter for newline)" autocomplete="off"></textarea>
+      <button id="chat-send" disabled>Send</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links"></script>
+<script>
+(function() {
+  'use strict';
+
+  // ── WebSocket URLs ──
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const TERM_WS = `${proto}//${location.host}/api/v1/terminal/ws`;
+  const AGENT_WS = `${proto}//${location.host}/api/v1/agent/ws`;
+
+  // ── DOM ──
+  const container = document.getElementById('terminal-container');
+  const loadingOverlay = document.getElementById('loading-overlay');
+  const tDot = document.getElementById('terminal-dot');
+  const tStat = document.getElementById('terminal-status');
+  const aDot = document.getElementById('agent-dot');
+  const aStat = document.getElementById('agent-status');
+  const sessionLabel = document.getElementById('session-id-display');
+  const chatMessages = document.getElementById('chat-messages');
+  const chatInput = document.getElementById('chat-input');
+  const chatSend = document.getElementById('chat-send');
+  const chatClear = document.getElementById('chat-clear');
+  const toolLogContent = document.getElementById('tool-log-content');
+  const toolLogToggle = document.getElementById('tool-log-toggle');
+  const toolLogPanel = document.getElementById('tool-log-panel');
+  const toolLogClose = document.getElementById('tool-log-close');
+  const segCloud = document.getElementById('seg-cloud');
+  const segLocal = document.getElementById('seg-local');
+  const CONTROL_MODE_KEY = 'terminalControlModeUi';
+
+  const localUserId = localStorage.getItem('terminalUserId') || 'ddbd80a2-e46f-436e-a165-4f63469218d9';
+
+  // ── Database mode control ──
+  async function fetchDbMode() {
+    try {
+      const res = await fetch('/admin/db/mode');
+      if (res.ok) {
+        const data = await res.json();
+        return data.mode; // 'cloud' or 'local'
+      }
+    } catch (e) { /* server not up yet */ }
+    return null;
+  }
+
+  async function setDbMode(mode) {
+    try {
+      const res = await fetch('/admin/db/mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const s = data.status || {};
+        const tableCount = s.tables ? Object.values(s.tables).reduce((a, b) => a + (b > 0 ? b : 0), 0) : 0;
+        tStat.textContent = `Mode: ${data.status.mode} (${tableCount} records)`;
+        return true;
+      }
+    } catch (e) {
+      console.error('Failed to switch mode:', e);
+    }
+    return false;
+  }
+
+  (function initControlToggleUi() {
+    async function applyMode(mode) {
+      const isLocal = mode === 'local';
+      segLocal.classList.toggle('active', isLocal);
+      segCloud.classList.toggle('active', !isLocal);
+      segLocal.setAttribute('aria-pressed', isLocal ? 'true' : 'false');
+      segCloud.setAttribute('aria-pressed', isLocal ? 'false' : 'true');
+    }
+
+    // On page load, fetch actual mode from server
+    fetchDbMode().then(function(mode) {
+      if (mode) {
+        applyMode(mode);
+        localStorage.setItem(CONTROL_MODE_KEY, mode);
+      } else {
+        // Fallback: default Local unless user explicitly chose Cloud
+        var saved = localStorage.getItem(CONTROL_MODE_KEY);
+        applyMode(saved === 'cloud' ? 'cloud' : 'local');
+      }
+    });
+
+    segCloud.addEventListener('click', async function() {
+      segCloud.disabled = true;
+      segLocal.disabled = true;
+      await setDbMode('cloud');
+      localStorage.setItem(CONTROL_MODE_KEY, 'cloud');
+      applyMode('cloud');
+      segCloud.disabled = false;
+      segLocal.disabled = false;
+    });
+
+    segLocal.addEventListener('click', async function() {
+      segCloud.disabled = true;
+      segLocal.disabled = true;
+      await setDbMode('local');
+      localStorage.setItem(CONTROL_MODE_KEY, 'local');
+      applyMode('local');
+      segCloud.disabled = false;
+      segLocal.disabled = false;
+    });
+  })();
+
+  // Generate a valid UUID v4 for the session (required by Supabase uuid columns)
+  // Use a UUID-based session ID; the browser stores the same one across page nav.
+  function generateUUID() {
+    return crypto.randomUUID();
+  }
+  const storedSessionId = sessionStorage.getItem('terminalSessionId');
+  let currentSessionId = storedSessionId || generateUUID();
+  if (!storedSessionId) {
+    sessionStorage.setItem('terminalSessionId', currentSessionId);
+  }
+  let currentUserId = new URLSearchParams(location.search).get('user_id') || localUserId;
+
+  // ── Set up xterm.js ──
+  const term = new Terminal({
+    cursorBlink: true,
+    cursorStyle: 'block',
+    fontSize: 14,
+    fontFamily: '"Cascadia Code", "Fira Code", Menlo, Monaco, "Courier New", monospace',
+    allowTransparency: true,
+    theme: {
+      background: '#0d0d1a', foreground: '#c0caf5', cursor: '#c0caf5',
+      selectionBackground: '#2a2a4a',
+      black: '#1d202f', red: '#f7768e', green: '#9ece6a', yellow: '#e0af68',
+      blue: '#7aa2f7', magenta: '#bb9af7', cyan: '#7dcfff', white: '#c0caf5',
+      brightBlack: '#565f89', brightRed: '#f7768e', brightGreen: '#9ece6a',
+      brightYellow: '#e0af68', brightBlue: '#7aa2f7', brightMagenta: '#bb9af7',
+      brightCyan: '#7dcfff', brightWhite: '#c0caf5',
+    },
+  });
+  const fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.loadAddon(new WebLinksAddon.WebLinksAddon());
+  term.open(container);
+  fitAddon.fit();
+
+  // ── Terminal status dots ──
+  function setTermStatus(state) {
+    tDot.className = 'status-dot ' + state;
+    tStat.textContent = state === 'green' ? 'Terminal' : state === 'yellow' ? 'Connecting...' : 'Disconnected';
+  }
+  function setAgentStatus(state) {
+    aDot.className = 'status-dot ' + state;
+    aStat.textContent = state === 'green' ? 'Agent' : state === 'yellow' ? 'Connecting...' : 'Disconnected';
+  }
+
+  // ── Terminal WebSocket (PTY shell) ──
+  let termWs = null;
+  let agentWs = null;
+  let isProcessing = false;
+
+  function connectTerminal() {
+    setTermStatus('yellow');
+    if (termWs) { termWs.onclose = null; termWs.close(); }
+    termWs = new WebSocket(TERM_WS);
+    termWs.binaryType = 'arraybuffer';
+
+    termWs.onopen = () => {
+      setTermStatus('green');
+      term.focus();
+      termWs.send(JSON.stringify({ type: 'resize', rows: term.rows, cols: term.cols }));
+    };
+
+    termWs.onmessage = (ev) => {
+      if (ev.data instanceof ArrayBuffer) {
+        const data = new Uint8Array(ev.data);
+        if (data.length === 0) {
+          term.write('\r\n\x1b[31m[Process exited — refresh to reconnect]\x1b[0m\r\n');
+        } else {
+          term.write(data);
+        }
+      }
+    };
+
+    termWs.onclose = () => setTermStatus('red');
+    termWs.onerror = () => setTermStatus('red');
+  }
+
+  term.onData((data) => {
+    if (termWs && termWs.readyState === WebSocket.OPEN) termWs.send(data);
+  });
+  term.onResize(({ rows, cols }) => {
+    if (termWs && termWs.readyState === WebSocket.OPEN)
+      termWs.send(JSON.stringify({ type: 'resize', rows, cols }));
+  });
+  window.addEventListener('resize', () => fitAddon.fit());
+
+  // ── Tool Log ──
+  toolLogToggle.addEventListener('click', () => toolLogPanel.classList.toggle('open'));
+  toolLogClose.addEventListener('click', () => toolLogPanel.classList.remove('open'));
+
+  function logTool(event) {
+    const el = document.createElement('div');
+    el.className = 'tl-entry';
+
+    switch (event.type) {
+      case 'stream':
+        el.className = 'tl-entry tl-think';
+        el.textContent = '💭 ' + event.content;
+        break;
+      case 'tool_call':
+        el.className = 'tl-entry tl-call';
+        el.textContent = '🔧 ' + event.tool + '(' + JSON.stringify(event.args || {}) + ')';
+        break;
+      case 'tool_result':
+        el.className = 'tl-entry ' + (event.error ? 'tl-err' : 'tl-ok');
+        const dur = event.duration_ms ? ` [${event.duration_ms}ms]` : '';
+        el.textContent = (event.error ? '❌ ' : '✅ ') + event.tool + dur + ': ' + (event.result || '').slice(0, 300);
+        break;
+      case 'response':
+        el.className = 'tl-entry tl-ok';
+        el.textContent = '💬 Response: ' + (event.content || '').slice(0, 200);
+        break;
+      default:
+        el.textContent = JSON.stringify(event);
+    }
+
+    toolLogContent.appendChild(el);
+    toolLogContent.scrollTop = toolLogContent.scrollHeight;
+  }
+
+  // ── Chat ──
+  function addChatBubble(role, text, extraClass) {
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-bubble ' + role + (extraClass ? ' ' + extraClass : '');
+    const label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = role === 'user' ? 'You' : 'Assistant';
+    bubble.appendChild(label);
+    const content = document.createTextNode(text);
+    bubble.appendChild(content);
+    chatMessages.appendChild(bubble);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+    return bubble;
+  }
+
+  function updateLastBubble(text, extraClass) {
+    const bubbles = chatMessages.querySelectorAll('.chat-bubble.agent');
+    const last = bubbles[bubbles.length - 1];
+    if (last) {
+      // Remove old text node, add new one
+      while (last.childNodes.length > 1) last.removeChild(last.lastChild);
+      last.appendChild(document.createTextNode(text));
+      if (extraClass) last.className = 'chat-bubble agent ' + extraClass;
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+  }
+
+  chatSend.addEventListener('click', sendMessage);
+  chatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+  chatInput.addEventListener('input', () => {
+    chatSend.disabled = !chatInput.value.trim() || isProcessing;
+  });
+
+  chatClear.addEventListener('click', () => {
+    chatMessages.innerHTML = '';
+    addChatBubble('agent', 'Conversation cleared. Ask me anything.');
+  });
+
+  // ── Reconnect button ──
+  document.getElementById('btn-reconnect').addEventListener('click', () => {
+    connectTerminal();
+    connectAgent();
+    addChatBubble('agent', 'Reconnecting...');
+  });
+
+  // ── Restart button ──
+  document.getElementById('btn-restart').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-restart');
+    btn.classList.add('restarting');
+    btn.textContent = '⏻ Restarting...';
+    addChatBubble('agent', 'Restarting server...');
+    try {
+      await fetch('/api/v1/restart', { method: 'POST' });
+    } catch { /* server will go down, that's expected */ }
+    // Poll until server comes back up, then reconnect
+    const poll = setInterval(async () => {
+      try {
+        const r = await fetch('/health');
+        if (r.ok) {
+          clearInterval(poll);
+          btn.classList.remove('restarting');
+          btn.textContent = '⏻ Restart';
+          addChatBubble('agent', 'Server restarted. Reconnecting...');
+          connectTerminal();
+          connectAgent();
+        }
+      } catch { /* server still down */ }
+    }, 2000);
+  });
+
+  function sendMessage() {
+    const text = chatInput.value.trim();
+    if (!text || isProcessing) return;
+    chatInput.value = '';
+    chatSend.disabled = true;
+
+    addChatBubble('user', text);
+    const respBubble = addChatBubble('agent', '…', 'streaming');
+    isProcessing = true;
+    chatSend.disabled = true;
+
+    const msg = JSON.stringify({
+      message: text,
+      session_id: currentSessionId,
+      user_id: currentUserId,
+    });
+
+    if (agentWs && agentWs.readyState === WebSocket.OPEN) {
+      agentWs.send(msg);
+    } else {
+      updateLastBubble('Agent disconnected. Reconnecting...', 'error');
+      isProcessing = false;
+      chatSend.disabled = false;
+      connectAgent();
+    }
+  }
+
+  // ── Agent WebSocket ──
+  let agentBuffer = '';  // accumulate streaming text
+
+  function connectAgent() {
+    setAgentStatus('yellow');
+    if (agentWs) { agentWs.onclose = null; agentWs.close(); }
+
+    agentWs = new WebSocket(AGENT_WS);
+    agentBuffer = '';
+
+    agentWs.onopen = () => {
+      setAgentStatus('green');
+      sessionLabel.textContent = currentSessionId;
+      document.getElementById('user-id-display').textContent = currentUserId;
+    };
+
+    agentWs.onmessage = (ev) => {
+      let event;
+      try { event = JSON.parse(ev.data); } catch { return; }
+
+      // Log all events to the tool log panel
+      logTool(event);
+
+      switch (event.type) {
+        case 'stream':
+          agentBuffer += event.content;
+          updateLastBubble(agentBuffer, 'streaming');
+          break;
+
+        case 'response':
+          agentBuffer = '';
+          updateLastBubble(event.content, '');
+          isProcessing = false;
+          chatSend.disabled = false;
+          if (chatInput.value.trim()) chatSend.disabled = false;
+          break;
+
+        case 'error':
+          updateLastBubble('Error: ' + event.message, 'error');
+          agentBuffer = '';
+          isProcessing = false;
+          chatSend.disabled = false;
+          break;
+
+        case 'tool_call':
+        case 'tool_result':
+          // Already logged above, no chat change needed
+          break;
+
+        default:
+          break;
+      }
+    };
+
+    agentWs.onclose = () => {
+      setAgentStatus('red');
+      if (isProcessing) {
+        updateLastBubble('Connection lost while processing.', 'error');
+        isProcessing = false;
+        chatSend.disabled = false;
+      }
+    };
+
+    agentWs.onerror = () => setAgentStatus('red');
+  }
+
+  // ── Init ──
+  try {
+    connectTerminal();
+    connectAgent();
+    loadingOverlay.classList.add('hidden');
+  } catch (e) {
+    document.title = 'JS ERROR: ' + e.message;
+    loadingOverlay.classList.add('hidden');
+  }
+
+  // Safety net: if anything went wrong, hide the overlay after 3s anyway
+  setTimeout(function() {
+    loadingOverlay.classList.add('hidden');
+  }, 3000);
+
+  // ── Tab switching ──
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+      // Resize terminal when switching back to it
+      if (btn.dataset.tab === 'terminal') {
+        setTimeout(() => { fitAddon.fit(); }, 50);
+      }
+    });
+  });
+
+  // ── Database viewer ──
+  let dbTables = [];
+  let dbSelectedTable = null;
+  let dbCurrentResult = null;  // last query result (for editing)
+  let editingCell = null;      // { rowIndex, colName, originalValue }
+
+  // DB toolbar
+  const dbToolbar = document.getElementById('db-toolbar');
+  // Create save/cancel buttons (hidden by default)
+  const dbSaveBtn = document.createElement('button');
+  dbSaveBtn.id = 'db-save-btn';
+  dbSaveBtn.textContent = '\u2714 Save';
+  dbSaveBtn.style.display = 'none';
+  dbSaveBtn.style.background = '#9ece6a';
+  dbSaveBtn.style.color = '#0d0d1a';
+  dbSaveBtn.style.border = 'none';
+  dbSaveBtn.style.borderRadius = '4px';
+  dbSaveBtn.style.padding = '4px 12px';
+  dbSaveBtn.style.cursor = 'pointer';
+  dbSaveBtn.style.fontSize = '12px';
+  dbSaveBtn.style.fontWeight = '600';
+  dbSaveBtn.style.fontFamily = 'inherit';
+  const dbCancelBtn = document.createElement('button');
+  dbCancelBtn.id = 'db-cancel-btn';
+  dbCancelBtn.textContent = '\u2716 Cancel';
+  dbCancelBtn.style.display = 'none';
+  dbCancelBtn.style.background = '#565f89';
+  dbCancelBtn.style.color = '#c0caf5';
+  dbCancelBtn.style.border = 'none';
+  dbCancelBtn.style.borderRadius = '4px';
+  dbCancelBtn.style.padding = '4px 12px';
+  dbCancelBtn.style.cursor = 'pointer';
+  dbCancelBtn.style.fontSize = '12px';
+  dbCancelBtn.style.fontFamily = 'inherit';
+  dbCancelBtn.style.marginLeft = '4px';
+  dbToolbar.appendChild(dbSaveBtn);
+  dbToolbar.appendChild(dbCancelBtn);
+
+  async function fetchTables(dbName) {
+    try {
+      const res = await fetch(`/api/v1/db/tables?db=${encodeURIComponent(dbName)}`);
+      const data = await res.json();
+      dbTables = data.tables || [];
+      renderTableList();
+    } catch (e) {
+      document.getElementById('db-table-list').innerHTML = '<div class="db-hint">Error loading tables</div>';
+    }
+  }
+
+  // Update only the row counts in the sidebar (no re-render, no flicker)
+  async function updateTableCounts() {
+    const dbName = document.getElementById('db-select').value;
+    try {
+      const res = await fetch(`/api/v1/db/tables?db=${encodeURIComponent(dbName)}`);
+      const data = await res.json();
+      if (!data.tables) return;
+      // Update cached dbTables
+      for (const fresh of data.tables) {
+        const existing = dbTables.find(t => t.name === fresh.name);
+        if (existing) existing.row_count = fresh.row_count;
+      }
+      // Update count spans in-place
+      document.querySelectorAll('.db-table-item').forEach(item => {
+        const name = item.dataset.table;
+        const t = dbTables.find(t => t.name === name);
+        if (t) {
+          const countSpan = item.querySelector('.count');
+          if (countSpan) countSpan.textContent = t.row_count;
+        }
+      });
+    } catch (e) {
+      // Silently ignore — counts will update on next cycle
+    }
+  }
+
+  function getPKColumns(tableName) {
+    const t = dbTables.find(t => t.name === tableName);
+    if (!t) return [];
+    return t.columns.filter(c => c.pk).map(c => c.name);
+  }
+
+  function renderTableList() {
+    const el = document.getElementById('db-table-list');
+    if (!dbTables.length) {
+      el.innerHTML = '<div class="db-hint">No tables found</div>';
+      return;
+    }
+    el.innerHTML = dbTables.map(t =>
+      `<div class="db-table-item${dbSelectedTable === t.name ? ' active' : ''}" data-table="${t.name}">
+        <span>${t.name}</span>
+        <span class="count">${t.row_count}</span>
+      </div>`
+    ).join('');
+    el.querySelectorAll('.db-table-item').forEach(item => {
+      item.addEventListener('click', () => {
+        dbSelectedTable = item.dataset.table;
+        renderTableList();
+        queryTable(dbSelectedTable).then(() => startAutoRefresh());
+      });
+    });
+  }
+
+  function cancelEditing() {
+    if (editingCell) {
+      // Re-render the table to discard edits
+      editingCell = null;
+      dbSaveBtn.style.display = 'none';
+      dbCancelBtn.style.display = 'none';
+      if (dbCurrentResult) {
+        renderTableData(dbCurrentResult);
+      }
+    }
+  }
+
+  function getDisplayColumns(columns) {
+    // Priority order: created_at first, then id, then session_id, then the rest alphabetically
+    const priority = ['created_at', 'role', 'content', 'session_id', 'id'];
+    const ordered = [];
+    for (const p of priority) {
+      if (columns.includes(p)) ordered.push(p);
+    }
+    for (const c of columns) {
+      if (!priority.includes(c)) ordered.push(c);
+    }
+    return ordered;
+  }
+
+  // Column width overrides (in addition to narrow cols)
+  const COL_WIDTHS = {
+    'created_at': '20px',
+    'session_id': '20px',
+    'id': '20px',
+    'role': '50px',
+    'content': '300px',
+  };
+
+  function renderTableData(result, silent) {
+    const data = document.getElementById('db-table-data');
+    const pkCols = getPKColumns(result.table);
+    const displayCols = getDisplayColumns(result.columns);
+
+    if (silent) {
+      // ── Silent update: update cell text in-place, no DOM rebuild ──
+      const tbody = data.querySelector('table.db-table tbody');
+      if (tbody) {
+        const existingRows = tbody.querySelectorAll('tr');
+        for (let ri = 0; ri < result.rows.length && ri < existingRows.length; ri++) {
+          const row = result.rows[ri];
+          const cells = existingRows[ri].querySelectorAll('td');
+          for (let ci = 0; ci < displayCols.length && ci < cells.length; ci++) {
+            const col = displayCols[ci];
+            const val = row[col];
+            const display = val === null ? 'NULL' : String(val);
+            const cell = cells[ci];
+            // Only update if value changed (avoids unnecessary DOM writes)
+            if (cell.dataset.val !== String(val)) {
+              cell.textContent = display;
+              cell.dataset.val = val === null ? 'null' : String(val);
+              cell.className = 'db-cell' + (val === null ? ' col-null' : '');
+            }
+          }
+        }
+        // If rows changed, re-render fully
+        if (result.rows.length !== existingRows.length) {
+          return renderTableData(result, false);
+        }
+        return;
+      }
+      // Fall through to full render if no existing table
+    }
+
+    // ── Full render (new table or non-silent) ──
+    let html = '<table class="db-table"><thead><tr>';
+    for (const col of displayCols) {
+      const w = COL_WIDTHS[col];
+      const style = w ? ` style="width:${w}"` : '';
+      html += `<th class="db-th" data-col="${col}"${style}><span class="th-text">${col}</span><span class="th-resize"></span></th>`;
+    }
+    html += '</tr></thead><tbody>';
+
+    for (let ri = 0; ri < result.rows.length; ri++) {
+      const row = result.rows[ri];
+      html += '<tr>';
+      for (const col of displayCols) {
+        const val = row[col];
+        const w = COL_WIDTHS[col];
+        const style = w ? ` style="width:${w}"` : '';
+        const cls = val === null ? 'col-null' : '';
+        html += `<td class="db-cell ${cls}"${style} data-row="${ri}" data-col="${col}" data-val="${String(val).replace(/"/g, '&quot;')}">${val === null ? 'NULL' : String(val)}</td>`;
+      }
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+    data.innerHTML = html;
+
+    // Add click handler for editable cells (not PK columns)
+    data.querySelectorAll('.db-cell').forEach(cell => {
+      cell.addEventListener('dblclick', (e) => {
+        const ri = parseInt(cell.dataset.row);
+        const col = cell.dataset.col;
+
+        // Don't edit PK columns
+        if (pkCols.includes(col)) return;
+
+        // Cancel any previous editing
+        cancelEditing();
+
+        const originalValue = cell.dataset.val === 'null' ? '' : cell.dataset.val;
+        cell.innerHTML = `<input class="db-edit-input" type="text" value="${originalValue.replace(/"/g, '&quot;')}" />`;
+        const input = cell.querySelector('input');
+        input.focus();
+        input.select();
+
+        editingCell = { rowIndex: ri, colName: col, originalValue };
+        dbSaveBtn.style.display = '';
+        dbCancelBtn.style.display = '';
+
+        // Save on Enter, cancel on Escape
+        input.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter') {
+            ev.preventDefault();
+            saveEdit(cell, input.value);
+          } else if (ev.key === 'Escape') {
+            ev.preventDefault();
+            cancelEditing();
+          }
+        });
+      });
+    });
+
+    // Init column resize handles
+    initColumnResize();
+  }
+
+  // ── Column resize ──
+  let resizeData = null;
+
+  function initColumnResize() {
+    document.querySelectorAll('.th-resize').forEach(handle => {
+      // Remove old listeners (clone to avoid duplicates)
+      const newHandle = handle.cloneNode(true);
+      handle.parentNode.replaceChild(newHandle, handle);
+
+      newHandle.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        const th = newHandle.closest('.db-th');
+        const table = th.closest('.db-table');
+        const colIndex = Array.from(th.parentNode.children).indexOf(th);
+        const startX = e.clientX;
+        const startWidth = th.getBoundingClientRect().width;
+
+        resizeData = { th, table, colIndex, startX, startWidth };
+        newHandle.classList.add('resizing');
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+
+        // Create a visual resize line
+        const line = document.createElement('div');
+        line.className = 'resize-line';
+        line.style.left = e.clientX + 'px';
+        document.body.appendChild(line);
+        resizeData.line = line;
+      });
+    });
+  }
+
+  document.addEventListener('mousemove', (e) => {
+    if (!resizeData) return;
+    const diff = e.clientX - resizeData.startX;
+    const newWidth = Math.max(30, resizeData.startWidth + diff);
+    resizeData.line.style.left = e.clientX + 'px';
+  });
+
+  document.addEventListener('mouseup', (e) => {
+    if (!resizeData) return;
+
+    // Calculate final width
+    const diff = e.clientX - resizeData.startX;
+    const newWidth = Math.max(30, resizeData.startWidth + diff);
+
+    // Apply width to all cells in this column
+    const colName = resizeData.th.dataset.col;
+    const table = resizeData.table;
+    const colIndex = resizeData.colIndex;
+
+    // Update header
+    resizeData.th.style.width = newWidth + 'px';
+    resizeData.th.style.minWidth = newWidth + 'px';
+    resizeData.th.style.maxWidth = newWidth + 'px';
+
+    // Update all td cells in this column
+    table.querySelectorAll('tbody tr').forEach(row => {
+      const cell = row.children[colIndex];
+      if (cell) {
+        cell.style.width = newWidth + 'px';
+        cell.style.minWidth = newWidth + 'px';
+        cell.style.maxWidth = newWidth + 'px';
+      }
+    });
+
+    // Save custom width
+    COL_WIDTHS[colName] = newWidth + 'px';
+
+    // Clean up
+    resizeData.th.querySelector('.th-resize')?.classList.remove('resizing');
+    if (resizeData.line) resizeData.line.remove();
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    resizeData = null;
+  });
+
+  async function saveEdit(cell, newValue) {
+    if (!editingCell || !dbCurrentResult) return;
+
+    const row = dbCurrentResult.rows[editingCell.rowIndex];
+    const pkCols = getPKColumns(dbCurrentResult.table);
+
+    // Build where clause from PK columns
+    const where = {};
+    for (const pk of pkCols) {
+      where[pk] = row[pk];
+    }
+    if (!Object.keys(where).length) {
+      // No PK — use all columns as identity (risky but functional)
+      for (const col of dbCurrentResult.columns) {
+        where[col] = row[col];
+      }
+    }
+
+    const values = {};
+    values[editingCell.colName] = newValue;
+
+    try {
+      const dbName = document.getElementById('db-select').value;
+      const res = await fetch('/api/v1/db/update', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          db: dbName,
+          table: dbCurrentResult.table,
+          where: where,
+          values: values,
+        }),
+      });
+      const result = await res.json();
+      if (!result.success) {
+        alert('Save failed');
+        return;
+      }
+      // Update local data
+      row[editingCell.colName] = newValue;
+      editingCell = null;
+      dbSaveBtn.style.display = 'none';
+      dbCancelBtn.style.display = 'none';
+      renderTableData(dbCurrentResult);
+    } catch (e) {
+      alert('Error saving: ' + e.message);
+    }
+  }
+
+  function populateSortCol(columns, selectedCol) {
+    const sel = document.getElementById('db-sort-col');
+    sel.innerHTML = columns.map(c =>
+      `<option value="${c}"${c === selectedCol ? ' selected' : ''}>${c}</option>`
+    ).join('');
+  }
+
+  async function queryTable(tableName, opts) {
+    const dbName = document.getElementById('db-select').value;
+    const sortCol = document.getElementById('db-sort-col').value;
+    const sortDir = document.getElementById('db-sort-dir').value;
+    const header = document.getElementById('db-table-header');
+    const data = document.getElementById('db-table-data');
+    const silent = opts?.silent;
+
+    if (!silent) {
+      header.textContent = 'Loading...';
+      data.innerHTML = '';
+      cancelEditing();
+    }
+
+    let url = `/api/v1/db/query?db=${encodeURIComponent(dbName)}&table=${encodeURIComponent(tableName)}&limit=200`;
+    url += `&order_by=${encodeURIComponent(sortCol)}&order_dir=${sortDir}`;
+
+    try {
+      const res = await fetch(url);
+      const result = await res.json();
+      dbCurrentResult = result;
+      if (!result.columns || !result.columns.length) {
+        if (!silent) {
+          header.textContent = `${tableName} — no columns`;
+          data.innerHTML = '<div class="db-hint">Empty or invalid table</div>';
+        }
+        return;
+      }
+      populateSortCol(result.columns, sortCol);
+      header.textContent = `${tableName} — ${result.total} rows (sorted by ${sortCol} ${sortDir})`;
+      renderTableData(result, silent);
+    } catch (e) {
+      if (!silent) {
+        header.textContent = 'Error';
+        data.innerHTML = `<div class="db-hint">Error: ${e.message}</div>`;
+      }
+    }
+  }
+
+  // ── Auto-refresh ──
+  let autoRefreshInterval = null;
+  const AUTO_REFRESH_MS = 5000;
+
+  function startAutoRefresh() {
+    stopAutoRefresh();
+    if (!dbSelectedTable) return;
+    document.getElementById('db-auto-status').textContent = '⟳ auto 5s';
+    autoRefreshInterval = setInterval(() => {
+      if (dbSelectedTable && !editingCell) {
+        queryTable(dbSelectedTable, { silent: true });
+      }
+      updateTableCounts();
+    }, AUTO_REFRESH_MS);
+  }
+
+  function stopAutoRefresh() {
+    if (autoRefreshInterval) {
+      clearInterval(autoRefreshInterval);
+      autoRefreshInterval = null;
+    }
+    document.getElementById('db-auto-status').textContent = '';
+  }
+
+  // Restart auto-refresh when sort or table changes
+  function restartAutoRefresh() {
+    if (dbSelectedTable) {
+      startAutoRefresh();
+    } else {
+      stopAutoRefresh();
+    }
+  }
+
+  // DB controls
+  document.getElementById('db-refresh').addEventListener('click', () => {
+    const dbName = document.getElementById('db-select').value;
+    dbSelectedTable = null;
+    dbCurrentResult = null;
+    cancelEditing();
+    stopAutoRefresh();
+    fetchTables(dbName);
+    document.getElementById('db-table-header').textContent = '';
+    document.getElementById('db-table-data').innerHTML = '<div class="db-hint">Select a table to view its contents</div>';
+  });
+  document.getElementById('db-select').addEventListener('change', () => {
+    document.getElementById('db-refresh').click();
+  });
+  document.getElementById('db-sort-col').addEventListener('change', () => {
+    if (dbSelectedTable) queryTable(dbSelectedTable);
+  });
+  document.getElementById('db-sort-dir').addEventListener('change', () => {
+    if (dbSelectedTable) queryTable(dbSelectedTable);
+  });
+
+  // Save/Cancel buttons
+  dbSaveBtn.addEventListener('click', () => {
+    if (editingCell) {
+      const cell = document.querySelector(`.db-cell[data-row="${editingCell.rowIndex}"][data-col="${editingCell.colName}"]`);
+      if (cell) {
+        const input = cell.querySelector('input');
+        if (input) saveEdit(cell, input.value);
+      }
+    }
+  });
+  dbCancelBtn.addEventListener('click', cancelEditing);
+
+  // Initial load of database tables
+  fetchTables('local_webagent.db').then(() => {
+    // Auto-select interactions table
+    if (dbTables.some(t => t.name === 'interactions')) {
+      dbSelectedTable = 'interactions';
+      renderTableList();
+      // Default sort: created_at DESC (latest first)
+      document.getElementById('db-sort-col').value = 'created_at';
+      document.getElementById('db-sort-dir').value = 'DESC';
+      queryTable('interactions').then(() => startAutoRefresh());
+    }
+  });
+
+  // Auto-reconnect terminal if it drops
+  setInterval(() => {
+    if (!termWs || termWs.readyState > 1) connectTerminal();
+    if (!agentWs || agentWs.readyState > 1) connectAgent();
+  }, 5000);
+})();
+</script>
+</body>
+</html>

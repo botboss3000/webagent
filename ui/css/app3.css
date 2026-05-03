@@ -1,0 +1,223 @@
+    top: 0;
+    border-bottom: 1px solid #2a2a4a;
+    white-space: nowrap;
+  }
+  .db-table td {
+    padding: 4px 10px;
+    border-bottom: 1px solid #1a1a2e;
+    color: #c0caf5;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .db-table tr:hover td { background: #1a1a2e55; }
+  .db-table .col-pk { color: #e0af68; }
+  .db-table .col-null { color: #565f89; font-style: italic; }
+  .db-cell-pre {
+    margin: 0;
+    white-space: pre-wrap;
+    font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 11px;
+    line-height: 1.4;
+    max-height: 6em;
+    overflow: hidden;
+  }
+  .db-row-resize-td {
+    padding: 0 !important;
+    line-height: 0;
+  }
+  .db-row-resize-handle {
+    height: 4px;
+    cursor: row-resize;
+    background: transparent;
+  }
+  .db-row-resize-handle:hover,
+  .db-row-resize-handle.resizing {
+    background: #7dcfff30;
+  }
+  .db-cell { overflow: auto; position: relative; }
+  .db-cell:hover { outline: 1px solid #7dcfff55; }
+  .db-cell-expand {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    color: #565f89;
+    width: 18px;
+    height: 18px;
+    line-height: 16px;
+    text-align: center;
+    font-size: 11px;
+    cursor: pointer;
+    border-radius: 3px;
+    opacity: 0;
+    z-index: 5;
+    padding: 0;
+    transition: opacity 0.12s;
+  }
+  .db-cell:hover .db-cell-expand {
+    opacity: 1;
+  }
+  .db-cell-expand:hover {
+    color: #7dcfff;
+    border-color: #7dcfff;
+  }
+  .db-table td, .db-table th {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .db-th { position: relative; user-select: none; }
+  .th-text { overflow: hidden; text-overflow: ellipsis; display: block; }
+  .th-resize {
+    position: absolute;
+    top: 0; right: 0;
+    width: 5px;
+    height: 100%;
+    cursor: col-resize;
+    z-index: 10;
+  }
+  .th-resize:hover, .th-resize.resizing { background: #7dcfff55; }
+  .db-table .resize-line {
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 1px;
+    background: #7dcfff;
+    z-index: 20;
+    pointer-events: none;
+  }
+  .db-edit-input {
+    background: #0d0d1a;
+    border: 1px solid #7dcfff;
+    color: #c0caf5;
+    padding: 4px 6px;
+    font-size: 12px;
+    font-family: 'Cascadia Code', 'Fira Code', Menlo, monospace;
+    width: 100%;
+    box-sizing: border-box;
+    outline: none;
+    border-radius: 2px;
+    resize: none;
+  }
+
+  /* ── JSON editor modal ── */
+  #cell-modal { display: none; position: fixed; inset: 0; z-index: 999; }
+  #cell-modal.open { display: flex; align-items: center; justify-content: center; }
+  #cell-modal-backdrop {
+    position: absolute; inset: 0;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(4px);
+  }
+  #cell-modal-panel {
+    position: relative;
+    width: 80vw;
+    max-width: 900px;
+    height: 70vh;
+    background: #0d0d1a;
+    border: 1px solid #2a2a4a;
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    z-index: 10;
+    overflow: hidden;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+  }
+  #cell-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    border-bottom: 1px solid #2a2a4a;
+    flex-shrink: 0;
+  }
+  #cell-modal-title {
+    color: #7dcfff;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  #cell-modal-close {
+    background: none;
+    border: none;
+    color: #565f89;
+    font-size: 20px;
+    cursor: pointer;
+    line-height: 1;
+  }
+  #cell-modal-close:hover { color: #f7768e; }
+  #cell-modal-editor {
+    flex: 1;
+    background: #0d0d1a;
+    border: none;
+    border-bottom: 1px solid #2a2a4a;
+    color: #c0caf5;
+    font-family: 'Cascadia Code', 'Fira Code', Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    padding: 14px 16px;
+    resize: none;
+    outline: none;
+    tab-size: 2;
+    white-space: pre;
+    overflow-wrap: normal;
+    overflow: auto;
+  }
+  #cell-modal-editor:focus { border-bottom-color: #7dcfff; }
+
+  /* Filter row */
+  .db-filter-input {
+    width: 100%;
+    background: #0d0d1a;
+    border: 1px solid #2a2a4a;
+    border-radius: 3px;
+    padding: 2px 4px;
+    color: #c0caf5;
+    font-size: 11px;
+    font-family: inherit;
+    box-sizing: border-box;
+  }
+  .db-filter-input:focus {
+    border-color: #7dcfff;
+    outline: none;
+  }
+  .db-filter-input::placeholder {
+    color: #3b4261;
+  }
+  .db-filter-th {
+    padding: 2px 4px;
+    background: #0a2f0a;
+    border-bottom: 1px solid #2a2a4a;
+  }
+
+  /* Sort arrows */
+  .th-sort-arrows {
+    display: inline-flex;
+    flex-direction: row;
+    vertical-align: middle;
+    margin-left: 4px;
+    gap: 1px;
+  }
+  .th-sort-arrow {
+    font-size: 10px;
+    color: #3b4261;
+    cursor: pointer;
+    user-select: none;
+  }
+  .th-sort-arrow:hover {
+    color: #565f89;
+  }
+  .th-sort-arrow.active {
+    color: #7dcfff;
+  }
+
+  /* Drag-to-reorder */
+  .db-th.drop-target {
+    border-left: 2px solid #7dcfff !important;
+  }
+  .db-th[draggable="true"] {
+    cursor: grab;
+  }
+  .db-th[draggable="true"]:active {
+    cursor: grabbing;
+  }

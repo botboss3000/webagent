@@ -1,0 +1,610 @@
+"""
+Supabase storage backend for webAgent.
+
+Implements StorageBackend using Supabase as the remote database.
+Refactored from the original static-method SupabaseClient into an instance-based class.
+"""
+
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+import json
+import logging
+from typing import Any, Dict, List, Optional
+from supabase import create_client, Client
+from app.models.schemas import InteractionRecord
+from app.db.interface import StorageBackend
+
+logger = logging.getLogger(__name__)
+
+
+class SupabaseBackend(StorageBackend):
+    """Supabase implementation of StorageBackend."""
+
+    def __init__(self):
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        if not url or not key:
+            raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
+        self._client: Client = create_client(url, key)
+
+    def get_raw_client(self) -> Client:
+        """Return the underlying Supabase client for direct table queries."""
+        return self._client
+
+    # ---- Sessions ----
+
+    async def assert_session_owned(self, user_id: str, session_id: str) -> None:
+        res = (
+            self._client.table("sessions")
+            .select("id")
+            .eq("id", session_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            raise PermissionError(
+                f"Session {session_id} not found or not owned by user {user_id}"
+            )
+
+    async def upsert_session_summary(
+        self,
+        user_id: str,
+        session_id: str,
+        summary: str,
+        message_count: int,
+        title: str = None,
+    ) -> None:
+        try:
+            data = {
+                "user_id": user_id,
+                "session_id": session_id,
+                "summary": summary,
+                "message_count": message_count,
+                "updated_at": "now()",
+            }
+            if title:
+                data["title"] = title
+
+            response = self._client.table("session_summaries").upsert(
+                data, on_conflict="session_id"
+            ).execute()
+            if response.data:
+                logger.debug("Upserted session summary for session %s", session_id)
+            else:
+                raise ValueError("No data returned after upsert")
+        except Exception as e:
+            logger.error("Error upserting session summary: %s", e)
+            raise
+
+    # ---- Interactions ----
+
+    async def fetch_interactions(self, user_id: str, session_id: str) -> List[InteractionRecord]:
+        try:
+            await self.assert_session_owned(user_id, session_id)
+            response = (
+                self._client.table("interactions")
+                .select("id, session_id, parent_id, role, content, tool_name, tool_call_id, metadata, input, created_at")
+                .eq("session_id", session_id)
+                .order("created_at", desc=False)
+                .execute()
+            )
+            interactions = [InteractionRecord(**row) for row in response.data]
+            logger.debug(
+                "Fetched %s interactions for user %s, session %s",
+                len(interactions), user_id, session_id,
+            )
+            return interactions
+        except PermissionError:
+            raise
+        except Exception as e:
+            logger.error("Error fetching interactions: %s", e)
+            raise
+
+    async def insert_interaction(
+        self,
+        user_id: str,
+        session_id: str,
+        role: str,
+        content: str,
+        parent_id: str | None = None,
+        tool_name: str | None = None,
+        tool_call_id: str | None = None,
+        metadata: str | None = None,
+        input_data: str | None = None,
+    ) -> str:
+        try:
+            await self.assert_session_owned(user_id, session_id)
+            data = {
+                "session_id": session_id,
+                "role": role,
+                "content": content,
+                "parent_id": parent_id,
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "metadata": metadata,
+                "input": input_data,
+            }
+            response = self._client.table("interactions").insert(data).execute()
+            if response.data and len(response.data) > 0:
+                interaction_id = response.data[0]["id"]
+                logger.debug("Inserted interaction %s", interaction_id)
+                return interaction_id
+            raise ValueError("No data returned after insert")
+        except PermissionError:
+            raise
+        except Exception as e:
+            logger.error("Error inserting interaction: %s", e)
+            raise
+
+    # ---- Context Defaults ----
+
+    async def fetch_context_defaults(
+        self, context_types: List[str]
+    ) -> List[dict]:
+        try:
+            response = (
+                self._client.table("context_defaults")
+                .select("id, context_type, title, content, tags, created_at, updated_at")
+                .in_("context_type", context_types)
+                .execute()
+            )
+            logger.debug(
+                "Fetched %s context default rows", len(response.data or []),
+            )
+            return response.data or []
+        except Exception as e:
+            logger.error("Error fetching context defaults: %s", e)
+            raise
+
+    async def copy_defaults_to_user(self, user_id: str) -> int:
+        """
+        Copy all context_default rows into context for a user.
+        Only copies rows that don't already exist for that user (by context_type).
+        """
+        try:
+            # Get all default rows
+            defaults = (
+                self._client.table("context_defaults")
+                .select("context_type, title, content, tags")
+                .execute()
+            )
+            if not defaults.data:
+                return 0
+
+            # Get existing context_types for this user
+            existing = (
+                self._client.table("context")
+                .select("context_type")
+                .eq("user_id", user_id)
+                .execute()
+            )
+            existing_types = set(r["context_type"] for r in (existing.data or []))
+
+            copied = 0
+            for d in defaults.data:
+                if d["context_type"] in existing_types:
+                    continue
+                data = {
+                    "user_id": user_id,
+                    "context_type": d["context_type"],
+                    "title": d["title"],
+                    "content": d["content"],
+                    "tags": d.get("tags", []),
+                }
+                self._client.table("context").insert(data).execute()
+                copied += 1
+
+            if copied > 0:
+                logger.info("Copied %s default context rows to user %s", copied, user_id)
+            return copied
+        except Exception as e:
+            logger.error("Error copying defaults to user: %s", e)
+            raise
+
+    # ---- Context Documents ----
+
+    async def fetch_context_documents(
+        self, user_id: str, context_types: List[str]
+    ) -> List[dict]:
+        try:
+            response = (
+                self._client.table("context")
+                .select("id, user_id, context_type, title, content, tags, created_at, updated_at")
+                .eq("user_id", user_id)
+                .in_("context_type", context_types)
+                .execute()
+            )
+            logger.debug(
+                "Fetched %s context rows for user %s",
+                len(response.data or []), user_id,
+            )
+            return response.data or []
+        except Exception as e:
+            logger.error("Error fetching context documents: %s", e)
+            raise
+
+    async def insert_document(
+        self,
+        user_id: str,
+        context_type: str,
+        title: str,
+        content: str,
+        tags: Optional[List[str]] = None,
+    ) -> str:
+        try:
+            data = {
+                "user_id": user_id, "context_type": context_type,
+                "title": title, "content": content, "tags": tags or [],
+            }
+            response = self._client.table("context").insert(data).execute()
+            if response.data and len(response.data) > 0:
+                doc_id = response.data[0]["id"]
+                logger.debug("Inserted context %s type=%s for user %s", doc_id, context_type, user_id)
+                return doc_id
+            raise ValueError("No data returned after insert")
+        except Exception as e:
+            logger.error("Error inserting document: %s", e)
+            raise
+
+    async def update_context_row(self, context_id: str, content: str) -> None:
+        try:
+            self._client.table("context").update({"content": content, "updated_at": "now()"}).eq("id", context_id).execute()
+            logger.debug("Updated context row %s", context_id)
+        except Exception as e:
+            logger.error("Error updating context row: %s", e)
+            raise
+
+    async def delete_context_row(self, context_id: str) -> None:
+        try:
+            self._client.table("context").delete().eq("id", context_id).execute()
+            logger.debug("Deleted context row %s", context_id)
+        except Exception as e:
+            logger.error("Error deleting context row: %s", e)
+            raise
+
+    async def delete_all_documents_for_user(self, user_id: str) -> int:
+        try:
+            response = self._client.table("context").delete().eq("user_id", user_id).execute()
+            deleted = len(response.data) if response.data else 0
+            logger.debug("Deleted %s context rows for user %s", deleted, user_id)
+            return deleted
+        except Exception as e:
+            logger.error("Error deleting context: %s", e)
+            raise
+
+    # ---- Memories ----
+
+    # ---- Memory System (knowledge brain) ----
+    # Stubs for cloud mode — full implementation when switching to Supabase
+
+    async def memory_upsert(
+        self,
+        user_id: str,
+        slug: str,
+        page_type: str,
+        title: str,
+        compiled_truth: str = "",
+        timeline: str = "",
+        frontmatter: dict | None = None,
+    ) -> dict:
+        logger.warning("memory_upsert not yet implemented for Supabase backend")
+        return {"slug": slug, "status": "stub"}
+
+    async def memory_get(self, user_id: str, slug: str) -> dict | None:
+        logger.warning("memory_get not yet implemented for Supabase backend")
+        return None
+
+    async def memory_delete(self, user_id: str, slug: str) -> bool:
+        logger.warning("memory_delete not yet implemented for Supabase backend")
+        return False
+
+    async def memory_list(
+        self, user_id: str, page_type: str | None = None
+    ) -> List[dict]:
+        return []
+
+    async def memory_search(
+        self, user_id: str, query: str, limit: int = 10
+    ) -> List[dict]:
+        logger.warning("memory_search not yet implemented for Supabase backend")
+        return []
+
+    async def memory_add_link(
+        self,
+        user_id: str,
+        from_slug: str,
+        to_slug: str,
+        link_type: str,
+        context: str | None = None,
+    ) -> dict:
+        logger.warning("memory_add_link not yet implemented for Supabase backend")
+        return {"status": "stub"}
+
+    async def memory_graph_query(
+        self,
+        user_id: str,
+        node_slug: str,
+        link_type: str | None = None,
+        direction: str = "both",
+        depth: int = 2,
+    ) -> List[dict]:
+        return []
+
+    async def memory_add_timeline_entry(
+        self,
+        user_id: str,
+        page_slug: str,
+        event_date: str,
+        source: str,
+        summary: str,
+        detail: str | None = None,
+    ) -> dict:
+        logger.warning("memory_add_timeline_entry not yet implemented for Supabase backend")
+        return {"status": "stub"}
+
+    # ---- Session Search ----
+
+    async def search_sessions(
+        self, user_id: str, query: str, limit: int = 5
+    ) -> List[dict]:
+        try:
+            summary_response = (
+                self._client.table("session_summaries")
+                .select("*")
+                .eq("user_id", user_id)
+                .ilike("summary", f"%{query}%")
+                .order("updated_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            if summary_response.data:
+                logger.debug("Found %s session summaries for query %s", len(summary_response.data), query)
+                return summary_response.data
+
+            msg_response = (
+                self._client.table("interactions")
+                .select("session_id, content, created_at")
+                .ilike("content", f"%{query}%")
+                .limit(limit * 5)
+                .execute()
+            )
+
+            if not msg_response.data:
+                return []
+
+            session_ids = list(set(m["session_id"] for m in msg_response.data))
+
+            sessions_response = (
+                self._client.table("sessions")
+                .select("id, title, created_at, updated_at")
+                .in_("id", session_ids)
+                .execute()
+            )
+
+            results = []
+            for s in sessions_response.data or []:
+                matched_msgs = [m for m in msg_response.data if m["session_id"] == s["id"]]
+                temp_summary = "Messages found: " + "; ".join(
+                    m["content"][:100] for m in matched_msgs[:3]
+                )
+                results.append({
+                    "session_id": s["id"],
+                    "title": s.get("title", "Untitled"),
+                    "summary": temp_summary,
+                    "message_count": len(matched_msgs),
+                    "updated_at": s.get("updated_at", ""),
+                })
+            logger.debug("Found %s sessions via message search for query %s", len(results), query)
+            return results
+
+        except Exception as e:
+            logger.error("Error searching sessions: %s", e)
+            raise
+
+    # ---- Skills ----
+
+    async def list_skills(self, user_id: str, limit: int = 50) -> List[dict]:
+        logger.warning("list_skills not fully implemented for Supabase backend")
+        return []
+
+    async def skill_track_execution(
+        self, skill_id, user_id, session_id, success, duration_ms,
+        interaction_id=None, error_message=None, input_params=None,
+        output_summary=None, steps_to_complete=1,
+    ) -> str:
+        logger.warning("skill_track_execution not yet implemented for Supabase")
+        return ""
+
+    async def skill_get_rating(self, skill_id: str, user_id: str | None = None) -> dict:
+        return {"skill_id": skill_id, "score": None, "execution_count": 0}
+
+    async def skill_add_feedback(
+        self, skill_id, user_id, feedback_type, execution_id=None, message=None,
+    ) -> str:
+        logger.warning("skill_add_feedback not yet implemented for Supabase")
+        return ""
+
+    async def skill_get_id_by_name(self, user_id: str, name: str) -> str | None:
+        return None
+
+
+# ── Backward-compatible alias ────────────────────────────────────────────────
+# The old SupabaseClient used static methods directly.
+# This shim creates an instance and delegates, so existing imports still work.
+
+
+class SupabaseClient:
+    """
+    Backward-compatible static-method interface.
+    Delegates to a single SupabaseBackend instance.
+    """
+    _backend: Optional[SupabaseBackend] = None
+
+    @classmethod
+    def _get_backend(cls) -> SupabaseBackend:
+        if cls._backend is None:
+            cls._backend = SupabaseBackend()
+        return cls._backend
+
+    @classmethod
+    def get_client(cls) -> Client:
+        """Return the underlying Supabase client (for direct table queries)."""
+        return cls._get_backend().get_raw_client()
+
+    @staticmethod
+    async def assert_session_owned(user_id: str, session_id: str) -> None:
+        await SupabaseClient._get_backend().assert_session_owned(user_id, session_id)
+
+    @staticmethod
+    async def upsert_session_summary(
+        user_id: str, session_id: str, summary: str, message_count: int, title: str = None
+    ) -> None:
+        await SupabaseClient._get_backend().upsert_session_summary(
+            user_id, session_id, summary, message_count, title
+        )
+
+    @staticmethod
+    async def fetch_interactions(user_id: str, session_id: str) -> List[InteractionRecord]:
+        return await SupabaseClient._get_backend().fetch_interactions(user_id, session_id)
+
+    @staticmethod
+    async def insert_interaction(
+        user_id: str, session_id: str, role: str, content: str,
+        parent_id: str | None = None, tool_name: str | None = None,
+        tool_call_id: str | None = None, metadata: str | None = None,
+        input_data: str | None = None,
+    ) -> str:
+        return await SupabaseClient._get_backend().insert_interaction(
+            user_id, session_id, role, content, parent_id, tool_name, tool_call_id, metadata, input_data
+        )
+
+    @staticmethod
+    async def fetch_context_defaults(context_types: List[str]) -> List[dict]:
+        return await SupabaseClient._get_backend().fetch_context_defaults(
+            context_types
+        )
+
+    @staticmethod
+    async def copy_defaults_to_user(user_id: str) -> int:
+        return await SupabaseClient._get_backend().copy_defaults_to_user(user_id)
+
+    @staticmethod
+    async def fetch_context_documents(user_id: str, context_types: List[str]) -> List[dict]:
+        return await SupabaseClient._get_backend().fetch_context_documents(
+            user_id, context_types
+        )
+
+    @staticmethod
+    async def insert_document(
+        user_id: str, context_type: str, title: str, content: str,
+        tags: Optional[List[str]] = None,
+    ) -> str:
+        return await SupabaseClient._get_backend().insert_document(
+            user_id, context_type, title, content, tags
+        )
+
+    @staticmethod
+    async def update_context_row(context_id: str, content: str) -> None:
+        await SupabaseClient._get_backend().update_context_row(context_id, content)
+
+    @staticmethod
+    async def delete_context_row(context_id: str) -> None:
+        await SupabaseClient._get_backend().delete_context_row(context_id)
+
+    @staticmethod
+    async def delete_all_documents_for_user(user_id: str) -> int:
+        return await SupabaseClient._get_backend().delete_all_documents_for_user(user_id)
+
+    @staticmethod
+    async def memory_upsert(
+        user_id: str, slug: str, page_type: str, title: str,
+        compiled_truth: str = "", timeline: str = "",
+        frontmatter: dict | None = None,
+    ) -> dict:
+        return await SupabaseClient._get_backend().memory_upsert(
+            user_id, slug, page_type, title, compiled_truth, timeline, frontmatter
+        )
+
+    @staticmethod
+    async def memory_get(user_id: str, slug: str) -> dict | None:
+        return await SupabaseClient._get_backend().memory_get(user_id, slug)
+
+    @staticmethod
+    async def memory_delete(user_id: str, slug: str) -> bool:
+        return await SupabaseClient._get_backend().memory_delete(user_id, slug)
+
+    @staticmethod
+    async def memory_list(user_id: str, page_type: str | None = None) -> List[dict]:
+        return await SupabaseClient._get_backend().memory_list(user_id, page_type)
+
+    @staticmethod
+    async def memory_search(user_id: str, query: str, limit: int = 10) -> List[dict]:
+        return await SupabaseClient._get_backend().memory_search(user_id, query, limit)
+
+    @staticmethod
+    async def memory_add_link(
+        user_id: str, from_slug: str, to_slug: str,
+        link_type: str, context: str | None = None,
+    ) -> dict:
+        return await SupabaseClient._get_backend().memory_add_link(
+            user_id, from_slug, to_slug, link_type, context
+        )
+
+    @staticmethod
+    async def memory_graph_query(
+        user_id: str, node_slug: str,
+        link_type: str | None = None,
+        direction: str = "both", depth: int = 2,
+    ) -> List[dict]:
+        return await SupabaseClient._get_backend().memory_graph_query(
+            user_id, node_slug, link_type, direction, depth
+        )
+
+    @staticmethod
+    async def memory_add_timeline_entry(
+        user_id: str, page_slug: str, event_date: str,
+        source: str, summary: str, detail: str | None = None,
+    ) -> dict:
+        return await SupabaseClient._get_backend().memory_add_timeline_entry(
+            user_id, page_slug, event_date, source, summary, detail
+        )
+
+    @staticmethod
+    async def search_sessions(user_id: str, query: str, limit: int = 5) -> List[dict]:
+        return await SupabaseClient._get_backend().search_sessions(user_id, query, limit)
+
+    @staticmethod
+    async def list_skills(user_id: str, limit: int = 50) -> List[dict]:
+        return await SupabaseClient._get_backend().list_skills(user_id, limit)
+
+    @staticmethod
+    async def skill_track_execution(
+        skill_id, user_id, session_id, success, duration_ms,
+        interaction_id=None, error_message=None, input_params=None,
+        output_summary=None, steps_to_complete=1,
+    ) -> str:
+        return await SupabaseClient._get_backend().skill_track_execution(
+            skill_id, user_id, session_id, success, duration_ms,
+            interaction_id, error_message, input_params,
+            output_summary, steps_to_complete,
+        )
+
+    @staticmethod
+    async def skill_get_rating(skill_id: str, user_id: str | None = None) -> dict:
+        return await SupabaseClient._get_backend().skill_get_rating(skill_id, user_id)
+
+    @staticmethod
+    async def skill_add_feedback(
+        skill_id, user_id, feedback_type, execution_id=None, message=None,
+    ) -> str:
+        return await SupabaseClient._get_backend().skill_add_feedback(
+            skill_id, user_id, feedback_type, execution_id, message,
+        )
+
+    @staticmethod
+    async def skill_get_id_by_name(user_id: str, name: str) -> str | None:
+        return await SupabaseClient._get_backend().skill_get_id_by_name(user_id, name)

@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>webAgent</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm/css/xterm.css">
+<link rel="stylesheet" href="/ui/css/app1.css">
+<link rel="stylesheet" href="/ui/css/app2.css">
+<link rel="stylesheet" href="/ui/css/app3.css">
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div id="loading-overlay">
+  <div class="spinner"></div>
+  <span>Connecting...</span>
+</div>
+
+<!-- Status bar -->
+<div id="status-bar">
+  <div id="control-host-toggle" title="Switch between Cloud (Supabase) and Local (SQLite) database">
+    <span class="ch-label">Control</span>
+    <div class="segment-track" role="group" aria-label="Cloud or local control (UI preview)">
+      <button type="button" id="seg-cloud" aria-pressed="false">Cloud</button>
+      <button type="button" id="seg-local" class="active" aria-pressed="true">Local</button>
+    </div>
+  </div>
+
+  <div class="status-group">
+    <span class="status-dot yellow" id="terminal-dot"></span>
+    <span id="terminal-status">Terminal...</span>
+  </div>
+  <div class="status-group">
+    <span class="status-dot yellow" id="agent-dot"></span>
+    <span id="agent-status">Agent...</span>
+  </div>
+  <span id="status-right">
+    <button id="btn-reconnect" class="status-btn" title="Reconnect WebSockets">🔄 Reconnect</button>
+    <button id="btn-restart" class="status-btn" title="Restart the Python agent server">⏻ Restart</button>
+  </span>
+</div>
+
+<!-- Split container -->
+<div id="app-container">
+
+  <!-- Terminal side -->
+  <div id="terminal-side">
+    <!-- Tab bar -->
+    <div id="tab-bar">
+      <button class="tab-btn" data-tab="terminal">⌘ Terminal</button>
+      <button class="tab-btn active" data-tab="database">📊 Database</button>
+    </div>
+    <!-- Tab content -->
+    <div id="tab-terminal" class="tab-content">
+      <div id="terminal-container"></div>
+    </div>
+    <div id="tab-database" class="tab-content active">
+      <div id="db-viewer">
+        <div id="db-toolbar">
+          <select id="db-select">
+            <option value="local_webagent.db">local_webagent.db</option>
+            <option value="local_webagent.db">local_webagent.db</option>
+          </select>
+          <select id="db-sort-col">
+            <option value="created_at">Sort: created_at</option>
+          </select>
+          <select id="db-sort-dir">
+            <option value="DESC">▼ Desc</option>
+            <option value="ASC">▲ Asc</option>
+          </select>
+          <button id="db-refresh">↻ Refresh</button>
+          <span id="db-auto-status" style="margin-left:auto;color:#565f89;font-size:11px;"></span>
+          <span id="db-page-info" style="color:#565f89;font-size:11px;margin-left:8px;"></span>
+          <button id="db-page-prev" style="display:none;background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">◀</button>
+          <button id="db-page-next" style="display:none;background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">▶</button>
+        </div>
+        <div id="db-panel">
+          <div id="db-table-list"></div>
+          <div id="db-table-view">
+            <div id="db-table-header"></div>
+            <div id="db-table-data">
+              <div class="db-hint">Select a table to view its contents</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tool call log overlay -->
+    <button id="tool-log-toggle">📋 Log</button>
+    <div id="tool-log-panel">
+      <div id="tool-log-header">
+        <span>⚙️ Agent Activity</span>
+        <button id="tool-log-close">✕</button>
+      </div>
+      <div id="tool-log-content"></div>
+    </div>
+  </div>
+
+  <!-- Chat side -->
+  <div id="chat-side">
+    <div id="chat-header">
+      <span id="header-user-session">
+        <span id="user-label">User:
+          <select id="user-select" class="status-select">
+            <option value="">—</option>
+          </select>
+        </span>
+        <span id="session-label">Session:
+          <select id="session-select" class="status-select">
+            <option value="">—</option>
+          </select>
+        </span>
+      </span>
+      <div class="actions">
+        <button id="chat-clear" title="Clear conversation">🗑️</button>
+      </div>
+    </div>
+    <div id="chat-messages">
+      <div class="chat-bubble agent">
+        <span class="label">Assistant</span>
+        Terminal agent ready. Ask me anything — I'll show tool calls in the terminal log.
+      </div>
+    </div>
+    <div id="chat-input-area">
+      <textarea id="chat-input" rows="2" placeholder="Ask the agent... (Enter to send, Shift+Enter for newline)" autocomplete="off"></textarea>
+      <button id="chat-send" disabled>Send</button>
+    </div>
+  </div>
+</div>
+
+<!-- Cell editor modal (double-click popup) -->
+<div id="cell-modal" style="display:none;">
+  <div id="cell-modal-backdrop"></div>
+  <div id="cell-modal-panel">
+    <div id="cell-modal-header">
+      <span id="cell-modal-title">Edit cell</span>
+      <button id="cell-modal-close">&times;</button>
+    </div>
+    <textarea id="cell-modal-editor" spellcheck="false"></textarea>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links"></script>
+<script type="module" src="/ui/js/main.js"></script>
+</body>
+</html>
