@@ -25,7 +25,7 @@ android {
                 install "pydantic<2"
                 install "python-dotenv"
                 install "python-multipart"
-                install "openai"
+                install "openai==0.28.1" // Older version, avoids jiter dependency
                 install "websockets"
             }
         }
