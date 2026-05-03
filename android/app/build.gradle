@@ -21,7 +21,7 @@ android {
                 install "fastapi"
                 install "uvicorn"
                 install "httpx"
-                install "supabase==2.6.0"  # latest on Chaquopy index
+                install "supabase==2.6.0"
                 install "pydantic"
                 install "python-dotenv"
                 install "python-multipart"
