@@ -8,18 +8,27 @@ import logging
 import os
 import time
 from typing import Dict, Any, List, Optional
-from openai import AsyncOpenAI
 
 from app.db import get_db
 
 logger = logging.getLogger(__name__)
 
-# OpenRouter client setup with timeout (prevents hanging requests)
-client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.environ.get("OPENROUTER_API_KEY"),
-    timeout=60.0,
-)
+_client = None
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        try:
+            from openai import AsyncOpenAI
+        except ImportError:
+            from app.openai_compat import AsyncOpenAI
+        _client = AsyncOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=os.environ.get("OPENROUTER_API_KEY"),
+            timeout=60.0,
+        )
+    return _client
 
 
 async def run_agent_loop(
@@ -87,7 +96,7 @@ async def run_agent_loop(
         start_time = time.time()
         model_name = os.environ.get("OPENROUTER_MODEL", "deepseek/deepseek-v3.2")
         try:
-            response = await client.chat.completions.create(
+            response = await _get_client().chat.completions.create(
                 model=model_name,
                 messages=messages,
                 tools=tool_definitions if tool_definitions else None,

@@ -29,7 +29,10 @@ _client = None
 def _get_client():
     global _client
     if _client is None:
-        from openai import AsyncOpenAI
+        try:
+            from openai import AsyncOpenAI
+        except ImportError:
+            from app.openai_compat import AsyncOpenAI
 
         _client = AsyncOpenAI(
             base_url="https://openrouter.ai/api/v1",
