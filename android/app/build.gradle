@@ -23,6 +23,7 @@ android {
                 install "httpx"
                 install "supabase==2.6.0"
                 install "pydantic"
+                install "maturin"
                 install "python-dotenv"
                 install "python-multipart"
                 install "openai"
