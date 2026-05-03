@@ -14,10 +14,14 @@ logger = logging.getLogger("webagent.server")
 _app_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _app_dir)
 
-# Default to local SQLite; user can switch in UI
 os.environ.setdefault("DB_MODE", "local")
-os.environ.setdefault("OPENROUTER_API_KEY",
-                       "CHANGE_ME")
+
+# Apply any saved provider config (API key) from previous sessions
+try:
+    from app.admin.settings import apply_provider_config
+    apply_provider_config()
+except Exception as e:
+    logger.warning("Could not apply saved provider config: %s", e)
 
 _server_ref = None
 

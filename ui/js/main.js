@@ -10,6 +10,7 @@ import { initTabs } from './tabs.js';
 import { initStream } from './stream.js';
 import { initDbViewer } from './db/index.js';
 import { registerSessionApi, initSessions } from './sessions.js';
+import { initSettings } from './settings.js';
 
 bindDom();
 initDbModeUi();
@@ -28,6 +29,7 @@ try {
 initTabs();
 initStream();
 initDbViewer();
+initSettings();
 initSessions();
 
 // ── Visibility change: reconnect when user returns to this tab ──

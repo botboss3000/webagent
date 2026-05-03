@@ -21,6 +21,12 @@
     </div>
   </div>
 
+  <div class="status-group tab-btn-group">
+    <button class="tab-btn" data-tab="terminal">⌘ Terminal</button>
+    <button class="tab-btn" data-tab="stream">📡 Stream</button>
+    <button class="tab-btn active" data-tab="database">📊 Database</button>
+  </div>
+
   <div class="status-group">
     <span class="status-dot yellow" id="terminal-dot"></span>
     <span id="terminal-status">Terminal...</span>
@@ -40,12 +46,6 @@
 
   <!-- Terminal side -->
   <div id="terminal-side">
-    <!-- Tab bar -->
-    <div id="tab-bar">
-      <button class="tab-btn" data-tab="terminal">⌘ Terminal</button>
-      <button class="tab-btn" data-tab="stream">📡 Stream</button>
-      <button class="tab-btn active" data-tab="database">📊 Database</button>
-    </div>
     <!-- Tab content -->
     <div id="tab-terminal" class="tab-content">
       <div id="terminal-container"></div>
@@ -113,6 +113,7 @@
       </span>
       <div class="actions">
         <button id="chat-clear" title="Clear conversation">🗑️</button>
+        <button id="settings-btn" title="Settings" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:16px;margin-left:4px;">⚙️</button>
       </div>
     </div>
     <div id="chat-messages">
@@ -137,6 +138,31 @@
       <button id="cell-modal-close">&times;</button>
     </div>
     <textarea id="cell-modal-editor" spellcheck="false"></textarea>
+  </div>
+</div>
+
+<!-- Settings modal -->
+<div id="settings-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:1000;">
+  <div id="settings-backdrop" style="position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);"></div>
+  <div id="settings-panel" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:24px;min-width:320px;max-width:400px;color:#c0caf5;font-size:14px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h2 style="margin:0;font-size:18px;font-weight:600;">⚙️ Settings</h2>
+      <button id="settings-close" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:20px;">&times;</button>
+    </div>
+    <div style="margin-bottom:16px;">
+      <label style="display:block;margin-bottom:6px;color:#a9b1d6;font-size:13px;font-weight:600;">Provider</label>
+      <select id="settings-provider" style="width:100%;padding:10px;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;color:#c0caf5;font-size:14px;font-family:inherit;">
+        <option value="openrouter">OpenRouter</option>
+        <option value="openai">OpenAI</option>
+      </select>
+    </div>
+    <div style="margin-bottom:20px;">
+      <label style="display:block;margin-bottom:6px;color:#a9b1d6;font-size:13px;font-weight:600;">API Key</label>
+      <input type="password" id="settings-api-key" placeholder="sk-..." style="width:100%;padding:10px;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;color:#c0caf5;font-size:14px;font-family:inherit;">
+      <div style="margin-top:4px;font-size:11px;color:#565f89;">Stored on this device only. Never sent elsewhere.</div>
+    </div>
+    <button id="settings-save" style="width:100%;padding:10px;background:#7dcfff;border:none;border-radius:6px;color:#0d0d1a;font-size:14px;font-weight:600;cursor:pointer;">Save</button>
+    <div id="settings-status" style="margin-top:8px;font-size:12px;color:#9ece6a;display:none;"></div>
   </div>
 </div>
 
