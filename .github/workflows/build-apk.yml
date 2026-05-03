@@ -37,6 +37,9 @@ jobs:
           mkdir -p android/app/src/main/python/ui
           cp -r ui/* android/app/src/main/python/ui/
 
+      - name: Dummy Cache Buster
+        run: echo "cache bust $(date +%s)"
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
