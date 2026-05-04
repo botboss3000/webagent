@@ -101,9 +101,12 @@ async def run_agent_loop(
     messages.append({"role": "user", "content": user_message})
 
     turn_count = 0
-    max_turns = 20
+    db = get_db()
+    max_turns = await db.get_max_turn_count("default_agent") # Fetch from DB
+    if max_turns == 0: # 0 means infinite turns
+        max_turns = float("inf")
     permission_granted = False
-    model_name = os.environ.get("OPENROUTER_MODEL", "deepseek/deepseek-v3.2")
+    model_name = os.environ.get("OPENROUTER_MODEL", "deepseek/deepseek-v4-flash")
 
     while turn_count < max_turns:
         turn_count += 1

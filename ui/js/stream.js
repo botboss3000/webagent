@@ -349,7 +349,8 @@ function toggleInput(entry, rawData) {
 async function poll() {
   if (!streamActive) return;
   try {
-    const url = `/api/v1/db/stream/interactions?since=${encodeURIComponent(lastTimestamp)}&db=local_webagent.db`;
+    const sid = app.currentSessionId;
+    const url = `/api/v1/db/stream/interactions?since=${encodeURIComponent(lastTimestamp)}&db=local.db${sid ? '&session_id=' + encodeURIComponent(sid) : ''}`;
     const res = await fetch(url);
     const data = await res.json();
     if (data.interactions && data.interactions.length > 0) {
@@ -372,7 +373,9 @@ export function startStream() {
 
   renderFilterPanel();
 
-  fetch('/api/v1/db/stream/interactions?since=&db=local_webagent.db')
+  const initialSid = app.currentSessionId;
+  const initialUrl = `/api/v1/db/stream/interactions?since=&db=local.db${initialSid ? '&session_id=' + encodeURIComponent(initialSid) : ''}`;
+  fetch(initialUrl)
     .then(r => r.json())
     .then(data => {
       const list = document.getElementById('stream-list');
@@ -389,7 +392,7 @@ export function startStream() {
         `<div class="db-hint">Error: ${e.message}</div>`;
     });
 
-  streamInterval = setInterval(poll, 2000);
+  streamInterval = setInterval(poll, 1000);
 }
 
 export function stopStream() {
@@ -399,6 +402,25 @@ export function stopStream() {
     streamInterval = null;
   }
   document.getElementById('stream-status').textContent = '⏸ paused';
+}
+
+// ── Called when session changes externally (from sessions.js) ──
+export function streamSessionChanged() {
+  const wasActive = streamActive;
+  // Stop current poll, clear state, restart fresh with new session
+  if (streamInterval) {
+    clearInterval(streamInterval);
+    streamInterval = null;
+  }
+  const list = document.getElementById('stream-list');
+  if (list) {
+    list.innerHTML = '<div class="db-hint" style="padding:20px;font-size:11px;">Session changed — loading…</div>';
+  }
+  lastTimestamp = '';
+  initFilters();
+  if (wasActive) {
+    startStream();
+  }
 }
 
 export function initStream() {

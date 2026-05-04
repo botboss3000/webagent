@@ -65,6 +65,7 @@ export function renderTableList() {
     item.addEventListener('click', (e) => {
       if (e.target.closest('.db-table-reset-btn')) return;
       app.dbSelectedTable = item.dataset.table;
+      localStorage.setItem('lastDbTable', item.dataset.table);
       renderTableList();
       queryTable(app.dbSelectedTable).then(() => startAutoRefresh());
     });

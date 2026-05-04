@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webAgent</title>
+<link rel="icon" href="/ui/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm/css/xterm.css">
 <link rel="stylesheet" href="/ui/css/app1.css">
 <link rel="stylesheet" href="/ui/css/app2.css">
@@ -39,6 +40,10 @@
     <span id="agent-status">Agent...</span>
   </div>
   <span id="status-right">
+    <span id="user-mini" style="display:inline-flex;align-items:center;gap:4px;margin-right:6px;">
+      <span style="color:#565f89;font-size:11px;">User</span>
+      <select id="user-select" class="status-select" style="max-width:120px;"></select>
+    </span>
     <button id="btn-reconnect" class="status-btn" title="Reconnect WebSockets">🔄 Reconnect</button>
     <button id="btn-restart" class="status-btn" title="Restart the Python agent server">⏻ Restart</button>
   </span>
@@ -87,8 +92,8 @@
       <div id="db-viewer">
         <div id="db-toolbar">
           <select id="db-select">
-            <option value="local_webagent.db">local_webagent.db</option>
-            <option value="local_webagent.db">local_webagent.db</option>
+            <option value="local.db">local.db</option>
+            <option value="local.db">local.db</option>
           </select>
           <select id="db-sort-col">
             <option value="created_at">Sort: created_at</option>
@@ -121,20 +126,11 @@
   <div id="chat-side">
     <div id="chat-header">
       <span id="header-user-session">
-        <span id="user-label">User:
-          <select id="user-select" class="status-select">
-            <option value="">—</option>
-          </select>
-        </span>
         <span id="session-label">Session:
-          <select id="session-select" class="status-select">
-            <option value="">—</option>
-          </select>
+          <select id="session-select" class="status-select" style="max-width:180px;"></select>
+          <button id="session-delete" title="Delete this session" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:14px;padding:0 4px;vertical-align:middle;">🗑️</button>
         </span>
       </span>
-      <div class="actions">
-        <button id="chat-clear" title="Clear conversation">🗑️</button>
-      </div>
     </div>
     <div id="chat-messages">
       <div class="chat-bubble agent">
@@ -186,9 +182,9 @@
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit/lib/addon-fit.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links/lib/addon-web-links.js"></script>
 <script type="module" src="/ui/js/main.js"></script>
 </body>
 </html>

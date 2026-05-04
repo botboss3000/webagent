@@ -242,7 +242,7 @@ async def agent_websocket(websocket: WebSocket):
                     raw.table("sessions").insert({
                         "id": session_id,
                         "user_id": user_id,
-                        "title": f"Terminal — {session_id[:12]}", # Default title
+                        "title": f"{session_id[:12]}", # Default title
                     }).execute()
                     logger.info(f"Created session {session_id} for user {user_id}")
                 except Exception as create_err:

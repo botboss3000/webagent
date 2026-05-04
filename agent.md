@@ -1,10 +1,43 @@
-# Agent Instructions for WebAgent Workspace
+# Agent instructions for the webAgent workspace
 
-When operating in this workspace, your primary job is to **edit and modify the `webagent` application.**
+**webAgent** is the AI Agent Harness app in this repository (chat, tools, WebSockets, UI). When the user talks about the **agent process**, **flow**, **memory**, **skills**, or **tools** in this project, they mean **that application**, not the Pi Agent, Cursor, Hermes, Claude assistants.
 
-## Terminology Clarifications:
+Your job here is to **edit and extend the webAgent codebase** (Python backend, `ui/` frontend, config).
 
-*   **"Chat"**: Any user reference to "chat" or "the chat" should be understood as referring to the chat interface *within the `webagent` application*, not your own interaction with the user.
-*   **"Agent"**: Unless explicitly stated as "Pi Agent", any reference to "agent" or "agents" shall mean the *`webagent` application or its internal agent components*.
+## Terminology
 
-Your focus is on developing, debugging, and enhancing the `webagent` project outlined in `project.md`.
+- **"Chat"** — The in-app chat UI or `POST /api/v1/chat`, not this IDE chat between you and the user.
+- **"Agent"** — Unless they explicitly say something like **Pi Agent**, **agent** means webAgent’s runtime (loops, WebSocket stream, tools), not the coding assistant.
+
+Use **`README.md`** for architecture, module map, setup, env vars, and HTTP/WebSocket paths.
+
+## README upkeep (required with code changes)
+
+After **any** change that affects how the repo is structured, configured, or used, **update `README.md` in the same work** so it stays the single accurate guide. Do not leave README stale while landing features or refactors.
+
+**Always review and adjust when your edit touches:**
+
+| Area of change | Update in `README.md` |
+|----------------|----------------------|
+| New / removed / renamed **directories** or notable **root files** | **Directory tree** (abbreviated block) and any prose that lists those paths. |
+| New / removed **`app/`** modules, routers, endpoints, WebSockets, mounts | **Architecture → Backend** table; **Features** bullets if behavior is user-visible; **Useful URLs** if routes or ports change. |
+| **`ui/`** entry points, major tabs, or default DB / API strings | **Frontend** paragraph; tree; **Quick test** if flows change. |
+| **`.env.example`**, config knobs, default model, DB mode / paths | **Environment variables** table and related sentences (e.g. local vs cloud, `local.db`, `db_mode.json`). |
+| **Install / run** commands, Docker, scripts, ports | **Installation**, **Deployment**, tree (`scripts/`, `Dockerfile`, `webAgent.bat`), and **Useful URLs**. |
+| **Migrations**, schema location, seeding / context behavior | Sections on **Installation** (Supabase / `migrations/`), **Context defaults**, **Adding custom context** as applicable. |
+
+**Process:** Before you consider the task done, re-read the sections above and patch whatever is now wrong or missing. If the change is tiny (e.g. typo in a comment only) and **nothing** in the table applies, you may skip README—but default to **brief README sync** whenever behavior, paths, or layout moved.
+
+## Temporary files (non-Markdown)
+
+- Put **all temporary non-Markdown** artifacts here: scratch exports, one-off data dumps, downloaded samples, throwaway scripts output, ad-hoc logs, etc. — under **`temp/`**, unless the user explicitly authorizes a different path.
+- **Do not read by default:** Do not treat **`temp/`** as reliable context for the codebase. Only read or search there if the user clearly asks you to.
+
+## Markdown files (drafts, notes, scratch)
+
+- **Where to write:** Put **new** Markdown you create in this workspace (analysis drafts, scratch specs, ad-hoc notes, etc.) under **`temp-md-files/`**, unless the user explicitly tells you to use a different directory or path.
+- **Do not read by default:** **Do not** open, search, grep, or treat **`temp-md-files/`** as a source of truth. It may contain obsolete, incorrect, or conflicting material that would confuse reasoning about the real codebase. **Only** read files there if the user clearly asks you to (e.g. “read my notes in `temp-md-files/…`”).
+
+## Misc Directions
+
+- **Console logs:** If adding console logs to investigate issue, remove the logging after the issue is resolved

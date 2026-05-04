@@ -60,9 +60,18 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="webAgent API",
-    description="webAgent — FastAPI service with tool-calling and LangGraph-style agent loop",
+    description="webAgent — FastAPI service with tool-calling agent loop and WebSocket streaming",
     version="0.1.0"
 )
+
+
+# ── Favicon ──
+@app.get("/favicon.ico", include_in_schema=False)
+@app.get("/favicon.svg", include_in_schema=False)
+async def favicon():
+    from fastapi.responses import FileResponse
+    return FileResponse(str(_APP_DIR.parent / "ui" / "favicon.svg"), media_type="image/svg+xml")
+
 
 # CORS middleware (adjust origins as needed)
 app.add_middleware(
@@ -143,7 +152,7 @@ async def health_check():
 @app.get("/test", response_class=HTMLResponse)
 async def test_interface():
     """Serve the test interface HTML page."""
-    test_html = _APP_DIR.parent / "test_interface.html"
+    test_html = _APP_DIR.parent / "ui" / "test_interface.html"
     return HTMLResponse(content=test_html.read_text(encoding="utf-8"))
 
 

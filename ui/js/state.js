@@ -8,8 +8,8 @@ export const app = {
   aStat: null,
   chatMessages: null,
   chatInput: null,
+  chatInput: null,
   chatSend: null,
-  chatClear: null,
   toolLogContent: null,
   toolLogToggle: null,
   toolLogPanel: null,
@@ -76,7 +76,6 @@ export function bindDom() {
   app.chatMessages = document.getElementById('chat-messages');
   app.chatInput = document.getElementById('chat-input');
   app.chatSend = document.getElementById('chat-send');
-  app.chatClear = document.getElementById('chat-clear');
   app.toolLogContent = document.getElementById('tool-log-content');
   app.toolLogToggle = document.getElementById('tool-log-toggle');
   app.toolLogPanel = document.getElementById('tool-log-panel');
@@ -95,10 +94,10 @@ export function bindDom() {
     app.dbColumnOrder = {};
   }
 
-  const storedSessionId = sessionStorage.getItem('terminalSessionId');
+  const storedSessionId = localStorage.getItem('terminalSessionId');
   app.currentSessionId = storedSessionId || crypto.randomUUID();
   if (!storedSessionId) {
-    sessionStorage.setItem('terminalSessionId', app.currentSessionId);
+    localStorage.setItem('terminalSessionId', app.currentSessionId);
   }
   app.currentUserId =
     new URLSearchParams(location.search).get('user_id') || app.localUserId;

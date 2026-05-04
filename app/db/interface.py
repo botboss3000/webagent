@@ -264,3 +264,8 @@ class StorageBackend(ABC):
         For local mode, this is the aiosqlite connection or a proxy.
         """
         ...
+
+    @abstractmethod
+    async def get_max_turn_count(self, agent_id: str = "default_agent") -> int:
+        """Get the max_turn_count for a given agent_id."""
+        ...

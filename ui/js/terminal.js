@@ -41,7 +41,7 @@ export function initTerminal() {
     cursorStyle: 'block',
     fontSize: 14,
     fontFamily:
-      '"Cascadia Code", "Fira Code", Menlo, Monaco, "Courier New", monospace',
+      '"Fira Code", Menlo, Monaco, "Courier New", monospace',
     allowTransparency: true,
     theme: {
       background: '#0d0d1a',

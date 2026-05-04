@@ -17,7 +17,7 @@
   .db-cell-pre {
     margin: 0;
     white-space: pre-wrap;
-    font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
     font-size: 11px;
     line-height: 1.4;
     max-height: 6em;
@@ -94,7 +94,7 @@
     color: #c0caf5;
     padding: 4px 6px;
     font-size: 12px;
-    font-family: 'Cascadia Code', 'Fira Code', Menlo, monospace;
+    font-family: 'Fira Code', Menlo, monospace;
     width: 100%;
     box-sizing: border-box;
     outline: none;
@@ -152,7 +152,7 @@
     border: none;
     border-bottom: 1px solid #2a2a4a;
     color: #c0caf5;
-    font-family: 'Cascadia Code', 'Fira Code', Menlo, monospace;
+    font-family: 'Fira Code', Menlo, monospace;
     font-size: 12px;
     line-height: 1.5;
     padding: 14px 16px;

@@ -1,61 +1,94 @@
 # webAgent
 
-A FastAPI agent application with tool-calling support and Supabase persistence.
+A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional **Supabase** or **local SQLite** persistence, and a **vanilla JS** UI under `/ui/`.
 
 ## Features
 
-- **Chat endpoint** that maintains session‑specific message history.
-- **WebSocket streaming** for real-time agent responses and tool call visibility.
-- **Context‑aware system prompts** assembled from `public.context` rows (agent, user, skills, tools, tasks).
-- **Tool-calling agent loop** using OpenRouter with DeepSeek V3.2 (or any OpenRouter model).
-- **Supabase Postgres** for `sessions`, `messages`, and `context` (same schema as the Web Portal migrations).
-- **Dev‑friendly** with a `/seed‑docs` endpoint to bootstrap test data.
+- **Chat** — `POST /api/v1/chat`: non-streaming agent loop with tools; persists turns to **`interactions`** (not a separate `messages` table).
+- **WebSocket agent** — `GET` upgrade to `/api/v1/agent/ws`: streaming tokens, tool events, pipeline steps (**loopback clients only**).
+- **Context** — Prompt slices from `context_type` / `doc_type`; if a user has no rows, **`context_defaults`** are copied into per-user context on first chat.
+- **Memory** — Brain-style lookup before each chat turn; optional background save of chat snippets into memory.
+- **Tools** — Dynamic tools from the DB (JSON schemas in **`app/tools/loader.py`**), including Playwright **`browser.py`**.
+- **OpenRouter** — Model from `OPENROUTER_MODEL` (see `.env.example`; e.g. `deepseek/deepseek-v4-flash`).
+- **Dual storage** — **`cloud`** (Supabase) vs **`local`** (SQLite file **`app/db/local.db`**). Mode is stored in **`app/db_mode.json`** and switched via **`/admin/db/*`**.
+- **Web UI** — Static app at **`/ui/`** (chat, DB viewer, terminal, stream/loop). **`/terminal`** redirects to **`/ui/`**.
+- **Minimal tester** — **`GET /test`** serves **`ui/test_interface.html`** (same origin as the API).
 
-## Project Structure
+## Architecture and module map
+
+### Backend (`app/`)
+
+| Module | Role |
+|--------|------|
+| **`main.py`** | FastAPI app: routers, CORS, no-cache for `/ui/`, **`StaticFiles`** for `/ui/` and `/screenshots`, **`GET /test`**, **`GET /health`**, favicon from `ui/favicon.svg`, **`POST /api/v1/restart`**, shutdown (browser + terminal). |
+| **`api/chat.py`** | **`POST /api/v1/chat`** — context load, memory search, prompt build, **`loop.run_agent_loop`**, **`interactions`**, optional memory persistence; pipeline events for visualizers. |
+| **`api/agent.py`** | **`WebSocket /api/v1/agent/ws`** — **`streaming_loop.stream_agent_events`**. |
+| **`api/terminal.py`** | **`WebSocket /api/v1/terminal/ws`** — browser shell (PTY / **`pywinpty`** on Windows). |
+| **`api/db_viewer.py`** | **`/api/v1/db/*`** — SQLite introspection; DB files under **`app/db/`** (default filename **`local.db`** for the UI query param `db=`). |
+| **`agent/loop.py`** | HTTP multi-turn loop: tool validation, parallel tool runs where applicable. |
+| **`agent/streaming_loop.py`** | WebSocket streaming loop; structured tool/pipeline events. |
+| **`agent/prompts.py`** | System prompt from context, brain results, tools. |
+| **`agent/error_classifier.py`** | Structured tool errors (**used on the WebSocket / streaming path**). |
+| **`db/__init__.py`** | **`get_db()`** → **`SupabaseBackend`** or **`LocalBackend`** from persisted mode. |
+| **`db/supabase.py`** | Cloud: **`sessions`**, **`interactions`**, **`context`**, **`context_defaults`**, memories / tools / skills per shared schema. |
+| **`db/local.py`** | Local SQLite (e.g. **`context_documents`**) and related tables beside **`local.db`**. |
+| **`db/interface.py`** | **`StorageBackend`** protocol. |
+| **`tools/`** | **`loader`**, **`registry`**, **`tracker`**, **`browser`**. |
+| **`models/schemas.py`** | Pydantic models (`ChatRequest`, etc.). |
+| **`admin/`** | **`review`** (`/admin/...`), **`db_mode`** (`/admin/db/...`), **`settings`**, **`guardrails`**, optional **`source`** / **`source_tools`**. |
+| **`openai_compat.py`** | OpenAI-compatible client wiring for OpenRouter. |
+
+### Frontend (`ui/`)
+
+Single-page app: **`index.html`**, CSS (`app1.css`, `app2.css`, `app3.css`, `loop.css`), ES modules under **`js/`** — e.g. **`main.js`**, **`chat.js`**, **`agentWs.js`**, **`stream.js`**, **`loop.js`**, **`tabs.js`**, **`toolLog.js`**, **`terminal.js`**, **`dbMode.js`**, **`sessions.js`**, **`js/db/`** (data browser). **`test_interface.html`** is also here and is served at **`GET /test`**.
+
+### Directory tree (abbreviated)
 
 ```
-webagent/
-├── app/
-│   ├── main.py              # FastAPI app entrypoint
-│   ├── api/
-│   │   ├── chat.py          # POST /chat route
-│   │   ├── agent.py         # WebSocket streaming endpoint
-│   │   └── terminal.py      # Web terminal interface
-│   ├── agent/
-│   │   ├── loop.py          # Simple tool-calling agent loop
-│   │   ├── streaming_loop.py # Streaming agent loop (events)
-│   │   └── prompts.py       # System prompt assembly
-│   ├── db/
-│   │   └── supabase.py      # Supabase client + all DB operations
-│   ├── tools/
-│   │   ├── loader.py        # Dynamic tool loading
-│   │   ├── registry.py      # Tool registry
-│   │   └── tracker.py       # Tool execution tracking
-│   ├── models/
-│   │   └── schemas.py       # Pydantic request/response models
-│   └── admin/
-│       └── review.py        # Admin review routes
-├── .env.example
+webAgent/
+├── app/                    # Python package (see table above)
+├── ui/                     # Static UI + test_interface.html
+├── scripts/
+│   ├── start_webAgent.sh   # Unix: cd to repo root, background uvicorn :8000
+│   └── seed_tools.py       # Optional tool DB seeding
+├── migrations/             # Ad-hoc SQL snapshots; see migrations/README.md
+├── supabase/migrations/    # e.g. 005_memory_system.sql (Supabase CLI / team workflow)
+├── screenshots/            # Mounted at /screenshots
+├── android/                # Optional Android wrapper (Java + embedded Python)
+├── tasks/                  # Small Node helper (package.json, run-all.ts)
+├── temp/                   # Scratch non-Markdown files (see agent.md)
+├── temp-md-files/          # Scratch Markdown (see agent.md)
+├── .github/workflows/      # CI (e.g. APK build)
+├── webAgent.bat            # Windows: uvicorn loop + restart support
+├── Dockerfile
 ├── requirements.txt
+├── pyproject.toml
+├── uv.lock
+├── .env.example
+├── agent.md                # Instructions for assistants working in this repo
 └── README.md
 ```
 
-## Environment Variables
+## Environment variables
 
-Copy `.env.example` to `.env` and fill in your credentials:
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env`:
+Copy **`.env.example`** to **`.env`**:
 
 ```bash
-OPENROUTER_API_KEY=your_openrouter_api_key
-OPENROUTER_MODEL=deepseek/deepseek-v3.2
-SUPABASE_URL=your_supabase_project_url
-SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
+cp .env.example .env          # Windows (cmd): copy .env.example .env
 ```
+
+| Variable | Purpose |
+|----------|---------|
+| `OPENROUTER_API_KEY` | OpenRouter API key |
+| `OPENROUTER_MODEL` | Model id (default in `.env.example`: `deepseek/deepseek-v4-flash`) |
+| `OPENROUTER_REFERER` | Optional Referer header for OpenRouter |
+| `OPENROUTER_TITLE` | Optional app title for OpenRouter |
+| `SUPABASE_URL` | Supabase URL (**required in cloud mode**) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Service role key (**required in cloud mode**) |
+| `ENVIRONMENT` | e.g. `development` |
+| `LOG_LEVEL` | e.g. `INFO` |
+
+In **local** mode, Supabase vars are not required for storage; you still need **`OPENROUTER_API_KEY`** (and usually **`OPENROUTER_MODEL`**) for LLM calls.
 
 ## Installation
 
@@ -64,40 +97,39 @@ SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
 2. Create a virtual environment and install dependencies:
 
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+python -m venv .venv
+source .venv/bin/activate    # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-3. Set up Supabase (shared with the Web Portal):
+3. **Cloud (Supabase)** — If you use **`cloud`** mode, apply your team’s canonical schema (often the **Web Portal** monorepo migration, e.g. `Web Portal/supabase/migrations/20260130120000_webagent_complete_schema.sql`, when that sibling repo exists). The **`migrations/`** folder in *this* repo holds extra or historical SQL; read **`migrations/README.md`** for how it is being used.
 
-   - Create a new project at [supabase.com](https://supabase.com) or use an existing one.
-   - Apply the single migration [`Web Portal/supabase/migrations/20260130120000_webagent_complete_schema.sql`](../Web%20Portal/supabase/migrations/20260130120000_webagent_complete_schema.sql) (SQL Editor or `supabase db push` from `Web Portal`). See [`Web Portal/supabase/NEW_PROJECT_CHECKLIST.md`](../Web%20Portal/supabase/NEW_PROJECT_CHECKLIST.md) for env vars when pointing at a new project.
-   - Copy your project URL and **service role** key from **Project Settings → API** into `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
-
-4. Run the application:
+4. Run the server:
 
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-The API will be available at `http://localhost:8000`. Interactive Swagger docs at `http://localhost:8000/docs`.
+**Useful URLs**
 
-## Seeding Test Documents
+| URL | Purpose |
+|-----|---------|
+| `http://localhost:8000/` | API root JSON |
+| `http://localhost:8000/docs` | Swagger |
+| `http://localhost:8000/ui/` | Full UI |
+| `http://localhost:8000/test` | Minimal HTML chat (`ui/test_interface.html`) |
 
-Once the app is running, you can insert placeholder rows into `public.context` for a user UUID that already exists in `public.users` (e.g. your Supabase auth user id):
+**Unix quick start (background + logs):** `bash scripts/start_webAgent.sh` (works from any cwd; script `cd`s to repo root).
 
-```bash
-curl -X POST "http://localhost:8000/api/v1/seed-docs?user_id=YOUR_AUTH_USER_UUID"
-```
+## Context defaults (no `/seed-docs` route)
 
-This creates five rows with `context_type`: `agent`, `user`, `skills`, `tools`, and `tasks`.
+There is **no** `POST /api/v1/seed-docs` in this codebase. When a user has no context rows, the first chat path copies **`context_defaults`** into that user’s store (**`public.context`** on Supabase, **`context_documents`** in local SQLite).
 
-## Using the Chat Endpoint
+## Using the chat API
 
-**POST `/api/v1/chat`**
+**`POST /api/v1/chat`**
 
-Request body (minimal):
+Minimal JSON body:
 
 ```json
 {
@@ -107,9 +139,11 @@ Request body (minimal):
 }
 ```
 
-Optional fields (sent by the Web Portal): `documents` (array of `{ "doc_type", "title", "content" }`), `history` (array of `{ "role", "content" }`). When provided, the agent uses them instead of loading from the database for that turn.
+**`session_id`** must exist in **`sessions`** for that **`user_id`**.
 
-Example curl:
+Optional fields include **`documents`** and **`history`** — see **`ChatRequest`** in **`app/models/schemas.py`**.
+
+Example:
 
 ```bash
 curl -X POST "http://localhost:8000/api/v1/chat" \
@@ -121,52 +155,29 @@ curl -X POST "http://localhost:8000/api/v1/chat" \
   }'
 ```
 
-Response (includes `response` for the Next.js client):
+Response includes **`reply`**, **`response`** (duplicate for different clients), and **`session_id`**. Turns are stored in **`interactions`**.
 
-```json
-{
-  "reply": "...",
-  "response": "...",
-  "session_id": "session-uuid"
-}
-```
+## Adding custom context
 
-Each turn saves the user message and assistant reply to **`public.messages`** for the given `session_id` (session must exist in **`public.sessions`** and belong to `user_id`).
+- **Supabase:** insert into **`public.context`** with the desired **`context_type`**.
+- **Local:** insert into **`context_documents`**.
 
-## Adding Custom Documents
+Common types include `agent`, `user`, `skills`, `tools`, `tasks`, and optionally `memory`, `project`, `jobs` (see **`app/api/chat.py`**).
 
-You can insert rows via Supabase’s Table Editor into **`public.context`**. The chat endpoint loads rows whose **`context_type`** is one of:
+## Quick test
 
-- `agent`
-- `user`
-- `skills`
-- `tools`
-- `tasks`
-
-(Optional: forward additional slices from the portal as `documents` with a `doc_type` of `memory` for prompt assembly in that request only.)
-
-## Quick Test Interface
-
-For immediate testing without building a frontend, use the included HTML interface:
-
-1. Start the backend server:
-   ```bash
-   uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-   ```
-
-2. Open `test_interface.html` in your browser (double-click or `open test_interface.html`)
-
-3. Configure the API URL (default: `http://localhost:8000/api/v1/chat`), User ID, and Session ID
-
-4. Click "Seed Test Documents" to populate the database with sample context
-
-5. Start chatting!
-
-The interface will display your conversation and handle all API calls to the webAgent backend.
+1. Start **`uvicorn`** as above.
+2. Open **`/ui/`** or **`/test`**.
+3. Ensure a **session** row exists for your **`user_id`** / **`session_id`**.
+4. Chat; defaults apply on first use when the DB has **`context_defaults`**.
 
 ## Deployment
 
-The application is ready to be deployed on any platform that supports Python (e.g., Railway, Render, Fly.io, Docker). Ensure environment variables are set in production.
+Use any Python-capable host (Railway, Render, Fly.io, Docker, etc.). Set the same env vars; use **cloud** + Supabase when you run multiple app instances.
+
+## Assistants and scratch files
+
+**`agent.md`** defines how coding assistants should treat this repo (terminology, **`temp/`** vs **`temp-md-files/`**, etc.) and **requires updating this README** when edits change layout, config, APIs, or features so the tree and sections stay accurate. Roadmap notes may live in **`temp-md-files/FUTURE_PLANS.md`** (not treated as product spec unless you say otherwise).
 
 ## License
 

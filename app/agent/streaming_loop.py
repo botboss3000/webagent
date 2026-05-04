@@ -136,7 +136,7 @@ async def stream_agent_events(
     """
     from app.tools.loader import load_tools
 
-    model_name = os.environ.get("OPENROUTER_MODEL", "deepseek/deepseek-v3.2")
+    model_name = os.environ.get("OPENROUTER_MODEL", "deepseek/deepseek-v4-flash")
 
     load_start = time.time()
     tools = await load_tools(user_id)

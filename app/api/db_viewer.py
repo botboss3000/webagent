@@ -16,19 +16,21 @@ from fastapi import APIRouter, HTTPException, Query
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/db", tags=["db_viewer"])
 
-# Resolve project root (where local_webagent.db lives)
-_PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
+# SQLite files for this API live under app/db/ (same directory as local.py)
+_DB_FILES_DIR = Path(__file__).resolve().parent.parent / "db"
 
 
-def _get_db_path(name: str = "local_webagent.db") -> Path:
-    db_path = _PROJECT_DIR / name
+def _get_db_path(name: str = "local.db") -> Path:
+    if Path(name).name != name:
+        raise HTTPException(status_code=400, detail="Database name must be a plain filename")
+    db_path = _DB_FILES_DIR / name
     if not db_path.exists():
         raise HTTPException(status_code=404, detail=f"Database '{name}' not found at {db_path}")
     return db_path
 
 
 @router.get("/tables")
-async def list_tables(db: str = Query("local_webagent.db", description="Database filename")):
+async def list_tables(db: str = Query("local.db", description="Database filename")):
     """List all tables in the database."""
     db_path = _get_db_path(db)
     try:
@@ -56,7 +58,7 @@ async def list_tables(db: str = Query("local_webagent.db", description="Database
 
 
 @router.get("/users")
-async def list_users(db: str = Query("local_webagent.db", description="Database filename")):
+async def list_users(db: str = Query("local.db", description="Database filename")):
     """List distinct user IDs from the database."""
     db_path = _get_db_path(db)
     try:
@@ -77,10 +79,52 @@ async def list_users(db: str = Query("local_webagent.db", description="Database 
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/sessions/{session_id}")
+async def delete_session(
+    session_id: str,
+    db: str = Query("local.db", description="Database filename"),
+):
+    """Delete a session and all its interactions/messages."""
+    db_path = _get_db_path(db)
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+
+        # Delete interactions for this session
+        cur.execute('DELETE FROM interactions WHERE session_id = ?', (session_id,))
+        interactions_deleted = cur.rowcount
+
+        # Delete session summary
+        cur.execute('DELETE FROM session_summaries WHERE session_id = ?', (session_id,))
+
+        # Delete pipeline events
+        try:
+            cur.execute('DELETE FROM pipeline_events WHERE session_id = ?', (session_id,))
+        except sqlite3.OperationalError:
+            pass
+
+        # Delete the session itself
+        cur.execute('DELETE FROM sessions WHERE id = ?', (session_id,))
+        session_deleted = cur.rowcount
+
+        conn.commit()
+        conn.close()
+
+        logger.info(f"Deleted session {session_id[:12]}: {session_deleted} session, {interactions_deleted} interactions")
+        return {
+            "success": True,
+            "session_id": session_id,
+            "session_deleted": session_deleted,
+            "interactions_deleted": interactions_deleted,
+        }
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/sessions")
 async def list_sessions(
     user_id: str = Query(..., description="User ID"),
-    db: str = Query("local_webagent.db", description="Database filename"),
+    db: str = Query("local.db", description="Database filename"),
 ):
     """List sessions for a user."""
     db_path = _get_db_path(db)
@@ -118,7 +162,7 @@ async def list_sessions(
 @router.get("/session-messages")
 async def get_session_messages(
     session_id: str = Query(..., description="Session ID"),
-    db: str = Query("local_webagent.db", description="Database filename"),
+    db: str = Query("local.db", description="Database filename"),
 ):
     """Get all messages for a session, ordered by created_at ASC."""
     db_path = _get_db_path(db)
@@ -174,11 +218,11 @@ async def get_session_messages(
 @router.get("/stream/interactions")
 async def stream_interactions(
     since: str = Query("", description="ISO timestamp — return rows with created_at > since"),
-    db: str = Query("local_webagent.db", description="Database filename"),
+    db: str = Query("local.db", description="Database filename"),
+    user_id: str = Query("", description="Filter by user_id (optional)"),
+    session_id: str = Query("", description="Filter by session_id (optional)"),
 ):
-    """Return new interactions created after `since`. Used by the Stream tab.
-    Returns sender (role), content, created_at, and other fields.
-    """
+    """Return interactions. Used by Stream tab and Loop visualizer."""
     db_path = _get_db_path(db)
     try:
         conn = sqlite3.connect(str(db_path))
@@ -190,17 +234,30 @@ async def stream_interactions(
             conn.close()
             return {"interactions": [], "db": db}
 
+        where_parts = []
+        params = []
+
+        if session_id:
+            # Direct session filter — most specific
+            where_parts.append("session_id = ?")
+            params.append(session_id)
+        elif user_id:
+            # User filter via sessions table
+            where_parts.append("session_id IN (SELECT id FROM sessions WHERE user_id = ?)")
+            params.append(user_id)
+
         if since:
-            cur.execute(
-                'SELECT id, session_id, role, content, tool_name, input, created_at '
-                'FROM interactions WHERE created_at > ? ORDER BY created_at ASC',
-                (since,)
-            )
-        else:
-            cur.execute(
-                'SELECT id, session_id, role, content, tool_name, input, created_at '
-                'FROM interactions ORDER BY created_at ASC LIMIT 50'
-            )
+            where_parts.append("created_at > ?")
+            params.append(since)
+
+        where_clause = " AND ".join(where_parts) if where_parts else "1=1"
+        limit_clause = "" if since else "LIMIT 200"
+
+        cur.execute(
+            f'SELECT id, session_id, role, content, tool_name, metadata, input, created_at '
+            f'FROM interactions WHERE {where_clause} ORDER BY created_at ASC {limit_clause}',
+            params
+        )
 
         rows = [dict(row) for row in cur.fetchall()]
         conn.close()
@@ -211,7 +268,7 @@ async def stream_interactions(
 
 class UpdateRowRequest(BaseModel):
     """Request body for updating a row."""
-    db: str = "local_webagent.db"
+    db: str = "local.db"
     table: str
     # Column-value pairs to identify the row (typically PK columns)
     where: dict[str, object]
@@ -265,7 +322,7 @@ async def update_row(req: UpdateRowRequest):
 @router.delete("/truncate")
 async def truncate_table(
     table: str = Query(..., description="Table name to truncate"),
-    db: str = Query("local_webagent.db", description="Database filename"),
+    db: str = Query("local.db", description="Database filename"),
 ):
     """Delete ALL rows from a table."""
     db_path = _get_db_path(db)
@@ -303,7 +360,7 @@ async def query_table(
     filter_col: Optional[str] = Query(None, description="Column to filter on"),
     filter_op: str = Query("contains", regex="^(contains|equals|starts|gt|lt)$"),
     filter_val: Optional[str] = Query(None, description="Filter value"),
-    db: str = Query("local_webagent.db", description="Database filename"),
+    db: str = Query("local.db", description="Database filename"),
 ):
     """Query rows from a table."""
     db_path = _get_db_path(db)

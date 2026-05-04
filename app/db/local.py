@@ -18,11 +18,8 @@ from app.db.interface import StorageBackend
 
 logger = logging.getLogger(__name__)
 
-# Default path for the local database
-DEFAULT_DB_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "local_webagent.db",
-)
+# Default path for the local database (alongside this module)
+DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "local.db")
 
 
 def _now_iso() -> str:
@@ -330,6 +327,14 @@ CREATE TABLE IF NOT EXISTS skill_feedback (
 CREATE INDEX IF NOT EXISTS idx_feedback_skill ON skill_feedback(skill_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_user ON skill_feedback(user_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_type ON skill_feedback(feedback_type);
+
+CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY DEFAULT 'default_agent',
+    max_turn_count INTEGER DEFAULT 10
+);
+
+INSERT OR IGNORE INTO agents (id, max_turn_count) VALUES ('default_agent', 10);
+
 """
 
 
@@ -1166,6 +1171,18 @@ class LocalBackend(StorageBackend):
                 (user_id, name),
             ).fetchone()
             return row["id"] if row else None
+        finally:
+            conn.close()
+    
+    async def get_max_turn_count(self, agent_id: str = "default_agent") -> int:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT max_turn_count FROM agents WHERE id = ?", (agent_id,)
+            ).fetchone()
+            if row:
+                return row["max_turn_count"]
+            return 10  # Default if agent not found
         finally:
             conn.close()
 

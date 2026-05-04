@@ -134,11 +134,6 @@ export function initChat() {
   app.chatInput.addEventListener('input', () => {
     app.chatSend.disabled = !app.chatInput.value.trim();
   });
-
-  app.chatClear.addEventListener('click', () => {
-    app.chatMessages.innerHTML = '';
-    addChatBubble('agent', 'Conversation cleared. Ask me anything.');
-  });
 }
 
 export { escapeHtml };

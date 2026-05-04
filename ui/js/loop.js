@@ -67,28 +67,17 @@ export function initLoop() {
 // ── Start: activate tab, replay buffer, then live-render ──
 export function startLoop() {
   const list = getLoopList();
-  if (!list) {
-    console.error('[loop] #loop-list not found in DOM');
-    return;
-  }
+  if (!list) return;
 
-  console.log('[loop] startLoop() called, activating');
   loopActive = true;
-  list.innerHTML = '';
+  list.innerHTML = '<div class="loop-hint" style="padding:20px;text-align:center;color:#565f89;font-size:12px;">Loading pipeline history…</div>';
   currentTurn = null;
   currentTurnNum = 0;
   executingTools.clear();
   streamingBubble = null;
   turns = [];
 
-  // Replay buffered events
-  console.log('[loop] replaying ' + eventBuffer.length + ' buffered events');
-  eventBuffer.forEach(event => renderEvent(event));
-  eventBuffer = [];
-
-  if (list.children.length === 0) {
-    list.innerHTML = '<div class="loop-hint" style="padding:20px;text-align:center;color:#565f89;font-size:12px;">Pipeline visualizer active — waiting for agent events…</div>';
-  }
+  fetchLoopEvents();
 }
 
 // ── Stop: deactivate tab (but keep collecting events in background) ──
@@ -100,13 +89,18 @@ export function stopLoop() {
   streamingBubble = null;
   turns = [];
   // Don't clear eventBuffer — keep collecting
+}
 
 // ── Handle events (called from agentWs.js) ──
+const MAX_BUFFER = 2000;
 let _eventCount = 0;
 function handleEvent(event) {
   _eventCount++;
 
-  // Always buffer for replay when tab opens
+  // Always buffer for replay (cap size to prevent memory bloat)
+  if (eventBuffer.length >= MAX_BUFFER) {
+    eventBuffer.shift(); // Drop oldest
+  }
   eventBuffer.push(event);
 
   // Only render if loop tab is active
@@ -158,6 +152,122 @@ function renderEvent(event) {
   if (autoScroll) {
     list.scrollTop = list.scrollHeight;
   }
+}
+
+// ── Fetch interactions from DB and reconstruct pipeline ──
+async function fetchLoopEvents() {
+  const list = getLoopList();
+  if (!list) return;
+
+  const userId = app.currentUserId;
+  const sessionId = app.currentSessionId;
+  if (!userId || !sessionId) {
+    replayBuffer();
+    return;
+  }
+
+  try {
+    const url = `/api/v1/db/stream/interactions?user_id=${encodeURIComponent(userId)}&session_id=${encodeURIComponent(sessionId)}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    const rows = data.interactions || [];
+
+    list.innerHTML = '';
+    currentTurn = null;
+    currentTurnNum = 0;
+    executingTools.clear();
+    streamingBubble = null;
+    turns = [];
+
+    rows.forEach(row => {
+      const events = interactionToEvents(row);
+      events.forEach(ev => renderEvent(ev));
+    });
+
+    replayBuffer();
+
+    if (list.children.length === 0) {
+      list.innerHTML = '<div class="loop-hint" style="padding:20px;text-align:center;color:#565f89;font-size:12px;">Pipeline visualizer active — waiting for agent events…</div>';
+    }
+  } catch (e) {
+    console.error('[loop] fetch failed:', e);
+    replayBuffer();
+  }
+}
+
+function replayBuffer() {
+  const list = getLoopList();
+  if (!list) return;
+  const hint = list.querySelector('.loop-hint');
+  if (hint && eventBuffer.length > 0) hint.remove();
+  eventBuffer.forEach(event => renderEvent(event));
+  eventBuffer = [];
+  if (list.children.length === 0) {
+    list.innerHTML = '<div class="loop-hint" style="padding:20px;text-align:center;color:#565f89;font-size:12px;">Pipeline visualizer active — waiting for agent events…</div>';
+  }
+}
+
+// ── Convert interaction DB row to loop event(s) ──
+function interactionToEvents(row) {
+  const events = [];
+  const role = row.role || 'unknown';
+
+  if (role === 'user') {
+    events.push({
+      type: 'pipeline', level: 'user',
+      step: 'user_message', content: row.content || '',
+    });
+  } else if (role === 'assistant') {
+    let meta = {};
+    try { meta = JSON.parse(row.metadata || '{}'); } catch(e) {}
+    if (meta.turn) {
+      events.push({
+        type: 'pipeline', level: 'pipeline',
+        step: 'turn_start', turn: meta.turn, max_turns: 10,
+      });
+    }
+    events.push({
+      type: 'response', level: 'agent',
+      content: (row.content || '').replace(/\n\n\[Tool calls:.*\]$/s, ''),
+      _input_tokens: meta.input_tokens,
+      _output_tokens: meta.output_tokens,
+      _duration_ms: meta.duration_ms,
+      _model: meta.model,
+    });
+  } else if (role === 'tool') {
+    const toolName = row.tool_name || 'unknown';
+    let meta = {};
+    try { meta = JSON.parse(row.metadata || '{}'); } catch(e) {}
+
+    if (toolName === 'memory_search') {
+      let contentObj = {};
+      try { contentObj = JSON.parse(row.content || '{}'); } catch(e) {}
+      events.push({
+        type: 'pipeline', level: 'pipeline',
+        step: 'memory_search_end', results_count: meta.count || contentObj.count || 0,
+      });
+    } else if (toolName === 'memory_save') {
+      events.push({
+        type: 'pipeline', level: 'pipeline',
+        step: 'memory_save_end', slug: meta.slug || toolName,
+      });
+    } else {
+      events.push({
+        type: 'tool_call', level: 'agent',
+        tool: toolName, args: meta.input_params || {},
+      });
+      events.push({
+        type: 'tool_result', level: 'agent',
+        tool: toolName, result: row.content || '',
+        duration_ms: meta.duration_ms || 0,
+        error: !(meta.success !== false),
+        error_type: meta.error_message ? 'execution_error' : null,
+        recoverable: true,
+      });
+    }
+  }
+
+  return events;
 }
 
 // ── Turn management ──
@@ -234,12 +344,23 @@ function handleResponse(event) {
     streamingBubble.classList.remove('loop-streaming');
     const spinner = streamingBubble.querySelector('.loop-spinner');
     if (spinner) spinner.remove();
-    // Don't overwrite accumulated stream content
     streamingBubble.querySelector('.loop-node-icon').textContent = '🤖';
     streamingBubble = null;
   } else if (parent) {
-    const node = createNode('agent', 'response', event.content || '', parent);
+    let label = event.content || '';
+    // Add token/duration info from interaction metadata
+    const extras = [];
+    if (event._input_tokens) extras.push(`${event._input_tokens}↓${event._output_tokens || 0}↑ tokens`);
+    if (event._duration_ms) extras.push(`${event._duration_ms}ms`);
+    if (extras.length) label += '  (' + extras.join(', ') + ')';
+    const node = createNode('agent', 'response', label, parent);
     node.querySelector('.loop-node-icon').textContent = '🤖';
+    node._details = {
+      input_tokens: event._input_tokens,
+      output_tokens: event._output_tokens,
+      duration_ms: event._duration_ms,
+      model: event._model,
+    };
   }
 }
 
@@ -637,4 +758,20 @@ export function toggleAutoScroll() {
     btn.textContent = autoScroll ? 'Auto-scroll ✓' : 'Auto-scroll ✗';
     btn.classList.toggle('active', autoScroll);
   }
+}
+
+// ── Session changed handler (called from sessions.js) ──
+export function loopSessionChanged() {
+  if (!loopActive) return;
+  const list = getLoopList();
+  if (list) {
+    list.innerHTML = '<div class="loop-hint" style="padding:20px;text-align:center;color:#565f89;font-size:12px;">Session changed — reloading…</div>';
+  }
+  currentTurn = null;
+  currentTurnNum = 0;
+  executingTools.clear();
+  streamingBubble = null;
+  turns = [];
+  eventBuffer = [];
+  fetchLoopEvents();
 }

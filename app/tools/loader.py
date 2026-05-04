@@ -50,6 +50,9 @@ class ToolLoader:
                     params = json.loads(params)
                 except (json.JSONDecodeError, TypeError):
                     params = {"type": "object", "properties": {}, "required": []}
+            # Ensure params is a proper JSON Schema object
+            if not isinstance(params, dict) or params.get("type") != "object":
+                params = {"type": "object", "properties": {}, "required": []}
             tools[name] = ToolInfo(name=name, handler=handler, parameters=params)
             logger.debug(f"Loaded tool {name} for user {user_id}")
 

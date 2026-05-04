@@ -78,13 +78,21 @@ export function initDbPaginationAndToolbar() {
 }
 
 export function runInitialDbTableLoad() {
-  fetchTables('local_webagent.db').then(() => {
-    if (app.dbTables.some((t) => t.name === 'interactions')) {
-      app.dbSelectedTable = 'interactions';
+  fetchTables('local.db').then(() => {
+    // Try saved table, fall back to 'interactions', else nothing
+    const savedTable = localStorage.getItem('lastDbTable');
+    const tableToLoad =
+      savedTable && app.dbTables.some((t) => t.name === savedTable)
+        ? savedTable
+        : app.dbTables.some((t) => t.name === 'interactions')
+          ? 'interactions'
+          : null;
+    if (tableToLoad) {
+      app.dbSelectedTable = tableToLoad;
       renderTableList();
       document.getElementById('db-sort-col').value = 'created_at';
       document.getElementById('db-sort-dir').value = 'DESC';
-      queryTable('interactions').then(() => startAutoRefresh());
+      queryTable(tableToLoad).then(() => startAutoRefresh());
     }
   });
 }

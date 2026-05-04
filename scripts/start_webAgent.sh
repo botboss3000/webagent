@@ -1,6 +1,8 @@
 #!/bin/bash
-# Quick start script for webAgent
-# Run this after database migration
+# Repo root (script lives in scripts/). .venv and .env are resolved from here.
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.." || exit 1
+
+# Run after database migration; starts uvicorn in the background on port 8000.
 
 echo "========================================="
 echo "webAgent - Quick Start"
@@ -46,18 +48,7 @@ sleep 3
 if curl -s http://localhost:8000/health > /dev/null; then
     echo "✅ Server is running!"
     echo ""
-    
-    # Seed documents
-    echo "Seeding test documents..."
-    SEED_RESPONSE=$(curl -s -X POST "http://localhost:8000/api/v1/seed-docs?user_id=webagent_user")
-    
-    if echo "$SEED_RESPONSE" | grep -q "Inserted"; then
-        echo "✅ Test documents seeded successfully"
-    else
-        echo "⚠️  Seed response: $SEED_RESPONSE"
-        echo "   (This might be OK if documents already exist)"
-    fi
-    
+    echo "Context defaults are applied on first chat if the user has no context rows (no separate seed endpoint)."
     echo ""
     echo "========================================="
     echo "✅ webAgent is ready!"
@@ -69,8 +60,8 @@ if curl -s http://localhost:8000/health > /dev/null; then
     echo "    -d '{\"user_id\":\"test\",\"session_id\":\"test\",\"message\":\"Hello!\"}'"
     echo ""
     echo "Web interface:"
-    echo "  Open test_interface.html in your browser"
-    echo "  Click 'Seed Test Documents' then start chatting"
+    echo "  Minimal tester:  http://localhost:8000/test"
+    echo "  Full UI:         http://localhost:8000/ui/"
     echo ""
     echo "Connect your web app to:"
     echo "  http://localhost:8000/api/v1/chat"

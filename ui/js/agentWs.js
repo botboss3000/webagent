@@ -70,9 +70,7 @@ export function connectAgent() {
 
     // Forward to loop visualizer if registered
     if (app._loopHandler) {
-      try { app._loopHandler(event); } catch(e) {
-        console.error('[agentWs] loop handler error:', e);
-      }
+      try { app._loopHandler(event); } catch(e) { /* ignore */ }
     }
 
     switch (event.type) {
@@ -88,6 +86,10 @@ export function connectAgent() {
         app.isProcessing = false;
         app.chatSend.disabled = false;
         if (app.chatInput.value.trim()) app.chatSend.disabled = false;
+        // Refresh session list so new sessions appear in dropdown
+        if (typeof app.populateSessionSelect === 'function') {
+          app.populateSessionSelect(app.currentUserId);
+        }
         break;
 
       case 'error':
