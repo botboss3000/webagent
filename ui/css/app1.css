@@ -101,6 +101,7 @@
     align-self: flex-start;
     border-bottom-left-radius: 4px;
   }
+
   .chat-bubble.agent.streaming { border-color: #7dcfff50; }
   .chat-bubble.error {
     background: #f7768e15;

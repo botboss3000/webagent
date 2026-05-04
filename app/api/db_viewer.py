@@ -192,13 +192,13 @@ async def stream_interactions(
 
         if since:
             cur.execute(
-                'SELECT id, session_id, role, content, tool_name, created_at '
+                'SELECT id, session_id, role, content, tool_name, input, created_at '
                 'FROM interactions WHERE created_at > ? ORDER BY created_at ASC',
                 (since,)
             )
         else:
             cur.execute(
-                'SELECT id, session_id, role, content, tool_name, created_at '
+                'SELECT id, session_id, role, content, tool_name, input, created_at '
                 'FROM interactions ORDER BY created_at ASC LIMIT 50'
             )
 

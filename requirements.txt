@@ -10,3 +10,4 @@ python-multipart==0.0.6
 tiktoken>=0.5.2,<1
 playwright>=1.40.0
 Pillow>=10.0.0
+wsproto>=1.2.0

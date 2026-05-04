@@ -3,6 +3,7 @@
 import { app } from "../state.js";
 import { getPKColumns, getDisplayColumns, saveColumnOrder } from "./columns.js";
 import { initColumnResize } from "./columnResize.js";
+import { formatJsonAsHtml } from "../json-tree.js";
 
 function cancelEditing() {
   if (app.editingCell) {
@@ -81,14 +82,12 @@ function renderTableData(result, silent) {
   html += '</thead><tbody>';
 
   function fmtCell(val) {
-    if (val === null) return 'NULL';
+    if (val === null) return { html: 'NULL', isJson: false };
     if (typeof val === 'string' && val.length > 1 && (val[0] === '{' || val[0] === '[')) {
-      try {
-        const parsed = JSON.parse(val);
-        return JSON.stringify(parsed, null, 2);
-      } catch(e) { /* not json, show as-is */ }
+      const jsonHtml = formatJsonAsHtml(val);
+      if (jsonHtml) return { html: jsonHtml, isJson: true };
     }
-    return String(val);
+    return { html: String(val).replace(/</g, '&lt;').replace(/>/g, '&gt;'), isJson: false };
   }
 
   for (let ri = 0; ri < result.rows.length; ri++) {
@@ -99,9 +98,9 @@ function renderTableData(result, silent) {
       const w = app.COL_WIDTHS[col];
       const style = w ? ` style="width:${w}"` : '';
       const cls = val === null ? 'col-null' : '';
-      const display = fmtCell(val);
+      const { html: display, isJson } = fmtCell(val);
       const safeVal = String(val).replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      html += `<td class="db-cell ${cls}"${style} data-row="${ri}" data-col="${col}" data-val="${safeVal}"><pre class="db-cell-pre">${display}</pre><button class="db-cell-expand" title="Expand editor">↗</button></td>`;
+      html += `<td class="db-cell ${cls}"${style} data-row="${ri}" data-col="${col}" data-val="${safeVal}">${isJson ? `<div class="db-cell-json">${display}</div>` : `<pre class="db-cell-pre">${display}</pre>`}<button class="db-cell-expand" title="Expand editor">↗</button></td>`;
     }
     html += '</tr>';
     // Resize handle after each row

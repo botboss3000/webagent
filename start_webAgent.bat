@@ -253,7 +253,7 @@ echo =========================================
 echo.
 
 :: Launch the Python agent (blocking)
-.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port %WEBAGENT_PORT%
+.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port %WEBAGENT_PORT% --ws wsproto
 
 :: If we get here, agent stopped
 echo.

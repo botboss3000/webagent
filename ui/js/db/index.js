@@ -1,6 +1,7 @@
 'use strict';
 
 import { queryTable } from './query-render.js';
+import { initJsonToggle } from '../json-tree.js';
 import { setTableDeps } from './tables.js';
 import { initGlobalColumnResizeListeners } from './columnResize.js';
 import { initDbCellEditors } from './edit.js';
@@ -12,6 +13,7 @@ import {
 import { initCellModal } from './modal.js';
 
 export function initDbViewer() {
+  initJsonToggle();
   setTableDeps({ queryTable, startAutoRefresh });
   initGlobalColumnResizeListeners();
   initDbCellEditors();

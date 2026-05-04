@@ -25,7 +25,7 @@ ping -n 2 127.0.0.1 >nul
 echo [webAgent] Server running. Press Ctrl+C to stop permanently.
 echo [webAgent] Use the "Restart" button in the terminal page to restart.
 echo.
-.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8765
+.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8765 --ws wsproto
 
 :: If uvicorn exits (e.g. via /api/v1/restart), restart the loop
 echo.

@@ -119,10 +119,15 @@ app.mount("/ui", StaticFiles(directory=str(_UI_DIR), html=True), name="ui")
 # ── Cleanup on shutdown ──
 @app.on_event("shutdown")
 async def shutdown():
-    """Close browser instances on server shutdown."""
+    """Close browser instances and persistent terminal session on server shutdown."""
     try:
         from app.tools.browser import close_all
         await close_all()
+    except Exception:
+        pass
+    try:
+        from app.api.terminal import close_persistent_session
+        await close_persistent_session()
     except Exception:
         pass
 

@@ -24,8 +24,8 @@
 
   <div class="status-group tab-btn-group">
     <button class="tab-btn" data-tab="terminal">⌘ Terminal</button>
-    <button class="tab-btn" data-tab="stream">📡 Stream</button>
-    <button class="tab-btn active" data-tab="database">📊 Database</button>
+    <button class="tab-btn active" data-tab="stream">📡 Stream</button>
+    <button class="tab-btn" data-tab="database">📊 Database</button>
   </div>
 
   <div class="status-group">
@@ -51,19 +51,23 @@
     <div id="tab-terminal" class="tab-content">
       <div id="terminal-container"></div>
     </div>
-    <div id="tab-stream" class="tab-content">
+    <div id="tab-stream" class="tab-content active">
       <div id="stream-viewer">
         <div id="stream-toolbar">
           <span style="color:#565f89;font-size:11px;">📡 Live interactions</span>
+          <button id="stream-filter-btn" title="Filter roles and tools" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#565f89;padding:2px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;margin-left:8px;">⚙ Filters</button>
           <span id="stream-status" style="color:#565f89;font-size:11px;margin-left:auto;">⏸ paused</span>
           <button id="stream-clear" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:2px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;margin-left:8px;">✕ Clear</button>
+        </div>
+        <div id="stream-filter-panel" style="display:none;background:#1a1a2e;border-bottom:1px solid #2a2a4a;padding:8px 12px;font-size:12px;flex-shrink:0;">
+          <div id="stream-filter-panel-inner"></div>
         </div>
         <div id="stream-list">
           <div class="db-hint">Switch to this tab to start streaming interactions</div>
         </div>
       </div>
     </div>
-    <div id="tab-database" class="tab-content active">
+    <div id="tab-database" class="tab-content">
       <div id="db-viewer">
         <div id="db-toolbar">
           <select id="db-select">

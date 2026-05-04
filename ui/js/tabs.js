@@ -24,4 +24,10 @@ export function initTabs() {
       }
     });
   });
+
+  // Initial activation for the default-active tab
+  const activeBtn = document.querySelector('.tab-btn.active');
+  if (activeBtn && activeBtn.dataset.tab === 'stream') {
+    startStream();
+  }
 }

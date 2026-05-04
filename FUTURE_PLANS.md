@@ -147,3 +147,176 @@ Ordered by impact, highest first.
 - Features should be feature-flagged via user settings in DB. Individual users can opt in/out.
 - Retry counters, fallback state, and iteration budget should be per-request (not global) to avoid cross-user state leaks.
 - Tool execution errors should include structured error info (error type, recoverable bool, hint string) so the frontend can display appropriate UI.
+
+
+pi's Tools vs webAgent's — Side by Side
+
+ ┌─────────────┬─────────────────────────────┬──────────────────────┬────────────────────────────┐ 
+ │ Tool        │ webAgent                    │ pi                   │ pi Advantage               │ 
+ ├─────────────┼─────────────────────────────┼──────────────────────┼────────────────────────────┤ 
+ │ read file   │ read_source(path)           │ read(path, offset,   │ Offset/limit for large     │ 
+ │             │                             │ limit)               │ files. Reads images        │ 
+ │             │                             │                      │ (jpg/png/gif).             │ 
+ │             │                             │                      │ Auto-truncates.            │ 
+ ├─────────────┼─────────────────────────────┼──────────────────────┼────────────────────────────┤ 
+ │ write file  │ write_source(path, content) │ write(path, content) │ Same. pi creates parent    │ 
+ │             │                             │                      │ dirs automatically.        │ 
+ ├─────────────┼─────────────────────────────┼──────────────────────┼────────────────────────────┤ 
+ │ edit file   │ edit_source(path, old, new) │ edit(path, edits[])  │ pi validates               │ 
+ │             │  — single replacement       │ — multiple disjoint  │ non-overlapping edits,     │ 
+ │             │                             │ edits in one call    │ merges nearby changes.     │ 
+ │             │                             │                      │ webAgent does one          │ 
+ │             │                             │                      │ str.replace(old, new, 1).  │ 
+ ├─────────────┼─────────────────────────────┼──────────────────────┼────────────────────────────┤ 
+ │ delete file │ delete_source(path, rec)    │ ❌ No built-in       │ webAgent wins here —       │  
+ │             │                             │ delete. Done via     │ dedicated tool             │ 
+ │             │                             │ bash rm              │                            │ 
+ ├─────────────┼─────────────────────────────┼──────────────────────┼────────────────────────────┤ 
+ │ shell       │ run_command(cmd, timeout)   │ bash(cmd, timeout)   │ pi runs in the agent's     │ 
+ │             │                             │                      │ working directory,         │ 
+ │             │                             │                      │ auto-truncates output.     │ 
+ │             │                             │                      │ Same capability.           │ 
+ ├─────────────┼─────────────────────────────┼──────────────────────┼────────────────────────────┤ 
+ │ search      │ ❌                          │ grep(pattern) —      │ pi-only. Fast codebase     │  
+ │             │                             │ ripgrep-powered      │ search.                    │ 
+ ├─────────────┼─────────────────────────────┼──────────────────────┼────────────────────────────┤ 
+ │ find files  │ ❌                          │ find(pattern) —      │ pi-only. File discovery by │  
+ │             │                             │ fd-powered           │ name.                      │ 
+ ├─────────────┼─────────────────────────────┼──────────────────────┼────────────────────────────┤ 
+ │ list dir    │ ❌                          │ ls(path)             │ pi-only. Directory         │  
+ │             │                             │                      │ listing.                   │ 
+ ├─────────────┼─────────────────────────────┼──────────────────────┼────────────────────────────┤ 
+ │ browser     │ browser_action(...) — 11    │ ❌ No built-in.      │ webAgent wins — full       │  
+ │             │ actions, Playwright         │ OpenClaw adds one.   │ headless browser built-in. │ 
+ ├─────────────┼─────────────────────────────┼──────────────────────┼────────────────────────────┤ 
+ │ screenshot  │ take_screenshot(monitor,    │ ❌                   │ webAgent-only              │  │ screenshot  │ take_screenshot(monitor,    │ ❌                   │ webAgent-only.             │  │             │ region)                     │                      │                            │ 
+ │             │ region)                     │                      │                            │ 
+ ├─────────────┼─────────────────────────────┼──────────────────────┼────────────────────────────┤ 
+ │ restart     │ restart_server()            │ ❌                   │                            │  │ restart     │ restart_server()            │ ❌                   │ webAgent-only.             │  └─────────────┴─────────────────────────────┴──────────────────────┴────────────────────────────┘ 
+
+
+
+pi's real additions are session management and UX:
+
+ ┌─────────────────┬─────────────────────────────────────────────────────────────────────────────┐ 
+ │ Feature         │ What it does                                                                │ 
+ ├─────────────────┼─────────────────────────────────────────────────────────────────────────────┤ 
+ │ Session tree    │ Branch at any message, fork, explore alternatives. webAgent is linear.      │ 
+ ├─────────────────┼─────────────────────────────────────────────────────────────────────────────┤ 
+ │ Compaction      │ Auto-summarizes long conversations to stay under context limits. webAgent   │ 
+ │                 │ just caps at 10-20 turns.                                                   │ 
+ ├─────────────────┼─────────────────────────────────────────────────────────────────────────────┤ 
+ │ Model cycling   │ Ctrl+P to switch models mid-session (e.g., fast/cheap model for simple      │ 
+ │                 │ work, smart model for hard work).                                           │ 
+ ├─────────────────┼─────────────────────────────────────────────────────────────────────────────┤ 
+ │ Thinking        │ See the model's reasoning chain in real time.                               │ 
+ │ display         │                                                                             │ 
+ ├─────────────────┼─────────────────────────────────────────────────────────────────────────────┤ 
+ │ TUI editor      │ Message editing, history navigation, keyboard shortcuts.                    │ 
+ ├─────────────────┼─────────────────────────────────────────────────────────────────────────────┤ 
+ │ Slash commands  │ /compact, /model, /resume, /handoff — built-in workflow control.            │ 
+ ├─────────────────┼─────────────────────────────────────────────────────────────────────────────┤ 
+ │ Skills system   │ SKILL.md files that load on-demand into the system prompt.                  │ 
+ ├─────────────────┼─────────────────────────────────────────────────────────────────────────────┤ 
+ │ Extensions      │ TypeScript plugins that intercept tool calls, add permission gates, inject  │ 
+ │                 │ context.                                                                    │ 
+ ├─────────────────┼─────────────────────────────────────────────────────────────────────────────┤ 
+ │ Prompt          │ /mycommand expands to full prompt content.                                  │ 
+ │ templates       │                                                                             │ 
+ ├─────────────────┼─────────────────────────────────────────────────────────────────────────────┤ 
+ │ Auto-retry      │ Configurable retry on LLM errors.                                           │ 
+ ├─────────────────┼─────────────────────────────────────────────────────────────────────────────┤ 
+ │ Context files   │ AGENTS.md, CLAUDE.md auto-loaded into system prompt.                        │ 
+ └─────────────────┴─────────────────────────────────────────────────────────────────────────────┘
+
+
+Guardrails: pi vs webAgent
+
+ ### pi Has — webAgent Doesn't
+
+ ┌────┬─────────────────┬──────────────────────────────────┬─────────────────────────────────────┐ 
+ │ #  │ Guardrail       │ What It Does                     │ How pi Does It                      │ 
+ ├────┼─────────────────┼──────────────────────────────────┼─────────────────────────────────────┤ 
+ │ 1  │ Tool call       │ Extension can inspect, log,      │ pi.on("tool_call", async (event,    │ 
+ │    │ interception    │ block, or modify any tool call   │ ctx) => { return { block: true };   │ 
+ │    │                 │ before execution                 │ })                                  │ 
+ ├────┼─────────────────┼──────────────────────────────────┼─────────────────────────────────────┤ 
+ │ 2  │ Dangerous bash  │ Prompts user before rm -rf,      │ Extension checks                    │ 
+ │    │ confirmation    │ sudo, chmod 777                  │ event.input.command against regex,  │ 
+ │    │                 │                                  │ calls ctx.ui.confirm()              │ 
+ ├────┼─────────────────┼──────────────────────────────────┼─────────────────────────────────────┤ 
+ │ 3  │ Write/edit path │ Blocks writes to .env, .git/,    │ Extension checks event.input.path,  │ 
+ │    │ protection      │ node_modules/                    │ returns { block: true }             │ 
+ ├────┼─────────────────┼──────────────────────────────────┼─────────────────────────────────────┤ 
+ │ 4  │ Read path       │ Blocks reads of .env, secrets,   │ Override read tool, reject matches  │ 
+ │    │ protection      │ credentials, ~/.ssh, ~/.aws,     │                                     │ 
+ │    │                 │ ~/.gnupg                         │                                     │ 
+ ├────┼─────────────────┼──────────────────────────────────┼─────────────────────────────────────┤ 
+ │ 5  │ Session action  │ Confirms before                  │ pi.on("session_before_switch"),     │ 
+ │    │ confirmation    │ clearing/switching/forking       │ pi.on("session_before_fork")        │ 
+ │    │                 │ sessions                         │                                     │ 
+ ├────┼─────────────────┼──────────────────────────────────┼─────────────────────────────────────┤ 
+ │ 6  │ OS-level        │ Filesystem + network isolation   │ @anthropic-ai/sandbox-runtime       │ 
+ │    │ sandbox         │ via bubblewrap (Linux) or        │ extension                           │ 
+ │    │                 │ sandbox-exec (macOS)             │                                     │ 
+ ├────┼─────────────────┼──────────────────────────────────┼─────────────────────────────────────┤ 
+ │ 7  │ Git             │ Auto-stashes changes at each     │ Extension hooks turn_end            │ 
+ │    │ checkpointing   │ turn for undo                    │                                     │ 
+ ├────┼─────────────────┼──────────────────────────────────┼─────────────────────────────────────┤ 
+ │ 8  │ Dirty repo      │ Prevents session switch with     │ Extension checks git status before  │ 
+ │    │ guard           │ uncommitted changes              │ session_before_switch               │ 
+ ├────┼─────────────────┼──────────────────────────────────┼─────────────────────────────────────┤ 
+ │ 9  │ Tool override   │ Replace built-in tools with      │ pi.registerTool({ name: "read", ... │ 
+ │    │                 │ audited/restricted versions      │ }) — same name overrides built-in   │ 
+ ├────┼─────────────────┼──────────────────────────────────┼─────────────────────────────────────┤ 
+ │ 10 │ Access logging  │ Logs every file read to disk for │ Override read → appendFile(logFile, │ 
+ │    │                 │ audit trail                      │ entry)                              │ 
+ ├────┼─────────────────┼──────────────────────────────────┼─────────────────────────────────────┤ 
+ │ 11 │ Output          │ Auto-truncates all output at     │ Built into every pi tool            │ 
+ │    │ truncation      │ 50KB / 2000 lines                │                                     │ 
+ ├────┼─────────────────┼──────────────────────────────────┼─────────────────────────────────────┤ 
+ │ 12 │ Tool loop       │ Detects repeated non-progressing │ OpenClaw's tool-loop-detection.ts   │ 
+ │    │ detection       │ tool calls                       │                                     │ 
+ ├────┼─────────────────┼──────────────────────────────────┼─────────────────────────────────────┤ 
+ │ 13 │ Abort signals   │ User can cancel any running tool │ AbortSignal passed to every tool's  │ 
+ │    │                 │ mid-execution                    │ execute()                           │ 
+ ├────┼─────────────────┼──────────────────────────────────┼─────────────────────────────────────┤ 
+ │ 14 │ File mutation   │ Batches writes for undo safety,  │ withFileMutationQueue() wrapper     │ 
+ │    │ queue           │ prevents races                   │ around all writes                   │ 
+ ├────┼─────────────────┼──────────────────────────────────┼─────────────────────────────────────┤ 
+ │ 15 │ Bash working    │ Verifies cwd exists before       │ existsSync(cwd) in bash tool        │ 
+ │    │ directory check │ spawning shell                   │                                     │ 
+ ├────┼─────────────────┼──────────────────────────────────┼─────────────────────────────────────┤ 
+ │ 16 │ Headless safety │ Auto-blocks dangerous ops in     │ if (!ctx.hasUI) return { block:     │ 
+ │    │                 │ non-interactive mode             │ true }                              │ 
+ ├────┼─────────────────┼──────────────────────────────────┼─────────────────────────────────────┤ 
+ │ 17 │ Auto-retry      │ Configurable LLM error retry     │ Built into pi's agent loop          │ 
+ │    │                 │ with backoff                     │                                     │ 
+ ├────┼─────────────────┼──────────────────────────────────┼─────────────────────────────────────┤ 
+ │ 18 │ Path traversal  │ Resolves paths relative to       │ resolveToCwd() in all file tools    │ 
+ │    │ prevention      │ workspace, normalizes ..         │                                     │ 
+ └────┴─────────────────┴──────────────────────────────────┴─────────────────────────────────────┘ 
+
+ ────────────────────────────────────────────────────────────────────────────────
+
+ ### webAgent Has — pi Doesn't
+
+ ┌───┬────────────────────┬──────────────────────────────────────────────────────────────────────┐ 
+ │ # │ Guardrail          │ What It Does                                                         │ 
+ ├───┼────────────────────┼──────────────────────────────────────────────────────────────────────┤ 
+ │ 1 │ System prompt      │ [CRITICAL RULE] in every prompt: model must ask user before          │ 
+ │   │ confirmation rules │ destructive tools. Only defense that exists for                      │ 
+ │   │                    │ edit_source/write_source/delete_source/run_command/restart_server    │ 
+ ├───┼────────────────────┼──────────────────────────────────────────────────────────────────────┤ 
+ │ 2 │ Syntax validation  │ ast.parse() checks .py files, json.loads() checks .json before       │ 
+ │   │ on write           │ saving                                                               │ 
+ ├───┼────────────────────┼──────────────────────────────────────────────────────────────────────┤ 
+ │ 3 │ Backups on write   │ Auto-creates .source-backups/<file>.<timestamp>.bak before every     │ 
+ │   │                    │ overwrite                                                            │ 
+ ├───┼────────────────────┼──────────────────────────────────────────────────────────────────────┤ 
+ │ 4 │ Turn limit         │ Hard cap at 10-20 turns per conversation                             │ 
+ ├───┼────────────────────┼──────────────────────────────────────────────────────────────────────┤ 
+ │ 5 │ localhost only     │ WebSocket endpoints reject non-loopback connections                  │ 
+ └───┴────────────────────┴──────────────────────────────────────────────────────────────────────┘ 
+
+

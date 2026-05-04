@@ -6,6 +6,7 @@ Cross-platform: uses os/pty on Unix, pywinpty on Windows.
 """
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
@@ -17,6 +18,38 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# ── Persistent terminal session (survives page reloads) ──
+_persistent_session: Optional["TerminalSession"] = None
+_persistent_session_lock = asyncio.Lock()
+
+
+async def get_or_create_session() -> "TerminalSession":
+    """Return the one persistent shell session. Creates on first call.
+    Re-spawns if the underlying process has exited (e.g. user typed 'exit').
+    Lives until server shutdown. WebSocket attach/detach doesn't kill it."""
+    global _persistent_session
+    async with _persistent_session_lock:
+        if _persistent_session is None or not _persistent_session.is_alive:
+            if _persistent_session is not None:
+                _persistent_session.close()
+                logger.info("Re-spawning dead terminal session")
+            _persistent_session = TerminalSession()
+            _persistent_session.spawn()
+            _persistent_session.write_input(b"\r")
+            logger.info("Persistent terminal session created")
+        return _persistent_session
+
+
+async def close_persistent_session():
+    """Close the session on server shutdown. Called from main.py shutdown."""
+    global _persistent_session
+    if _persistent_session is not None:
+        _persistent_session.close()
+        _persistent_session = None
+        logger.info("Persistent terminal session closed")
+    if IS_WINDOWS:
+        _close_winpty_executor()
 
 
 def _ws_client_is_loopback(host: Optional[str]) -> bool:
@@ -39,6 +72,24 @@ if IS_WINDOWS:
     except ImportError:
         _HAS_WINPTY = False
         logger.warning("winpty not installed — terminal WebSocket will return an error. Install with: pip install pywinpty")
+
+    # Shared thread pool for Windows PTY reads — avoids per-call executor
+    # that blocks event loop on task cancellation (pool.shutdown deadlock).
+    _WINPTY_READER: Optional[concurrent.futures.ThreadPoolExecutor] = None
+
+    def _get_winpty_executor() -> concurrent.futures.ThreadPoolExecutor:
+        global _WINPTY_READER
+        if _WINPTY_READER is None:
+            _WINPTY_READER = concurrent.futures.ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="pty-read"
+            )
+        return _WINPTY_READER
+
+    def _close_winpty_executor():
+        global _WINPTY_READER
+        if _WINPTY_READER is not None:
+            _WINPTY_READER.shutdown(wait=False)
+            _WINPTY_READER = None
 else:
     _HAS_WINPTY = True  # Unix always works
 
@@ -183,9 +234,12 @@ class TerminalSession:
             self._reader_added = False
 
     async def _read_output_windows(self) -> Optional[bytes]:
-        """Read from pywinpty WinPty (non-blocking via thread)."""
-        import concurrent.futures
+        """Read from pywinpty WinPty via shared thread pool.
 
+        Uses a module-level reusable executor so task cancellation does NOT
+        trigger pool.shutdown() (which would block the event loop waiting for
+        a stuck proc.read() thread).
+        """
         loop = asyncio.get_event_loop()
         proc = self._process
 
@@ -198,8 +252,8 @@ class TerminalSession:
             except (EOFError, OSError):
                 return None
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return await loop.run_in_executor(pool, _read)
+        executor = _get_winpty_executor()
+        return await loop.run_in_executor(executor, _read)
 
     def write_input(self, data: bytes):
         """Write raw bytes into the PTY (keystrokes from the browser)."""
@@ -239,6 +293,31 @@ class TerminalSession:
                 fcntl.ioctl(master_fd, termios.TIOCSWINSZ, buf)
             except OSError:
                 pass
+
+    @property
+    def is_alive(self) -> bool:
+        """Check if the child process is still running."""
+        if self._process is None:
+            return False
+        if IS_WINDOWS:
+            try:
+                # pywinpty: check if process handle is valid
+                return self._process.isalive()
+            except Exception:
+                return False
+        else:
+            master_fd, pid = self._process
+            try:
+                wpid, _ = os.waitpid(pid, os.WNOHANG)
+                # wpid == 0 means child still alive (WNOHANG, no status available)
+                # wpid > 0 means child has exited and was reaped
+                return wpid == 0
+            except ChildProcessError:
+                # Already reaped by another handler
+                return False
+            except ProcessLookupError:
+                # No such process
+                return False
 
     def close(self):
         """Kill the child and clean up."""
@@ -309,12 +388,8 @@ async def terminal_websocket(websocket: WebSocket):
 
     heartbeat_task = asyncio.ensure_future(_heartbeat())
 
-    session = TerminalSession()
+    session = await get_or_create_session()
     try:
-        session.spawn()
-        # Trigger the shell prompt (PowerShell on Windows doesn't emit one until it receives input)
-        session.write_input(b"\r")
-
         async def reader_task():
             """Background: pump PTY output → WebSocket."""
             try:
@@ -367,5 +442,5 @@ async def terminal_websocket(websocket: WebSocket):
             await heartbeat_task
         except asyncio.CancelledError:
             pass
-        session.close()
-        logger.info("Terminal session closed")
+        # Do NOT close the session — it's persistent across page reloads
+        logger.info("Terminal WebSocket detached (persistent session keeps running)")

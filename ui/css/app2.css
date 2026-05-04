@@ -75,28 +75,31 @@
     #terminal-side { min-height: 40vh; }
   }
 
-  /* ── Tab bar ── */
-  #tab-bar {
+  /* ── Tab buttons in status bar ── */
+  .tab-btn-group {
     display: flex;
-    background: #0d0d1a;
-    border-bottom: 1px solid #2a2a4a;
-    flex-shrink: 0;
+    align-items: center;
+    gap: 2px;
+    margin-right: 8px;
+    padding-right: 12px;
+    border-right: 1px solid #2a2a4a;
   }
-  .tab-btn {
+  .tab-btn-group .tab-btn {
     background: none;
     border: none;
     color: #565f89;
-    padding: 8px 18px;
-    font-size: 12px;
+    padding: 3px 10px;
+    font-size: 11px;
     cursor: pointer;
-    border-bottom: 2px solid transparent;
-    transition: 0.15s;
     font-family: inherit;
+    border-radius: 4px;
+    transition: 0.15s;
+    font-weight: 500;
   }
-  .tab-btn:hover { color: #a9b1d6; }
-  .tab-btn.active {
+  .tab-btn-group .tab-btn:hover { color: #a9b1d6; background: #1a1a2e; }
+  .tab-btn-group .tab-btn.active {
     color: #7dcfff;
-    border-bottom-color: #7dcfff;
+    background: #7dcfff15;
   }
   .tab-content { display: none; flex: 1; min-height: 0; }
   .tab-content.active { display: flex; flex-direction: column; }
@@ -119,6 +122,17 @@
     flex-shrink: 0;
     background: #1a1a2e;
   }
+  #stream-filter-panel {
+    max-height: 200px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #2a2a4a transparent;
+  }
+  #stream-filter-panel-inner {
+    line-height: 1.8;
+  }
+  .str-flt-label:hover { color: #c0caf5 !important; }
+  .str-flt-label input { cursor: pointer; }
   #stream-list {
     flex: 1;
     overflow-y: auto;
@@ -128,21 +142,143 @@
     line-height: 1.5;
   }
   .str-entry {
-    padding: 8px 10px;
-    margin-bottom: 4px;
-    background: #1a1a2e;
-    border: 1px solid #2a2a4a;
-    border-radius: 6px;
+    margin-bottom: 6px;
     animation: str-fadein 0.3s ease;
   }
+  .str-entry.str-hidden { display: none; }
+
+  /* ── Input button ── */
+  .str-input-section {
+    background: #0d0d1a;
+    border: 1px solid #2a2a4a;
+    border-radius: 6px;
+    margin: 6px 0;
+    padding: 8px;
+    max-height: 300px;
+    overflow: auto;
+  }
+  .str-input-pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: 'Cascadia Code', 'Fira Code', Menlo, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    color: #a9b1d6;
+  }
+
+  /* ── Collapsible JSON tree ── */
+  .json-root {
+    font-family: 'Cascadia Code', 'Fira Code', Menlo, monospace;
+    font-size: 11px;
+    line-height: 1.6;
+  }
+  .json-line {
+    padding-left: 12px;
+  }
+  .json-block {
+    cursor: default;
+  }
+  .json-block.json-collapsed > .json-children { display: none; }
+  .json-block.json-collapsed > .json-punc:first-of-type::after { content: ' ... '; color: #565f89; font-style: italic; }
+  .json-toggle {
+    cursor: pointer;
+    color: #565f89;
+    font-size: 9px;
+    margin-right: 2px;
+    user-select: none;
+  }
+  .json-toggle:hover { color: #7dcfff; }
+  .json-punc { color: #565f89; }
+  .json-key { color: #7dcfff; }
+  .json-str { color: #9ece6a; }
+  .json-num { color: #e0af68; }
+  .json-bool { color: #bb9af7; }
+  .json-null { color: #565f89; font-style: italic; }
+  .db-cell-json {
+    overflow: auto;
+    max-height: 200px;
+    padding: 4px;
+  }
+  .str-input-btn {
+    background: none;
+    border: none;
+    color: #3b4261;
+    cursor: pointer;
+    font-size: 11px;
+    padding: 0 2px;
+    line-height: 1;
+    transition: color 0.15s;
+    font-family: inherit;
+  }
+  .str-input-btn:hover { color: #7dcfff; }
+
+  /* ── Collapse buttons ── */
+  .str-coll-btn, .str-coll-all-btn {
+    background: none;
+    border: none;
+    color: #3b4261;
+    cursor: pointer;
+    font-size: 10px;
+    padding: 0 2px;
+    line-height: 1;
+    transition: color 0.15s;
+    font-family: inherit;
+  }
+  .str-coll-btn:hover, .str-coll-all-btn:hover { color: #7dcfff; }
+  .str-collapsed .str-coll-btn { color: #7dcfff; }
+  .str-collapsed .str-body { display: none; }
+
+  /* ── User & Assistant: bubble style like chat ── */
+  .str-entry[data-role="user"],
+  .str-entry[data-role="assistant"] {
+    padding: 8px 12px;
+    border-radius: 10px;
+    max-width: 90%;
+    word-wrap: break-word;
+  }
+  .str-entry[data-role="user"] {
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    color: #a9b1d6;
+    margin-left: auto;
+    border-bottom-right-radius: 4px;
+  }
+  .str-entry[data-role="assistant"] {
+    background: #7dcfff10;
+    border: 1px solid #7dcfff25;
+    color: #c0caf5;
+    margin-right: auto;
+    border-bottom-left-radius: 4px;
+  }
+  .str-entry[data-role="user"] .str-body { color: #a9b1d6; }
+  .str-entry[data-role="assistant"] .str-body { color: #c0caf5; }
+
+  /* ── Tool: no bubble, plain on stage ── */
+  .str-entry[data-role="tool"] {
+    background: transparent;
+    border: none;
+    padding: 2px 0;
+    color: #a9b1d6;
+    margin-right: auto;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .str-entry[data-role="tool"] .str-body {
+    color: #a9b1d6;
+    max-height: none;
+  }
+
   @keyframes str-fadein {
     from { opacity: 0; transform: translateY(-4px); }
     to   { opacity: 1; transform: translateY(0); }
   }
+
+  /* ── Header inside user/assistant bubbles ── */
   .str-header {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     margin-bottom: 4px;
     font-size: 11px;
   }
@@ -152,6 +288,8 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
+  .str-entry[data-role="user"] .str-role { color: #7dcfff; }
+  .str-entry[data-role="assistant"] .str-role { color: #9ece6a; }
   .str-time {
     color: #565f89;
     font-size: 10px;
@@ -167,13 +305,18 @@
     margin-left: auto;
   }
   .str-body {
-    color: #a9b1d6;
     white-space: pre-wrap;
     word-break: break-word;
     font-size: 12px;
     line-height: 1.5;
-    max-height: 120px;
-    overflow: hidden;
+  }
+  .str-entry[data-role="tool"] .str-body {
+    color: #888;
+    font-family: 'Cascadia Code', 'Fira Code', Menlo, monospace;
+    font-size: 11px;
+  }
+  .str-entry[data-role="tool"] .str-header {
+    opacity: 0.6;
   }
 
   /* ── Database viewer ── */
