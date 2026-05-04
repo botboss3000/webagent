@@ -48,6 +48,7 @@ export function logTool(event) {
       el.textContent = JSON.stringify(event);
   }
 
+  if (!app.toolLogContent) return;
   app.toolLogContent.appendChild(el);
   app.toolLogContent.scrollTop = app.toolLogContent.scrollHeight;
 }

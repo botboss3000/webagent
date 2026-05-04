@@ -19,6 +19,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.agent.prompts import build_system_prompt
 from app.agent.streaming_loop import stream_agent_events
 from app.db import get_db
+from app.api.chat import register_visualizer_listener, unregister_visualizer_listener
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,34 @@ async def agent_websocket(websocket: WebSocket):
             while True:
                 raw_message = await websocket.receive_text()
                 data = json.loads(raw_message)
+
+                # ── Visualizer listener mode (HTTP chat events) ──
+                if data.get("mode") == "http_chat":
+                    vis_user = data.get("user_id", "").strip()
+                    vis_session = data.get("session_id", "").strip()
+                    if not vis_user or not vis_session:
+                        await websocket.send_text(json.dumps({
+                            "type": "error", "level": "agent",
+                            "message": "http_chat mode requires user_id and session_id",
+                        }, default=_json_default_serializer))
+                        continue
+                    register_visualizer_listener(vis_session, websocket)
+                    logger.info(f"Visualizer listener registered for session {vis_session}")
+                    # Stay connected, receiving events from chat endpoint
+                    try:
+                        while True:
+                            raw = await websocket.receive_text()
+                            try:
+                                d = json.loads(raw)
+                                if d.get("type") == "disconnect":
+                                    break
+                            except json.JSONDecodeError:
+                                pass
+                    except (WebSocketDisconnect, ConnectionClosedOK):
+                        pass
+                    finally:
+                        unregister_visualizer_listener(vis_session, websocket)
+                    return  # Exit reader task
 
                 # Initialize user_id and session_id from the first message if not already set
                 if user_id is None: # user_id must be set first as session_id might derive from it
@@ -226,6 +255,12 @@ async def agent_websocket(websocket: WebSocket):
             # Handle reset flag: clear history if client requests it
             if current_message_data.get("reset"):
                 history = []
+
+            # ── Emit user message to pipeline ──
+            await websocket.send_text(json.dumps({
+                "type": "pipeline", "level": "user",
+                "step": "user_message", "content": msg,
+            }, default=_json_default_serializer))
             
             # Fetch context documents (agent, user, skills, tools, etc.)
             context_docs = await db.fetch_context_documents(
@@ -241,8 +276,24 @@ async def agent_websocket(websocket: WebSocket):
                         ["agent", "user", "skills", "tools", "tasks", "memory", "project", "jobs"],
                     )
 
+            # ── Pipeline: context loaded ──
+            doc_types = list(set(
+                (d.get("context_type") or d.get("doc_type") or "")
+                for d in context_docs if d.get("context_type") or d.get("doc_type")
+            ))
+            await websocket.send_text(json.dumps({
+                "type": "pipeline", "level": "pipeline",
+                "step": "load_context", "count": len(context_docs),
+                "types": doc_types,
+            }, default=_json_default_serializer))
+
             # ── PHASE 1: Brain-first lookup (visible as tool interaction) ──
             # Perform a memory search based on the user's message
+            await websocket.send_text(json.dumps({
+                "type": "pipeline", "level": "pipeline",
+                "step": "memory_search_start", "query": msg, "limit": 5,
+            }, default=_json_default_serializer))
+
             brain_results = await db.memory_search(user_id, msg, limit=5)
             brain_context = None
 
@@ -260,10 +311,30 @@ async def agent_websocket(websocket: WebSocket):
                     lines.append("")
                 brain_context = "\n".join(lines)
 
+            # ── Pipeline: memory search results ──
+            await websocket.send_text(json.dumps({
+                "type": "pipeline", "level": "pipeline",
+                "step": "memory_search_end", "results_count": len(brain_results),
+                "results": [{"slug": r["slug"], "title": r.get("title", r["slug"]),
+                             "score": round(r.get("rank", 0), 2)}
+                            for r in (brain_results or [])],
+            }, default=_json_default_serializer))
+
             # Build the complete system prompt for the LLM
             system_prompt = await build_system_prompt(
                 context_docs, brain_context, user_id
             )
+
+            # ── Pipeline: prompt built ──
+            from app.tools.loader import load_tools as lt
+            ws_tools = await lt(user_id)
+            tool_count = len(ws_tools)
+            await websocket.send_text(json.dumps({
+                "type": "pipeline", "level": "pipeline",
+                "step": "build_prompt",
+                "brain_injected": bool(brain_context),
+                "tool_count_in_prompt": tool_count,
+            }, default=_json_default_serializer))
 
             # Add the current user message to the session history
             history.append({"role": "user", "content": msg})
@@ -350,6 +421,12 @@ async def agent_websocket(websocket: WebSocket):
                         # Accumulate assistant response into history for future turns
                         if event["type"] == "response":
                             history.append({"role": "assistant", "content": event["content"]})
+                            # Pipeline: memory save
+                            await websocket.send_text(json.dumps({
+                                "type": "pipeline", "level": "pipeline",
+                                "step": "memory_save_start",
+                                "slug": f"chat/{_session_id[:8]}",
+                            }, default=_json_default_serializer))
                             # Asynchronously save the completed chat turn to memory
                             asyncio.create_task(_save_chat_to_memory(
                                 db, _user_id, _session_id, _user_message, event["content"], _parent_id,
@@ -425,6 +502,7 @@ async def _save_chat_to_memory(
 ) -> None:
     """Save chat conversation to memory as visible tool interaction."""
     try:
+        from app.api.chat import _emit_to_visualizers
         slug = f"chat/{session_id[:8]}"
         await db.memory_upsert(
             user_id, slug, "meeting",
@@ -445,6 +523,15 @@ async def _save_chat_to_memory(
             tool_name="memory_save",
             metadata=json.dumps({"brain": True, "slug": slug}, default=_json_default_serializer), # Use custom serializer
         )
+        # Emit visualizer events
+        await _emit_to_visualizers(session_id, {
+            "type": "pipeline", "level": "pipeline",
+            "step": "memory_save_end", "slug": slug,
+        })
+        await _emit_to_visualizers(session_id, {
+            "type": "db", "level": "db",
+            "op": "memory_upsert", "slug": slug, "page_type": "meeting",
+        })
         logger.debug("Saved chat to memory: %s", slug)
     except Exception as e:
         logger.warning("Failed to save chat to memory: %s", e)

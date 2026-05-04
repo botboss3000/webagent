@@ -66,7 +66,14 @@ export function connectAgent() {
     // Ignore heartbeat pings from server
     if (event.type === 'ping') return;
 
-    logTool(event);
+    try { logTool(event); } catch(e) { /* toolLog panel not mounted */ }
+
+    // Forward to loop visualizer if registered
+    if (app._loopHandler) {
+      try { app._loopHandler(event); } catch(e) {
+        console.error('[agentWs] loop handler error:', e);
+      }
+    }
 
     switch (event.type) {
       case 'stream':

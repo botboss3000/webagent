@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="/ui/css/app1.css">
 <link rel="stylesheet" href="/ui/css/app2.css">
 <link rel="stylesheet" href="/ui/css/app3.css">
+<link rel="stylesheet" href="/ui/css/loop.css">
 </head>
 <body>
 
@@ -25,6 +26,7 @@
   <div class="status-group tab-btn-group">
     <button class="tab-btn" data-tab="terminal">⌘ Terminal</button>
     <button class="tab-btn active" data-tab="stream">📡 Stream</button>
+    <button class="tab-btn" data-tab="loop">🔄 Loop</button>
     <button class="tab-btn" data-tab="database">📊 Database</button>
   </div>
 
@@ -64,6 +66,20 @@
         </div>
         <div id="stream-list">
           <div class="db-hint">Switch to this tab to start streaming interactions</div>
+        </div>
+      </div>
+    </div>
+    <div id="tab-loop" class="tab-content">
+      <div id="loop-container">
+        <div id="loop-toolbar">
+          <span style="color:#565f89;font-size:11px;">🔄 Pipeline</span>
+          <button class="loop-filter-btn" data-level="basic">Basic</button>
+          <button class="loop-filter-btn active" data-level="detailed">Detailed</button>
+          <button class="loop-filter-btn" data-level="debug">Debug</button>
+          <button id="loop-autoscroll" class="active">Auto-scroll ✓</button>
+        </div>
+        <div id="loop-list">
+          <div class="loop-hint">Pipeline visualizer — connect to see agent flow</div>
         </div>
       </div>
     </div>

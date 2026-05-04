@@ -12,11 +12,12 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+const MAX_JSON_DEPTH = 20;
+
 function renderJsonTree(data, indent) {
   if (indent === undefined) indent = 0;
+  if (indent > MAX_JSON_DEPTH) return '<span class="json-str">"... (truncated)"</span>';
   const padInner = '  '.repeat(indent + 1);
-
-  if (data === null) return '<span class="json-null">null</span>';
   if (typeof data === 'boolean') return `<span class="json-bool">${data}</span>`;
   if (typeof data === 'number') return `<span class="json-num">${data}</span>`;
   if (typeof data === 'string') {

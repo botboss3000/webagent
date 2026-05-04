@@ -31,6 +31,12 @@ async def chat(request: ChatRequest):
             metadata=json.dumps({"source": "web_portal_chat"}),
         )
 
+        # ── Emit user message to visualizer listeners ──
+        await _emit_to_visualizers(request.session_id, {
+            "type": "user_message", "level": "user",
+            "content": request.message, "id": user_interaction_id,
+        })
+
         # Fetch context documents; if empty, copy defaults for this user
         context_docs = await db.fetch_context_documents(
             request.user_id,
@@ -44,9 +50,34 @@ async def chat(request: ChatRequest):
                     ["agent", "user", "skills", "tools", "tasks", "memory", "project", "jobs"],
                 )
 
+        # ── Pipeline: context loaded ──
+        doc_types = list(set(
+            (d.get("context_type") or d.get("doc_type") or "")
+            for d in context_docs if d.get("context_type") or d.get("doc_type")
+        ))
+        await _emit_to_visualizers(request.session_id, {
+            "type": "pipeline", "level": "pipeline",
+            "step": "load_context", "count": len(context_docs),
+            "types": doc_types,
+        })
+
         # ── PHASE 1: Brain-first lookup (visible as tool interaction) ──
+        await _emit_to_visualizers(request.session_id, {
+            "type": "pipeline", "level": "pipeline",
+            "step": "memory_search_start", "query": request.message, "limit": 5,
+        })
+
         brain_results = await db.memory_search(request.user_id, request.message, limit=5)
         brain_context = None
+
+        # ── Pipeline: memory search results ──
+        await _emit_to_visualizers(request.session_id, {
+            "type": "pipeline", "level": "pipeline",
+            "step": "memory_search_end", "results_count": len(brain_results),
+            "results": [{"slug": r["slug"], "title": r.get("title", r["slug"]),
+                         "score": round(r.get("rank", 0), 2)}
+                        for r in (brain_results or [])],
+        })
 
         # Format brain context for system prompt injection
         if brain_results:
@@ -85,16 +116,42 @@ async def chat(request: ChatRequest):
             }),
         )
 
+        # Emit memory_search as a tool result
+        await _emit_to_visualizers(request.session_id, {
+            "type": "tool_result", "level": "agent",
+            "tool": "memory_search",
+            "result": search_content[:2000],
+            "duration_ms": 0,
+            "error": False,
+        })
+
         # Build system prompt with brain context + dynamic tools
         system_prompt = await build_system_prompt(
             context_docs, brain_context, request.user_id
         )
+
+        # ── Pipeline: prompt built ──
+        from app.tools.loader import load_tools
+        tools = await load_tools(request.user_id)
+        tool_count_for_prompt = len(tools)
+        section_names = ["SYSTEM"]  # Simplified section count — actual sections are dynamic
+
+        await _emit_to_visualizers(request.session_id, {
+            "type": "pipeline", "level": "pipeline",
+            "step": "build_prompt", "sections": section_names,
+            "brain_injected": bool(brain_context),
+            "tool_count_in_prompt": tool_count_for_prompt,
+        })
 
         # Convert history to the format expected by our agent
         history = []
         if request.history:
             for msg in request.history:
                 history.append({"role": msg.role, "content": msg.content})
+
+        # Create event callback that pushes to visualizer listeners
+        async def event_callback(event: Dict[str, Any]):
+            await _emit_to_visualizers(request.session_id, event)
 
         # Run the agent loop
         assistant_reply = await run_agent_loop(
@@ -104,6 +161,7 @@ async def chat(request: ChatRequest):
             system_prompt=system_prompt,
             history=history,
             parent_interaction_id=parent_id,
+            event_callback=event_callback,
         )
 
         # ── PHASE 3: Background memory save (visible tool interaction) ──
@@ -111,6 +169,12 @@ async def chat(request: ChatRequest):
             db, request.user_id, request.session_id,
             request.message, assistant_reply, parent_id,
         ))
+
+        # ── Pipeline: memory save (async, fire-and-forget notification) ──
+        await _emit_to_visualizers(request.session_id, {
+            "type": "pipeline", "level": "pipeline",
+            "step": "memory_save_start", "slug": f"chat/{request.session_id[:8]}",
+        })
 
         return ChatResponse(
             reply=assistant_reply,
@@ -152,6 +216,52 @@ async def _save_chat_to_memory(
             tool_name="memory_save",
             metadata=json.dumps({"brain": True, "slug": slug}),
         )
+
+        # Emit to visualizer
+        await _emit_to_visualizers(session_id, {
+            "type": "pipeline", "level": "pipeline",
+            "step": "memory_save_end", "slug": slug,
+        })
+        await _emit_to_visualizers(session_id, {
+            "type": "db", "level": "db",
+            "op": "memory_upsert", "slug": slug, "page_type": "meeting",
+        })
         logger.debug("Saved chat to memory: %s", slug)
     except Exception as e:
         logger.warning("Failed to save chat to memory: %s", e)
+
+
+# ── Visualizer listener registry ──
+# WebSocket subscribers that receive pipeline events for HTTP chat sessions.
+_visualizer_listeners: Dict[str, List[Any]] = {}  # session_id → list of WebSocket objects
+
+
+def register_visualizer_listener(session_id: str, websocket: Any):
+    """Register a WebSocket as a visualizer listener for a session."""
+    if session_id not in _visualizer_listeners:
+        _visualizer_listeners[session_id] = []
+    _visualizer_listeners[session_id].append(websocket)
+
+
+def unregister_visualizer_listener(session_id: str, websocket: Any):
+    """Remove a WebSocket from the visualizer listeners."""
+    if session_id in _visualizer_listeners:
+        _visualizer_listeners[session_id] = [
+            ws for ws in _visualizer_listeners[session_id] if ws is not websocket
+        ]
+        if not _visualizer_listeners[session_id]:
+            del _visualizer_listeners[session_id]
+
+
+async def _emit_to_visualizers(session_id: str, event: Dict[str, Any]):
+    """Push an event to all visualizer listeners for a session."""
+    import json
+    listeners = _visualizer_listeners.get(session_id, [])
+    disconnected = []
+    for ws in listeners:
+        try:
+            await ws.send_text(json.dumps(event))
+        except Exception:
+            disconnected.append(ws)
+    for ws in disconnected:
+        unregister_visualizer_listener(session_id, ws)

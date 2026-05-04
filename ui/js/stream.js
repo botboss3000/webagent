@@ -290,9 +290,36 @@ function escapeHtml(str) {
 }
 
 function renderContent(text) {
-  const asHtml = formatJsonAsHtml(text);
-  if (asHtml) return asHtml;
+  // Try full text as JSON first
+  try {
+    const asHtml = formatJsonAsHtml(text);
+    if (asHtml) return asHtml;
+  } catch (e) { /* fall through */ }
+
+  // Detect "[Tool calls: <json>]" embedded anywhere in text
+  // Uses greedy .+ for inner JSON to handle nested brackets
+  const tcMatch = text.match(/(.*?)\[Tool calls: (\[.+\])\](.*)/s);
+  if (tcMatch) {
+    const prefix = tcMatch[1];
+    const jsonStr = tcMatch[2];
+    const suffix = tcMatch[3];
+    try {
+      const jsonHtml = formatJsonAsHtml(jsonStr);
+      if (jsonHtml) {
+        const escapedPrefix = prefix ? escapeHtml(prefix) : '';
+        const escapedSuffix = suffix ? escapeHtml(suffix) : '';
+        return escapedPrefix +
+          `<span style="color:#565f89;font-weight:600;">[Tool calls:</span> ${jsonHtml}<span style="color:#565f89;">]</span>` +
+          escapedSuffix;
+      }
+    } catch (e) { /* fall through */ }
+  }
+
   return escapeHtml(text);
+}
+
+function toggleInput(entry, rawData) {
+  let section = entry.querySelector('.str-input-section');
   if (section) {
     section.remove();
     entry.querySelector('.str-input-btn').style.color = '#3b4261';

@@ -2,11 +2,13 @@
 Streaming agent loop — yields events instead of returning a single string.
 
 Events:
-  {"type": "stream", "content": "..."}       — token-by-token LLM output
-  {"type": "tool_call", "tool": "...", "args": {...}}     — agent invoked a tool
-  {"type": "tool_result", "tool": "...", "result": "...", "duration_ms": N}  — tool returned
-  {"type": "response", "content": "..."}     — final answer (no more tool calls)
-  {"type": "error", "message": "..."}        — something went wrong
+  {"type": "stream", "level": "agent", "content": "..."}       — token-by-token LLM output
+  {"type": "tool_call", "level": "agent", "tool": "...", "args": {...}}     — agent invoked a tool
+  {"type": "tool_result", "level": "agent", "tool": "...", "result": "...", "duration_ms": N}  — tool returned
+  {"type": "response", "level": "agent", "content": "..."}     — final answer (no more tool calls)
+  {"type": "error", "level": "agent", "message": "..."}        — something went wrong
+  {"type": "pipeline", "level": "pipeline", "step": "...", ...} — internal agent logic
+  {"type": "db", "level": "db", "op": "...", ...}              — database operations
 """
 
 import asyncio
@@ -24,6 +26,10 @@ from app.db import get_db
 logger = logging.getLogger(__name__)
 
 _client = None
+
+# ── Destructive tools that require confirmation ──
+DESTRUCTIVE_TOOLS = {"edit_source", "write_source", "delete_source",
+                     "run_command", "restart_server", "create_tool"}
 
 
 def _get_client():
@@ -79,6 +85,40 @@ async def validate_tool_call(name: str, args: dict, tools: Dict[str, Any]) -> Op
     return None
 
 
+def _check_user_confirmed(messages: List[Dict[str, Any]], tool_name: str) -> bool:
+    """
+    Check if the user confirmed a destructive tool call.
+    Scans recent conversation for confirmation-seeking language from the model
+    followed by user approval.
+    """
+    # Look at the last assistant message + last user message
+    last_assistant_content = ""
+    last_user_content = ""
+    for msg in reversed(messages):
+        if msg.get("role") == "user" and not last_user_content:
+            last_user_content = (msg.get("content") or "").lower()
+        if msg.get("role") == "assistant" and not last_assistant_content:
+            last_assistant_content = (msg.get("content") or "").lower()
+
+    # Check if the model asked for confirmation
+    ask_keywords = ["would you like me to", "should i", "shall i",
+                     "let me know if", "do you want me to",
+                     "confirm", "approve", "ok to", "okay to",
+                     "proceed", "go ahead and"]
+    model_asked = any(kw in last_assistant_content for kw in ask_keywords)
+
+    if not model_asked:
+        # Model didn't explicitly ask — check if user proactively confirmed
+        confirm_keywords = ["yes", "go ahead", "proceed", "approved", "ok", "okay",
+                            "sure", "do it", "confirm", "go for it", "please do"]
+        return any(kw in last_user_content for kw in confirm_keywords)
+
+    # Model asked — check if user approved
+    confirm_keywords = ["yes", "go ahead", "proceed", "approved", "ok", "okay",
+                        "sure", "do it", "confirm", "go for it", "please do"]
+    return any(kw in last_user_content for kw in confirm_keywords)
+
+
 async def stream_agent_events(
     user_id: str,
     session_id: str,
@@ -96,7 +136,17 @@ async def stream_agent_events(
     """
     from app.tools.loader import load_tools
 
+    model_name = os.environ.get("OPENROUTER_MODEL", "deepseek/deepseek-v3.2")
+
+    load_start = time.time()
     tools = await load_tools(user_id)
+    load_duration = int((time.time() - load_start) * 1000)
+
+    # ── Pipeline: tools loaded ──
+    yield {"type": "pipeline", "level": "pipeline",
+           "step": "load_tools", "count": len(tools),
+           "names": list(tools.keys()),
+           "duration_ms": load_duration}
 
     # Build message list
     messages: List[Dict[str, Any]] = []
@@ -114,6 +164,10 @@ async def stream_agent_events(
             await _check_interrupt(interrupt_event)
             turn_count += 1
 
+            # ── Pipeline: turn start ──
+            yield {"type": "pipeline", "level": "pipeline",
+                   "step": "turn_start", "turn": turn_count, "max_turns": max_turns}
+
             # Build tool definitions from loaded tools
             tool_definitions = []
             for name, info in tools.items():
@@ -128,12 +182,16 @@ async def stream_agent_events(
                     },
                 })
 
+            # ── Pipeline: tool definitions built ──
+            yield {"type": "pipeline", "level": "pipeline",
+                   "step": "tool_defs_built", "count": len(tool_definitions)}
+
             # Helper to build metadata (lightweight)
             llm_start_time = time.time()
 
             def _build_meta(role: str) -> str:
                 return json.dumps({
-                    "model": os.environ.get("OPENROUTER_MODEL", "deepseek/deepseek-v3.2"),
+                    "model": model_name,
                     "turn": turn_count,
                     "duration_ms": int((time.time() - llm_start_time) * 1000),
                     "role": role,
@@ -145,11 +203,17 @@ async def stream_agent_events(
 
             await _check_interrupt(interrupt_event)
 
+            # ── Pipeline: LLM call start ──
+            yield {"type": "pipeline", "level": "pipeline",
+                   "step": "llm_call_start", "model": model_name,
+                   "message_count": len(messages),
+                   "turn": turn_count}
+
             # ── Stream the LLM response ──
-            model = os.environ.get("OPENROUTER_MODEL", "deepseek/deepseek-v3.2")
+            llm_start = time.time()
             try:
                 stream = await _get_client().chat.completions.create(
-                    model=model,
+                    model=model_name,
                     messages=messages,
                     tools=tool_definitions if tool_definitions else None,
                     tool_choice="auto" if tool_definitions else None,
@@ -158,11 +222,13 @@ async def stream_agent_events(
                     stream=True,
                 )
             except Exception as e:
-                yield {"type": "error", "message": f"LLM call failed: {e}"}
+                yield {"type": "error", "level": "agent", "message": f"LLM call failed: {e}"}
                 return
 
             collected_content = ""
             collected_tool_calls: Dict[int, Any] = {}
+            input_tokens = None
+            output_tokens = None
 
             async for chunk in stream:
                 await _check_interrupt(interrupt_event)
@@ -172,9 +238,14 @@ async def stream_agent_events(
                 if not delta:
                     continue
 
+                # Capture token usage if available
+                if chunk.usage:
+                    input_tokens = chunk.usage.prompt_tokens
+                    output_tokens = chunk.usage.completion_tokens
+
                 if delta.content:
                     collected_content += delta.content
-                    yield {"type": "stream", "content": delta.content}
+                    yield {"type": "stream", "level": "agent", "content": delta.content}
 
                 if delta.tool_calls:
                     for tc in delta.tool_calls:
@@ -189,6 +260,15 @@ async def stream_agent_events(
                                 if tc.function.arguments:
                                     existing.function.arguments = (existing.function.arguments or "") + tc.function.arguments
 
+            llm_duration = int((time.time() - llm_start) * 1000)
+
+            # ── Pipeline: LLM call end ──
+            tool_calls_data = list(collected_tool_calls.values()) if collected_tool_calls else None
+            yield {"type": "pipeline", "level": "pipeline",
+                   "step": "llm_call_end", "duration_ms": llm_duration,
+                   "input_tokens": input_tokens, "output_tokens": output_tokens,
+                   "has_tool_calls": bool(tool_calls_data)}
+
             # ── Handle tool calls ──
             if collected_tool_calls:
                 # Build the assistant message for the message list
@@ -199,6 +279,15 @@ async def stream_agent_events(
                         "type": "function",
                         "function": {"name": tc.function.name, "arguments": tc.function.arguments or "{}"},
                     })
+
+                # Emit tool_call events
+                for tc in collected_tool_calls.values():
+                    tool_name = tc.function.name
+                    try:
+                        tool_args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                    except json.JSONDecodeError:
+                        tool_args = {}
+                    yield {"type": "tool_call", "level": "agent", "tool": tool_name, "args": tool_args}
 
                 messages.append({
                     "role": "assistant",
@@ -216,15 +305,25 @@ async def stream_agent_events(
                     assistant_content += f"\n\n[Tool calls: {tool_calls_summary}]"
                 meta_asst = _build_meta("assistant")
                 inp = _build_input()
+                db_start = time.time()
                 asst_id = await get_db().insert_interaction(
                     user_id, session_id, role="assistant", content=assistant_content,
                     parent_id=parent_interaction_id,
                     metadata=meta_asst,
                     input_data=inp,
                 )
+                db_dur = int((time.time() - db_start) * 1000)
+                yield {"type": "db", "level": "db",
+                       "op": "insert_interaction", "role": "assistant",
+                       "tool_name": None, "id": asst_id, "ms": db_dur}
+
+                # ── Pipeline: validation start ──
+                yield {"type": "pipeline", "level": "pipeline",
+                       "step": "validate_start", "tool_count": len(collected_tool_calls)}
 
                 # 1. Validate ALL tool calls before any execution
                 valid_calls: List[Any] = []
+                blocked_calls: List[Any] = []  # guardrail-blocked tools
                 for idx, tc in sorted(collected_tool_calls.items()):
                     await _check_interrupt(interrupt_event)
                     tool_name = tc.function.name
@@ -234,11 +333,17 @@ async def stream_agent_events(
                         tool_args = {}
 
                     validation_error = await validate_tool_call(tool_name, tool_args, tools)
+
+                    # ── Pipeline: validation result ──
+                    yield {"type": "pipeline", "level": "pipeline",
+                           "step": "validate_result", "tool": tool_name,
+                           "passed": validation_error is None,
+                           "error": str(validation_error) if validation_error else None}
+
                     if validation_error:
-                        yield {"type": "tool_call", "tool": tool_name, "args": tool_args}
                         error_json = json.dumps(validation_error)
                         yield {
-                            "type": "tool_result",
+                            "type": "tool_result", "level": "agent",
                             "tool": tool_name,
                             "result": error_json[:2000],
                             "error": True,
@@ -249,20 +354,78 @@ async def stream_agent_events(
                         messages.append(tool_msg)
                         # Persist: save validation error to DB
                         inp = _build_input()
-                        await get_db().insert_interaction(
+                        db_start = time.time()
+                        inter_id = await get_db().insert_interaction(
                             user_id, session_id, role="tool", content=tool_msg["content"],
                             parent_id=asst_id,
                             tool_call_id=tc.id,
                             metadata=json.dumps({"success": False, "duration_ms": 0, "input_params": tool_args, "error_message": "Validation failed"}),
                             input_data=inp,
                         )
+                        db_dur = int((time.time() - db_start) * 1000)
+                        yield {"type": "db", "level": "db",
+                               "op": "insert_interaction", "role": "tool",
+                               "tool_name": tool_name, "id": inter_id, "ms": db_dur}
                     else:
-                        valid_calls.append((idx, tc, tool_name, tool_args))
+                        # ── Guardrail check for destructive tools ──
+                        if tool_name in DESTRUCTIVE_TOOLS:
+                            yield {"type": "pipeline", "level": "pipeline",
+                                   "step": "guardrail_check", "tool": tool_name,
+                                   "status": "requires_confirmation",
+                                   "message": f"Tool '{tool_name}' requires user confirmation per system prompt"}
+
+                            user_confirmed = _check_user_confirmed(messages, tool_name)
+
+                            if not user_confirmed:
+                                yield {"type": "pipeline", "level": "pipeline",
+                                       "step": "guardrail_blocked", "tool": tool_name,
+                                       "status": "blocked",
+                                       "message": f"Tool '{tool_name}' BLOCKED: user confirmation not detected in conversation"}
+                                blocked_calls.append((idx, tc, tool_name, tool_args))
+                                # Emit blocked tool result
+                                yield {
+                                    "type": "tool_result", "level": "agent",
+                                    "tool": tool_name,
+                                    "result": json.dumps({"status": "blocked", "message": f"Tool '{tool_name}' requires user confirmation before execution."}),
+                                    "duration_ms": 0,
+                                    "error": True,
+                                    "error_type": "guardrail_blocked",
+                                    "recoverable": True,
+                                }
+                                tool_msg = {"role": "tool", "content": f"Tool '{tool_name}' was blocked because user confirmation is required for destructive operations.", "tool_call_id": tc.id}
+                                messages.append(tool_msg)
+                                # Persist blocked tool
+                                inp = _build_input()
+                                db_start = time.time()
+                                inter_id = await get_db().insert_interaction(
+                                    user_id, session_id, role="tool", content=tool_msg["content"],
+                                    parent_id=asst_id,
+                                    tool_call_id=tc.id,
+                                    tool_name=tool_name,
+                                    metadata=json.dumps({"success": False, "duration_ms": 0, "input_params": tool_args, "error_message": "Guardrail blocked — requires confirmation"}),
+                                    input_data=inp,
+                                )
+                                db_dur = int((time.time() - db_start) * 1000)
+                                yield {"type": "db", "level": "db",
+                                       "op": "insert_interaction", "role": "tool",
+                                       "tool_name": tool_name, "id": inter_id, "ms": db_dur}
+                            else:
+                                yield {"type": "pipeline", "level": "pipeline",
+                                       "step": "guardrail_override", "tool": tool_name,
+                                       "status": "confirmed", "by": "user"}
+                                valid_calls.append((idx, tc, tool_name, tool_args))
+                        else:
+                            valid_calls.append((idx, tc, tool_name, tool_args))
 
                 await _check_interrupt(interrupt_event)
 
                 # 2. Execute valid tools concurrently
                 if valid_calls:
+                    # ── Pipeline: execute batch start ──
+                    yield {"type": "pipeline", "level": "pipeline",
+                           "step": "execute_batch_start", "tool_count": len(valid_calls),
+                           "tools": [name for _, _, name, _ in valid_calls]}
+
                     async def execute_one(name: str, args: dict, tc_id: str) -> dict:
                         start = time.time()
                         try:
@@ -280,6 +443,11 @@ async def stream_agent_events(
                             })
                             return {"tool_call_id": tc_id, "tool": name, "content": result_str, "duration_ms": duration_ms, "success": False, "error": te, "input_params": args}
 
+                    # Emit execute_start events before execution
+                    for _, _, tool_name, _ in valid_calls:
+                        yield {"type": "pipeline", "level": "pipeline",
+                               "step": "execute_start", "tool": tool_name}
+
                     tasks = [execute_one(name, args, tc.id) for _, tc, name, args in valid_calls]
                     results = await asyncio.gather(*tasks)
 
@@ -290,7 +458,7 @@ async def stream_agent_events(
                         te = result.get("error")
 
                         yield {
-                            "type": "tool_result",
+                            "type": "tool_result", "level": "agent",
                             "tool": tool_name,
                             "result": result["content"][:2000],
                             "duration_ms": result["duration_ms"],
@@ -298,6 +466,12 @@ async def stream_agent_events(
                             "error_type": te.error_type if te else None,
                             "recoverable": te.recoverable if te else None,
                         }
+
+                        # ── Pipeline: execute end ──
+                        yield {"type": "pipeline", "level": "pipeline",
+                               "step": "execute_end", "tool": tool_name,
+                               "duration_ms": result["duration_ms"],
+                               "success": success}
 
                         tool_exec_meta = json.dumps({
                             "success": success,
@@ -310,6 +484,7 @@ async def stream_agent_events(
                         messages.append(tool_msg)
                         # Persist: save tool result to DB
                         inp = _build_input()
+                        db_start = time.time()
                         inter_id = await get_db().insert_interaction(
                             user_id, session_id, role="tool", content=tool_msg["content"],
                             parent_id=asst_id,
@@ -318,13 +493,17 @@ async def stream_agent_events(
                             metadata=tool_exec_meta,
                             input_data=inp,
                         )
+                        db_dur = int((time.time() - db_start) * 1000)
+                        yield {"type": "db", "level": "db",
+                               "op": "insert_interaction", "role": "tool",
+                               "tool_name": tool_name, "id": inter_id, "ms": db_dur}
 
                         # Track skill execution
                         try:
                             db = get_db()
                             skill_id = await db.skill_get_id_by_name(user_id, tool_name)
                             if skill_id:
-                                await db.skill_track_execution(
+                                exec_id = await db.skill_track_execution(
                                     skill_id=skill_id,
                                     user_id=user_id,
                                     session_id=session_id,
@@ -335,12 +514,22 @@ async def stream_agent_events(
                                     input_params=tool_args,
                                     output_summary=result["content"][:200],
                                 )
+                                # ── DB: skill track ──
+                                rating_info = await db.skill_get_rating(skill_id)
+                                new_rating = rating_info.get("score") if rating_info else None
+                                yield {"type": "db", "level": "db",
+                                       "op": "skill_track", "tool": tool_name,
+                                       "success": success, "new_rating": new_rating}
                             else:
-                                # Skill not registered yet — skip silently
                                 pass
                         except Exception as track_err:
                             logger.debug(f"Skill tracking skipped for {tool_name}: {track_err}")
 
+                # ── Pipeline: check continue ──
+                will_continue = turn_count < max_turns
+                yield {"type": "pipeline", "level": "pipeline",
+                       "step": "check_continue", "turn": turn_count,
+                       "max_turns": max_turns, "will_continue": will_continue}
                 continue
 
             # ── No tool calls → final response ──
@@ -352,18 +541,28 @@ async def stream_agent_events(
             # Save to database
             meta_final = _build_meta("assistant")
             inp = _build_input()
-            await get_db().insert_interaction(
+            db_start = time.time()
+            inter_id = await get_db().insert_interaction(
                 user_id, session_id, role="assistant", content=collected_content,
                 parent_id=parent_interaction_id,
                 metadata=meta_final,
                 input_data=inp,
             )
+            db_dur = int((time.time() - db_start) * 1000)
+            yield {"type": "db", "level": "db",
+                   "op": "insert_interaction", "role": "assistant",
+                   "tool_name": None, "id": inter_id, "ms": db_dur}
 
-            yield {"type": "response", "content": collected_content}
+            yield {"type": "response", "level": "agent", "content": collected_content}
             return
 
+        # ── Max turns reached ──
+        yield {"type": "pipeline", "level": "pipeline",
+               "step": "max_turns_reached", "turn": turn_count,
+               "max_turns": max_turns,
+               "message": f"Reached maximum {max_turns} turns"}
         yield {
-            "type": "response",
+            "type": "response", "level": "agent",
             "content": "I've reached the maximum number of turns. What would you like to do next?",
         }
     except asyncio.CancelledError:
@@ -371,5 +570,5 @@ async def stream_agent_events(
         return
     except Exception as e:
         logger.error(f"stream_agent_events error: {e}", exc_info=True)
-        yield {"type": "error", "message": f"Unexpected error in agent loop: {e}"}
+        yield {"type": "error", "level": "agent", "message": f"Unexpected error in agent loop: {e}"}
         return

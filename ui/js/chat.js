@@ -30,9 +30,34 @@ function addChatBubble(role, text, extraClass, imageUrl) {
     img.style.border = '1px solid #444';
     bubble.appendChild(img);
   }
+  // Add stop button on streaming agent bubbles
+  if (role === 'agent' && extraClass === 'streaming') {
+    const stopBtn = document.createElement('button');
+    stopBtn.className = 'stop-btn';
+    stopBtn.textContent = '\ud83d\uded1';
+    stopBtn.title = 'Stop generation';
+    stopBtn.addEventListener('click', sendStopMessage);
+    bubble.appendChild(stopBtn);
+  }
   app.chatMessages.appendChild(bubble);
   app.chatMessages.scrollTop = app.chatMessages.scrollHeight;
   return bubble;
+}
+
+function sendStopMessage() {
+  // Show user's stop message
+  addChatBubble('user', '\ud83d\uded1 Stop');
+
+  if (!app.agentWs || app.agentWs.readyState !== WebSocket.OPEN) {
+    addChatBubble('agent', 'Cannot stop: agent disconnected.', 'error');
+    return;
+  }
+
+  app.agentWs.send(JSON.stringify({
+    message: 'stop',
+    session_id: app.currentSessionId,
+    user_id: app.currentUserId,
+  }));
 }
 
 function updateLastBubble(text, extraClass, imageUrl) {
@@ -50,6 +75,15 @@ function updateLastBubble(text, extraClass, imageUrl) {
       img.style.marginTop = '8px';
       img.style.border = '1px solid #444';
       last.appendChild(img);
+    }
+    // Add stop button if still streaming
+    if (extraClass === 'streaming') {
+      const stopBtn = document.createElement('button');
+      stopBtn.className = 'stop-btn';
+      stopBtn.textContent = '\ud83d\uded1';
+      stopBtn.title = 'Stop generation';
+      stopBtn.addEventListener('click', sendStopMessage);
+      last.appendChild(stopBtn);
     }
     if (extraClass) last.className = 'chat-bubble agent ' + extraClass;
     app.chatMessages.scrollTop = app.chatMessages.scrollHeight;
