@@ -4,7 +4,7 @@ A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional *
 
 ## Features
 
-- **Chat** — `POST /api/v1/chat`: non-streaming agent loop with tools; persists turns to **`interactions`** (not a separate `messages` table).
+- **Chat** — `POST /api/v1/chat` (and **`POST /api/v1/chat/stream`**): agent loop with tools; turns go to **`interactions`**. Prior turns for the same **`session_id`** are reloaded from the DB into the model context (browser refresh does not reset the conversation).
 - **WebSocket agent** — `GET` upgrade to `/api/v1/agent/ws`: streaming tokens, tool events, pipeline steps (**loopback clients only**).
 - **Context** — Prompt slices from `context_type` / `doc_type`; if a user has no rows, **`context_templates`** are copied into per-user context on first chat.
 - **Memory** — Brain-style lookup before each chat turn; optional background save of chat snippets into memory.
@@ -16,17 +16,58 @@ A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional *
 
 ## Architecture and module map
 
+### Unified Agent Engine
+
+The agent uses a single unified execution engine (`app/agent/loop.py`) that serves both streaming (WebSocket/SSE) and buffered (HTTP POST) requests:
+
+```text
+       [CLIENT]
+          |
+          | (Chooses Transport Protocol)
+          |
+          +-- (WebSocket) ----> [ app/api/agent.py ] (WS Route: live bidirectional)
+          |
+          +-- (HTTP SSE) -----> [ app/api/chat.py ]  (SSE Route: live unidirectional)
+          |
+          +-- (HTTP POST) ----> [ app/api/chat.py ]  (Sync Route: buffers until end)
+                                        |
+                                        v
+                            +--------------------------+
+                            | ONE UNIFIED ENGINE       |
+                            | (app/agent/loop.py)      |
+                            +--------------------------+
+                                        |
+                                        +--> 1. Build System Prompt & Fetch Memory
+                                        |
++------------------------------------+  +--> 2. While turn_count < max_turns:
+| INTERRUPT DB/CACHE                 |  |       |
+| Tracks flags for session_id        |  |       +-> Check Client Disconnect OR Interrupt Flag
++------------------------------------+  |       |    (If true: Break & Emit Interrupted)
+             ^                          |       |
+             |  (Sets Flag)             |       +-> Stream LLM Call (Tools = Auto)
+ [ HTTP POST /api/v1/chat/interrupt ]   |       |
+             ^                          |       +-> Validate Tool Calls & Check Guardrails
+             |                          |       |
+          [CLIENT]                      |       +-> Execute Tools in Parallel
+                                        |       |
+                                        |       +-> Track Skill Execution & Save to DB
+                                        |
+                                        +--> 3. Return Final Response
+                                        |
+                                        +--> 4. Async Background Memory Save
+```
+
 ### Backend (`app/`)
 
 | Module | Role |
 |--------|------|
 | **`main.py`** | FastAPI app: routers, CORS, no-cache for `/ui/`, **`StaticFiles`** for `/ui/` and `/screenshots`, **`GET /test`**, **`GET /health`**, favicon from `ui/favicon.svg`, **`POST /api/v1/restart`**, shutdown (browser + terminal). |
-| **`api/chat.py`** | **`POST /api/v1/chat`** — context load, memory search, prompt build, **`loop.run_agent_loop`**, **`interactions`**, optional memory persistence; pipeline events for visualizers. |
-| **`api/agent.py`** | **`WebSocket /api/v1/agent/ws`** — **`streaming_loop.stream_agent_events`**. |
+| **`api/chat.py`** | **`POST /api/v1/chat`**, **`POST /api/v1/chat/stream`**, **`POST /api/v1/chat/interrupt`** — context load, memory search, prompt build, **`session_history`** → **`loop.stream_agent_events`** / **`run_agent_loop_buffered`**, **`interactions`**; pipeline events for visualizers. |
+| **`api/agent.py`** | **`WebSocket /api/v1/agent/ws`** — **`loop.stream_agent_events`**; reloads session from **`interactions`** each message. |
 | **`api/terminal.py`** | **`WebSocket /api/v1/terminal/ws`** — browser shell (PTY / **`pywinpty`** on Windows). |
 | **`api/db_viewer.py`** | **`/api/v1/db/*`** — SQLite introspection; DB files under **`app/db/`** (default filename **`local.db`** for the UI query param `db=`). |
-| **`agent/loop.py`** | HTTP multi-turn loop: tool validation, parallel tool runs where applicable. |
-| **`agent/streaming_loop.py`** | WebSocket streaming loop; structured tool/pipeline events. |
+| **`agent/loop.py`** | Unified multi-turn loop (streaming + buffered): tool validation, parallel tool runs, pipeline events. |
+| **`agent/session_history.py`** | Maps **`interactions`** rows → OpenAI-style **`messages`** for the active session (excludes internal memory tools). |
 | **`agent/prompts.py`** | System prompt from context, brain results, tools. |
 | **`agent/error_classifier.py`** | Structured tool errors (**used on the WebSocket / streaming path**). |
 | **`db/__init__.py`** | **`get_db()`** → **`SupabaseBackend`** or **`LocalBackend`** from persisted mode. |
@@ -47,6 +88,7 @@ Single-page app: **`index.html`**, CSS (`app1.css`, `app2.css`, `app3.css`, `loo
 ```
 webAgent/
 ├── app/                    # Python package (see table above)
+├── tests/                  # e.g. test_session_history.py (unittest)
 ├── ui/                     # Static UI + test_interface.html
 ├── scripts/
 │   ├── start_webAgent.sh   # Unix: cd to repo root, background uvicorn :8000
@@ -56,8 +98,7 @@ webAgent/
 ├── screenshots/            # Mounted at /screenshots
 ├── android/                # Optional Android wrapper (Java + embedded Python)
 ├── tasks/                  # Small Node helper (package.json, run-all.ts)
-├── temp/                   # Scratch non-Markdown files (see agent.md)
-├── temp-md-files/          # Scratch Markdown (see agent.md)
+├── temp/                   # Scratch files incl. Markdown drafts (see agent.md); roadmap: temp/FUTURE_PLANS.md
 ├── .github/workflows/      # CI (e.g. APK build)
 ├── webAgent.bat            # Windows: uvicorn loop + restart support
 ├── Dockerfile
@@ -141,7 +182,7 @@ Minimal JSON body:
 
 **`session_id`** must exist in **`sessions`** for that **`user_id`**.
 
-Optional fields include **`documents`** and **`history`** — see **`ChatRequest`** in **`app/models/schemas.py`**.
+Optional fields include **`documents`** and legacy **`history`** — see **`ChatRequest`** in **`app/models/schemas.py`**. **Model context is rebuilt from `interactions` in the DB** for that `session_id`; you do not need to resend **`history`** after a refresh (it is ignored for the transcript).
 
 Example:
 
@@ -177,7 +218,7 @@ Use any Python-capable host (Railway, Render, Fly.io, Docker, etc.). Set the sam
 
 ## Assistants and scratch files
 
-**`agent.md`** defines how coding assistants should treat this repo (terminology, **`temp/`** vs **`temp-md-files/`**, etc.) and **requires updating this README** when edits change layout, config, APIs, or features so the tree and sections stay accurate. Roadmap notes may live in **`temp-md-files/FUTURE_PLANS.md`** (not treated as product spec unless you say otherwise).
+**`agent.md`** defines how coding assistants should treat this repo (terminology, **`temp/`** for scratch artifacts, etc.) and **requires updating this README** when edits change layout, config, APIs, or features so the tree and sections stay accurate. Roadmap notes live in **`temp/FUTURE_PLANS.md`** (not treated as product spec unless you say otherwise).
 
 ## License
 

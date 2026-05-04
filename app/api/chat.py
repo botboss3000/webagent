@@ -3,16 +3,34 @@
 import json
 import logging
 from typing import List, Any, Dict
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from app.models.schemas import ChatRequest, ChatResponse
 from app.db import get_db
 from app.agent.prompts import build_system_prompt
 
-from app.agent.loop import run_agent_loop
+from app.agent.loop import run_agent_loop_buffered, stream_agent_events
+from app.agent.session_history import build_openai_history_from_session
 import asyncio
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
+
+class InterruptRequest(BaseModel):
+    session_id: str
+
+@router.post("/interrupt")
+async def interrupt_chat(request: InterruptRequest):
+    """Request an interruption for an ongoing chat session."""
+    try:
+        db = get_db()
+        await db.set_interrupt(request.session_id)
+        return {"status": "ok", "message": "Interrupt requested."}
+    except Exception as e:
+        logger.error(f"Error setting interrupt: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.post("", response_model=ChatResponse)
@@ -155,18 +173,19 @@ async def chat(request: ChatRequest):
             "tool_count_in_prompt": tool_count_for_prompt,
         })
 
-        # Convert history to the format expected by our agent
-        history = []
-        if request.history:
-            for msg in request.history:
-                history.append({"role": msg.role, "content": msg.content})
+        # DB-backed conversation history (same session survives browser refresh)
+        exclude_ids = {user_interaction_id} if user_interaction_id else set()
+        history = await build_openai_history_from_session(
+            db, request.user_id, request.session_id,
+            exclude_interaction_ids=exclude_ids,
+        )
 
         # Create event callback that pushes to visualizer listeners
         async def event_callback(event: Dict[str, Any]):
             await _emit_to_visualizers(request.session_id, event)
 
         # Run the agent loop
-        assistant_reply = await run_agent_loop(
+        assistant_reply = await run_agent_loop_buffered(
             user_id=request.user_id,
             session_id=request.session_id,
             user_message=request.message,
@@ -198,6 +217,148 @@ async def chat(request: ChatRequest):
     except Exception as e:
         logger.error(f"Chat endpoint error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/stream")
+async def chat_stream(request: ChatRequest, fastapi_request: Request):
+    """
+    Process a chat message using Server-Sent Events (SSE).
+    """
+    db = get_db()
+    
+    # Save user message and get its ID for parent linking
+    user_interaction_id = await db.insert_interaction(
+        request.user_id, request.session_id, role="user", content=request.message,
+        metadata=json.dumps({"source": "web_portal_chat_sse"}),
+    )
+
+    async def event_generator():
+        # Fetch context documents
+        context_docs = await db.fetch_context_documents(
+            request.user_id,
+            ["agent", "user", "skills", "tools", "tasks", "memory", "project", "jobs"],
+        )
+        if not context_docs:
+            copied = await db.copy_defaults_to_user(request.user_id)
+            if copied > 0:
+                context_docs = await db.fetch_context_documents(
+                    request.user_id,
+                    ["agent", "user", "skills", "tools", "tasks", "memory", "project", "jobs"],
+                )
+
+        doc_types = list(set(
+            (d.get("context_type") or d.get("doc_type") or "")
+            for d in context_docs if d.get("context_type") or d.get("doc_type")
+        ))
+        yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'load_context', 'count': len(context_docs), 'types': doc_types})}\n\n"
+
+        # ── PHASE 1: Brain-first lookup ──
+        yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_search_start', 'query': request.message, 'limit': 5})}\n\n"
+
+        brain_results = await db.memory_search(request.user_id, request.message, limit=5)
+        brain_context = None
+
+        yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_search_end', 'results_count': len(brain_results), 'results': [{'slug': r['slug'], 'title': r.get('title', r['slug']), 'score': round(r.get('rank', 0), 2)} for r in (brain_results or [])]})}\n\n"
+
+        if brain_results:
+            lines = []
+            for r in brain_results:
+                slug = r.get("slug", "?")
+                title = r.get("title", slug)
+                ct = r.get("compiled_truth", "")[:300]
+                rank = r.get("rank", 0)
+                lines.append(f"## {slug} — {title} (score: {rank:.2f})")
+                if ct:
+                    lines.append(ct)
+                lines.append("")
+            brain_context = "\n".join(lines)
+
+        search_content = json.dumps({
+            "query": request.message,
+            "results": [
+                {"slug": r["slug"], "title": r.get("title",""), "score": round(r.get("rank", 0), 2), "snippet": r.get("compiled_truth", "")[:150]}
+                for r in (brain_results or [])
+            ],
+            "count": len(brain_results or []),
+        }, indent=2)
+        parent_id = await db.insert_interaction(
+            request.user_id, request.session_id, role="tool",
+            content=search_content,
+            parent_id=user_interaction_id,
+            tool_name="memory_search",
+            metadata=json.dumps({
+                "count": len(brain_results or []),
+                "brain": True,
+                "has_results": bool(brain_results),
+            }),
+        )
+
+        yield f"data: {json.dumps({'type': 'tool_result', 'level': 'agent', 'tool': 'memory_search', 'result': search_content[:2000], 'duration_ms': 0, 'error': False})}\n\n"
+
+        agent = await db.get_agent_for_user(request.user_id)
+        if agent is None:
+            agent = await db.create_agent_for_user(request.user_id)
+            yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'agent_assigned', 'agent_id': agent['id'], 'max_turn_count': agent['max_turn_count']})}\n\n"
+
+        system_prompt = await build_system_prompt(
+            context_docs, brain_context, request.user_id,
+            agent_system_prompt=agent.get("system_prompt"),
+        )
+
+        from app.tools.loader import load_tools
+        tools = await load_tools(request.user_id)
+        
+        yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'build_prompt', 'sections': ['SYSTEM'], 'brain_injected': bool(brain_context), 'tool_count_in_prompt': len(tools)})}\n\n"
+
+        exclude_ids = {user_interaction_id} if user_interaction_id else set()
+        history = await build_openai_history_from_session(
+            db, request.user_id, request.session_id,
+            exclude_interaction_ids=exclude_ids,
+        )
+
+        q = asyncio.Queue()
+
+        async def run_agent_task():
+            assistant_reply = ""
+            try:
+                async for event in stream_agent_events(
+                    user_id=request.user_id,
+                    session_id=request.session_id,
+                    user_message=request.message,
+                    system_prompt=system_prompt,
+                    history=history,
+                    parent_interaction_id=parent_id,
+                    max_turns=agent["max_turn_count"],
+                ):
+                    await q.put(event)
+                    
+                    if event["type"] == "response":
+                        assistant_reply = event["content"]
+                    elif event["type"] == "error" and not assistant_reply:
+                        assistant_reply = f"I encountered an error: {event['message']}"
+                    elif event["type"] == "interrupted" and not assistant_reply:
+                        assistant_reply = f"I was interrupted: {event['message']}"
+
+                asyncio.create_task(_save_chat_to_memory(
+                    db, request.user_id, request.session_id,
+                    request.message, assistant_reply, parent_id,
+                ))
+
+                await q.put({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_save_start', 'slug': f'chat/{request.session_id[:8]}'})
+            finally:
+                await q.put(None) # Signal end of stream
+        
+        # Start agent loop in the background!
+        asyncio.create_task(run_agent_task())
+
+        # Stream from the queue
+        while True:
+            event = await q.get()
+            if event is None:
+                break
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 async def _save_chat_to_memory(

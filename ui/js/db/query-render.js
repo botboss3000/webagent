@@ -55,24 +55,41 @@ function renderTableData(result, silent) {
   const curSortCol = document.getElementById('db-sort-col').value;
   const curSortDir = document.getElementById('db-sort-dir').value;
 
+  // Column width strategy: name-width for most, overrides for a few
+  function getColWidth(table, col) {
+    // Hard overrides — fixed 300px
+    const contentTables = ['interactions', 'context_defaults', 'context_templates', 'context'];
+    if (table === 'interactions' && col === 'input') return '300px';
+    if (contentTables.includes(table) && col === 'content') return '300px';
+    // Already user-resized via drag?
+    if (app.COL_WIDTHS[col]) return app.COL_WIDTHS[col];
+    // Default: width ≈ column name text (mono 12px ≈ 7.2px/char + padding)
+    const px = Math.max(40, col.length * 7.5 + 20);
+    return Math.round(px) + 'px';
+  }
+  function isFixedCol(table, col) {
+    const fixedCols = ['interactions/input', 'interactions/content', 'context_defaults/content', 'context_templates/content', 'context/content'];
+    return fixedCols.includes(table + '/' + col);
+  }
+
   let html = '<table class="db-table"><thead>';
 
   // Header row (clickable to sort, draggable to reorder)
   html += '<tr>';
   for (const col of displayCols) {
-    const isInput = result.table === 'interactions' && col === 'input';
-    const w = isInput ? '300px' : app.COL_WIDTHS[col];
+    const w = getColWidth(result.table, col);
     const style = w ? ` style="width:${w};min-width:${w};max-width:${w}"` : '';
     const isActive = col === curSortCol;
     const activeAsc = isActive && curSortDir === 'ASC';
     const activeDesc = isActive && curSortDir === 'DESC';
+    const noResize = isFixedCol(result.table, col);
     html += `<th class="db-th" data-col="${col}"${style} draggable="true">
       <span class="th-text">${col}</span>
       <span class="th-sort-arrows">
         <span class="th-sort-arrow th-sort-asc${activeAsc ? ' active' : ''}" title="Sort ascending">\u25B2</span>
         <span class="th-sort-arrow th-sort-desc${activeDesc ? ' active' : ''}" title="Sort descending">\u25BC</span>
       </span>
-      ${isInput ? '' : '<span class="th-resize"></span>'}
+      ${noResize ? '' : '<span class="th-resize"></span>'}
     </th>`;
   }
   html += '</tr>';
@@ -99,8 +116,7 @@ function renderTableData(result, silent) {
     html += `<tr class="${rowClass}" data-ri="${ri}"${trStyle}>`;
     for (const col of displayCols) {
       const val = row[col];
-      const isInput = result.table === 'interactions' && col === 'input';
-      const w = isInput ? '300px' : app.COL_WIDTHS[col];
+      const w = getColWidth(result.table, col);
       const style = w ? ` style="width:${w};min-width:${w};max-width:${w}"` : '';
       const cls = val === null ? 'col-null' : '';
       const { html: display, isJson } = fmtCell(val);

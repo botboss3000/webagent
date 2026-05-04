@@ -17,7 +17,8 @@ from websockets.exceptions import ConnectionClosedOK # Added for handling WebSoc
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.agent.prompts import build_system_prompt
-from app.agent.streaming_loop import stream_agent_events
+from app.agent.loop import stream_agent_events
+from app.agent.session_history import build_openai_history_from_session
 from app.db import get_db
 from app.api.chat import register_visualizer_listener, unregister_visualizer_listener
 
@@ -69,8 +70,6 @@ async def agent_websocket(websocket: WebSocket):
     # Session-level state, initialized on first message received
     session_id: Optional[str] = None
     user_id: Optional[str] = None
-    # All messages, including partial streaming responses, are accumulated here for context.
-    history: List[Dict[str, str]] = []
 
     # Queue for incoming user messages from the WebSocket reader task
     user_message_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
@@ -264,9 +263,8 @@ async def agent_websocket(websocket: WebSocket):
                 }, default=_json_default_serializer))
             max_turns = agent["max_turn_count"]
 
-            # Handle reset flag: clear history if client requests it
-            if current_message_data.get("reset"):
-                history = []
+            # reset=True skips loading prior turns from DB for this message only (dev escape hatch)
+            skip_db_history = bool(current_message_data.get("reset"))
 
             # ── Emit user message to pipeline ──
             await websocket.send_text(json.dumps({
@@ -349,9 +347,6 @@ async def agent_websocket(websocket: WebSocket):
                 "tool_count_in_prompt": tool_count,
             }, default=_json_default_serializer))
 
-            # Add the current user message to the session history
-            history.append({"role": "user", "content": msg})
-
             # Save the user's interaction message to the database
             user_interaction_id = None
             try:
@@ -389,6 +384,16 @@ async def agent_websocket(websocket: WebSocket):
                 logger.warning(f"Failed to save memory search interaction: {save_err}")
                 parent_id = user_interaction_id
 
+            if skip_db_history:
+                llm_history: List[Dict[str, Any]] = []
+            else:
+                excl: set[str] = set()
+                if user_interaction_id:
+                    excl.add(user_interaction_id)
+                llm_history = await build_openai_history_from_session(
+                    db, user_id, session_id, exclude_interaction_ids=excl,
+                )
+
             # Clear the interrupt signal for the new agent task about to start
             interrupt_agent_event.clear()
 
@@ -398,18 +403,19 @@ async def agent_websocket(websocket: WebSocket):
                 "session_id": session_id,
                 "user_message": msg,
                 "system_prompt": system_prompt,
-                "history": history[:-1], # Current message already appended above
                 "parent_interaction_id": parent_id
             }
 
             async def run_agent_stream_wrapper(
                 _user_id: str, _session_id: str, _user_message: str, 
-                _system_prompt: str, _history: List[Dict[str, str]], _parent_id: Optional[str],
+                _system_prompt: str, _history: List[Dict[str, Any]], _parent_id: Optional[str],
                 _max_turns: int,
             ):
                 # nonlocal allows modifying agent_processing_task from the enclosing scope
                 nonlocal agent_processing_task 
+
                 try:
+                    client_disconnected = False
                     async for event in stream_agent_events(
                         user_id=_user_id,
                         session_id=_session_id,
@@ -417,31 +423,38 @@ async def agent_websocket(websocket: WebSocket):
                         system_prompt=_system_prompt,
                         history=_history, 
                         parent_interaction_id=_parent_id,
-                        interrupt_event=interrupt_agent_event, # Pass the event down to stream_agent_events
+                        interrupt_event=interrupt_agent_event,
                         max_turns=_max_turns,
                     ):
                         # Exit the streaming loop if an interrupt signal was received during processing
                         if interrupt_agent_event.is_set():
                             logger.info(f"Agent WS [{_session_id}]: Stream interrupted, stopping processing of current message.")
-                            await websocket.send_text(json.dumps({"type": "interrupt_ack", "message": "Agent processing stopped due to interruption."}, default=_json_default_serializer))
+                            if not client_disconnected:
+                                try:
+                                    await websocket.send_text(json.dumps({"type": "interrupt_ack", "message": "Agent processing stopped due to interruption."}, default=_json_default_serializer))
+                                except Exception:
+                                    pass
                             return # Exit the stream_agent_events loop and this wrapper function
                             
                         # Send events (stream, tool_call, tool_result, response, error) to the frontend
-                        try:
-                            await websocket.send_text(json.dumps(event, default=_json_default_serializer))
-                        except (WebSocketDisconnect, ConnectionClosedOK):
-                            logger.info(f"Agent WS [{_session_id}]: Client disconnected during streaming events.")
-                            return
+                        if not client_disconnected:
+                            try:
+                                await websocket.send_text(json.dumps(event, default=_json_default_serializer))
+                            except (WebSocketDisconnect, ConnectionClosedOK, RuntimeError):
+                                logger.info(f"Agent WS [{_session_id}]: Client disconnected during streaming events. Agent continues in background.")
+                                client_disconnected = True
 
-                        # Accumulate assistant response into history for future turns
                         if event["type"] == "response":
-                            history.append({"role": "assistant", "content": event["content"]})
                             # Pipeline: memory save
-                            await websocket.send_text(json.dumps({
-                                "type": "pipeline", "level": "pipeline",
-                                "step": "memory_save_start",
-                                "slug": f"chat/{_session_id[:8]}",
-                            }, default=_json_default_serializer))
+                            if not client_disconnected:
+                                try:
+                                    await websocket.send_text(json.dumps({
+                                        "type": "pipeline", "level": "pipeline",
+                                        "step": "memory_save_start",
+                                        "slug": f"chat/{_session_id[:8]}",
+                                    }, default=_json_default_serializer))
+                                except Exception:
+                                    pass
                             # Asynchronously save the completed chat turn to memory
                             asyncio.create_task(_save_chat_to_memory(
                                 db, _user_id, _session_id, _user_message, event["content"], _parent_id,
@@ -449,12 +462,10 @@ async def agent_websocket(websocket: WebSocket):
                         elif event["type"] == "stream":
                             pass  # Parts of a streaming response are being built, not a final message
                         elif event["type"] == "error":
-                            history.append({"role": "assistant", "content": f"Error: {event['message']}"})
+                            pass
 
                 except asyncio.CancelledError:
                     logger.info(f"Agent WS [{_session_id}]: Agent task was cancelled externally (new user message). Original message: \"{_user_message[:50]}...\"")
-                    # Mark in history that this response was interrupted
-                    history.append({"role": "assistant", "content": "(Agent task interrupted externally)"})
                 except Exception as e:
                     logger.error(f"Agent WS [{_session_id}]: Unhandled error during agent streaming: {e}", exc_info=True)
                     try:
@@ -475,7 +486,7 @@ async def agent_websocket(websocket: WebSocket):
                     session_id,
                     msg,
                     system_prompt,
-                    history[:-1],  # history passed without the current user message (which might be handled internally by LLM)
+                    llm_history,
                     parent_id,
                     max_turns,
                 )
@@ -498,17 +509,19 @@ async def agent_websocket(websocket: WebSocket):
             heartbeat_task.cancel()
         if read_task and not read_task.done():
             read_task.cancel()
-        if agent_processing_task and not agent_processing_task.done():
-            agent_processing_task.cancel()
+        
+        # We intentionally DO NOT cancel the agent_processing_task here.
+        # This allows the agent to continue executing in the background 
+        # even after the client disconnects.
         
         # Gather all tasks to ensure they complete their cancellation/cleanup
         await asyncio.gather(
             heartbeat_task,
             read_task,
-            *([agent_processing_task] if agent_processing_task else []), # Conditionally include agent_processing_task if it exists
-            return_exceptions=True # Allow other tasks to complete even if one fails
+            # We don't await agent_processing_task here so it runs detached
+            return_exceptions=True 
         )
-        logger.info("All agent WS tasks stopped.")
+        logger.info("Agent WS socket tasks stopped (background agent may still be running).")
 
 
 async def _save_chat_to_memory(

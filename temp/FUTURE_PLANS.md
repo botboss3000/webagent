@@ -148,6 +148,25 @@ Ordered by impact, highest first.
 - Retry counters, fallback state, and iteration budget should be per-request (not global) to avoid cross-user state leaks.
 - Tool execution errors should include structured error info (error type, recoverable bool, hint string) so the frontend can display appropriate UI.
 
+---
+
+## 11. LLM provider message adapters (OpenAI messages + beyond)
+
+**What we have:** Session turns are persisted as `interactions` rows (`user` / `assistant` / `tool`). The live loop calls OpenRouter using an **OpenAI-compatible** Chat Completions client, so the in-memory `messages` list follows the **OpenAI messages** shape (`role`, `content`, optional `tool_calls` / `tool_call_id`).
+
+**What we need:** Treat the DB transcript as the **canonical** session log. Add an explicit **adapter layer** that maps `interactions` → **OpenAI messages** for the current client path, and leaves room for additional adapters when a user must call a provider that is **not** OpenAI-compatible (e.g. native Anthropic Messages, Gemini, or a custom enterprise gateway with a different JSON schema).
+
+**Why:** Not all providers use the same wire format. OpenRouter today aligns with OpenAI-style chat; SMS/WhatsApp and other channels should not depend on “whatever the browser sent last refresh” — they depend on DB + the correct adapter for the configured provider.
+
+**Concrete work (when implementing multi-provider):**
+
+- Keep **`interactions`** as the single source of truth (no duplicate per-provider transcript tables unless required).
+- Implement `interactions_to_openai_messages(...)` (or equivalent) for the default path.
+- Add `interactions_to_<provider>_...(…)` behind a small interface (e.g. `MessageAdapter` + registry keyed by `provider` / `api_style` in agent config).
+- Unit-test each adapter: same seeded `interactions` rows → expected provider payload; tool turns must preserve `tool_calls` ↔ `tool` pairing.
+
+**Reference:** OpenAI Chat Completions message list docs; Anthropic Messages API (different structure); provider docs for any new backend.
+
 
 pi's Tools vs webAgent's — Side by Side
 

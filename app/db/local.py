@@ -328,6 +328,12 @@ CREATE INDEX IF NOT EXISTS idx_feedback_skill ON skill_feedback(skill_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_user ON skill_feedback(user_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_type ON skill_feedback(feedback_type);
 
+CREATE TABLE IF NOT EXISTS session_interrupts (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    interrupt_requested INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS agent_templates (
     id TEXT PRIMARY KEY DEFAULT 'default',
     system_prompt TEXT NOT NULL DEFAULT '',
@@ -423,9 +429,9 @@ class LocalBackend(StorageBackend):
             if cursor.fetchone():
                 logger.info("Migrating context_defaults -> context_templates")
                 conn.executescript("""
-                    ALTER TABLE context_defaults RENAME TO context_templates;
-                    DROP INDEX IF EXISTS idx_context_defaults_type;
-                    CREATE UNIQUE INDEX IF NOT EXISTS idx_context_templates_type ON context_templates(context_type);
+                    INSERT OR IGNORE INTO context_templates (id, context_type, title, content, tags, created_at, updated_at)
+                    SELECT id, context_type, title, content, tags, created_at, updated_at FROM context_defaults;
+                    DROP TABLE context_defaults;
                 """)
                 conn.commit()
                 logger.info("Context templates migration complete")
@@ -1337,6 +1343,52 @@ class LocalBackend(StorageBackend):
             if row:
                 return row["max_turn_count"]
             return 10  # Default if agent not found
+        finally:
+            conn.close()
+
+    # ---- Interrupt Handling ----
+
+    async def set_interrupt(self, session_id: str) -> None:
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                """INSERT INTO session_interrupts (session_id, interrupt_requested, created_at) 
+                   VALUES (?, 1, ?) 
+                   ON CONFLICT(session_id) DO UPDATE SET interrupt_requested = 1, created_at = ?""",
+                (session_id, _now_iso(), _now_iso())
+            )
+            conn.commit()
+        except Exception as e:
+            logger.error("Error setting interrupt for %s: %s", session_id, e)
+            raise
+        finally:
+            conn.close()
+
+    async def clear_interrupt(self, session_id: str) -> None:
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                "DELETE FROM session_interrupts WHERE session_id = ?",
+                (session_id,)
+            )
+            conn.commit()
+        except Exception as e:
+            logger.error("Error clearing interrupt for %s: %s", session_id, e)
+            raise
+        finally:
+            conn.close()
+
+    async def check_interrupt(self, session_id: str) -> bool:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT interrupt_requested FROM session_interrupts WHERE session_id = ?",
+                (session_id,)
+            ).fetchone()
+            return bool(row and row["interrupt_requested"])
+        except Exception as e:
+            logger.error("Error checking interrupt for %s: %s", session_id, e)
+            return False
         finally:
             conn.close()
 

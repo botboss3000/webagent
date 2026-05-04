@@ -529,6 +529,42 @@ class SupabaseBackend(StorageBackend):
             logger.error("Error getting max_turn_count for agent %s: %s", agent_id, e)
             raise
 
+    # ---- Interrupt Handling ----
+
+    async def set_interrupt(self, session_id: str) -> None:
+        try:
+            data = {
+                "session_id": session_id,
+                "interrupt_requested": True,
+            }
+            self._client.table("session_interrupts").upsert(data, on_conflict="session_id").execute()
+        except Exception as e:
+            logger.error("Error setting interrupt for %s: %s", session_id, e)
+            raise
+
+    async def clear_interrupt(self, session_id: str) -> None:
+        try:
+            self._client.table("session_interrupts").delete().eq("session_id", session_id).execute()
+        except Exception as e:
+            logger.error("Error clearing interrupt for %s: %s", session_id, e)
+            raise
+
+    async def check_interrupt(self, session_id: str) -> bool:
+        try:
+            res = (
+                self._client.table("session_interrupts")
+                .select("interrupt_requested")
+                .eq("session_id", session_id)
+                .limit(1)
+                .execute()
+            )
+            if res.data and res.data[0]["interrupt_requested"]:
+                return True
+            return False
+        except Exception as e:
+            logger.error("Error checking interrupt for %s: %s", session_id, e)
+            return False
+
 
 # ── Backward-compatible alias ────────────────────────────────────────────────
 # The old SupabaseClient used static methods directly.

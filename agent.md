@@ -35,8 +35,8 @@ After **any** change that affects how the repo is structured, configured, or use
 
 ## Markdown files (drafts, notes, scratch)
 
-- **Where to write:** Put **new** Markdown you create in this workspace (analysis drafts, scratch specs, ad-hoc notes, etc.) under **`temp-md-files/`**, unless the user explicitly tells you to use a different directory or path.
-- **Do not read by default:** **Do not** open, search, grep, or treat **`temp-md-files/`** as a source of truth. It may contain obsolete, incorrect, or conflicting material that would confuse reasoning about the real codebase. **Only** read files there if the user clearly asks you to (e.g. “read my notes in `temp-md-files/…`”).
+- **Where to write:** Put **new** Markdown you create in this workspace (analysis drafts, scratch specs, ad-hoc notes, roadmap drafts, etc.) under **`temp/`** (for example `temp/my-notes.md`), unless the user explicitly tells you to use a different directory or path.
+- **Do not read by default:** **Do not** open, search, grep, or treat **`temp/`** as a source of truth for how the product works. It may contain obsolete, incorrect, or conflicting material that would confuse reasoning about the real codebase. **Only** read files there if the user clearly asks you to (e.g. “read my notes in `temp/…`”).
 
 ## Misc Directions
 

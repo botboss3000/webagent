@@ -286,3 +286,21 @@ class StorageBackend(ABC):
     async def get_max_turn_count(self, agent_id: str = "default_agent") -> int:
         """Get the max_turn_count for a given agent_id. DEPRECATED — use get_agent_for_user instead."""
         ...
+
+    # ---- Interrupt Handling ----
+
+    @abstractmethod
+    async def set_interrupt(self, session_id: str) -> None:
+        """Set the interrupt flag for a session."""
+        ...
+
+    @abstractmethod
+    async def clear_interrupt(self, session_id: str) -> None:
+        """Clear the interrupt flag for a session."""
+        ...
+
+    @abstractmethod
+    async def check_interrupt(self, session_id: str) -> bool:
+        """Check if an interrupt was requested for a session."""
+        ...
+
