@@ -319,6 +319,41 @@ async def update_row(req: UpdateRowRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/reset")
+async def reset_database(
+    db: str = Query("local.db", description="Database filename"),
+):
+    """Delete ALL rows from ALL tables. Preserves context_templates and agent_templates."""
+    db_path = _get_db_path(db)
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+
+        # Get all user tables (not internal sqlite ones)
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts%' ORDER BY name")
+        all_tables = [row[0] for row in cur.fetchall()]
+
+        # Preserve template/protected tables
+        exclude = {"context_templates", "agent_templates"}
+        to_truncate = [t for t in all_tables if t not in exclude]
+
+        results = {}
+        for table in to_truncate:
+            cur.execute(f'SELECT COUNT(*) FROM "{table}"')
+            before = cur.fetchone()[0]
+            if before > 0:
+                cur.execute(f'DELETE FROM "{table}"')
+                results[table] = before
+
+        conn.commit()
+        conn.close()
+
+        logger.info(f"Database reset: {len(results)} tables truncated ({sum(results.values())} rows total)")
+        return {"success": True, "tables_truncated": results, "total_rows_deleted": sum(results.values()), "db": db}
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.delete("/truncate")
 async def truncate_table(
     table: str = Query(..., description="Table name to truncate"),

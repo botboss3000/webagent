@@ -6,7 +6,7 @@ A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional *
 
 - **Chat** — `POST /api/v1/chat`: non-streaming agent loop with tools; persists turns to **`interactions`** (not a separate `messages` table).
 - **WebSocket agent** — `GET` upgrade to `/api/v1/agent/ws`: streaming tokens, tool events, pipeline steps (**loopback clients only**).
-- **Context** — Prompt slices from `context_type` / `doc_type`; if a user has no rows, **`context_defaults`** are copied into per-user context on first chat.
+- **Context** — Prompt slices from `context_type` / `doc_type`; if a user has no rows, **`context_templates`** are copied into per-user context on first chat.
 - **Memory** — Brain-style lookup before each chat turn; optional background save of chat snippets into memory.
 - **Tools** — Dynamic tools from the DB (JSON schemas in **`app/tools/loader.py`**), including Playwright **`browser.py`**.
 - **OpenRouter** — Model from `OPENROUTER_MODEL` (see `.env.example`; e.g. `deepseek/deepseek-v4-flash`).
@@ -30,7 +30,7 @@ A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional *
 | **`agent/prompts.py`** | System prompt from context, brain results, tools. |
 | **`agent/error_classifier.py`** | Structured tool errors (**used on the WebSocket / streaming path**). |
 | **`db/__init__.py`** | **`get_db()`** → **`SupabaseBackend`** or **`LocalBackend`** from persisted mode. |
-| **`db/supabase.py`** | Cloud: **`sessions`**, **`interactions`**, **`context`**, **`context_defaults`**, memories / tools / skills per shared schema. |
+| **`db/supabase.py`** | Cloud: **`sessions`**, **`interactions`**, **`context`**, **`context_templates`**, memories / tools / skills per shared schema. |
 | **`db/local.py`** | Local SQLite (e.g. **`context_documents`**) and related tables beside **`local.db`**. |
 | **`db/interface.py`** | **`StorageBackend`** protocol. |
 | **`tools/`** | **`loader`**, **`registry`**, **`tracker`**, **`browser`**. |
@@ -123,7 +123,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ## Context defaults (no `/seed-docs` route)
 
-There is **no** `POST /api/v1/seed-docs` in this codebase. When a user has no context rows, the first chat path copies **`context_defaults`** into that user’s store (**`public.context`** on Supabase, **`context_documents`** in local SQLite).
+There is **no** `POST /api/v1/seed-docs` in this codebase. When a user has no context rows, the first chat path copies **`context_templates`** into that user’s store (**`public.context`** on Supabase, **`context_documents`** in local SQLite).
 
 ## Using the chat API
 
@@ -169,7 +169,7 @@ Common types include `agent`, `user`, `skills`, `tools`, `tasks`, and optionally
 1. Start **`uvicorn`** as above.
 2. Open **`/ui/`** or **`/test`**.
 3. Ensure a **session** row exists for your **`user_id`** / **`session_id`**.
-4. Chat; defaults apply on first use when the DB has **`context_defaults`**.
+4. Chat; defaults apply on first use when the DB has **`context_templates`**.
 
 ## Deployment
 

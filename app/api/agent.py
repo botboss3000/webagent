@@ -252,6 +252,18 @@ async def agent_websocket(websocket: WebSocket):
                     }, default=_json_default_serializer))
                     continue # Skip current message if session creation fails
 
+            # ── Agent assignment (first chat → create agent) ──
+            agent = await db.get_agent_for_user(user_id)
+            if agent is None:
+                agent = await db.create_agent_for_user(user_id)
+                await websocket.send_text(json.dumps({
+                    "type": "pipeline", "level": "pipeline",
+                    "step": "agent_assigned",
+                    "agent_id": agent["id"],
+                    "max_turn_count": agent["max_turn_count"],
+                }, default=_json_default_serializer))
+            max_turns = agent["max_turn_count"]
+
             # Handle reset flag: clear history if client requests it
             if current_message_data.get("reset"):
                 history = []
@@ -322,7 +334,8 @@ async def agent_websocket(websocket: WebSocket):
 
             # Build the complete system prompt for the LLM
             system_prompt = await build_system_prompt(
-                context_docs, brain_context, user_id
+                context_docs, brain_context, user_id,
+                agent_system_prompt=agent.get("system_prompt"),
             )
 
             # ── Pipeline: prompt built ──
@@ -391,7 +404,8 @@ async def agent_websocket(websocket: WebSocket):
 
             async def run_agent_stream_wrapper(
                 _user_id: str, _session_id: str, _user_message: str, 
-                _system_prompt: str, _history: List[Dict[str, str]], _parent_id: Optional[str]
+                _system_prompt: str, _history: List[Dict[str, str]], _parent_id: Optional[str],
+                _max_turns: int,
             ):
                 # nonlocal allows modifying agent_processing_task from the enclosing scope
                 nonlocal agent_processing_task 
@@ -404,6 +418,7 @@ async def agent_websocket(websocket: WebSocket):
                         history=_history, 
                         parent_interaction_id=_parent_id,
                         interrupt_event=interrupt_agent_event, # Pass the event down to stream_agent_events
+                        max_turns=_max_turns,
                     ):
                         # Exit the streaming loop if an interrupt signal was received during processing
                         if interrupt_agent_event.is_set():
@@ -461,7 +476,8 @@ async def agent_websocket(websocket: WebSocket):
                     msg,
                     system_prompt,
                     history[:-1],  # history passed without the current user message (which might be handled internally by LLM)
-                    parent_id
+                    parent_id,
+                    max_turns,
                 )
             )
             # The main loop *does not* await agent_processing_task here.

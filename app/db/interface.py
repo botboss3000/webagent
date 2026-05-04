@@ -265,7 +265,24 @@ class StorageBackend(ABC):
         """
         ...
 
+    # ---- Agent Assignment ----
+
+    @abstractmethod
+    async def get_agent_for_user(self, user_id: str) -> dict | None:
+        """Get the assigned agent for a user. Returns None if not assigned yet."""
+        ...
+
+    @abstractmethod
+    async def create_agent_for_user(self, user_id: str) -> dict:
+        """Create a new agent for a user by cloning the default template. Returns the new agent row."""
+        ...
+
+    @abstractmethod
+    async def get_default_template(self) -> dict:
+        """Get the default agent template (used as blueprint for new agents)."""
+        ...
+
     @abstractmethod
     async def get_max_turn_count(self, agent_id: str = "default_agent") -> int:
-        """Get the max_turn_count for a given agent_id."""
+        """Get the max_turn_count for a given agent_id. DEPRECATED — use get_agent_for_user instead."""
         ...

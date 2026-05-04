@@ -12,15 +12,28 @@
     white-space: nowrap;
   }
   .db-table tr:hover td { background: #1a1a2e55; }
+  .db-row-even td { background: #14142a; }
+  .db-table tr[style*="height:100px"] .db-cell-pre { max-height: 50px; }
+
+  /* Dark scrollbars on db cells — don't change on hover */
+  #db-table-data { scrollbar-width: thin; scrollbar-color: #2a2a4a transparent; }
+  #db-table-data::-webkit-scrollbar { width: 6px; }
+  #db-table-data::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+  .db-cell { scrollbar-width: thin; scrollbar-color: #2a2a4a transparent; }
+  .db-cell::-webkit-scrollbar { width: 6px; }
+  .db-cell::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
   .db-table .col-pk { color: #e0af68; }
   .db-table .col-null { color: #565f89; font-style: italic; }
   .db-cell-pre {
     margin: 0;
     white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: break-word;
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
     font-size: 11px;
     line-height: 1.4;
     max-height: 6em;
+    max-width: 100%;
     overflow: hidden;
   }
   .db-row-resize-td {
@@ -95,7 +108,14 @@
     padding: 4px 6px;
     font-size: 12px;
     font-family: 'Fira Code', Menlo, monospace;
-    width: 100%;
+    position: absolute;
+    top: 4px;
+    left: 10px;
+    right: 10px;
+    bottom: 4px;
+    width: auto;
+    height: auto;
+    min-height: auto;
     box-sizing: border-box;
     outline: none;
     border-radius: 2px;

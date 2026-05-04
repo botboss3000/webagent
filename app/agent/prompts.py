@@ -27,6 +27,7 @@ async def build_system_prompt(
     docs: List[Dict],
     brain_context: Optional[str] = None,
     user_id: Optional[str] = None,
+    agent_system_prompt: Optional[str] = None,
 ) -> str:
     """
     Assemble a system prompt from context rows, brain context, and tool descriptions.
@@ -35,8 +36,15 @@ async def build_system_prompt(
         docs: List of context documents from the context table
         brain_context: Optional formatted brain search results to inject
         user_id: User ID for loading personal tools (optional)
+        agent_system_prompt: Non-editable system prompt from the agent record (injected first)
     """
     sections: List[str] = []
+
+    # ---- Agent system prompt (non-editable, from agents table) ----
+    if agent_system_prompt:
+        sections.append("# [AGENT DIRECTIVE]")
+        sections.append(agent_system_prompt)
+        sections.append("")
 
     # ---- Context documents ----
     grouped: Dict[str, List[Dict]] = {}

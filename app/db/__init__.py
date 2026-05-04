@@ -117,7 +117,7 @@ async def get_db_stats() -> dict:
     
     tables = [
         "sessions", "interactions", "session_summaries", "context_documents",
-        "context_defaults", "memories", "memory_chunks", "memory_links", "memory_timeline",
+        "context_templates", "memories", "memory_chunks", "memory_links", "memory_timeline",
         "tools", "agent_credentials", "skills",
     ]
     

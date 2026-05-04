@@ -127,6 +127,7 @@ async def stream_agent_events(
     history: Optional[List[Dict[str, str]]] = None,
     parent_interaction_id: str | None = None,
     interrupt_event: Optional[asyncio.Event] = None,
+    max_turns: int = 10,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Run the agent loop and yield structured events.
@@ -157,7 +158,6 @@ async def stream_agent_events(
     messages.append({"role": "user", "content": user_message})
 
     turn_count = 0
-    max_turns = 10
 
     try:
         while turn_count < max_turns:

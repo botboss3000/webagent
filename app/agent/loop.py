@@ -67,6 +67,7 @@ async def run_agent_loop(
     history: Optional[List[Dict[str, str]]] = None,
     parent_interaction_id: str | None = None,
     event_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    max_turns: int | None = None,
 ) -> str:
     """
     Run the agent loop with tool calling capability.
@@ -101,9 +102,10 @@ async def run_agent_loop(
     messages.append({"role": "user", "content": user_message})
 
     turn_count = 0
-    db = get_db()
-    max_turns = await db.get_max_turn_count("default_agent") # Fetch from DB
-    if max_turns == 0: # 0 means infinite turns
+    if max_turns is None:
+        db = get_db()
+        max_turns = await db.get_max_turn_count("default_agent")  # Fetch from DB (backward compat)
+    if max_turns == 0:  # 0 means infinite turns
         max_turns = float("inf")
     permission_granted = False
     model_name = os.environ.get("OPENROUTER_MODEL", "deepseek/deepseek-v4-flash")

@@ -54,6 +54,64 @@ export function initDbPaginationAndToolbar() {
     });
   }
 
+  // Reset DB button — two-click confirm (tables wiped except templates)
+  const resetBtn = document.getElementById('db-reset');
+  let resetPending = false;
+  let resetTimer = null;
+
+  resetBtn.addEventListener('click', async () => {
+    if (!resetPending) {
+      resetPending = true;
+      resetBtn.textContent = 'PERMANENT RESET?';
+      resetBtn.style.background = '#9d0006';
+      resetBtn.style.borderColor = '#cc241d';
+      clearTimeout(resetTimer);
+      resetTimer = setTimeout(() => {
+        resetPending = false;
+        resetBtn.textContent = 'Reset DB';
+        resetBtn.style.background = '#cc241d';
+        resetBtn.style.borderColor = '#fb4934';
+      }, 4000);
+      return;
+    }
+    // Second click — execute
+    resetPending = false;
+    clearTimeout(resetTimer);
+    resetBtn.textContent = 'Resetting...';
+    resetBtn.style.background = '#cc241d';
+    resetBtn.style.borderColor = '#fb4934';
+    try {
+      const dbName = document.getElementById('db-select').value;
+      const res = await fetch('/api/v1/db/reset?db=' + encodeURIComponent(dbName), { method: 'DELETE' });
+      const result = await res.json();
+      if (result.success) {
+        // Reload tables and refresh view
+        const { fetchTables } = await import('./tables.js');
+        resetBtn.textContent = '✓ Reset';
+        resetBtn.style.background = '#689d6a';
+        resetBtn.style.borderColor = '#8ec07c';
+        setTimeout(() => {
+          resetBtn.textContent = 'Reset DB';
+          resetBtn.style.background = '#cc241d';
+          resetBtn.style.borderColor = '#fb4934';
+        }, 2000);
+        app.dbSelectedTable = null;
+        app.dbCurrentResult = null;
+        cancelEditing();
+        stopAutoRefresh();
+        await fetchTables(dbName);
+        document.getElementById('db-table-data').innerHTML =
+          '<div class="db-hint">Database reset (templates preserved)</div>';
+      } else {
+        resetBtn.textContent = 'Reset DB';
+        alert('Reset failed');
+      }
+    } catch (err) {
+      resetBtn.textContent = 'Reset DB';
+      alert('Error: ' + err.message);
+    }
+  });
+
   document.getElementById('db-refresh').addEventListener('click', () => {
     const dbName = document.getElementById('db-select').value;
     app.dbSelectedTable = null;

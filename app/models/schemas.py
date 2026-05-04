@@ -143,6 +143,42 @@ class CredentialRecord(BaseModel):
     updated_at: datetime
 
 
+# ── Agent models ──────────────────────────────────────────────────────────────────
+
+
+class AgentTemplate(BaseModel):
+    """Blueprint for new agents. Read-only after seed."""
+
+    id: str
+    system_prompt: str
+    max_turn_count: int
+    model: str | None = None
+    provider: str | None = None
+    temperature: float = 0.0
+    max_tokens: int = 4096
+    metadata: str = "{}"
+    created_at: datetime
+    updated_at: datetime
+
+
+class AgentRecord(BaseModel):
+    """Assigned agent — one per user."""
+
+    id: str
+    user_id: str
+    system_prompt: str
+    max_turn_count: int = 10
+    model: str | None = None
+    provider: str | None = None
+    temperature: float = 0.0
+    max_tokens: int = 4096
+    status: str = "active"
+    metadata: str = "{}"
+    assigned_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
 class CreateToolRequest(BaseModel):
     """Request model for creating/updating a tool."""
 

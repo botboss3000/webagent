@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS context_documents (
 CREATE INDEX IF NOT EXISTS idx_context_user ON context_documents(user_id);
 CREATE INDEX IF NOT EXISTS idx_context_type ON context_documents(context_type);
 
-CREATE TABLE IF NOT EXISTS context_defaults (
+CREATE TABLE IF NOT EXISTS context_templates (
     id TEXT PRIMARY KEY,
     context_type TEXT NOT NULL,
     title TEXT NOT NULL,
@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS context_defaults (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_context_defaults_type ON context_defaults(context_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_context_templates_type ON context_templates(context_type);
 
 -- ============================================================
 -- Memory System: core knowledge brain
@@ -328,12 +328,39 @@ CREATE INDEX IF NOT EXISTS idx_feedback_skill ON skill_feedback(skill_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_user ON skill_feedback(user_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_type ON skill_feedback(feedback_type);
 
-CREATE TABLE IF NOT EXISTS agents (
-    id TEXT PRIMARY KEY DEFAULT 'default_agent',
-    max_turn_count INTEGER DEFAULT 10
+CREATE TABLE IF NOT EXISTS agent_templates (
+    id TEXT PRIMARY KEY DEFAULT 'default',
+    system_prompt TEXT NOT NULL DEFAULT '',
+    max_turn_count INTEGER NOT NULL DEFAULT 10,
+    model TEXT,
+    provider TEXT,
+    temperature REAL NOT NULL DEFAULT 0.0,
+    max_tokens INTEGER NOT NULL DEFAULT 4096,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-INSERT OR IGNORE INTO agents (id, max_turn_count) VALUES ('default_agent', 10);
+INSERT OR IGNORE INTO agent_templates (id, system_prompt, max_turn_count)
+VALUES ('default', '', 10);
+
+CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL UNIQUE,
+    system_prompt TEXT NOT NULL DEFAULT '',
+    max_turn_count INTEGER NOT NULL DEFAULT 10,
+    model TEXT,
+    provider TEXT,
+    temperature REAL NOT NULL DEFAULT 0.0,
+    max_tokens INTEGER NOT NULL DEFAULT 4096,
+    status TEXT NOT NULL DEFAULT 'active',
+    metadata TEXT NOT NULL DEFAULT '{}',
+    assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agents_user ON agents(user_id);
 
 """
 
@@ -357,11 +384,52 @@ class LocalBackend(StorageBackend):
         """Create tables if they don't exist."""
         conn = self._get_conn()
         try:
+            # ── Pre-migration: handle old agents table ──
+            # Old schema (v1): (id TEXT PK DEFAULT 'default_agent', max_turn_count INT)
+            # New schema (v2): (id TEXT PK, user_id TEXT NOT NULL UNIQUE, ...)
+            # Detect old schema and rename before SCHEMA_SQL runs
+            cursor = conn.execute("PRAGMA table_info(agents)")
+            cols = {row[1] for row in cursor.fetchall()}
+            if cols and "user_id" not in cols:
+                logger.info("Pre-migration: renaming old agents table (v1) before schema init")
+                conn.execute("ALTER TABLE agents RENAME TO agents_v1")
+                conn.commit()
+
             conn.executescript(SCHEMA_SQL)
             conn.commit()
             logger.info("Local database initialized at %s", self._db_path)
 
-            # context_defaults seeded by SQL migration; no-op here
+            # ── Post-migration: move data from old agents_v1 ──
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='agents_v1'"
+            )
+            if cursor.fetchone():
+                logger.info("Post-migration: copying data from agents_v1")
+                conn.execute(
+                    """INSERT OR IGNORE INTO agents
+                       (id, user_id, max_turn_count, status, assigned_at, created_at, updated_at)
+                       SELECT id, 'migrated_default', max_turn_count, 'active',
+                              datetime('now'), datetime('now'), datetime('now')
+                       FROM agents_v1 WHERE id = 'default_agent'"""
+                )
+                conn.execute("DROP TABLE agents_v1")
+                conn.commit()
+                logger.info("Agents table migration complete")
+
+            # ── Migration: context_defaults -> context_templates ──
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='context_defaults'"
+            )
+            if cursor.fetchone():
+                logger.info("Migrating context_defaults -> context_templates")
+                conn.executescript("""
+                    ALTER TABLE context_defaults RENAME TO context_templates;
+                    DROP INDEX IF EXISTS idx_context_defaults_type;
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_context_templates_type ON context_templates(context_type);
+                """)
+                conn.commit()
+                logger.info("Context templates migration complete")
+
         except Exception as e:
             logger.error("Error initializing local database: %s", e)
             raise
@@ -486,7 +554,7 @@ class LocalBackend(StorageBackend):
             placeholders = ",".join("?" for _ in context_types)
             rows = conn.execute(
                 f"""SELECT id, context_type, title, content, tags, created_at, updated_at
-                    FROM context_defaults
+                    FROM context_templates
                     WHERE context_type IN ({placeholders})""",
                 context_types,
             ).fetchall()
@@ -515,7 +583,7 @@ class LocalBackend(StorageBackend):
         try:
             # Get all default rows
             defaults = conn.execute(
-                "SELECT context_type, title, content, tags FROM context_defaults"
+                "SELECT context_type, title, content, tags FROM context_templates"
             ).fetchall()
 
             if not defaults:
@@ -1174,6 +1242,92 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
     
+    async def get_agent_for_user(self, user_id: str) -> dict | None:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM agents WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def create_agent_for_user(self, user_id: str) -> dict:
+        conn = self._get_conn()
+        try:
+            # Clone the default template
+            tpl = conn.execute(
+                "SELECT * FROM agent_templates WHERE id = 'default'"
+            ).fetchone()
+            if not tpl:
+                # Fallback: inline default values
+                tpl_data = {
+                    "system_prompt": "",
+                    "max_turn_count": 10,
+                    "model": None,
+                    "provider": None,
+                    "temperature": 0.0,
+                    "max_tokens": 4096,
+                    "metadata": "{}",
+                }
+            else:
+                tpl_data = dict(tpl)
+
+            now = _now_iso()
+            agent_id = _uuid()
+            conn.execute(
+                """INSERT INTO agents
+                   (id, user_id, system_prompt, max_turn_count, model, provider,
+                    temperature, max_tokens, status, metadata,
+                    assigned_at, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)""",
+                (agent_id, user_id,
+                 tpl_data.get("system_prompt", ""),
+                 tpl_data.get("max_turn_count", 10),
+                 tpl_data.get("model"),
+                 tpl_data.get("provider"),
+                 tpl_data.get("temperature", 0.0),
+                 tpl_data.get("max_tokens", 4096),
+                 tpl_data.get("metadata", "{}"),
+                 now, now, now),
+            )
+            conn.commit()
+
+            row = conn.execute(
+                "SELECT * FROM agents WHERE id = ?", (agent_id,)
+            ).fetchone()
+            logger.info("Created agent %s for user %s", agent_id, user_id)
+            return dict(row)
+        except Exception as e:
+            logger.error("Error creating agent for user %s: %s", user_id, e)
+            raise
+        finally:
+            conn.close()
+
+    async def get_default_template(self) -> dict:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM agent_templates WHERE id = 'default'"
+            ).fetchone()
+            if row:
+                return dict(row)
+            # Return sensible defaults if table empty
+            return {
+                "id": "default",
+                "system_prompt": "",
+                "max_turn_count": 10,
+                "model": None,
+                "provider": None,
+                "temperature": 0.0,
+                "max_tokens": 4096,
+                "metadata": "{}",
+                "created_at": _now_iso(),
+                "updated_at": _now_iso(),
+            }
+        finally:
+            conn.close()
+
     async def get_max_turn_count(self, agent_id: str = "default_agent") -> int:
         conn = self._get_conn()
         try:

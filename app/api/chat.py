@@ -125,9 +125,21 @@ async def chat(request: ChatRequest):
             "error": False,
         })
 
+        # ── Agent assignment (first chat → create agent) ──
+        agent = await db.get_agent_for_user(request.user_id)
+        if agent is None:
+            agent = await db.create_agent_for_user(request.user_id)
+            await _emit_to_visualizers(request.session_id, {
+                "type": "pipeline", "level": "pipeline",
+                "step": "agent_assigned",
+                "agent_id": agent["id"],
+                "max_turn_count": agent["max_turn_count"],
+            })
+
         # Build system prompt with brain context + dynamic tools
         system_prompt = await build_system_prompt(
-            context_docs, brain_context, request.user_id
+            context_docs, brain_context, request.user_id,
+            agent_system_prompt=agent.get("system_prompt"),
         )
 
         # ── Pipeline: prompt built ──
@@ -162,6 +174,7 @@ async def chat(request: ChatRequest):
             history=history,
             parent_interaction_id=parent_id,
             event_callback=event_callback,
+            max_turns=agent["max_turn_count"],
         )
 
         # ── PHASE 3: Background memory save (visible tool interaction) ──

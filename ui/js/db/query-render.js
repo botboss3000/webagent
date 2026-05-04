@@ -60,8 +60,9 @@ function renderTableData(result, silent) {
   // Header row (clickable to sort, draggable to reorder)
   html += '<tr>';
   for (const col of displayCols) {
-    const w = app.COL_WIDTHS[col];
-    const style = w ? ` style="width:${w}"` : '';
+    const isInput = result.table === 'interactions' && col === 'input';
+    const w = isInput ? '300px' : app.COL_WIDTHS[col];
+    const style = w ? ` style="width:${w};min-width:${w};max-width:${w}"` : '';
     const isActive = col === curSortCol;
     const activeAsc = isActive && curSortDir === 'ASC';
     const activeDesc = isActive && curSortDir === 'DESC';
@@ -71,7 +72,7 @@ function renderTableData(result, silent) {
         <span class="th-sort-arrow th-sort-asc${activeAsc ? ' active' : ''}" title="Sort ascending">\u25B2</span>
         <span class="th-sort-arrow th-sort-desc${activeDesc ? ' active' : ''}" title="Sort descending">\u25BC</span>
       </span>
-      <span class="th-resize"></span>
+      ${isInput ? '' : '<span class="th-resize"></span>'}
     </th>`;
   }
   html += '</tr>';
@@ -92,11 +93,15 @@ function renderTableData(result, silent) {
 
   for (let ri = 0; ri < result.rows.length; ri++) {
     const row = result.rows[ri];
-    html += `<tr class="db-row" data-ri="${ri}">`;
+    const rowClass = ri % 2 === 0 ? 'db-row' : 'db-row db-row-even';
+    const isInteractions = result.table === 'interactions';
+    const trStyle = isInteractions ? ' style="height:100px"' : '';
+    html += `<tr class="${rowClass}" data-ri="${ri}"${trStyle}>`;
     for (const col of displayCols) {
       const val = row[col];
-      const w = app.COL_WIDTHS[col];
-      const style = w ? ` style="width:${w}"` : '';
+      const isInput = result.table === 'interactions' && col === 'input';
+      const w = isInput ? '300px' : app.COL_WIDTHS[col];
+      const style = w ? ` style="width:${w};min-width:${w};max-width:${w}"` : '';
       const cls = val === null ? 'col-null' : '';
       const { html: display, isJson } = fmtCell(val);
       const safeVal = String(val).replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

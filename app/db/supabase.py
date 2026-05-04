@@ -147,7 +147,7 @@ class SupabaseBackend(StorageBackend):
     ) -> List[dict]:
         try:
             response = (
-                self._client.table("context_defaults")
+                self._client.table("context_templates")
                 .select("id, context_type, title, content, tags, created_at, updated_at")
                 .in_("context_type", context_types)
                 .execute()
@@ -168,7 +168,7 @@ class SupabaseBackend(StorageBackend):
         try:
             # Get all default rows
             defaults = (
-                self._client.table("context_defaults")
+                self._client.table("context_templates")
                 .select("context_type, title, content, tags")
                 .execute()
             )
@@ -430,6 +430,104 @@ class SupabaseBackend(StorageBackend):
 
     async def skill_get_id_by_name(self, user_id: str, name: str) -> str | None:
         return None
+
+    # ---- Agent Assignment ----
+
+    async def get_agent_for_user(self, user_id: str) -> dict | None:
+        try:
+            res = (
+                self._client.table("agents")
+                .select("*")
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+            return res.data[0] if res.data else None
+        except Exception as e:
+            logger.error("Error getting agent for user %s: %s", user_id, e)
+            raise
+
+    async def create_agent_for_user(self, user_id: str) -> dict:
+        from datetime import datetime, timezone
+        import uuid
+        try:
+            # Fetch default template
+            tpl_res = (
+                self._client.table("agent_templates")
+                .select("*")
+                .eq("id", "default")
+                .limit(1)
+                .execute()
+            )
+            tpl = tpl_res.data[0] if tpl_res.data else {}
+
+            now = datetime.now(timezone.utc).isoformat()
+            agent_data = {
+                "id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "system_prompt": tpl.get("system_prompt", ""),
+                "max_turn_count": tpl.get("max_turn_count", 10),
+                "model": tpl.get("model"),
+                "provider": tpl.get("provider"),
+                "temperature": tpl.get("temperature", 0.0),
+                "max_tokens": tpl.get("max_tokens", 4096),
+                "status": "active",
+                "metadata": tpl.get("metadata", "{}"),
+                "assigned_at": now,
+                "created_at": now,
+                "updated_at": now,
+            }
+
+            res = self._client.table("agents").insert(agent_data).execute()
+            if res.data and len(res.data) > 0:
+                logger.info("Created agent %s for user %s", agent_data["id"], user_id)
+                return res.data[0]
+            raise ValueError("No data returned after agent insert")
+        except Exception as e:
+            logger.error("Error creating agent for user %s: %s", user_id, e)
+            raise
+
+    async def get_default_template(self) -> dict:
+        try:
+            res = (
+                self._client.table("agent_templates")
+                .select("*")
+                .eq("id", "default")
+                .limit(1)
+                .execute()
+            )
+            if res.data:
+                return res.data[0]
+            # Return sensible defaults
+            return {
+                "id": "default",
+                "system_prompt": "",
+                "max_turn_count": 10,
+                "model": None,
+                "provider": None,
+                "temperature": 0.0,
+                "max_tokens": 4096,
+                "metadata": "{}",
+            }
+        except Exception as e:
+            logger.error("Error getting default template: %s", e)
+            raise
+
+    async def get_max_turn_count(self, agent_id: str = "default_agent") -> int:
+        try:
+            res = (
+                self._client.table("agents")
+                .select("max_turn_count")
+                .eq("id", agent_id)
+                .limit(1)
+                .execute()
+            )
+            if res.data:
+                return res.data[0]["max_turn_count"]
+            return 10
+        except Exception as e:
+            logger.error("Error getting max_turn_count for agent %s: %s", agent_id, e)
+            raise
 
 
 # ── Backward-compatible alias ────────────────────────────────────────────────

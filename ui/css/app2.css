@@ -433,7 +433,7 @@
   .db-table {
     min-width: 100%;
     width: auto;
-    table-layout: auto;
+    table-layout: fixed;
     border-collapse: collapse;
     font-size: 12px;
     font-family: 'Fira Code', Menlo, monospace;
