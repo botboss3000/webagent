@@ -110,11 +110,11 @@ class SupabaseBackend(StorageBackend):
         session_id: str,
         role: str,
         content: str,
-        parent_id: str | None = None,
-        tool_name: str | None = None,
-        tool_call_id: str | None = None,
-        metadata: str | None = None,
-        input_data: str | None = None,
+        parent_id: Optional[str] = None,
+        tool_name: Optional[str] = None,
+        tool_call_id: Optional[str] = None,
+        metadata: Optional[str] = None,
+        input_data: Optional[str] = None,
     ) -> str:
         try:
             await self.assert_session_owned(user_id, session_id)
@@ -289,12 +289,12 @@ class SupabaseBackend(StorageBackend):
         title: str,
         compiled_truth: str = "",
         timeline: str = "",
-        frontmatter: dict | None = None,
+        frontmatter: Optional[dict] = None,
     ) -> dict:
         logger.warning("memory_upsert not yet implemented for Supabase backend")
         return {"slug": slug, "status": "stub"}
 
-    async def memory_get(self, user_id: str, slug: str) -> dict | None:
+    async def memory_get(self, user_id: str, slug: str) -> Optional[dict]:
         logger.warning("memory_get not yet implemented for Supabase backend")
         return None
 
@@ -303,7 +303,7 @@ class SupabaseBackend(StorageBackend):
         return False
 
     async def memory_list(
-        self, user_id: str, page_type: str | None = None
+        self, user_id: str, page_type: Optional[str] = None
     ) -> List[dict]:
         return []
 
@@ -319,7 +319,7 @@ class SupabaseBackend(StorageBackend):
         from_slug: str,
         to_slug: str,
         link_type: str,
-        context: str | None = None,
+        context: Optional[str] = None,
     ) -> dict:
         logger.warning("memory_add_link not yet implemented for Supabase backend")
         return {"status": "stub"}
@@ -328,7 +328,7 @@ class SupabaseBackend(StorageBackend):
         self,
         user_id: str,
         node_slug: str,
-        link_type: str | None = None,
+        link_type: Optional[str] = None,
         direction: str = "both",
         depth: int = 2,
     ) -> List[dict]:
@@ -341,7 +341,7 @@ class SupabaseBackend(StorageBackend):
         event_date: str,
         source: str,
         summary: str,
-        detail: str | None = None,
+        detail: Optional[str] = None,
     ) -> dict:
         logger.warning("memory_add_timeline_entry not yet implemented for Supabase backend")
         return {"status": "stub"}
@@ -419,7 +419,7 @@ class SupabaseBackend(StorageBackend):
         logger.warning("skill_track_execution not yet implemented for Supabase")
         return ""
 
-    async def skill_get_rating(self, skill_id: str, user_id: str | None = None) -> dict:
+    async def skill_get_rating(self, skill_id: str, user_id: Optional[str] = None) -> dict:
         return {"skill_id": skill_id, "score": None, "execution_count": 0}
 
     async def skill_add_feedback(
@@ -428,12 +428,12 @@ class SupabaseBackend(StorageBackend):
         logger.warning("skill_add_feedback not yet implemented for Supabase")
         return ""
 
-    async def skill_get_id_by_name(self, user_id: str, name: str) -> str | None:
+    async def skill_get_id_by_name(self, user_id: str, name: str) -> Optional[str]:
         return None
 
     # ---- Agent Assignment ----
 
-    async def get_agent_for_user(self, user_id: str) -> dict | None:
+    async def get_agent_for_user(self, user_id: str) -> Optional[dict]:
         try:
             res = (
                 self._client.table("agents")
@@ -445,6 +445,20 @@ class SupabaseBackend(StorageBackend):
             return res.data[0] if res.data else None
         except Exception as e:
             logger.error("Error getting agent for user %s: %s", user_id, e)
+            raise
+
+    async def get_agent_by_id(self, agent_id: str) -> Optional[dict]:
+        try:
+            res = (
+                self._client.table("agents")
+                .select("*")
+                .eq("id", agent_id)
+                .limit(1)
+                .execute()
+            )
+            return res.data[0] if res.data else None
+        except Exception as e:
+            logger.error("Error getting agent by id %s: %s", agent_id, e)
             raise
 
     async def create_agent_for_user(self, user_id: str) -> dict:
@@ -608,9 +622,9 @@ class SupabaseClient:
     @staticmethod
     async def insert_interaction(
         user_id: str, session_id: str, role: str, content: str,
-        parent_id: str | None = None, tool_name: str | None = None,
-        tool_call_id: str | None = None, metadata: str | None = None,
-        input_data: str | None = None,
+        parent_id: Optional[str] = None, tool_name: Optional[str] = None,
+        tool_call_id: Optional[str] = None, metadata: Optional[str] = None,
+        input_data: Optional[str] = None,
     ) -> str:
         return await SupabaseClient._get_backend().insert_interaction(
             user_id, session_id, role, content, parent_id, tool_name, tool_call_id, metadata, input_data
@@ -657,14 +671,14 @@ class SupabaseClient:
     async def memory_upsert(
         user_id: str, slug: str, page_type: str, title: str,
         compiled_truth: str = "", timeline: str = "",
-        frontmatter: dict | None = None,
+        frontmatter: Optional[dict] = None,
     ) -> dict:
         return await SupabaseClient._get_backend().memory_upsert(
             user_id, slug, page_type, title, compiled_truth, timeline, frontmatter
         )
 
     @staticmethod
-    async def memory_get(user_id: str, slug: str) -> dict | None:
+    async def memory_get(user_id: str, slug: str) -> Optional[dict]:
         return await SupabaseClient._get_backend().memory_get(user_id, slug)
 
     @staticmethod
@@ -672,7 +686,7 @@ class SupabaseClient:
         return await SupabaseClient._get_backend().memory_delete(user_id, slug)
 
     @staticmethod
-    async def memory_list(user_id: str, page_type: str | None = None) -> List[dict]:
+    async def memory_list(user_id: str, page_type: Optional[str] = None) -> List[dict]:
         return await SupabaseClient._get_backend().memory_list(user_id, page_type)
 
     @staticmethod
@@ -682,7 +696,7 @@ class SupabaseClient:
     @staticmethod
     async def memory_add_link(
         user_id: str, from_slug: str, to_slug: str,
-        link_type: str, context: str | None = None,
+        link_type: str, context: Optional[str] = None,
     ) -> dict:
         return await SupabaseClient._get_backend().memory_add_link(
             user_id, from_slug, to_slug, link_type, context
@@ -691,7 +705,7 @@ class SupabaseClient:
     @staticmethod
     async def memory_graph_query(
         user_id: str, node_slug: str,
-        link_type: str | None = None,
+        link_type: Optional[str] = None,
         direction: str = "both", depth: int = 2,
     ) -> List[dict]:
         return await SupabaseClient._get_backend().memory_graph_query(
@@ -701,7 +715,7 @@ class SupabaseClient:
     @staticmethod
     async def memory_add_timeline_entry(
         user_id: str, page_slug: str, event_date: str,
-        source: str, summary: str, detail: str | None = None,
+        source: str, summary: str, detail: Optional[str] = None,
     ) -> dict:
         return await SupabaseClient._get_backend().memory_add_timeline_entry(
             user_id, page_slug, event_date, source, summary, detail
@@ -728,7 +742,7 @@ class SupabaseClient:
         )
 
     @staticmethod
-    async def skill_get_rating(skill_id: str, user_id: str | None = None) -> dict:
+    async def skill_get_rating(skill_id: str, user_id: Optional[str] = None) -> dict:
         return await SupabaseClient._get_backend().skill_get_rating(skill_id, user_id)
 
     @staticmethod
@@ -740,5 +754,5 @@ class SupabaseClient:
         )
 
     @staticmethod
-    async def skill_get_id_by_name(user_id: str, name: str) -> str | None:
+    async def skill_get_id_by_name(user_id: str, name: str) -> Optional[str]:
         return await SupabaseClient._get_backend().skill_get_id_by_name(user_id, name)

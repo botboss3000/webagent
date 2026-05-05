@@ -25,6 +25,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from app.agent.error_classifier import classify_tool_error, ToolError
 from app.db import get_db
+from app.db.system_prompt_fragments import get_prompt_fragments
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ _client = None
 
 # ── Destructive tools that require confirmation ──
 DESTRUCTIVE_TOOLS = {"edit_source", "write_source", "delete_source",
-                     "run_command", "restart_server", "create_tool"}
+                     "run_command", "restart_server"}
 
 
 def _get_client():
@@ -132,7 +133,7 @@ async def stream_agent_events(
     user_message: str,
     system_prompt: str,
     history: Optional[List[Dict[str, Any]]] = None,
-    parent_interaction_id: str | None = None,
+    parent_interaction_id: Optional[str] = None,
     interrupt_event: Optional[asyncio.Event] = None,
     max_turns: int = 10,
 ) -> AsyncGenerator[Dict[str, Any], None]:
@@ -176,8 +177,10 @@ async def stream_agent_events(
 
             # Ask for permission to continue after 10 turns
             if turn_count == 11 and not permission_granted:
-                permission_message = "I've reached 10 conversation turns. Would you like me to continue? I can go up to 20 turns total."
-                messages.append({"role": "system", "content": permission_message})
+                fr = get_prompt_fragments()
+                permission_message = (fr.get("turn_permission_request") or "").strip()
+                if permission_message:
+                    messages.append({"role": "system", "content": permission_message})
 
             # Check if user has granted permission to continue (in their last message)
             if turn_count >= 11 and not permission_granted:
@@ -188,7 +191,16 @@ async def stream_agent_events(
                     if any(keyword in user_content for keyword in permission_keywords):
                         permission_granted = True
                         max_turns = turn_count + 10
-                        messages.append({"role": "system", "content": f"Permission granted. I'll continue for {max_turns - turn_count} more turns."})
+                        remaining_turns = max_turns - turn_count
+                        tpl = (get_prompt_fragments().get("turn_permission_granted_template") or "").strip()
+                        if tpl:
+                            try:
+                                granted_text = tpl.format(remaining_turns=remaining_turns)
+                            except (KeyError, ValueError):
+                                granted_text = (
+                                    f"Permission granted. I'll continue for {remaining_turns} more turns."
+                                )
+                            messages.append({"role": "system", "content": granted_text})
 
             # Build tool definitions from loaded tools
             tool_definitions = []
@@ -589,7 +601,7 @@ async def run_agent_loop_buffered(
     user_message: str,
     system_prompt: str,
     history: Optional[List[Dict[str, Any]]] = None,
-    parent_interaction_id: str | None = None,
+    parent_interaction_id: Optional[str] = None,
     max_turns: int = 10,
     event_callback: Optional[Any] = None,
 ) -> str:

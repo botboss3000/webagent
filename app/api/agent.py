@@ -261,6 +261,9 @@ async def agent_websocket(websocket: WebSocket):
                     "agent_id": agent["id"],
                     "max_turn_count": agent["max_turn_count"],
                 }, default=_json_default_serializer))
+            row = await db.get_agent_by_id(agent["id"])
+            if row:
+                agent = row
             max_turns = agent["max_turn_count"]
 
             # reset=True skips loading prior turns from DB for this message only (dev escape hatch)
@@ -527,7 +530,7 @@ async def agent_websocket(websocket: WebSocket):
 async def _save_chat_to_memory(
     db, user_id: str, session_id: str,
     user_message: str, assistant_reply: str,
-    parent_interaction_id: str | None = None,
+    parent_interaction_id: Optional[str] = None,
 ) -> None:
     """Save chat conversation to memory as visible tool interaction."""
     try:

@@ -27,7 +27,7 @@ class StorageBackend(ABC):
         session_id: str,
         summary: str,
         message_count: int,
-        title: str | None = None,
+        title: Optional[str] = None,
     ) -> None:
         """Insert or update a session summary."""
         ...
@@ -37,7 +37,7 @@ class StorageBackend(ABC):
     @abstractmethod
     async def fetch_interactions(
         self, user_id: str, session_id: str
-    ) -> list[InteractionRecord]:
+    ) -> List[InteractionRecord]:
         """Load all interactions for a session, ordered by created_at."""
         ...
 
@@ -48,11 +48,11 @@ class StorageBackend(ABC):
         session_id: str,
         role: str,
         content: str,
-        parent_id: str | None = None,
-        tool_name: str | None = None,
-        tool_call_id: str | None = None,
-        metadata: str | None = None,
-        input_data: str | None = None,
+        parent_id: Optional[str] = None,
+        tool_name: Optional[str] = None,
+        tool_call_id: Optional[str] = None,
+        metadata: Optional[str] = None,
+        input_data: Optional[str] = None,
     ) -> str:
         """Insert an interaction row. Returns the interaction id."""
         ...
@@ -61,8 +61,8 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def fetch_context_defaults(
-        self, context_types: list[str]
-    ) -> list[dict]:
+        self, context_types: List[str]
+    ) -> List[dict]:
         """Load default context rows where context_type is in the list."""
         ...
 
@@ -81,8 +81,8 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def fetch_context_documents(
-        self, user_id: str, context_types: list[str]
-    ) -> list[dict]:
+        self, user_id: str, context_types: List[str]
+    ) -> List[dict]:
         """Load context rows where context_type is in the list."""
         ...
 
@@ -93,7 +93,7 @@ class StorageBackend(ABC):
         context_type: str,
         title: str,
         content: str,
-        tags: Optional[list[str]] = None,
+        tags: Optional[List[str]] = None,
     ) -> str:
         """Insert a context document. Returns the id."""
         ...
@@ -125,13 +125,13 @@ class StorageBackend(ABC):
         title: str,
         compiled_truth: str = "",
         timeline: str = "",
-        frontmatter: dict | None = None,
+        frontmatter: Optional[dict] = None,
     ) -> dict:
         """Create or update a memory page. Returns the page dict."""
         ...
 
     @abstractmethod
-    async def memory_get(self, user_id: str, slug: str) -> dict | None:
+    async def memory_get(self, user_id: str, slug: str) -> Optional[dict]:
         """Get a single memory page by slug."""
         ...
 
@@ -142,15 +142,15 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def memory_list(
-        self, user_id: str, page_type: str | None = None
-    ) -> list[dict]:
+        self, user_id: str, page_type: Optional[str] = None
+    ) -> List[dict]:
         """List all memory pages, optionally filtered by type."""
         ...
 
     @abstractmethod
     async def memory_search(
         self, user_id: str, query: str, limit: int = 10
-    ) -> list[dict]:
+    ) -> List[dict]:
         """Keyword search across memory pages using FTS."""
         ...
 
@@ -161,7 +161,7 @@ class StorageBackend(ABC):
         from_slug: str,
         to_slug: str,
         link_type: str,
-        context: str | None = None,
+        context: Optional[str] = None,
     ) -> dict:
         """Add a typed edge to the knowledge graph."""
         ...
@@ -171,10 +171,10 @@ class StorageBackend(ABC):
         self,
         user_id: str,
         node_slug: str,
-        link_type: str | None = None,
+        link_type: Optional[str] = None,
         direction: str = "both",
         depth: int = 2,
-    ) -> list[dict]:
+    ) -> List[dict]:
         """Traverse the knowledge graph from a starting node."""
         ...
 
@@ -186,7 +186,7 @@ class StorageBackend(ABC):
         event_date: str,
         source: str,
         summary: str,
-        detail: str | None = None,
+        detail: Optional[str] = None,
     ) -> dict:
         """Append a new entry to a page's timeline."""
         ...
@@ -196,7 +196,7 @@ class StorageBackend(ABC):
     @abstractmethod
     async def search_sessions(
         self, user_id: str, query: str, limit: int = 5
-    ) -> list[dict]:
+    ) -> List[dict]:
         """Search across sessions and messages. Returns enriched results."""
         ...
 
@@ -205,7 +205,7 @@ class StorageBackend(ABC):
     @abstractmethod
     async def list_skills(
         self, user_id: str, limit: int = 50
-    ) -> list[dict]:
+    ) -> List[dict]:
         """List all active skills for a user (with execution stats)."""
         ...
 
@@ -217,10 +217,10 @@ class StorageBackend(ABC):
         session_id: str,
         success: bool,
         duration_ms: int,
-        interaction_id: str | None = None,
-        error_message: str | None = None,
-        input_params: dict | None = None,
-        output_summary: str | None = None,
+        interaction_id: Optional[str] = None,
+        error_message: Optional[str] = None,
+        input_params: Optional[dict] = None,
+        output_summary: Optional[str] = None,
         steps_to_complete: int = 1,
     ) -> str:
         """Record a skill execution. Returns the execution id."""
@@ -228,7 +228,7 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def skill_get_rating(
-        self, skill_id: str, user_id: str | None = None
+        self, skill_id: str, user_id: Optional[str] = None
     ) -> dict:
         """
         Compute composite rating for a skill.
@@ -242,14 +242,14 @@ class StorageBackend(ABC):
         skill_id: str,
         user_id: str,
         feedback_type: str,
-        execution_id: str | None = None,
-        message: str | None = None,
+        execution_id: Optional[str] = None,
+        message: Optional[str] = None,
     ) -> str:
         """Record user feedback on a skill execution. Returns the feedback id."""
         ...
 
     @abstractmethod
-    async def skill_get_id_by_name(self, user_id: str, name: str) -> str | None:
+    async def skill_get_id_by_name(self, user_id: str, name: str) -> Optional[str]:
         """Look up a skill's id by name for a user."""
         ...
 
@@ -268,8 +268,13 @@ class StorageBackend(ABC):
     # ---- Agent Assignment ----
 
     @abstractmethod
-    async def get_agent_for_user(self, user_id: str) -> dict | None:
+    async def get_agent_for_user(self, user_id: str) -> Optional[dict]:
         """Get the assigned agent for a user. Returns None if not assigned yet."""
+        ...
+
+    @abstractmethod
+    async def get_agent_by_id(self, agent_id: str) -> Optional[dict]:
+        """Load one agent row by primary key ``id`` (includes ``system_prompt``)."""
         ...
 
     @abstractmethod

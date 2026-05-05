@@ -74,13 +74,13 @@ class InteractionRecord(BaseModel):
 
     id: str
     session_id: str
-    parent_id: str | None = None
+    parent_id: Optional[str] = None
     role: str  # 'user', 'assistant', 'tool'
     content: str
-    tool_name: str | None = None       # for tool role
-    tool_call_id: str | None = None    # for tool role
-    metadata: str | None = None        # JSON: model, turn, duration, tokens
-    input: str | None = None           # JSON: the exact messages array sent to LLM
+    tool_name: Optional[str] = None       # for tool role
+    tool_call_id: Optional[str] = None    # for tool role
+    metadata: Optional[str] = None        # JSON: model, turn, duration, tokens
+    input: Optional[str] = None           # JSON: the exact messages array sent to LLM
     created_at: datetime
 
 
@@ -152,8 +152,8 @@ class AgentTemplate(BaseModel):
     id: str
     system_prompt: str
     max_turn_count: int
-    model: str | None = None
-    provider: str | None = None
+    model: Optional[str] = None
+    provider: Optional[str] = None
     temperature: float = 0.0
     max_tokens: int = 4096
     metadata: str = "{}"
@@ -168,8 +168,8 @@ class AgentRecord(BaseModel):
     user_id: str
     system_prompt: str
     max_turn_count: int = 10
-    model: str | None = None
-    provider: str | None = None
+    model: Optional[str] = None
+    provider: Optional[str] = None
     temperature: float = 0.0
     max_tokens: int = 4096
     status: str = "active"

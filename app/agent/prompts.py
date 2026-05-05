@@ -4,6 +4,10 @@ Prompt construction with dynamic tool descriptions from database.
 
 from typing import List, Dict, Optional
 from app.tools.loader import load_tools
+from app.db.system_prompt_fragments import (
+    format_tool_subheadings_markdown,
+    get_prompt_fragments,
+)
 import json
 
 # Section titles for public.context.context_type (Web Portal schema)
@@ -77,39 +81,30 @@ async def build_system_prompt(
                 sections.append(content)
         sections.append("")
 
-    # ---- CONFIRMATION RULE (always first in prompt so model sees it) ----
-    sections.append("# [CRITICAL RULE]")
-    sections.append("BEFORE calling ANY destructive tool (edit_source, write_source, delete_source, create_tool, run_command, restart_server), you MUST:")
-    sections.append("1. Explain to the user exactly what you plan to change and show the proposed change.")
-    sections.append("2. Wait for the user to explicitly approve before making the tool call.")
-    sections.append("3. If the user says no or expresses doubt — do NOT call the tool.")
-    sections.append("Safe tools like read_source, web_search, db_query, memory, session_search do NOT need confirmation.")
-    sections.append("")
+    fr = get_prompt_fragments()
+
+    # ---- CONFIRMATION RULE (from app/db/system_prompt.md) ----
+    critical = (fr.get("critical_rule") or "").strip()
+    if critical:
+        sections.append(critical)
+        sections.append("")
 
     # ---- Tool descriptions ----
     if user_id:
         tool_descriptions = await _get_tool_descriptions_from_db(user_id)
         sections.append(tool_descriptions)
     else:
-        # Fallback to basic tool descriptions
-        sections.append("# [TOOLS]")
-        sections.append("## web_search")
-        sections.append("Search the web for current information.")
-        sections.append("## db_query")
-        sections.append("Read or edit context documents in Supabase.")
-        sections.append("## memory")
-        sections.append("Manage persistent memories across sessions.")
-        sections.append("## session_search")
-        sections.append("Search across past conversation sessions and messages.")
-        sections.append("")
+        fallback = format_tool_subheadings_markdown(fr.get("fallback_tools") or "")
+        if fallback:
+            sections.append(fallback)
+            sections.append("")
 
     # ---- Brain context injection ----
     if brain_context:
         sections.append("# [BRAIN CONTEXT]")
-        sections.append(
-            "The following is retrieved from your personal knowledge base, "
-            "relevant to the user's current message. Use it to inform your response.\n"
-        )
+        intro = (fr.get("brain_context_intro") or "").strip()
+        if intro:
+            sections.append(intro + "\n")
         sections.append(brain_context)
         sections.append("")
 
@@ -155,23 +150,10 @@ async def _get_tool_descriptions_from_db(user_id: str) -> str:
         sections.append(description)
         sections.append("")
 
-    # Built-in tools (always shown at end)
-    sections.append("## create_tool  [⚠ REQUIRES CONFIRMATION]")
-    sections.append("Create or update a Python tool in the agent tools library. ")
-    sections.append("When you need a capability that doesn't exist yet, write Python code for it ")
-    sections.append("and call this tool to save it. The tool will be available in the next turn. ")
-    sections.append("If the tool already exists, it auto-increments the version (v1 -> v2 -> v3).")
-    sections.append("⚠ You MUST ask the user to review the code and get approval before calling this tool.")
-    sections.append("Parameters: name, description, parameters (JSON Schema), code (full async function).")
-    sections.append("")
-    sections.append("## browser_open")
-    sections.append("Open a browser to a given URL, typically for authentication flows.")
-    sections.append("")
-    sections.append("## rate_skill")
-    sections.append("Record user feedback on the last tool execution. Call this when the user ")
-    sections.append("expresses satisfaction (positive) or dissatisfaction (negative) with a result. ")
-    sections.append("Parameters: skill_name (str), feedback_type ('positive'|'negative'|'correction'), ")
-    sections.append("message (str, optional).")
-    sections.append("")
+    fr = get_prompt_fragments()
+    builtin = format_tool_subheadings_markdown(fr.get("builtin_tools_append") or "")
+    if builtin:
+        sections.append(builtin)
+        sections.append("")
 
     return "\n".join(sections)

@@ -34,12 +34,12 @@ def _uuid() -> str:
 _FTS5_QUERY_OPS = frozenset({"AND", "OR", "NOT", "NEAR"})
 
 
-def _fts5_safe_match_query(raw: str, max_tokens: int = 12, max_token_len: int = 64) -> str | None:
+def _fts5_safe_match_query(raw: str, max_tokens: int = 12, max_token_len: int = 64) -> Optional[str]:
     """Turn free text into a conservative prefix OR-query safe for FTS5 MATCH."""
     if not raw or not raw.strip():
         return None
     tokens = re.findall(r"\w+", raw, flags=re.UNICODE)
-    parts: list[str] = []
+    parts: List[str] = []
     for t in tokens:
         if len(t) < 2 or t.upper() in _FTS5_QUERY_OPS:
             continue
@@ -374,7 +374,7 @@ CREATE INDEX IF NOT EXISTS idx_agents_user ON agents(user_id);
 class LocalBackend(StorageBackend):
     """SQLite implementation of StorageBackend."""
 
-    def __init__(self, db_path: str | None = None):
+    def __init__(self, db_path: Optional[str] = None):
         self._db_path = db_path or DEFAULT_DB_PATH
         self._init_db()
 
@@ -474,7 +474,7 @@ class LocalBackend(StorageBackend):
         session_id: str,
         summary: str,
         message_count: int,
-        title: str | None = None,
+        title: Optional[str] = None,
     ) -> None:
         conn = self._get_conn()
         try:
@@ -509,7 +509,7 @@ class LocalBackend(StorageBackend):
 
     async def fetch_interactions(
         self, user_id: str, session_id: str
-    ) -> list[InteractionRecord]:
+    ) -> List[InteractionRecord]:
         await self.assert_session_owned(user_id, session_id)
         conn = self._get_conn()
         try:
@@ -527,11 +527,11 @@ class LocalBackend(StorageBackend):
         session_id: str,
         role: str,
         content: str,
-        parent_id: str | None = None,
-        tool_name: str | None = None,
-        tool_call_id: str | None = None,
-        metadata: str | None = None,
-        input_data: str | None = None,
+        parent_id: Optional[str] = None,
+        tool_name: Optional[str] = None,
+        tool_call_id: Optional[str] = None,
+        metadata: Optional[str] = None,
+        input_data: Optional[str] = None,
     ) -> str:
         await self.assert_session_owned(user_id, session_id)
         conn = self._get_conn()
@@ -553,8 +553,8 @@ class LocalBackend(StorageBackend):
     # ---- Context Defaults ----
 
     async def fetch_context_defaults(
-        self, context_types: list[str]
-    ) -> list[dict]:
+        self, context_types: List[str]
+    ) -> List[dict]:
         conn = self._get_conn()
         try:
             placeholders = ",".join("?" for _ in context_types)
@@ -627,8 +627,8 @@ class LocalBackend(StorageBackend):
     # ---- Context Documents ----
 
     async def fetch_context_documents(
-        self, user_id: str, context_types: list[str]
-    ) -> list[dict]:
+        self, user_id: str, context_types: List[str]
+    ) -> List[dict]:
         conn = self._get_conn()
         try:
             placeholders = ",".join("?" for _ in context_types)
@@ -662,7 +662,7 @@ class LocalBackend(StorageBackend):
         context_type: str,
         title: str,
         content: str,
-        tags: Optional[list[str]] = None,
+        tags: Optional[List[str]] = None,
     ) -> str:
         conn = self._get_conn()
         try:
@@ -734,7 +734,7 @@ class LocalBackend(StorageBackend):
         title: str,
         compiled_truth: str = "",
         timeline: str = "",
-        frontmatter: dict | None = None,
+        frontmatter: Optional[dict] = None,
     ) -> dict:
         conn = self._get_conn()
         try:
@@ -782,7 +782,7 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
-    async def memory_get(self, user_id: str, slug: str) -> dict | None:
+    async def memory_get(self, user_id: str, slug: str) -> Optional[dict]:
         conn = self._get_conn()
         try:
             row = conn.execute(
@@ -820,8 +820,8 @@ class LocalBackend(StorageBackend):
             conn.close()
 
     async def memory_list(
-        self, user_id: str, page_type: str | None = None
-    ) -> list[dict]:
+        self, user_id: str, page_type: Optional[str] = None
+    ) -> List[dict]:
         conn = self._get_conn()
         try:
             if page_type:
@@ -848,7 +848,7 @@ class LocalBackend(StorageBackend):
 
     async def memory_search(
         self, user_id: str, query: str, limit: int = 10
-    ) -> list[dict]:
+    ) -> List[dict]:
         """FTS5 keyword search across memory pages."""
         match_expr = _fts5_safe_match_query(query)
         if not match_expr:
@@ -882,7 +882,7 @@ class LocalBackend(StorageBackend):
         from_slug: str,
         to_slug: str,
         link_type: str,
-        context: str | None = None,
+        context: Optional[str] = None,
     ) -> dict:
         conn = self._get_conn()
         try:
@@ -910,10 +910,10 @@ class LocalBackend(StorageBackend):
         self,
         user_id: str,
         node_slug: str,
-        link_type: str | None = None,
+        link_type: Optional[str] = None,
         direction: str = "both",
         depth: int = 2,
-    ) -> list[dict]:
+    ) -> List[dict]:
         """Traverse the knowledge graph. SQLite doesn't support recursive CTEs,
         so we do a BFS in Python up to the given depth."""
         conn = self._get_conn()
@@ -968,7 +968,7 @@ class LocalBackend(StorageBackend):
         event_date: str,
         source: str,
         summary: str,
-        detail: str | None = None,
+        detail: Optional[str] = None,
     ) -> dict:
         conn = self._get_conn()
         try:
@@ -1004,7 +1004,7 @@ class LocalBackend(StorageBackend):
 
     async def search_sessions(
         self, user_id: str, query: str, limit: int = 5
-    ) -> list[dict]:
+    ) -> List[dict]:
         conn = self._get_conn()
         try:
             # Try finding summaries first
@@ -1069,7 +1069,7 @@ class LocalBackend(StorageBackend):
 
     # ---- Skills & Performance Tracking ----
 
-    async def list_skills(self, user_id: str, limit: int = 50) -> list[dict]:
+    async def list_skills(self, user_id: str, limit: int = 50) -> List[dict]:
         conn = self._get_conn()
         try:
             rows = conn.execute(
@@ -1105,10 +1105,10 @@ class LocalBackend(StorageBackend):
         session_id: str,
         success: bool,
         duration_ms: int,
-        interaction_id: str | None = None,
-        error_message: str | None = None,
-        input_params: dict | None = None,
-        output_summary: str | None = None,
+        interaction_id: Optional[str] = None,
+        error_message: Optional[str] = None,
+        input_params: Optional[dict] = None,
+        output_summary: Optional[str] = None,
         steps_to_complete: int = 1,
     ) -> str:
         """Record a skill execution. Returns the execution id."""
@@ -1135,7 +1135,7 @@ class LocalBackend(StorageBackend):
             conn.close()
 
     async def skill_get_rating(
-        self, skill_id: str, user_id: str | None = None
+        self, skill_id: str, user_id: Optional[str] = None
     ) -> dict:
         """
         Compute composite rating for a skill.
@@ -1214,8 +1214,8 @@ class LocalBackend(StorageBackend):
         skill_id: str,
         user_id: str,
         feedback_type: str,
-        execution_id: str | None = None,
-        message: str | None = None,
+        execution_id: Optional[str] = None,
+        message: Optional[str] = None,
     ) -> str:
         """Record user feedback on a skill execution. Returns the feedback id."""
         conn = self._get_conn()
@@ -1236,7 +1236,7 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
-    async def skill_get_id_by_name(self, user_id: str, name: str) -> str | None:
+    async def skill_get_id_by_name(self, user_id: str, name: str) -> Optional[str]:
         """Look up a skill's id by name for a user."""
         conn = self._get_conn()
         try:
@@ -1248,11 +1248,21 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
     
-    async def get_agent_for_user(self, user_id: str) -> dict | None:
+    async def get_agent_for_user(self, user_id: str) -> Optional[dict]:
         conn = self._get_conn()
         try:
             row = conn.execute(
                 "SELECT * FROM agents WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def get_agent_by_id(self, agent_id: str) -> Optional[dict]:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM agents WHERE id = ?", (agent_id,)
             ).fetchone()
             return dict(row) if row else None
         finally:
@@ -1421,9 +1431,9 @@ class _LocalQueryBuilder:
         self._db_path = db_path
         self._table_name = table_name
         self._select_cols = "*"
-        self._filters: list[tuple[str, str, Any]] = []  # (op, field, value)
-        self._order_by: list[tuple[str, bool]] = []  # (field, desc)
-        self._limit_val: int | None = None
+        self._filters: List[tuple[str, str, Any]] = []  # (op, field, value)
+        self._order_by: List[tuple[str, bool]] = []  # (field, desc)
+        self._limit_val: Optional[int] = None
         self._count: bool = False
 
     def select(self, columns: str = "*") -> "_LocalQueryBuilder":
@@ -1599,7 +1609,7 @@ class _LocalQueryBuilder:
 class _LocalQueryResult:
     """Mimics supabase's query result with .data attribute."""
 
-    def __init__(self, data: list[dict]):
+    def __init__(self, data: List[dict]):
         self.data = data
     def __bool__(self):
         return bool(self.data)

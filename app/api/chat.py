@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import List, Any, Dict
+from typing import List, Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -154,6 +154,10 @@ async def chat(request: ChatRequest):
                 "max_turn_count": agent["max_turn_count"],
             })
 
+        row = await db.get_agent_by_id(agent["id"])
+        if row:
+            agent = row
+
         # Build system prompt with brain context + dynamic tools
         system_prompt = await build_system_prompt(
             context_docs, brain_context, request.user_id,
@@ -300,6 +304,10 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             agent = await db.create_agent_for_user(request.user_id)
             yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'agent_assigned', 'agent_id': agent['id'], 'max_turn_count': agent['max_turn_count']})}\n\n"
 
+        row = await db.get_agent_by_id(agent["id"])
+        if row:
+            agent = row
+
         system_prompt = await build_system_prompt(
             context_docs, brain_context, request.user_id,
             agent_system_prompt=agent.get("system_prompt"),
@@ -364,7 +372,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
 async def _save_chat_to_memory(
     db, user_id: str, session_id: str,
     user_message: str, assistant_reply: str,
-    parent_interaction_id: str | None = None,
+    parent_interaction_id: Optional[str] = None,
 ) -> None:
     """Save chat conversation to memory as visible tool interaction."""
     try:

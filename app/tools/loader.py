@@ -16,8 +16,8 @@ class ToolInfo:
     name: str
     handler: Callable
     parameters: dict
-    rating: dict | None = None  # skill performance rating
-    skill_id: str | None = None  # links to skills table
+    rating: Optional[dict] = None  # skill performance rating
+    skill_id: Optional[str] = None  # links to skills table
 
 
 class ToolLoader:
@@ -108,7 +108,7 @@ class ToolLoader:
         )
 
         # ── rate_skill (record user feedback on tool executions) ──
-        async def _rate_skill_wrapper(skill_name: str, feedback_type: str, message: str | None = None):
+        async def _rate_skill_wrapper(skill_name: str, feedback_type: str, message: Optional[str] = None):
             db = get_db()
             skill_id = await db.skill_get_id_by_name(user_id, skill_name)
             if not skill_id:
