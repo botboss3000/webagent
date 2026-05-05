@@ -28,6 +28,21 @@ After **any** change that affects how the repo is structured, configured, or use
 
 **Process:** Before you consider the task done, re-read the sections above and patch whatever is now wrong or missing. If the change is tiny (e.g. typo in a comment only) and **nothing** in the table applies, you may skip README—but default to **brief README sync** whenever behavior, paths, or layout moved.
 
+## Folder .md files: read before act, update after change
+
+**Before** modifying, analyzing, or creating files in any folder:
+
+1. **Read every `.md` file** in that folder first. They contain context, instructions, config, and docs you need to follow.
+2. **Apply what you learn** — if a `.md` file specifies an approach, use it.
+3. **Recurse** — same rule for subdirectories you enter (skip `.git/`, `node_modules/`, `.venv*`, `__pycache__`, `.source-backups/`, `temp/`).
+
+**After** completing work that touches any folder:
+
+1. **Identify** all `.md` files in the affected folder(s) that describe the changed area.
+2. **Re-read** them (content may now be stale vs your changes).
+3. **Update** any stale descriptions, tables, paths, config keys, env vars, usage examples, or architecture notes.
+4. **If a root `.md` file** (like `README.md` or this file) references the changed area, update it too.
+
 ## Temporary files (non-Markdown)
 
 - Put **all temporary non-Markdown** artifacts here: scratch exports, one-off data dumps, downloaded samples, throwaway scripts output, ad-hoc logs, etc. — under **`temp/`**, unless the user explicitly authorizes a different path.

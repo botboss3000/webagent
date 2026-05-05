@@ -1,0 +1,250 @@
+"""
+User registration + auth flow for communication channels.
+
+Tracks three tiers:
+  - anonymous: first contact, no registration
+  - channel_verified: proved ownership of phone/chat ID
+  - full: email + password (cross-device linking enabled)
+
+Data stored in channel_identities and users tables.
+"""
+
+import json
+import logging
+import secrets
+import time
+from dataclasses import dataclass, field
+from typing import Optional
+
+from app.db import get_db
+
+logger = logging.getLogger(__name__)
+
+# ── Data types ───────────────────────────────────────────────────────────────
+
+
+@dataclass
+class ChannelIdentity:
+    """Represents a user on one communication channel."""
+
+    channel: str          # 'telegram', 'whatsapp', 'sms'
+    external_id: str      # chat_id, phone number, etc.
+    user_id: str          # internal: 'telegram:12345' or 'user:uuid'
+    user_tier: str        # 'anonymous', 'channel_verified', 'full'
+    display_name: str = ""
+    email: str = ""
+    email_verified: bool = False
+    linked_user_id: Optional[str] = None  # UUID in users table (cross-device)
+    metadata: dict = field(default_factory=dict)
+
+
+@dataclass
+class VerificationCode:
+    code: str
+    channel: str
+    external_id: str
+    created_at: float
+    expires_at: float
+    used: bool = False
+
+
+# ── In-memory verification codes (replace with DB for production) ──────────
+
+_verification_codes: dict[str, VerificationCode] = {}
+
+
+def _generate_code() -> str:
+    return str(secrets.randbelow(900000) + 100000)  # 6-digit
+
+
+def _code_key(channel: str, external_id: str) -> str:
+    return f"{channel}:{external_id}"
+
+
+# ── Public API ──────────────────────────────────────────────────────────────
+
+
+async def get_identity(channel: str, external_id: str) -> Optional[ChannelIdentity]:
+    """
+    Look up a channel identity from the database.
+    Returns None if this external_id has never been seen.
+    """
+    try:
+        db = get_db()
+        raw = db.get_raw_client()
+        # Try local mode first (SQLite), fall back to Supabase
+        try:
+            resp = (
+                raw.table("channel_identities")
+                .select("*")
+                .eq("channel", channel)
+                .eq("external_id", external_id)
+                .limit(1)
+                .execute()
+            )
+            rows = resp.data if hasattr(resp, 'data') else (resp or [])
+        except Exception:
+            return None
+
+        if not rows:
+            return None
+
+        row = rows[0]
+        return ChannelIdentity(
+            channel=row["channel"],
+            external_id=row["external_id"],
+            user_id=row["user_id"],
+            user_tier=row.get("user_tier", "anonymous"),
+            display_name=row.get("display_name", ""),
+            email=row.get("email", ""),
+            email_verified=bool(row.get("email_verified", False)),
+            linked_user_id=row.get("linked_user_id"),
+            metadata=json.loads(row.get("metadata", "{}")),
+        )
+    except Exception as e:
+        logger.warning("get_identity error: %s", e)
+        return None
+
+
+async def create_anonymous_identity(channel: str, external_id: str) -> ChannelIdentity:
+    """
+    Create a new anonymous identity for a first-time contact.
+    """
+    user_id = f"{channel}:{external_id}"
+    identity = ChannelIdentity(
+        channel=channel,
+        external_id=external_id,
+        user_id=user_id,
+        user_tier="anonymous",
+    )
+
+    await _upsert_identity(identity)
+    return identity
+
+
+async def upgrade_to_verified(identity: ChannelIdentity, display_name: str = "") -> ChannelIdentity:
+    """
+    Upgrade an identity from anonymous to channel_verified.
+    This means the user proved ownership of the channel.
+    """
+    identity.user_tier = "channel_verified"
+    if display_name:
+        identity.display_name = display_name
+    await _upsert_identity(identity)
+    return identity
+
+
+async def start_verification(identity: ChannelIdentity, plugin) -> str:
+    """
+    Generate and send a verification code to the user via their channel.
+    Returns the code (for logging). The code is also sent to the user.
+
+    The plugin must have a send_message method.
+    """
+    code = _generate_code()
+    key = _code_key(identity.channel, identity.external_id)
+    now = time.time()
+    _verification_codes[key] = VerificationCode(
+        code=code,
+        channel=identity.channel,
+        external_id=identity.external_id,
+        created_at=now,
+        expires_at=now + 300,  # 5 min TTL
+    )
+
+    message = (
+        f"🔐 Your verification code is: {code}\n\n"
+        f"This code expires in 5 minutes. Reply with the code to verify."
+    )
+    await plugin.send_message(identity.external_id, message)
+    return code
+
+
+async def verify_code(channel: str, external_id: str, code: str) -> bool:
+    """Check a verification code. Returns True if valid and not expired."""
+    key = _code_key(channel, external_id)
+    vc = _verification_codes.get(key)
+    if vc is None:
+        return False
+    if vc.used:
+        return False
+    if time.time() > vc.expires_at:
+        return False
+    if vc.code != code:
+        return False
+    vc.used = True
+    return True
+
+
+async def get_or_create_identity(channel: str, external_id: str) -> ChannelIdentity:
+    """
+    Get existing identity or create anonymous one.
+    This is the main entry point for webhook handlers.
+    """
+    identity = await get_identity(channel, external_id)
+    if identity is None:
+        identity = await create_anonymous_identity(channel, external_id)
+    return identity
+
+
+# ── DB helpers ──────────────────────────────────────────────────────────────
+
+
+async def _upsert_identity(identity: ChannelIdentity) -> None:
+    """Insert or update a channel identity in the database."""
+    try:
+        db = get_db()
+        raw = db.get_raw_client()
+        row = {
+            "channel": identity.channel,
+            "external_id": identity.external_id,
+            "user_id": identity.user_id,
+            "user_tier": identity.user_tier,
+            "display_name": identity.display_name,
+            "email": identity.email,
+            "email_verified": identity.email_verified,
+            "linked_user_id": identity.linked_user_id,
+            "metadata": json.dumps(identity.metadata),
+        }
+
+        # Upsert by (channel, external_id)
+        raw.table("channel_identities").upsert(
+            row, on_conflict="channel,external_id"
+        ).execute()
+    except Exception as e:
+        logger.warning("Failed to upsert identity: %s", e)
+
+
+# ── Registration system prompt ──────────────────────────────────────────────
+
+
+def get_registration_system_prompt(identity: ChannelIdentity) -> str:
+    """
+    Build a system prompt for the agent when handling an unregistered user.
+    This tells the agent to guide the user through registration.
+    """
+    return f"""
+# [SYSTEM — REGISTRATION MODE]
+
+You are talking to an unregistered user via {identity.channel}.
+
+Your job is to:
+1. Welcome them warmly
+2. Explain they can use you anonymously (limited) or register for full access
+3. If they want to register, collect their name
+4. Call `register_user(name)` tool to save their info
+5. Tell them they're now verified on this channel
+
+Rules:
+- Be friendly and helpful
+- If they want to stay anonymous, that's fine — just proceed with limited service
+- If they provide a name, register them immediately with `register_user`
+- Do NOT ask for email, password, or any sensitive info (that comes later)
+""".strip()
+
+
+def get_anonymous_limit_prompt() -> str:
+    """System prompt fragment for anonymous users — limits their turns."""
+    return """
+[NOTE: User is ANONYMOUS — 5 turn limit. Encourage registration for full access.]
+""".strip()

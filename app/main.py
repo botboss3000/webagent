@@ -38,6 +38,7 @@ from app.api.uploads import router as uploads_router
 from app.api.db_viewer import router as db_viewer_router
 from app.admin.review import router as admin_router
 from app.admin.db_mode import router as admin_db_router
+from app.api.webhooks import router as webhooks_router
 try:
     from app.admin.source import router as admin_source_router
     _HAS_SOURCE_TOOLS = True
@@ -51,6 +52,8 @@ try:
 except ImportError:
     _HAS_SETTINGS = False
     admin_settings_router = None
+
+from app.admin.communications import router as admin_communications_router
 
 # Configure logging
 logging.basicConfig(
@@ -97,6 +100,12 @@ if _HAS_SOURCE_TOOLS and admin_source_router is not None:
 
 if _HAS_SETTINGS and admin_settings_router is not None:
     app.include_router(admin_settings_router)
+
+# Register communications admin router
+app.include_router(admin_communications_router)
+
+# Register webhook router (for Telegram, WhatsApp, SMS etc.)
+app.include_router(webhooks_router)
 
 # ── Restart endpoint ──
 # POST /api/v1/restart shuts down the server process.
@@ -150,6 +159,15 @@ async def shutdown():
         await close_persistent_session()
     except Exception:
         pass
+    # Remove Telegram webhook on shutdown
+    try:
+        from app.communications.manager import get_plugin_manager
+        pm = get_plugin_manager()
+        tg = pm.get_plugin("telegram")
+        if tg and tg.enabled:
+            await tg.delete_webhook_url()
+    except Exception:
+        pass
 
 
 @app.get("/")
@@ -171,6 +189,23 @@ async def test_interface():
 async def terminal_legacy_redirect():
     """Old bookmark path; UI now lives under /ui/."""
     return RedirectResponse(url="/ui/", status_code=307)
+
+# ── Start-up: register Telegram webhook ──
+@app.on_event("startup")
+async def startup():
+    """Register communication webhooks on server start."""
+    try:
+        from app.communications.manager import get_plugin_manager
+        pm = get_plugin_manager()
+        registry = getattr(pm, "_registry", {})
+        base_url = registry.get("webhook_base_url", "")
+        if base_url:
+            tg = pm.get_plugin("telegram")
+            if tg and tg.enabled:
+                await tg.set_webhook_url(base_url)
+    except Exception as e:
+        logger.warning("Failed to register webhooks on startup: %s", e)
+
 
 if __name__ == "__main__":
     import uvicorn

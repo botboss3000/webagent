@@ -1,16 +1,17 @@
-"""Upload endpoint for attachments (images, voice, files)."""
+"""Upload endpoint for attachments (images, voice, files).
+
+File bytes are stored via app/db/attachments/ (local filesystem or Supabase Storage).
+"""
 
 import json
 import logging
 import os
-import uuid
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
-from fastapi.responses import FileResponse, JSONResponse
 
 from app.db import get_db
+from app.db.attachments import store_file, read_file, delete_file as storage_delete
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,6 @@ router = APIRouter(prefix="/api/v1/upload", tags=["upload"])
 # ── Config ──
 _MAX_SIZE_MB = int(os.environ.get("MAX_UPLOAD_SIZE_MB", "25"))
 _MAX_SIZE_BYTES = _MAX_SIZE_MB * 1024 * 1024
-_UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "uploads"))
 
 _ALLOWED_MIME_PREFIXES = (
     "image/",     # jpeg, png, gif, webp, svg
@@ -28,13 +28,6 @@ _ALLOWED_MIME_PREFIXES = (
     "application/pdf",
     "text/plain",
 )
-
-
-def _ensure_upload_dir(user_id: str) -> Path:
-    """Create per-user upload directory if needed."""
-    user_dir = _UPLOAD_DIR / user_id
-    user_dir.mkdir(parents=True, exist_ok=True)
-    return user_dir
 
 
 @router.post("")
@@ -53,11 +46,10 @@ async def upload_file(
 
     Returns attachment metadata including id and serving URL.
     """
-    # Validate file
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
-    # Check mime type
+    # Validate mime type
     mime_type = file.content_type or "application/octet-stream"
     if not mime_type.startswith(_ALLOWED_MIME_PREFIXES):
         raise HTTPException(
@@ -65,7 +57,7 @@ async def upload_file(
             detail=f"File type '{mime_type}' not allowed. Allowed: image/*, audio/*, video/*, application/pdf, text/plain",
         )
 
-    # Check file size (read first bytes to detect oversized)
+    # Read file and check size
     contents = await file.read()
     file_size = len(contents)
 
@@ -75,22 +67,21 @@ async def upload_file(
             detail=f"File too large. Max {_MAX_SIZE_MB}MB. Got {file_size / 1024 / 1024:.1f}MB",
         )
 
-    # Generate unique storage path
-    ext = ""
-    if "." in file.filename:
-        ext = file.filename.rsplit(".", 1)[1]
-        ext = f".{ext.lower()}"
-    storage_name = f"{uuid.uuid4().hex}{ext}"
-    storage_rel = f"{user_id}/{storage_name}"
+    # Store bytes via the attachment storage layer (local FS or cloud)
+    try:
+        result = await store_file(
+            user_id=user_id,
+            session_id=session_id,
+            file_bytes=contents,
+            filename=file.filename,
+            mime_type=mime_type,
+        )
+    except NotImplementedError:
+        raise HTTPException(status_code=501, detail="File storage not configured for current DB mode")
+    except IOError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to store file: {e}")
 
-    user_dir = _ensure_upload_dir(user_id)
-    dest = user_dir / storage_name
-
-    # Write file
-    with open(dest, "wb") as f:
-        f.write(contents)
-
-    # Compute optional metadata (e.g. audio duration placeholder)
+    # Compute optional metadata hints
     meta = {}
     if mime_type.startswith("audio/"):
         meta["encoding"] = "recorded"
@@ -106,19 +97,18 @@ async def upload_file(
             original_name=file.filename,
             mime_type=mime_type,
             size_bytes=file_size,
-            storage_path=storage_rel,
+            storage_path=result["storage_path"],
             metadata=meta,
         )
     except Exception as e:
         # Clean up file on DB failure
-        if dest.exists():
-            dest.unlink()
+        await storage_delete(result["storage_path"])
         logger.error(f"Failed to insert attachment record: {e}")
         raise HTTPException(status_code=500, detail="Failed to store attachment metadata")
 
     return {
         "attachment_id": att_id,
-        "url": f"/uploads/{storage_rel}",
+        "url": result["public_url"],
         "original_name": file.filename,
         "mime_type": mime_type,
         "size_bytes": file_size,
@@ -143,11 +133,8 @@ async def delete_attachment(attachment_id: str):
     if not att:
         raise HTTPException(status_code=404, detail="Attachment not found")
 
-    # Delete file
-    file_path = _UPLOAD_DIR / att["storage_path"]
-    if file_path.exists():
-        file_path.unlink()
-
+    # Delete bytes
+    await storage_delete(att["storage_path"])
     # Delete DB record
     await db.delete_attachment(attachment_id)
     return {"status": "deleted", "attachment_id": attachment_id}

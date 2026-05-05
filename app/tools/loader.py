@@ -145,6 +145,80 @@ class ToolLoader:
             parameters=_ATTACH_TOOL_DEF["parameters"],
         )
 
+        # ── Communication plugin tools (Telegram, WhatsApp, etc.) ──
+        try:
+            from app.communications.manager import get_plugin_manager
+            pm = get_plugin_manager()
+            for tool_def in pm.get_all_tools():
+                _name = tool_def["name"]
+                if _name in tools:
+                    continue
+                _plugin = next(
+                    (p for p in pm.get_enabled_plugins()
+                     if any(t["name"] == _name for t in p.get_tools())),
+                    None
+                )
+                if _plugin is None:
+                    continue
+                # Closure capture by value via default args
+                def _build_handler(_p, _n):
+                    async def _handler(**kw):
+                        text = kw.get("text", "")
+                        recipient = kw.get("chat_id") or kw.get("to") or kw.get("phone")
+                        if not recipient:
+                            return json.dumps({"error": f"missing recipient for {_n}"})
+                        return await _p.send_message(str(recipient), text)
+                    return _handler
+                tools[_name] = ToolInfo(
+                    name=_name,
+                    handler=_build_handler(_plugin, _name),
+                    parameters=tool_def["parameters"],
+                )
+        except Exception as e:
+            logger.warning("Failed to inject communication plugin tools: %s", e)
+
+        # ── register_user (auth tool, always available) ──
+        async def _register_user_wrapper(name: str, source_channel: str = ""):
+            """Register a user who just verified their channel identity."""
+            import json
+            from app.communications.auth import get_identity, upgrade_to_verified, ChannelIdentity
+
+            # The user_id passed to load_tools tells us who the agent is talking about.
+            # But registration happens via the channel, so we need to find the identity.
+            # The user_id format is "channel:external_id"
+            if ":" in user_id:
+                chan, ext_id = user_id.split(":", 1)
+            else:
+                return json.dumps({"error": "cannot determine channel identity"})
+
+            identity = await get_identity(chan, ext_id)
+            if identity is None:
+                return json.dumps({"error": "identity not found"})
+
+            if identity.user_tier == "full":
+                return json.dumps({"status": "ok", "message": "Already fully registered."})
+
+            identity = await upgrade_to_verified(identity, display_name=name)
+            return json.dumps({
+                "status": "ok",
+                "user_tier": identity.user_tier,
+                "display_name": identity.display_name,
+                "message": f"User registered as {name} on {chan}.",
+            })
+
+        tools["register_user"] = ToolInfo(
+            name="register_user",
+            handler=_register_user_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "User's display name"},
+                    "source_channel": {"type": "string", "description": "Which channel they came from (telegram, whatsapp, etc.)"},
+                },
+                "required": ["name"],
+            },
+        )
+
         # ── Source management tools (in admin/ — delete to lock down) ──
         try:
             from app.admin.source_tools import inject_source_tools

@@ -3,19 +3,18 @@ Tool for reading attachment content (images, text files, PDFs).
 
 Registered dynamically so the agent can call read_attachment(attachment_id)
 to inspect files the user uploaded.
+
+File bytes are fetched via app/db/attachments/ (local filesystem or Supabase Storage).
 """
 
 import json
 import logging
-import os
-from pathlib import Path
 from typing import Optional
 
 from app.db import get_db
+from app.db.attachments import read_file
 
 logger = logging.getLogger(__name__)
-
-_UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "uploads"))
 
 
 TOOL_DEFINITION = {
@@ -47,7 +46,7 @@ async def read_attachment(attachment_id: str) -> str:
         attachment_id: The UUID of the attachment to read.
 
     Returns:
-        A string with the file's content or metadata description.
+        A JSON string with the file's content or metadata description.
     """
     db = get_db()
     att = await db.get_attachment(attachment_id)
@@ -58,21 +57,24 @@ async def read_attachment(attachment_id: str) -> str:
         })
 
     mime = att["mime_type"]
-    path = _UPLOAD_DIR / att["storage_path"]
+    storage_path = att["storage_path"]
+    size_str = _format_size(att["size_bytes"])
 
-    if not path.exists():
+    # Fetch bytes
+    file_bytes = await read_file(storage_path)
+    if file_bytes is None:
         return json.dumps({
             "status": "error",
-            "message": f"File not found on disk: {att['storage_path']}",
+            "message": f"File not found on storage: {storage_path}",
         })
 
-    size_str = _format_size(att["size_bytes"])
+    # Build a public-facing URL hint for image/audio/video types
+    public_url = f"/uploads/{storage_path}"
 
     # ── Text files ──
     if mime in ("text/plain", "text/markdown", "text/csv", "text/html", "application/json"):
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-            # Truncate to avoid blowing the context
+            text = file_bytes.decode("utf-8", errors="replace")
             max_chars = 10000
             if len(text) > max_chars:
                 text = text[:max_chars] + f"\n\n... [truncated at {max_chars} chars]"
@@ -87,7 +89,7 @@ async def read_attachment(attachment_id: str) -> str:
         except Exception as e:
             return json.dumps({
                 "status": "error",
-                "message": f"Failed to read text file: {e}",
+                "message": f"Failed to decode text file: {e}",
             })
 
     # ── Images (placeholder — real OCR requires tesseract or vision model) ──
@@ -100,7 +102,7 @@ async def read_attachment(attachment_id: str) -> str:
             "size": size_str,
             "content": (
                 f"[Image file: {att['original_name']} ({mime}, {size_str})]\n"
-                f"The image is accessible at: /uploads/{att['storage_path']}\n"
+                f"The image is accessible at: {public_url}\n"
                 "Note: Local OCR is not yet available. If you have vision capabilities, "
                 "describe the image to the user based on its filename and metadata."
             ),
@@ -123,7 +125,7 @@ async def read_attachment(attachment_id: str) -> str:
             "duration_seconds": duration,
             "content": (
                 f"[Audio file: {att['original_name']} ({mime}, {size_str})]\n"
-                f"Playable at: /uploads/{att['storage_path']}\n"
+                f"Playable at: {public_url}\n"
                 "Transcription not yet available. Summarize based on filename."
             ),
         }, indent=2)
@@ -138,7 +140,7 @@ async def read_attachment(attachment_id: str) -> str:
             "size": size_str,
             "content": (
                 f"[PDF file: {att['original_name']} ({size_str})]\n"
-                f"Downloadable at: /uploads/{att['storage_path']}\n"
+                f"Downloadable at: {public_url}\n"
                 "PDF text extraction not yet available."
             ),
         }, indent=2)

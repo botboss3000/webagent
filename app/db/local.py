@@ -387,6 +387,42 @@ CREATE TABLE IF NOT EXISTS attachments (
 CREATE INDEX IF NOT EXISTS idx_attachments_user ON attachments(user_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_session ON attachments(session_id);
 
+-- ============================================================
+-- Communication channels (Telegram, WhatsApp, SMS, etc.)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS channel_identities (
+    id              TEXT PRIMARY KEY,
+    channel         TEXT NOT NULL,
+    external_id     TEXT NOT NULL,
+    user_id         TEXT NOT NULL,
+    user_tier       TEXT NOT NULL DEFAULT 'anonymous'
+                    CHECK (user_tier IN ('anonymous', 'channel_verified', 'full')),
+    display_name    TEXT NOT NULL DEFAULT '',
+    email           TEXT NOT NULL DEFAULT '',
+    email_verified  INTEGER NOT NULL DEFAULT 0,
+    linked_user_id  TEXT,
+    metadata        TEXT NOT NULL DEFAULT '{}',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(channel, external_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_channel_user ON channel_identities(user_id);
+CREATE INDEX IF NOT EXISTS idx_channel_channel_ext ON channel_identities(channel, external_id);
+
+CREATE TABLE IF NOT EXISTS linking_codes (
+    id              TEXT PRIMARY KEY,
+    code            TEXT NOT NULL UNIQUE,
+    source_user_id  TEXT NOT NULL,
+    target_channel  TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at      TEXT NOT NULL,
+    used            INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_linking_codes_code ON linking_codes(code);
+
 """
 
 

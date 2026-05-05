@@ -8,7 +8,7 @@ A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional *
 - **WebSocket agent** — `GET` upgrade to `/api/v1/agent/ws`: streaming tokens, tool events, pipeline steps (**loopback clients only**).
 - **Context** — Prompt slices from `context_type` / `doc_type`; if a user has no rows, **`context_templates`** are copied into per-user context on first chat.
 - **Memory** — Brain-style lookup before each chat turn; optional background save of chat snippets into memory.
-- **Attachments** — Image, audio, video, and file uploads. Users attach files via the UI (📎 button, drag & drop, 🎤 voice recording). Files upload to **`/api/v1/upload`**, stored under **`uploads/`**, and the agent accesses them with the **`read_attachment`** tool. Supports image preview, audio player, and download links inline in chat bubbles.
+- **Attachments** — Image, audio, video, and file uploads. Users attach files via the UI (📎 button in footer, drag & drop onto chat messages or footer area, 🎤 voice recording). Files upload via **`POST /api/v1/upload`** and bytes are persisted through **`app/db/attachments/`** (local filesystem in dev, Supabase Storage in production — see `app/db/SUPABASE_STORAGE.md`). Metadata is stored in the **`attachments`** table (local SQLite or Supabase). The agent accesses files with the **`read_attachment`** built-in tool. Supports image preview, audio/video players, and download links inline in chat bubbles. Attachments persist per-session and survive server restarts.
 - **Tools** — Dynamic tools from the DB (JSON schemas in **`app/tools/loader.py`**), including Playwright **`browser.py`** and built-in **`read_attachment`**, **`create_tool`**, **`rate_skill`**.
 - **OpenRouter** — Model from `OPENROUTER_MODEL` (see `.env.example`; e.g. `deepseek/deepseek-v4-flash`).
 - **Dual storage** — **`cloud`** (Supabase) vs **`local`** (SQLite file **`app/db/local.db`**). Mode is stored in **`app/db_mode.json`** and switched via **`/admin/db/*`**.
@@ -31,12 +31,23 @@ The agent uses a single unified execution engine (`app/agent/loop.py`) that serv
           +-- (HTTP SSE) -----> [ app/api/chat.py ]  (SSE Route: live unidirectional)
           |
           +-- (HTTP POST) ----> [ app/api/chat.py ]  (Sync Route: buffers until end)
+          |
+          +-- (HTTP Upload) --> [ app/api/uploads.py ]  (Multipart POST async from UI)
+          |                            |
+          |                     [ app/db/attachments/file_store.py ]
+          |                     store_file()  → bytes saved + DB row
+          |                            |
+          |                     Returns { attachment_id, url } to client
+          |                            |
+          +<--- attachment_ids included in next WS message ----------+
                                         |
                                         v
                             +--------------------------+
                             | ONE UNIFIED ENGINE       |
                             | (app/agent/loop.py)      |
                             +--------------------------+
+                                        |
+                                        +--> 0. Resolve attachment_ids → inject [USER ATTACHMENTS] into system prompt
                                         |
                                         +--> 1. Build System Prompt & Fetch Memory
                                         |
@@ -50,10 +61,13 @@ The agent uses a single unified execution engine (`app/agent/loop.py`) that serv
              ^                          |       +-> Validate Tool Calls & Check Guardrails
              |                          |       |
           [CLIENT]                      |       +-> Execute Tools in Parallel
+                                        |       |    read_attachment(attachment_id)
+                                        |       |      → read_file() from storage
+                                        |       |      → return content to agent
                                         |       |
                                         |       +-> Track Skill Execution & Save to DB
                                         |
-                                        +--> 3. Return Final Response
+                                        +--> 3. Return Final Response (attachments rendered inline)
                                         |
                                         +--> 4. Async Background Memory Save
 ```
@@ -65,20 +79,21 @@ The agent uses a single unified execution engine (`app/agent/loop.py`) that serv
 | **`main.py`** | FastAPI app: routers, CORS, no-cache for `/ui/`, **`StaticFiles`** for `/ui/` and `/screenshots`, **`GET /test`**, **`GET /health`**, favicon from `ui/favicon.svg`, **`POST /api/v1/restart`**, shutdown (browser + terminal). |
 | **`api/chat.py`** | **`POST /api/v1/chat`**, **`POST /api/v1/chat/stream`**, **`POST /api/v1/chat/interrupt`** — context load, memory search, prompt build, attachment resolution, **`session_history`** → **`loop.stream_agent_events`** / **`run_agent_loop_buffered`**, **`interactions`**; pipeline events for visualizers. |
 | **`api/agent.py`** | **`WebSocket /api/v1/agent/ws`** — **`loop.stream_agent_events`**; reloads session from **`interactions`** each message; resolves attachment references from WS message. |
-| **`api/uploads.py`** | **`POST /api/v1/upload`** — multipart file upload (images, audio, video, PDF, text). **`GET /api/v1/upload/{id}`** — metadata lookup. **`DELETE /api/v1/upload/{id}`** — delete. Files saved under **`uploads/{user_id}/{uuid}.ext`**. |
+| **`api/uploads.py`** | **`POST /api/v1/upload`** — multipart file upload (images, audio, video, PDF, text). **`GET /api/v1/upload/{id}`** — metadata lookup. **`DELETE /api/v1/upload/{id}`** — delete. File bytes stored via `app/db/attachments/`. |
 | **`api/terminal.py`** | **`WebSocket /api/v1/terminal/ws`** — browser shell (PTY / **`pywinpty`** on Windows). |
 | **`api/db_viewer.py`** | **`/api/v1/db/*`** — SQLite introspection; DB files under **`app/db/`** (default filename **`local.db`** for the UI query param `db=`). |
-| **`agent/loop.py`** | Unified multi-turn loop (streaming + buffered): tool validation, parallel tool runs, pipeline events. |
+| **`agent/loop.py`** | Unified multi-turn loop (streaming + buffered): tool validation, parallel tool runs, pipeline events. Emits `attachment` event type for frontend file rendering. |
 | **`agent/session_history.py`** | Maps **`interactions`** rows → OpenAI-style **`messages`** for the active session (excludes internal memory tools). |
 | **`agent/prompts.py`** | System prompt from context, brain results, tools, attachment context. Includes **`format_attachments_for_prompt()`** helper. |
 | **`agent/error_classifier.py`** | Structured tool errors (**used on the WebSocket / streaming path**). |
 | **`db/__init__.py`** | **`get_db()`** → **`SupabaseBackend`** or **`LocalBackend`** from persisted mode. |
 | **`db/supabase.py`** | Cloud: **`sessions`**, **`interactions`**, **`context`**, **`context_templates`**, **`attachments`**, memories / tools / skills per shared schema. |
 | **`db/local.py`** | Local SQLite (e.g. **`context_documents`**, **`attachments`**) and related tables beside **`local.db`**. |
+| **`db/attachments/`** | **`file_store.py`** — file byte storage abstraction. Dispatches to local filesystem (`uploads/`) or Supabase Storage based on `db_mode.json`. Exports `store_file()`, `read_file()`, `delete_file()`. See `app/db/SUPABASE_STORAGE.md` for cloud setup. |
 | **`db/interface.py`** | **`StorageBackend`** protocol with **`insert_attachment`**, **`get_attachment`**, **`get_session_attachments`**, **`delete_attachment`**. |
-| **`tools/`** | **`loader`**, **`registry`**, **`tracker`**, **`browser`**, **`read_attachment`** (built-in tool for reading uploaded files). |
+| **`tools/`** | **`loader`**, **`registry`**, **`tracker`**, **`browser`**, **`read_attachment`** (built-in tool for reading uploaded files via `app/db/attachments/`). |
 | **`models/schemas.py`** | Pydantic models (`ChatRequest`, etc.). |
-| **`admin/`** | **`review`** (`/admin/...`), **`db_mode`** (`/admin/db/...`), **`settings`**, **`guardrails`**, optional **`source`** / **`source_tools`**. |
+| **`admin/`** | **`review`** (`/admin/...`), **`db_mode`** (`/admin/db/...`), **`settings`**, **`guardrails`**, **`communications`** (plugin mgmt), optional **`source`** / **`source_tools`**. |
 | **`openai_compat.py`** | OpenAI-compatible client wiring for OpenRouter. |
 
 ### Frontend (`ui/`)
@@ -90,13 +105,15 @@ Single-page app: **`index.html`**, CSS (`app1.css`, `app2.css`, `app3.css`, `loo
 ```
 webAgent/
 ├── app/                    # Python package (see table above)
+│   └── db/
+│       └── attachments/    # File storage abstraction (store_file / read_file / delete_file)
 ├── tests/                  # e.g. test_session_history.py (unittest)
 ├── ui/                     # Static UI + test_interface.html
 ├── uploads/                # User-uploaded files (images, voice, docs; mounted at /uploads)
 ├── scripts/
 │   ├── start_webAgent.sh   # Unix: cd to repo root, background uvicorn :8000
 │   └── seed_tools.py       # Optional tool DB seeding
-├── migrations/             # Ad-hoc SQL snapshots; see migrations/README.md
+├── migrations/             # Ad-hoc SQL snapshots (includes 007_channel_identities, 008_linking_codes); see migrations/README.md
 ├── supabase/migrations/    # e.g. 005_memory_system.sql (Supabase CLI / team workflow)
 ├── screenshots/            # Mounted at /screenshots
 ├── android/                # Optional Android wrapper (Java + embedded Python)
@@ -151,6 +168,8 @@ pip install -r requirements.txt
 
 3. **Cloud (Supabase)** — If you use **`cloud`** mode, apply your team’s canonical schema (often the **Web Portal** monorepo migration, e.g. `Web Portal/supabase/migrations/20260130120000_webagent_complete_schema.sql`, when that sibling repo exists). The **`migrations/`** folder in *this* repo holds extra or historical SQL; read **`migrations/README.md`** for how it is being used.
 
+  > **New (v0.3+):** `007_create_channel_identities.sql` and `008_create_linking_codes.sql` add tables for the communication plugin system (Telegram, WhatsApp, SMS). The **local** backend auto-creates these; on **Supabase**, apply via the SQL editor.
+
 4. Run the server:
 
 ```bash
@@ -190,7 +209,7 @@ Minimal JSON body:
 
 **`session_id`** must exist in **`sessions`** for that **`user_id`**.
 
-Optional fields include **`documents`** and legacy **`history`** — see **`ChatRequest`** in **`app/models/schemas.py`**. **Model context is rebuilt from `interactions` in the DB** for that `session_id`; you do not need to resend **`history`** after a refresh (it is ignored for the transcript).
+Optional fields include **`documents`**, legacy **`history`**, and **`attachment_ids`** (list of UUIDs from prior uploads) — see **`ChatRequest`** in **`app/models/schemas.py`**. When `attachment_ids` are provided, the agent sees a `[USER ATTACHMENTS]` section in its system prompt and can use the **`read_attachment`** tool to inspect file contents. **Model context is rebuilt from `interactions` in the DB** for that `session_id`; you do not need to resend **`history`** after a refresh (it is ignored for the transcript).
 
 Example:
 
