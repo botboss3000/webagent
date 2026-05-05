@@ -8,7 +8,8 @@ A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional *
 - **WebSocket agent** — `GET` upgrade to `/api/v1/agent/ws`: streaming tokens, tool events, pipeline steps (**loopback clients only**).
 - **Context** — Prompt slices from `context_type` / `doc_type`; if a user has no rows, **`context_templates`** are copied into per-user context on first chat.
 - **Memory** — Brain-style lookup before each chat turn; optional background save of chat snippets into memory.
-- **Tools** — Dynamic tools from the DB (JSON schemas in **`app/tools/loader.py`**), including Playwright **`browser.py`**.
+- **Attachments** — Image, audio, video, and file uploads. Users attach files via the UI (📎 button, drag & drop, 🎤 voice recording). Files upload to **`/api/v1/upload`**, stored under **`uploads/`**, and the agent accesses them with the **`read_attachment`** tool. Supports image preview, audio player, and download links inline in chat bubbles.
+- **Tools** — Dynamic tools from the DB (JSON schemas in **`app/tools/loader.py`**), including Playwright **`browser.py`** and built-in **`read_attachment`**, **`create_tool`**, **`rate_skill`**.
 - **OpenRouter** — Model from `OPENROUTER_MODEL` (see `.env.example`; e.g. `deepseek/deepseek-v4-flash`).
 - **Dual storage** — **`cloud`** (Supabase) vs **`local`** (SQLite file **`app/db/local.db`**). Mode is stored in **`app/db_mode.json`** and switched via **`/admin/db/*`**.
 - **Web UI** — Static app at **`/ui/`** (chat, DB viewer, terminal, stream/loop). **`/terminal`** redirects to **`/ui/`**.
@@ -62,26 +63,27 @@ The agent uses a single unified execution engine (`app/agent/loop.py`) that serv
 | Module | Role |
 |--------|------|
 | **`main.py`** | FastAPI app: routers, CORS, no-cache for `/ui/`, **`StaticFiles`** for `/ui/` and `/screenshots`, **`GET /test`**, **`GET /health`**, favicon from `ui/favicon.svg`, **`POST /api/v1/restart`**, shutdown (browser + terminal). |
-| **`api/chat.py`** | **`POST /api/v1/chat`**, **`POST /api/v1/chat/stream`**, **`POST /api/v1/chat/interrupt`** — context load, memory search, prompt build, **`session_history`** → **`loop.stream_agent_events`** / **`run_agent_loop_buffered`**, **`interactions`**; pipeline events for visualizers. |
-| **`api/agent.py`** | **`WebSocket /api/v1/agent/ws`** — **`loop.stream_agent_events`**; reloads session from **`interactions`** each message. |
+| **`api/chat.py`** | **`POST /api/v1/chat`**, **`POST /api/v1/chat/stream`**, **`POST /api/v1/chat/interrupt`** — context load, memory search, prompt build, attachment resolution, **`session_history`** → **`loop.stream_agent_events`** / **`run_agent_loop_buffered`**, **`interactions`**; pipeline events for visualizers. |
+| **`api/agent.py`** | **`WebSocket /api/v1/agent/ws`** — **`loop.stream_agent_events`**; reloads session from **`interactions`** each message; resolves attachment references from WS message. |
+| **`api/uploads.py`** | **`POST /api/v1/upload`** — multipart file upload (images, audio, video, PDF, text). **`GET /api/v1/upload/{id}`** — metadata lookup. **`DELETE /api/v1/upload/{id}`** — delete. Files saved under **`uploads/{user_id}/{uuid}.ext`**. |
 | **`api/terminal.py`** | **`WebSocket /api/v1/terminal/ws`** — browser shell (PTY / **`pywinpty`** on Windows). |
 | **`api/db_viewer.py`** | **`/api/v1/db/*`** — SQLite introspection; DB files under **`app/db/`** (default filename **`local.db`** for the UI query param `db=`). |
 | **`agent/loop.py`** | Unified multi-turn loop (streaming + buffered): tool validation, parallel tool runs, pipeline events. |
 | **`agent/session_history.py`** | Maps **`interactions`** rows → OpenAI-style **`messages`** for the active session (excludes internal memory tools). |
-| **`agent/prompts.py`** | System prompt from context, brain results, tools. |
+| **`agent/prompts.py`** | System prompt from context, brain results, tools, attachment context. Includes **`format_attachments_for_prompt()`** helper. |
 | **`agent/error_classifier.py`** | Structured tool errors (**used on the WebSocket / streaming path**). |
 | **`db/__init__.py`** | **`get_db()`** → **`SupabaseBackend`** or **`LocalBackend`** from persisted mode. |
-| **`db/supabase.py`** | Cloud: **`sessions`**, **`interactions`**, **`context`**, **`context_templates`**, memories / tools / skills per shared schema. |
-| **`db/local.py`** | Local SQLite (e.g. **`context_documents`**) and related tables beside **`local.db`**. |
-| **`db/interface.py`** | **`StorageBackend`** protocol. |
-| **`tools/`** | **`loader`**, **`registry`**, **`tracker`**, **`browser`**. |
+| **`db/supabase.py`** | Cloud: **`sessions`**, **`interactions`**, **`context`**, **`context_templates`**, **`attachments`**, memories / tools / skills per shared schema. |
+| **`db/local.py`** | Local SQLite (e.g. **`context_documents`**, **`attachments`**) and related tables beside **`local.db`**. |
+| **`db/interface.py`** | **`StorageBackend`** protocol with **`insert_attachment`**, **`get_attachment`**, **`get_session_attachments`**, **`delete_attachment`**. |
+| **`tools/`** | **`loader`**, **`registry`**, **`tracker`**, **`browser`**, **`read_attachment`** (built-in tool for reading uploaded files). |
 | **`models/schemas.py`** | Pydantic models (`ChatRequest`, etc.). |
 | **`admin/`** | **`review`** (`/admin/...`), **`db_mode`** (`/admin/db/...`), **`settings`**, **`guardrails`**, optional **`source`** / **`source_tools`**. |
 | **`openai_compat.py`** | OpenAI-compatible client wiring for OpenRouter. |
 
 ### Frontend (`ui/`)
 
-Single-page app: **`index.html`**, CSS (`app1.css`, `app2.css`, `app3.css`, `loop.css`), ES modules under **`js/`** — e.g. **`main.js`**, **`chat.js`**, **`agentWs.js`**, **`stream.js`**, **`loop.js`**, **`tabs.js`**, **`toolLog.js`**, **`terminal.js`**, **`dbMode.js`**, **`sessions.js`**, **`js/db/`** (data browser). **`test_interface.html`** is also here and is served at **`GET /test`**.
+Single-page app: **`index.html`**, CSS (`app1.css`, `app2.css`, `app3.css`, `loop.css`), ES modules under **`js/`** — e.g. **`main.js`**, **`chat.js`**, **`agentWs.js`**, **`stream.js`**, **`loop.js`**, **`tabs.js`**, **`toolLog.js`**, **`terminal.js`**, **`dbMode.js`**, **`sessions.js`**, **`attachments.js`** (file upload, voice recording, drag & drop, preview chips), **`js/db/`** (data browser). **`test_interface.html`** is also here and is served at **`GET /test`**.
 
 ### Directory tree (abbreviated)
 
@@ -90,6 +92,7 @@ webAgent/
 ├── app/                    # Python package (see table above)
 ├── tests/                  # e.g. test_session_history.py (unittest)
 ├── ui/                     # Static UI + test_interface.html
+├── uploads/                # User-uploaded files (images, voice, docs; mounted at /uploads)
 ├── scripts/
 │   ├── start_webAgent.sh   # Unix: cd to repo root, background uvicorn :8000
 │   └── seed_tools.py       # Optional tool DB seeding
@@ -101,6 +104,7 @@ webAgent/
 ├── temp/                   # Scratch files incl. Markdown drafts (see agent.md); roadmap: temp/FUTURE_PLANS.md
 ├── .github/workflows/      # CI (e.g. APK build)
 ├── webAgent.bat            # Windows: uvicorn loop + restart support
+├── uploads/                # Uploaded attachments directory (auto-created, gitignored)
 ├── Dockerfile
 ├── requirements.txt
 ├── pyproject.toml
@@ -128,6 +132,8 @@ cp .env.example .env          # Windows (cmd): copy .env.example .env
 | `SUPABASE_SERVICE_ROLE_KEY` | Service role key (**required in cloud mode**) |
 | `ENVIRONMENT` | e.g. `development` |
 | `LOG_LEVEL` | e.g. `INFO` |
+| `MAX_UPLOAD_SIZE_MB` | Max file upload size in MB (default: 25) |
+| `UPLOAD_DIR` | Directory for uploaded files (default: `uploads`) |
 
 In **local** mode, Supabase vars are not required for storage; you still need **`OPENROUTER_API_KEY`** (and usually **`OPENROUTER_MODEL`**) for LLM calls.
 
@@ -159,6 +165,8 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 | `http://localhost:8000/docs` | Swagger |
 | `http://localhost:8000/ui/` | Full UI |
 | `http://localhost:8000/test` | Minimal HTML chat (`ui/test_interface.html`) |
+| `http://localhost:8000/uploads/` | Served uploaded files directory |
+| `http://localhost:8000/docs` | Swagger UI (includes upload endpoint docs) |
 
 **Unix quick start (background + logs):** `bash scripts/start_webAgent.sh` (works from any cwd; script `cd`s to repo root).
 

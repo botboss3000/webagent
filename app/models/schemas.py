@@ -31,6 +31,7 @@ class ChatRequest(BaseModel):
     message: str
     documents: Optional[List[ContextDocumentPayload]] = None
     history: Optional[List[HistoryMessagePayload]] = None
+    attachment_ids: Optional[List[str]] = None
 
 
 class ChatResponse(BaseModel):

@@ -34,6 +34,7 @@ class NoCacheMiddleware(BaseHTTPMiddleware):
 from app.api.chat import router as chat_router
 from app.api.terminal import router as terminal_router
 from app.api.agent import router as agent_router
+from app.api.uploads import router as uploads_router
 from app.api.db_viewer import router as db_viewer_router
 from app.admin.review import router as admin_router
 from app.admin.db_mode import router as admin_db_router
@@ -87,6 +88,7 @@ app.add_middleware(NoCacheMiddleware)
 app.include_router(chat_router)
 app.include_router(terminal_router)
 app.include_router(agent_router)
+app.include_router(uploads_router)
 app.include_router(db_viewer_router)
 app.include_router(admin_router)
 app.include_router(admin_db_router)
@@ -120,6 +122,15 @@ app.include_router(restart_router)
 _SCREENSHOTS_DIR = _APP_DIR.parent / "screenshots"
 _SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/screenshots", StaticFiles(directory=str(_SCREENSHOTS_DIR)), name="screenshots")
+
+_UPLOAD_DIR = _APP_DIR.parent / "uploads"
+_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+try:
+    app.mount("/uploads", StaticFiles(directory=str(_UPLOAD_DIR)), name="uploads")
+    logger.info("Uploads directory mounted at /uploads")
+except Exception as e:
+    logger.warning("Could not mount /uploads: %s", e)
 
 _UI_DIR = _APP_DIR.parent / "ui"
 app.mount("/ui", StaticFiles(directory=str(_UI_DIR), html=True), name="ui")

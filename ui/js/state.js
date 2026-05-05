@@ -73,7 +73,7 @@ export function bindDom() {
   app.tStat = document.getElementById('terminal-status');
   app.aDot = document.getElementById('agent-dot');
   app.aStat = document.getElementById('agent-status');
-  app.chatMessages = document.getElementById('chat-messages');
+  app.chatMessages = document.getElementById('chat-messages-inner');
   app.chatInput = document.getElementById('chat-input');
   app.chatSend = document.getElementById('chat-send');
   app.toolLogContent = document.getElementById('tool-log-content');

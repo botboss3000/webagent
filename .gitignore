@@ -43,3 +43,7 @@ logs/
 .DS_Store
 Thumbs.db
 nul
+
+# Uploads
+uploads/*
+!uploads/.gitkeep

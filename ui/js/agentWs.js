@@ -111,6 +111,19 @@ export function connectAgent() {
         // Acknowledgment that streaming stopped. No UI action needed.
         break;
 
+      case 'attachment':
+        // Render attachment previews in the current agent bubble
+        if (event.attachments && event.attachments.length > 0) {
+          window.__streamAttachments = event.attachments;
+          // If there's an existing streaming bubble, mark it
+          const bubbles = app.chatMessages.querySelectorAll('.chat-bubble.agent');
+          const last = bubbles[bubbles.length - 1];
+          if (last && !last.classList.contains('has-attachments')) {
+            last.classList.add('has-attachments');
+          }
+        }
+        break;
+
       case 'tool_call':
       case 'tool_result':
         break;

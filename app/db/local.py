@@ -368,6 +368,25 @@ CREATE TABLE IF NOT EXISTS agents (
 
 CREATE INDEX IF NOT EXISTS idx_agents_user ON agents(user_id);
 
+-- ============================================================
+-- Attachment storage
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS attachments (
+    id              TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL,
+    session_id      TEXT REFERENCES sessions(id),
+    original_name   TEXT NOT NULL,
+    mime_type       TEXT NOT NULL,
+    size_bytes      INTEGER NOT NULL,
+    storage_path    TEXT NOT NULL,
+    metadata        TEXT NOT NULL DEFAULT '{}',  -- JSON: duration (voice), dimensions (image)
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachments_user ON attachments(user_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_session ON attachments(session_id);
+
 """
 
 
@@ -1385,6 +1404,69 @@ class LocalBackend(StorageBackend):
         except Exception as e:
             logger.error("Error clearing interrupt for %s: %s", session_id, e)
             raise
+        finally:
+            conn.close()
+
+    # ---- Attachments ----
+
+    async def insert_attachment(
+        self,
+        user_id: str,
+        session_id: str,
+        original_name: str,
+        mime_type: str,
+        size_bytes: int,
+        storage_path: str,
+        metadata: Optional[dict] = None,
+    ) -> str:
+        """Insert an attachment record. Returns the attachment id."""
+        att_id = _uuid()
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                """INSERT INTO attachments (id, user_id, session_id, original_name, mime_type, size_bytes, storage_path, metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (att_id, user_id, session_id, original_name, mime_type, size_bytes, storage_path,
+                 json.dumps(metadata or {})),
+            )
+            conn.commit()
+            logger.debug("Inserted attachment %s: %s", att_id, original_name)
+            return att_id
+        finally:
+            conn.close()
+
+    async def get_attachment(self, attachment_id: str) -> Optional[dict]:
+        """Get a single attachment by id."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM attachments WHERE id = ?", (attachment_id,)
+            ).fetchone()
+            if not row:
+                return None
+            return dict(row)
+        finally:
+            conn.close()
+
+    async def get_session_attachments(self, session_id: str) -> List[dict]:
+        """Get all attachments for a session."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM attachments WHERE session_id = ? ORDER BY created_at",
+                (session_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def delete_attachment(self, attachment_id: str) -> bool:
+        """Delete an attachment record by id."""
+        conn = self._get_conn()
+        try:
+            cur = conn.execute("DELETE FROM attachments WHERE id = ?", (attachment_id,))
+            conn.commit()
+            return cur.rowcount > 0
         finally:
             conn.close()
 

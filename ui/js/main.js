@@ -5,6 +5,7 @@ import { initDbModeUi } from './dbMode.js';
 import { initTerminal, connectTerminal } from './terminal.js';
 import { initChat } from './chat.js';
 import { initReconnect } from './reconnect.js';
+import { ensureAttachmentsInit } from './attachments.js';
 import { connectAgent } from './agentWs.js';
 import { initTabs } from './tabs.js';
 import { initStream } from './stream.js';
@@ -17,6 +18,7 @@ bindDom();
 initDbModeUi();
 initTerminal();
 initChat();
+ensureAttachmentsInit();
 initReconnect();
 registerSessionApi();
 

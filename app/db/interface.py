@@ -292,6 +292,37 @@ class StorageBackend(ABC):
         """Get the max_turn_count for a given agent_id. DEPRECATED — use get_agent_for_user instead."""
         ...
 
+    # ---- Attachments ----
+
+    @abstractmethod
+    async def insert_attachment(
+        self,
+        user_id: str,
+        session_id: str,
+        original_name: str,
+        mime_type: str,
+        size_bytes: int,
+        storage_path: str,
+        metadata: Optional[dict] = None,
+    ) -> str:
+        """Insert an attachment record. Returns the attachment id."""
+        ...
+
+    @abstractmethod
+    async def get_attachment(self, attachment_id: str) -> Optional[dict]:
+        """Get a single attachment by id."""
+        ...
+
+    @abstractmethod
+    async def get_session_attachments(self, session_id: str) -> List[dict]:
+        """Get all attachments for a session."""
+        ...
+
+    @abstractmethod
+    async def delete_attachment(self, attachment_id: str) -> bool:
+        """Delete an attachment record by id."""
+        ...
+
     # ---- Interrupt Handling ----
 
     @abstractmethod

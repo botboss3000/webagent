@@ -111,6 +111,43 @@ async def build_system_prompt(
     return "\n".join(sections).strip()
 
 
+def format_attachments_for_prompt(attachments: List[Dict]) -> str:
+    """
+    Format attached files into a concise summary for the system prompt.
+
+    Args:
+        attachments: List of attachment dicts with original_name, mime_type, size_bytes, id
+
+    Returns:
+        Formatted string the agent can read to know what user attached.
+    """
+    if not attachments:
+        return ""
+    lines = ["# [USER ATTACHMENTS]"]
+    lines.append("The user attached the following files to this message:")
+    lines.append("")
+    for att in attachments:
+        name = att.get("original_name", "unknown")
+        mime = att.get("mime_type", "application/octet-stream")
+        size_kb = att.get("size_bytes", 0) / 1024
+        size_str = f"{size_kb:.1f}KB" if size_kb < 1024 else f"{size_kb/1024:.1f}MB"
+        att_id = att.get("id", "?")
+        # Categorize for agent clarity
+        if mime.startswith("image/"):
+            icon = "🖼"
+        elif mime.startswith("audio/"):
+            icon = "🎤"
+        elif mime.startswith("video/"):
+            icon = "🎬"
+        else:
+            icon = "📎"
+        lines.append(f"  - {icon} **{name}** ({mime}, {size_str})")
+        lines.append(f"    attachment_id: `{att_id}` — use `read_attachment` tool to process")
+    lines.append("")
+    lines.append("Use the `read_attachment` tool to read content from attached files.")
+    return "\n".join(lines)
+
+
 async def _get_tool_descriptions_from_db(user_id: str) -> str:
     """
     Get formatted tool descriptions from the database.

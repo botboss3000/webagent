@@ -16,7 +16,7 @@ from websockets.exceptions import ConnectionClosedOK # Added for handling WebSoc
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app.agent.prompts import build_system_prompt
+from app.agent.prompts import build_system_prompt, format_attachments_for_prompt
 from app.agent.loop import stream_agent_events
 from app.agent.session_history import build_openai_history_from_session
 from app.db import get_db
@@ -333,11 +333,36 @@ async def agent_websocket(websocket: WebSocket):
                             for r in (brain_results or [])],
             }, default=_json_default_serializer))
 
+            # ── Resolve attachment references ──
+            attachment_ids = current_message_data.get("attachment_ids")
+            attachment_context = None
+            if attachment_ids:
+                attachment_docs = []
+                for att_id in attachment_ids:
+                    att = await db.get_attachment(att_id)
+                    if att:
+                        attachment_docs.append(att)
+                if attachment_docs:
+                    attachment_context = format_attachments_for_prompt(attachment_docs)
+                    # Emit attachment event to frontend
+                    await websocket.send_text(json.dumps({
+                        "type": "attachment", "level": "agent",
+                        "attachments": [
+                            {"id": a["id"], "original_name": a["original_name"],
+                             "mime_type": a["mime_type"], "size_bytes": a["size_bytes"],
+                             "storage_path": a.get("storage_path", "")}
+                            for a in attachment_docs
+                        ],
+                    }, default=_json_default_serializer))
+
             # Build the complete system prompt for the LLM
             system_prompt = await build_system_prompt(
                 context_docs, brain_context, user_id,
                 agent_system_prompt=agent.get("system_prompt"),
             )
+            # Append attachment context after base prompt
+            if attachment_context:
+                system_prompt = system_prompt + "\n\n" + attachment_context
 
             # ── Pipeline: prompt built ──
             from app.tools.loader import load_tools as lt

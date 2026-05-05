@@ -563,6 +563,72 @@ class SupabaseBackend(StorageBackend):
             logger.error("Error clearing interrupt for %s: %s", session_id, e)
             raise
 
+    # ---- Attachments ----
+
+    async def insert_attachment(
+        self,
+        user_id: str,
+        session_id: str,
+        original_name: str,
+        mime_type: str,
+        size_bytes: int,
+        storage_path: str,
+        metadata: Optional[dict] = None,
+    ) -> str:
+        """Insert an attachment record. Returns the attachment id."""
+        import uuid
+        att_id = str(uuid.uuid4())
+        res = (
+            self._client.table("attachments")
+            .insert({
+                "id": att_id,
+                "user_id": user_id,
+                "session_id": session_id,
+                "original_name": original_name,
+                "mime_type": mime_type,
+                "size_bytes": size_bytes,
+                "storage_path": storage_path,
+                "metadata": json.dumps(metadata or {}),
+            })
+            .execute()
+        )
+        logger.debug("Inserted attachment %s: %s", att_id, original_name)
+        return att_id
+
+    async def get_attachment(self, attachment_id: str) -> Optional[dict]:
+        """Get a single attachment by id."""
+        res = (
+            self._client.table("attachments")
+            .select("*")
+            .eq("id", attachment_id)
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            return res.data[0]
+        return None
+
+    async def get_session_attachments(self, session_id: str) -> List[dict]:
+        """Get all attachments for a session."""
+        res = (
+            self._client.table("attachments")
+            .select("*")
+            .eq("session_id", session_id)
+            .order("created_at")
+            .execute()
+        )
+        return res.data or []
+
+    async def delete_attachment(self, attachment_id: str) -> bool:
+        """Delete an attachment record by id."""
+        res = (
+            self._client.table("attachments")
+            .delete()
+            .eq("id", attachment_id)
+            .execute()
+        )
+        return len(res.data or []) > 0
+
     async def check_interrupt(self, session_id: str) -> bool:
         try:
             res = (

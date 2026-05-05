@@ -137,6 +137,14 @@ class ToolLoader:
             },
         )
 
+        # ── read_attachment (always available) ──
+        from app.tools.read_attachment import read_attachment as _builtin_read_attachment, TOOL_DEFINITION as _ATTACH_TOOL_DEF
+        tools["read_attachment"] = ToolInfo(
+            name="read_attachment",
+            handler=_builtin_read_attachment,
+            parameters=_ATTACH_TOOL_DEF["parameters"],
+        )
+
         # ── Source management tools (in admin/ — delete to lock down) ──
         try:
             from app.admin.source_tools import inject_source_tools

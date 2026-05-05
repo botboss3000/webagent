@@ -2,6 +2,7 @@
 
 import { app } from './state.js';
 import { connectAgent } from './agentWs.js';
+import { addAttachmentsToMessage, renderAttachmentElement } from './attachments.js';
 
 function escapeHtml(str) {
   return str
@@ -29,6 +30,14 @@ function addChatBubble(role, text, extraClass, imageUrl) {
     img.style.marginTop = '8px';
     img.style.border = '1px solid #444';
     bubble.appendChild(img);
+  }
+  // Add attachment elements if present
+  if (role === 'agent' && window.__streamAttachments && extraClass === 'has-attachments') {
+    for (const att of window.__streamAttachments) {
+      const el = renderAttachmentElement(att);
+      if (el) bubble.appendChild(el);
+    }
+    window.__streamAttachments = null;
   }
   // Add stop button on streaming agent bubbles
   if (role === 'agent' && extraClass === 'streaming') {
@@ -76,6 +85,14 @@ function updateLastBubble(text, extraClass, imageUrl) {
       img.style.border = '1px solid #444';
       last.appendChild(img);
     }
+    // Add attachment elements if present
+    if (window.__streamAttachments && extraClass === 'has-attachments') {
+      for (const att of window.__streamAttachments) {
+        const el = renderAttachmentElement(att);
+        if (el) last.appendChild(el);
+      }
+      window.__streamAttachments = null;
+    }
     // Add stop button if still streaming
     if (extraClass === 'streaming') {
       const stopBtn = document.createElement('button');
@@ -99,16 +116,17 @@ function sendMessage() {
   addChatBubble('user', text);
 
   if (!app.isProcessing) {
-    addChatBubble('agent', '…', 'streaming');
+    addChatBubble('agent', '\u2026', 'streaming');
     app.isProcessing = true;
     app.chatSend.disabled = true;
   }
 
-  const msg = JSON.stringify({
+  const msg = JSON.stringify(addAttachmentsToMessage({
     message: text,
     session_id: app.currentSessionId,
     user_id: app.currentUserId,
-  });
+  }));
+  if (app.clearPendingAttachments) app.clearPendingAttachments();
 
   if (app.agentWs && app.agentWs.readyState === WebSocket.OPEN) {
     app.agentWs.send(msg);

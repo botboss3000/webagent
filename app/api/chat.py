@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from app.models.schemas import ChatRequest, ChatResponse
 from app.db import get_db
-from app.agent.prompts import build_system_prompt
+from app.agent.prompts import build_system_prompt, format_attachments_for_prompt
 
 from app.agent.loop import run_agent_loop_buffered, stream_agent_events
 from app.agent.session_history import build_openai_history_from_session
@@ -158,11 +158,33 @@ async def chat(request: ChatRequest):
         if row:
             agent = row
 
+        # ── Resolve attachment references ──
+        attachment_context = None
+        if request.attachment_ids:
+            attachment_docs = []
+            for att_id in request.attachment_ids:
+                att = await db.get_attachment(att_id)
+                if att:
+                    attachment_docs.append(att)
+            if attachment_docs:
+                attachment_context = format_attachments_for_prompt(attachment_docs)
+                await _emit_to_visualizers(request.session_id, {
+                    "type": "attachment", "level": "agent",
+                    "attachments": [
+                        {"id": a["id"], "original_name": a["original_name"],
+                         "mime_type": a["mime_type"], "size_bytes": a["size_bytes"],
+                         "storage_path": a.get("storage_path", "")}
+                        for a in attachment_docs
+                    ],
+                })
+
         # Build system prompt with brain context + dynamic tools
         system_prompt = await build_system_prompt(
             context_docs, brain_context, request.user_id,
             agent_system_prompt=agent.get("system_prompt"),
         )
+        if attachment_context:
+            system_prompt = system_prompt + "\n\n" + attachment_context
 
         # ── Pipeline: prompt built ──
         from app.tools.loader import load_tools
@@ -308,10 +330,24 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         if row:
             agent = row
 
+        # ── Resolve attachment references (SSE) ──
+        attachment_context = None
+        if request.attachment_ids:
+            attachment_docs = []
+            for att_id in request.attachment_ids:
+                att = await db.get_attachment(att_id)
+                if att:
+                    attachment_docs.append(att)
+            if attachment_docs:
+                attachment_context = format_attachments_for_prompt(attachment_docs)
+                yield f"data: {json.dumps({'type': 'attachment', 'level': 'agent', 'attachments': [{'id': a['id'], 'original_name': a['original_name'], 'mime_type': a['mime_type'], 'size_bytes': a['size_bytes'], 'storage_path': a.get('storage_path', '')} for a in attachment_docs]})}\n\n"
+
         system_prompt = await build_system_prompt(
             context_docs, brain_context, request.user_id,
             agent_system_prompt=agent.get("system_prompt"),
         )
+        if attachment_context:
+            system_prompt = system_prompt + "\n\n" + attachment_context
 
         from app.tools.loader import load_tools
         tools = await load_tools(request.user_id)
