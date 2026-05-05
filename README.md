@@ -32,15 +32,16 @@ The agent uses a single unified execution engine (`app/agent/loop.py`) that serv
           |
           +-- (HTTP POST) ----> [ app/api/chat.py ]  (Sync Route: buffers until end)
           |
-          +-- (HTTP Upload) --> [ app/api/uploads.py ]  (Multipart POST async from UI)
-          |                            |
+          +-- (HTTP Upload) --> [ app/api/uploads.py ]  (Multipart POST async from UI) <<<UPLOAD SHOULD BE AVAILABLE FROM ALL SOURCES, LIKE UI, TELEGRAM, AND OTHER CONNECTIONS (ONLY UI AND TELEGRAM FOR NOW, OTHERS TO COME)>>>
+          |                             |
           |                     [ app/db/attachments/file_store.py ]
           |                     store_file()  → bytes saved + DB row
-          |                            |
+          |                             |
           |                     Returns { attachment_id, url } to client
-          |                            |
-          +<--- attachment_ids included in next WS message ----------+
+          |                             |
+          +<--- attachment_ids included in next WS message
                                         |
+                          <<<DOES IT GO TO DB FIRST? IF SO, DOE THE ENGINE GET NOTIFIED? THAT'S HOW IT WOULD WORK WITH FUTURE SUPABASE IMPLEMENTATION>>>
                                         v
                             +--------------------------+
                             | ONE UNIFIED ENGINE       |
@@ -49,27 +50,29 @@ The agent uses a single unified execution engine (`app/agent/loop.py`) that serv
                                         |
                                         +--> 0. Resolve attachment_ids → inject [USER ATTACHMENTS] into system prompt
                                         |
-                                        +--> 1. Build System Prompt & Fetch Memory
+                                        +--> 1. Build System Prompt <<<NEED TO ELABORATE WHERE SYSTEM PROMPT IS COMING FROM. WHICH FILES, WHICH LOGIC, DB CELLS, ETC>>>
+                                        |
+                                        +--> 1. Fetch Memory <<<WHAT IS LOGIC FOR MEMORY FETCH? SEPERATE PY SCRIPT? HOW DOES IT PARSE, ETC>>>
                                         |
 +------------------------------------+  +--> 2. While turn_count < max_turns:
 | INTERRUPT DB/CACHE                 |  |       |
-| Tracks flags for session_id        |  |       +-> Check Client Disconnect OR Interrupt Flag
+| Tracks flags for session_id        |  |       +-> Check Client Disconnect OR Interrupt Flag <<<CLIENT DISCONNECT SHOULD NOT BE A CONCERN. need to remove the disconnect logic.. AGENT SHOLD WORK OFFLINE AND SEND OUTPUT TO DB. INTERRUPT FLAG FROM WHICH CLIENT SOURCE?>>>
 +------------------------------------+  |       |    (If true: Break & Emit Interrupted)
              ^                          |       |
-             |  (Sets Flag)             |       +-> Stream LLM Call (Tools = Auto)
+             |  (Sets Flag)             |       +-> Stream LLM Call (Tools = Auto) <<<what does tool=auto mean? where does it get the library of available tools and how to use them?>>>
  [ HTTP POST /api/v1/chat/interrupt ]   |       |
-             ^                          |       +-> Validate Tool Calls & Check Guardrails
+             ^                          |       +-> Validate Tool Calls & Check Guardrails <<<need to show the guardrails>>>
              |                          |       |
-          [CLIENT]                      |       +-> Execute Tools in Parallel
+          [CLIENT]                      |       +-> Execute Tools in Parallel <<<does this mean agent can call multiple tools?
                                         |       |    read_attachment(attachment_id)
                                         |       |      → read_file() from storage
                                         |       |      → return content to agent
                                         |       |
-                                        |       +-> Track Skill Execution & Save to DB
+                                        |       +-> Track Skill Execution & Save to DB <<<show logic>>>
                                         |
                                         +--> 3. Return Final Response (attachments rendered inline)
                                         |
-                                        +--> 4. Async Background Memory Save
+                                        +--> 4. Async Background Memory Save <<<does it go to db, and then to user (ui or telegram)?>>>
 ```
 
 ### Backend (`app/`)
