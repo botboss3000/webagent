@@ -15,8 +15,8 @@ COPY . .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Expose port
-EXPOSE 8000
+# Cloud Run sets PORT (default 8080 locally / in Dockerfile expectations)
+EXPOSE 8080
 
-# Run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Shell form so $PORT is expanded (exec JSON form does not substitute env vars)
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
