@@ -17,7 +17,7 @@ A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional *
 
 ## Architecture and module map
 
-### Unified Agent Engine
+### Unified Agent Engine Workflow
 
 The agent uses a single unified execution engine (`app/agent/loop.py`) that serves both streaming (WebSocket/SSE) and buffered (HTTP POST) requests:
 
