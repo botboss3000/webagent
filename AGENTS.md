@@ -22,8 +22,8 @@ Key URLs: `/health`, `/index.html` (UI), `/docs` (Swagger), `/test` (minimal tes
 
 ### Environment
 
-- Copy `.env.example` → `.env` and set `OPENROUTER_API_KEY` for LLM functionality.
-- Without the API key, the server starts and all non-LLM endpoints work (health, upload, DB viewer, UI serving). The chat endpoint will return a 401 error from OpenRouter.
+- Copy `.env.example` → `.env` (no secrets required in the file — defaults work for local dev).
+- The LLM provider and API key are configured **through the app UI** (Settings panel) or via `POST /admin/settings/provider`. The key is persisted in `provider.json` at the project root and applied at runtime — no environment variable needed.
 - The app auto-creates `app/db/local.db` (SQLite) on first request — no manual migration needed in local mode.
 
 ### Gotchas
