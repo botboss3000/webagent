@@ -1,5 +1,7 @@
 'use strict';
 
+import { apiPath } from './config.js';
+
 /**
  * Settings module — provider and API key configuration.
  * Saves to backend via /admin/settings/provider endpoint.
@@ -45,7 +47,7 @@ function closeSettings() {
 
 async function loadSettings() {
     try {
-        const res = await fetch('/admin/settings/provider');
+        const res = await fetch(apiPath('/admin/settings/provider'));
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         SETTINGS_PROVIDER.value = data.provider || 'openrouter';
@@ -71,7 +73,7 @@ async function saveSettings() {
     }
 
     try {
-        const res = await fetch('/admin/settings/provider', {
+        const res = await fetch(apiPath('/admin/settings/provider'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ provider, api_key: apiKey }),

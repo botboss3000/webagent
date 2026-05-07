@@ -3,6 +3,7 @@
 import { app } from '../state.js';
 import { getPKColumns } from './columns.js';
 import { cancelEditing, renderTableData } from './query-render.js';
+import { apiPath } from '../config.js';
 
 export async function saveEdit(cell, newValue) {
   if (!app.editingCell || !app.dbCurrentResult) return;
@@ -25,7 +26,7 @@ export async function saveEdit(cell, newValue) {
 
   try {
     const dbName = document.getElementById('db-select').value;
-    const res = await fetch('/api/v1/db/update', {
+    const res = await fetch(apiPath('/api/v1/db/update'), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
