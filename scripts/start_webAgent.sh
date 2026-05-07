@@ -61,7 +61,7 @@ if curl -s http://localhost:8000/health > /dev/null; then
     echo ""
     echo "Web interface:"
     echo "  Minimal tester:  http://localhost:8000/test"
-    echo "  Full UI:         http://localhost:8000/ui/"
+    echo "  Full UI:         http://localhost:8000/index.html"
     echo ""
     echo "Connect your web app to:"
     echo "  http://localhost:8000/api/v1/chat"
