@@ -1,6 +1,6 @@
 # webAgent
 
-A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional **Supabase** or **local SQLite** persistence, and a **vanilla JS** UI under `/ui/`.
+A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional **Supabase** or **local SQLite** persistence, and a **vanilla JS** UI at **`/index.html`** (static assets under `/ui/`).
 
 ## Features
 
@@ -12,7 +12,7 @@ A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional *
 - **Tools** — Dynamic tools from the DB (JSON schemas in **`app/tools/loader.py`**), including Playwright **`browser.py`** and built-in **`read_attachment`**, **`create_tool`**, **`rate_skill`**.
 - **OpenRouter** — Model from `OPENROUTER_MODEL` (see `.env.example`; e.g. `deepseek/deepseek-v4-flash`).
 - **Dual storage** — **`cloud`** (Supabase) vs **`local`** (SQLite file **`app/db/local.db`**). Mode is stored in **`app/db_mode.json`** and switched via **`/admin/db/*`**.
-- **Web UI** — Static app at **`/ui/`** (chat, DB viewer, terminal, stream/loop). **`/terminal`** redirects to **`/ui/`**.
+- **Web UI** — Main page at **`/index.html`** (chat, DB viewer, terminal, stream/loop). **`/terminal`** redirects to **`/index.html`**.
 - **Minimal tester** — **`GET /test`** serves **`ui/test_interface.html`** (same origin as the API).
 
 ## Architecture and module map
@@ -79,7 +79,7 @@ The agent uses a single unified execution engine (`app/agent/loop.py`) that serv
 
 | Module | Role |
 |--------|------|
-| **`main.py`** | FastAPI app: routers, CORS, no-cache for `/ui/`, **`StaticFiles`** for `/ui/` and `/screenshots`, **`GET /test`**, **`GET /health`**, favicon from `ui/favicon.svg`, **`POST /api/v1/restart`**, shutdown (browser + terminal). |
+| **`main.py`** | FastAPI app: routers, CORS, no-cache for `/ui/` and `/index.html`, **`StaticFiles`** for `/ui/` and `/screenshots`, **`GET /index.html`**, **`GET /test`**, **`GET /health`**, favicon from `ui/favicon.svg`, **`POST /api/v1/restart`**, shutdown (browser + terminal). |
 | **`api/chat.py`** | **`POST /api/v1/chat`**, **`POST /api/v1/chat/stream`**, **`POST /api/v1/chat/interrupt`** — context load, memory search, prompt build, attachment resolution, **`session_history`** → **`loop.stream_agent_events`** / **`run_agent_loop_buffered`**, **`interactions`**; pipeline events for visualizers. |
 | **`api/agent.py`** | **`WebSocket /api/v1/agent/ws`** — **`loop.stream_agent_events`**; reloads session from **`interactions`** each message; resolves attachment references from WS message. |
 | **`api/uploads.py`** | **`POST /api/v1/upload`** — multipart file upload (images, audio, video, PDF, text). **`GET /api/v1/upload/{id}`** — metadata lookup. **`DELETE /api/v1/upload/{id}`** — delete. File bytes stored via `app/db/attachments/`. |
@@ -114,7 +114,7 @@ webAgent/
 ├── ui/                     # Static UI + test_interface.html
 ├── uploads/                # User-uploaded files (images, voice, docs; mounted at /uploads)
 ├── scripts/
-│   ├── start_webAgent.sh   # Unix: cd to repo root, background uvicorn :8000
+│   ├── start_webAgent.sh   # Unix: cd to repo root, background uvicorn (default :8080, PORT= overrides)
 │   └── seed_tools.py       # Optional tool DB seeding
 ├── migrations/             # Ad-hoc SQL snapshots (includes 007_channel_identities, 008_linking_codes); see migrations/README.md
 ├── supabase/migrations/    # e.g. 005_memory_system.sql (Supabase CLI / team workflow)
@@ -176,19 +176,19 @@ pip install -r requirements.txt
 4. Run the server:
 
 ```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 ```
 
 **Useful URLs**
 
 | URL | Purpose |
 |-----|---------|
-| `http://localhost:8000/` | API root JSON |
-| `http://localhost:8000/docs` | Swagger |
-| `http://localhost:8000/ui/` | Full UI |
-| `http://localhost:8000/test` | Minimal HTML chat (`ui/test_interface.html`) |
-| `http://localhost:8000/uploads/` | Served uploaded files directory |
-| `http://localhost:8000/docs` | Swagger UI (includes upload endpoint docs) |
+| `http://localhost:8080/` | API root JSON |
+| `http://localhost:8080/docs` | Swagger |
+| `http://localhost:8080/index.html` | Full UI |
+| `http://localhost:8080/test` | Minimal HTML chat (`ui/test_interface.html`) |
+| `http://localhost:8080/uploads/` | Served uploaded files directory |
+| `http://localhost:8080/docs` | Swagger UI (includes upload endpoint docs) |
 
 **Unix quick start (background + logs):** `bash scripts/start_webAgent.sh` (works from any cwd; script `cd`s to repo root).
 
@@ -217,7 +217,7 @@ Optional fields include **`documents`**, legacy **`history`**, and **`attachment
 Example:
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/chat" \
+curl -X POST "http://localhost:8080/api/v1/chat" \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "user_123",
@@ -238,7 +238,7 @@ Common types include `agent`, `user`, `skills`, `tools`, `tasks`, and optionally
 ## Quick test
 
 1. Start **`uvicorn`** as above.
-2. Open **`/ui/`** or **`/test`**.
+2. Open **`/index.html`** or **`/test`**.
 3. Ensure a **session** row exists for your **`user_id`** / **`session_id`**.
 4. Chat; defaults apply on first use when the DB has **`context_templates`**.
 

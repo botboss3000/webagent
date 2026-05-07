@@ -25,7 +25,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 class NoCacheMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
-        if request.url.path.startswith("/ui/"):
+        p = request.url.path
+        if p.startswith("/ui/") or p == "/index.html":
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
@@ -142,7 +143,9 @@ except Exception as e:
     logger.warning("Could not mount /uploads: %s", e)
 
 _UI_DIR = _APP_DIR.parent / "ui"
-app.mount("/ui", StaticFiles(directory=str(_UI_DIR), html=True), name="ui")
+app.mount("/ui", StaticFiles(directory=str(_UI_DIR)), name="ui")
+
+_ROOT_INDEX_HTML = _APP_DIR.parent / "index.html"
 
 
 # ── Cleanup on shutdown ──
@@ -172,7 +175,15 @@ async def shutdown():
 
 @app.get("/")
 async def root():
-    return {"message": "Welcome to webAgent API", "docs": "/docs"}
+    return {"message": "Welcome to webAgent API", "docs": "/docs", "ui": "/index.html"}
+
+
+@app.get("/index.html", response_class=HTMLResponse, include_in_schema=False)
+async def main_ui():
+    """Serve the main web UI (static assets remain under /ui/)."""
+    if not _ROOT_INDEX_HTML.is_file():
+        return HTMLResponse("<p>Missing index.html</p>", status_code=404)
+    return HTMLResponse(content=_ROOT_INDEX_HTML.read_text(encoding="utf-8"))
 
 @app.get("/health")
 async def health_check():
@@ -187,8 +198,8 @@ async def test_interface():
 
 @app.get("/terminal")
 async def terminal_legacy_redirect():
-    """Old bookmark path; UI now lives under /ui/."""
-    return RedirectResponse(url="/ui/", status_code=307)
+    """Old bookmark path; redirect to the main UI."""
+    return RedirectResponse(url="/index.html", status_code=307)
 
 # ── Start-up: register Telegram webhook ──
 @app.on_event("startup")
