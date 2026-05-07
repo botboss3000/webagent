@@ -157,6 +157,8 @@ cp .env.example .env          # Windows (cmd): copy .env.example .env
 
 In **local** mode, Supabase vars are not required for storage; you still need **`OPENROUTER_API_KEY`** (and usually **`OPENROUTER_MODEL`**) for LLM calls.
 
+Provider, API key, and model can **also** be configured at runtime via the ⚙️ **Settings** modal in the UI (gear icon next to Cloud/Local toggle). Changes are saved to **`provider.json`** in the project root and applied on next server start. The API key is masked in the UI after saving.
+
 ## Installation
 
 1. Clone the repository and enter the directory.

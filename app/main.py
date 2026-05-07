@@ -16,6 +16,11 @@ _DOTENV_PATH = _APP_DIR.parent / ".env"
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=_DOTENV_PATH)
 
+# Apply saved provider config (model, API key) from provider.json
+# so environment vars are set before any imports that need them
+from app.admin.settings import apply_provider_config
+apply_provider_config()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse

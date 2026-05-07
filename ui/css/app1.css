@@ -431,3 +431,20 @@
     background: #1a1a2e;
     border: 1px solid #2a2a4a;
     color: #c0caf5;
+  }
+
+  /* ── Model dropdown ── */
+  .model-dropdown-item {
+    padding: 8px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    color: #c0caf5;
+    border-bottom: 1px solid #2a2a4a;
+    transition: background 0.1s;
+  }
+  .model-dropdown-item:hover {
+    background: #2f3b5c;
+  }
+  .model-dropdown-item:last-child {
+    border-bottom: none;
+  }

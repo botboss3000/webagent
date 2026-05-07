@@ -22,6 +22,7 @@ MANIFEST
 
 # Environments
 .env
+provider.json
 .venv
 env/
 venv/
