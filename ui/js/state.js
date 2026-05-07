@@ -80,8 +80,8 @@ export function bindDom() {
   app.toolLogToggle = document.getElementById('tool-log-toggle');
   app.toolLogPanel = document.getElementById('tool-log-panel');
   app.toolLogClose = document.getElementById('tool-log-close');
-  app.segCloud = document.getElementById('seg-cloud');
-  app.segLocal = document.getElementById('seg-local');
+  app.segCloud = document.getElementById('menu-seg-cloud');
+  app.segLocal = document.getElementById('menu-seg-local');
   app.dbToolbar = document.getElementById('db-toolbar');
 
   app.localUserId =

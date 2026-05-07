@@ -448,3 +448,99 @@
   .model-dropdown-item:last-child {
     border-bottom: none;
   }
+
+  /* ── Settings Dropdown Menu ── */
+  .settings-dropdown {
+    position: relative;
+    display: inline-block;
+  }
+  .settings-dropdown-content {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    z-index: 1000;
+    min-width: 140px;
+    padding: 4px 0;
+  }
+  .settings-menu-item {
+    padding: 8px 16px;
+    color: #c0caf5;
+    font-size: 13px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    position: relative;
+    transition: background 0.15s;
+  }
+  .settings-menu-item:hover {
+    background: #2f3b5c;
+  }
+  .settings-menu-item .arrow {
+    font-size: 10px;
+    color: #565f89;
+  }
+  
+  /* Submenus */
+  .settings-submenu {
+    display: none;
+    position: absolute;
+    top: -5px; /* align with parent item */
+    left: 100%; /* open to the right */
+    margin-left: 4px;
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    z-index: 1001;
+    min-width: 160px;
+    padding: 4px 0;
+    max-height: 400px;
+    overflow-y: auto;
+  }
+  /* Show submenu on hover of parent item */
+  .settings-menu-item:hover > .settings-submenu,
+  .settings-submenu:hover {
+    display: block;
+  }
+  
+  .submenu-item {
+    padding: 8px 16px;
+    color: #c0caf5;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s;
+    background: none;
+    border: none;
+    width: 100%;
+    text-align: left;
+    display: block;
+  }
+  .submenu-item:hover {
+    background: #2f3b5c;
+  }
+  .submenu-item.active {
+    background: #7dcfff15;
+    color: #7dcfff;
+    font-weight: 600;
+  }
+  
+  /* Specific styling for LLM submenu panel (since it contains inputs) */
+  #llm-submenu {
+    padding: 16px;
+    width: 320px;
+    cursor: default; /* override pointer for input area */
+  }
+  #llm-submenu label {
+    display: block; margin-bottom: 6px; color: #a9b1d6; font-size: 12px; font-weight: 600;
+  }
+  #llm-submenu input, #llm-submenu select {
+    width: 100%; padding: 8px; background: #0d0d1a; border: 1px solid #2a2a4a; border-radius: 6px; color: #c0caf5; font-size: 13px; margin-bottom: 4px;
+  }
+  #llm-submenu .hint { margin-top: 2px; margin-bottom: 12px; font-size: 11px; color: #565f89; }
+
