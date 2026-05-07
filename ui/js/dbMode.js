@@ -1,11 +1,11 @@
 'use strict';
 
 import { app } from './state.js';
-import { CONTROL_MODE_KEY } from './config.js';
+import { CONTROL_MODE_KEY, apiPath } from './config.js';
 
 export async function fetchDbMode() {
   try {
-    const res = await fetch('/admin/db/mode');
+    const res = await fetch(apiPath('/admin/db/mode'));
     if (res.ok) {
       const data = await res.json();
       return data.mode;
@@ -18,7 +18,7 @@ export async function fetchDbMode() {
 
 export async function setDbMode(mode) {
   try {
-    const res = await fetch('/admin/db/mode', {
+    const res = await fetch(apiPath('/admin/db/mode'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode }),

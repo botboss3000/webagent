@@ -4,6 +4,7 @@ import { app } from './state.js';
 import { connectAgent } from './agentWs.js';
 import { loopSessionChanged } from './loop.js';
 import { streamSessionChanged } from './stream.js';
+import { apiPath } from './config.js';
 
 export function generateUUID() {
   return crypto.randomUUID();
@@ -11,7 +12,7 @@ export function generateUUID() {
 
 export async function populateUserSelect() {
   try {
-    const res = await fetch('/api/v1/db/users?db=local.db');
+    const res = await fetch(apiPath('/api/v1/db/users?db=local.db'));
     const data = await res.json();
     const submenu = document.getElementById('user-submenu');
     if (!submenu) return;
@@ -45,7 +46,7 @@ export async function populateSessionSelect(userId) {
   }
   try {
     const res = await fetch(
-      `/api/v1/db/sessions?db=local.db&user_id=${encodeURIComponent(userId)}`,
+      apiPath(`/api/v1/db/sessions?db=local.db&user_id=${encodeURIComponent(userId)}`),
     );
     const data = await res.json();
     const sel = document.getElementById('session-select');
@@ -84,7 +85,7 @@ export async function populateSessionSelect(userId) {
 export async function loadSessionChat(sessionId) {
   try {
     const res = await fetch(
-      `/api/v1/db/session-messages?db=local.db&session_id=${encodeURIComponent(sessionId)}`,
+      apiPath(`/api/v1/db/session-messages?db=local.db&session_id=${encodeURIComponent(sessionId)}`),
     );
     const data = await res.json();
     app.chatMessages.innerHTML = '';
@@ -234,7 +235,7 @@ export function initSessions() {
     if (confirmOpt) confirmOpt.remove();
 
     try {
-      const res = await fetch('/api/v1/db/sessions/' + encodeURIComponent(sid) + '?db=local.db', { method: 'DELETE' });
+      const res = await fetch(apiPath('/api/v1/db/sessions/' + encodeURIComponent(sid) + '?db=local.db'), { method: 'DELETE' });
       if (res.ok) {
         if (sid === app.currentSessionId) {
           app.currentSessionId = generateUUID();

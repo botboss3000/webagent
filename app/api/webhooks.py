@@ -21,7 +21,7 @@ from app.communications.auth import (
 from app.communications.manager import get_plugin_manager
 from app.db import get_db
 from app.agent.loop import run_agent_loop_buffered
-from app.agent.prompts import build_system_prompt
+from app.agent.prompts import build_system_prompt, CONTEXT_SECTION_TYPES
 from app.agent.session_history import build_openai_history_from_session
 
 logger = logging.getLogger(__name__)
@@ -108,23 +108,24 @@ async def _run_registration_agent(
             metadata=json.dumps({"source": f"webhook/{plugin.name}"}),
         )
 
-        # Build context docs (same as normal chat)
-        context_docs = await db.fetch_context_documents(
-            user_id,
-            ["agent", "user", "skills", "tools", "tasks", "memory", "project", "jobs"],
-        )
-        if not context_docs:
-            copied = await db.copy_defaults_to_user(user_id)
-            if copied > 0:
-                context_docs = await db.fetch_context_documents(
-                    user_id,
-                    ["agent", "user", "skills", "tools", "tasks", "memory", "project", "jobs"],
-                )
-
-        # Load agent config
         agent = await db.get_agent_for_user(user_id)
         if agent is None:
             agent = await db.create_agent_for_user(user_id)
+
+        context_docs = await db.fetch_context_documents(
+            agent["id"], CONTEXT_SECTION_TYPES,
+        )
+        if not context_docs:
+            copied = await db.copy_defaults_to_agent(agent["id"])
+            if copied > 0:
+                context_docs = await db.fetch_context_documents(
+                    agent["id"], CONTEXT_SECTION_TYPES,
+                )
+
+        # Load agent row for system_prompt override (registration prompt)
+        row = await db.get_agent_by_id(agent["id"])
+        if row:
+            agent = row
 
         # Build registration system prompt
         registration_prompt = get_registration_system_prompt(identity)
@@ -171,17 +172,22 @@ async def _run_agent_loop(
             metadata=json.dumps({"source": f"webhook/{plugin.name}"}),
         )
 
-        # Build context
+        agent = await db.get_agent_for_user(user_id)
+        if agent is None:
+            agent = await db.create_agent_for_user(user_id)
+
+        row = await db.get_agent_by_id(agent["id"])
+        if row:
+            agent = row
+
         context_docs = await db.fetch_context_documents(
-            user_id,
-            ["agent", "user", "skills", "tools", "tasks", "memory", "project", "jobs"],
+            agent["id"], CONTEXT_SECTION_TYPES,
         )
         if not context_docs:
-            copied = await db.copy_defaults_to_user(user_id)
+            copied = await db.copy_defaults_to_agent(agent["id"])
             if copied > 0:
                 context_docs = await db.fetch_context_documents(
-                    user_id,
-                    ["agent", "user", "skills", "tools", "tasks", "memory", "project", "jobs"],
+                    agent["id"], CONTEXT_SECTION_TYPES,
                 )
 
         # Brain search
@@ -200,16 +206,7 @@ async def _run_agent_loop(
                 lines.append("")
             brain_context = "\n".join(lines)
 
-        # Agent config
-        agent = await db.get_agent_for_user(user_id)
-        if agent is None:
-            agent = await db.create_agent_for_user(user_id)
-
-        row = await db.get_agent_by_id(agent["id"])
-        if row:
-            agent = row
-
-        # Build system prompt
+        # Agent config (tier-specific additions)
         # Append anonymous limit if still anonymous
         agent_system_prompt = agent.get("system_prompt", "")
         if identity.user_tier == "anonymous":

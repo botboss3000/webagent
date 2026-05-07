@@ -1,6 +1,7 @@
 'use strict';
 
 import { app } from '../state.js';
+import { apiPath } from '../config.js';
 
 let queryTable = () => {};
 let startAutoRefresh = () => {};
@@ -12,7 +13,7 @@ export function setTableDeps(deps) {
 
 export async function fetchTables(dbName) {
   try {
-    const res = await fetch(`/api/v1/db/tables?db=${encodeURIComponent(dbName)}`);
+    const res = await fetch(apiPath(`/api/v1/db/tables?db=${encodeURIComponent(dbName)}`));
     const data = await res.json();
     app.dbTables = data.tables || [];
     renderTableList();
@@ -25,7 +26,7 @@ export async function fetchTables(dbName) {
 export async function updateTableCounts() {
   const dbName = document.getElementById('db-select').value;
   try {
-    const res = await fetch(`/api/v1/db/tables?db=${encodeURIComponent(dbName)}`);
+    const res = await fetch(apiPath(`/api/v1/db/tables?db=${encodeURIComponent(dbName)}`));
     const data = await res.json();
     if (!data.tables) return;
     for (const fresh of data.tables) {
@@ -77,10 +78,12 @@ export function renderTableList() {
       try {
         const dbName = document.getElementById('db-select').value;
         const res = await fetch(
-          '/api/v1/db/truncate?db=' +
-            encodeURIComponent(dbName) +
-            '&table=' +
-            encodeURIComponent(table),
+          apiPath(
+            '/api/v1/db/truncate?db=' +
+              encodeURIComponent(dbName) +
+              '&table=' +
+              encodeURIComponent(table),
+          ),
           { method: 'DELETE' },
         );
         const result = await res.json();

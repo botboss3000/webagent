@@ -1,5 +1,7 @@
 'use strict';
 
+import { apiPath } from './config.js';
+
 /**
  * Settings module — provider, base URL, API key, and model configuration.
  * Per-provider key+model persist across provider switches.
@@ -171,7 +173,7 @@ function closeSettings() {
 
 async function loadSettings() {
     try {
-        const res = await fetch('/admin/settings/provider');
+        const res = await fetch(apiPath('/admin/settings/provider'));
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 
@@ -334,7 +336,7 @@ async function saveSettings() {
     };
 
     try {
-        const res = await fetch('/admin/settings/provider', {
+        const res = await fetch(apiPath('/admin/settings/provider'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({

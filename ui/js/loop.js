@@ -1,6 +1,7 @@
 'use strict';
 
 import { app } from './state.js';
+import { apiPath } from './config.js';
 
 // ── State ──
 let autoScroll = true;
@@ -167,7 +168,7 @@ async function fetchLoopEvents() {
   }
 
   try {
-    const url = `/api/v1/db/stream/interactions?user_id=${encodeURIComponent(userId)}&session_id=${encodeURIComponent(sessionId)}`;
+    const url = apiPath(`/api/v1/db/stream/interactions?user_id=${encodeURIComponent(userId)}&session_id=${encodeURIComponent(sessionId)}`);
     const res = await fetch(url);
     const data = await res.json();
     const rows = data.interactions || [];
