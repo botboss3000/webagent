@@ -30,6 +30,8 @@ from app.db.system_prompt_fragments import get_prompt_fragments
 logger = logging.getLogger(__name__)
 
 _client = None
+_current_base_url = None
+_current_api_key = None
 
 # ── Destructive tools that require confirmation ──
 DESTRUCTIVE_TOOLS = {"edit_source", "write_source", "delete_source",
@@ -37,21 +39,26 @@ DESTRUCTIVE_TOOLS = {"edit_source", "write_source", "delete_source",
 
 
 def _get_client():
-    global _client
-    if _client is None:
+    global _client, _current_base_url, _current_api_key
+    
+    base_url = os.environ.get("LLM_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
+    api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY") or ""
+
+    # Re-initialize if env changed or first time
+    if _client is None or base_url != _current_base_url or api_key != _current_api_key:
         try:
             from openai import AsyncOpenAI
         except ImportError:
             from app.openai_compat import AsyncOpenAI
-
-        base_url = os.environ.get("LLM_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
-        api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY") or ""
 
         _client = AsyncOpenAI(
             base_url=base_url,
             api_key=api_key,
             timeout=60.0,
         )
+        _current_base_url = base_url
+        _current_api_key = api_key
+
     return _client
 
 

@@ -453,7 +453,6 @@ class LocalBackend(StorageBackend):
             cursor = conn.execute("PRAGMA table_info(agents)")
             cols = {row[1] for row in cursor.fetchall()}
             if cols and "user_id" not in cols:
-                logger.info("Pre-migration: renaming old agents table (v1) before schema init")
                 conn.execute("ALTER TABLE agents RENAME TO agents_v1")
                 conn.commit()
 
@@ -464,18 +463,16 @@ class LocalBackend(StorageBackend):
             cursor = conn.execute("PRAGMA table_info(interactions)")
             cols = {row[1] for row in cursor.fetchall()}
             if "channel" not in cols:
-                logger.info("Migration: adding channel column to interactions")
                 conn.execute("ALTER TABLE interactions ADD COLUMN channel TEXT")
                 conn.commit()
 
-            logger.info("Local database initialized at %s", self._db_path)
+            conn.commit()
 
             # ── Post-migration: move data from old agents_v1 ──
             cursor = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='agents_v1'"
             )
             if cursor.fetchone():
-                logger.info("Post-migration: copying data from agents_v1")
                 conn.execute(
                     """INSERT OR IGNORE INTO agents
                        (id, user_id, max_turn_count, status, assigned_at, created_at, updated_at)
