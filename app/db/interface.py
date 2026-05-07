@@ -113,6 +113,44 @@ class StorageBackend(ABC):
         """Delete all context rows for a user. Returns count of deleted rows."""
         ...
 
+    @abstractmethod
+    async def fetch_context_documents_for_agent(
+        self,
+        agent_id: str,
+        context_types: Optional[List[str]] = None,
+    ) -> List[dict]:
+        """
+        Load context documents for the user assigned to this agent.
+        If ``context_types`` is None or empty, load all types for that user.
+        """
+        ...
+
+    @abstractmethod
+    async def get_context_document_for_agent(
+        self, agent_id: str, context_id: str
+    ) -> Optional[dict]:
+        """Return one context row by id if it belongs to this agent's user."""
+        ...
+
+    @abstractmethod
+    async def update_context_document_content_for_agent(
+        self, agent_id: str, context_id: str, content: str
+    ) -> None:
+        """Update the ``content`` column for a row owned by this agent's user."""
+        ...
+
+    @abstractmethod
+    async def insert_context_document_for_agent(
+        self,
+        agent_id: str,
+        context_type: str,
+        title: str,
+        content: str,
+        tags: Optional[List[str]] = None,
+    ) -> str:
+        """Insert a context document for this agent's user. Returns the new id."""
+        ...
+
     # ---- Memory System (knowledge brain) ----
     # Four tables: memories, memory_chunks, memory_links, memory_timeline
 
