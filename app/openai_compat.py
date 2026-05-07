@@ -19,9 +19,8 @@ class _AsyncOpenAICompat:
     def __init__(self, base_url: str = "", api_key: str = "", timeout: float = 60.0):
         import httpx
 
-        self.base_url = base_url or os.environ.get("OPENROUTER_BASE_URL",
-                                                     "https://openrouter.ai/api/v1")
-        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        self.base_url = base_url or os.environ.get("LLM_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        self.api_key = api_key or os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
         self.timeout = timeout
         self._client = httpx.AsyncClient(timeout=timeout)
 

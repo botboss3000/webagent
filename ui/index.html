@@ -188,11 +188,16 @@
       </select>
     </div>
     <div style="margin-bottom:16px;">
+      <label style="display:block;margin-bottom:6px;color:#a9b1d6;font-size:13px;font-weight:600;">Base URL</label>
+      <input type="text" id="settings-base-url" placeholder="https://api.openai.com/v1" autocomplete="off" style="width:100%;padding:10px;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;color:#c0caf5;font-size:14px;font-family:inherit;">
+      <div style="margin-top:4px;font-size:11px;color:#565f89;">Auto-filled when you pick a provider. Edit for custom endpoints.</div>
+    </div>
+    <div style="margin-bottom:16px;">
       <label style="display:block;margin-bottom:6px;color:#a9b1d6;font-size:13px;font-weight:600;">API Key</label>
       <input type="password" id="settings-api-key" placeholder="sk-..." style="width:100%;padding:10px;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;color:#c0caf5;font-size:14px;font-family:inherit;">
       <div style="margin-top:4px;font-size:11px;color:#565f89;">Stored on this device only. Never sent elsewhere.</div>
     </div>
-    <div id="settings-model-group" style="margin-bottom:20px;display:none;">
+    <div id="settings-model-group" style="margin-bottom:20px;">
       <label style="display:block;margin-bottom:6px;color:#a9b1d6;font-size:13px;font-weight:600;">Model</label>
       <div style="position:relative;">
         <input type="text" id="settings-model-search" placeholder="Search models..." autocomplete="off" style="width:100%;padding:10px;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;color:#c0caf5;font-size:14px;font-family:inherit;box-sizing:border-box;">
