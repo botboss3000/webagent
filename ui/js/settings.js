@@ -5,8 +5,10 @@
  * Per-provider key+model persist across provider switches.
  */
 
+const SETTINGS_MENU_BTN = document.getElementById('settings-menu-btn');
+const SETTINGS_DROPDOWN_MENU = document.getElementById('settings-dropdown-menu');
+const LLM_MENU_ITEM = document.getElementById('llm-menu-item');
 const SETTINGS_MODAL = document.getElementById('settings-modal');
-const SETTINGS_BTN = document.getElementById('settings-btn');
 const SETTINGS_CLOSE = document.getElementById('settings-close');
 const SETTINGS_BACKDROP = document.getElementById('settings-backdrop');
 const SETTINGS_PROVIDER = document.getElementById('settings-provider');
@@ -32,11 +34,28 @@ let providerConfigs = {};
 let currentProvider = 'openrouter';
 
 export function initSettings() {
-    if (!SETTINGS_BTN) return;
+    if (!SETTINGS_MENU_BTN) return;
 
-    SETTINGS_BTN.addEventListener('click', openSettings);
-    SETTINGS_CLOSE.addEventListener('click', closeSettings);
-    SETTINGS_BACKDROP.addEventListener('click', closeSettings);
+    SETTINGS_MENU_BTN.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isHidden = SETTINGS_DROPDOWN_MENU.style.display === 'none' || SETTINGS_DROPDOWN_MENU.style.display === '';
+        if (isHidden) {
+            SETTINGS_DROPDOWN_MENU.style.display = 'block';
+        } else {
+            SETTINGS_DROPDOWN_MENU.style.display = 'none';
+        }
+    });
+
+    if (LLM_MENU_ITEM) {
+        LLM_MENU_ITEM.addEventListener('click', () => {
+            SETTINGS_DROPDOWN_MENU.style.display = 'none';
+            openSettings();
+        });
+    }
+
+    if (SETTINGS_CLOSE) SETTINGS_CLOSE.addEventListener('click', closeSettings);
+    if (SETTINGS_BACKDROP) SETTINGS_BACKDROP.addEventListener('click', closeSettings);
+
     SETTINGS_SAVE.addEventListener('click', saveSettings);
     SETTINGS_CLEAR.addEventListener('click', clearSettings);
 
@@ -92,6 +111,9 @@ export function initSettings() {
     });
 
     document.addEventListener('click', (e) => {
+        if (!e.target.closest('.settings-dropdown')) {
+            SETTINGS_DROPDOWN_MENU.style.display = 'none';
+        }
         if (!SETTINGS_MODEL_GROUP.contains(e.target)) {
             SETTINGS_MODEL_DROPDOWN.style.display = 'none';
         }
@@ -144,7 +166,7 @@ async function openSettings() {
 }
 
 function closeSettings() {
-    SETTINGS_MODAL.style.display = 'none';
+    if (SETTINGS_MODAL) SETTINGS_MODAL.style.display = 'none';
     SETTINGS_STATUS.style.display = 'none';
     SETTINGS_MODEL_DROPDOWN.style.display = 'none';
 }

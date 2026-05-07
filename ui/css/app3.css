@@ -19,9 +19,16 @@
   #db-table-data { scrollbar-width: thin; scrollbar-color: #2a2a4a transparent; }
   #db-table-data::-webkit-scrollbar { width: 6px; }
   #db-table-data::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
-  .db-cell { scrollbar-width: thin; scrollbar-color: #2a2a4a transparent; }
-  .db-cell::-webkit-scrollbar { width: 6px; }
-  .db-cell::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+  .db-cell { scrollbar-width: thin; scrollbar-color: #7dcfff33 transparent; }
+  .db-cell::-webkit-scrollbar { width: 4px; height: 4px; }
+  .db-cell::-webkit-scrollbar-thumb { background: #7dcfff55; border-radius: 2px; }
+  .db-cell::-webkit-scrollbar-thumb:hover { background: #7dcfff99; }
+
+  /* Slim blue scrollbar for the DB sidebar table list */
+  #db-table-list { scrollbar-width: thin; scrollbar-color: #7dcfff33 transparent; }
+  #db-table-list::-webkit-scrollbar { width: 4px; }
+  #db-table-list::-webkit-scrollbar-thumb { background: #7dcfff55; border-radius: 2px; }
+  #db-table-list::-webkit-scrollbar-thumb:hover { background: #7dcfff99; }
   .db-table .col-pk { color: #e0af68; }
   .db-table .col-null { color: #565f89; font-style: italic; }
   .db-cell-pre {

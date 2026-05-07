@@ -248,6 +248,9 @@ class TerminalSession:
                 data = proc.read(65536)
                 if not data:
                     return None
+                # pywinpty returns str, encode to bytes for the WebSocket
+                if isinstance(data, str):
+                    return data.encode('utf-8', errors='replace')
                 return data
             except (EOFError, OSError):
                 return None
@@ -262,6 +265,9 @@ class TerminalSession:
 
         if IS_WINDOWS:
             try:
+                # pywinpty expects str, not bytes
+                if isinstance(data, bytes):
+                    data = data.decode('utf-8', errors='replace')
                 self._process.write(data)
             except Exception:
                 pass

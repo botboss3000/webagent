@@ -13,20 +13,25 @@ export async function populateUserSelect() {
   try {
     const res = await fetch('/api/v1/db/users?db=local.db');
     const data = await res.json();
-    const sel = document.getElementById('user-select');
-    sel.innerHTML = '<option value="">— select user —</option>';
+    const submenu = document.getElementById('user-submenu');
+    if (!submenu) return;
+    
+    submenu.innerHTML = '';
+    
     for (const uid of data.users || []) {
-      const opt = document.createElement('option');
-      opt.value = uid;
-      opt.textContent = uid.slice(0, 12) + '...';
-      opt.title = uid;
-      if (uid === app.currentUserId) opt.selected = true;
-      sel.appendChild(opt);
+      const item = document.createElement('button');
+      item.className = 'submenu-item';
+      if (uid === app.currentUserId) item.classList.add('active');
+      item.dataset.value = uid;
+      item.textContent = uid.slice(0, 12) + '...';
+      item.title = uid;
+      submenu.appendChild(item);
     }
-    const newUserOpt = document.createElement('option');
-    newUserOpt.value = '__new_user__';
-    newUserOpt.textContent = '+ New User...';
-    sel.appendChild(newUserOpt);
+    const newUserBtn = document.createElement('button');
+    newUserBtn.className = 'submenu-item';
+    newUserBtn.dataset.value = '__new_user__';
+    newUserBtn.textContent = '+ New User...';
+    submenu.appendChild(newUserBtn);
     if (app.currentUserId) populateSessionSelect(app.currentUserId);
   } catch (e) {
     console.warn('Failed to load users:', e);
@@ -110,24 +115,33 @@ export function registerSessionApi() {
 }
 
 export function initSessions() {
-  document.getElementById('user-select').addEventListener('change', (e) => {
-    if (e.target.value === '__new_user__') {
-      const name = prompt('Enter new user ID:', '');
-      if (!name || !name.trim()) {
-        e.target.value = app.currentUserId || '';
-        return;
+  const userSubmenu = document.getElementById('user-submenu');
+  if (userSubmenu) {
+    userSubmenu.addEventListener('click', (e) => {
+      const btn = e.target.closest('.submenu-item');
+      if (!btn) return;
+      
+      const value = btn.dataset.value;
+      if (value === '__new_user__') {
+        const name = prompt('Enter new user ID:', '');
+        if (!name || !name.trim()) {
+          return;
+        }
+        app.currentUserId = name.trim();
+      } else {
+        app.currentUserId = value || '';
       }
-      app.currentUserId = name.trim();
-    } else {
-      app.currentUserId = e.target.value || '';
-    }
-    localStorage.setItem('terminalUserId', app.currentUserId);
-    app.currentSessionId = generateUUID();
-    localStorage.setItem('terminalSessionId', app.currentSessionId);
-    populateSessionSelect(app.currentUserId);
-    loopSessionChanged();
-    connectAgent();
-  });
+      localStorage.setItem('terminalUserId', app.currentUserId);
+      app.currentSessionId = generateUUID();
+      localStorage.setItem('terminalSessionId', app.currentSessionId);
+      populateSessionSelect(app.currentUserId);
+      loopSessionChanged();
+      connectAgent();
+      
+      // Update UI active state
+      populateUserSelect();
+    });
+  }
 
   const sessionSelect = document.getElementById('session-select');
 

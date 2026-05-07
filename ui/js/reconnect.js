@@ -5,11 +5,14 @@ import { connectTerminal } from './terminal.js';
 import { connectAgent } from './agentWs.js';
 
 export function initReconnect() {
-  document.getElementById('btn-reconnect').addEventListener('click', () => {
-    connectTerminal();
-    connectAgent();
-    app.addChatBubble('agent', 'Reconnecting...');
-  });
+  const reconnectBtn = document.getElementById('btn-reconnect');
+  if (reconnectBtn) {
+    reconnectBtn.addEventListener('click', () => {
+      connectTerminal();
+      connectAgent();
+      app.addChatBubble('agent', 'Reconnecting...');
+    });
+  }
 
   document.getElementById('btn-restart').addEventListener('click', async () => {
     const btn = document.getElementById('btn-restart');

@@ -13,38 +13,47 @@
 </head>
 <body>
 
-<!-- Status bar -->
 <div id="status-bar">
-    <div id="control-host-toggle" title="Switch between Cloud (Supabase) and Local (SQLite) database">
-    <span class="ch-label">Control</span>
-    <div class="segment-track" role="group" aria-label="Cloud or local control (UI preview)">
-      <button type="button" id="seg-cloud" aria-pressed="false">Cloud</button>
-      <button type="button" id="seg-local" class="active" aria-pressed="true">Local</button>
+  <div class="settings-dropdown">
+    <button id="settings-menu-btn" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:13px;margin-right:12px;font-weight:600;">⚙️ Config ▼</button>
+    <div id="settings-dropdown-menu" class="settings-dropdown-content" style="display:none;">
+      
+      <div class="settings-menu-item">
+        <span>User</span> <span class="arrow">►</span>
+        <div id="user-submenu" class="settings-submenu">
+          <!-- populated by sessions.js -->
+        </div>
+      </div>
+
+      <div class="settings-menu-item" id="llm-menu-item">
+        <span>LLM</span>
+      </div>
+
+      <div class="settings-menu-item">
+        <span>Database</span> <span class="arrow">►</span>
+        <div id="database-submenu" class="settings-submenu">
+          <button type="button" id="menu-seg-cloud" class="submenu-item">Cloud (Supabase)</button>
+          <button type="button" id="menu-seg-local" class="submenu-item active">Local (SQLite)</button>
+        </div>
+      </div>
+
     </div>
-    <button id="settings-btn" title="Settings" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:16px;margin-left:6px;vertical-align:middle;">⚙️</button>
   </div>
 
-  <div class="status-group tab-btn-group">
-    <button class="tab-btn" data-tab="terminal">⌘ Terminal</button>
-    <button class="tab-btn active" data-tab="stream">📡 Stream</button>
-    <button class="tab-btn" data-tab="loop">🔄 Loop</button>
-    <button class="tab-btn" data-tab="database">📊 Database</button>
+  <div class="status-group tab-select-group">
+    <select id="main-tab-select" class="status-select">
+      <option value="terminal">⌘ Terminal</option>
+      <option value="stream" selected>📡 Stream</option>
+      <option value="loop">🔄 Loop</option>
+      <option value="database">📊 Database</option>
+    </select>
   </div>
 
-  <div class="status-group">
-    <span class="status-dot yellow" id="terminal-dot"></span>
-    <span id="terminal-status">Terminal...</span>
-  </div>
-  <div class="status-group">
-    <span class="status-dot yellow" id="agent-dot"></span>
-    <span id="agent-status">Agent...</span>
-  </div>
   <span id="status-right">
-    <span id="user-mini" style="display:inline-flex;align-items:center;gap:4px;margin-right:6px;">
-      <span style="color:#565f89;font-size:11px;">User</span>
-      <select id="user-select" class="status-select" style="max-width:120px;"></select>
-    </span>
-    <button id="btn-reconnect" class="status-btn" title="Reconnect WebSockets">🔄 Reconnect</button>
+    <span class="status-dot yellow" id="terminal-dot" title="Terminal Connection"></span>
+    <span id="terminal-status" style="display:none;"></span>
+    <span class="status-dot yellow" id="agent-dot" title="Server Connection"></span>
+    <span id="agent-status" style="display:none;"></span>
     <button id="btn-restart" class="status-btn" title="Restart the Python agent server">⏻ Restart</button>
   </span>
 </div>
@@ -177,7 +186,7 @@
   <div id="settings-backdrop" style="position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);"></div>
   <div id="settings-panel" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:24px;min-width:380px;max-width:480px;color:#c0caf5;font-size:14px;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
-      <h2 style="margin:0;font-size:18px;font-weight:600;">⚙️ Settings</h2>
+      <h2 style="margin:0;font-size:18px;font-weight:600;">⚙️ Config</h2>
       <button id="settings-close" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:20px;">&times;</button>
     </div>
     <div style="margin-bottom:16px;">
