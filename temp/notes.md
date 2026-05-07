@@ -1,7 +1,7 @@
 UI
 	- Fix mobile mode so it's full chat with ability to change to different windows
-	- Should be able to enter own API key/provider
-		- works but should be enhanced with "save key/model" feature for quick switching
+	 Should be able to enter own API key/provider
+		- works but should be enhanced with "save key/model" feature so that there would be a list of preferences for quick switching
 
 Connections
 	- Need to test telegram
