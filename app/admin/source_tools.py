@@ -11,7 +11,7 @@ from app.tools.loader import ToolInfo
 
 logger = logging.getLogger(__name__)
 
-BASE = "http://localhost:8765"
+BASE = "http://localhost:8080"
 
 
 async def _api_get(path: str, params: dict = None):
