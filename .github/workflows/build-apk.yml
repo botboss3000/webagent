@@ -33,7 +33,8 @@ jobs:
           # Python backend
           mkdir -p android/app/src/main/python/app
           cp -r app/* android/app/src/main/python/app/
-          # UI frontend
+          cp index.html android/app/src/main/python/index.html
+          # UI frontend (CSS/JS/assets; main shell is root index.html)
           mkdir -p android/app/src/main/python/ui
           cp -r ui/* android/app/src/main/python/ui/
 

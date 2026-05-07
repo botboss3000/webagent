@@ -26,7 +26,7 @@ except Exception as e:
 _server_ref = None
 
 
-def start_server(port=8000):
+def start_server(port=8080):
     from app.main import app
     import uvicorn
 

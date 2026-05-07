@@ -4,6 +4,7 @@ import { app } from "../state.js";
 import { getPKColumns, getDisplayColumns, saveColumnOrder } from "./columns.js";
 import { initColumnResize } from "./columnResize.js";
 import { formatJsonAsHtml } from "../json-tree.js";
+import { apiPath } from "../config.js";
 
 function cancelEditing() {
   if (app.editingCell) {
@@ -345,7 +346,7 @@ async function queryTable(tableName, opts) {
     }
   }
 
-  let url = `/api/v1/db/query?db=${encodeURIComponent(dbName)}&table=${encodeURIComponent(tableName)}&limit=${app.dbPageLimit}&offset=${app.dbPageOffset}`;
+  let url = apiPath(`/api/v1/db/query?db=${encodeURIComponent(dbName)}&table=${encodeURIComponent(tableName)}&limit=${app.dbPageLimit}&offset=${app.dbPageOffset}`);
   url += `&order_by=${encodeURIComponent(sortCol)}&order_dir=${sortDir}`;
 
   // Add filter

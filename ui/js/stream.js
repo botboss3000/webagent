@@ -2,6 +2,7 @@
 
 import { app } from './state.js';
 import { formatJsonAsHtml, initJsonToggle } from './json-tree.js';
+import { apiPath } from './config.js';
 
 let streamInterval = null;
 let lastTimestamp = '';
@@ -350,7 +351,7 @@ async function poll() {
   if (!streamActive) return;
   try {
     const sid = app.currentSessionId;
-    const url = `/api/v1/db/stream/interactions?since=${encodeURIComponent(lastTimestamp)}&db=local.db${sid ? '&session_id=' + encodeURIComponent(sid) : ''}`;
+    const url = apiPath(`/api/v1/db/stream/interactions?since=${encodeURIComponent(lastTimestamp)}&db=local.db${sid ? '&session_id=' + encodeURIComponent(sid) : ''}`);
     const res = await fetch(url);
     const data = await res.json();
     if (data.interactions && data.interactions.length > 0) {
@@ -374,7 +375,7 @@ export function startStream() {
   renderFilterPanel();
 
   const initialSid = app.currentSessionId;
-  const initialUrl = `/api/v1/db/stream/interactions?since=&db=local.db${initialSid ? '&session_id=' + encodeURIComponent(initialSid) : ''}`;
+  const initialUrl = apiPath(`/api/v1/db/stream/interactions?since=&db=local.db${initialSid ? '&session_id=' + encodeURIComponent(initialSid) : ''}`);
   fetch(initialUrl)
     .then(r => r.json())
     .then(data => {

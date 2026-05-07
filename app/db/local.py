@@ -94,9 +94,43 @@ CREATE TABLE IF NOT EXISTS session_summaries (
 
 CREATE INDEX IF NOT EXISTS idx_summaries_user ON session_summaries(user_id);
 
+CREATE TABLE IF NOT EXISTS agent_templates (
+    id TEXT PRIMARY KEY DEFAULT 'default',
+    system_prompt TEXT NOT NULL DEFAULT '',
+    max_turn_count INTEGER NOT NULL DEFAULT 10,
+    model TEXT,
+    provider TEXT,
+    temperature REAL NOT NULL DEFAULT 0.0,
+    max_tokens INTEGER NOT NULL DEFAULT 4096,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+INSERT OR IGNORE INTO agent_templates (id, system_prompt, max_turn_count)
+VALUES ('default', '', 10);
+
+CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL UNIQUE,
+    system_prompt TEXT NOT NULL DEFAULT '',
+    max_turn_count INTEGER NOT NULL DEFAULT 10,
+    model TEXT,
+    provider TEXT,
+    temperature REAL NOT NULL DEFAULT 0.0,
+    max_tokens INTEGER NOT NULL DEFAULT 4096,
+    status TEXT NOT NULL DEFAULT 'active',
+    metadata TEXT NOT NULL DEFAULT '{}',
+    assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agents_user ON agents(user_id);
+
 CREATE TABLE IF NOT EXISTS context_documents (
     id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL REFERENCES agents(id),
     context_type TEXT NOT NULL,
     title TEXT NOT NULL,
     content TEXT NOT NULL,
@@ -105,7 +139,7 @@ CREATE TABLE IF NOT EXISTS context_documents (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_context_user ON context_documents(user_id);
+CREATE INDEX IF NOT EXISTS idx_context_agent ON context_documents(agent_id);
 CREATE INDEX IF NOT EXISTS idx_context_type ON context_documents(context_type);
 
 CREATE TABLE IF NOT EXISTS context_templates (
@@ -335,40 +369,6 @@ CREATE TABLE IF NOT EXISTS session_interrupts (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS agent_templates (
-    id TEXT PRIMARY KEY DEFAULT 'default',
-    system_prompt TEXT NOT NULL DEFAULT '',
-    max_turn_count INTEGER NOT NULL DEFAULT 10,
-    model TEXT,
-    provider TEXT,
-    temperature REAL NOT NULL DEFAULT 0.0,
-    max_tokens INTEGER NOT NULL DEFAULT 4096,
-    metadata TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-INSERT OR IGNORE INTO agent_templates (id, system_prompt, max_turn_count)
-VALUES ('default', '', 10);
-
-CREATE TABLE IF NOT EXISTS agents (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL UNIQUE,
-    system_prompt TEXT NOT NULL DEFAULT '',
-    max_turn_count INTEGER NOT NULL DEFAULT 10,
-    model TEXT,
-    provider TEXT,
-    temperature REAL NOT NULL DEFAULT 0.0,
-    max_tokens INTEGER NOT NULL DEFAULT 4096,
-    status TEXT NOT NULL DEFAULT 'active',
-    metadata TEXT NOT NULL DEFAULT '{}',
-    assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_agents_user ON agents(user_id);
-
 -- ============================================================
 -- Attachment storage
 -- ============================================================
@@ -456,6 +456,9 @@ class LocalBackend(StorageBackend):
                 conn.execute("ALTER TABLE agents RENAME TO agents_v1")
                 conn.commit()
 
+            # Upgrade legacy context_documents (user_id) before SCHEMA_SQL adds indexes on agent_id
+            self._migrate_context_documents_to_agent_id(conn)
+
             conn.executescript(SCHEMA_SQL)
             conn.commit()
 
@@ -503,6 +506,73 @@ class LocalBackend(StorageBackend):
             raise
         finally:
             conn.close()
+
+    def _migrate_context_documents_to_agent_id(self, conn: sqlite3.Connection) -> None:
+        """Migrate legacy context_documents.user_id → agent_id (one-time)."""
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='context_documents'"
+        )
+        if not cur.fetchone():
+            return
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(context_documents)").fetchall()}
+        if "user_id" not in cols:
+            return
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agents'"
+        ).fetchone():
+            logger.warning(
+                "Skipping context_documents migration: agents table not present yet",
+            )
+            return
+        logger.info("Migrating context_documents from user_id to agent_id")
+        try:
+            conn.execute("ALTER TABLE context_documents ADD COLUMN agent_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+        conn.execute(
+            """
+            UPDATE context_documents SET agent_id = (
+                SELECT agents.id FROM agents WHERE agents.user_id = context_documents.user_id LIMIT 1
+            )
+            """
+        )
+        deleted = conn.execute(
+            "DELETE FROM context_documents WHERE agent_id IS NULL"
+        ).rowcount
+        if deleted:
+            logger.warning(
+                "Removed %s context_documents rows with no matching agent", deleted
+            )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS context_documents_new (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL REFERENCES agents(id),
+                context_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                tags TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO context_documents_new (id, agent_id, context_type, title, content, tags, created_at, updated_at)
+            SELECT id, agent_id, context_type, title, content, tags, created_at, updated_at FROM context_documents
+            """
+        )
+        conn.execute("DROP TABLE context_documents")
+        conn.execute("ALTER TABLE context_documents_new RENAME TO context_documents")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_context_agent ON context_documents(agent_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_context_type ON context_documents(context_type)"
+        )
+        conn.commit()
+        logger.info("context_documents migration to agent_id complete")
 
     # ---- Raw client access ----
 
@@ -643,14 +713,19 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
-    async def copy_defaults_to_user(self, user_id: str) -> int:
+    async def copy_defaults_to_agent(self, agent_id: str) -> int:
         """
-        Copy all context_default rows into context_documents for a user.
-        Only copies rows that don't already exist for that user (by context_type).
+        Copy template rows into context_documents for this agent.
+        Only copies types not already present for this agent.
         """
         conn = self._get_conn()
         try:
-            # Get all default rows
+            exists = conn.execute(
+                "SELECT 1 FROM agents WHERE id = ?", (agent_id,)
+            ).fetchone()
+            if not exists:
+                return 0
+
             defaults = conn.execute(
                 "SELECT context_type, title, content, tags FROM context_templates"
             ).fetchall()
@@ -658,11 +733,11 @@ class LocalBackend(StorageBackend):
             if not defaults:
                 return 0
 
-            # Get existing context_types for this user
             existing_types = set(
-                r["context_type"] for r in conn.execute(
-                    "SELECT DISTINCT context_type FROM context_documents WHERE user_id = ?",
-                    (user_id,),
+                r["context_type"]
+                for r in conn.execute(
+                    "SELECT DISTINCT context_type FROM context_documents WHERE agent_id = ?",
+                    (agent_id,),
                 ).fetchall()
             )
 
@@ -671,18 +746,20 @@ class LocalBackend(StorageBackend):
                 if d["context_type"] in existing_types:
                     continue
                 conn.execute(
-                    """INSERT INTO context_documents (id, user_id, context_type, title, content, tags)
+                    """INSERT INTO context_documents (id, agent_id, context_type, title, content, tags)
                        VALUES (?, ?, ?, ?, ?, ?)""",
-                    (_uuid(), user_id, d["context_type"], d["title"], d["content"], d["tags"]),
+                    (_uuid(), agent_id, d["context_type"], d["title"], d["content"], d["tags"]),
                 )
                 copied += 1
 
             conn.commit()
             if copied > 0:
-                logger.info("Copied %s default context rows to user %s", copied, user_id)
+                logger.info(
+                    "Copied %s default context rows to agent %s", copied, agent_id
+                )
             return copied
         except Exception as e:
-            logger.error("Error copying defaults to user: %s", e)
+            logger.error("Error copying defaults to agent: %s", e)
             raise
         finally:
             conn.close()
@@ -690,17 +767,29 @@ class LocalBackend(StorageBackend):
     # ---- Context Documents ----
 
     async def fetch_context_documents(
-        self, user_id: str, context_types: List[str]
+        self,
+        agent_id: str,
+        context_types: Optional[List[str]] = None,
     ) -> List[dict]:
         conn = self._get_conn()
         try:
-            placeholders = ",".join("?" for _ in context_types)
-            rows = conn.execute(
-                f"""SELECT id, user_id, context_type, title, content, tags, created_at, updated_at
-                    FROM context_documents
-                    WHERE user_id = ? AND context_type IN ({placeholders})""",
-                (user_id, *context_types),
-            ).fetchall()
+            if context_types:
+                placeholders = ",".join("?" for _ in context_types)
+                rows = conn.execute(
+                    f"""SELECT id, agent_id, context_type, title, content, tags, created_at, updated_at
+                        FROM context_documents
+                        WHERE agent_id = ? AND context_type IN ({placeholders})
+                        ORDER BY context_type, title""",
+                    (agent_id, *context_types),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT id, agent_id, context_type, title, content, tags, created_at, updated_at
+                       FROM context_documents
+                       WHERE agent_id = ?
+                       ORDER BY context_type, title""",
+                    (agent_id,),
+                ).fetchall()
             result = []
             for r in rows:
                 d = dict(r)
@@ -710,7 +799,7 @@ class LocalBackend(StorageBackend):
                     d["tags"] = []
                 result.append(d)
             logger.debug(
-                "Fetched %s context rows for user %s", len(result), user_id
+                "Fetched %s context rows for agent %s", len(result), agent_id
             )
             return result
         except Exception as e:
@@ -719,9 +808,55 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
+    async def get_context_document(
+        self, agent_id: str, context_id: str
+    ) -> Optional[dict]:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                """SELECT id, agent_id, context_type, title, content, tags,
+                          created_at, updated_at
+                   FROM context_documents WHERE id = ? AND agent_id = ?""",
+                (context_id, agent_id),
+            ).fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            try:
+                d["tags"] = json.loads(d["tags"])
+            except (json.JSONDecodeError, TypeError):
+                d["tags"] = []
+            return d
+        finally:
+            conn.close()
+
+    async def update_context_document_content(
+        self, agent_id: str, context_id: str, content: str
+    ) -> None:
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                """UPDATE context_documents SET content = ?, updated_at = ?
+                   WHERE id = ? AND agent_id = ?""",
+                (content, _now_iso(), context_id, agent_id),
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                raise PermissionError(
+                    "Context document not found or not owned by this agent",
+                )
+            logger.debug("Updated context row %s for agent %s", context_id, agent_id)
+        except PermissionError:
+            raise
+        except Exception as e:
+            logger.error("Error updating context row: %s", e)
+            raise
+        finally:
+            conn.close()
+
     async def insert_document(
         self,
-        user_id: str,
+        agent_id: str,
         context_type: str,
         title: str,
         content: str,
@@ -731,12 +866,15 @@ class LocalBackend(StorageBackend):
         try:
             doc_id = _uuid()
             conn.execute(
-                """INSERT INTO context_documents (id, user_id, context_type, title, content, tags)
+                """INSERT INTO context_documents (id, agent_id, context_type, title, content, tags)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (doc_id, user_id, context_type, title, content, json.dumps(tags or [])),
+                (doc_id, agent_id, context_type, title, content, json.dumps(tags or [])),
             )
             conn.commit()
-            logger.debug("Inserted context %s type=%s for user %s", doc_id, context_type, user_id)
+            logger.debug(
+                "Inserted context %s type=%s for agent %s",
+                doc_id, context_type, agent_id,
+            )
             return doc_id
         except Exception as e:
             logger.error("Error inserting document: %s", e)
@@ -744,48 +882,164 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
-    async def update_context_row(self, context_id: str, content: str) -> None:
+    async def delete_context_row(self, agent_id: str, context_id: str) -> None:
         conn = self._get_conn()
         try:
-            conn.execute(
-                "UPDATE context_documents SET content = ?, updated_at = ? WHERE id = ?",
-                (content, _now_iso(), context_id),
+            cursor = conn.execute(
+                "DELETE FROM context_documents WHERE id = ? AND agent_id = ?",
+                (context_id, agent_id),
             )
             conn.commit()
-            logger.debug("Updated context row %s", context_id)
-        except Exception as e:
-            logger.error("Error updating context row: %s", e)
+            if cursor.rowcount == 0:
+                raise PermissionError(
+                    "Context document not found or not owned by this agent",
+                )
+            logger.debug("Deleted context row %s for agent %s", context_id, agent_id)
+        except PermissionError:
             raise
-        finally:
-            conn.close()
-
-    async def delete_context_row(self, context_id: str) -> None:
-        conn = self._get_conn()
-        try:
-            conn.execute("DELETE FROM context_documents WHERE id = ?", (context_id,))
-            conn.commit()
-            logger.debug("Deleted context row %s", context_id)
         except Exception as e:
             logger.error("Error deleting context row: %s", e)
             raise
         finally:
             conn.close()
 
-    async def delete_all_documents_for_user(self, user_id: str) -> int:
+    async def delete_all_documents_for_agent(self, agent_id: str) -> int:
         conn = self._get_conn()
         try:
             cursor = conn.execute(
-                "DELETE FROM context_documents WHERE user_id = ?", (user_id,)
+                "DELETE FROM context_documents WHERE agent_id = ?", (agent_id,)
             )
             conn.commit()
             deleted = cursor.rowcount
-            logger.debug("Deleted %s context rows for user %s", deleted, user_id)
+            logger.debug(
+                "Deleted %s context rows for agent %s", deleted, agent_id
+            )
             return deleted
         except Exception as e:
             logger.error("Error deleting context: %s", e)
             raise
         finally:
             conn.close()
+
+    async def fetch_context_documents_for_agent(
+        self,
+        agent_id: str,
+        context_types: Optional[List[str]] = None,
+    ) -> List[dict]:
+        agent = await self.get_agent_by_id(agent_id)
+        if not agent:
+            return []
+        uid = agent["user_id"]
+        conn = self._get_conn()
+        try:
+            if context_types:
+                placeholders = ",".join("?" * len(context_types))
+                sql = (
+                    f"""SELECT id, user_id, context_type, title, content, tags,
+                               created_at, updated_at
+                        FROM context_documents
+                        WHERE user_id = ? AND context_type IN ({placeholders})
+                        ORDER BY context_type, title"""
+                )
+                rows = conn.execute(sql, (uid, *context_types)).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT id, user_id, context_type, title, content, tags,
+                              created_at, updated_at
+                       FROM context_documents
+                       WHERE user_id = ?
+                       ORDER BY context_type, title""",
+                    (uid,),
+                ).fetchall()
+            result: List[dict] = []
+            keys = [
+                "id", "user_id", "context_type", "title", "content", "tags",
+                "created_at", "updated_at",
+            ]
+            for row in rows:
+                d = dict(zip(keys, row))
+                try:
+                    d["tags"] = json.loads(d["tags"])
+                except (json.JSONDecodeError, TypeError):
+                    d["tags"] = []
+                result.append(d)
+            return result
+        finally:
+            conn.close()
+
+    async def get_context_document_for_agent(
+        self, agent_id: str, context_id: str
+    ) -> Optional[dict]:
+        agent = await self.get_agent_by_id(agent_id)
+        if not agent:
+            return None
+        uid = agent["user_id"]
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                """SELECT id, user_id, context_type, title, content, tags,
+                          created_at, updated_at
+                   FROM context_documents WHERE id = ? AND user_id = ?""",
+                (context_id, uid),
+            ).fetchone()
+            if not row:
+                return None
+            keys = [
+                "id", "user_id", "context_type", "title", "content", "tags",
+                "created_at", "updated_at",
+            ]
+            d = dict(zip(keys, row))
+            try:
+                d["tags"] = json.loads(d["tags"])
+            except (json.JSONDecodeError, TypeError):
+                d["tags"] = []
+            return d
+        finally:
+            conn.close()
+
+    async def update_context_document_content_for_agent(
+        self, agent_id: str, context_id: str, content: str
+    ) -> None:
+        agent = await self.get_agent_by_id(agent_id)
+        if not agent:
+            raise PermissionError("Unknown agent")
+        uid = agent["user_id"]
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                """UPDATE context_documents SET content = ?, updated_at = ?
+                   WHERE id = ? AND user_id = ?""",
+                (content, _now_iso(), context_id, uid),
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                raise PermissionError(
+                    "Context document not found or not owned by this agent",
+                )
+            logger.debug("Updated context row %s (agent-scoped)", context_id)
+        except PermissionError:
+            raise
+        except Exception as e:
+            logger.error("Error updating context row (agent-scoped): %s", e)
+            raise
+        finally:
+            conn.close()
+
+    async def insert_context_document_for_agent(
+        self,
+        agent_id: str,
+        context_type: str,
+        title: str,
+        content: str,
+        tags: Optional[List[str]] = None,
+    ) -> str:
+        agent = await self.get_agent_by_id(agent_id)
+        if not agent:
+            raise PermissionError("Unknown agent")
+        uid = agent["user_id"]
+        return await self.insert_document(
+            uid, context_type, title, content, tags=tags,
+        )
 
     # ---- Memory System (knowledge brain) ----
 
