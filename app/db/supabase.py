@@ -87,7 +87,7 @@ class SupabaseBackend(StorageBackend):
             await self.assert_session_owned(user_id, session_id)
             response = (
                 self._client.table("interactions")
-                .select("id, session_id, parent_id, role, content, tool_name, tool_call_id, metadata, input, created_at")
+                .select("id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, created_at")
                 .eq("session_id", session_id)
                 .order("created_at", desc=False)
                 .execute()
@@ -113,6 +113,7 @@ class SupabaseBackend(StorageBackend):
         parent_id: Optional[str] = None,
         tool_name: Optional[str] = None,
         tool_call_id: Optional[str] = None,
+        channel: Optional[str] = None,
         metadata: Optional[str] = None,
         input_data: Optional[str] = None,
     ) -> str:
@@ -125,6 +126,7 @@ class SupabaseBackend(StorageBackend):
                 "parent_id": parent_id,
                 "tool_name": tool_name,
                 "tool_call_id": tool_call_id,
+                "channel": channel,
                 "metadata": metadata,
                 "input": input_data,
             }
@@ -689,11 +691,11 @@ class SupabaseClient:
     async def insert_interaction(
         user_id: str, session_id: str, role: str, content: str,
         parent_id: Optional[str] = None, tool_name: Optional[str] = None,
-        tool_call_id: Optional[str] = None, metadata: Optional[str] = None,
-        input_data: Optional[str] = None,
+        tool_call_id: Optional[str] = None, channel: Optional[str] = None,
+        metadata: Optional[str] = None, input_data: Optional[str] = None,
     ) -> str:
         return await SupabaseClient._get_backend().insert_interaction(
-            user_id, session_id, role, content, parent_id, tool_name, tool_call_id, metadata, input_data
+            user_id, session_id, role, content, parent_id, tool_name, tool_call_id, channel, metadata, input_data
         )
 
     @staticmethod

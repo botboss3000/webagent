@@ -51,6 +51,7 @@ class StorageBackend(ABC):
         parent_id: Optional[str] = None,
         tool_name: Optional[str] = None,
         tool_call_id: Optional[str] = None,
+        channel: Optional[str] = None,
         metadata: Optional[str] = None,
         input_data: Optional[str] = None,
     ) -> str:

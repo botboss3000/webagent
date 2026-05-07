@@ -46,6 +46,7 @@ async def chat(request: ChatRequest):
         # Save user message and get its ID for parent linking
         user_interaction_id = await db.insert_interaction(
             request.user_id, request.session_id, role="user", content=request.message,
+            channel="web_portal",
             metadata=json.dumps({"source": "web_portal_chat"}),
         )
 
@@ -127,6 +128,7 @@ async def chat(request: ChatRequest):
             content=search_content,
             parent_id=user_interaction_id,
             tool_name="memory_search",
+            channel="web_portal",
             metadata=json.dumps({
                 "count": len(brain_results or []),
                 "brain": True,
@@ -220,6 +222,7 @@ async def chat(request: ChatRequest):
             parent_interaction_id=parent_id,
             event_callback=event_callback,
             max_turns=agent["max_turn_count"],
+            channel="web_portal",
         )
 
         # ── PHASE 3: Background memory save (visible tool interaction) ──
@@ -255,6 +258,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
     # Save user message and get its ID for parent linking
     user_interaction_id = await db.insert_interaction(
         request.user_id, request.session_id, role="user", content=request.message,
+        channel="web_portal",
         metadata=json.dumps({"source": "web_portal_chat_sse"}),
     )
 
@@ -312,6 +316,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             content=search_content,
             parent_id=user_interaction_id,
             tool_name="memory_search",
+            channel="web_portal",
             metadata=json.dumps({
                 "count": len(brain_results or []),
                 "brain": True,
@@ -373,6 +378,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                     history=history,
                     parent_interaction_id=parent_id,
                     max_turns=agent["max_turn_count"],
+                    channel="web_portal",
                 ):
                     await q.put(event)
                     
@@ -432,6 +438,7 @@ async def _save_chat_to_memory(
             content=save_content,
             parent_id=parent_interaction_id,
             tool_name="memory_save",
+            channel="web_portal",
             metadata=json.dumps({"brain": True, "slug": slug}),
         )
 

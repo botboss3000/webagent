@@ -380,6 +380,7 @@ async def agent_websocket(websocket: WebSocket):
             try:
                 user_interaction_id = await db.insert_interaction(
                     user_id, session_id, role="user", content=msg,
+                    channel="webagent_ui",
                     metadata=json.dumps({"source": "terminal"}, default=_json_default_serializer),
                 )
             except Exception as save_err:
@@ -402,6 +403,7 @@ async def agent_websocket(websocket: WebSocket):
                     content=search_content,
                     parent_id=user_interaction_id,
                     tool_name="memory_search",
+                    channel="webagent_ui",
                     metadata=json.dumps({
                         "count": len(brain_results or []),
                         "brain": True,
@@ -453,6 +455,7 @@ async def agent_websocket(websocket: WebSocket):
                         parent_interaction_id=_parent_id,
                         interrupt_event=interrupt_agent_event,
                         max_turns=_max_turns,
+                        channel="webagent_ui",
                     ):
                         # Exit the streaming loop if an interrupt signal was received during processing
                         if interrupt_agent_event.is_set():
@@ -578,6 +581,7 @@ async def _save_chat_to_memory(
             content=save_content,
             parent_id=parent_interaction_id,
             tool_name="memory_save",
+            channel="webagent_ui",
             metadata=json.dumps({"brain": True, "slug": slug}, default=_json_default_serializer), # Use custom serializer
         )
         # Emit visualizer events

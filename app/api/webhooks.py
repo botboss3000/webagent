@@ -104,6 +104,7 @@ async def _run_registration_agent(
         # Save the incoming message
         await db.insert_interaction(
             user_id, session_id, role="user", content=message_text,
+            channel=plugin.name,
             metadata=json.dumps({"source": f"webhook/{plugin.name}"}),
         )
 
@@ -144,6 +145,7 @@ async def _run_registration_agent(
             system_prompt=system_prompt,
             history=history,
             max_turns=5,  # registration is quick
+            channel=plugin.name,
         )
 
         return reply
@@ -165,6 +167,7 @@ async def _run_agent_loop(
         # Save the incoming message
         await db.insert_interaction(
             user_id, session_id, role="user", content=message_text,
+            channel=plugin.name,
             metadata=json.dumps({"source": f"webhook/{plugin.name}"}),
         )
 
@@ -229,6 +232,7 @@ async def _run_agent_loop(
             system_prompt=system_prompt,
             history=history,
             max_turns=agent.get("max_turn_count", 10),
+            channel=plugin.name,
         )
 
         return reply

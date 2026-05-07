@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS interactions (
     content TEXT NOT NULL,
     tool_name TEXT,
     tool_call_id TEXT,
+    channel TEXT,
     metadata TEXT,
     input TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -458,6 +459,15 @@ class LocalBackend(StorageBackend):
 
             conn.executescript(SCHEMA_SQL)
             conn.commit()
+
+            # ── Migration: add channel column to interactions ──
+            cursor = conn.execute("PRAGMA table_info(interactions)")
+            cols = {row[1] for row in cursor.fetchall()}
+            if "channel" not in cols:
+                logger.info("Migration: adding channel column to interactions")
+                conn.execute("ALTER TABLE interactions ADD COLUMN channel TEXT")
+                conn.commit()
+
             logger.info("Local database initialized at %s", self._db_path)
 
             # ── Post-migration: move data from old agents_v1 ──
@@ -569,7 +579,7 @@ class LocalBackend(StorageBackend):
         conn = self._get_conn()
         try:
             rows = conn.execute(
-                "SELECT id, session_id, parent_id, role, content, tool_name, tool_call_id, metadata, input, created_at FROM interactions WHERE session_id = ? ORDER BY created_at ASC",
+                "SELECT id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, created_at FROM interactions WHERE session_id = ? ORDER BY created_at ASC",
                 (session_id,),
             ).fetchall()
             return [InteractionRecord(**dict(r)) for r in rows]
@@ -585,6 +595,7 @@ class LocalBackend(StorageBackend):
         parent_id: Optional[str] = None,
         tool_name: Optional[str] = None,
         tool_call_id: Optional[str] = None,
+        channel: Optional[str] = None,
         metadata: Optional[str] = None,
         input_data: Optional[str] = None,
     ) -> str:
@@ -593,8 +604,8 @@ class LocalBackend(StorageBackend):
         try:
             interaction_id = _uuid()
             conn.execute(
-                "INSERT INTO interactions (id, session_id, parent_id, role, content, tool_name, tool_call_id, metadata, input) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (interaction_id, session_id, parent_id, role, content, tool_name, tool_call_id, metadata, input_data),
+                "INSERT INTO interactions (id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (interaction_id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input_data),
             )
             conn.commit()
             logger.debug("Inserted interaction %s", interaction_id)
