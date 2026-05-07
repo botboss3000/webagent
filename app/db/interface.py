@@ -67,12 +67,12 @@ class StorageBackend(ABC):
         ...
 
     @abstractmethod
-    async def copy_defaults_to_user(
-        self, user_id: str
+    async def copy_defaults_to_agent(
+        self, agent_id: str
     ) -> int:
         """
-        Copy all context_default rows into context_documents for a user.
-        Only copies rows that don't already exist for that user (by context_type).
+        Copy template rows into context storage for this agent.
+        Only copies types not already present for this agent.
         Returns the number of rows copied.
         """
         ...
@@ -81,15 +81,29 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def fetch_context_documents(
-        self, user_id: str, context_types: List[str]
+        self, agent_id: str, context_types: Optional[List[str]] = None,
     ) -> List[dict]:
-        """Load context rows where context_type is in the list."""
+        """Load context rows for this agent; if context_types is None or empty, load all types."""
+        ...
+
+    @abstractmethod
+    async def get_context_document(
+        self, agent_id: str, context_id: str,
+    ) -> Optional[dict]:
+        """Return one context row by id if it belongs to this agent."""
+        ...
+
+    @abstractmethod
+    async def update_context_document_content(
+        self, agent_id: str, context_id: str, content: str,
+    ) -> None:
+        """Update the ``content`` column for a row owned by this agent."""
         ...
 
     @abstractmethod
     async def insert_document(
         self,
-        user_id: str,
+        agent_id: str,
         context_type: str,
         title: str,
         content: str,
@@ -99,18 +113,13 @@ class StorageBackend(ABC):
         ...
 
     @abstractmethod
-    async def update_context_row(self, context_id: str, content: str) -> None:
-        """Update a context row's content."""
+    async def delete_context_row(self, agent_id: str, context_id: str) -> None:
+        """Delete a context row by id (scoped to agent)."""
         ...
 
     @abstractmethod
-    async def delete_context_row(self, context_id: str) -> None:
-        """Delete a context row by id."""
-        ...
-
-    @abstractmethod
-    async def delete_all_documents_for_user(self, user_id: str) -> int:
-        """Delete all context rows for a user. Returns count of deleted rows."""
+    async def delete_all_documents_for_agent(self, agent_id: str) -> int:
+        """Delete all context rows for an agent. Returns count of deleted rows."""
         ...
 
     @abstractmethod

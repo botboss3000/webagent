@@ -16,7 +16,11 @@ from websockets.exceptions import ConnectionClosedOK # Added for handling WebSoc
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app.agent.prompts import build_system_prompt, format_attachments_for_prompt
+from app.agent.prompts import (
+    build_system_prompt,
+    format_attachments_for_prompt,
+    CONTEXT_SECTION_TYPES,
+)
 from app.agent.loop import stream_agent_events
 from app.agent.session_history import build_openai_history_from_session
 from app.db import get_db
@@ -277,16 +281,13 @@ async def agent_websocket(websocket: WebSocket):
             
             # Fetch context documents (agent, user, skills, tools, etc.)
             context_docs = await db.fetch_context_documents(
-                user_id,
-                ["agent", "user", "skills", "tools", "tasks", "memory", "project", "jobs"],
+                agent["id"], CONTEXT_SECTION_TYPES,
             )
             if not context_docs:
-                # If no context docs, try copying default ones for the user
-                copied = await db.copy_defaults_to_user(user_id)
+                copied = await db.copy_defaults_to_agent(agent["id"])
                 if copied > 0:
                     context_docs = await db.fetch_context_documents(
-                        user_id,
-                        ["agent", "user", "skills", "tools", "tasks", "memory", "project", "jobs"],
+                        agent["id"], CONTEXT_SECTION_TYPES,
                     )
 
             # ── Pipeline: context loaded ──

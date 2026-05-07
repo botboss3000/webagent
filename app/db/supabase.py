@@ -160,13 +160,22 @@ class SupabaseBackend(StorageBackend):
             logger.error("Error fetching context defaults: %s", e)
             raise
 
-    async def copy_defaults_to_user(self, user_id: str) -> int:
+    async def copy_defaults_to_agent(self, agent_id: str) -> int:
         """
-        Copy all context_default rows into context for a user.
-        Only copies rows that don't already exist for that user (by context_type).
+        Copy template rows into context for this agent.
+        Only copies rows that don't already exist for this agent (by context_type).
         """
         try:
-            # Get all default rows
+            agent_check = (
+                self._client.table("agents")
+                .select("id")
+                .eq("id", agent_id)
+                .limit(1)
+                .execute()
+            )
+            if not agent_check.data:
+                return 0
+
             defaults = (
                 self._client.table("context_templates")
                 .select("context_type, title, content, tags")
@@ -175,11 +184,10 @@ class SupabaseBackend(StorageBackend):
             if not defaults.data:
                 return 0
 
-            # Get existing context_types for this user
             existing = (
                 self._client.table("context")
                 .select("context_type")
-                .eq("user_id", user_id)
+                .eq("agent_id", agent_id)
                 .execute()
             )
             existing_types = set(r["context_type"] for r in (existing.data or []))
@@ -189,7 +197,7 @@ class SupabaseBackend(StorageBackend):
                 if d["context_type"] in existing_types:
                     continue
                 data = {
-                    "user_id": user_id,
+                    "agent_id": agent_id,
                     "context_type": d["context_type"],
                     "title": d["title"],
                     "content": d["content"],
@@ -199,37 +207,88 @@ class SupabaseBackend(StorageBackend):
                 copied += 1
 
             if copied > 0:
-                logger.info("Copied %s default context rows to user %s", copied, user_id)
+                logger.info(
+                    "Copied %s default context rows to agent %s", copied, agent_id,
+                )
             return copied
         except Exception as e:
-            logger.error("Error copying defaults to user: %s", e)
+            logger.error("Error copying defaults to agent: %s", e)
             raise
 
     # ---- Context Documents ----
 
     async def fetch_context_documents(
-        self, user_id: str, context_types: List[str]
+        self,
+        agent_id: str,
+        context_types: Optional[List[str]] = None,
     ) -> List[dict]:
         try:
-            response = (
+            q = (
                 self._client.table("context")
-                .select("id, user_id, context_type, title, content, tags, created_at, updated_at")
-                .eq("user_id", user_id)
-                .in_("context_type", context_types)
-                .execute()
+                .select(
+                    "id, agent_id, context_type, title, content, tags, created_at, updated_at",
+                )
+                .eq("agent_id", agent_id)
             )
+            if context_types:
+                q = q.in_("context_type", context_types)
+            response = q.order("context_type").execute()
             logger.debug(
-                "Fetched %s context rows for user %s",
-                len(response.data or []), user_id,
+                "Fetched %s context rows for agent %s",
+                len(response.data or []), agent_id,
             )
             return response.data or []
         except Exception as e:
             logger.error("Error fetching context documents: %s", e)
             raise
 
+    async def get_context_document(
+        self, agent_id: str, context_id: str
+    ) -> Optional[dict]:
+        try:
+            response = (
+                self._client.table("context")
+                .select(
+                    "id, agent_id, context_type, title, content, tags, created_at, updated_at",
+                )
+                .eq("id", context_id)
+                .eq("agent_id", agent_id)
+                .limit(1)
+                .execute()
+            )
+            if response.data:
+                return response.data[0]
+            return None
+        except Exception as e:
+            logger.error("Error fetching context document: %s", e)
+            raise
+
+    async def update_context_document_content(
+        self, agent_id: str, context_id: str, content: str
+    ) -> None:
+        try:
+            response = (
+                self._client.table("context")
+                .update({"content": content, "updated_at": "now()"})
+                .eq("id", context_id)
+                .eq("agent_id", agent_id)
+                .execute()
+            )
+            rows = response.data or []
+            if not rows:
+                raise PermissionError(
+                    "Context document not found or not owned by this agent",
+                )
+            logger.debug("Updated context row %s for agent %s", context_id, agent_id)
+        except PermissionError:
+            raise
+        except Exception as e:
+            logger.error("Error updating context row: %s", e)
+            raise
+
     async def insert_document(
         self,
-        user_id: str,
+        agent_id: str,
         context_type: str,
         title: str,
         content: str,
@@ -237,40 +296,58 @@ class SupabaseBackend(StorageBackend):
     ) -> str:
         try:
             data = {
-                "user_id": user_id, "context_type": context_type,
-                "title": title, "content": content, "tags": tags or [],
+                "agent_id": agent_id,
+                "context_type": context_type,
+                "title": title,
+                "content": content,
+                "tags": tags or [],
             }
             response = self._client.table("context").insert(data).execute()
             if response.data and len(response.data) > 0:
                 doc_id = response.data[0]["id"]
-                logger.debug("Inserted context %s type=%s for user %s", doc_id, context_type, user_id)
+                logger.debug(
+                    "Inserted context %s type=%s for agent %s",
+                    doc_id, context_type, agent_id,
+                )
                 return doc_id
             raise ValueError("No data returned after insert")
         except Exception as e:
             logger.error("Error inserting document: %s", e)
             raise
 
-    async def update_context_row(self, context_id: str, content: str) -> None:
+    async def delete_context_row(self, agent_id: str, context_id: str) -> None:
         try:
-            self._client.table("context").update({"content": content, "updated_at": "now()"}).eq("id", context_id).execute()
-            logger.debug("Updated context row %s", context_id)
-        except Exception as e:
-            logger.error("Error updating context row: %s", e)
+            response = (
+                self._client.table("context")
+                .delete()
+                .eq("id", context_id)
+                .eq("agent_id", agent_id)
+                .execute()
+            )
+            rows = response.data or []
+            if not rows:
+                raise PermissionError(
+                    "Context document not found or not owned by this agent",
+                )
+            logger.debug("Deleted context row %s for agent %s", context_id, agent_id)
+        except PermissionError:
             raise
-
-    async def delete_context_row(self, context_id: str) -> None:
-        try:
-            self._client.table("context").delete().eq("id", context_id).execute()
-            logger.debug("Deleted context row %s", context_id)
         except Exception as e:
             logger.error("Error deleting context row: %s", e)
             raise
 
-    async def delete_all_documents_for_user(self, user_id: str) -> int:
+    async def delete_all_documents_for_agent(self, agent_id: str) -> int:
         try:
-            response = self._client.table("context").delete().eq("user_id", user_id).execute()
+            response = (
+                self._client.table("context")
+                .delete()
+                .eq("agent_id", agent_id)
+                .execute()
+            )
             deleted = len(response.data) if response.data else 0
-            logger.debug("Deleted %s context rows for user %s", deleted, user_id)
+            logger.debug(
+                "Deleted %s context rows for agent %s", deleted, agent_id,
+            )
             return deleted
         except Exception as e:
             logger.error("Error deleting context: %s", e)
@@ -792,35 +869,49 @@ class SupabaseClient:
         )
 
     @staticmethod
-    async def copy_defaults_to_user(user_id: str) -> int:
-        return await SupabaseClient._get_backend().copy_defaults_to_user(user_id)
+    async def copy_defaults_to_agent(agent_id: str) -> int:
+        return await SupabaseClient._get_backend().copy_defaults_to_agent(agent_id)
 
     @staticmethod
-    async def fetch_context_documents(user_id: str, context_types: List[str]) -> List[dict]:
+    async def fetch_context_documents(
+        agent_id: str, context_types: Optional[List[str]] = None,
+    ) -> List[dict]:
         return await SupabaseClient._get_backend().fetch_context_documents(
-            user_id, context_types
+            agent_id, context_types
+        )
+
+    @staticmethod
+    async def get_context_document(agent_id: str, context_id: str) -> Optional[dict]:
+        return await SupabaseClient._get_backend().get_context_document(
+            agent_id, context_id,
+        )
+
+    @staticmethod
+    async def update_context_document_content(
+        agent_id: str, context_id: str, content: str,
+    ) -> None:
+        await SupabaseClient._get_backend().update_context_document_content(
+            agent_id, context_id, content,
         )
 
     @staticmethod
     async def insert_document(
-        user_id: str, context_type: str, title: str, content: str,
+        agent_id: str, context_type: str, title: str, content: str,
         tags: Optional[List[str]] = None,
     ) -> str:
         return await SupabaseClient._get_backend().insert_document(
-            user_id, context_type, title, content, tags
+            agent_id, context_type, title, content, tags
         )
 
     @staticmethod
-    async def update_context_row(context_id: str, content: str) -> None:
-        await SupabaseClient._get_backend().update_context_row(context_id, content)
+    async def delete_context_row(agent_id: str, context_id: str) -> None:
+        await SupabaseClient._get_backend().delete_context_row(agent_id, context_id)
 
     @staticmethod
-    async def delete_context_row(context_id: str) -> None:
-        await SupabaseClient._get_backend().delete_context_row(context_id)
-
-    @staticmethod
-    async def delete_all_documents_for_user(user_id: str) -> int:
-        return await SupabaseClient._get_backend().delete_all_documents_for_user(user_id)
+    async def delete_all_documents_for_agent(agent_id: str) -> int:
+        return await SupabaseClient._get_backend().delete_all_documents_for_agent(
+            agent_id,
+        )
 
     @staticmethod
     async def memory_upsert(

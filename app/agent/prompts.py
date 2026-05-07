@@ -22,6 +22,8 @@ CONTEXT_TYPE_TO_TITLE = {
     "jobs": "JOBS",
 }
 
+CONTEXT_SECTION_TYPES = list(CONTEXT_TYPE_TO_TITLE.keys())
+
 
 def _row_context_type(doc: Dict) -> str:
     return (doc.get("context_type") or doc.get("doc_type") or "").strip()
