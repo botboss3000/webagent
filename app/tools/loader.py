@@ -145,6 +145,112 @@ class ToolLoader:
             parameters=_ATTACH_TOOL_DEF["parameters"],
         )
 
+        # ── Agent context documents (body text read/write; scoped to this user's assigned agent) ──
+        async def _list_agent_context_documents(context_types: Optional[List[str]] = None):
+            """List persisted context documents for the user's assigned agent."""
+            db = get_db()
+            agent = await db.get_agent_for_user(user_id)
+            if not agent:
+                return json.dumps({"status": "error", "message": "No agent assigned for this user."})
+            filt = context_types if context_types else None
+            docs = await db.fetch_context_documents_for_agent(agent["id"], filt)
+            return json.dumps({"status": "ok", "count": len(docs), "documents": docs})
+
+        tools["list_agent_context_documents"] = ToolInfo(
+            name="list_agent_context_documents",
+            handler=_list_agent_context_documents,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "context_types": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional filter by context_type (e.g. agent, skills, tools). Omit to return all.",
+                    },
+                },
+                "required": [],
+            },
+        )
+
+        async def _get_agent_context_document(context_id: str):
+            """Load one context document by id if owned by this user's agent."""
+            db = get_db()
+            agent = await db.get_agent_for_user(user_id)
+            if not agent:
+                return json.dumps({"status": "error", "message": "No agent assigned for this user."})
+            doc = await db.get_context_document_for_agent(agent["id"], context_id)
+            if not doc:
+                return json.dumps({"status": "error", "message": "Document not found or not accessible to this agent."})
+            return json.dumps({"status": "ok", "document": doc})
+
+        tools["get_agent_context_document"] = ToolInfo(
+            name="get_agent_context_document",
+            handler=_get_agent_context_document,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "context_id": {"type": "string", "description": "Document id from list_agent_context_documents."},
+                },
+                "required": ["context_id"],
+            },
+        )
+
+        async def _update_agent_context_document(context_id: str, content: str):
+            """Replace the body (content) of a context document owned by this user's agent."""
+            db = get_db()
+            agent = await db.get_agent_for_user(user_id)
+            if not agent:
+                return json.dumps({"status": "error", "message": "No agent assigned for this user."})
+            try:
+                await db.update_context_document_content_for_agent(agent["id"], context_id, content)
+            except PermissionError as e:
+                return json.dumps({"status": "error", "message": str(e)})
+            return json.dumps({"status": "ok", "context_id": context_id})
+
+        tools["update_agent_context_document"] = ToolInfo(
+            name="update_agent_context_document",
+            handler=_update_agent_context_document,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "context_id": {"type": "string"},
+                    "content": {"type": "string", "description": "Full replacement text for the document body."},
+                },
+                "required": ["context_id", "content"],
+            },
+        )
+
+        async def _insert_agent_context_document(
+            context_type: str, title: str, content: str, tags: Optional[List[str]] = None,
+        ):
+            """Insert a new context document row for this user's agent."""
+            db = get_db()
+            agent = await db.get_agent_for_user(user_id)
+            if not agent:
+                return json.dumps({"status": "error", "message": "No agent assigned for this user."})
+            try:
+                doc_id = await db.insert_context_document_for_agent(
+                    agent["id"], context_type, title, content, tags=tags,
+                )
+            except PermissionError as e:
+                return json.dumps({"status": "error", "message": str(e)})
+            return json.dumps({"status": "ok", "id": doc_id})
+
+        tools["insert_agent_context_document"] = ToolInfo(
+            name="insert_agent_context_document",
+            handler=_insert_agent_context_document,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "context_type": {"type": "string", "description": "Section type e.g. skills, tools, memory."},
+                    "title": {"type": "string"},
+                    "content": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional tags."},
+                },
+                "required": ["context_type", "title", "content"],
+            },
+        )
+
         # ── Communication plugin tools (Telegram, WhatsApp, etc.) ──
         try:
             from app.communications.manager import get_plugin_manager

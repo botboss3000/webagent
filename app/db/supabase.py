@@ -276,6 +276,95 @@ class SupabaseBackend(StorageBackend):
             logger.error("Error deleting context: %s", e)
             raise
 
+    async def fetch_context_documents_for_agent(
+        self,
+        agent_id: str,
+        context_types: Optional[List[str]] = None,
+    ) -> List[dict]:
+        agent = await self.get_agent_by_id(agent_id)
+        if not agent:
+            return []
+        uid = agent["user_id"]
+        try:
+            q = (
+                self._client.table("context")
+                .select("id, user_id, context_type, title, content, tags, created_at, updated_at")
+                .eq("user_id", uid)
+            )
+            if context_types:
+                q = q.in_("context_type", context_types)
+            response = q.order("context_type").execute()
+            return response.data or []
+        except Exception as e:
+            logger.error("Error fetching context documents for agent: %s", e)
+            raise
+
+    async def get_context_document_for_agent(
+        self, agent_id: str, context_id: str
+    ) -> Optional[dict]:
+        agent = await self.get_agent_by_id(agent_id)
+        if not agent:
+            return None
+        uid = agent["user_id"]
+        try:
+            response = (
+                self._client.table("context")
+                .select("id, user_id, context_type, title, content, tags, created_at, updated_at")
+                .eq("id", context_id)
+                .eq("user_id", uid)
+                .limit(1)
+                .execute()
+            )
+            if response.data:
+                return response.data[0]
+            return None
+        except Exception as e:
+            logger.error("Error fetching context document for agent: %s", e)
+            raise
+
+    async def update_context_document_content_for_agent(
+        self, agent_id: str, context_id: str, content: str
+    ) -> None:
+        agent = await self.get_agent_by_id(agent_id)
+        if not agent:
+            raise PermissionError("Unknown agent")
+        uid = agent["user_id"]
+        try:
+            response = (
+                self._client.table("context")
+                .update({"content": content, "updated_at": "now()"})
+                .eq("id", context_id)
+                .eq("user_id", uid)
+                .execute()
+            )
+            rows = response.data or []
+            if not rows:
+                raise PermissionError(
+                    "Context document not found or not owned by this agent",
+                )
+            logger.debug("Updated context row %s (agent-scoped)", context_id)
+        except PermissionError:
+            raise
+        except Exception as e:
+            logger.error("Error updating context row (agent-scoped): %s", e)
+            raise
+
+    async def insert_context_document_for_agent(
+        self,
+        agent_id: str,
+        context_type: str,
+        title: str,
+        content: str,
+        tags: Optional[List[str]] = None,
+    ) -> str:
+        agent = await self.get_agent_by_id(agent_id)
+        if not agent:
+            raise PermissionError("Unknown agent")
+        uid = agent["user_id"]
+        return await self.insert_document(
+            uid, context_type, title, content, tags=tags,
+        )
+
     # ---- Memories ----
 
     # ---- Memory System (knowledge brain) ----
