@@ -271,6 +271,9 @@ class ToolLoader:
     def _compile_tool(self, code_string: str, tool_name: str) -> Any:
         """
         Compile a tool code string into a Python function.
+        Uses a restricted namespace that strips dangerous builtins
+        (open, exec, eval, compile, __import__) as defense-in-depth
+        against filesystem/shell/DB access via create_tool.
 
         Args:
             code_string: Full Python function code
@@ -280,8 +283,13 @@ class ToolLoader:
             Compiled Python function object
         """
         try:
+            # Strip dangerous builtins — defense-in-depth for create_tool
+            safe_builtins = dict(__builtins__)
+            for _dangerous in ("open", "exec", "eval", "compile", "__import__"):
+                safe_builtins.pop(_dangerous, None)
+
             compiled = compile(code_string, f"<tool:{tool_name}>", "exec")
-            namespace = {}
+            namespace = {"__builtins__": safe_builtins}
             exec(compiled, namespace)
             return namespace[tool_name]
         except Exception as e:

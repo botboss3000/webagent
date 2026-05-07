@@ -12,6 +12,7 @@ A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional *
 - **Tools** — Dynamic tools from the DB (JSON schemas in **`app/tools/loader.py`**), including Playwright **`browser.py`** and built-in **`read_attachment`**, **`create_tool`**, **`rate_skill`**.
 - **OpenRouter** — Model from `OPENROUTER_MODEL` (see `.env.example`; e.g. `deepseek/deepseek-v4-flash`).
 - **Dual storage** — **`cloud`** (Supabase) vs **`local`** (SQLite file **`app/db/local.db`**). Mode is stored in **`app/db_mode.json`** and switched via **`/admin/db/*`**.
+- **Administrator tools** — Optional filesystem read/write/edit/delete, shell command execution, and server restart exposed as agent tools (**`read_source`**, **`write_source`**, **`edit_source`**, **`delete_source`**, **`run_command`**, **`restart_server`**). Powered by **`app/admin/source.py`** + **`app/admin/source_tools.py`**. **These are privileged debug tools — NOT available in normal user operation.** Deleting the `app/admin/` directory removes them entirely. See the [Administrator Tools](#administrator-tools) section.
 - **Web UI** — Static app at **`/ui/`** (chat, DB viewer, terminal, stream/loop). **`/terminal`** redirects to **`/ui/`**.
 - **Minimal tester** — **`GET /test`** serves **`ui/test_interface.html`** (same origin as the API).
 
@@ -96,7 +97,7 @@ The agent uses a single unified execution engine (`app/agent/loop.py`) that serv
 | **`db/interface.py`** | **`StorageBackend`** protocol with **`insert_attachment`**, **`get_attachment`**, **`get_session_attachments`**, **`delete_attachment`**. |
 | **`tools/`** | **`loader`**, **`registry`**, **`tracker`**, **`browser`**, **`read_attachment`** (built-in tool for reading uploaded files via `app/db/attachments/`). |
 | **`models/schemas.py`** | Pydantic models (`ChatRequest`, etc.). |
-| **`admin/`** | **`review`** (`/admin/...`), **`db_mode`** (`/admin/db/...`), **`settings`**, **`guardrails`**, **`communications`** (plugin mgmt), optional **`source`** / **`source_tools`**. |
+| **`admin/`** | **`review`** (`/admin/tools` — list/deprecate DB tools), **`db_mode`** (`/admin/db/` — cloud/local switch), **`settings`** (provider config, model list, metadata toggle), **`guardrails`** (path/command deny-list for source tools), **`communications`** (Telegram/WhatsApp plugin mgmt), **`source`** + **`source_tools`** (optional privileged filesystem & shell access — delete to disable). See [Administrator Tools](#administrator-tools). |
 | **`openai_compat.py`** | OpenAI-compatible client wiring for OpenRouter. |
 
 ### Frontend (`ui/`)
@@ -247,6 +248,54 @@ Common types include `agent`, `user`, `skills`, `tools`, `tasks`, and optionally
 ## Deployment
 
 Use any Python-capable host (Railway, Render, Fly.io, Docker, etc.). Set the same env vars; use **cloud** + Supabase when you run multiple app instances.
+
+## Administrator Tools
+
+The **`app/admin/`** directory provides **privileged debug and management capabilities** that are **not part of normal user-facing operation**. These give the agent broad filesystem access and shell execution on the server.
+
+### Source management stack (optional)
+
+| File | What it provides |
+|------|------------------|
+| **`app/admin/source.py`** | FastAPI router at `/admin/source/` — **REST endpoints** for reading, writing, deleting files and running shell commands. Syntax-validates Python/JSON before writes. Backs up overwritten files to `.source-backups/`. |
+| **`app/admin/source_tools.py`** | **Agent tool wrappers** — injects `read_source`, `write_source`, `edit_source`, `delete_source`, `run_command`, and `restart_server` into the agent's tool list. Mutating tools (`write`, `edit`, `delete`, `run`, `restart`) **require user confirmation** before the agent may call them. |
+| **`app/admin/guardrails.py`** | **Optional security deny-list** — blocks access to `.env`, `.bash_history`, `.ssh/*`, and dangerous commands like `rm -rf /`. Delete this file to remove all restrictions. |
+
+**How the agent sees them:**
+
+| Tool | What it does | User confirmation? |
+|------|-------------|-------------------|
+| `read_source` | Read any file on the system | ❌ No (read-only) |
+| `write_source` | Create/overwrite files (backed up) | ✅ Yes |
+| `edit_source` | Replace exact text in a file | ✅ Yes |
+| `delete_source` | Delete files or directories | ✅ Yes |
+| `run_command` | Execute arbitrary shell commands | ✅ Yes |
+| `restart_server` | Kill and restart the webAgent server process | ✅ Yes |
+
+### Other admin endpoints
+
+| Router | Endpoints | Purpose |
+|--------|-----------|---------|
+| `review.py` | `GET /admin/tools`, `GET /admin/tools/{name}`, `DELETE /admin/tools/{id}` | List/get/deprecate tools in the DB |
+| `settings.py` | `GET/POST /admin/settings/provider`, `GET/POST /admin/settings/metadata`, `GET /admin/settings/models` | Switch AI provider, API key, model; toggle metadata logging |
+| `db_mode.py` | `GET /admin/db/mode`, `POST /admin/db/mode` | Toggle between Cloud (Supabase) and Local (SQLite) |
+| `communications.py` | `GET /admin/communications/plugins`, enable/disable, set webhook URL | Manage Telegram, WhatsApp plugins |
+
+### Disabling administrator tools
+
+**To remove all privileged filesystem and shell access, simply delete the `app/admin/` directory (or just `source.py` + `source_tools.py`).**
+
+The import in `app/tools/loader.py` is guarded by `try/except ImportError` — if the files don't exist, the agent never gets the tools. The same guarded import pattern in `app/main.py` prevents the REST endpoints from being mounted.
+
+```bash
+# Fastest lockdown — remove the source management files:
+rm -rf app/admin/source.py app/admin/source_tools.py
+
+# Full lockdown — remove the entire admin module:
+rm -rf app/admin/
+```
+
+No code changes are needed. The server continues running; the next agent turn will simply lack all admin tools.
 
 ## Assistants and scratch files
 

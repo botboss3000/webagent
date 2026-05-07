@@ -8,11 +8,91 @@ and tool rating/scoring utilities.
 
 import json
 import logging
+import re
 from typing import Dict, Any, List, Optional
 
 from app.db import get_db
 
 logger = logging.getLogger(__name__)
+
+
+# ── Tool code safety scanner ─────────────────────────────────────────────────
+# Prevents create_tool from injecting code that touches the agent's own
+# codebase (filesystem, shell, DB, code execution). Only external-facing
+# tools (HTTP APIs, data processing, etc.) are allowed.
+
+BLOCKED_IMPORTS = [
+    "os",
+    "subprocess",
+    "shutil",
+    "pathlib",
+    "sqlite3",
+    "builtins",
+    "importlib",
+    "aiofiles",
+    "io",
+    "tempfile",
+    "fileinput",
+    "filecmp",
+    "zipfile",
+    "tarfile",
+    "gzip",
+    "bz2",
+    "lzma",
+]
+
+# Regex: matches `import os`, `import   os`, `from os import`, `from   os import`
+_IMPORT_RE = re.compile(
+    r"""(?:^|[\n;])\s*(?:import|from)\s+([a-zA-Z0-9_.]+)""",
+    re.MULTILINE,
+)
+
+# Inline/call patterns: os., subprocess., shutil.rmtree, open(, exec(, eval(
+_CALL_PATTERNS = [
+    r"""\bos\.""",
+    r"""\bsubprocess\.""",
+    r"""\bshutil\.""",
+    r"""\bpathlib\.""",
+    r"""\bsqlite3\.""",
+    r"""\bbuiltins\.""",
+    r"""\bimportlib\.""",
+    r"""\baiofiles\.""",
+    r"""\bopen\s*\(""",
+    r"""\bexec\s*\(""",
+    r"""\beval\s*\(""",
+    r"""\bcompile\s*\(""",
+    r"""__import__\s*\(""",
+]
+_CALL_RE = re.compile("|".join(_CALL_PATTERNS))
+
+
+def _check_tool_code_safety(code: str) -> Optional[str]:
+    """
+    Scan tool code for dangerous imports and patterns.
+    Returns error message string if unsafe, None if safe.
+    """
+    # Check imports
+    for match in _IMPORT_RE.finditer(code):
+        mod = match.group(1).split(".")[0]  # top-level module name
+        if mod in BLOCKED_IMPORTS:
+            return (
+                f"Unsafe import rejected: '{match.group(0).strip()}' "
+                f"(module '{mod}' provides filesystem/shell/DB access). "
+                f"create_tool is for external tools only (HTTP APIs, data processing). "
+                f"Allowed imports exclude: os, subprocess, shutil, pathlib, sqlite3, "
+                f"builtins, importlib, aiofiles, io, tempfile, and archive modules."
+            )
+
+    # Check call patterns (e.g. `os.`, `open(`, `exec(`)
+    call_match = _CALL_RE.search(code)
+    if call_match:
+        return (
+            f"Unsafe pattern rejected: '{call_match.group().strip()}' "
+            f"provides filesystem/shell/DB access. "
+            f"create_tool is for external tools only."
+        )
+
+    return None
 
 
 # ── Built-in tool: create_tool ────────────────────────────────────────────────
@@ -44,6 +124,12 @@ async def create_tool(
     """
     if not user_id:
         return {"status": "error", "message": "user_id is required"}
+
+    # Safety scan — reject code that touches the agent's codebase
+    safety_error = _check_tool_code_safety(code)
+    if safety_error:
+        logger.warning("Tool '%s' rejected by safety scanner: %s", name, safety_error[:80])
+        return {"status": "blocked", "tool_name": name, "message": safety_error}
 
     client = get_db().get_raw_client()
 
