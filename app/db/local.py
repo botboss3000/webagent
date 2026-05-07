@@ -905,6 +905,126 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
+    async def fetch_context_documents_for_agent(
+        self,
+        agent_id: str,
+        context_types: Optional[List[str]] = None,
+    ) -> List[dict]:
+        agent = await self.get_agent_by_id(agent_id)
+        if not agent:
+            return []
+        uid = agent["user_id"]
+        conn = self._get_conn()
+        try:
+            if context_types:
+                placeholders = ",".join("?" * len(context_types))
+                sql = (
+                    f"""SELECT id, user_id, context_type, title, content, tags,
+                               created_at, updated_at
+                        FROM context_documents
+                        WHERE user_id = ? AND context_type IN ({placeholders})
+                        ORDER BY context_type, title"""
+                )
+                rows = conn.execute(sql, (uid, *context_types)).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT id, user_id, context_type, title, content, tags,
+                              created_at, updated_at
+                       FROM context_documents
+                       WHERE user_id = ?
+                       ORDER BY context_type, title""",
+                    (uid,),
+                ).fetchall()
+            result: List[dict] = []
+            keys = [
+                "id", "user_id", "context_type", "title", "content", "tags",
+                "created_at", "updated_at",
+            ]
+            for row in rows:
+                d = dict(zip(keys, row))
+                try:
+                    d["tags"] = json.loads(d["tags"])
+                except (json.JSONDecodeError, TypeError):
+                    d["tags"] = []
+                result.append(d)
+            return result
+        finally:
+            conn.close()
+
+    async def get_context_document_for_agent(
+        self, agent_id: str, context_id: str
+    ) -> Optional[dict]:
+        agent = await self.get_agent_by_id(agent_id)
+        if not agent:
+            return None
+        uid = agent["user_id"]
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                """SELECT id, user_id, context_type, title, content, tags,
+                          created_at, updated_at
+                   FROM context_documents WHERE id = ? AND user_id = ?""",
+                (context_id, uid),
+            ).fetchone()
+            if not row:
+                return None
+            keys = [
+                "id", "user_id", "context_type", "title", "content", "tags",
+                "created_at", "updated_at",
+            ]
+            d = dict(zip(keys, row))
+            try:
+                d["tags"] = json.loads(d["tags"])
+            except (json.JSONDecodeError, TypeError):
+                d["tags"] = []
+            return d
+        finally:
+            conn.close()
+
+    async def update_context_document_content_for_agent(
+        self, agent_id: str, context_id: str, content: str
+    ) -> None:
+        agent = await self.get_agent_by_id(agent_id)
+        if not agent:
+            raise PermissionError("Unknown agent")
+        uid = agent["user_id"]
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                """UPDATE context_documents SET content = ?, updated_at = ?
+                   WHERE id = ? AND user_id = ?""",
+                (content, _now_iso(), context_id, uid),
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                raise PermissionError(
+                    "Context document not found or not owned by this agent",
+                )
+            logger.debug("Updated context row %s (agent-scoped)", context_id)
+        except PermissionError:
+            raise
+        except Exception as e:
+            logger.error("Error updating context row (agent-scoped): %s", e)
+            raise
+        finally:
+            conn.close()
+
+    async def insert_context_document_for_agent(
+        self,
+        agent_id: str,
+        context_type: str,
+        title: str,
+        content: str,
+        tags: Optional[List[str]] = None,
+    ) -> str:
+        agent = await self.get_agent_by_id(agent_id)
+        if not agent:
+            raise PermissionError("Unknown agent")
+        uid = agent["user_id"]
+        return await self.insert_document(
+            uid, context_type, title, content, tags=tags,
+        )
+
     # ---- Memory System (knowledge brain) ----
 
     async def memory_upsert(
