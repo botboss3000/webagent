@@ -31,7 +31,7 @@ import java.util.concurrent.Executors;
 public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "webAgent";
-    private static final int PORT = 8000;
+    private static final int PORT = 8080;
     private static final String APP_URL = "http://127.0.0.1:" + PORT + "/index.html";
     private static final String HEALTH_URL = "http://127.0.0.1:" + PORT + "/health";
 

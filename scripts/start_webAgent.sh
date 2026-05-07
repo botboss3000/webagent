@@ -2,7 +2,7 @@
 # Repo root (script lives in scripts/). .venv and .env are resolved from here.
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.." || exit 1
 
-# Run after database migration; starts uvicorn in the background on port 8000.
+# Run after database migration; starts uvicorn in the background (default port 8080, override with PORT=).
 
 echo "========================================="
 echo "webAgent - Quick Start"
@@ -24,7 +24,8 @@ if [ ! -f ".env" ]; then
 fi
 
 # Start server in background
-echo "Starting FastAPI server on port 8000..."
+PORT="${PORT:-8080}"
+echo "Starting FastAPI server on port ${PORT}..."
 echo "Server will run in background. Logs: server.log"
 echo "To stop: pkill -f 'uvicorn app.main:app'"
 
@@ -33,7 +34,7 @@ LOG_FILE="server_$(date +%Y%m%d_%H%M%S).log"
 echo "Server starting at $(date)" > "$LOG_FILE"
 
 # Start server
-.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 >> "$LOG_FILE" 2>&1 &
+.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port "$PORT" >> "$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 
 echo "Server started with PID: $SERVER_PID"
@@ -45,7 +46,7 @@ echo "Waiting for server to start..."
 sleep 3
 
 # Check if server is running
-if curl -s http://localhost:8000/health > /dev/null; then
+if curl -s "http://localhost:${PORT}/health" > /dev/null; then
     echo "✅ Server is running!"
     echo ""
     echo "Context defaults are applied on first chat if the user has no context rows (no separate seed endpoint)."
@@ -54,20 +55,20 @@ if curl -s http://localhost:8000/health > /dev/null; then
     echo "✅ webAgent is ready!"
     echo ""
     echo "Test endpoints:"
-    echo "  Health:    curl http://localhost:8000/health"
-    echo "  Chat test: curl -X POST http://localhost:8000/api/v1/chat \\"
+    echo "  Health:    curl http://localhost:${PORT}/health"
+    echo "  Chat test: curl -X POST http://localhost:${PORT}/api/v1/chat \\"
     echo "    -H \"Content-Type: application/json\" \\"
     echo "    -d '{\"user_id\":\"test\",\"session_id\":\"test\",\"message\":\"Hello!\"}'"
     echo ""
     echo "Web interface:"
-    echo "  Minimal tester:  http://localhost:8000/test"
-    echo "  Full UI:         http://localhost:8000/index.html"
+    echo "  Minimal tester:  http://localhost:${PORT}/test"
+    echo "  Full UI:         http://localhost:${PORT}/index.html"
     echo ""
     echo "Connect your web app to:"
-    echo "  http://localhost:8000/api/v1/chat"
+    echo "  http://localhost:${PORT}/api/v1/chat"
     echo ""
     echo "API documentation:"
-    echo "  http://localhost:8000/docs"
+    echo "  http://localhost:${PORT}/docs"
     echo ""
     echo "To stop server:"
     echo "  pkill -f 'uvicorn app.main:app'"
