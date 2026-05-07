@@ -93,6 +93,40 @@ CREATE TABLE IF NOT EXISTS session_summaries (
 
 CREATE INDEX IF NOT EXISTS idx_summaries_user ON session_summaries(user_id);
 
+CREATE TABLE IF NOT EXISTS agent_templates (
+    id TEXT PRIMARY KEY DEFAULT 'default',
+    system_prompt TEXT NOT NULL DEFAULT '',
+    max_turn_count INTEGER NOT NULL DEFAULT 10,
+    model TEXT,
+    provider TEXT,
+    temperature REAL NOT NULL DEFAULT 0.0,
+    max_tokens INTEGER NOT NULL DEFAULT 4096,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+INSERT OR IGNORE INTO agent_templates (id, system_prompt, max_turn_count)
+VALUES ('default', '', 10);
+
+CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL UNIQUE,
+    system_prompt TEXT NOT NULL DEFAULT '',
+    max_turn_count INTEGER NOT NULL DEFAULT 10,
+    model TEXT,
+    provider TEXT,
+    temperature REAL NOT NULL DEFAULT 0.0,
+    max_tokens INTEGER NOT NULL DEFAULT 4096,
+    status TEXT NOT NULL DEFAULT 'active',
+    metadata TEXT NOT NULL DEFAULT '{}',
+    assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agents_user ON agents(user_id);
+
 CREATE TABLE IF NOT EXISTS context_documents (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents(id),
@@ -334,40 +368,6 @@ CREATE TABLE IF NOT EXISTS session_interrupts (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS agent_templates (
-    id TEXT PRIMARY KEY DEFAULT 'default',
-    system_prompt TEXT NOT NULL DEFAULT '',
-    max_turn_count INTEGER NOT NULL DEFAULT 10,
-    model TEXT,
-    provider TEXT,
-    temperature REAL NOT NULL DEFAULT 0.0,
-    max_tokens INTEGER NOT NULL DEFAULT 4096,
-    metadata TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-INSERT OR IGNORE INTO agent_templates (id, system_prompt, max_turn_count)
-VALUES ('default', '', 10);
-
-CREATE TABLE IF NOT EXISTS agents (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL UNIQUE,
-    system_prompt TEXT NOT NULL DEFAULT '',
-    max_turn_count INTEGER NOT NULL DEFAULT 10,
-    model TEXT,
-    provider TEXT,
-    temperature REAL NOT NULL DEFAULT 0.0,
-    max_tokens INTEGER NOT NULL DEFAULT 4096,
-    status TEXT NOT NULL DEFAULT 'active',
-    metadata TEXT NOT NULL DEFAULT '{}',
-    assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_agents_user ON agents(user_id);
-
 -- ============================================================
 -- Attachment storage
 -- ============================================================
@@ -456,6 +456,9 @@ class LocalBackend(StorageBackend):
                 conn.execute("ALTER TABLE agents RENAME TO agents_v1")
                 conn.commit()
 
+            # Upgrade legacy context_documents (user_id) before SCHEMA_SQL adds indexes on agent_id
+            self._migrate_context_documents_to_agent_id(conn)
+
             conn.executescript(SCHEMA_SQL)
             conn.commit()
             logger.info("Local database initialized at %s", self._db_path)
@@ -491,8 +494,6 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Context templates migration complete")
 
-            self._migrate_context_documents_to_agent_id(conn)
-
         except Exception as e:
             logger.error("Error initializing local database: %s", e)
             raise
@@ -508,6 +509,13 @@ class LocalBackend(StorageBackend):
             return
         cols = {row[1] for row in conn.execute("PRAGMA table_info(context_documents)").fetchall()}
         if "user_id" not in cols:
+            return
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agents'"
+        ).fetchone():
+            logger.warning(
+                "Skipping context_documents migration: agents table not present yet",
+            )
             return
         logger.info("Migrating context_documents from user_id to agent_id")
         try:
