@@ -8,7 +8,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from app.models.schemas import ChatRequest, ChatResponse
 from app.db import get_db
-from app.agent.prompts import build_system_prompt, format_attachments_for_prompt
+from app.agent.prompts import (
+    build_system_prompt,
+    format_attachments_for_prompt,
+    CONTEXT_SECTION_TYPES,
+)
 
 from app.agent.loop import run_agent_loop_buffered, stream_agent_events
 from app.agent.session_history import build_openai_history_from_session
@@ -55,17 +59,30 @@ async def chat(request: ChatRequest):
             "content": request.message, "id": user_interaction_id,
         })
 
-        # Fetch context documents; if empty, copy defaults for this user
+        # ── Assign agent first (context rows are keyed by agent_id) ──
+        agent = await db.get_agent_for_user(request.user_id)
+        if agent is None:
+            agent = await db.create_agent_for_user(request.user_id)
+            await _emit_to_visualizers(request.session_id, {
+                "type": "pipeline", "level": "pipeline",
+                "step": "agent_assigned",
+                "agent_id": agent["id"],
+                "max_turn_count": agent["max_turn_count"],
+            })
+
+        row = await db.get_agent_by_id(agent["id"])
+        if row:
+            agent = row
+
+        # Fetch context documents; if empty, seed from templates for this agent
         context_docs = await db.fetch_context_documents(
-            request.user_id,
-            ["agent", "user", "skills", "tools", "tasks", "memory", "project", "jobs"],
+            agent["id"], CONTEXT_SECTION_TYPES,
         )
         if not context_docs:
-            copied = await db.copy_defaults_to_user(request.user_id)
+            copied = await db.copy_defaults_to_agent(agent["id"])
             if copied > 0:
                 context_docs = await db.fetch_context_documents(
-                    request.user_id,
-                    ["agent", "user", "skills", "tools", "tasks", "memory", "project", "jobs"],
+                    agent["id"], CONTEXT_SECTION_TYPES,
                 )
 
         # ── Pipeline: context loaded ──
@@ -142,21 +159,6 @@ async def chat(request: ChatRequest):
             "duration_ms": 0,
             "error": False,
         })
-
-        # ── Agent assignment (first chat → create agent) ──
-        agent = await db.get_agent_for_user(request.user_id)
-        if agent is None:
-            agent = await db.create_agent_for_user(request.user_id)
-            await _emit_to_visualizers(request.session_id, {
-                "type": "pipeline", "level": "pipeline",
-                "step": "agent_assigned",
-                "agent_id": agent["id"],
-                "max_turn_count": agent["max_turn_count"],
-            })
-
-        row = await db.get_agent_by_id(agent["id"])
-        if row:
-            agent = row
 
         # ── Resolve attachment references ──
         attachment_context = None
@@ -259,17 +261,23 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
     )
 
     async def event_generator():
-        # Fetch context documents
+        agent = await db.get_agent_for_user(request.user_id)
+        if agent is None:
+            agent = await db.create_agent_for_user(request.user_id)
+            yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'agent_assigned', 'agent_id': agent['id'], 'max_turn_count': agent['max_turn_count']})}\n\n"
+
+        row = await db.get_agent_by_id(agent["id"])
+        if row:
+            agent = row
+
         context_docs = await db.fetch_context_documents(
-            request.user_id,
-            ["agent", "user", "skills", "tools", "tasks", "memory", "project", "jobs"],
+            agent["id"], CONTEXT_SECTION_TYPES,
         )
         if not context_docs:
-            copied = await db.copy_defaults_to_user(request.user_id)
+            copied = await db.copy_defaults_to_agent(agent["id"])
             if copied > 0:
                 context_docs = await db.fetch_context_documents(
-                    request.user_id,
-                    ["agent", "user", "skills", "tools", "tasks", "memory", "project", "jobs"],
+                    agent["id"], CONTEXT_SECTION_TYPES,
                 )
 
         doc_types = list(set(
@@ -320,15 +328,6 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         )
 
         yield f"data: {json.dumps({'type': 'tool_result', 'level': 'agent', 'tool': 'memory_search', 'result': search_content[:2000], 'duration_ms': 0, 'error': False})}\n\n"
-
-        agent = await db.get_agent_for_user(request.user_id)
-        if agent is None:
-            agent = await db.create_agent_for_user(request.user_id)
-            yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'agent_assigned', 'agent_id': agent['id'], 'max_turn_count': agent['max_turn_count']})}\n\n"
-
-        row = await db.get_agent_by_id(agent["id"])
-        if row:
-            agent = row
 
         # ── Resolve attachment references (SSE) ──
         attachment_context = None

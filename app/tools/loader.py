@@ -153,7 +153,7 @@ class ToolLoader:
             if not agent:
                 return json.dumps({"status": "error", "message": "No agent assigned for this user."})
             filt = context_types if context_types else None
-            docs = await db.fetch_context_documents_for_agent(agent["id"], filt)
+            docs = await db.fetch_context_documents(agent["id"], filt)
             return json.dumps({"status": "ok", "count": len(docs), "documents": docs})
 
         tools["list_agent_context_documents"] = ToolInfo(
@@ -178,7 +178,7 @@ class ToolLoader:
             agent = await db.get_agent_for_user(user_id)
             if not agent:
                 return json.dumps({"status": "error", "message": "No agent assigned for this user."})
-            doc = await db.get_context_document_for_agent(agent["id"], context_id)
+            doc = await db.get_context_document(agent["id"], context_id)
             if not doc:
                 return json.dumps({"status": "error", "message": "Document not found or not accessible to this agent."})
             return json.dumps({"status": "ok", "document": doc})
@@ -202,7 +202,7 @@ class ToolLoader:
             if not agent:
                 return json.dumps({"status": "error", "message": "No agent assigned for this user."})
             try:
-                await db.update_context_document_content_for_agent(agent["id"], context_id, content)
+                await db.update_context_document_content(agent["id"], context_id, content)
             except PermissionError as e:
                 return json.dumps({"status": "error", "message": str(e)})
             return json.dumps({"status": "ok", "context_id": context_id})
@@ -229,7 +229,7 @@ class ToolLoader:
             if not agent:
                 return json.dumps({"status": "error", "message": "No agent assigned for this user."})
             try:
-                doc_id = await db.insert_context_document_for_agent(
+                doc_id = await db.insert_document(
                     agent["id"], context_type, title, content, tags=tags,
                 )
             except PermissionError as e:
