@@ -44,9 +44,12 @@ def _get_client():
         except ImportError:
             from app.openai_compat import AsyncOpenAI
 
+        base_url = os.environ.get("LLM_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
+        api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY") or ""
+
         _client = AsyncOpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=os.environ.get("OPENROUTER_API_KEY"),
+            base_url=base_url,
+            api_key=api_key,
             timeout=60.0,
         )
     return _client
@@ -142,7 +145,8 @@ async def stream_agent_events(
     """
     from app.tools.loader import load_tools
 
-    model_name = os.environ.get("OPENROUTER_MODEL", "deepseek/deepseek-v4-flash")
+    model_name = os.environ.get("LLM_MODEL") or os.environ.get("OPENROUTER_MODEL") or "deepseek/deepseek-v4-flash"
+    provider_name = os.environ.get("LLM_PROVIDER", "openrouter")
 
     load_start = time.time()
     tools = await load_tools(user_id)
@@ -222,8 +226,9 @@ async def stream_agent_events(
 
             llm_start_time = time.time()
 
-            def _build_meta(role: str, in_tok: int=None, out_tok: int=None) -> str:
-                return json.dumps({
+            def _build_meta(role: str, in_tok: int=None, out_tok: int=None, cost: float=None) -> str:
+                meta = {
+                    "provider": provider_name,
                     "model": model_name,
                     "turn": turn_count,
                     "duration_ms": int((time.time() - llm_start_time) * 1000),
@@ -231,7 +236,10 @@ async def stream_agent_events(
                     "output_tokens": out_tok,
                     "role": role,
                     "streaming": True,
-                })
+                }
+                if cost is not None:
+                    meta["cost"] = cost
+                return json.dumps(meta)
 
             def _build_input() -> str:
                 return json.dumps(messages)
@@ -265,6 +273,7 @@ async def stream_agent_events(
             collected_tool_calls: Dict[int, Any] = {}
             input_tokens = None
             output_tokens = None
+            llm_cost = None
 
             async for chunk in stream:
 
@@ -272,6 +281,10 @@ async def stream_agent_events(
                 if chunk.usage:
                     input_tokens = chunk.usage.prompt_tokens
                     output_tokens = chunk.usage.completion_tokens
+                    # Some providers (e.g. OpenRouter) include cost in extra fields
+                    extra = getattr(chunk.usage, 'model_extra', None)
+                    if extra and 'total_cost' in extra:
+                        llm_cost = extra['total_cost']
 
                 if not chunk.choices:
                     continue
@@ -339,7 +352,7 @@ async def stream_agent_events(
                         for tc in full_tool_calls
                     ])
                     assistant_content += f"\n\n[Tool calls: {tool_calls_summary}]"
-                meta_asst = _build_meta("assistant", input_tokens, output_tokens)
+                meta_asst = _build_meta("assistant", input_tokens, output_tokens, llm_cost)
                 inp = _build_input()
                 db_start = time.time()
                 asst_id = await get_db().insert_interaction(
@@ -559,7 +572,7 @@ async def stream_agent_events(
                 "content": collected_content,
             })
 
-            meta_final = _build_meta("assistant", input_tokens, output_tokens)
+            meta_final = _build_meta("assistant", input_tokens, output_tokens, llm_cost)
             inp = _build_input()
             db_start = time.time()
             inter_id = await get_db().insert_interaction(

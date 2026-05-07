@@ -1,10 +1,8 @@
 'use strict';
 
 /**
- * Settings module — provider, API key, and model configuration.
- * Saves to backend via /admin/settings/provider endpoint.
- * Settings persist across app restarts.
- * API key is stored on-device only, never sent to third parties.
+ * Settings module — provider, base URL, API key, and model configuration.
+ * Per-provider key+model persist across provider switches.
  */
 
 const SETTINGS_MODAL = document.getElementById('settings-modal');
@@ -12,6 +10,7 @@ const SETTINGS_BTN = document.getElementById('settings-btn');
 const SETTINGS_CLOSE = document.getElementById('settings-close');
 const SETTINGS_BACKDROP = document.getElementById('settings-backdrop');
 const SETTINGS_PROVIDER = document.getElementById('settings-provider');
+const SETTINGS_BASE_URL = document.getElementById('settings-base-url');
 const SETTINGS_API_KEY = document.getElementById('settings-api-key');
 const SETTINGS_SAVE = document.getElementById('settings-save');
 const SETTINGS_CLEAR = document.getElementById('settings-clear');
@@ -25,11 +24,12 @@ const MASKED_PLACEHOLDER = '*******************************************';
 let allModels = [];
 let selectedModel = '';
 let keyHasBeenModified = false;
+let providerPresets = {};
 
-const providerNames = {
-    openrouter: 'OpenRouter',
-    openai: 'OpenAI',
-};
+// Per-provider config map: { openrouter: {api_key: "...", model: "..."}, ... }
+// Updated on provider switch and on save.
+let providerConfigs = {};
+let currentProvider = 'openrouter';
 
 export function initSettings() {
     if (!SETTINGS_BTN) return;
@@ -40,17 +40,49 @@ export function initSettings() {
     SETTINGS_SAVE.addEventListener('click', saveSettings);
     SETTINGS_CLEAR.addEventListener('click', clearSettings);
 
-    // Track whether user modified the API key field
     SETTINGS_API_KEY.addEventListener('input', () => {
         const val = SETTINGS_API_KEY.value;
-        if (val === MASKED_PLACEHOLDER || val === '') {
-            keyHasBeenModified = false;
-        } else {
-            keyHasBeenModified = true;
-        }
+        keyHasBeenModified = !(val === MASKED_PLACEHOLDER || val === '');
     });
 
-    // Model search: show dropdown on focus, filter as user types
+    // Provider switch: save current to map, load new from map
+    SETTINGS_PROVIDER.addEventListener('change', () => {
+        // Save current provider's key+model to map before switching
+        const prevProvider = currentProvider;
+        saveCurrentToMap(prevProvider);
+
+        const newProv = SETTINGS_PROVIDER.value;
+        currentProvider = newProv;
+
+        // Auto-fill base URL
+        if (providerPresets[newProv]) {
+            SETTINGS_BASE_URL.value = providerPresets[newProv].base_url;
+        } else if (newProv === '_custom') {
+            SETTINGS_BASE_URL.value = '';
+            SETTINGS_BASE_URL.placeholder = 'https://your-endpoint.com/v1';
+        }
+
+        // Load saved key+model for new provider from map (or blank)
+        const saved = providerConfigs[newProv];
+        if (saved && saved.api_key) {
+            SETTINGS_API_KEY.value = MASKED_PLACEHOLDER;
+            SETTINGS_API_KEY.placeholder = '';
+            keyHasBeenModified = false;
+        } else {
+            SETTINGS_API_KEY.value = '';
+            SETTINGS_API_KEY.placeholder = 'sk-...';
+            keyHasBeenModified = false;
+        }
+
+        selectedModel = (saved && saved.model) || '';
+        SETTINGS_MODEL_SEARCH.value = selectedModel;
+        SETTINGS_MODEL_STATUS.textContent = selectedModel ? `Selected: ${selectedModel}` : '';
+        SETTINGS_MODEL_STATUS.style.color = selectedModel ? '#9ece6a' : '#565f89';
+        allModels = [];
+        SETTINGS_MODEL_DROPDOWN.style.display = 'none';
+        fetchAndRenderModels();
+    });
+
     SETTINGS_MODEL_SEARCH.addEventListener('focus', () => {
         renderModelDropdown(SETTINGS_MODEL_SEARCH.value.toLowerCase().trim());
     });
@@ -59,18 +91,50 @@ export function initSettings() {
         renderModelDropdown(q);
     });
 
-    // Hide dropdown when clicking outside
     document.addEventListener('click', (e) => {
         if (!SETTINGS_MODEL_GROUP.contains(e.target)) {
             SETTINGS_MODEL_DROPDOWN.style.display = 'none';
         }
     });
 
-    // Show model section for any provider that has model selection
-    SETTINGS_PROVIDER.addEventListener('change', () => {
-        SETTINGS_MODEL_GROUP.style.display = 'block';
-        fetchAndRenderModels();
-    });
+    fetchProviderPresets();
+}
+
+function saveCurrentToMap(providerKey) {
+    if (!providerKey || providerKey === '_custom') return;
+    let apiKey = SETTINGS_API_KEY.value;
+    if (apiKey === MASKED_PLACEHOLDER) {
+        // Preserve the key from the stored map (we can't read masked value)
+        const existing = providerConfigs[providerKey];
+        apiKey = existing ? existing.api_key || '' : '';
+    }
+    providerConfigs[providerKey] = {
+        api_key: apiKey,
+        model: selectedModel,
+    };
+}
+
+async function fetchProviderPresets() {
+    try {
+        const res = await fetch('/admin/settings/providers');
+        if (!res.ok) return;
+        providerPresets = await res.json();
+
+        const select = SETTINGS_PROVIDER;
+        select.innerHTML = '';
+        for (const [key, preset] of Object.entries(providerPresets)) {
+            const opt = document.createElement('option');
+            opt.value = key;
+            opt.textContent = preset.name;
+            select.appendChild(opt);
+        }
+        const custom = document.createElement('option');
+        custom.value = '_custom';
+        custom.textContent = 'Custom';
+        select.appendChild(custom);
+    } catch (e) {
+        console.error('Failed to load provider presets:', e);
+    }
 }
 
 async function openSettings() {
@@ -90,9 +154,24 @@ async function loadSettings() {
         const res = await fetch('/admin/settings/provider');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        SETTINGS_PROVIDER.value = data.provider || 'openrouter';
 
-        // API key field
+        // Store the full providers map from server
+        providerConfigs = data.providers || {};
+        currentProvider = data.provider || 'openrouter';
+
+        // Provider dropdown
+        const providerKey = providerConfigs[currentProvider] ? currentProvider : (currentProvider || 'openrouter');
+        if (providerPresets[providerKey]) {
+            SETTINGS_PROVIDER.value = providerKey;
+            currentProvider = providerKey;
+            SETTINGS_BASE_URL.value = data.base_url || providerPresets[providerKey].base_url;
+        } else {
+            SETTINGS_PROVIDER.value = '_custom';
+            currentProvider = '_custom';
+            SETTINGS_BASE_URL.value = data.base_url || '';
+        }
+
+        // API key — show masked if saved, blank otherwise
         if (data.api_key && data.api_key.length > 0) {
             SETTINGS_API_KEY.value = MASKED_PLACEHOLDER;
             SETTINGS_API_KEY.placeholder = '';
@@ -101,9 +180,8 @@ async function loadSettings() {
             SETTINGS_API_KEY.placeholder = 'sk-...';
         }
 
-        // Model selection
+        // Model
         selectedModel = data.model || '';
-        SETTINGS_MODEL_GROUP.style.display = 'block';
         SETTINGS_MODEL_SEARCH.value = selectedModel;
         if (selectedModel) {
             SETTINGS_MODEL_STATUS.textContent = `Selected: ${selectedModel}`;
@@ -111,6 +189,7 @@ async function loadSettings() {
         } else {
             SETTINGS_MODEL_STATUS.textContent = '';
         }
+
         fetchAndRenderModels();
     } catch (e) {
         console.error('Failed to load settings:', e);
@@ -120,7 +199,7 @@ async function loadSettings() {
 async function fetchAndRenderModels() {
     SETTINGS_MODEL_STATUS.textContent = 'Loading models...';
     SETTINGS_MODEL_STATUS.style.color = '#565f89';
-    const provider = SETTINGS_PROVIDER.value;
+    const provider = SETTINGS_PROVIDER.value === '_custom' ? '' : SETTINGS_PROVIDER.value;
     try {
         const res = await fetch(`/admin/settings/models?provider=${encodeURIComponent(provider)}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -145,7 +224,6 @@ async function fetchAndRenderModels() {
             SETTINGS_MODEL_STATUS.textContent = `${allModels.length} models available. Type to filter.`;
             SETTINGS_MODEL_STATUS.style.color = '#565f89';
         }
-        // Don't render dropdown here — only on user keystroke in search input
     } catch (e) {
         SETTINGS_MODEL_STATUS.textContent = `Failed to load models: ${e.message}`;
         SETTINGS_MODEL_STATUS.style.color = '#f7768e';
@@ -175,7 +253,6 @@ function renderModelDropdown(filter) {
     dropdown.innerHTML = '';
     dropdown.style.display = 'block';
 
-    // Show first 200 results to avoid perf issues
     const slice = filtered.slice(0, 200);
     for (const m of slice) {
         const item = document.createElement('div');
@@ -191,7 +268,6 @@ function renderModelDropdown(filter) {
         dropdown.appendChild(item);
     }
 
-    // Scroll selected model into view
     const selectedEl = dropdown.querySelector(`[data-model-id="${selectedModel}"]`);
     if (selectedEl) {
         selectedEl.scrollIntoView({ block: 'nearest' });
@@ -207,17 +283,35 @@ function selectModel(modelId) {
 }
 
 async function saveSettings() {
-    const provider = SETTINGS_PROVIDER.value;
-    let apiKey = '';
+    const provider = currentProvider === '_custom' ? 'custom' : currentProvider;
+    const baseUrl = SETTINGS_BASE_URL.value.trim();
 
+    if (!baseUrl) {
+        showStatus('Please enter a base URL', 'error');
+        return;
+    }
+
+    // Read current api_key from form
+    let apiKey = '';
     if (keyHasBeenModified) {
         apiKey = SETTINGS_API_KEY.value.trim();
         if (!apiKey) {
             showStatus('Please enter an API key', 'error');
             return;
         }
+    } else {
+        // Not modified — preserve from map
+        const saved = providerConfigs[provider];
+        if (saved && saved.api_key) {
+            apiKey = saved.api_key;
+        }
     }
-    // If key not modified, send empty string → backend preserves existing key
+
+    // Update current provider in map
+    providerConfigs[provider] = {
+        api_key: apiKey,
+        model: selectedModel,
+    };
 
     try {
         const res = await fetch('/admin/settings/provider', {
@@ -225,14 +319,15 @@ async function saveSettings() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 provider,
+                base_url: baseUrl,
                 api_key: apiKey,
                 model: selectedModel,
+                providers: providerConfigs,
             }),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         showStatus(`✅ ${data.message}`, 'success');
-        // Reload to show saved state
         keyHasBeenModified = false;
         await loadSettings();
     } catch (e) {
@@ -241,21 +336,50 @@ async function saveSettings() {
 }
 
 async function clearSettings() {
-    try {
-        const res = await fetch('/admin/settings/provider/clear', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        showStatus(`🗑️ ${data.message}`, 'success');
-        selectedModel = '';
-        allModels = [];
-        keyHasBeenModified = false;
-        await loadSettings();
-    } catch (e) {
-        showStatus(`❌ Error: ${e.message}`, 'error');
+    // Clear current provider from map
+    const provider = currentProvider === '_custom' ? 'custom' : currentProvider;
+    delete providerConfigs[provider];
+
+    // If no providers left, make a clean reset
+    if (Object.keys(providerConfigs).length === 0) {
+        try {
+            const res = await fetch('/admin/settings/provider/clear', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            showStatus(`🗑️ ${data.message}`, 'success');
+        } catch (e) {
+            showStatus(`❌ Error: ${e.message}`, 'error');
+        }
+    } else {
+        // Save updated map (without current provider)
+        const baseUrl = SETTINGS_BASE_URL.value.trim();
+        try {
+            const res = await fetch('/admin/settings/provider', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    provider: currentProvider === '_custom' ? 'custom' : currentProvider,
+                    base_url: baseUrl,
+                    api_key: '',
+                    model: '',
+                    providers: providerConfigs,
+                }),
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            showStatus(`🗑️ Cleared ${currentProvider} settings`, 'success');
+        } catch (e) {
+            showStatus(`❌ Error: ${e.message}`, 'error');
+        }
     }
+
+    selectedModel = '';
+    allModels = [];
+    keyHasBeenModified = false;
+    await loadSettings();
 }
 
 function showStatus(msg, type) {
