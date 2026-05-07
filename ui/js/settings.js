@@ -66,32 +66,29 @@ export function initSettings() {
 
     // Provider switch: save current to map, load new from map
     SETTINGS_PROVIDER.addEventListener('change', () => {
-        // Save current provider's key+model to map before switching
+        // Save current provider's state to map before switching
         const prevProvider = currentProvider;
         saveCurrentToMap(prevProvider);
 
         const newProv = SETTINGS_PROVIDER.value;
         currentProvider = newProv;
 
-        // Auto-fill base URL
-        if (providerPresets[newProv]) {
+        const saved = providerConfigs[newProv];
+
+        // Load base URL: saved value > preset value > blank
+        if (saved && saved.base_url) {
+            SETTINGS_BASE_URL.value = saved.base_url;
+        } else if (providerPresets[newProv]) {
             SETTINGS_BASE_URL.value = providerPresets[newProv].base_url;
         } else if (newProv === '_custom') {
             SETTINGS_BASE_URL.value = '';
             SETTINGS_BASE_URL.placeholder = 'https://your-endpoint.com/v1';
         }
 
-        // Load saved key+model for new provider from map (or blank)
-        const saved = providerConfigs[newProv];
-        if (saved && saved.api_key) {
-            SETTINGS_API_KEY.value = MASKED_PLACEHOLDER;
-            SETTINGS_API_KEY.placeholder = '';
-            keyHasBeenModified = false;
-        } else {
-            SETTINGS_API_KEY.value = '';
-            SETTINGS_API_KEY.placeholder = 'sk-...';
-            keyHasBeenModified = false;
-        }
+        // Always blank out API key on switch as requested
+        SETTINGS_API_KEY.value = '';
+        SETTINGS_API_KEY.placeholder = 'sk-...';
+        keyHasBeenModified = false;
 
         selectedModel = (saved && saved.model) || '';
         SETTINGS_MODEL_SEARCH.value = selectedModel;
@@ -133,6 +130,7 @@ function saveCurrentToMap(providerKey) {
     providerConfigs[providerKey] = {
         api_key: apiKey,
         model: selectedModel,
+        base_url: SETTINGS_BASE_URL.value.trim(),
     };
 }
 

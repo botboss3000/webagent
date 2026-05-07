@@ -243,17 +243,21 @@ async def set_provider(config: ProviderConfig):
     for pk, pv in request_providers.items():
         merged_providers[pk] = pv
 
-    # Ensure current provider's key+model live in root too (backward compat)
+    # Ensure current provider's key+model+url live in root too
     current_key = config.api_key or existing.get("api_key", "")
     current_model = config.model or existing.get("model", "")
+    current_url = config.base_url or existing.get("base_url", "")
+    
+    # Sync the active provider in the map
     merged_providers[config.provider] = {
         "api_key": current_key,
         "model": current_model,
+        "base_url": current_url,
     }
 
     merged = {
         "provider": config.provider,
-        "base_url": config.base_url or existing.get("base_url", ""),
+        "base_url": current_url,
         "api_key": current_key,
         "model": current_model,
         "providers": merged_providers,
