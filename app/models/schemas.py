@@ -80,6 +80,7 @@ class InteractionRecord(BaseModel):
     content: str
     tool_name: Optional[str] = None       # for tool role
     tool_call_id: Optional[str] = None    # for tool role
+    channel: Optional[str] = None         # source: 'webagent_ui' | 'telegram' | 'web_portal' | 'api'
     metadata: Optional[str] = None        # JSON: model, turn, duration, tokens
     input: Optional[str] = None           # JSON: the exact messages array sent to LLM
     created_at: datetime

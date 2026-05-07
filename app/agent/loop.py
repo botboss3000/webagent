@@ -139,6 +139,7 @@ async def stream_agent_events(
     parent_interaction_id: Optional[str] = None,
     interrupt_event: Optional[asyncio.Event] = None,
     max_turns: int = 10,
+    channel: Optional[str] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Run the unified agent loop and yield structured events.
@@ -358,6 +359,7 @@ async def stream_agent_events(
                 asst_id = await get_db().insert_interaction(
                     user_id, session_id, role="assistant", content=assistant_content,
                     parent_id=parent_interaction_id,
+                    channel=channel,
                     metadata=meta_asst,
                     input_data=inp,
                 )
@@ -407,6 +409,7 @@ async def stream_agent_events(
                             user_id, session_id, role="tool", content=tool_msg["content"],
                             parent_id=asst_id,
                             tool_call_id=tc.id,
+                            channel=channel,
                             metadata=json.dumps({"success": False, "duration_ms": 0, "input_params": tool_args, "error_message": "Validation failed"}),
                             input_data=inp,
                         )
@@ -447,6 +450,7 @@ async def stream_agent_events(
                                     parent_id=asst_id,
                                     tool_call_id=tc.id,
                                     tool_name=tool_name,
+                                    channel=channel,
                                     metadata=json.dumps({"success": False, "duration_ms": 0, "input_params": tool_args, "error_message": "Guardrail blocked — requires confirmation"}),
                                     input_data=inp,
                                 )
@@ -530,6 +534,7 @@ async def stream_agent_events(
                             parent_id=asst_id,
                             tool_call_id=tc.id,
                             tool_name=tool_name,
+                            channel=channel,
                             metadata=tool_exec_meta,
                             input_data=inp,
                         )
@@ -578,6 +583,7 @@ async def stream_agent_events(
             inter_id = await get_db().insert_interaction(
                 user_id, session_id, role="assistant", content=collected_content,
                 parent_id=parent_interaction_id,
+                channel=channel,
                 metadata=meta_final,
                 input_data=inp,
             )
@@ -617,6 +623,7 @@ async def run_agent_loop_buffered(
     parent_interaction_id: Optional[str] = None,
     max_turns: int = 10,
     event_callback: Optional[Any] = None,
+    channel: Optional[str] = None,
 ) -> str:
     """
     Compatibility wrapper that runs the streaming loop internally,
@@ -633,6 +640,7 @@ async def run_agent_loop_buffered(
         history=history,
         parent_interaction_id=parent_interaction_id,
         max_turns=max_turns,
+        channel=channel,
     ):
         if event_callback:
             try:
