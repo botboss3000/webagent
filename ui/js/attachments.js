@@ -9,6 +9,7 @@
  */
 
 import { app } from './state.js';
+import { apiPath } from './config.js';
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -117,7 +118,7 @@ async function uploadAndPreview(file) {
     formData.append('user_id', app.currentUserId);
     formData.append('session_id', app.currentSessionId);
 
-    const res = await fetch('/api/v1/upload', {
+    const res = await fetch(apiPath('/api/v1/upload'), {
       method: 'POST',
       body: formData,
     });

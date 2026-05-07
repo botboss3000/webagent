@@ -3,6 +3,7 @@
 import { app } from '../state.js';
 import { queryTable, updatePageInfo, cancelEditing } from './query-render.js';
 import { fetchTables, updateTableCounts, renderTableList } from './tables.js';
+import { apiPath } from '../config.js';
 
 const AUTO_REFRESH_MS = 5000;
 
@@ -82,7 +83,7 @@ export function initDbPaginationAndToolbar() {
     resetBtn.style.borderColor = '#fb4934';
     try {
       const dbName = document.getElementById('db-select').value;
-      const res = await fetch('/api/v1/db/reset?db=' + encodeURIComponent(dbName), { method: 'DELETE' });
+      const res = await fetch(apiPath('/api/v1/db/reset?db=' + encodeURIComponent(dbName)), { method: 'DELETE' });
       const result = await res.json();
       if (result.success) {
         // Reload tables and refresh view

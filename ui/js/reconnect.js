@@ -3,6 +3,7 @@
 import { app } from './state.js';
 import { connectTerminal } from './terminal.js';
 import { connectAgent } from './agentWs.js';
+import { apiPath } from './config.js';
 
 export function initReconnect() {
   document.getElementById('btn-reconnect').addEventListener('click', () => {
@@ -17,13 +18,13 @@ export function initReconnect() {
     btn.textContent = '⏻ Restarting...';
     app.addChatBubble('agent', 'Restarting server...');
     try {
-      await fetch('/api/v1/restart', { method: 'POST' });
+      await fetch(apiPath('/api/v1/restart'), { method: 'POST' });
     } catch {
       /* server will go down */
     }
     const poll = setInterval(async () => {
       try {
-        const r = await fetch('/health');
+        const r = await fetch(apiPath('/health'));
         if (r.ok) {
           clearInterval(poll);
           btn.classList.remove('restarting');
