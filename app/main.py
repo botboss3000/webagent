@@ -175,7 +175,8 @@ async def shutdown():
 
 @app.get("/")
 async def root():
-    return {"message": "Welcome to webAgent API", "docs": "/docs", "ui": "/index.html"}
+    """Open the main web UI in a browser. API: `/docs`, `/health`."""
+    return RedirectResponse(url="/index.html", status_code=307)
 
 
 @app.get("/index.html", response_class=HTMLResponse, include_in_schema=False)

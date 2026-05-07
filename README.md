@@ -79,7 +79,7 @@ The agent uses a single unified execution engine (`app/agent/loop.py`) that serv
 
 | Module | Role |
 |--------|------|
-| **`main.py`** | FastAPI app: routers, CORS, no-cache for `/ui/` and `/index.html`, **`StaticFiles`** for `/ui/` and `/screenshots`, **`GET /index.html`**, **`GET /test`**, **`GET /health`**, favicon from `ui/favicon.svg`, **`POST /api/v1/restart`**, shutdown (browser + terminal). |
+| **`main.py`** | FastAPI app: routers, CORS, no-cache for `/ui/` and `/index.html`, **`StaticFiles`** for `/ui/` and `/screenshots`, **`GET /` → redirect to `/index.html`**, **`GET /index.html`**, **`GET /test`**, **`GET /health`**, favicon from `ui/favicon.svg`, **`POST /api/v1/restart`**, shutdown (browser + terminal). |
 | **`api/chat.py`** | **`POST /api/v1/chat`**, **`POST /api/v1/chat/stream`**, **`POST /api/v1/chat/interrupt`** — context load, memory search, prompt build, attachment resolution, **`session_history`** → **`loop.stream_agent_events`** / **`run_agent_loop_buffered`**, **`interactions`**; pipeline events for visualizers. |
 | **`api/agent.py`** | **`WebSocket /api/v1/agent/ws`** — **`loop.stream_agent_events`**; reloads session from **`interactions`** each message; resolves attachment references from WS message. |
 | **`api/uploads.py`** | **`POST /api/v1/upload`** — multipart file upload (images, audio, video, PDF, text). **`GET /api/v1/upload/{id}`** — metadata lookup. **`DELETE /api/v1/upload/{id}`** — delete. File bytes stored via `app/db/attachments/`. |
@@ -183,7 +183,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 
 | URL | Purpose |
 |-----|---------|
-| `http://localhost:8080/` | API root JSON |
+| `http://localhost:8080/` | Redirects to **`/index.html`** (main UI) |
 | `http://localhost:8080/docs` | Swagger |
 | `http://localhost:8080/index.html` | Full UI |
 | `http://localhost:8080/test` | Minimal HTML chat (`ui/test_interface.html`) |
