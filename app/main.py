@@ -252,6 +252,32 @@ async def startup():
     except Exception as e:
         logger.warning("Failed to register webhooks on startup: %s", e)
 
+    # ── Seed LLM config from env vars into auth_elements (cloud-first deploy) ──
+    api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
+    if api_key:
+        try:
+            from app.db import get_db
+            db = get_db()
+            existing = await db.auth_element_get("admin_default", "llm", "default")
+            if existing and existing.get("secret_ref"):
+                logger.info("LLM config already in auth_elements, skipping seed")
+            else:
+                config = {
+                    "provider": os.environ.get("LLM_PROVIDER", "openrouter"),
+                    "base_url": os.environ.get("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
+                    "model": os.environ.get("LLM_MODEL", ""),
+                    "providers": {},
+                }
+                await db.auth_element_set(
+                    user_id="admin_default",
+                    service="llm",
+                    config=config,
+                    secret_ref=api_key,
+                )
+                logger.info("LLM config seeded into auth_elements from env vars")
+        except Exception as e:
+            logger.warning("Failed to seed LLM config: %s", e)
+
 
 if __name__ == "__main__":
     import uvicorn

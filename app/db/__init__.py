@@ -98,9 +98,16 @@ def get_db() -> StorageBackend:
             _db_instance = LocalBackend()
             logger.info("Initialized LocalBackend (SQLite)")
         else:
-            from app.db.supabase import SupabaseBackend
-            _db_instance = SupabaseBackend()
-            logger.info("Initialized SupabaseBackend (Cloud)")
+            try:
+                from app.db.supabase import SupabaseBackend
+                _db_instance = SupabaseBackend()
+                logger.info("Initialized SupabaseBackend (Cloud)")
+            except ValueError as e:
+                logger.warning("Supabase not configured (%s), falling back to local", e)
+                from app.db.local import LocalBackend
+                _db_instance = LocalBackend()
+                _db_mode = "local"
+                logger.info("Fell back to LocalBackend (SQLite)")
     
     return _db_instance
 
