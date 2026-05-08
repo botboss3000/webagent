@@ -17,6 +17,12 @@ export async function populateUserSelect() {
     const submenu = document.getElementById('user-submenu');
     if (!submenu) return;
     
+    const topUserIdVal = document.getElementById('top-user-id-val');
+    if (topUserIdVal) {
+      topUserIdVal.textContent = app.currentUserId ? (app.currentUserId.length > 15 ? app.currentUserId.slice(0, 15) + '...' : app.currentUserId) : 'None';
+      topUserIdVal.title = app.currentUserId || '';
+    }
+    
     submenu.innerHTML = '';
     
     for (const uid of data.users || []) {
