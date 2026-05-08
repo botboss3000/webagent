@@ -814,6 +814,105 @@ class SupabaseBackend(StorageBackend):
             logger.error("Error checking interrupt for %s: %s", session_id, e)
             return False
 
+    # ---- Auth Elements ----
+
+    async def auth_element_get(
+        self, user_id: str, service: str, label: str = "default"
+    ) -> Optional[dict]:
+        try:
+            res = (
+                self._client.table("auth_elements")
+                .select("*")
+                .eq("user_id", user_id)
+                .eq("service", service)
+                .eq("label", label)
+                .limit(1)
+                .execute()
+            )
+            return res.data[0] if res.data else None
+        except Exception as e:
+            logger.error("auth_element_get error: %s", e)
+            return None
+
+    async def auth_element_set(
+        self,
+        user_id: str,
+        service: str,
+        config: dict,
+        secret_ref: str = "",
+        label: str = "default",
+    ) -> dict:
+        import json, uuid
+        data = {
+            "user_id": user_id,
+            "service": service,
+            "label": label,
+            "config": json.dumps(config),
+            "secret_ref": secret_ref,
+        }
+        try:
+            existing = (
+                self._client.table("auth_elements")
+                .select("id")
+                .eq("user_id", user_id)
+                .eq("service", service)
+                .eq("label", label)
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                res = (
+                    self._client.table("auth_elements")
+                    .update(data)
+                    .eq("id", existing.data[0]["id"])
+                    .execute()
+                )
+            else:
+                data["id"] = str(uuid.uuid4())
+                res = (
+                    self._client.table("auth_elements")
+                    .insert(data)
+                    .execute()
+                )
+            return res.data[0] if res.data else data
+        except Exception as e:
+            logger.error("auth_element_set error: %s", e)
+            return data
+
+    async def auth_element_list(
+        self, user_id: str, service: Optional[str] = None
+    ) -> List[dict]:
+        try:
+            q = (
+                self._client.table("auth_elements")
+                .select("*")
+                .eq("user_id", user_id)
+            )
+            if service:
+                q = q.eq("service", service)
+            res = q.execute()
+            return res.data or []
+        except Exception as e:
+            logger.error("auth_element_list error: %s", e)
+            return []
+
+    async def auth_element_delete(
+        self, user_id: str, service: str, label: str = "default"
+    ) -> bool:
+        try:
+            res = (
+                self._client.table("auth_elements")
+                .delete()
+                .eq("user_id", user_id)
+                .eq("service", service)
+                .eq("label", label)
+                .execute()
+            )
+            return len(res.data) > 0
+        except Exception as e:
+            logger.error("auth_element_delete error: %s", e)
+            return False
+
 
 # ── Backward-compatible alias ────────────────────────────────────────────────
 # The old SupabaseClient used static methods directly.
@@ -1006,3 +1105,35 @@ class SupabaseClient:
     @staticmethod
     async def skill_get_id_by_name(user_id: str, name: str) -> Optional[str]:
         return await SupabaseClient._get_backend().skill_get_id_by_name(user_id, name)
+
+    @staticmethod
+    async def auth_element_get(
+        user_id: str, service: str, label: str = "default"
+    ) -> Optional[dict]:
+        return await SupabaseClient._get_backend().auth_element_get(user_id, service, label)
+
+    @staticmethod
+    async def auth_element_set(
+        user_id: str,
+        service: str,
+        config: dict,
+        secret_ref: str = "",
+        label: str = "default",
+    ) -> dict:
+        return await SupabaseClient._get_backend().auth_element_set(
+            user_id, service, config, secret_ref, label
+        )
+
+    @staticmethod
+    async def auth_element_list(
+        user_id: str, service: Optional[str] = None
+    ) -> List[dict]:
+        return await SupabaseClient._get_backend().auth_element_list(user_id, service)
+
+    @staticmethod
+    async def auth_element_delete(
+        user_id: str, service: str, label: str = "default"
+    ) -> bool:
+        return await SupabaseClient._get_backend().auth_element_delete(
+            user_id, service, label
+        )

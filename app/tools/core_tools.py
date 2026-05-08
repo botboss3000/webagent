@@ -658,6 +658,124 @@ _CALC_SAFE_LOCALS = {
 }
 
 
+# ── HTTP Request tool ────────────────────────────────────────────────────────
+
+async def http_request(
+    method: str = "GET",
+    url: str = "",
+    headers: Optional[Dict[str, str]] = None,
+    body: Optional[Any] = None,
+    body_type: str = "json",
+    timeout: int = 30,
+) -> str:
+    """
+    Make an outbound HTTP request to any endpoint.
+
+    Supports GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS.
+    Body can be JSON (auto-serialized), form data, or raw text.
+
+    Args:
+        method: HTTP method (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS)
+        url: Full URL including scheme (e.g. https://api.example.com/data)
+        headers: Optional dict of HTTP headers
+        body: Request body data (dict for JSON/form, string for raw text)
+        body_type: "json", "form", "text" — how to encode body
+        timeout: Request timeout in seconds (default 30)
+
+    Returns:
+        Formatted response with status code, headers, and body.
+    """
+    import httpx
+    import json as _json
+    import time
+
+    method = method.upper()
+    valid_methods = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
+    if method not in valid_methods:
+        return f"Error: invalid method '{method}'. Use one of: {', '.join(sorted(valid_methods))}"
+
+    if not url:
+        return "Error: url is required"
+
+    if not url.startswith(("http://", "https://")):
+        return "Error: url must start with http:// or https://"
+
+    prepared_headers = {
+        "User-Agent": "webAgent/1.0",
+    }
+    if headers:
+        prepared_headers.update(headers)
+
+    # Prepare body
+    content = None
+    if body is not None:
+        if body_type == "json":
+            if isinstance(body, str):
+                try:
+                    body = _json.loads(body)
+                except _json.JSONDecodeError:
+                    pass
+            content = _json.dumps(body).encode()
+            prepared_headers.setdefault("Content-Type", "application/json")
+        elif body_type == "form":
+            content = body  # httpx handles dicts directly for data= in POST
+        elif body_type == "text":
+            content = str(body).encode()
+            prepared_headers.setdefault("Content-Type", "text/plain")
+
+    start = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            if method == "GET":
+                resp = await client.get(url, headers=prepared_headers)
+            elif method == "POST":
+                if body_type == "form" and isinstance(body, dict):
+                    resp = await client.post(url, headers=prepared_headers, data=body)
+                else:
+                    resp = await client.post(url, headers=prepared_headers, content=content)
+            elif method == "PUT":
+                resp = await client.put(url, headers=prepared_headers, content=content)
+            elif method == "DELETE":
+                resp = await client.delete(url, headers=prepared_headers, content=content)
+            elif method == "PATCH":
+                resp = await client.patch(url, headers=prepared_headers, content=content)
+            elif method == "HEAD":
+                resp = await client.head(url, headers=prepared_headers)
+            elif method == "OPTIONS":
+                resp = await client.options(url, headers=prepared_headers)
+            else:
+                return f"Error: unsupported method {method}"
+    except httpx.TimeoutException:
+        return f"Error: request to {url} timed out after {timeout}s"
+    except httpx.ConnectError as e:
+        return f"Error: could not connect to {url} — {e}"
+    except Exception as e:
+        return f"Error: request failed — {e}"
+
+    duration_ms = int((time.time() - start) * 1000)
+
+    # Truncate large response bodies
+    body_text = resp.text
+    if len(body_text) > 50000:
+        body_text = body_text[:50000] + f"\n[... truncated, full size: {len(body_text)} bytes]"
+
+    # Summarize headers (exclude long or binary ones)
+    summary_headers = dict(resp.headers)
+    for skip in ("set-cookie", "transfer-encoding", "content-encoding"):
+        summary_headers.pop(skip, None)
+
+    lines = [
+        f"Status: {resp.status_code}",
+        f"Duration: {duration_ms}ms",
+        f"Content-Type: {resp.headers.get('content-type', '?')}",
+        f"Content-Length: {len(resp.content)} bytes",
+        "",
+        "Body:",
+        body_text,
+    ]
+    return "\n".join(lines)
+
+
 async def calculate(expression: str) -> str:
     """
     Evaluate a mathematical expression.

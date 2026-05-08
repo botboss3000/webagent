@@ -18,7 +18,6 @@ export function initReconnect() {
   document.getElementById('btn-restart').addEventListener('click', async () => {
     const btn = document.getElementById('btn-restart');
     btn.classList.add('restarting');
-    btn.textContent = '⏻ Restarting...';
     app.addChatBubble('agent', 'Restarting server...');
     try {
       await fetch(apiPath('/api/v1/restart'), { method: 'POST' });
@@ -31,7 +30,6 @@ export function initReconnect() {
         if (r.ok) {
           clearInterval(poll);
           btn.classList.remove('restarting');
-          btn.textContent = '⏻ Restart';
           app.addChatBubble('agent', 'Server restarted. Reconnecting...');
           connectTerminal();
           connectAgent();

@@ -84,8 +84,10 @@ export function bindDom() {
   app.segLocal = document.getElementById('menu-seg-local');
   app.dbToolbar = document.getElementById('db-toolbar');
 
+  // Use auth_user_id if logged in, otherwise anonymous UUID
+  const authUserId = localStorage.getItem('auth_user_id');
   app.localUserId =
-    localStorage.getItem('terminalUserId') || 'ddbd80a2-e46f-436e-a165-4f63469218d9';
+    localStorage.getItem('terminalUserId') || authUserId || 'ddbd80a2-e46f-436e-a165-4f63469218d9';
 
   try {
     const saved = localStorage.getItem('dbColumnOrder');
@@ -99,6 +101,10 @@ export function bindDom() {
   if (!storedSessionId) {
     localStorage.setItem('terminalSessionId', app.currentSessionId);
   }
+  // If logged in, override with auth_user_id so sessions + LLM config follow auth
+  const overrideUserId = authUserId && localStorage.getItem('auth_token')
+    ? authUserId
+    : null;
   app.currentUserId =
-    new URLSearchParams(location.search).get('user_id') || app.localUserId;
+    new URLSearchParams(location.search).get('user_id') || overrideUserId || app.localUserId;
 }

@@ -430,6 +430,57 @@ CREATE TABLE IF NOT EXISTS linking_codes (
 
 CREATE INDEX IF NOT EXISTS idx_linking_codes_code ON linking_codes(code);
 
+-- Generic inbound webhook registrations
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS webhook_registrations (
+    id              TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    instructions    TEXT NOT NULL DEFAULT '',
+    active          INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_webhook_reg_user ON webhook_registrations(user_id);
+
+-- Inbound webhook event log
+CREATE TABLE IF NOT EXISTS webhook_event_log (
+    id              TEXT PRIMARY KEY,
+    webhook_id      TEXT NOT NULL REFERENCES webhook_registrations(id) ON DELETE CASCADE,
+    method          TEXT NOT NULL,
+    headers         TEXT NOT NULL DEFAULT '{}',
+    payload         TEXT NOT NULL DEFAULT '',
+    response_status INTEGER NOT NULL DEFAULT 200,
+    response_body   TEXT NOT NULL DEFAULT '',
+    duration_ms     INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_webhook_log_hook ON webhook_event_log(webhook_id);
+CREATE INDEX IF NOT EXISTS idx_webhook_log_created ON webhook_event_log(created_at DESC);
+
+-- ============================================================
+-- Auth Elements: per-user service credentials (LLM, Telegram, Google, etc.)
+-- config holds non-sensitive settings (JSON).
+-- secret_ref holds the actual secret (API key, token) — migrating to vault later.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS auth_elements (
+    id              TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL,
+    service         TEXT NOT NULL,             -- 'llm', 'telegram', 'google', etc.
+    label           TEXT NOT NULL DEFAULT 'default',
+    config          TEXT NOT NULL DEFAULT '{}',  -- JSON: non-sensitive settings
+    secret_ref      TEXT NOT NULL DEFAULT '',    -- secret value; later vault path
+    is_active       INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_elements_user_service_label
+    ON auth_elements(user_id, service, label);
+
 """
 
 
@@ -1978,6 +2029,211 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
+    # ---- Webhook Registrations ----
+
+    async def register_webhook(
+        self,
+        user_id: str,
+        name: str,
+        instructions: str = "",
+    ) -> dict:
+        """Create a generic inbound webhook registration."""
+        from datetime import datetime, timezone
+        webhook_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                """INSERT INTO webhook_registrations (id, user_id, name, instructions, active, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 1, ?, ?)""",
+                (webhook_id, user_id, name, instructions, now, now),
+            )
+            conn.commit()
+            return {
+                "id": webhook_id,
+                "user_id": user_id,
+                "name": name,
+                "instructions": instructions,
+                "active": True,
+                "created_at": now,
+            }
+        finally:
+            conn.close()
+
+    async def get_webhook(self, webhook_id: str) -> Optional[dict]:
+        """Get a webhook registration by id."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM webhook_registrations WHERE id = ?", (webhook_id,)
+            ).fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            d["active"] = bool(d["active"])
+            return d
+        finally:
+            conn.close()
+
+    async def list_webhooks(self, user_id: str) -> List[dict]:
+        """List all webhook registrations for a user."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM webhook_registrations WHERE user_id = ? ORDER BY created_at DESC",
+                (user_id,),
+            ).fetchall()
+            result = []
+            for r in rows:
+                d = dict(r)
+                d["active"] = bool(d["active"])
+                result.append(d)
+            return result
+        finally:
+            conn.close()
+
+    async def delete_webhook(self, webhook_id: str, user_id: str) -> bool:
+        """Delete a webhook registration (scoped to user_id)."""
+        conn = self._get_conn()
+        try:
+            cur = conn.execute(
+                "DELETE FROM webhook_registrations WHERE id = ? AND user_id = ?",
+                (webhook_id, user_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    async def log_webhook_event(
+        self,
+        webhook_id: str,
+        method: str,
+        headers: str,
+        payload: str,
+        response_status: int,
+        response_body: str,
+        duration_ms: int,
+    ) -> str:
+        """Log an incoming webhook event. Returns the event id."""
+        event_id = str(uuid.uuid4())
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                """INSERT INTO webhook_event_log (id, webhook_id, method, headers, payload,
+                   response_status, response_body, duration_ms)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (event_id, webhook_id, method, headers, payload,
+                 response_status, response_body, duration_ms),
+            )
+            conn.commit()
+            return event_id
+        finally:
+            conn.close()
+
+    async def get_webhook_logs(
+        self, webhook_id: str, limit: int = 20
+    ) -> List[dict]:
+        """Get recent webhook events for a registration."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM webhook_event_log WHERE webhook_id = ? ORDER BY created_at DESC LIMIT ?",
+                (webhook_id, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    # ---- Auth Elements ----
+
+    async def auth_element_get(
+        self, user_id: str, service: str, label: str = "default"
+    ) -> Optional[dict]:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM auth_elements WHERE user_id = ? AND service = ? AND label = ?",
+                (user_id, service, label),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def auth_element_set(
+        self,
+        user_id: str,
+        service: str,
+        config: dict,
+        secret_ref: str = "",
+        label: str = "default",
+    ) -> dict:
+        import uuid
+        conn = self._get_conn()
+        try:
+            existing = conn.execute(
+                "SELECT id FROM auth_elements WHERE user_id = ? AND service = ? AND label = ?",
+                (user_id, service, label),
+            ).fetchone()
+            now = __import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            config_json = __import__('json').dumps(config)
+            if existing:
+                conn.execute(
+                    "UPDATE auth_elements SET config = ?, secret_ref = ?, updated_at = ? WHERE id = ?",
+                    (config_json, secret_ref, now, existing[0]),
+                )
+                row_id = existing[0]
+            else:
+                row_id = str(uuid.uuid4())
+                conn.execute(
+                    "INSERT INTO auth_elements (id, user_id, service, label, config, secret_ref, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (row_id, user_id, service, label, config_json, secret_ref, now, now),
+                )
+            conn.commit()
+            return {
+                "id": row_id,
+                "user_id": user_id,
+                "service": service,
+                "label": label,
+                "config": config_json,
+                "secret_ref": secret_ref,
+                "is_active": 1,
+            }
+        finally:
+            conn.close()
+
+    async def auth_element_list(
+        self, user_id: str, service: Optional[str] = None
+    ) -> List[dict]:
+        conn = self._get_conn()
+        try:
+            if service:
+                rows = conn.execute(
+                    "SELECT * FROM auth_elements WHERE user_id = ? AND service = ? ORDER BY created_at",
+                    (user_id, service),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM auth_elements WHERE user_id = ? ORDER BY service, label",
+                    (user_id,),
+                ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def auth_element_delete(
+        self, user_id: str, service: str, label: str = "default"
+    ) -> bool:
+        conn = self._get_conn()
+        try:
+            cur = conn.execute(
+                "DELETE FROM auth_elements WHERE user_id = ? AND service = ? AND label = ?",
+                (user_id, service, label),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
 
 # ── Proxy for code that uses supabase.Client.table() directly ──────────────
 
