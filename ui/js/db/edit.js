@@ -52,6 +52,10 @@ export async function saveEdit(cell, newValue) {
 }
 
 export function initDbCellEditors() {
+  console.log('[DB] initDbCellEditors called');
+  const tableData = document.getElementById('db-table-data');
+  if (!tableData) { console.log('[DB] ERROR: #db-table-data not found'); return; }
+  console.log('[DB] #db-table-data found, registering click handlers');
   document.getElementById('db-table-data').addEventListener('click', (e) => {
     const cell = e.target.closest('.db-cell');
     if (!cell) return;
@@ -100,21 +104,27 @@ export function initDbCellEditors() {
 
   document.getElementById('db-table-data').addEventListener('click', (e) => {
     const btn = e.target.closest('.db-cell-expand');
-    if (!btn) return;
+    if (!btn) { console.log('[DB] expand: no btn found'); return; }
+    console.log('[DB] expand button clicked!', btn);
     e.stopPropagation();
 
     // Cancel any active inline editing before opening modal
     if (app.editingCell) {
+      console.log('[DB] expand: cancelling active edit');
       cancelEditing();
     }
 
     const cell = btn.closest('.db-cell');
-    if (!cell) return;
+    if (!cell) { console.log('[DB] expand: no parent cell found'); return; }
+    console.log('[DB] expand: cell found', cell.dataset);
 
     const ri = parseInt(cell.dataset.row, 10);
     const col = cell.dataset.col;
     const originalValue = cell.dataset.val === 'null' ? '' : cell.dataset.val;
+    console.log('[DB] expand: calling openCellPopup with', { ri, col, originalValue });
 
+    console.log('[DB] expand: openCellPopup =', openCellPopup);
     openCellPopup(cell, ri, col, originalValue);
+    console.log('[DB] expand: openCellPopup returned');
   });
 }

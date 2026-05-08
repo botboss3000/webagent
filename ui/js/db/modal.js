@@ -4,6 +4,7 @@ import { app } from '../state.js';
 import { saveEdit } from './edit.js';
 
 function openCellPopup(cell, ri, col, originalValue) {
+  console.log('[DB modal] openCellPopup called', { ri, col, originalValue });
   app.cellPopupData = { cell, col, originalValue };
 
   let displayValue = originalValue;
@@ -20,10 +21,18 @@ function openCellPopup(cell, ri, col, originalValue) {
     }
   }
 
-  document.getElementById('cell-modal-title').textContent = 'Editing: ' + col;
+  const titleEl = document.getElementById('cell-modal-title');
   const editor = document.getElementById('cell-modal-editor');
+  const modal = document.getElementById('cell-modal');
+  console.log('[DB modal] DOM refs:', { titleEl, editor, modal });
+  if (!titleEl || !editor || !modal) {
+    console.log('[DB modal] ERROR: modal DOM elements missing!');
+    return;
+  }
+  titleEl.textContent = 'Editing: ' + col;
   editor.value = displayValue;
-  document.getElementById('cell-modal').classList.add('open');
+  modal.classList.add('open');
+  console.log('[DB modal] modal opened successfully');
 
   editor.focus();
   editor.scrollTop = 0;
