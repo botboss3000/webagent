@@ -52,6 +52,7 @@
       <option value="stream" selected>📡 Stream</option>
       <option value="loop">🔄 Loop</option>
       <option value="database">📊 Database</option>
+      <option value="github">🐙 GitHub</option>
     </select>
   </div>
 
@@ -104,6 +105,122 @@
         </div>
         <div id="loop-list">
           <div class="loop-hint">Pipeline visualizer — connect to see agent flow</div>
+        </div>
+      </div>
+    </div>
+    <div id="tab-github" class="tab-content">
+      <div id="gh-viewer">
+        <div id="gh-toolbar">
+          <span style="color:#565f89;font-size:11px;">🐙 GitHub Repository</span>
+          <span id="gh-repo-badge" style="color:#565f89;font-size:11px;margin-left:8px;">
+            <span id="gh-branch-display"><span id="gh-branch">—</span></span>
+          </span>
+          <span style="margin-left:auto;display:flex;gap:6px;align-items:center;">
+            <button id="gh-refresh-btn" class="gh-btn gh-btn-sm">↻ Refresh</button>
+            <span id="gh-refresh-spinner" class="gh-spinner" style="display:none;">⟳</span>
+          </span>
+        </div>
+
+        <div id="gh-body">
+          <!-- Left column: status + actions -->
+          <div id="gh-left">
+            <!-- Repo status card -->
+            <div class="gh-card">
+              <div class="gh-card-title">Repository</div>
+              <div class="gh-status-grid">
+                <div class="gh-status-item">
+                  <span class="gh-label">Remote</span>
+                  <span id="gh-remote-url" class="gh-value">—</span>
+                </div>
+                <div class="gh-status-item">
+                  <span class="gh-label">Last Commit</span>
+                  <span id="gh-last-commit" class="gh-value">—</span>
+                </div>
+                <div class="gh-status-item">
+                  <span class="gh-label">Sync</span>
+                  <span id="gh-ahead-behind" class="gh-value">—</span>
+                </div>
+                <div class="gh-status-item">
+                  <span class="gh-label">Files</span>
+                  <span id="gh-file-count" class="gh-value">—</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Changed files -->
+            <div class="gh-card">
+              <div class="gh-card-title">Changed Files</div>
+              <div id="gh-file-list" class="gh-file-list">
+                <div class="gh-meta">Loading...</div>
+              </div>
+            </div>
+
+            <!-- Commit area -->
+            <div id="gh-commit-section" class="gh-card" style="display:none;">
+              <div class="gh-card-title">Commit</div>
+              <div class="gh-commit-row">
+                <input type="text" id="gh-commit-msg" class="gh-input" placeholder="Commit message..." maxlength="200">
+                <button id="gh-commit-btn" class="gh-btn gh-btn-primary">Commit</button>
+                <span id="gh-commit-spinner" class="gh-spinner" style="display:none;">⟳</span>
+              </div>
+              <div id="gh-commit-result" class="gh-result" style="display:none;"></div>
+            </div>
+
+            <!-- Push / Pull -->
+            <div id="gh-push-pull-group" class="gh-card" style="display:none;">
+              <div class="gh-card-title">Sync</div>
+              <div class="gh-sync-row">
+                <button id="gh-push-btn" class="gh-btn gh-btn-primary">⬆ Push</button>
+                <span id="gh-push-spinner" class="gh-spinner" style="display:none;">⟳</span>
+                <span id="gh-push-result" class="gh-result" style="display:none;"></span>
+                <button id="gh-pull-btn" class="gh-btn">⬇ Pull</button>
+                <span id="gh-pull-spinner" class="gh-spinner" style="display:none;">⟳</span>
+                <span id="gh-pull-result" class="gh-result" style="display:none;"></span>
+              </div>
+            </div>
+
+            <!-- Token config -->
+            <div id="gh-token-section" class="gh-card">
+              <div class="gh-card-title">GitHub Token <span id="gh-token-configured" style="font-weight:400;font-size:11px;color:#565f89;margin-left:8px;">—</span></div>
+              <div class="gh-token-row">
+                <input type="password" id="gh-token-input" class="gh-input" placeholder="ghp_... or github_pat_...">
+                <button id="gh-token-save-btn" class="gh-btn gh-btn-primary">Save</button>
+              </div>
+              <div id="gh-token-status" class="gh-result" style="display:none;"></div>
+              <details class="gh-hint-details">
+                <summary style="cursor:pointer;color:#7dcfff;font-size:11px;font-weight:500;">How to create a GitHub token →</summary>
+                <div class="gh-hint-steps">
+                  <p><strong>Classic token:</strong></p>
+                  <ol>
+                    <li>Go to <a href="https://github.com/settings/tokens" target="_blank" style="color:#7dcfff;">github.com/settings/tokens</a></li>
+                    <li>Click <strong>Generate new token (classic)</strong></li>
+                    <li>Give it a name (e.g. "webAgent")</li>
+                    <li>Select scope: <strong>repo</strong> (full control)</li>
+                    <li>Click <strong>Generate token</strong> and copy it</li>
+                  </ol>
+                  <p style="margin-top:6px;"><strong>Fine-grained token:</strong></p>
+                  <ol>
+                    <li>Go to <a href="https://github.com/settings/tokens?type=beta" target="_blank" style="color:#7dcfff;">github.com/settings/tokens</a></li>
+                    <li>Click <strong>Generate new token (fine-grained)</strong></li>
+                    <li>Select this repository only</li>
+                    <li>Permissions → <strong>Contents: Read and write</strong></li>
+                    <li>Click <strong>Generate token</strong> and copy it</li>
+                  </ol>
+                  <p style="margin-top:6px;color:#e0af68;">Paste the token above and click Save. It's stored locally in provider.json.</p>
+                </div>
+              </details>
+            </div>
+          </div>
+
+          <!-- Right column: commit log -->
+          <div id="gh-right">
+            <div class="gh-card">
+              <div class="gh-card-title">Recent Commits</div>
+              <div id="gh-log-list" class="gh-log-list">
+                <div class="gh-meta">Loading...</div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
