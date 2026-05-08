@@ -152,6 +152,10 @@ async def stream_agent_events(
     Run the unified agent loop and yield structured events.
     """
     from app.tools.loader import load_tools
+    from app.admin.settings import load_provider_for_user
+
+    # Load THIS user's provider config (not shared with any other user)
+    await load_provider_for_user(user_id)
 
     model_name = os.environ.get("LLM_MODEL") or os.environ.get("OPENROUTER_MODEL") or "deepseek/deepseek-v4-flash"
     provider_name = os.environ.get("LLM_PROVIDER", "openrouter")

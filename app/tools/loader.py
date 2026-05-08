@@ -10,6 +10,17 @@ from app.db import get_db
 logger = logging.getLogger(__name__)
 
 
+def _get_webhook_base_url() -> str:
+    """Get the configured public webhook base URL from the plugin registry."""
+    try:
+        from app.communications.manager import get_plugin_manager
+        pm = get_plugin_manager()
+        registry = getattr(pm, "_registry", {})
+        return registry.get("webhook_base_url", "http://localhost:8080")
+    except Exception:
+        return "http://localhost:8080"
+
+
 @dataclass
 class ToolInfo:
     """Enriched tool descriptor returned by load_tools()."""
@@ -332,6 +343,7 @@ class ToolLoader:
             get_date as _core_get_date,
             get_weather as _core_get_weather,
             calculate as _core_calculate,
+            http_request as _core_http_request,
         )
 
         # ── Tool discovery ──
@@ -597,6 +609,144 @@ class ToolLoader:
                 "required": ["expression"],
             },
         )
+
+        # ── HTTP Request tool (outbound GET/POST/PUT/DELETE/PATCH) ──
+        tools["http_request"] = ToolInfo(
+            name="http_request",
+            handler=_core_http_request,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "method": {
+                        "type": "string",
+                        "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
+                        "description": "HTTP method",
+                        "default": "GET",
+                    },
+                    "url": {"type": "string", "description": "Full URL including scheme (e.g. https://api.example.com/data)"},
+                    "headers": {
+                        "type": "object",
+                        "description": "Optional dict of HTTP headers",
+                        "additionalProperties": {"type": "string"},
+                        "default": {},
+                    },
+                    "body": {
+                        "type": "object",
+                        "description": "Request body (dict for JSON/form, string for text)",
+                        "default": {},
+                    },
+                    "body_type": {
+                        "type": "string",
+                        "enum": ["json", "form", "text"],
+                        "description": "How to encode body",
+                        "default": "json",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Request timeout in seconds",
+                        "default": 30,
+                    },
+                },
+                "required": ["url"],
+            },
+        )
+
+        # ── Webhook management (generic inbound webhooks) ──
+        async def _register_webhook_wrapper(name: str, instructions: str = ""):
+            """Register a new generic inbound webhook endpoint."""
+            from app.db import get_db
+            db = get_db()
+            result = await db.register_webhook(
+                user_id=user_id,
+                name=name,
+                instructions=instructions,
+            )
+            webhook_url = _get_webhook_base_url() + f"/api/v1/webhooks/generic/{result['id']}"
+            result["url"] = webhook_url
+            return json.dumps({
+                "status": "ok",
+                "webhook": result,
+                "message": f"Webhook '{name}' registered at {webhook_url}",
+            })
+
+        tools["register_webhook"] = ToolInfo(
+            name="register_webhook",
+            handler=_register_webhook_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Human-readable name for this webhook (e.g. 'GitHub push events')"},
+                    "instructions": {"type": "string", "description": "Instructions for the agent when this webhook fires (e.g. 'Analyze the push payload and summarize changes')"},
+                },
+                "required": ["name"],
+            },
+        )
+
+        async def _list_webhooks_wrapper():
+            """List all registered webhooks for the current user."""
+            from app.db import get_db
+            db = get_db()
+            hooks = await db.list_webhooks(user_id=user_id)
+            base_url = _get_webhook_base_url()
+            for h in hooks:
+                h["url"] = base_url + f"/api/v1/webhooks/generic/{h['id']}"
+            return json.dumps({"status": "ok", "webhooks": hooks, "count": len(hooks)})
+
+        tools["list_webhooks"] = ToolInfo(
+            name="list_webhooks",
+            handler=_list_webhooks_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        )
+
+        async def _delete_webhook_wrapper(webhook_id: str):
+            """Delete a webhook registration by id."""
+            from app.db import get_db
+            db = get_db()
+            ok = await db.delete_webhook(webhook_id=webhook_id, user_id=user_id)
+            if ok:
+                return json.dumps({"status": "ok", "message": f"Webhook {webhook_id} deleted"})
+            return json.dumps({"status": "error", "message": f"Webhook {webhook_id} not found or not owned by user"})
+
+        tools["delete_webhook"] = ToolInfo(
+            name="delete_webhook",
+            handler=_delete_webhook_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "webhook_id": {"type": "string", "description": "The webhook registration id to delete"},
+                },
+                "required": ["webhook_id"],
+            },
+        )
+
+        async def _get_webhook_log_wrapper(webhook_id: str, limit: int = 10):
+            """View recent events for a webhook registration."""
+            from app.db import get_db
+            db = get_db()
+            # Verify ownership
+            reg = await db.get_webhook(webhook_id=webhook_id)
+            if not reg or reg.get("user_id") != user_id:
+                return json.dumps({"status": "error", "message": "Webhook not found or not owned by user"})
+            events = await db.get_webhook_logs(webhook_id=webhook_id, limit=limit)
+            return json.dumps({"status": "ok", "events": events, "count": len(events)})
+
+        tools["get_webhook_log"] = ToolInfo(
+            name="get_webhook_log",
+            handler=_get_webhook_log_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "webhook_id": {"type": "string", "description": "The webhook registration id"},
+                    "limit": {"type": "integer", "description": "Max events to return", "default": 10},
+                },
+                "required": ["webhook_id"],
+            },
+        )
+
 
     def _make_handler(self, row: dict, user_id: str) -> Callable:
         """Compile tool code and wrap it with user context."""

@@ -1,9 +1,16 @@
 """
 Settings endpoints — toggleable features for the agent.
 
-Currently supports:
+Supports:
   - metadata_logging: stores full prompt context in interactions.metadata
-  - provider: AI provider config (provider, base_url, api_key, model)
+  - provider: per-user AI provider config (provider, base_url, api_key, model)
+
+Provider configs are stored per user_id in provider.json:
+  {
+    "__anonymous__": { ... config ... },
+    "admin_default": { ... config ... },
+    ...
+  }
 """
 
 import json
@@ -13,8 +20,10 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, Header, Query
 from pydantic import BaseModel
+
+from app.auth.jwt import decode_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/settings", tags=["admin"])
@@ -22,6 +31,8 @@ router = APIRouter(prefix="/admin/settings", tags=["admin"])
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 METADATA_FLAG = PROJECT_ROOT / ".metadata-enabled"
 PROVIDER_FILE = PROJECT_ROOT / "provider.json"
+
+ANONYMOUS_KEY = "__anonymous__"
 
 DEFAULT_PROVIDER = {
     "provider": "openrouter",
@@ -83,66 +94,110 @@ PROVIDER_PRESETS = {
 }
 
 
-def _load_provider() -> dict:
-    """Load saved provider config from disk."""
+# ── User ID extraction ──────────────────────────────────────────────────────
+
+def _resolve_user_id(authorization: str = "", token_qs: str = "") -> str:
+    """Extract user_id from Authorization header or query param.
+    Returns ANONYMOUS_KEY if no valid token.
+    """
+    raw = ""
+    if authorization.startswith("Bearer "):
+        raw = authorization[7:]
+    if not raw and token_qs:
+        raw = token_qs
+
+    if raw:
+        payload = decode_token(raw)
+        if payload:
+            return payload.get("user_id", ANONYMOUS_KEY)
+
+    return ANONYMOUS_KEY
+
+
+# ── Per-user provider storage ──────────────────────────────────────────────
+
+def _load_all_providers() -> dict:
+    """Load the full provider.json (map of user_id → config)."""
     try:
         if PROVIDER_FILE.exists():
             with open(PROVIDER_FILE) as f:
-                return json.load(f)
+                data = json.load(f)
+                # Migration: if old flat format (has "provider" key at root),
+                # wrap under ANONYMOUS_KEY
+                if "provider" in data:
+                    data = {ANONYMOUS_KEY: data}
+                    _save_all_providers(data)
+                return data
     except Exception as e:
         logger.warning("Failed to load provider.json: %s", e)
+    return {}
+
+
+def _save_all_providers(data: dict) -> None:
+    """Save the full provider.json."""
+    try:
+        with open(PROVIDER_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logger.warning("Failed to save provider.json: %s", e)
+
+
+def _load_provider(user_id: str) -> dict:
+    """Load provider config for a specific user. Returns DEFAULT_PROVIDER if none."""
+    all_configs = _load_all_providers()
+    config = all_configs.get(user_id)
+    if config:
+        return dict(config)
+    # Fall back to anonymous config
+    config = all_configs.get(ANONYMOUS_KEY)
+    if config:
+        return dict(config)
     return dict(DEFAULT_PROVIDER)
 
 
-def _save_provider(config: dict) -> None:
-    """Save provider config to disk and set env vars immediately.
-
-    Sets generic LLM_* env vars so the agent loop and compat shim pick them up.
-    If the saved provider has a preset base_url with no custom override, fills it.
-    """
+def _save_provider(user_id: str, config: dict) -> None:
+    """Save provider config for a specific user."""
     # Fill in base_url from preset if missing
     provider = config.get("provider", "")
     if not config.get("base_url") and provider in PROVIDER_PRESETS:
         config["base_url"] = PROVIDER_PRESETS[provider]["base_url"]
 
+    all_configs = _load_all_providers()
+    all_configs[user_id] = config
+    _save_all_providers(all_configs)
+
+    # Apply this config as the active env vars (current user's session)
+    _apply_config_to_env(config)
+
+    logger.info("Provider config saved for user %s: %s", user_id[:12], config.get("provider"))
+
+
+async def load_provider_for_user(user_id: str) -> None:
+    """Load a user's provider config into env vars.
+    Tries auth_elements DB table first, falls back to provider.json.
+    Called at the start of each agent loop.
+    """
+    # Try DB first
     try:
-        with open(PROVIDER_FILE, "w") as f:
-            json.dump(config, f)
-    except Exception as e:
-        logger.warning("Failed to save provider.json: %s", e)
+        from app.db import get_db
+        db = get_db()
+        elem = await db.auth_element_get(user_id, "llm", "default")
+        if elem:
+            cfg = json.loads(elem.get("config", "{}"))
+            cfg["api_key"] = elem.get("secret_ref", "")
+            _apply_config_to_env(cfg)
+            return
+    except Exception:
+        pass
 
-    # Set generic env vars (with OPENROUTER_* fallbacks for backward compat)
-    provider = config.get("provider", "openrouter")
-    os.environ["LLM_PROVIDER"] = provider
-    os.environ["OPENROUTER_PROVIDER"] = provider
-
-    if config.get("api_key"):
-        os.environ["LLM_API_KEY"] = config["api_key"]
-        os.environ["OPENROUTER_API_KEY"] = config["api_key"]
-    else:
-        os.environ.pop("LLM_API_KEY", None)
-        os.environ.pop("OPENROUTER_API_KEY", None)
-
-    if config.get("base_url"):
-        os.environ["LLM_BASE_URL"] = config["base_url"]
-        os.environ["OPENROUTER_BASE_URL"] = config["base_url"]
-    else:
-        os.environ.pop("LLM_BASE_URL", None)
-        os.environ.pop("OPENROUTER_BASE_URL", None)
-
-    if config.get("model"):
-        os.environ["LLM_MODEL"] = config["model"]
-        os.environ["OPENROUTER_MODEL"] = config["model"]
-    else:
-        os.environ.pop("LLM_MODEL", None)
-        os.environ.pop("OPENROUTER_MODEL", None)
-
-    logger.info("Provider config saved and applied: %s", config.get("provider"))
+    # Fall back to provider.json
+    config = _load_provider(user_id)
+    _apply_config_to_env(config)
 
 
 def apply_provider_config() -> None:
-    """Call on startup to apply saved provider config."""
-    config = _load_provider()
+    """Call on startup to apply saved anonymous provider config."""
+    config = _load_provider(ANONYMOUS_KEY)
     _apply_config_to_env(config)
 
 
@@ -155,15 +210,25 @@ def _apply_config_to_env(config: dict) -> None:
 
     if provider:
         os.environ["LLM_PROVIDER"] = provider
+        os.environ["OPENROUTER_PROVIDER"] = provider
     if config.get("api_key"):
         os.environ["LLM_API_KEY"] = config["api_key"]
         os.environ["OPENROUTER_API_KEY"] = config["api_key"]
+    else:
+        os.environ.pop("LLM_API_KEY", None)
+        os.environ.pop("OPENROUTER_API_KEY", None)
     if base_url:
         os.environ["LLM_BASE_URL"] = base_url
         os.environ["OPENROUTER_BASE_URL"] = base_url
+    else:
+        os.environ.pop("LLM_BASE_URL", None)
+        os.environ.pop("OPENROUTER_BASE_URL", None)
     if config.get("model"):
         os.environ["LLM_MODEL"] = config["model"]
         os.environ["OPENROUTER_MODEL"] = config["model"]
+    else:
+        os.environ.pop("LLM_MODEL", None)
+        os.environ.pop("OPENROUTER_MODEL", None)
 
 
 def _is_metadata_enabled() -> bool:
@@ -174,6 +239,8 @@ async def is_metadata_enabled() -> bool:
     """Check if metadata logging is enabled."""
     return METADATA_FLAG.exists()
 
+
+# ── Pydantic models ────────────────────────────────────────────────────────
 
 class ProviderConfig(BaseModel):
     provider: str
@@ -187,6 +254,8 @@ class MetadataSetting(BaseModel):
     enabled: bool
 
 
+# ── Endpoints ──────────────────────────────────────────────────────────────
+
 @router.get("/providers")
 async def get_providers():
     """Return known provider presets (id → name + base_url)."""
@@ -194,15 +263,37 @@ async def get_providers():
 
 
 @router.get("/provider", response_model=ProviderConfig)
-async def get_provider():
-    """Get current provider configuration. API key is masked for security.
-    Returns the full `providers` map so the frontend can persist per-provider
-    key/model across switches.
+async def get_provider(
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Get current provider configuration for the requesting user.
+    Reads from the auth_elements table in the DB (per-user), falls back to provider.json.
+    API key is masked for security.
     """
-    config = _load_provider()
+    user_id = _resolve_user_id(authorization or "", token or "")
+
+    # Try DB first (auth_elements table)
+    config = None
+    try:
+        from app.db import get_db
+        db = get_db()
+        elem = await db.auth_element_get(user_id, "llm", "default")
+        if elem:
+            cfg = json.loads(elem.get("config", "{}"))
+            cfg["api_key"] = elem.get("secret_ref", "")
+            config = cfg
+    except Exception:
+        pass
+
+    # Fall back to provider.json
+    if config is None:
+        config = _load_provider(user_id)
+
     # Ensure providers dict exists
     if "providers" not in config:
         config["providers"] = {}
+
     masked = dict(config)
     # Mask current provider's key
     if masked.get("api_key") and len(masked["api_key"]) > 8:
@@ -227,14 +318,17 @@ async def get_provider():
 
 
 @router.post("/provider", response_model=dict)
-async def set_provider(config: ProviderConfig):
-    """Set provider configuration. Stored on device, never sent elsewhere.
-
-    Merges the `providers` map from the request so per-provider key+model
-    persist across switches. If api_key is empty, the existing key is preserved.
-    If base_url is empty, the preset URL for the provider is filled in.
+async def set_provider(
+    config: ProviderConfig,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Set provider configuration for the requesting user.
+    Stored in auth_elements table (DB) AND provider.json fallback.
+    Never shared between users.
     """
-    existing = _load_provider()
+    user_id = _resolve_user_id(authorization or "", token or "")
+    existing = _load_provider(user_id)
     existing_providers = existing.get("providers", {})
     request_providers = config.providers or {}
 
@@ -247,7 +341,7 @@ async def set_provider(config: ProviderConfig):
     current_key = config.api_key or existing.get("api_key", "")
     current_model = config.model or existing.get("model", "")
     current_url = config.base_url or existing.get("base_url", "")
-    
+
     # Sync the active provider in the map
     merged_providers[config.provider] = {
         "api_key": current_key,
@@ -262,28 +356,56 @@ async def set_provider(config: ProviderConfig):
         "model": current_model,
         "providers": merged_providers,
     }
-    _save_provider(merged)
-    return {"status": "ok", "message": f"Provider set to {config.provider}"}
+
+    # Save to DB (auth_elements table) — primary storage
+    try:
+        from app.db import get_db
+        db = get_db()
+        await db.auth_element_set(
+            user_id=user_id,
+            service="llm",
+            config={
+                "provider": config.provider,
+                "base_url": current_url,
+                "model": current_model,
+                "providers": merged_providers,
+            },
+            secret_ref=current_key,
+            label="default",
+        )
+    except Exception as e:
+        logger.warning("Failed to save to auth_elements DB: %s", e)
+
+    # Also save to provider.json (fallback)
+    _save_provider(user_id, merged)
+
+    logger.info("Provider config set for user %s: %s", user_id[:12], config.provider)
+    return {"status": "ok", "message": f"Provider set to {config.provider}", "user": user_id}
 
 
 @router.post("/provider/clear", response_model=dict)
-async def clear_provider():
-    """Clear provider configuration (API key, model, base_url). Provider resets to openrouter."""
-    _save_provider(dict(DEFAULT_PROVIDER))
-    for var in ["LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL", "LLM_PROVIDER",
-                "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL", "OPENROUTER_MODEL", "OPENROUTER_PROVIDER"]:
-        os.environ.pop(var, None)
-    return {"status": "ok", "message": "Provider settings cleared"}
+async def clear_provider(
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Clear provider configuration for the requesting user."""
+    user_id = _resolve_user_id(authorization or "", token or "")
+    _save_provider(user_id, dict(DEFAULT_PROVIDER))
+    logger.info("Provider config cleared for user %s", user_id[:12])
+    return {"status": "ok", "message": "Provider settings cleared", "user": user_id}
 
 
 @router.get("/models")
-async def get_models(provider: str = ""):
+async def get_models(
+    provider: str = "",
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
     """Fetch available models from the configured provider's API.
-
-    Uses the saved base_url to determine the models endpoint.
-    Query param `provider` overrides the saved provider.
+    Uses the requesting user's saved config.
     """
-    config = _load_provider()
+    user_id = _resolve_user_id(authorization or "", token or "")
+    config = _load_provider(user_id)
     api_key = config.get("api_key", "")
     if not api_key:
         return {"error": "No API key configured", "models": []}

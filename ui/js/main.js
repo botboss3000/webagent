@@ -52,20 +52,15 @@ setInterval(() => {
   if (!app.agentWs || app.agentWs.readyState > 1) connectAgent();
 }, 10000);
 
-// ── Sign Out (clears DB viewer auth only, chat stays anonymous) ──
+// ── Sign Out ────────────────────────────────────────────────────────────
 document.getElementById('btn-signout')?.addEventListener('click', () => {
   localStorage.removeItem('auth_token');
   localStorage.removeItem('auth_username');
   localStorage.removeItem('auth_user_id');
   localStorage.removeItem('auth_display_name');
   localStorage.removeItem('remember_token');
-  // Refresh DB viewer to show login prompt
-  const dbTab = document.getElementById('tab-database');
-  if (dbTab && dbTab.classList.contains('active')) {
-    // Re-initialize by re-running fetchTables which will show login
-    import('./db/tables.js').then(m => {
-      const dbName = document.getElementById('db-select')?.value || 'local.db';
-      m.fetchTables(dbName);
-    });
-  }
+  // Reset user to anonymous UUID (different from the auth user_id)
+  localStorage.removeItem('terminalUserId');
+  // Reload to pick up anonymous identity
+  window.location.reload();
 });

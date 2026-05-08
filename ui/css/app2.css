@@ -21,6 +21,8 @@
   .status-btn:hover { background: #3b4261; border-color: #7dcfff; color: #c0caf5; }
   .status-btn:active { background: #565f89; }
   .status-btn.restarting { opacity: 0.5; pointer-events: none; }
+#btn-restart.restarting { animation: spin 1s linear infinite; opacity: 0.6; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
   /* Cloud / Local — UI only (no backend routing) */
   #control-host-toggle {

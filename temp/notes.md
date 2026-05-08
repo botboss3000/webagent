@@ -30,6 +30,7 @@ Security
 	- Need to have separate input and output encryption
 	- Encryption keys to be reset periodically
 	- 2 and maybe even 3 factor authentication
+	different providers for secret key, db and llm keys?
 	
 Memory
 	- Needs refinement/optimization/calibration

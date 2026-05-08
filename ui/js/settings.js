@@ -5,7 +5,18 @@ import { apiPath } from './config.js';
 /**
  * Settings module — provider, base URL, API key, and model configuration.
  * Per-provider key+model persist across provider switches.
+ * Each user (anonymous or authenticated) has their own isolated provider config.
  */
+
+/** Wrap fetch with auth token if available (per-user settings isolation). */
+function _authFetch(url, opts = {}) {
+  const token = localStorage.getItem('auth_token');
+  if (token) {
+    opts.headers = { ...(opts.headers || {}) };
+    opts.headers['Authorization'] = `Bearer ${token}`;
+  }
+  return fetch(url, opts);
+}
 
 const SETTINGS_MENU_BTN = document.getElementById('settings-menu-btn');
 const SETTINGS_DROPDOWN_MENU = document.getElementById('settings-dropdown-menu');
@@ -138,7 +149,7 @@ function saveCurrentToMap(providerKey) {
 
 async function fetchProviderPresets() {
     try {
-        const res = await fetch('/admin/settings/providers');
+        const res = await _authFetch('/admin/settings/providers');
         if (!res.ok) return;
         providerPresets = await res.json();
 
@@ -173,7 +184,7 @@ function closeSettings() {
 
 async function loadSettings() {
     try {
-        const res = await fetch(apiPath('/admin/settings/provider'));
+        const res = await _authFetch(apiPath('/admin/settings/provider'));
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 
@@ -223,7 +234,7 @@ async function fetchAndRenderModels() {
     SETTINGS_MODEL_STATUS.style.color = '#565f89';
     const provider = SETTINGS_PROVIDER.value === '_custom' ? '' : SETTINGS_PROVIDER.value;
     try {
-        const res = await fetch(`/admin/settings/models?provider=${encodeURIComponent(provider)}`);
+        const res = await _authFetch(`/admin/settings/models?provider=${encodeURIComponent(provider)}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         if (data.error) {
@@ -336,7 +347,7 @@ async function saveSettings() {
     };
 
     try {
-        const res = await fetch(apiPath('/admin/settings/provider'), {
+        const res = await _authFetch(apiPath('/admin/settings/provider'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -365,7 +376,7 @@ async function clearSettings() {
     // If no providers left, make a clean reset
     if (Object.keys(providerConfigs).length === 0) {
         try {
-            const res = await fetch('/admin/settings/provider/clear', {
+            const res = await _authFetch('/admin/settings/provider/clear', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
             });
@@ -379,7 +390,7 @@ async function clearSettings() {
         // Save updated map (without current provider)
         const baseUrl = SETTINGS_BASE_URL.value.trim();
         try {
-            const res = await fetch('/admin/settings/provider', {
+            const res = await _authFetch('/admin/settings/provider', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

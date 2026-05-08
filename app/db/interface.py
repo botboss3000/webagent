@@ -389,3 +389,96 @@ class StorageBackend(ABC):
         """Check if an interrupt was requested for a session."""
         ...
 
+    # ---- Webhooks (generic inbound) ----
+
+    @abstractmethod
+    async def register_webhook(
+        self,
+        user_id: str,
+        name: str,
+        instructions: str = "",
+    ) -> dict:
+        """
+        Create a generic inbound webhook registration.
+        Returns the registration dict with:
+          id, name, instructions, url, active, created_at
+        """
+        ...
+
+    @abstractmethod
+    async def get_webhook(self, webhook_id: str) -> Optional[dict]:
+        """Get a webhook registration by id."""
+        ...
+
+    @abstractmethod
+    async def list_webhooks(self, user_id: str) -> List[dict]:
+        """List all webhook registrations for a user."""
+        ...
+
+    @abstractmethod
+    async def delete_webhook(self, webhook_id: str, user_id: str) -> bool:
+        """Delete a webhook registration by id (scoped to user_id)."""
+        ...
+
+    @abstractmethod
+    async def log_webhook_event(
+        self,
+        webhook_id: str,
+        method: str,
+        headers: str,
+        payload: str,
+        response_status: int,
+        response_body: str,
+        duration_ms: int,
+    ) -> str:
+        """Log an incoming webhook event. Returns the event id."""
+        ...
+
+    @abstractmethod
+    async def get_webhook_logs(
+        self, webhook_id: str, limit: int = 20
+    ) -> List[dict]:
+        """Get recent webhook events for a registration."""
+        ...
+
+    # ---- Auth Elements (per-user service credentials) ----
+
+    @abstractmethod
+    async def auth_element_get(
+        self, user_id: str, service: str, label: str = "default"
+    ) -> Optional[dict]:
+        """Get one auth element by user + service + label.
+        Returns dict with keys: id, user_id, service, label, config (JSON str),
+        secret_ref, is_active, created_at, updated_at.
+        Returns None if not found."""
+        ...
+
+    @abstractmethod
+    async def auth_element_set(
+        self,
+        user_id: str,
+        service: str,
+        config: dict,
+        secret_ref: str = "",
+        label: str = "default",
+    ) -> dict:
+        """Upsert an auth element for a user+service+label.
+        config is a dict of non-sensitive settings (provider, model, base_url, etc.)
+        secret_ref is the secret value (API key, token, etc.) — will move to vault later.
+        Returns the saved row dict."""
+        ...
+
+    @abstractmethod
+    async def auth_element_list(
+        self, user_id: str, service: Optional[str] = None
+    ) -> List[dict]:
+        """List auth elements for a user, optionally filtered by service."""
+        ...
+
+    @abstractmethod
+    async def auth_element_delete(
+        self, user_id: str, service: str, label: str = "default"
+    ) -> bool:
+        """Delete an auth element. Returns True if deleted."""
+        ...
+

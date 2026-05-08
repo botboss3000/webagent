@@ -45,6 +45,7 @@ from app.api.db_viewer import router as db_viewer_router
 from app.admin.review import router as admin_router
 from app.admin.db_mode import router as admin_db_router
 from app.api.webhooks import router as webhooks_router
+from app.api.webhooks_generic import router as webhooks_generic_router
 try:
     from app.admin.source import router as admin_source_router
     _HAS_SOURCE_TOOLS = True
@@ -116,7 +117,10 @@ app.include_router(admin_communications_router)
 # Register auth router
 app.include_router(auth_router)
 
-# Register webhook router (for Telegram, WhatsApp, SMS etc.)
+# Register generic webhook router (more specific paths first)
+app.include_router(webhooks_generic_router)
+
+# Register communication plugin webhook router (for Telegram, WhatsApp, SMS etc.)
 app.include_router(webhooks_router)
 
 # ── Restart endpoint ──
