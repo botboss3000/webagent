@@ -48,12 +48,8 @@ function bindGHDom() {
 
 // ── Helpers ──
 
-/** Wrap fetch with auth token if available. */
-async function _authFetch(url, opts = {}) {
-  const token = localStorage.getItem('auth_token');
-  if (token) {
-    opts.headers = { ...(opts.headers || {}), Authorization: `Bearer ${token}` };
-  }
+/* GitHub endpoints don't need auth — the repo is shared, token is shared. */
+function _ghFetch(url, opts = {}) {
   return fetch(url, opts);
 }
 
@@ -101,7 +97,7 @@ function escapeHtml(str) {
 // ── Core API ──
 
 async function fetchStatus() {
-  const res = await _authFetch(apiPath('/api/v1/github/status'));
+  const res = await _ghFetch(apiPath('/api/v1/github/status'));
   if (!res.ok) {
     const body = await res.text();
     throw new Error(body || `HTTP ${res.status}`);
@@ -110,7 +106,7 @@ async function fetchStatus() {
 }
 
 async function createCommit(message) {
-  const res = await _authFetch(apiPath('/api/v1/github/commit'), {
+  const res = await _ghFetch(apiPath('/api/v1/github/commit'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message }),
@@ -123,7 +119,7 @@ async function createCommit(message) {
 }
 
 async function pushRemote() {
-  const res = await _authFetch(apiPath('/api/v1/github/push'), { method: 'POST' });
+  const res = await _ghFetch(apiPath('/api/v1/github/push'), { method: 'POST' });
   if (!res.ok) {
     const body = await res.text();
     throw new Error(body || `HTTP ${res.status}`);
@@ -132,7 +128,7 @@ async function pushRemote() {
 }
 
 async function pullRemote() {
-  const res = await _authFetch(apiPath('/api/v1/github/pull'), { method: 'POST' });
+  const res = await _ghFetch(apiPath('/api/v1/github/pull'), { method: 'POST' });
   if (!res.ok) {
     const body = await res.text();
     throw new Error(body || `HTTP ${res.status}`);
@@ -141,7 +137,7 @@ async function pullRemote() {
 }
 
 async function saveToken(token) {
-  const res = await _authFetch(apiPath('/api/v1/github/token'), {
+  const res = await _ghFetch(apiPath('/api/v1/github/token'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token }),
@@ -154,7 +150,7 @@ async function saveToken(token) {
 }
 
 async function fetchTokenStatus() {
-  const res = await _authFetch(apiPath('/api/v1/github/token-status'));
+  const res = await _ghFetch(apiPath('/api/v1/github/token-status'));
   if (!res.ok) return { configured: false, masked: '' };
   return res.json();
 }
@@ -373,6 +369,35 @@ export function initGithub() {
 
   bindGHDom();
   if (!GH.statusArea) return; // not in DOM
+
+  // ── Admin-only gate ──────────────────────────────────────────────────
+  const authUserId = localStorage.getItem('auth_user_id');
+  const isAdmin = authUserId === 'admin_default' && !!localStorage.getItem('auth_token');
+  if (!isAdmin) {
+    const viewer = document.getElementById('gh-viewer');
+    if (viewer) {
+      viewer.innerHTML = `
+        <div style="
+          display:flex; align-items:center; justify-content:center;
+          height:100%; min-height:300px;
+        ">
+          <div style="
+            background:#1a1a2e; border:1px solid #fb4934;
+            border-radius:12px; padding:32px 40px;
+            text-align:center; max-width:360px;
+          ">
+            <div style="font-size:40px; margin-bottom:12px;">⛔</div>
+            <h2 style="margin:0 0 8px 0; font-size:18px; color:#fb4934; font-weight:700;">RESTRICTED ACCESS</h2>
+            <p style="margin:0; font-size:13px; color:#565f89; line-height:1.5;">
+              The GitHub panel is only available to the admin user.
+            </p>
+          </div>
+        </div>
+      `;
+    }
+    return;
+  }
+
 
   // Wire events
   GH.refreshBtn.addEventListener('click', doRefresh);

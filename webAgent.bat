@@ -15,9 +15,11 @@ echo.
 
 :: ── Kill any stale server on this port ──
 :restart
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8080 " ^| findstr LISTEN') do (
-    echo [webAgent] Killing stale process PID %%a on port 8080...
-    taskkill /F /PID %%a >nul 2>nul
+for /f "tokens=5*" %%a in ('netstat -ano ^| findstr ":8080" ^| findstr LISTEN') do (
+    if not "%%b"=="" (
+        echo [webAgent] Killing stale process PID %%b on port 8080...
+        taskkill /F /PID %%b >nul 2>nul
+    )
 )
 ping -n 2 127.0.0.1 >nul
 

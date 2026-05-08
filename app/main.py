@@ -61,6 +61,7 @@ except ImportError:
     admin_settings_router = None
 
 from app.admin.communications import router as admin_communications_router
+from app.admin.webhooks_admin import router as admin_webhooks_router
 
 # ── Auth ──
 from app.auth import router as auth_router
@@ -116,6 +117,9 @@ if _HAS_SETTINGS and admin_settings_router is not None:
 
 # Register communications admin router
 app.include_router(admin_communications_router)
+
+# Register generic webhook admin router
+app.include_router(admin_webhooks_router)
 
 # Register auth router
 app.include_router(auth_router)

@@ -5,6 +5,7 @@ import { connectAgent } from './agentWs.js';
 import { loopSessionChanged } from './loop.js';
 import { streamSessionChanged } from './stream.js';
 import { apiPath } from './config.js';
+import { getAuthToken } from './left-login.js';
 
 export function generateUUID() {
   return crypto.randomUUID();
@@ -23,16 +24,58 @@ export async function populateUserSelect() {
       topUserIdVal.title = app.currentUserId || '';
     }
     
+    const isAdmin = !!getAuthToken();
     submenu.innerHTML = '';
     
     for (const uid of data.users || []) {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;width:100%;';
+
       const item = document.createElement('button');
       item.className = 'submenu-item';
+      item.style.flex = '1';
       if (uid === app.currentUserId) item.classList.add('active');
       item.dataset.value = uid;
       item.textContent = uid.slice(0, 12) + '...';
       item.title = uid;
-      submenu.appendChild(item);
+      row.appendChild(item);
+
+      // Admin-only: ⛔ delete button for each user
+      if (isAdmin) {
+        const delBtn = document.createElement('span');
+        delBtn.textContent = '⛔';
+        delBtn.title = 'Delete this user and all their data';
+        delBtn.style.cssText = 'cursor:pointer;padding:2px 6px;font-size:13px;opacity:0.6;flex-shrink:0;';
+        delBtn.addEventListener('mouseenter', () => { delBtn.style.opacity = '1'; });
+        delBtn.addEventListener('mouseleave', () => { delBtn.style.opacity = '0.6'; });
+        delBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          if (!confirm(`Delete ALL data for user "${uid}"?`)) return;
+          try {
+            const token = getAuthToken();
+            const res = await fetch(apiPath('/api/v1/db/users/' + encodeURIComponent(uid) + '?db=local.db&token=' + encodeURIComponent(token)), { method: 'DELETE' });
+            const result = await res.json();
+            if (result.success) {
+              // If we deleted ourselves, reset to anonymous
+              if (uid === app.currentUserId) {
+                localStorage.removeItem('auth_token');
+                localStorage.removeItem('auth_user_id');
+                localStorage.removeItem('terminalUserId');
+                window.location.reload();
+              } else {
+                populateUserSelect();
+              }
+            } else {
+              alert('Failed to delete user');
+            }
+          } catch (err) {
+            alert('Error: ' + err.message);
+          }
+        });
+        row.appendChild(delBtn);
+      }
+
+      submenu.appendChild(row);
     }
     const newUserBtn = document.createElement('button');
     newUserBtn.className = 'submenu-item';

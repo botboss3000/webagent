@@ -29,6 +29,10 @@
         <span>LLM</span>
       </div>
 
+      <div class="settings-menu-item" id="connections-menu-item">
+        <span>🔗 Connections</span>
+      </div>
+
       <div class="settings-menu-item">
         <span>Database</span> <span class="arrow">►</span>
         <div id="database-submenu" class="settings-submenu">
@@ -53,6 +57,7 @@
       <option value="loop">🔄 Loop</option>
       <option value="database">📊 Database</option>
       <option value="github">🐙 GitHub</option>
+
     </select>
   </div>
 
@@ -352,6 +357,52 @@
       <button id="settings-clear" style="flex:0 0 auto;padding:10px 16px;background:transparent;border:1px solid #565f89;border-radius:6px;color:#565f89;font-size:13px;cursor:pointer;">Clear</button>
     </div>
     <div id="settings-status" style="margin-top:8px;font-size:12px;color:#9ece6a;display:none;"></div>
+  </div>
+</div>
+
+<!-- Connections modal -->
+<div id="connections-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:1000;">
+  <div id="connections-backdrop" style="position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);"></div>
+  <div id="connections-panel" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:24px;min-width:420px;max-width:560px;max-height:80vh;overflow-y:auto;color:#c0caf5;font-size:14px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h2 style="margin:0;font-size:18px;font-weight:600;">🔗 Connections</h2>
+      <button id="connections-close" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:20px;">&times;</button>
+    </div>
+
+    <!-- Webhook Base URL -->
+    <div style="margin-bottom:20px;">
+      <label style="display:block;margin-bottom:6px;color:#a9b1d6;font-size:13px;font-weight:600;">Webhook Base URL</label>
+      <div style="display:flex;gap:8px;">
+        <input type="text" id="conn-base-url" placeholder="https://webagent.com" autocomplete="off" style="flex:1;padding:10px;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;color:#c0caf5;font-size:14px;font-family:inherit;">
+        <button id="conn-base-url-save" style="padding:10px 16px;background:#7dcfff;border:none;border-radius:6px;color:#0d0d1a;font-size:13px;font-weight:600;cursor:pointer;">Save</button>
+      </div>
+      <div style="margin-top:4px;font-size:11px;color:#565f89;">Set this to your public domain so webhook URLs resolve correctly.</div>
+      <span id="conn-base-url-status" style="font-size:11px;display:none;"></span>
+    </div>
+
+    <!-- Registered webhooks -->
+    <div style="margin-bottom:16px;">
+      <label style="display:block;margin-bottom:8px;color:#a9b1d6;font-size:13px;font-weight:600;">Registered Webhooks</label>
+      <div id="conn-webhook-list" style="display:flex;flex-direction:column;gap:6px;">
+        <div style="color:#565f89;font-size:12px;padding:8px 0;">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Telegram -->
+    <div style="margin-bottom:16px;">
+      <label style="display:block;margin-bottom:8px;color:#a9b1d6;font-size:13px;font-weight:600;">Telegram Bot</label>
+      <div id="conn-telegram-status" style="font-size:12px;color:#565f89;padding:8px 0;">Loading...</div>
+    </div>
+
+    <!-- HTTP tool note -->
+    <div style="padding:10px 12px;background:#0d0d1a;border-radius:6px;border-left:3px solid #7dcfff;font-size:12px;color:#a9b1d6;margin-bottom:8px;">
+      <strong style="color:#7dcfff;">HTTP Requests</strong> — The agent has a built-in <code>http_request</code> tool for outbound GET/POST/PUT/DELETE/PATCH calls. No config needed.
+    </div>
+
+    <!-- Close button at bottom -->
+    <div style="text-align:right;margin-top:16px;">
+      <button id="connections-close-btn" style="padding:8px 20px;background:transparent;border:1px solid #565f89;border-radius:6px;color:#565f89;font-size:13px;cursor:pointer;">Close</button>
+    </div>
   </div>
 </div>
 
