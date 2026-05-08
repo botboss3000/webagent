@@ -49,12 +49,16 @@
     </select>
   </div>
 
-  <span id="status-right">
+  <div class="status-group" style="margin-left: 12px;">
     <span class="status-dot yellow" id="terminal-dot" title="Terminal Connection"></span>
     <span id="terminal-status" style="display:none;"></span>
     <span class="status-dot yellow" id="agent-dot" title="Server Connection"></span>
     <span id="agent-status" style="display:none;"></span>
     <button id="btn-restart" class="status-btn" title="Restart the Python agent server">⏻ Restart</button>
+  </div>
+
+  <span id="status-right">
+    <span id="top-user-id" style="color: #7dcfff; font-weight: 600; display: flex; align-items: center; gap: 4px; font-size: 13px;">User: <span id="top-user-id-val">None</span></span>
   </span>
 </div>
 
@@ -99,9 +103,8 @@
     </div>
     <div id="tab-database" class="tab-content">
       <div id="db-viewer">
-        <div id="db-toolbar">
+        <div id="db-toolbar" style="display:none;">
           <select id="db-select">
-            <option value="local.db">local.db</option>
             <option value="local.db">local.db</option>
           </select>
           <select id="db-sort-col">
@@ -111,17 +114,24 @@
             <option value="DESC">▼ Desc</option>
             <option value="ASC">▲ Asc</option>
           </select>
-          <button id="db-refresh">↻ Refresh</button>
-          <button id="db-reset" style="background:#cc241d;border:1px solid #fb4934;color:#fbf1c7;padding:2px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;margin-left:4px;">Reset DB</button>
-          <span id="db-auto-status" style="margin-left:auto;color:#565f89;font-size:11px;"></span>
-          <span id="db-page-info" style="color:#565f89;font-size:11px;margin-left:8px;"></span>
-          <button id="db-page-prev" style="display:none;background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">◀</button>
-          <button id="db-page-next" style="display:none;background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">▶</button>
+          <span id="db-auto-status"></span>
         </div>
         <div id="db-panel">
-          <div id="db-table-list"></div>
+          <div style="width:180px;min-width:140px;border-right:1px solid #2a2a4a;display:flex;flex-direction:column;flex-shrink:0;">
+            <div style="padding:8px 12px;border-bottom:1px solid #2a2a4a;display:flex;gap:8px;">
+              <button id="db-refresh" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">↻ Refresh</button>
+              <button id="db-reset" style="background:#cc241d;border:1px solid #fb4934;color:#fbf1c7;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">Reset DB</button>
+            </div>
+            <div id="db-table-list" style="width:100%;border-right:none;flex:1;"></div>
+          </div>
           <div id="db-table-view">
-            <div id="db-table-header"></div>
+            <div id="db-table-header" style="display:flex;justify-content:space-between;align-items:center;">
+              <span id="db-page-info" style="color:#565f89;font-size:11px;"></span>
+              <span>
+                <button id="db-page-prev" style="display:none;background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">◀</button>
+                <button id="db-page-next" style="display:none;background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">▶</button>
+              </span>
+            </div>
             <div id="db-table-data">
               <div class="db-hint">Select a table to view its contents</div>
             </div>
