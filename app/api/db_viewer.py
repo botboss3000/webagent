@@ -83,6 +83,64 @@ async def list_users(db: str = Query("local.db", description="Database filename"
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/users/{user_id}")
+async def delete_user(
+    user_id: str,
+    db: str = Query("local.db", description="Database filename"),
+    _auth: dict = Depends(require_db_auth),
+):
+    """Delete all sessions, interactions, and messages for a user."""
+    db_path = _get_db_path(db)
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+        deleted = {}
+
+        # Get all session IDs for this user
+        sessions = conn.execute(
+            "SELECT id FROM sessions WHERE user_id = ?", (user_id,)
+        ).fetchall()
+        session_ids = [row[0] for row in sessions]
+
+        # Delete interactions for those sessions
+        for sid in session_ids:
+            cur.execute("DELETE FROM interactions WHERE session_id = ?", (sid,))
+            deleted["interactions"] = deleted.get("interactions", 0) + cur.rowcount
+            try:
+                cur.execute("DELETE FROM pipeline_events WHERE session_id = ?", (sid,))
+            except sqlite3.OperationalError:
+                pass
+            try:
+                cur.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+            except sqlite3.OperationalError:
+                pass
+
+        # Delete sessions
+        cur.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        deleted["sessions"] = cur.rowcount
+
+        # Delete session summaries
+        try:
+            cur.execute("DELETE FROM session_summaries WHERE user_id = ?", (user_id,))
+            deleted["summaries"] = cur.rowcount
+        except sqlite3.OperationalError:
+            pass
+
+        # Delete attachments
+        try:
+            cur.execute("DELETE FROM attachments WHERE user_id = ?", (user_id,))
+            deleted["attachments"] = cur.rowcount
+        except sqlite3.OperationalError:
+            pass
+
+        conn.commit()
+        conn.close()
+        logger.info(f"Deleted user {user_id[:12]}: {deleted}")
+        return {"success": True, "user_id": user_id, "deleted": deleted}
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.delete("/sessions/{session_id}")
 async def delete_session(
     session_id: str,

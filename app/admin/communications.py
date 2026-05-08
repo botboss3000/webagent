@@ -36,9 +36,15 @@ async def list_plugins():
     pm = get_plugin_manager()
     plugins = []
     for p in pm.get_all_plugins():
+        has_token = False
+        if hasattr(p, '_bot_token'):
+            has_token = bool(p._bot_token)
+        elif hasattr(p, 'has_token'):
+            has_token = p.has_token
         plugins.append({
             "name": p.name,
             "enabled": p.enabled,
+            "has_token": has_token,
             "webhook_path": p.webhook_path,
             "tool_count": len(p.get_tools()),
         })

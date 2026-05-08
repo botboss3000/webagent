@@ -13,6 +13,7 @@ import { initLoop } from './loop.js';
 import { initDbViewer } from './db/index.js';
 import { registerSessionApi, initSessions } from './sessions.js';
 import { initSettings } from './settings.js';
+import { initConnections } from './connections.js';
 import { initGithub } from './github.js';
 import { isAuthenticated, showLeftOverlay, hideLeftOverlay } from './left-login.js';
 
@@ -43,6 +44,7 @@ initLoop();
 initDbViewer();
 initGithub();
 initSettings();
+initConnections();
 initSessions();
 
 // ── Visibility change: reconnect when user returns to this tab ──

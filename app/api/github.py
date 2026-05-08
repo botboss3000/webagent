@@ -7,6 +7,9 @@ Provides endpoints for:
 - Push to remote
 - Pull from remote
 - Store / check GitHub token (for HTTPS auth)
+
+Note: the GitHub token is a single shared credential (the repo is shared).
+Unlike LLM keys, it's NOT per-user — stored in provider.json only.
 """
 
 import logging
@@ -24,7 +27,7 @@ router = APIRouter(prefix="/api/v1/github")
 # ── Find project root (parent of app/) ──
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
-# ── Token storage ──
+# ── Token storage (single shared token in provider.json) ──
 _TOKEN_FILE = _PROJECT_ROOT / "provider.json"
 
 
@@ -52,14 +55,25 @@ def _save_token(token: str) -> None:
         raise HTTPException(status_code=500, detail=f"Failed to save token: {e}")
 
 
+# ── Token cache (set before sync git calls) ──
+_TOKEN_CACHE: str = ""
+
+
+def _cache_token(token: str) -> None:
+    global _TOKEN_CACHE
+    _TOKEN_CACHE = token
+
+
 def _run_git(args: list[str], timeout: int = 15) -> tuple[str, str, int]:
-    """Run a git command in the project root. Returns (stdout, stderr, returncode)."""
+    """Run a git command in the project root. Returns (stdout, stderr, returncode).
+    Uses cached token for HTTPS auth if available.
+    """
     env = os.environ.copy()
-    token = _get_token()
+    token = _TOKEN_CACHE or _get_token()
     if token:
-        # Use token for HTTPS auth
+        env["GIT_USERNAME"] = "token"
+        env["GIT_PASSWORD"] = token
         env["GIT_ASKPASS"] = ""
-        # Set credential helper to use token inline
         env["GIT_TERMINAL_PROMPT"] = "0"
     try:
         proc = subprocess.run(
@@ -94,6 +108,9 @@ class TokenRequest(BaseModel):
 @router.get("/status")
 async def get_status():
     """Return repo status: branch, remote, file status, ahead/behind info."""
+    # Cache token before running git commands
+    _cache_token(_get_token())
+
     # 1. Branch name
     branch_out, _, rc = _run_git(["rev-parse", "--abbrev-ref", "HEAD"])
     if rc != 0:
@@ -192,17 +209,16 @@ async def get_status():
 @router.post("/commit")
 async def create_commit(req: CommitRequest):
     """Stage all changes and commit with a message."""
-    # 1. Stage all
+    _cache_token(_get_token())
+
     stdout, stderr, rc = _run_git(["add", "-A"], timeout=10)
     if rc != 0:
         raise HTTPException(status_code=500, detail=f"Stage failed: {stderr}")
 
-    # 2. Check if anything to commit
     diff_cached, _, rc_check = _run_git(["diff", "--cached", "--quiet"], timeout=5)
     if rc_check == 0:
         return {"status": "nothing_to_commit", "message": "No changes to commit."}
 
-    # 3. Commit
     stdout, stderr, rc = _run_git(["commit", "-m", req.message], timeout=10)
     if rc != 0:
         raise HTTPException(status_code=500, detail=f"Commit failed: {stderr}")
@@ -217,10 +233,11 @@ async def create_commit(req: CommitRequest):
 @router.post("/push")
 async def push_to_remote():
     """Push commits to the remote."""
+    _cache_token(_get_token())
+
     stdout, stderr, rc = _run_git(["push"], timeout=30)
     if rc != 0:
         detail = stderr.strip()
-        # Check for auth issues
         if "Authentication failed" in stderr or "could not read" in stderr:
             detail += "\n\nSet your GitHub token in the GitHub tab → Settings."
         raise HTTPException(status_code=500, detail=detail)
@@ -235,6 +252,8 @@ async def push_to_remote():
 @router.post("/pull")
 async def pull_from_remote():
     """Pull from remote."""
+    _cache_token(_get_token())
+
     stdout, stderr, rc = _run_git(["pull"], timeout=30)
     if rc != 0:
         detail = stderr.strip()
@@ -251,9 +270,12 @@ async def pull_from_remote():
 
 @router.post("/token")
 async def set_token(req: TokenRequest):
-    """Store a GitHub personal access token for HTTPS auth."""
-    # Validate: try a simple git operation
+    """Store a GitHub personal access token for HTTPS auth.
+    Single shared token — same for all users (the repo is shared).
+    """
     _save_token(req.token)
+    _cache_token(req.token)
+    logger.info("GitHub token saved")
     return {"status": "ok", "message": "GitHub token saved."}
 
 
