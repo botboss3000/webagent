@@ -116,6 +116,7 @@ class SupabaseBackend(StorageBackend):
         channel: Optional[str] = None,
         metadata: Optional[str] = None,
         input_data: Optional[str] = None,
+        sender_id: Optional[str] = None,
     ) -> str:
         try:
             await self.assert_session_owned(user_id, session_id)
@@ -859,9 +860,10 @@ class SupabaseClient:
         parent_id: Optional[str] = None, tool_name: Optional[str] = None,
         tool_call_id: Optional[str] = None, channel: Optional[str] = None,
         metadata: Optional[str] = None, input_data: Optional[str] = None,
+        sender_id: Optional[str] = None,
     ) -> str:
         return await SupabaseClient._get_backend().insert_interaction(
-            user_id, session_id, role, content, parent_id, tool_name, tool_call_id, channel, metadata, input_data
+            user_id, session_id, role, content, parent_id, tool_name, tool_call_id, channel, metadata, input_data, sender_id,
         )
 
     @staticmethod

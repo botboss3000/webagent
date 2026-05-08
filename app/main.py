@@ -61,6 +61,9 @@ except ImportError:
 
 from app.admin.communications import router as admin_communications_router
 
+# ── Auth ──
+from app.auth import router as auth_router
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -109,6 +112,9 @@ if _HAS_SETTINGS and admin_settings_router is not None:
 
 # Register communications admin router
 app.include_router(admin_communications_router)
+
+# Register auth router
+app.include_router(auth_router)
 
 # Register webhook router (for Telegram, WhatsApp, SMS etc.)
 app.include_router(webhooks_router)
@@ -190,6 +196,15 @@ async def main_ui():
     if not _ROOT_INDEX_HTML.is_file():
         return HTMLResponse("<p>Missing index.html</p>", status_code=404)
     return HTMLResponse(content=_ROOT_INDEX_HTML.read_text(encoding="utf-8"))
+
+
+@app.get("/login.html", response_class=HTMLResponse, include_in_schema=False)
+async def login_ui():
+    """Serve the login page."""
+    login_html = _APP_DIR.parent / "ui" / "login.html"
+    if not login_html.is_file():
+        return HTMLResponse("<p>Missing login.html</p>", status_code=404)
+    return HTMLResponse(content=login_html.read_text(encoding="utf-8"))
 
 @app.get("/health")
 async def health_check():

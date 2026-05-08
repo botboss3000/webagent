@@ -11,7 +11,8 @@ from typing import Optional
 
 from pydantic import BaseModel
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from app.auth.db_auth import require_db_auth
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/db", tags=["db_viewer"])
@@ -30,7 +31,10 @@ def _get_db_path(name: str = "local.db") -> Path:
 
 
 @router.get("/tables")
-async def list_tables(db: str = Query("local.db", description="Database filename")):
+async def list_tables(
+    db: str = Query("local.db", description="Database filename"),
+    _auth: dict = Depends(require_db_auth),
+):
     """List all tables in the database."""
     db_path = _get_db_path(db)
     try:
@@ -277,7 +281,10 @@ class UpdateRowRequest(BaseModel):
 
 
 @router.put("/update")
-async def update_row(req: UpdateRowRequest):
+async def update_row(
+    req: UpdateRowRequest,
+    _auth: dict = Depends(require_db_auth),
+):
     """Update a row in a table."""
     db_path = _get_db_path(req.db)
     try:
@@ -322,6 +329,7 @@ async def update_row(req: UpdateRowRequest):
 @router.delete("/reset")
 async def reset_database(
     db: str = Query("local.db", description="Database filename"),
+    _auth: dict = Depends(require_db_auth),
 ):
     """Delete ALL rows from ALL tables. Preserves context_templates and agent_templates."""
     db_path = _get_db_path(db)
@@ -358,6 +366,7 @@ async def reset_database(
 async def truncate_table(
     table: str = Query(..., description="Table name to truncate"),
     db: str = Query("local.db", description="Database filename"),
+    _auth: dict = Depends(require_db_auth),
 ):
     """Delete ALL rows from a table."""
     db_path = _get_db_path(db)
@@ -396,6 +405,7 @@ async def query_table(
     filter_op: str = Query("contains", regex="^(contains|equals|starts|gt|lt)$"),
     filter_val: Optional[str] = Query(None, description="Filter value"),
     db: str = Query("local.db", description="Database filename"),
+    _auth: dict = Depends(require_db_auth),
 ):
     """Query rows from a table."""
     db_path = _get_db_path(db)

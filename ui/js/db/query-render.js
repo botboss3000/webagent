@@ -5,6 +5,7 @@ import { getPKColumns, getDisplayColumns, saveColumnOrder } from "./columns.js";
 import { initColumnResize } from "./columnResize.js";
 import { formatJsonAsHtml } from "../json-tree.js";
 import { apiPath } from "../config.js";
+import { getAuthToken, authUrl, showLoginOverlay, setOnLogin } from "./login.js";
 
 function cancelEditing() {
   if (app.editingCell) {
@@ -357,7 +358,13 @@ async function queryTable(tableName, opts) {
   }
 
   try {
-    const res = await fetch(url);
+    const res = await fetch(authUrl(url));
+    if (res.status === 401) {
+      localStorage.removeItem('auth_token');
+      showLoginOverlay();
+      setOnLogin(() => queryTable(tableName, opts));
+      return;
+    }
     const result = await res.json();
     app.dbTotalRows = result.total || 0;
     app.dbCurrentResult = result;

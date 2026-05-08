@@ -7,9 +7,9 @@ A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional *
 - **Chat** — `POST /api/v1/chat` (and **`POST /api/v1/chat/stream`**): agent loop with tools; turns go to **`interactions`**. Prior turns for the same **`session_id`** are reloaded from the DB into the model context (browser refresh does not reset the conversation).
 - **WebSocket agent** — `GET` upgrade to `/api/v1/agent/ws`: streaming tokens, tool events, pipeline steps (**loopback clients only**).
 - **Context** — Prompt slices from `context_type` / `doc_type`; if a user has no rows, **`context_templates`** are copied into per-user context on first chat.
-- **Memory** — Brain-style lookup before each chat turn; optional background save of chat snippets into memory.
+- **Memory** — Hybrid search (FTS5 keyword + vector cosine similarity via embedding API) runs before each chat turn; results injected as `[BRAIN CONTEXT]` in the system prompt. Trivial messages (greetings, affirmations, commands) skip memory via regex gate. Page content auto-chunked and embedded on write. Background save of chat snippets into memory. See [`memory-upgrade.md`](memory-upgrade.md).
 - **Attachments** — Image, audio, video, and file uploads. Users attach files via the UI (📎 button in footer, drag & drop onto chat messages or footer area, 🎤 voice recording). Files upload via **`POST /api/v1/upload`** and bytes are persisted through **`app/db/attachments/`** (local filesystem in dev, Supabase Storage in production — see `app/db/SUPABASE_STORAGE.md`). Metadata is stored in the **`attachments`** table (local SQLite or Supabase). The agent accesses files with the **`read_attachment`** built-in tool. Supports image preview, audio/video players, and download links inline in chat bubbles. Attachments persist per-session and survive server restarts.
-- **Tools** — Dynamic tools from the DB (JSON schemas in **`app/tools/loader.py`**), including Playwright **`browser.py`** and built-in **`read_attachment`**, **`create_tool`**, **`rate_skill`**.
+- **Tools** — **Bootstrap + on-demand discovery model.** A small set of hardcoded core tools (web_search, browser_action, list_tools, search_tools, get_tool_definition, create_tool, db_query, memory, session_search, get_time, get_date, get_weather, calculate, read_attachment) are always available from turn 1 via **`app/tools/loader.py`** + **`app/tools/core_tools.py`**. All other tools (user-created, admin, comm plugins) are discovered on demand via `list_tools` / `search_tools` / `get_tool_definition`. Tool definitions no longer auto-populate the system prompt — only curated `context_type="skills"` docs provide behavioral guidance in the `# [SKILLS]` section.
 - **OpenRouter** — Model from `OPENROUTER_MODEL` (see `.env.example`; e.g. `deepseek/deepseek-v4-flash`).
 - **Dual storage** — **`cloud`** (Supabase) vs **`local`** (SQLite file **`app/db/local.db`**). Mode is stored in **`app/db_mode.json`** and switched via **`/admin/db/*`**.
 - **Administrator tools** — Optional filesystem read/write/edit/delete, shell command execution, and server restart exposed as agent tools (**`read_source`**, **`write_source`**, **`edit_source`**, **`delete_source`**, **`run_command`**, **`restart_server`**). Powered by **`app/admin/source.py`** + **`app/admin/source_tools.py`**. **These are privileged debug tools — NOT available in normal user operation.** Deleting the `app/admin/` directory removes them entirely. See the [Administrator Tools](#administrator-tools) section.
@@ -90,12 +90,13 @@ The agent uses a single unified execution engine (`app/agent/loop.py`) that serv
 | **`agent/session_history.py`** | Maps **`interactions`** rows → OpenAI-style **`messages`** for the active session (excludes internal memory tools). |
 | **`agent/prompts.py`** | System prompt from context, brain results, tools, attachment context. Includes **`format_attachments_for_prompt()`** helper. |
 | **`agent/error_classifier.py`** | Structured tool errors (**used on the WebSocket / streaming path**). |
+| **`agent/embed.py`** | Embedding utility using same provider config as chat. Returns configurable-dimension vectors (`EMBED_DIM`, default 1536). |
 | **`db/__init__.py`** | **`get_db()`** → **`SupabaseBackend`** or **`LocalBackend`** from persisted mode. |
 | **`db/supabase.py`** | Cloud: **`sessions`**, **`interactions`**, **`context`**, **`context_templates`**, **`attachments`**, memories / tools / skills per shared schema. |
-| **`db/local.py`** | Local SQLite (e.g. **`context_documents`**, **`attachments`**) and related tables beside **`local.db`**. |
+| **`db/local.py`** | Local SQLite — schema init, FTS5 + vector hybrid search, embed-on-write, knowledge graph, timelines. |
 | **`db/attachments/`** | **`file_store.py`** — file byte storage abstraction. Dispatches to local filesystem (`uploads/`) or Supabase Storage based on `db_mode.json`. Exports `store_file()`, `read_file()`, `delete_file()`. See `app/db/SUPABASE_STORAGE.md` for cloud setup. |
 | **`db/interface.py`** | **`StorageBackend`** protocol with **`insert_attachment`**, **`get_attachment`**, **`get_session_attachments`**, **`delete_attachment`**. |
-| **`tools/`** | **`loader`**, **`registry`**, **`tracker`**, **`browser`**, **`read_attachment`** (built-in tool for reading uploaded files via `app/db/attachments/`). |
+| **`tools/`** | **`loader`** (dynamic tool loading + built-in injection), **`core_tools`** (bootstrap tools: list_tools, search_tools, get_tool_definition, web_search, db_query, memory, session_search, get_time, get_date, get_weather, calculate), **`registry`** (create_tool, safety scanner, rating utilities), **`tracker`** (legacy execution tracker), **`browser`** (persistent Chromium), **`read_attachment`** (read uploaded files via `app/db/attachments/`). |
 | **`models/schemas.py`** | Pydantic models (`ChatRequest`, etc.). |
 | **`admin/`** | **`review`** (`/admin/tools` — list/deprecate DB tools), **`db_mode`** (`/admin/db/` — cloud/local switch), **`settings`** (provider config, model list, metadata toggle), **`guardrails`** (path/command deny-list for source tools), **`communications`** (Telegram/WhatsApp plugin mgmt), **`source`** + **`source_tools`** (optional privileged filesystem & shell access — delete to disable). See [Administrator Tools](#administrator-tools). |
 | **`openai_compat.py`** | OpenAI-compatible client wiring for OpenRouter. |
@@ -115,8 +116,9 @@ webAgent/
 ├── ui/                     # Static UI + test_interface.html
 ├── uploads/                # User-uploaded files (images, voice, docs; mounted at /uploads)
 ├── scripts/
-│   ├── start_webAgent.sh   # Unix: cd to repo root, background uvicorn (default :8080, PORT= overrides)
-│   └── seed_tools.py       # Optional tool DB seeding
+│   ├── start_webAgent.sh            # Unix: cd to repo root, background uvicorn (default :8080, PORT= overrides)
+│   ├── backfill_embeddings.py       # One-off: embed existing memory pages
+│   └── seed_tools.py                # Optional tool DB seeding
 ├── migrations/             # Ad-hoc SQL snapshots (includes 007_channel_identities, 008_linking_codes); see migrations/README.md
 ├── supabase/migrations/    # e.g. 005_memory_system.sql (Supabase CLI / team workflow)
 ├── screenshots/            # Mounted at /screenshots
@@ -153,6 +155,8 @@ cp .env.example .env          # Windows (cmd): copy .env.example .env
 | `SUPABASE_SERVICE_ROLE_KEY` | Service role key (**required in cloud mode**) |
 | `ENVIRONMENT` | e.g. `development` |
 | `LOG_LEVEL` | e.g. `INFO` |
+| `EMBED_MODEL` | Embedding model (default: `text-embedding-3-small`) |
+| `EMBED_DIM` | Embedding vector dimension (default: `1536`) |
 | `MAX_UPLOAD_SIZE_MB` | Max file upload size in MB (default: 25) |
 | `UPLOAD_DIR` | Directory for uploaded files (default: `uploads`) |
 

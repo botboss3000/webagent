@@ -3,6 +3,8 @@ UI
 	 Should be able to enter own API key/provider
 		- works but should be enhanced with "save key/model" feature so that there would be a list of preferences for quick switching
 
+bootstrap message to seed agent and user context
+
 Connections
 	- Need to test telegram
 	- Need to add local whatsapp solution (portal to web-based whatsapp account on my number)
@@ -27,9 +29,10 @@ Security
 	- Need to enable encryption that would be linked per use
 	- Need to have separate input and output encryption
 	- Encryption keys to be reset periodically
-
+	- 2 and maybe even 3 factor authentication
+	
 Memory
-	- Needs refinement/optimization
+	- Needs refinement/optimization/calibration
 	- Should have ability to update is own md docs in the db with RLS
 
 Skills
@@ -53,7 +56,8 @@ Prompt engineering
 	- Smart brevity for consise output. Easier to read in message platforms
 	- response MUST be in same language as user's message
 
-
+Saveable agents
+- agents could call other agents (different context window, different memorydb/preferences/knowledge/different LLM)
 
 testing:
  - removing admin features

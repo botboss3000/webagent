@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>webAgent — Login</title>
+<link rel="icon" href="./favicon.svg" type="image/svg+xml">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #0d0d1a;
+  color: #c0caf5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+}
+.login-box {
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 12px;
+  padding: 36px 32px;
+  width: 360px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+.login-box h1 {
+  font-size: 22px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: #7dcfff;
+}
+.login-box p.sub {
+  font-size: 13px;
+  color: #565f89;
+  margin-bottom: 8px;
+}
+.login-box p.hint {
+  font-size: 12px;
+  color: #3b4261;
+  margin-bottom: 24px;
+  line-height: 1.4;
+}
+.form-group {
+  margin-bottom: 16px;
+}
+.form-group label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #a9b1d6;
+  margin-bottom: 6px;
+}
+.form-group input[type="text"],
+.form-group input[type="password"] {
+  width: 100%;
+  padding: 10px 12px;
+  background: #0d0d1a;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  color: #c0caf5;
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.form-group input:focus {
+  border-color: #7dcfff;
+}
+.form-group input::placeholder {
+  color: #3b4261;
+}
+.remember-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: #a9b1d6;
+}
+.remember-row input[type="checkbox"] {
+  accent-color: #7dcfff;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+.remember-row label {
+  cursor: pointer;
+}
+.btn-login {
+  width: 100%;
+  padding: 11px;
+  background: #7dcfff;
+  border: none;
+  border-radius: 6px;
+  color: #0d0d1a;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.2s;
+  margin-top: 4px;
+}
+.btn-login:hover {
+  background: #6bbce0;
+}
+.btn-login:disabled {
+  background: #2a2a4a;
+  color: #565f89;
+  cursor: not-allowed;
+}
+.error-msg {
+  color: #fb4934;
+  font-size: 13px;
+  margin-top: 12px;
+  display: none;
+}
+.loading {
+  display: none;
+  color: #565f89;
+  font-size: 13px;
+  margin-top: 12px;
+  text-align: center;
+}
+.skip-link {
+  display: block;
+  text-align: center;
+  margin-top: 18px;
+  font-size: 13px;
+}
+.skip-link a {
+  color: #565f89;
+  text-decoration: none;
+}
+.skip-link a:hover {
+  color: #a9b1d6;
+}
+</style>
+</head>
+<body>
+<div class="login-box">
+  <h1>🔐 webAgent</h1>
+  <p class="sub">DB Viewer Login</p>
+  <p class="hint">Login to access the database viewer.<br>
+  Chat &amp; agent work without logging in.</p>
+
+  <form id="login-form" autocomplete="off">
+    <div class="form-group">
+      <label for="username">Username</label>
+      <input type="text" id="username" placeholder="admin" autocomplete="username" value="admin">
+    </div>
+    <div class="form-group">
+      <label for="password">Password</label>
+      <input type="password" id="password" placeholder="••••••" autocomplete="current-password" value="admin">
+    </div>
+    <div class="remember-row">
+      <input type="checkbox" id="remember-me" checked>
+      <label for="remember-me">Remember me</label>
+    </div>
+    <button type="submit" class="btn-login" id="login-btn">Sign In</button>
+    <div class="error-msg" id="error-msg">Invalid username or password</div>
+    <div class="loading" id="loading">Signing in…</div>
+  </form>
+
+  <div class="skip-link">
+    <a href="/index.html">Skip — use chat anonymously</a>
+  </div>
+</div>
+
+<script>
+// ── Try auto-login via remember token ──
+(async function tryAutoLogin() {
+  const rememberToken = localStorage.getItem('remember_token');
+  if (!rememberToken) return;
+
+  const form = document.getElementById('login-form');
+  const loading = document.getElementById('loading');
+  form.style.display = 'none';
+  loading.style.display = 'block';
+  loading.textContent = 'Auto-login…';
+
+  try {
+    const res = await fetch('/api/v1/auth/recall', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ remember_token: rememberToken }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      localStorage.setItem('auth_token', data.access_token);
+      localStorage.setItem('auth_username', data.username);
+      localStorage.setItem('auth_user_id', data.user_id);
+      localStorage.setItem('auth_display_name', data.display_name);
+      window.location.href = '/index.html';
+      return;
+    }
+    localStorage.removeItem('remember_token');
+  } catch (e) {
+    localStorage.removeItem('remember_token');
+  }
+
+  loading.style.display = 'none';
+  form.style.display = 'block';
+})();
+
+// ── Manual login form submit ──
+document.getElementById('login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  const rememberMe = document.getElementById('remember-me').checked;
+  const btn = document.getElementById('login-btn');
+  const error = document.getElementById('error-msg');
+  const loading = document.getElementById('loading');
+
+  error.style.display = 'none';
+  btn.disabled = true;
+  loading.style.display = 'block';
+  loading.textContent = 'Signing in…';
+
+  try {
+    const res = await fetch('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password, remember_me: rememberMe }),
+    });
+    if (!res.ok) {
+      error.style.display = 'block';
+      btn.disabled = false;
+      loading.style.display = 'none';
+      return;
+    }
+    const data = await res.json();
+
+    localStorage.setItem('auth_token', data.access_token);
+    localStorage.setItem('auth_username', data.username);
+    localStorage.setItem('auth_user_id', data.user_id);
+    localStorage.setItem('auth_display_name', data.display_name);
+    if (data.remember_token) {
+      localStorage.setItem('remember_token', data.remember_token);
+    } else {
+      localStorage.removeItem('remember_token');
+    }
+
+    window.location.href = '/index.html';
+  } catch (err) {
+    error.textContent = 'Connection error. Is the server running?';
+    error.style.display = 'block';
+    btn.disabled = false;
+    loading.style.display = 'none';
+  }
+});
+</script>
+</body>
+</html>
