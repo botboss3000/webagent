@@ -17,8 +17,9 @@ import os
 import subprocess
 import json
 from pathlib import Path
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
+from app.auth.jwt import decode_token
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,35 @@ def _run_git(args: list[str], timeout: int = 15) -> tuple[str, str, int]:
 
 # ── Request models ──
 
+# ── Admin access control ──
+# AuthMiddleware not active in main.py, so we read Authorization header directly.
+
+_ADMIN_USER_ID = "admin_default"
+
+
+def _get_user_id_from_request(request: Request) -> str:
+    """Extract user_id from the Authorization header (JWT). Returns empty if not auth'd."""
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        token = auth[7:]
+        payload = decode_token(token)
+        if payload:
+            return payload.get("user_id", "")
+    return ""
+
+
+def _require_admin(request: Request):
+    """Check that the requesting user is admin. Raises 403 if not."""
+    user_id = _get_user_id_from_request(request)
+    if user_id != _ADMIN_USER_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="Restricted to admin users only.",
+        )
+
+
+# ── Request models ──
+
 class CommitRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=200)
 
@@ -105,8 +135,15 @@ class TokenRequest(BaseModel):
 
 # ── Endpoints ──
 
+@router.get("/check-access")
+async def check_access(request: Request):
+    """Check if the current user has admin access to the GitHub tab."""
+    user_id = _get_user_id_from_request(request)
+    return {"is_admin": user_id == _ADMIN_USER_ID}
+
+
 @router.get("/status")
-async def get_status():
+async def get_status(request: Request):
     """Return repo status: branch, remote, file status, ahead/behind info."""
     # Cache token before running git commands
     _cache_token(_get_token())
@@ -207,8 +244,9 @@ async def get_status():
 
 
 @router.post("/commit")
-async def create_commit(req: CommitRequest):
+async def create_commit(req: CommitRequest, request: Request):
     """Stage all changes and commit with a message."""
+    _require_admin(request)
     _cache_token(_get_token())
 
     stdout, stderr, rc = _run_git(["add", "-A"], timeout=10)
@@ -231,8 +269,9 @@ async def create_commit(req: CommitRequest):
 
 
 @router.post("/push")
-async def push_to_remote():
+async def push_to_remote(request: Request):
     """Push commits to the remote."""
+    _require_admin(request)
     _cache_token(_get_token())
 
     stdout, stderr, rc = _run_git(["push"], timeout=30)
@@ -250,8 +289,9 @@ async def push_to_remote():
 
 
 @router.post("/pull")
-async def pull_from_remote():
+async def pull_from_remote(request: Request):
     """Pull from remote."""
+    _require_admin(request)
     _cache_token(_get_token())
 
     stdout, stderr, rc = _run_git(["pull"], timeout=30)
@@ -269,10 +309,11 @@ async def pull_from_remote():
 
 
 @router.post("/token")
-async def set_token(req: TokenRequest):
+async def set_token(req: TokenRequest, request: Request):
     """Store a GitHub personal access token for HTTPS auth.
     Single shared token — same for all users (the repo is shared).
     """
+    _require_admin(request)
     _save_token(req.token)
     _cache_token(req.token)
     logger.info("GitHub token saved")
