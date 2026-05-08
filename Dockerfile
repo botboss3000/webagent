@@ -24,6 +24,6 @@ EXPOSE 8080
 
 # Shell form so $PORT is expanded
 # --ws wsproto: WebSocket protocol support
-# --timeout-keepalive 300: keep WebSocket connections alive for 5 min
+# --timeout-keep-alive 300: keep WebSocket connections alive for 5 min
 # --proxy-headers: trust X-Forwarded-* headers from Cloud Run LB
-CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080} --ws wsproto --timeout-keepalive 300 --proxy-headers"]
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080} --ws wsproto --timeout-keep-alive 300 --proxy-headers"]
