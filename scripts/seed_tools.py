@@ -20,148 +20,28 @@ from app.tools.registry import create_tool
 
 # ── Tool definitions ──────────────────────────────────────────────────────────
 
-WEB_SEARCH_CODE = r'''async def web_search(query: str, max_results: int = 5) -> str:
-    """
-    Search the web using DuckDuckGo and return summarized results.
-    Uses DuckDuckGo's HTML search endpoint - no API key required.
-
-    Args:
-        query: The search query
-        max_results: Maximum number of results to return (default 5, max 10)
-
-    Returns:
-        Formatted string with search results including titles, snippets, and URLs
-    """
-    import httpx
-    import re
-    from urllib.parse import quote_plus
-
-    max_results = min(max_results, 10)
-    url = "https://html.duckduckgo.com/html/"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    }
-
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-        response = await client.post(url, data={"q": query}, headers=headers)
-        response.raise_for_status()
-        html = response.text
-
-    # Parse results using regex (lightweight, no extra deps)
-    results = []
-    # DuckDuckGo HTML results look like:
-    # <a rel="nofollow" href="URL" class="result__a">TITLE</a>
-    # <a class="result__snippet">SNIPPET</a>
-    link_pattern = re.compile(r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.DOTALL)
-    snippet_pattern = re.compile(r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>', re.DOTALL)
-
-    links = link_pattern.findall(html)
-    snippets = snippet_pattern.findall(html)
-
-    for i in range(min(len(links), max_results)):
-        href, title_html = links[i]
-        # Clean HTML tags from title
-        title = re.sub(r'<[^>]+>', '', title_html).strip()
-        snippet = ""
-        if i < len(snippets):
-            snippet = re.sub(r'<[^>]+>', '', snippets[i]).strip()
-        # Clean up the URL (sometimes DuckDuckGo wraps redirect URLs)
-        if href.startswith("//"):
-            href = "https:" + href
-        results.append(f"{i+1}. {title}\n   {snippet}\n   {href}")
-
-    if not results:
-        return f"No results found for '{query}'."
-
-    return f"Search results for '{query}':\n\n" + "\n\n".join(results)
+# Stub code for tools whose actual handler is hardcoded in loader.py or core_tools.py.
+# The DB entry provides discoverable metadata for list_tools/get_tool_definition.
+_HARDCODED_STUB_CODE = '''async def _hardcoded_stub(**kwargs):
+    raise RuntimeError("This tool is handled by a hardcoded loader. The DB entry provides discoverable metadata only.")
 '''
 
-
-CREATE_TOOL_CODE = r'''async def create_tool(name: str, description: str, parameters: dict, code: str) -> dict:
-    """
-    Create or update a tool in the tools table.
-    The tool code is stored and compiled dynamically on next agent load.
-
-    Args:
-        name: Tool identifier (e.g. 'check_email', 'web_search')
-        description: What the tool does (shown to the model to describe when to use it)
-        parameters: JSON Schema describing the tool's input parameters
-        code: Full Python async function code. Must contain an async function with the same name as the tool.
-
-    Returns:
-        dict with status, tool_name, tool_id, and message
-    """
-    import json
-    from app.db import get_db
-
-    # This is a stub - the actual implementation is injected by the tool loader.
-    # This entry exists in the DB so the tool is discoverable.
-    raise RuntimeError("create_tool is handled by the built-in loader. This DB entry is for schema/description only.")
-'''
+# NOTE: web_search is now hardcoded in app/tools/core_tools.py.
+# This DB entry provides discoverable metadata for list_tools/get_tool_definition.
+# The actual handler at runtime comes from _inject_builtin_tools in loader.py.
+WEB_SEARCH_CODE = _HARDCODED_STUB_CODE
 
 
-# Stub code for built-in tools (actual handler injected by loader)
-BUILTIN_STUB = '''async def builtin_stub(**kwargs):
-    raise RuntimeError("This tool is handled by the built-in loader. The DB entry is for schema/description only.")
-'''
+# NOTE: create_tool is now hardcoded in app/tools/loader.py (wraps app/tools/registry.py).
+# This DB entry provides discoverable metadata.
+CREATE_TOOL_CODE = _HARDCODED_STUB_CODE
+
+BUILTIN_STUB = _HARDCODED_STUB_CODE
 
 
-BROWSER_ACTION_CODE = r'''async def browser_action(
-    action: str,
-    selector: str | None = None,
-    text: str | None = None,
-    url: str | None = None,
-    js: str | None = None,
-    timeout_ms: int = 5000,
-    full_page: bool = True,
-    user_id: str = "",
-) -> dict:
-    """
-    Control a persistent headless Chromium browser.
-
-    Maintains one browser per user. Consecutive calls within the same
-    session share the same page — navigate, then click, type, scrape, etc.
-    Call action="close" to free resources when done.
-
-    Actions:
-      navigate   → url (required). Go to a URL.
-      click      → selector (required). Click an element.
-      type       → selector (required), text (required). Fill an input field.
-      get_text   → selector (required). Get inner text of an element.
-      get_html   → selector (optional, defaults to full page HTML).
-      screenshot → full_page (optional). Saves to disk, returns URI e.g. /screenshots/<uuid>.png.
-      wait       → timeout_ms (optional, default 5000). Wait in ms.
-      evaluate   → js (required). Run JavaScript in the page.
-      title      → Get current page title.
-      url        → Get current page URL.
-      close      → Close the browser for this user.
-
-    Args:
-        action: One of navigate/click/type/get_text/get_html/screenshot/wait/evaluate/title/url/close
-        selector: CSS selector (for click, type, get_text)
-        text: Text to type (for type action)
-        url: URL to navigate to (for navigate action)
-        js: JavaScript code (for evaluate action)
-        timeout_ms: Wait timeout in ms (for wait action, default 5000)
-        full_page: Capture full scrollable page (for screenshot, default true)
-        user_id: Injected automatically by tool loader
-
-    Returns:
-        dict with success, result (text or URI), error, url, title
-    """
-    from app.tools.browser import browser_action as _ba
-    return await _ba(
-        user_id=user_id,
-        session_id=user_id,  # one browser per user is fine
-        action=action,
-        selector=selector,
-        text=text,
-        url=url,
-        js=js,
-        timeout_ms=timeout_ms,
-        full_page=full_page,
-    )
-'''
+# NOTE: browser_action is now hardcoded in app/tools/loader.py (wraps app/tools/browser.py).
+# This DB entry provides discoverable metadata.
+BROWSER_ACTION_CODE = _HARDCODED_STUB_CODE
 
 
 TAKE_SCREENSHOT_CODE = r'''async def take_screenshot(

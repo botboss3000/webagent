@@ -3,7 +3,9 @@
 import { app } from '../state.js';
 import { getPKColumns } from './columns.js';
 import { cancelEditing, renderTableData } from './query-render.js';
+import { openCellPopup } from './modal.js';
 import { apiPath } from '../config.js';
+import { authHeaders } from './login.js';
 
 export async function saveEdit(cell, newValue) {
   if (!app.editingCell || !app.dbCurrentResult) return;
@@ -28,7 +30,7 @@ export async function saveEdit(cell, newValue) {
     const dbName = document.getElementById('db-select').value;
     const res = await fetch(apiPath('/api/v1/db/update'), {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({
         db: dbName,
         table: app.dbCurrentResult.table,
@@ -100,16 +102,19 @@ export function initDbCellEditors() {
     const btn = e.target.closest('.db-cell-expand');
     if (!btn) return;
     e.stopPropagation();
+
+    // Cancel any active inline editing before opening modal
     if (app.editingCell) {
-      const oldCell = document.querySelector(
-        `.db-cell[data-row="${app.editingCell.rowIndex}"][data-col="${app.editingCell.colName}"]`,
-      );
-      if (oldCell) {
-        const ta = oldCell.querySelector('textarea');
-        if (ta) saveEdit(oldCell, ta.value);
-      } else {
-        cancelEditing();
-      }
+      cancelEditing();
     }
+
+    const cell = btn.closest('.db-cell');
+    if (!cell) return;
+
+    const ri = parseInt(cell.dataset.row, 10);
+    const col = cell.dataset.col;
+    const originalValue = cell.dataset.val === 'null' ? '' : cell.dataset.val;
+
+    openCellPopup(cell, ri, col, originalValue);
   });
 }

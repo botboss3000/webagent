@@ -671,6 +671,7 @@ class LocalBackend(StorageBackend):
         channel: Optional[str] = None,
         metadata: Optional[str] = None,
         input_data: Optional[str] = None,
+        sender_id: Optional[str] = None,
     ) -> str:
         await self.assert_session_owned(user_id, session_id)
         conn = self._get_conn()

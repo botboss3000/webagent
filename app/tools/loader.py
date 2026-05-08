@@ -16,8 +16,6 @@ class ToolInfo:
     name: str
     handler: Callable
     parameters: dict
-    rating: Optional[dict] = None  # skill performance rating
-    skill_id: Optional[str] = None  # links to skills table
 
 
 class ToolLoader:
@@ -59,23 +57,7 @@ class ToolLoader:
         # ── Inject built-in tools (override any DB versions) ──
         self._inject_builtin_tools(tools, user_id)
 
-        # ── Annotate tools with skill ratings ──
-        await self._annotate_ratings(tools, user_id)
-
         return tools
-
-    async def _annotate_ratings(self, tools: Dict[str, ToolInfo], user_id: str) -> None:
-        """Annotate each tool with its skill rating from execution history."""
-        db = get_db()
-        for name, info in tools.items():
-            try:
-                skill_id = await db.skill_get_id_by_name(user_id, name)
-                if skill_id:
-                    rating = await db.skill_get_rating(skill_id, user_id)
-                    info.rating = rating
-                    info.skill_id = skill_id
-            except Exception:
-                pass
 
     def _inject_builtin_tools(self, tools: Dict[str, ToolInfo], user_id: str) -> None:
         """Inject built-in tools that are always available regardless of DB state."""
@@ -331,6 +313,290 @@ class ToolLoader:
             inject_source_tools(tools, user_id)
         except ImportError:
             pass  # admin/source_tools.py not available — source editing disabled
+
+        # ═══════════════════════════════════════════════════════════════
+        # Bootstrap core tools — always available from turn 1
+        # These are the agent's discovery and essential utilities.
+        # All other tools are discovered via list_tools / search_tools.
+        # ═══════════════════════════════════════════════════════════════
+
+        from app.tools.core_tools import (
+            list_tools as _core_list_tools,
+            search_tools as _core_search_tools,
+            get_tool_definition as _core_get_tool_definition,
+            web_search as _core_web_search,
+            db_query as _core_db_query,
+            memory as _core_memory,
+            session_search as _core_session_search,
+            get_time as _core_get_time,
+            get_date as _core_get_date,
+            get_weather as _core_get_weather,
+            calculate as _core_calculate,
+        )
+
+        # ── Tool discovery ──
+        async def _list_tools_wrapper():
+            return await _core_list_tools(user_id=user_id)
+
+        tools["list_tools"] = ToolInfo(
+            name="list_tools",
+            handler=_list_tools_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        )
+
+        async def _search_tools_wrapper(query: str):
+            return await _core_search_tools(query=query, user_id=user_id)
+
+        tools["search_tools"] = ToolInfo(
+            name="search_tools",
+            handler=_search_tools_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Keyword to search for in tool names and descriptions"},
+                },
+                "required": ["query"],
+            },
+        )
+
+        async def _get_tool_definition_wrapper(tool_name: str):
+            return await _core_get_tool_definition(tool_name=tool_name, user_id=user_id)
+
+        tools["get_tool_definition"] = ToolInfo(
+            name="get_tool_definition",
+            handler=_get_tool_definition_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "tool_name": {"type": "string", "description": "Name of the tool to look up"},
+                },
+                "required": ["tool_name"],
+            },
+        )
+
+        # ── Web search ──
+        tools["web_search"] = ToolInfo(
+            name="web_search",
+            handler=_core_web_search,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The search query"},
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum results to return (default 5, max 10)",
+                        "default": 5,
+                    },
+                },
+                "required": ["query"],
+            },
+        )
+
+        # ── Browser action (persistent Chromium) ──
+        from app.tools.browser import browser_action as _core_browser_action
+
+        async def _browser_action_wrapper(
+            action: str,
+            selector: Optional[str] = None,
+            text: Optional[str] = None,
+            url: Optional[str] = None,
+            js: Optional[str] = None,
+            timeout_ms: int = 5000,
+            full_page: bool = True,
+        ):
+            return await _core_browser_action(
+                user_id=user_id,
+                session_id=user_id,
+                action=action,
+                selector=selector,
+                text=text,
+                url=url,
+                js=js,
+                timeout_ms=timeout_ms,
+                full_page=full_page,
+            )
+
+        tools["browser_action"] = ToolInfo(
+            name="browser_action",
+            handler=_browser_action_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["navigate", "click", "type", "get_text", "get_html", "screenshot", "wait", "evaluate", "title", "url", "close"],
+                        "description": "Browser action to perform",
+                    },
+                    "selector": {"type": "string", "description": "CSS selector (for click, type, get_text)"},
+                    "text": {"type": "string", "description": "Text to type (for type action)"},
+                    "url": {"type": "string", "description": "URL to navigate to (for navigate action)"},
+                    "js": {"type": "string", "description": "JavaScript code (for evaluate action)"},
+                    "timeout_ms": {"type": "integer", "description": "Wait timeout in ms (default 5000)", "default": 5000},
+                    "full_page": {"type": "boolean", "description": "Full page screenshot", "default": True},
+                },
+                "required": ["action"],
+            },
+        )
+
+        # ── DB query (context documents) ──
+        async def _db_query_wrapper(
+            action: str,
+            context_type: Optional[str] = None,
+            context_id: Optional[str] = None,
+            title: Optional[str] = None,
+            content: Optional[str] = None,
+            tags: Optional[List[str]] = None,
+        ):
+            return await _core_db_query(
+                action=action,
+                context_type=context_type,
+                context_id=context_id,
+                title=title,
+                content=content,
+                tags=tags,
+                user_id=user_id,
+            )
+
+        tools["db_query"] = ToolInfo(
+            name="db_query",
+            handler=_db_query_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "get", "insert", "update", "delete"],
+                        "description": "Action to perform: list, get, insert, update, or delete (delete clears content)",
+                    },
+                    "context_type": {"type": "string", "description": "Document type (agent, user, skills, tools, tasks, memory, project, jobs) — for list/insert actions"},
+                    "context_id": {"type": "string", "description": "Document ID — for get/update/delete actions"},
+                    "title": {"type": "string", "description": "Title — for insert action"},
+                    "content": {"type": "string", "description": "Content body — for insert/update actions"},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional tags — for insert action"},
+                },
+                "required": ["action"],
+            },
+        )
+
+        # ── Memory (persistent knowledge pages) ──
+        async def _memory_wrapper(
+            action: str,
+            slug: Optional[str] = None,
+            query: Optional[str] = None,
+            page_type: Optional[str] = None,
+            title: Optional[str] = None,
+            compiled_truth: Optional[str] = None,
+            timeline: Optional[str] = None,
+            limit: int = 10,
+        ):
+            return await _core_memory(
+                action=action,
+                slug=slug,
+                query=query,
+                page_type=page_type,
+                title=title,
+                compiled_truth=compiled_truth,
+                timeline=timeline,
+                limit=limit,
+                user_id=user_id,
+            )
+
+        tools["memory"] = ToolInfo(
+            name="memory",
+            handler=_memory_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["search", "list", "get", "upsert", "delete"],
+                        "description": "Action: search, list, get, upsert, or delete",
+                    },
+                    "slug": {"type": "string", "description": "Unique page identifier — for get/upsert/delete actions"},
+                    "query": {"type": "string", "description": "Search query — for search action"},
+                    "page_type": {"type": "string", "description": "Page type (note, meeting, project, person) — for list/upsert actions"},
+                    "title": {"type": "string", "description": "Page title — for upsert action"},
+                    "compiled_truth": {"type": "string", "description": "Main content body — for upsert action"},
+                    "timeline": {"type": "string", "description": "Optional timeline entry — for upsert action"},
+                    "limit": {"type": "integer", "description": "Max results for search action (default 10)", "default": 10},
+                },
+                "required": ["action"],
+            },
+        )
+
+        # ── Session search ──
+        async def _session_search_wrapper(query: str, limit: int = 10):
+            return await _core_session_search(query=query, limit=limit, user_id=user_id)
+
+        tools["session_search"] = ToolInfo(
+            name="session_search",
+            handler=_session_search_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Keyword to search for in past conversations"},
+                    "limit": {"type": "integer", "description": "Max results (default 10)", "default": 10},
+                },
+                "required": ["query"],
+            },
+        )
+
+        # ── Time & Date ──
+        tools["get_time"] = ToolInfo(
+            name="get_time",
+            handler=_core_get_time,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "timezone": {"type": "string", "description": "IANA timezone (e.g. 'America/New_York', 'Europe/London'). Defaults to UTC.", "default": "UTC"},
+                },
+                "required": [],
+            },
+        )
+
+        tools["get_date"] = ToolInfo(
+            name="get_date",
+            handler=_core_get_date,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "timezone": {"type": "string", "description": "IANA timezone (e.g. 'America/New_York'). Defaults to UTC.", "default": "UTC"},
+                    "format": {"type": "string", "enum": ["full", "short", "iso"], "description": "Date format: full (Monday, May 8, 2026), short (2026-05-08), iso (ISO 8601)", "default": "full"},
+                },
+                "required": [],
+            },
+        )
+
+        # ── Weather ──
+        tools["get_weather"] = ToolInfo(
+            name="get_weather",
+            handler=_core_get_weather,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string", "description": "City name or 'lat,lon' coordinates (e.g. 'London', '40.71,-74.01')"},
+                    "units": {"type": "string", "enum": ["metric", "imperial"], "description": "metric = Celsius/km/h, imperial = Fahrenheit/mph", "default": "metric"},
+                },
+                "required": ["location"],
+            },
+        )
+
+        # ── Calculator ──
+        tools["calculate"] = ToolInfo(
+            name="calculate",
+            handler=_core_calculate,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "expression": {"type": "string", "description": "Mathematical expression (e.g. '2 + 2', 'sin(pi/4)', 'sqrt(144)')"},
+                },
+                "required": ["expression"],
+            },
+        )
 
     def _make_handler(self, row: dict, user_id: str) -> Callable:
         """Compile tool code and wrap it with user context."""

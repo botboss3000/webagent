@@ -2,6 +2,7 @@
 
 import { app } from '../state.js';
 import { apiPath } from '../config.js';
+import { getAuthToken, authUrl, showLoginOverlay, setOnLogin } from './login.js';
 
 let queryTable = () => {};
 let startAutoRefresh = () => {};
@@ -12,8 +13,22 @@ export function setTableDeps(deps) {
 }
 
 export async function fetchTables(dbName) {
+  // If no auth token, show login overlay
+  if (!getAuthToken()) {
+    showLoginOverlay();
+    setOnLogin(() => fetchTables(dbName));
+    return;
+  }
+
   try {
-    const res = await fetch(apiPath(`/api/v1/db/tables?db=${encodeURIComponent(dbName)}`));
+    const url = authUrl(apiPath(`/api/v1/db/tables?db=${encodeURIComponent(dbName)}`));
+    const res = await fetch(url);
+    if (res.status === 401) {
+      localStorage.removeItem('auth_token');
+      showLoginOverlay();
+      setOnLogin(() => fetchTables(dbName));
+      return;
+    }
     const data = await res.json();
     app.dbTables = data.tables || [];
     renderTableList();
@@ -24,9 +39,14 @@ export async function fetchTables(dbName) {
 }
 
 export async function updateTableCounts() {
+  const token = getAuthToken();
+  if (!token) return;
+
   const dbName = document.getElementById('db-select').value;
   try {
-    const res = await fetch(apiPath(`/api/v1/db/tables?db=${encodeURIComponent(dbName)}`));
+    const url = authUrl(apiPath(`/api/v1/db/tables?db=${encodeURIComponent(dbName)}`));
+    const res = await fetch(url);
+    if (res.status === 401) return;
     const data = await res.json();
     if (!data.tables) return;
     for (const fresh of data.tables) {
@@ -78,12 +98,12 @@ export function renderTableList() {
       try {
         const dbName = document.getElementById('db-select').value;
         const res = await fetch(
-          apiPath(
+          authUrl(apiPath(
             '/api/v1/db/truncate?db=' +
               encodeURIComponent(dbName) +
               '&table=' +
               encodeURIComponent(table),
-          ),
+          )),
           { method: 'DELETE' },
         );
         const result = await res.json();
@@ -104,4 +124,29 @@ export function renderTableList() {
       }
     });
   });
+
+  // Show sign-out link if logged in
+  const token = getAuthToken();
+  const existing = el.querySelector('.db-logout-link');
+  if (token && !existing) {
+    const logoutLink = document.createElement('div');
+    logoutLink.className = 'db-logout-link';
+    logoutLink.style.cssText = 'padding:8px 12px; text-align:center;';
+    logoutLink.innerHTML = `<button id="db-logout-btn" style="
+      background:transparent; border:1px solid #565f89; color:#565f89;
+      padding:4px 14px; border-radius:4px; cursor:pointer; font-size:11px; font-family:inherit;
+    ">Sign Out</button>`;
+    el.appendChild(logoutLink);
+    document.getElementById('db-logout-btn')?.addEventListener('click', () => {
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('auth_username');
+      localStorage.removeItem('auth_user_id');
+      localStorage.removeItem('auth_display_name');
+      localStorage.removeItem('remember_token');
+      app.dbSelectedTable = null;
+      app.dbTables = [];
+      document.getElementById('db-table-data').innerHTML = '';
+      fetchTables(document.getElementById('db-select').value);
+    });
+  }
 }

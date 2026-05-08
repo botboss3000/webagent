@@ -3,7 +3,6 @@ Prompt construction with dynamic tool descriptions from database.
 """
 
 from typing import List, Dict, Optional
-from app.tools.loader import load_tools
 from app.db.system_prompt_fragments import (
     format_tool_subheadings_markdown,
     get_prompt_fragments,
@@ -91,10 +90,11 @@ async def build_system_prompt(
         sections.append(critical)
         sections.append("")
 
-    # ---- Tool descriptions ----
+    # ---- Tools header (bootstrap-only, tools discovered on demand) ----
     if user_id:
-        tool_descriptions = await _get_tool_descriptions_from_db(user_id)
-        sections.append(tool_descriptions)
+        sections.append("# [BOOTSTRAP TOOLS]")
+        sections.append("You have core tools always available: list_tools, search_tools, get_tool_definition, create_tool, web_search, browser_action, db_query, memory, session_search, get_time, get_date, get_weather, calculate, read_attachment, register_user. Use `list_tools` to discover additional tools, `search_tools` to find tools by keyword, and `get_tool_definition` to learn a tool's parameters.")
+        sections.append("")
     else:
         fallback = format_tool_subheadings_markdown(fr.get("fallback_tools") or "")
         if fallback:
@@ -150,49 +150,4 @@ def format_attachments_for_prompt(attachments: List[Dict]) -> str:
     return "\n".join(lines)
 
 
-async def _get_tool_descriptions_from_db(user_id: str) -> str:
-    """
-    Get formatted tool descriptions from the database.
 
-    Args:
-        user_id: User ID to load personal tools for
-
-    Returns:
-        Formatted string of tool descriptions
-    """
-    tools = await load_tools(user_id)
-
-    # Sort tools by rating (highest first, unrated at end)
-    sorted_tools = sorted(
-        tools.items(),
-        key=lambda kv: (
-            kv[1].rating["score"] if kv[1].rating and kv[1].rating["score"] is not None else -1
-        ),
-        reverse=True,
-    )
-
-    sections = ["# [TOOLS]"]
-
-    for name, func in sorted_tools:
-        if hasattr(func, "__doc__") and func.__doc__:
-            description = func.__doc__.strip()
-        else:
-            description = f"Execute {name} tool"
-
-        # Append rating badge if available
-        if func.rating and func.rating["execution_count"] > 0:
-            score = func.rating["score"]
-            rating_str = f"[rating: {score:.0f}%]" if score is not None else "[unrated]"
-            description = f"[{rating_str}] {description}"
-
-        sections.append(f"## {name}")
-        sections.append(description)
-        sections.append("")
-
-    fr = get_prompt_fragments()
-    builtin = format_tool_subheadings_markdown(fr.get("builtin_tools_append") or "")
-    if builtin:
-        sections.append(builtin)
-        sections.append("")
-
-    return "\n".join(sections)
