@@ -7,6 +7,7 @@ supabase==2.29.0
 pydantic>=2.10.0,<3
 python-dotenv==1.0.0
 python-multipart==0.0.6
+python-jose[cryptography]==3.3.0
 tiktoken>=0.5.2,<1
 playwright>=1.40.0
 Pillow>=10.0.0
