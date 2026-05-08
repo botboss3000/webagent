@@ -114,7 +114,17 @@
       </div>
     </div>
     <div id="tab-github" class="tab-content">
-      <div id="gh-viewer">
+      <div id="gh-restricted-overlay" style="display:none;">
+        <div class="gh-restricted-card">
+          <div class="gh-restricted-icon">🔒</div>
+          <div class="gh-restricted-title">Restricted Access</div>
+          <div class="gh-restricted-desc">The GitHub tab is only available for admin users.</div>
+          <div class="gh-restricted-desc" style="margin-top:8px;font-size:12px;color:#565f89;">
+            Log in as <strong>admin</strong> to manage the repository.
+          </div>
+        </div>
+      </div>
+      <div id="gh-viewer" style="display:none;">
         <div id="gh-toolbar">
           <span style="color:#565f89;font-size:11px;">🐙 GitHub Repository</span>
           <span id="gh-repo-badge" style="color:#565f89;font-size:11px;margin-left:8px;">

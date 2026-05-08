@@ -48,8 +48,12 @@ function bindGHDom() {
 
 // ── Helpers ──
 
-/* GitHub endpoints don't need auth — the repo is shared, token is shared. */
+/* Include auth token so check-access knows who you are. */
 function _ghFetch(url, opts = {}) {
+  const token = localStorage.getItem('auth_token');
+  if (token) {
+    opts.headers = { ...(opts.headers || {}), Authorization: `Bearer ${token}` };
+  }
   return fetch(url, opts);
 }
 
@@ -363,50 +367,34 @@ async function refreshTokenStatus() {
 
 let _initialized = false;
 
+function showRestricted() {
+  const overlay = document.getElementById('gh-restricted-overlay');
+  const viewer = document.getElementById('gh-viewer');
+  if (overlay) overlay.style.display = 'flex';
+  if (viewer) viewer.style.display = 'none';
+}
+
+function showViewer() {
+  const overlay = document.getElementById('gh-restricted-overlay');
+  const viewer = document.getElementById('gh-viewer');
+  if (overlay) overlay.style.display = 'none';
+  if (viewer) viewer.style.display = 'flex';
+}
+
 export function initGithub() {
   if (_initialized) return;
   _initialized = true;
 
   bindGHDom();
-  if (!GH.statusArea) return; // not in DOM
+  if (!GH.statusArea) return;
 
-  // ── Admin-only gate ──────────────────────────────────────────────────
-  const authUserId = localStorage.getItem('auth_user_id');
-  const isAdmin = authUserId === 'admin_default' && !!localStorage.getItem('auth_token');
-  if (!isAdmin) {
-    const viewer = document.getElementById('gh-viewer');
-    if (viewer) {
-      viewer.innerHTML = `
-        <div style="
-          display:flex; align-items:center; justify-content:center;
-          height:100%; min-height:300px;
-        ">
-          <div style="
-            background:#1a1a2e; border:1px solid #fb4934;
-            border-radius:12px; padding:32px 40px;
-            text-align:center; max-width:360px;
-          ">
-            <div style="font-size:40px; margin-bottom:12px;">⛔</div>
-            <h2 style="margin:0 0 8px 0; font-size:18px; color:#fb4934; font-weight:700;">RESTRICTED ACCESS</h2>
-            <p style="margin:0; font-size:13px; color:#565f89; line-height:1.5;">
-              The GitHub panel is only available to the admin user.
-            </p>
-          </div>
-        </div>
-      `;
-    }
-    return;
-  }
-
-
-  // Wire events
+  // Wire events (only fires if DOM elements exist)
   GH.refreshBtn.addEventListener('click', doRefresh);
   GH.commitBtn.addEventListener('click', doCommit);
   GH.pushBtn.addEventListener('click', doPush);
   GH.pullBtn.addEventListener('click', doPull);
   GH.tokenSaveBtn.addEventListener('click', doSaveToken);
 
-  // Commit on Enter (Ctrl+Enter or plain Enter)
   GH.commitMsg.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -414,7 +402,6 @@ export function initGithub() {
     }
   });
 
-  // Token input: save on Enter
   GH.tokenInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -423,12 +410,33 @@ export function initGithub() {
   });
 }
 
-export function startGithub() {
-  // Refresh status each time the tab becomes active
-  doRefresh();
-  refreshTokenStatus();
+export async function startGithub() {
+  // Check admin access via API (server-authoritative)
+  try {
+    const res = await _ghFetch(apiPath('/api/v1/github/check-access'));
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if (data.is_admin) {
+      showViewer();
+      doRefresh();
+      refreshTokenStatus();
+    } else {
+      showRestricted();
+    }
+  } catch (e) {
+    // Fallback: client-side check from localStorage
+    const authUserId = localStorage.getItem('auth_user_id');
+    const hasToken = !!localStorage.getItem('auth_token');
+    if (authUserId === 'admin_default' && hasToken) {
+      showViewer();
+      doRefresh();
+      refreshTokenStatus();
+    } else {
+      showRestricted();
+    }
+  }
 }
 
 export function stopGithub() {
-  // no-op for now
+  // no-op
 }
