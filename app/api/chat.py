@@ -1,7 +1,9 @@
 """Chat endpoint for webAgent."""
 
+import asyncio
 import json
 import logging
+import re
 from typing import List, Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -16,10 +18,26 @@ from app.agent.prompts import (
 
 from app.agent.loop import run_agent_loop_buffered, stream_agent_events
 from app.agent.session_history import build_openai_history_from_session
-import asyncio
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
+
+# ── Memory skip gate ──
+# Skip memory_search for trivial messages (greetings, affirmations, commands).
+_SKIP_MEMORY_PATTERN = re.compile(
+    r"^(hi|hello|hey|sup|yo|thanks|thank you|ok|okay|got it|cool|sure|"
+    r"yes|no|go ahead|keep going|continue|next|and\??|more|elaborate|"
+    r"good (morning|afternoon|evening)|what'?s up|how are you|how'?s it going|"
+    r"check my email|list my files|show my messages|"
+    r"read my email|get my mail|open my inbox)[\s!?.]*$",
+    re.IGNORECASE,
+)
+
+
+def _should_skip_memory(message: str) -> bool:
+    """Return True if message is trivial and doesn't need brain context."""
+    stripped = (message or "").strip()
+    return bool(not stripped or _SKIP_MEMORY_PATTERN.match(stripped))
 
 class InterruptRequest(BaseModel):
     session_id: str
@@ -98,69 +116,90 @@ async def chat(request: ChatRequest):
         })
 
         # ── PHASE 1: Brain-first lookup (visible as tool interaction) ──
-        await _emit_to_visualizers(request.session_id, {
-            "type": "pipeline", "level": "pipeline",
-            "step": "memory_search_start", "query": request.message, "limit": 5,
-        })
+        if _should_skip_memory(request.message):
+            await _emit_to_visualizers(request.session_id, {
+                "type": "pipeline", "level": "pipeline",
+                "step": "memory_search_skip", "reason": "greeting_or_cmd",
+            })
+            brain_results = []
+            brain_context = None
+            parent_id = await db.insert_interaction(
+                request.user_id, request.session_id, role="tool",
+                content=json.dumps({"skipped": True, "reason": "greeting_or_cmd"}),
+                parent_id=user_interaction_id,
+                tool_name="memory_search",
+                channel="web_portal",
+                metadata=json.dumps({"brain": True, "skipped": True}),
+            )
+            await _emit_to_visualizers(request.session_id, {
+                "type": "pipeline", "level": "pipeline",
+                "step": "memory_search_end", "results_count": 0, "results": [],
+                "skipped": True,
+            })
+        else:
+            await _emit_to_visualizers(request.session_id, {
+                "type": "pipeline", "level": "pipeline",
+                "step": "memory_search_start", "query": request.message, "limit": 5,
+            })
 
-        brain_results = await db.memory_search(request.user_id, request.message, limit=5)
-        brain_context = None
+            brain_results = await db.memory_search(request.user_id, request.message, limit=5)
+            brain_context = None
 
-        # ── Pipeline: memory search results ──
-        await _emit_to_visualizers(request.session_id, {
-            "type": "pipeline", "level": "pipeline",
-            "step": "memory_search_end", "results_count": len(brain_results),
-            "results": [{"slug": r["slug"], "title": r.get("title", r["slug"]),
-                         "score": round(r.get("rank", 0), 2)}
-                        for r in (brain_results or [])],
-        })
+            # ── Pipeline: memory search results ──
+            await _emit_to_visualizers(request.session_id, {
+                "type": "pipeline", "level": "pipeline",
+                "step": "memory_search_end", "results_count": len(brain_results),
+                "results": [{"slug": r["slug"], "title": r.get("title", r["slug"]),
+                             "score": round(r.get("rank", 0), 2)}
+                            for r in (brain_results or [])],
+            })
 
-        # Format brain context for system prompt injection
-        if brain_results:
-            lines = []
-            for r in brain_results:
-                slug = r.get("slug", "?")
-                title = r.get("title", slug)
-                ct = r.get("compiled_truth", "")[:300]
-                rank = r.get("rank", 0)
-                lines.append(f"## {slug} — {title} (score: {rank:.2f})")
-                if ct:
-                    lines.append(ct)
-                lines.append("")
-            brain_context = "\n".join(lines)
+            # Format brain context for system prompt injection
+            if brain_results:
+                lines = []
+                for r in brain_results:
+                    slug = r.get("slug", "?")
+                    title = r.get("title", slug)
+                    ct = r.get("compiled_truth", "")[:300]
+                    rank = r.get("rank", 0)
+                    lines.append(f"## {slug} — {title} (score: {rank:.2f})")
+                    if ct:
+                        lines.append(ct)
+                    lines.append("")
+                brain_context = "\n".join(lines)
 
-        # Always save memory_search as tool interaction (even empty)
-        search_content = json.dumps({
-            "query": request.message,
-            "results": [
-                {"slug": r["slug"], "title": r.get("title",""),
-                 "score": round(r.get("rank", 0), 2),
-                 "snippet": r.get("compiled_truth", "")[:150]}
-                for r in (brain_results or [])
-            ],
-            "count": len(brain_results or []),
-        }, indent=2)
-        parent_id = await db.insert_interaction(
-            request.user_id, request.session_id, role="tool",
-            content=search_content,
-            parent_id=user_interaction_id,
-            tool_name="memory_search",
-            channel="web_portal",
-            metadata=json.dumps({
+            # Save memory_search as tool interaction
+            search_content = json.dumps({
+                "query": request.message,
+                "results": [
+                    {"slug": r["slug"], "title": r.get("title",""),
+                     "score": round(r.get("rank", 0), 2),
+                     "snippet": r.get("compiled_truth", "")[:150]}
+                    for r in (brain_results or [])
+                ],
                 "count": len(brain_results or []),
-                "brain": True,
-                "has_results": bool(brain_results),
-            }),
-        )
+            }, indent=2)
+            parent_id = await db.insert_interaction(
+                request.user_id, request.session_id, role="tool",
+                content=search_content,
+                parent_id=user_interaction_id,
+                tool_name="memory_search",
+                channel="web_portal",
+                metadata=json.dumps({
+                    "count": len(brain_results or []),
+                    "brain": True,
+                    "has_results": bool(brain_results),
+                }),
+            )
 
-        # Emit memory_search as a tool result
-        await _emit_to_visualizers(request.session_id, {
-            "type": "tool_result", "level": "agent",
-            "tool": "memory_search",
-            "result": search_content[:2000],
-            "duration_ms": 0,
-            "error": False,
-        })
+            # Emit memory_search as a tool result
+            await _emit_to_visualizers(request.session_id, {
+                "type": "tool_result", "level": "agent",
+                "tool": "memory_search",
+                "result": search_content[:2000],
+                "duration_ms": 0,
+                "error": False,
+            })
 
         # ── Resolve attachment references ──
         attachment_context = None
@@ -291,48 +330,62 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'load_context', 'count': len(context_docs), 'types': doc_types})}\n\n"
 
         # ── PHASE 1: Brain-first lookup ──
-        yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_search_start', 'query': request.message, 'limit': 5})}\n\n"
+        if _should_skip_memory(request.message):
+            yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_search_skip', 'reason': 'greeting_or_cmd'})}\n\n"
+            brain_results = []
+            brain_context = None
+            parent_id = await db.insert_interaction(
+                request.user_id, request.session_id, role="tool",
+                content=json.dumps({"skipped": True, "reason": "greeting_or_cmd"}),
+                parent_id=user_interaction_id,
+                tool_name="memory_search",
+                channel="web_portal",
+                metadata=json.dumps({"brain": True, "skipped": True}),
+            )
+            yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_search_end', 'results_count': 0, 'results': [], 'skipped': True})}\n\n"
+        else:
+            yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_search_start', 'query': request.message, 'limit': 5})}\n\n"
 
-        brain_results = await db.memory_search(request.user_id, request.message, limit=5)
-        brain_context = None
+            brain_results = await db.memory_search(request.user_id, request.message, limit=5)
+            brain_context = None
 
-        yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_search_end', 'results_count': len(brain_results), 'results': [{'slug': r['slug'], 'title': r.get('title', r['slug']), 'score': round(r.get('rank', 0), 2)} for r in (brain_results or [])]})}\n\n"
+            yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_search_end', 'results_count': len(brain_results), 'results': [{'slug': r['slug'], 'title': r.get('title', r['slug']), 'score': round(r.get('rank', 0), 2)} for r in (brain_results or [])]})}\n\n"
 
-        if brain_results:
-            lines = []
-            for r in brain_results:
-                slug = r.get("slug", "?")
-                title = r.get("title", slug)
-                ct = r.get("compiled_truth", "")[:300]
-                rank = r.get("rank", 0)
-                lines.append(f"## {slug} — {title} (score: {rank:.2f})")
-                if ct:
-                    lines.append(ct)
-                lines.append("")
-            brain_context = "\n".join(lines)
+            if brain_results:
+                lines = []
+                for r in brain_results:
+                    slug = r.get("slug", "?")
+                    title = r.get("title", slug)
+                    ct = r.get("compiled_truth", "")[:300]
+                    rank = r.get("rank", 0)
+                    lines.append(f"## {slug} — {title} (score: {rank:.2f})")
+                    if ct:
+                        lines.append(ct)
+                    lines.append("")
+                brain_context = "\n".join(lines)
 
-        search_content = json.dumps({
-            "query": request.message,
-            "results": [
-                {"slug": r["slug"], "title": r.get("title",""), "score": round(r.get("rank", 0), 2), "snippet": r.get("compiled_truth", "")[:150]}
-                for r in (brain_results or [])
-            ],
-            "count": len(brain_results or []),
-        }, indent=2)
-        parent_id = await db.insert_interaction(
-            request.user_id, request.session_id, role="tool",
-            content=search_content,
-            parent_id=user_interaction_id,
-            tool_name="memory_search",
-            channel="web_portal",
-            metadata=json.dumps({
+            search_content = json.dumps({
+                "query": request.message,
+                "results": [
+                    {"slug": r["slug"], "title": r.get("title",""), "score": round(r.get("rank", 0), 2), "snippet": r.get("compiled_truth", "")[:150]}
+                    for r in (brain_results or [])
+                ],
                 "count": len(brain_results or []),
-                "brain": True,
-                "has_results": bool(brain_results),
-            }),
-        )
+            }, indent=2)
+            parent_id = await db.insert_interaction(
+                request.user_id, request.session_id, role="tool",
+                content=search_content,
+                parent_id=user_interaction_id,
+                tool_name="memory_search",
+                channel="web_portal",
+                metadata=json.dumps({
+                    "count": len(brain_results or []),
+                    "brain": True,
+                    "has_results": bool(brain_results),
+                }),
+            )
 
-        yield f"data: {json.dumps({'type': 'tool_result', 'level': 'agent', 'tool': 'memory_search', 'result': search_content[:2000], 'duration_ms': 0, 'error': False})}\n\n"
+            yield f"data: {json.dumps({'type': 'tool_result', 'level': 'agent', 'tool': 'memory_search', 'result': search_content[:2000], 'duration_ms': 0, 'error': False})}\n\n"
 
         # ── Resolve attachment references (SSE) ──
         attachment_context = None
