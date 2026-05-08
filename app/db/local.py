@@ -5,16 +5,22 @@ Completely independent from Supabase. Uses a local SQLite database file.
 Auto-creates tables on first use matching the Supabase schema.
 """
 
+import asyncio
 import json
 import logging
 import os
 import re
 import sqlite3
+import struct
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+import numpy as np
+
 from app.models.schemas import InteractionRecord
 from app.db.interface import StorageBackend
+from app.agent.embed import embed_text, EMBED_DIM
 
 logger = logging.getLogger(__name__)
 
@@ -1091,6 +1097,21 @@ class LocalBackend(StorageBackend):
                 )
 
             conn.commit()
+            memory_id = data["id"]
+
+            # ── Embed on write: chunk + embed + store ──
+            embed_sources = []
+            if compiled_truth and compiled_truth.strip():
+                embed_sources.append((compiled_truth, "compiled_truth"))
+            if timeline and timeline.strip():
+                embed_sources.append((timeline, "timeline"))
+            if embed_sources:
+                for text, source in embed_sources:
+                    try:
+                        await self._embed_and_store_chunks(conn, memory_id, text, source)
+                    except Exception as chunk_err:
+                        logger.warning("Chunk+embed failed for memory %s (%s): %s", slug, source, chunk_err)
+
             logger.debug("Memory upserted: %s (%s)", slug, "updated" if existing else "created")
             return data
         except Exception as e:
@@ -1166,11 +1187,54 @@ class LocalBackend(StorageBackend):
     async def memory_search(
         self, user_id: str, query: str, limit: int = 10
     ) -> List[dict]:
-        """FTS5 keyword search across memory pages."""
+        """Hybrid search: FTS5 + vector cosine similarity, merged via RRF."""
+        fts_task = asyncio.create_task(self._fts5_search(user_id, query, limit * 3))
+        vec_task = asyncio.create_task(self._vector_search(user_id, query, limit * 3))
+
+        fts_results, vec_results = await asyncio.gather(fts_task, vec_task, return_exceptions=True)
+        if isinstance(fts_results, BaseException):
+            logger.warning("FTS5 search failed: %s", fts_results)
+            fts_results = []
+        if isinstance(vec_results, BaseException):
+            logger.warning("Vector search failed: %s", vec_results)
+            vec_results = []
+
+        if not vec_results:
+            return fts_results[:limit] if fts_results else []
+        if not fts_results:
+            return vec_results[:limit]
+
+        # ── RRF merge ──
+        k = 60
+        rrf_scores: Dict[str, float] = {}
+        for rank, page in enumerate(fts_results, start=1):
+            slug = page.get("slug", "")
+            rrf_scores[slug] = rrf_scores.get(slug, 0.0) + 1.0 / (k + rank)
+        for rank, page in enumerate(vec_results, start=1):
+            slug = page.get("slug", "")
+            rrf_scores[slug] = rrf_scores.get(slug, 0.0) + 1.0 / (k + rank)
+
+        all_pages: Dict[str, dict] = {}
+        for p in fts_results + vec_results:
+            s = p.get("slug", "")
+            if s and s not in all_pages:
+                all_pages[s] = p
+
+        merged = []
+        for slug, score in sorted(rrf_scores.items(), key=lambda x: -x[1]):
+            if slug in all_pages:
+                entry = dict(all_pages[slug])
+                entry["rank"] = round(score, 4)
+                merged.append(entry)
+        return merged[:limit]
+
+    async def _fts5_search(
+        self, user_id: str, query: str, limit: int = 10
+    ) -> List[dict]:
+        """FTS5-only keyword search (internal, called within hybrid memory_search)."""
         match_expr = _fts5_safe_match_query(query)
         if not match_expr:
             return []
-
         conn = self._get_conn()
         try:
             rows = conn.execute(
@@ -1187,11 +1251,142 @@ class LocalBackend(StorageBackend):
                 d["frontmatter"] = json.loads(d.get("frontmatter", "{}"))
                 result.append(d)
             return result
-        except Exception as e:
-            logger.error("Error searching memories: %s", e)
-            raise
         finally:
             conn.close()
+
+    @staticmethod
+    def _chunk_text(text: str, max_chars: int = 500) -> List[str]:
+        """Split text into ~max_chars chunks, breaking at sentence boundaries."""
+        if len(text) <= max_chars:
+            return [text]
+        chunks = []
+        pos = 0
+        while pos < len(text):
+            end = min(pos + max_chars, len(text))
+            if end < len(text):
+                best_break = max(
+                    text.rfind(". ", pos, end),
+                    text.rfind(".\n", pos, end),
+                    text.rfind("\n", pos, end),
+                    text.rfind(". ", pos, end),
+                    text.rfind(" ", pos + max_chars // 2, end),
+                )
+                if best_break > pos + max_chars // 2:
+                    end = best_break + 1
+            chunk = text[pos:end].strip()
+            if chunk:
+                chunks.append(chunk)
+            pos = end
+        return chunks
+
+    async def _vector_search(
+        self, user_id: str, query_text: str, limit: int = 10
+    ) -> List[dict]:
+        """Search memory pages by embedding cosine similarity."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT mc.memory_id, mc.embedding,
+                          m.slug, m.title, m.compiled_truth, m.timeline,
+                          m.page_type, m.frontmatter, m.created_at, m.updated_at
+                   FROM memory_chunks mc
+                   JOIN memories m ON m.id = mc.memory_id
+                   WHERE m.user_id = ? AND mc.embedding IS NOT NULL""",
+                (user_id,),
+            ).fetchall()
+            if not rows:
+                return []
+        finally:
+            conn.close()
+
+        # Get query embedding via OpenRouter
+        try:
+            query_vec_list = await embed_text(query_text)
+        except Exception as e:
+            logger.warning("Query embed failed, skipping vector search: %s", e)
+            return []
+        query_vec = np.array(query_vec_list, dtype=np.float32)
+
+        # Build matrix from stored embeddings
+        memory_ids = []
+        vecs = []
+        for r in rows:
+            if r["embedding"]:
+                vec = np.frombuffer(r["embedding"], dtype=np.float32)
+                if vec.shape[0] == EMBED_DIM:
+                    memory_ids.append(r["memory_id"])
+                    vecs.append(vec)
+        if not vecs:
+            return []
+
+        matrix = np.stack(vecs)
+        norms = np.linalg.norm(matrix, axis=1)
+        q_norm = np.linalg.norm(query_vec)
+        scores = np.dot(matrix, query_vec) / (norms * q_norm + 1e-12)
+
+        # Group by memory_id, keep best score per page
+        page_best: Dict[str, float] = {}
+        for i, mid in enumerate(memory_ids):
+            s = float(scores[i])
+            if mid not in page_best or s > page_best[mid]:
+                page_best[mid] = s
+
+        # Build result dicts from rows, matched by memory_id
+        page_rows: Dict[str, dict] = {}
+        for r in rows:
+            mid = r["memory_id"]
+            if mid not in page_rows:
+                page_rows[mid] = {
+                    "slug": r["slug"],
+                    "title": r["title"],
+                    "compiled_truth": r["compiled_truth"],
+                    "timeline": r["timeline"],
+                    "page_type": r["page_type"],
+                    "frontmatter": json.loads(r["frontmatter"] or "{}"),
+                    "created_at": r["created_at"],
+                    "updated_at": r["updated_at"],
+                }
+
+        result = []
+        for mid, score in sorted(page_best.items(), key=lambda x: -x[1]):
+            if mid in page_rows:
+                entry = dict(page_rows[mid])
+                entry["rank"] = round(float(score), 4)
+                result.append(entry)
+                if len(result) >= limit:
+                    break
+        return result
+
+    async def _embed_and_store_chunks(
+        self, conn: sqlite3.Connection, memory_id: str, text: str, source: str
+    ) -> None:
+        """Chunk text, embed each chunk via OpenRouter, store in memory_chunks."""
+        chunks = self._chunk_text(text, max_chars=500)
+        # Remove old chunks for this memory_id + source
+        conn.execute(
+            "DELETE FROM memory_chunks WHERE memory_id = ? AND chunk_source = ?",
+            (memory_id, source),
+        )
+        stored = 0
+        for i, chunk in enumerate(chunks):
+            if not chunk.strip():
+                continue
+            chunk_id = _uuid()
+            embedding_blob = None
+            try:
+                emb_list = await embed_text(chunk)
+                embedding_blob = struct.pack(f"{len(emb_list)}f", *emb_list)
+            except Exception as e:
+                logger.warning("Chunk embed failed (idx=%d mem=%s): %s", i, memory_id, e)
+            conn.execute(
+                """INSERT OR REPLACE INTO memory_chunks
+                   (id, memory_id, chunk_index, chunk_text, chunk_source, embedding, token_count)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (chunk_id, memory_id, i, chunk, source, embedding_blob, len(chunk.split())),
+            )
+            stored += 1
+        if stored:
+            logger.debug("Stored %d chunks for memory %s (%s)", stored, memory_id, source)
 
     async def memory_add_link(
         self,
