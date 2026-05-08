@@ -4,7 +4,7 @@ import { app } from '../state.js';
 import { queryTable, updatePageInfo, cancelEditing } from './query-render.js';
 import { fetchTables, updateTableCounts, renderTableList } from './tables.js';
 import { apiPath } from '../config.js';
-import { authUrl } from './login.js';
+import { authUrl } from '../left-login.js';
 
 const AUTO_REFRESH_MS = 5000;
 

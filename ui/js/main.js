@@ -13,8 +13,16 @@ import { initLoop } from './loop.js';
 import { initDbViewer } from './db/index.js';
 import { registerSessionApi, initSessions } from './sessions.js';
 import { initSettings } from './settings.js';
+import { initGithub } from './github.js';
+import { isAuthenticated, showLeftOverlay, hideLeftOverlay } from './left-login.js';
 
 bindDom();
+
+// ── Left panel login gate ─────────────────────────────────────────────────
+// If not authenticated, show login overlay covering all left-side tabs
+if (!isAuthenticated()) {
+  showLeftOverlay();
+}
 initDbModeUi();
 initTerminal();
 initChat();
@@ -33,6 +41,7 @@ initTabs();
 initStream();
 initLoop();
 initDbViewer();
+initGithub();
 initSettings();
 initSessions();
 
@@ -59,8 +68,6 @@ document.getElementById('btn-signout')?.addEventListener('click', () => {
   localStorage.removeItem('auth_user_id');
   localStorage.removeItem('auth_display_name');
   localStorage.removeItem('remember_token');
-  // Reset user to anonymous UUID (different from the auth user_id)
   localStorage.removeItem('terminalUserId');
-  // Reload to pick up anonymous identity
   window.location.reload();
 });

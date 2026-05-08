@@ -2,7 +2,7 @@
 
 import { app } from '../state.js';
 import { apiPath } from '../config.js';
-import { getAuthToken, authUrl, showLoginOverlay, setOnLogin } from './login.js';
+import { getAuthToken, authUrl } from '../left-login.js';
 
 let queryTable = () => {};
 let startAutoRefresh = () => {};
@@ -13,20 +13,14 @@ export function setTableDeps(deps) {
 }
 
 export async function fetchTables(dbName) {
-  // If no auth token, show login overlay
-  if (!getAuthToken()) {
-    showLoginOverlay();
-    setOnLogin(() => fetchTables(dbName));
-    return;
-  }
+  if (!getAuthToken()) return;
 
   try {
     const url = authUrl(apiPath(`/api/v1/db/tables?db=${encodeURIComponent(dbName)}`));
     const res = await fetch(url);
     if (res.status === 401) {
       localStorage.removeItem('auth_token');
-      showLoginOverlay();
-      setOnLogin(() => fetchTables(dbName));
+      window.location.reload();
       return;
     }
     const data = await res.json();
@@ -143,10 +137,9 @@ export function renderTableList() {
       localStorage.removeItem('auth_user_id');
       localStorage.removeItem('auth_display_name');
       localStorage.removeItem('remember_token');
-      app.dbSelectedTable = null;
-      app.dbTables = [];
-      document.getElementById('db-table-data').innerHTML = '';
-      fetchTables(document.getElementById('db-select').value);
+      localStorage.removeItem('terminalUserId');
+      // Reload to fully reset to anonymous identity
+      window.location.reload();
     });
   }
 }

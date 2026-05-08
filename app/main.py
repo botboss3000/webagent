@@ -65,6 +65,9 @@ from app.admin.communications import router as admin_communications_router
 # ── Auth ──
 from app.auth import router as auth_router
 
+# ── GitHub ──
+from app.api.github import router as github_router
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -122,6 +125,9 @@ app.include_router(webhooks_generic_router)
 
 # Register communication plugin webhook router (for Telegram, WhatsApp, SMS etc.)
 app.include_router(webhooks_router)
+
+# Register GitHub router
+app.include_router(github_router)
 
 # ── Restart endpoint ──
 # POST /api/v1/restart shuts down the server process.

@@ -3,6 +3,7 @@
 import { app } from './state.js';
 import { startStream, stopStream } from './stream.js';
 import { startLoop, stopLoop, setLoopLevel, toggleAutoScroll } from './loop.js';
+import { initGithub, startGithub, stopGithub } from './github.js';
 
 export function initTabs() {
   const tabSelect = document.getElementById('main-tab-select');
@@ -42,6 +43,11 @@ export function initTabs() {
     } else if (tabValue === 'database') {
       stopStream();
       stopLoop();
+      stopGithub();
+    } else if (tabValue === 'github') {
+      stopStream();
+      stopLoop();
+      startGithub();
     }
   }
 

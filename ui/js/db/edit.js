@@ -5,7 +5,7 @@ import { getPKColumns } from './columns.js';
 import { cancelEditing, renderTableData } from './query-render.js';
 import { openCellPopup } from './modal.js';
 import { apiPath } from '../config.js';
-import { authHeaders } from './login.js';
+import { authHeaders } from '../left-login.js';
 
 export async function saveEdit(cell, newValue) {
   if (!app.editingCell || !app.dbCurrentResult) return;

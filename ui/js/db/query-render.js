@@ -5,7 +5,7 @@ import { getPKColumns, getDisplayColumns, saveColumnOrder } from "./columns.js";
 import { initColumnResize } from "./columnResize.js";
 import { formatJsonAsHtml } from "../json-tree.js";
 import { apiPath } from "../config.js";
-import { getAuthToken, authUrl, showLoginOverlay, setOnLogin } from "./login.js";
+import { authUrl } from "../left-login.js";
 
 function cancelEditing() {
   if (app.editingCell) {
@@ -361,8 +361,7 @@ async function queryTable(tableName, opts) {
     const res = await fetch(authUrl(url));
     if (res.status === 401) {
       localStorage.removeItem('auth_token');
-      showLoginOverlay();
-      setOnLogin(() => queryTable(tableName, opts));
+      window.location.reload();
       return;
     }
     const result = await res.json();

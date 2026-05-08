@@ -148,6 +148,10 @@ def _load_provider(user_id: str) -> dict:
     config = all_configs.get(user_id)
     if config:
         return dict(config)
+    # Fall back to admin user's config (so anonymous users get a working LLM)
+    config = all_configs.get("admin_default")
+    if config:
+        return dict(config)
     # Fall back to anonymous config
     config = all_configs.get(ANONYMOUS_KEY)
     if config:
@@ -177,11 +181,19 @@ async def load_provider_for_user(user_id: str) -> None:
     Tries auth_elements DB table first, falls back to provider.json.
     Called at the start of each agent loop.
     """
-    # Try DB first
+    # Try DB first — own config, then admin fallback
     try:
         from app.db import get_db
         db = get_db()
+        # Try this user's config first
         elem = await db.auth_element_get(user_id, "llm", "default")
+        if elem:
+            cfg = json.loads(elem.get("config", "{}"))
+            cfg["api_key"] = elem.get("secret_ref", "")
+            _apply_config_to_env(cfg)
+            return
+        # Fall back to admin user's config (anonymous visitors get a working LLM)
+        elem = await db.auth_element_get("admin_default", "llm", "default")
         if elem:
             cfg = json.loads(elem.get("config", "{}"))
             cfg["api_key"] = elem.get("secret_ref", "")
@@ -273,7 +285,7 @@ async def get_provider(
     """
     user_id = _resolve_user_id(authorization or "", token or "")
 
-    # Try DB first (auth_elements table)
+    # Try DB first (auth_elements table) — own config, then admin fallback
     config = None
     try:
         from app.db import get_db
@@ -283,6 +295,13 @@ async def get_provider(
             cfg = json.loads(elem.get("config", "{}"))
             cfg["api_key"] = elem.get("secret_ref", "")
             config = cfg
+        else:
+            # Fall back to admin user's config (so anonymous visitors see working LLM in settings)
+            elem = await db.auth_element_get("admin_default", "llm", "default")
+            if elem:
+                cfg = json.loads(elem.get("config", "{}"))
+                cfg["api_key"] = elem.get("secret_ref", "")
+                config = cfg
     except Exception:
         pass
 
