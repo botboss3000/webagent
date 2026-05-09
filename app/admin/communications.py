@@ -58,33 +58,42 @@ async def list_plugins():
 
 @router.post("/plugins/{name}/enable")
 async def enable_plugin(name: str):
-    """Enable a plugin."""
+    """Enable a plugin. Uses webhook if base URL is set, otherwise polls."""
     pm = get_plugin_manager()
     ok = pm.enable_plugin(name)
     if not ok:
         return {"status": "error", "message": f"Plugin '{name}' not found"}
-    
-    # If Telegram, set up webhook
+
     plugin = pm.get_plugin(name)
-    if plugin and hasattr(plugin, 'set_webhook_url'):
+    if plugin and hasattr(plugin, 's') and hasattr(plugin, 'set_webhook_url'):
         registry = getattr(pm, "_registry", {})
         base_url = registry.get("webhook_base_url", "")
-        if base_url:
+        # If a reachable webhook URL is configured, use webhook
+        if base_url and not ("localhost" in base_url or "127.0.0.1" in base_url):
             await plugin.set_webhook_url(base_url)
-    
+            logger.info("%s enabled with webhook at %s", name, base_url)
+        else:
+            # No reachable webhook → start polling
+            if hasattr(plugin, 'start_polling'):
+                await plugin.start_polling()
+                logger.info("%s enabled with polling (no public webhook URL)", name)
+
     return {"status": "ok", "message": f"Plugin '{name}' enabled"}
 
 
 @router.post("/plugins/{name}/disable")
 async def disable_plugin(name: str):
-    """Disable a plugin."""
+    """Disable a plugin. Stops polling if active."""
     pm = get_plugin_manager()
-    
-    # If Telegram, remove webhook
+
+    # Stop polling first (if any)
     plugin = pm.get_plugin(name)
+    if plugin and hasattr(plugin, 'stop_polling'):
+        await plugin.stop_polling()
+    # Remove webhook
     if plugin and hasattr(plugin, 'delete_webhook_url'):
         await plugin.delete_webhook_url()
-    
+
     ok = pm.disable_plugin(name)
     if not ok:
         return {"status": "error", "message": f"Plugin '{name}' not found"}
@@ -151,20 +160,35 @@ async def set_plugin_token(name: str, req: WebhookUrlRequest, http_request: Requ
     # Re-init plugin so it picks up the new token
     plugin._bot_token = token
 
-    # Auto-enable the plugin (also registers webhook with Telegram)
+    # Auto-enable the plugin
     pm.enable_plugin(name)
-    if hasattr(plugin, 'set_webhook_url') and server_url:
-        webhook_ok = await plugin.set_webhook_url(server_url)
-        logger.info("Telegram webhook registration at %s: %s", server_url + "/api/v1/webhooks/telegram", "ok" if webhook_ok else "failed")
-    else:
-        webhook_ok = False
 
+    # Decide: webhook (public URL) or polling (localhost / no URL)
+    is_local = not server_url or "localhost" in server_url or "127.0.0.1" in server_url
+    if is_local:
+        # Start polling
+        if hasattr(plugin, 'start_polling'):
+            await plugin.start_polling()
+            logger.info("Telegram polling started (server URL is localhost)")
+        webhook_ok = False
+        webhook_mode = False
+    else:
+        # Register webhook
+        if hasattr(plugin, 'set_webhook_url'):
+            webhook_ok = await plugin.set_webhook_url(server_url)
+            logger.info("Telegram webhook registration at %s: %s", server_url + "/api/v1/webhooks/telegram", "ok" if webhook_ok else "failed")
+        else:
+            webhook_ok = False
+        webhook_mode = True
+
+    mode = "polling" if is_local else "webhook"
     return {
         "status": "ok",
-        "message": f"Token saved for plugin '{name}', webhook auto-configured",
+        "message": f"Token saved for plugin '{name}', mode: {mode}",
         "has_token": True,
         "webhook_base_url": server_url,
-        "webhook_registered": webhook_ok,
+        "webhook_registered": webhook_ok if not is_local else False,
+        "mode": mode,
     }
 
 

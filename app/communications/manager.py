@@ -125,6 +125,19 @@ class PluginManager:
         self._plugins = {}
         self._discover_plugins()
 
+    async def start_polling_for_offline_plugins(self) -> None:
+        """Start polling for all enabled plugins without a reachable webhook URL.
+        Called on server startup."""
+        base_url = self._registry.get("webhook_base_url", "")
+        is_offline = not base_url or "localhost" in base_url or "127.0.0.1" in base_url
+        if not is_offline:
+            logger.info("Webhook base URL is set (%s), skipping auto-polling", base_url)
+            return
+        for plugin in self.get_enabled_plugins():
+            if hasattr(plugin, 'start_polling'):
+                await plugin.start_polling()
+                logger.info("Auto-started polling for %s", plugin.name)
+
 
 # ── Global singleton ──
 _plugin_manager: Optional[PluginManager] = None

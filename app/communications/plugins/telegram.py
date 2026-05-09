@@ -7,6 +7,7 @@ Bot token from TELEGRAM_BOT_TOKEN env var.
 Plugin discovery: set `plugin_cls = TelegramPlugin` at module level.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -79,11 +80,25 @@ async def delete_webhook(bot_token: str) -> bool:
 
 
 class TelegramPlugin(CommunicationPlugin):
-    """Telegram bot plugin. Uses Bot API directly via HTTP (no full SDK)."""
+    """Telegram bot plugin. Uses Bot API directly via HTTP (no full SDK).
+    Supports both webhook mode (production) and long-polling mode (local dev)."""
 
     def __init__(self, registry: dict):
         self._registry = registry
         self._bot_token: Optional[str] = None
+        self._polling_task: Optional[asyncio.Task] = None
+        self._last_update_id: int = 0
+
+    @property
+    def is_polling(self) -> bool:
+        """Whether the polling loop is currently running."""
+        return self._polling_task is not None and not self._polling_task.done()
+
+    @property
+    def is_offline(self) -> bool:
+        """No webhook base URL set — must use polling."""
+        base_url = self._registry.get("webhook_base_url", "")
+        return not base_url or "localhost" in base_url or "127.0.0.1" in base_url or "0.0.0.0" in base_url
 
     @property
     def name(self) -> str:
@@ -203,8 +218,83 @@ class TelegramPlugin(CommunicationPlugin):
             self._bot_token = token
         return token
 
+    async def start_polling(self) -> None:
+        """Start the background long-polling loop."""
+        if self.is_polling:
+            logger.info("Telegram polling already running")
+            return
+        # Delete any existing webhook first (polling conflicts with webhook)
+        token = await self._resolve_token()
+        if token:
+            try:
+                await delete_webhook(token)
+                logger.info("Deleted existing webhook before starting polling")
+            except Exception:
+                pass
+        self._last_update_id = 0
+        self._polling_task = asyncio.create_task(self._polling_loop())
+        logger.info("Telegram polling started")
+
+    async def stop_polling(self) -> None:
+        """Stop the background polling loop."""
+        if self._polling_task and not self._polling_task.done():
+            self._polling_task.cancel()
+            try:
+                await self._polling_task
+            except asyncio.CancelledError:
+                pass
+            self._polling_task = None
+            logger.info("Telegram polling stopped")
+
+    async def _polling_loop(self) -> None:
+        """Continuously poll Telegram for new messages via getUpdates."""
+        while True:
+            try:
+                token = await self._resolve_token()
+                if not token:
+                    await asyncio.sleep(5)
+                    continue
+
+                url = f"{TELEGRAM_API}{token}/getUpdates"
+                params = {"offset": self._last_update_id + 1, "timeout": 10}
+                async with httpx.AsyncClient(timeout=15) as client:
+                    resp = await client.get(url, params=params)
+                    data = resp.json()
+
+                if data.get("ok"):
+                    updates = data.get("result", [])
+                    for update in updates:
+                        update_id = update.get("update_id", 0)
+                        message = update.get("message", {})
+                        if not message:
+                            self._last_update_id = update_id
+                            continue
+
+                        chat_id = str(message.get("chat", {}).get("id", ""))
+                        text = message.get("text", "")
+                        if chat_id and text:
+                            try:
+                                from app.communications.processor import process_channel_message
+                                await process_channel_message(
+                                    self.name, chat_id, text, self
+                                )
+                            except Exception as e:
+                                logger.error("Polling message processing error: %s", e)
+
+                        self._last_update_id = update_id
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("Polling loop error: %s", e)
+                await asyncio.sleep(5)
+
+            await asyncio.sleep(2)
+
     async def set_webhook_url(self, base_url: str) -> bool:
         """Register the webhook with Telegram. Call after server starts."""
+        # Stop polling if running
+        await self.stop_polling()
         token = await self._resolve_token()
         if not token:
             return False

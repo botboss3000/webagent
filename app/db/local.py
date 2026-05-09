@@ -2367,17 +2367,28 @@ class _LocalQueryBuilder:
                 params = [data.get(c) for c in columns]
 
                 if conflict_col:
-                    # Check if row exists
+                    # Support both single col and composite keys (comma-separated)
+                    conflict_cols = [c.strip() for c in conflict_col.split(",")]
+                    where_parts = [f"{c} = ?" for c in conflict_cols]
+                    where_vals = []
+                    for c in conflict_cols:
+                        val = data.get(c)
+                        if val is not None:
+                            where_vals.append(val)
+                        else:
+                            # Fall back to the raw conflict_col string (legacy)
+                            where_vals.append(data.get(conflict_col))
+                            break
                     existing = conn.execute(
-                        f"SELECT 1 FROM {self._table_name} WHERE {conflict_col} = ? LIMIT 1",
-                        (data.get(conflict_col),),
+                        f"SELECT 1 FROM {self._table_name} WHERE {' AND '.join(where_parts)} LIMIT 1",
+                        where_vals,
                     ).fetchone()
                     if existing:
                         set_parts = [f"{k} = ?" for k in columns]
                         set_params = [data.get(c) for c in columns]
                         conn.execute(
-                            f"UPDATE {self._table_name} SET {', '.join(set_parts)} WHERE {conflict_col} = ?",
-                            set_params + [data.get(conflict_col)],
+                            f"UPDATE {self._table_name} SET {', '.join(set_parts)} WHERE {' AND '.join(where_parts)}",
+                            set_params + where_vals,
                         )
                     else:
                         if 'id' in data and not data['id']:

@@ -239,18 +239,22 @@ async def terminal_legacy_redirect():
 # ── Start-up: register Telegram webhook ──
 @app.on_event("startup")
 async def startup():
-    """Register communication webhooks on server start."""
+    """Register communication webhooks or start polling on server start."""
     try:
         from app.communications.manager import get_plugin_manager
         pm = get_plugin_manager()
         registry = getattr(pm, "_registry", {})
         base_url = registry.get("webhook_base_url", "")
-        if base_url:
+        # If a proper webhook URL is set, register webhooks
+        if base_url and not ("localhost" in base_url or "127.0.0.1" in base_url):
             tg = pm.get_plugin("telegram")
             if tg and tg.enabled:
                 await tg.set_webhook_url(base_url)
+        else:
+            # No reachable webhook URL → start polling for offline plugins
+            await pm.start_polling_for_offline_plugins()
     except Exception as e:
-        logger.warning("Failed to register webhooks on startup: %s", e)
+        logger.warning("Failed to register/poll on startup: %s", e)
 
     # ── Seed LLM config from env vars into auth_elements (cloud-first deploy) ──
     api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
