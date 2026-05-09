@@ -281,7 +281,7 @@ async def get_provider(
 ):
     """Get current provider configuration for the requesting user.
     Reads from the auth_elements table in the DB (per-user), falls back to provider.json.
-    API key is masked for security.
+    API key is returned as plaintext.
     """
     user_id = _resolve_user_id(authorization or "", token or "")
 
@@ -313,27 +313,12 @@ async def get_provider(
     if "providers" not in config:
         config["providers"] = {}
 
-    masked = dict(config)
-    # Mask current provider's key
-    if masked.get("api_key") and len(masked["api_key"]) > 8:
-        masked["api_key"] = masked["api_key"][:4] + "..." + masked["api_key"][-4:]
-    # Mask all keys in the providers map
-    providers = masked.get("providers", {})
-    if providers:
-        masked_providers = {}
-        for pk, pv in providers.items():
-            entry = dict(pv)
-            key = entry.get("api_key", "")
-            if key and len(key) > 8:
-                entry["api_key"] = key[:4] + "..." + key[-4:]
-            masked_providers[pk] = entry
-        masked["providers"] = masked_providers
     # Ensure base_url is present
-    if not masked.get("base_url"):
-        prov = masked.get("provider", "")
+    if not config.get("base_url"):
+        prov = config.get("provider", "")
         if prov in PROVIDER_PRESETS:
-            masked["base_url"] = PROVIDER_PRESETS[prov]["base_url"]
-    return ProviderConfig(**masked)
+            config["base_url"] = PROVIDER_PRESETS[prov]["base_url"]
+    return ProviderConfig(**config)
 
 
 @router.post("/provider", response_model=dict)
