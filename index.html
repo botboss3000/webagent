@@ -19,13 +19,6 @@
     <button id="settings-menu-btn" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:13px;margin-right:12px;font-weight:600;">⚙️ Config ▼</button>
     <div id="settings-dropdown-menu" class="settings-dropdown-content" style="display:none;">
       
-      <div class="settings-menu-item">
-        <span>User</span> <span class="arrow">►</span>
-        <div id="user-submenu" class="settings-submenu">
-          <!-- populated by sessions.js -->
-        </div>
-      </div>
-
       <div class="settings-menu-item" id="llm-menu-item">
         <span>LLM</span>
       </div>
@@ -34,12 +27,8 @@
         <span>🔗 Connections</span>
       </div>
 
-      <div class="settings-menu-item">
-        <span>Database</span> <span class="arrow">►</span>
-        <div id="database-submenu" class="settings-submenu">
-          <button type="button" id="menu-seg-cloud" class="submenu-item">Cloud (Supabase)</button>
-          <button type="button" id="menu-seg-local" class="submenu-item active">Local (SQLite)</button>
-        </div>
+      <div class="settings-menu-item" id="database-menu-item">
+        <span>Database</span>
       </div>
 
       <hr style="border:none;border-top:1px solid #2a2a4a;margin:4px 0;">
@@ -72,7 +61,8 @@
   </div>
 
   <span id="status-right">
-    <span id="top-user-id" style="color: #7dcfff; font-weight: 600; display: flex; align-items: center; gap: 4px; font-size: 13px;">User: <span id="top-user-id-val">None</span></span>
+    <span id="top-user-id" style="color: #7dcfff; font-weight: 600; display: flex; align-items: center; gap: 4px; font-size: 13px;"><span id="top-user-id-val">None</span></span>
+    <span id="btn-signout-header" style="cursor:pointer;color:#565f89;font-size:14px;" title="Sign out">➜]</span>
   </span>
 </div>
 
@@ -386,6 +376,35 @@
       <button id="settings-clear" style="flex:0 0 auto;padding:10px 16px;background:transparent;border:1px solid #565f89;border-radius:6px;color:#565f89;font-size:13px;cursor:pointer;">Clear</button>
     </div>
     <div id="settings-status" style="margin-top:8px;font-size:12px;color:#9ece6a;display:none;"></div>
+  </div>
+</div>
+
+<!-- Database modal -->
+<div id="database-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:1000;">
+  <div id="database-backdrop" style="position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);"></div>
+  <div id="database-panel" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:24px;min-width:400px;max-width:480px;color:#c0caf5;font-size:14px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h2 style="margin:0;font-size:18px;font-weight:600;">📊 Database</h2>
+      <button id="database-close" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:20px;">&times;</button>
+    </div>
+
+    <div style="margin-bottom:20px;">
+      <label style="display:block;margin-bottom:8px;color:#a9b1d6;font-size:13px;font-weight:600;">Storage Backend</label>
+      <div style="display:flex;gap:8px;">
+        <button type="button" id="modal-seg-cloud" class="submenu-item" style="flex:1;text-align:center;padding:12px;border:2px solid #2a2a4a;border-radius:8px;background:#0d0d1a;font-size:13px;font-weight:600;cursor:pointer;color:#c0caf5;font-family:inherit;transition:all 0.15s;">☁️ Cloud<br><span style="font-weight:400;font-size:11px;color:#565f89;">Supabase</span></button>
+        <button type="button" id="modal-seg-local" class="submenu-item" style="flex:1;text-align:center;padding:12px;border:2px solid #2a2a4a;border-radius:8px;background:#0d0d1a;font-size:13px;font-weight:600;cursor:pointer;color:#c0caf5;font-family:inherit;transition:all 0.15s;">💻 Local<br><span style="font-weight:400;font-size:11px;color:#565f89;">SQLite</span></button>
+      </div>
+      <div id="database-modal-status" style="margin-top:8px;font-size:12px;color:#565f89;"></div>
+    </div>
+
+    <div style="padding:12px;background:#0d0d1a;border-radius:8px;border-left:3px solid #7dcfff;font-size:12px;color:#a9b1d6;">
+      <strong style="color:#7dcfff;">Current Mode:</strong> <span id="database-current-mode">Loading...</span><br>
+      <span style="color:#565f89;">Cloud stores data in Supabase (multi-device). Local stores data in <code>app/db/local.db</code> (single-device).</span>
+    </div>
+
+    <div style="text-align:right;margin-top:20px;">
+      <button id="database-close-btn" style="padding:8px 20px;background:transparent;border:1px solid #565f89;border-radius:6px;color:#565f89;font-size:13px;cursor:pointer;">Close</button>
+    </div>
   </div>
 </div>
 

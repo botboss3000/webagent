@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.auth.jwt import create_access_token
-from app.auth.users import authenticate, set_remember_token, resolve_remember_token, get_user
+from app.auth.users import authenticate, set_remember_token, resolve_remember_token, get_user, register_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -24,6 +24,20 @@ class LoginResponse(BaseModel):
     user_id: str
     display_name: str
     remember_token: str = ""
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    display_name: str = ""
+
+
+class RegisterResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    username: str
+    user_id: str
+    display_name: str
 
 
 class RecallRequest(BaseModel):
@@ -78,6 +92,25 @@ async def recall(req: RecallRequest):
 
     token = create_access_token(user.username, user.user_id)
     return RecallResponse(
+        access_token=token,
+        username=user.username,
+        user_id=user.user_id,
+        display_name=user.display_name,
+    )
+
+
+@router.post("/register", response_model=RegisterResponse)
+async def register(req: RegisterRequest):
+    """Register a new user account.
+
+    Username must be unique. On success, returns a JWT (auto-login).
+    """
+    user = register_user(req.username, req.password, req.display_name)
+    if user is None:
+        raise HTTPException(status_code=409, detail="Username already exists")
+
+    token = create_access_token(user.username, user.user_id)
+    return RegisterResponse(
         access_token=token,
         username=user.username,
         user_id=user.user_id,

@@ -94,9 +94,12 @@ class TelegramPlugin(CommunicationPlugin):
         plugin_config = self._registry.get("plugins", {}).get("telegram", {})
         if not plugin_config.get("enabled", False):
             return False
-        token = os.environ.get(BOT_TOKEN_ENV, "")
+        # Check registry token first, then env var (so UI-set token takes priority)
+        token = plugin_config.get("bot_token", "")
         if not token:
-            logger.warning("Telegram plugin enabled but %s not set", BOT_TOKEN_ENV)
+            token = os.environ.get(BOT_TOKEN_ENV, "")
+        if not token:
+            logger.warning("Telegram plugin enabled but no token set")
             return False
         self._bot_token = token
         return True
@@ -184,23 +187,36 @@ class TelegramPlugin(CommunicationPlugin):
 
     async def send_message(self, recipient_id: str, text: str) -> str:
         """Send a message to a Telegram chat."""
-        if not self._bot_token:
+        token = await self._resolve_token()
+        if not token:
             raise RuntimeError("Telegram bot token not configured")
-        result = await _send_message(self._bot_token, recipient_id, text)
+        result = await _send_message(token, recipient_id, text)
         return json.dumps(result)
+
+    async def _resolve_token(self) -> str:
+        """Resolve the bot token from registry or env var."""
+        if self._bot_token:
+            return self._bot_token
+        plugin_config = self._registry.get("plugins", {}).get("telegram", {})
+        token = plugin_config.get("bot_token", "") or os.environ.get(BOT_TOKEN_ENV, "")
+        if token:
+            self._bot_token = token
+        return token
 
     async def set_webhook_url(self, base_url: str) -> bool:
         """Register the webhook with Telegram. Call after server starts."""
-        if not self._bot_token:
+        token = await self._resolve_token()
+        if not token:
             return False
         webhook_url = f"{base_url.rstrip('/')}/api/v1/webhooks/telegram"
-        return await set_webhook(self._bot_token, webhook_url)
+        return await set_webhook(token, webhook_url)
 
     async def delete_webhook_url(self) -> bool:
         """Remove the webhook registration."""
-        if not self._bot_token:
+        token = await self._resolve_token()
+        if not token:
             return False
-        return await delete_webhook(self._bot_token)
+        return await delete_webhook(token)
 
 
 # ── Plugin discovery hook ───────────────────────────────────────────────────

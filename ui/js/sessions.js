@@ -6,87 +6,20 @@ import { loopSessionChanged } from './loop.js';
 import { loopVisualSessionChanged } from './loop-visual.js';
 import { streamSessionChanged } from './stream.js';
 import { apiPath } from './config.js';
-import { getAuthToken } from './left-login.js';
 
 export function generateUUID() {
   return crypto.randomUUID();
 }
 
 export async function populateUserSelect() {
-  try {
-    const res = await fetch(apiPath('/api/v1/db/users?db=local.db'));
-    const data = await res.json();
-    const submenu = document.getElementById('user-submenu');
-    if (!submenu) return;
-    
-    const topUserIdVal = document.getElementById('top-user-id-val');
-    if (topUserIdVal) {
-      topUserIdVal.textContent = app.currentUserId ? (app.currentUserId.length > 15 ? app.currentUserId.slice(0, 15) + '...' : app.currentUserId) : 'None';
-      topUserIdVal.title = app.currentUserId || '';
-    }
-    
-    const isAdmin = !!getAuthToken();
-    submenu.innerHTML = '';
-    
-    for (const uid of data.users || []) {
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex;align-items:center;width:100%;';
-
-      const item = document.createElement('button');
-      item.className = 'submenu-item';
-      item.style.flex = '1';
-      if (uid === app.currentUserId) item.classList.add('active');
-      item.dataset.value = uid;
-      item.textContent = uid.slice(0, 12) + '...';
-      item.title = uid;
-      row.appendChild(item);
-
-      // Admin-only: ⛔ delete button for each user
-      if (isAdmin) {
-        const delBtn = document.createElement('span');
-        delBtn.textContent = '⛔';
-        delBtn.title = 'Delete this user and all their data';
-        delBtn.style.cssText = 'cursor:pointer;padding:2px 6px;font-size:13px;opacity:0.6;flex-shrink:0;';
-        delBtn.addEventListener('mouseenter', () => { delBtn.style.opacity = '1'; });
-        delBtn.addEventListener('mouseleave', () => { delBtn.style.opacity = '0.6'; });
-        delBtn.addEventListener('click', async (e) => {
-          e.stopPropagation();
-          if (!confirm(`Delete ALL data for user "${uid}"?`)) return;
-          try {
-            const token = getAuthToken();
-            const res = await fetch(apiPath('/api/v1/db/users/' + encodeURIComponent(uid) + '?db=local.db&token=' + encodeURIComponent(token)), { method: 'DELETE' });
-            const result = await res.json();
-            if (result.success) {
-              // If we deleted ourselves, reset to anonymous
-              if (uid === app.currentUserId) {
-                localStorage.removeItem('auth_token');
-                localStorage.removeItem('auth_user_id');
-                localStorage.removeItem('terminalUserId');
-                window.location.reload();
-              } else {
-                populateUserSelect();
-              }
-            } else {
-              alert('Failed to delete user');
-            }
-          } catch (err) {
-            alert('Error: ' + err.message);
-          }
-        });
-        row.appendChild(delBtn);
-      }
-
-      submenu.appendChild(row);
-    }
-    const newUserBtn = document.createElement('button');
-    newUserBtn.className = 'submenu-item';
-    newUserBtn.dataset.value = '__new_user__';
-    newUserBtn.textContent = '+ New User...';
-    submenu.appendChild(newUserBtn);
-    if (app.currentUserId) populateSessionSelect(app.currentUserId);
-  } catch (e) {
-    console.warn('Failed to load users:', e);
+  // Update user ID display in header
+  const topUserIdVal = document.getElementById('top-user-id-val');
+  if (topUserIdVal) {
+    topUserIdVal.textContent = app.currentUserId ? (app.currentUserId.length > 15 ? app.currentUserId.slice(0, 15) + '...' : app.currentUserId) : 'None';
+    topUserIdVal.title = app.currentUserId || '';
   }
+  // Populate session select for current user
+  if (app.currentUserId) populateSessionSelect(app.currentUserId);
 }
 
 export async function populateSessionSelect(userId) {
@@ -166,32 +99,17 @@ export function registerSessionApi() {
 }
 
 export function initSessions() {
-  const userSubmenu = document.getElementById('user-submenu');
-  if (userSubmenu) {
-    userSubmenu.addEventListener('click', (e) => {
-      const btn = e.target.closest('.submenu-item');
-      if (!btn) return;
-      
-      const value = btn.dataset.value;
-      if (value === '__new_user__') {
-        const name = prompt('Enter new user ID:', '');
-        if (!name || !name.trim()) {
-          return;
-        }
-        app.currentUserId = name.trim();
-      } else {
-        app.currentUserId = value || '';
-      }
-      localStorage.setItem('terminalUserId', app.currentUserId);
-      app.currentSessionId = generateUUID();
-      localStorage.setItem('terminalSessionId', app.currentSessionId);
-      populateSessionSelect(app.currentUserId);
-      loopSessionChanged();
-      loopVisualSessionChanged();
-      connectAgent();
-      
-      // Update UI active state
-      populateUserSelect();
+  // ── Sign-out button in header ──
+  const signoutBtn = document.getElementById('btn-signout-header');
+  if (signoutBtn) {
+    signoutBtn.addEventListener('click', () => {
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('auth_username');
+      localStorage.removeItem('auth_user_id');
+      localStorage.removeItem('auth_display_name');
+      localStorage.removeItem('remember_token');
+      localStorage.removeItem('terminalUserId');
+      window.location.reload();
     });
   }
 

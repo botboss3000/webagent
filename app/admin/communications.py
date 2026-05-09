@@ -112,6 +112,36 @@ async def set_webhook_url(req: WebhookUrlRequest):
     return {"status": "ok", "webhook_base_url": req.url, "results": results}
 
 
+@router.post("/plugins/{name}/token")
+async def set_plugin_token(name: str, req: WebhookUrlRequest):
+    """Set a bot token for a plugin. Saves to registry.json."""
+    pm = get_plugin_manager()
+    plugin = pm.get_plugin(name)
+    if not plugin:
+        return {"status": "error", "message": f"Plugin '{name}' not found"}
+
+    token = req.url  # reuse WebhookUrlRequest for a single string field
+
+    # Save to registry
+    registry = getattr(pm, "_registry", {})
+    registry.setdefault("plugins", {}).setdefault(name, {})
+    registry["plugins"][name]["bot_token"] = token
+
+    from pathlib import Path
+    import json as _json
+    reg_path = Path(__file__).resolve().parent.parent / "communications" / "registry.json"
+    reg_path.write_text(_json.dumps(registry, indent=2), encoding="utf-8")
+
+    # Re-init plugin so it picks up the new token
+    plugin._bot_token = token
+
+    return {
+        "status": "ok",
+        "message": f"Token saved for plugin '{name}'",
+        "has_token": True,
+    }
+
+
 @router.post("/plugins/reload")
 async def reload_plugins_endpoint():
     """Re-discover plugins from the filesystem."""
