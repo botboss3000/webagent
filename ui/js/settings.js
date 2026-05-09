@@ -1,6 +1,7 @@
 'use strict';
 
 import { apiPath } from './config.js';
+import { isAdmin, showRestrictedModal } from './left-login.js';
 
 /**
  * Settings module — provider, base URL, API key, and model configuration.
@@ -62,6 +63,10 @@ export function initSettings() {
     if (LLM_MENU_ITEM) {
         LLM_MENU_ITEM.addEventListener('click', () => {
             SETTINGS_DROPDOWN_MENU.style.display = 'none';
+            if (!isAdmin()) {
+                showRestrictedModal();
+                return;
+            }
             openSettings();
         });
     }

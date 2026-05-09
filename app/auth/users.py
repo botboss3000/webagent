@@ -153,6 +153,21 @@ def resolve_remember_token(token: str) -> Optional[User]:
     return None
 
 
+def register_user(username: str, password: str, display_name: str = "") -> Optional[User]:
+    """Register a new user. Returns User on success, None if username taken."""
+    if username in _users:
+        return None
+    user = User(
+        username=username,
+        password_hash=_hash_password(password),
+        user_id=username,
+        display_name=display_name or username,
+    )
+    _users[username] = user
+    _persist()
+    return user
+
+
 def clear_remember_token(username: str) -> bool:
     """Clear the remember token for a user (sign-out)."""
     user = _users.get(username)

@@ -14,8 +14,6 @@ export const app = {
   toolLogToggle: null,
   toolLogPanel: null,
   toolLogClose: null,
-  segCloud: null,
-  segLocal: null,
   dbToolbar: null,
 
   term: null,
@@ -80,8 +78,6 @@ export function bindDom() {
   app.toolLogToggle = document.getElementById('tool-log-toggle');
   app.toolLogPanel = document.getElementById('tool-log-panel');
   app.toolLogClose = document.getElementById('tool-log-close');
-  app.segCloud = document.getElementById('menu-seg-cloud');
-  app.segLocal = document.getElementById('menu-seg-local');
   app.dbToolbar = document.getElementById('db-toolbar');
 
   // Use auth_user_id if logged in, otherwise anonymous UUID

@@ -103,7 +103,9 @@ class PluginManager:
         """Enable a plugin by name. Returns True if found."""
         if name not in self._plugins:
             return False
-        self._registry.setdefault("plugins", {})[name] = {"enabled": True}
+        self._registry.setdefault("plugins", {})
+        self._registry["plugins"].setdefault(name, {})
+        self._registry["plugins"][name]["enabled"] = True
         _save_registry(self._registry)
         return True
 
@@ -111,7 +113,9 @@ class PluginManager:
         """Disable a plugin by name. Returns True if found."""
         if name not in self._plugins:
             return False
-        self._registry.setdefault("plugins", {})[name] = {"enabled": False}
+        self._registry.setdefault("plugins", {})
+        self._registry["plugins"].setdefault(name, {})
+        self._registry["plugins"][name]["enabled"] = False
         _save_registry(self._registry)
         return True
 

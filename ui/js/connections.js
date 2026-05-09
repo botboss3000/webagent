@@ -6,6 +6,7 @@
  */
 
 import { apiPath } from './config.js';
+import { isAdmin, showRestrictedModal } from './left-login.js';
 
 // ── DOM refs ──
 let CONN = {};
@@ -55,6 +56,8 @@ async function loadConnections() {
     // Base URL
     CONN.baseUrlInput.value = data.webhook_base_url || '';
 
+    const baseUrl = data.webhook_base_url || 'http://localhost:8080';
+
     // Telegram status
     await loadTelegram(baseUrl);
 
@@ -64,8 +67,6 @@ async function loadConnections() {
       CONN.webhookList.innerHTML = '<div style="color:#565f89;font-size:12px;padding:8px 0;">No webhooks registered. Use the <code>register_webhook</code> agent tool to create one.</div>';
       return;
     }
-
-    const baseUrl = data.webhook_base_url || 'http://localhost:8080';
     let html = '';
     for (const h of hooks) {
       const url = baseUrl + '/api/v1/webhooks/generic/' + h.id;
@@ -170,24 +171,15 @@ async function loadTelegram(baseUrl) {
             <span style="color:#fb4934;font-weight:600;font-size:13px;">○ Not configured</span>
             <span style="font-size:11px;color:#565f89;">Disabled</span>
           </div>
-          <div style="font-size:11px;color:#a9b1d6;line-height:1.5;">
-            <p style="margin:0 0 6px 0;">To connect Telegram:</p>
-            <ol style="margin:0 0 6px 0;padding-left:18px;">
-              <li>Talk to <a href="https://t.me/BotFather" target="_blank" style="color:#7dcfff;">@BotFather</a> on Telegram</li>
-              <li>Send <code>/newbot</code> and follow the prompts</li>
-              <li>Copy the bot token (looks like <code>123456:ABC-DEF...</code>)</li>
-              <li>Set it as <code>TELEGRAM_BOT_TOKEN</code> in your <code>.env</code> file</li>
-              <li>Restart the server</li>
-            </ol>
-            <p style="margin:0;color:#565f89;">Then enable the plugin via the admin panel and set the webhook URL above.</p>
+          <div style="font-size:11px;color:#a9b1d6;line-height:1.5;margin-bottom:10px;">
+            <p style="margin:0 0 6px 0;">Talk to <a href="https://t.me/BotFather" target="_blank" style="color:#7dcfff;">@BotFather</a> on Telegram, send <code>/newbot</code>, then paste the token below:</p>
           </div>
-          <details style="margin-top:8px;font-size:11px;">
-            <summary style="cursor:pointer;color:#7dcfff;">Webhook URL (set after configuring) →</summary>
-            <div style="margin-top:4px;display:flex;align-items:center;gap:4px;background:#16161e;border-radius:4px;padding:4px 6px;">
-              <code style="flex:1;font-size:11px;color:#7dcfff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(webhookUrl)}</code>
-              <button class="conn-copy-btn" data-url="${escHtml(webhookUrl)}" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:12px;padding:2px 4px;" title="Copy URL">📋</button>
-            </div>
-          </details>
+          <div style="display:flex;gap:6px;margin-bottom:8px;">
+            <input type="text" id="conn-tg-token-input" placeholder="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz" autocomplete="off" style="flex:1;padding:8px 10px;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;color:#c0caf5;font-size:12px;font-family:monospace;">
+            <button id="conn-tg-token-save-btn" style="padding:8px 14px;background:#7dcfff;border:none;border-radius:6px;color:#0d0d1a;font-size:12px;font-weight:600;cursor:pointer;">Save</button>
+          </div>
+          <div id="conn-tg-token-status" style="font-size:11px;color:#565f89;margin-bottom:8px;"></div>
+          <div style="font-size:11px;color:#565f89;">After saving the token, you can enable the plugin and set the webhook URL above.</div>
         </div>
       `;
     } else {
@@ -206,6 +198,14 @@ async function loadTelegram(baseUrl) {
               ${enabled ? '⏸ Disable' : '▶ Enable'}
             </button>
           </div>
+          <details style="margin-top:8px;font-size:11px;">
+            <summary style="cursor:pointer;color:#565f89;font-size:11px;">Change token</summary>
+            <div style="margin-top:6px;display:flex;gap:6px;">
+              <input type="text" id="conn-tg-token-input" placeholder="New token from @BotFather" autocomplete="off" style="flex:1;padding:8px 10px;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;color:#c0caf5;font-size:12px;font-family:monospace;">
+              <button id="conn-tg-token-save-btn" style="padding:8px 14px;background:#7dcfff;border:none;border-radius:6px;color:#0d0d1a;font-size:12px;font-weight:600;cursor:pointer;">Save</button>
+            </div>
+            <div id="conn-tg-token-status" style="font-size:11px;color:#565f89;margin-top:4px;"></div>
+          </details>
         </div>
       `;
     }
@@ -235,6 +235,55 @@ async function loadTelegram(baseUrl) {
       });
     }
 
+    // Wire token save button
+    const tokenInput = document.getElementById('conn-tg-token-input');
+    const tokenSaveBtn = document.getElementById('conn-tg-token-save-btn');
+    const tokenStatus = document.getElementById('conn-tg-token-status');
+
+    async function saveToken() {
+      if (!tokenInput || !tokenStatus) return;
+      const token = tokenInput.value.trim();
+      if (!token) {
+        tokenStatus.textContent = 'Please paste the bot token from @BotFather.';
+        tokenStatus.style.color = '#fb4934';
+        return;
+      }
+      tokenStatus.textContent = 'Saving...';
+      tokenStatus.style.color = '#565f89';
+      try {
+        const resp = await fetch(apiPath('/admin/communications/plugins/telegram/token'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: token }),
+        });
+        const result = await resp.json();
+        if (result.status === 'ok') {
+          tokenStatus.textContent = '✓ Token saved! Enabling plugin...';
+          tokenStatus.style.color = '#b8bb26';
+          // Auto-enable
+          const enableResp = await fetch(apiPath('/admin/communications/plugins/telegram/enable'), { method: 'POST' });
+          await enableResp.json();
+          // Reload
+          await loadTelegram(baseUrl);
+        } else {
+          tokenStatus.textContent = 'Error: ' + (result.message || 'unknown');
+          tokenStatus.style.color = '#fb4934';
+        }
+      } catch (e) {
+        tokenStatus.textContent = 'Error: ' + e.message;
+        tokenStatus.style.color = '#fb4934';
+      }
+    }
+
+    if (tokenSaveBtn) {
+      tokenSaveBtn.addEventListener('click', saveToken);
+    }
+    if (tokenInput) {
+      tokenInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') saveToken();
+      });
+    }
+
     // Wire copy buttons
     CONN.telegramStatus.querySelectorAll('.conn-copy-btn').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -257,9 +306,13 @@ export function initConnections() {
   bindDom();
   if (!CONN.menuItem || !CONN.modal) return;
 
-  // Menu item click → close dropdown → open modal
+  // Menu item click → close dropdown → open modal (admin only)
   CONN.menuItem.addEventListener('click', () => {
     if (CONN.dropdown) CONN.dropdown.style.display = 'none';
+    if (!isAdmin()) {
+      showRestrictedModal();
+      return;
+    }
     openConnections();
   });
 
