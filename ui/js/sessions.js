@@ -3,6 +3,7 @@
 import { app } from './state.js';
 import { connectAgent } from './agentWs.js';
 import { loopSessionChanged } from './loop.js';
+import { loopVisualSessionChanged } from './loop-visual.js';
 import { streamSessionChanged } from './stream.js';
 import { apiPath } from './config.js';
 import { getAuthToken } from './left-login.js';
@@ -186,6 +187,7 @@ export function initSessions() {
       localStorage.setItem('terminalSessionId', app.currentSessionId);
       populateSessionSelect(app.currentUserId);
       loopSessionChanged();
+      loopVisualSessionChanged();
       connectAgent();
       
       // Update UI active state
@@ -231,6 +233,7 @@ export function initSessions() {
     }
     streamSessionChanged();
     loopSessionChanged();
+    loopVisualSessionChanged();
     connectAgent();
   });
 

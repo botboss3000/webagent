@@ -3,6 +3,7 @@
 import { app } from './state.js';
 import { startStream, stopStream } from './stream.js';
 import { startLoop, stopLoop, setLoopLevel, toggleAutoScroll } from './loop.js';
+import { startLoopVisual, stopLoopVisual } from './loop-visual.js';
 import { initGithub, startGithub, stopGithub } from './github.js';
 export function initTabs() {
   const tabSelect = document.getElementById('main-tab-select');
@@ -28,6 +29,7 @@ export function initTabs() {
     if (tabValue === 'terminal') {
       stopStream();
       stopLoop();
+      stopLoopVisual();
       setTimeout(() => {
         if (app && app.fitAddon) {
           app.fitAddon.fit();
@@ -35,17 +37,25 @@ export function initTabs() {
       }, 50);
     } else if (tabValue === 'stream') {
       stopLoop();
+      stopLoopVisual();
       startStream();
-    } else if (tabValue === 'loop') {
+    } else if (tabValue === 'flow') {
       stopStream();
+      stopLoopVisual();
       startLoop();
+    } else if (tabValue === 'loop-visual') {
+      stopStream();
+      stopLoop();
+      startLoopVisual();
     } else if (tabValue === 'database') {
       stopStream();
       stopLoop();
+      stopLoopVisual();
       stopGithub();
     } else if (tabValue === 'github') {
       stopStream();
       stopLoop();
+      stopLoopVisual();
       startGithub();
     }
   }
