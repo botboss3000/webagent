@@ -31,16 +31,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _ws_client_is_loopback(host: Optional[str]) -> bool:
-    if host is None:
-        return True
-    if host in ("127.0.0.1", "::1", "localhost"):
-        return True
-    if host.startswith("::ffff:"):
-        return host.removeprefix("::ffff:") == "127.0.0.1"
-    return False
-
-
 # Helper function for JSON serialization (not part of the class, just a utility)
 def _json_default_serializer(obj: Any) -> Any:
     if isinstance(obj, (datetime.datetime, datetime.date, datetime.time)):
@@ -63,11 +53,6 @@ async def agent_websocket(websocket: WebSocket):
       {"type":"response","content":"Final answer"}     — final answer (no more tool calls)
       {"type":"error","message":"..."}        — something went wrong
     """
-
-    client_host = websocket.client.host if websocket.client else None
-    if not _ws_client_is_loopback(client_host):
-        await websocket.close(code=4001, reason="Localhost only")
-        return
 
     await websocket.accept()
 

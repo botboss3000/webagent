@@ -52,16 +52,6 @@ async def close_persistent_session():
         _close_winpty_executor()
 
 
-def _ws_client_is_loopback(host: Optional[str]) -> bool:
-    """Allow browser WebSockets from loopback (incl. IPv4-mapped IPv6 on Windows)."""
-    if host is None:
-        return True
-    if host in ("127.0.0.1", "::1", "localhost"):
-        return True
-    if host.startswith("::ffff:"):
-        return host.removeprefix("::ffff:") == "127.0.0.1"
-    return False
-
 # ── Platform detection ──
 IS_WINDOWS = sys.platform.startswith("win")
 
@@ -369,11 +359,6 @@ class TerminalSession:
 @router.websocket("/api/v1/terminal/ws")
 async def terminal_websocket(websocket: WebSocket):
     """WebSocket endpoint — one PTY session per connection."""
-
-    client_host = websocket.client.host if websocket.client else None
-    if not _ws_client_is_loopback(client_host):
-        await websocket.close(code=4001, reason="Localhost only")
-        return
 
     await websocket.accept()
 
