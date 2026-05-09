@@ -161,6 +161,7 @@ async function loadTelegram(baseUrl) {
     const configured = tgPlugin.has_token;
     const enabled = tgPlugin.enabled;
     const webhookUrl = (baseUrl || data.webhook_base_url || 'http://localhost:8080') + '/api/v1/webhooks/telegram';
+    const mode = (baseUrl && !baseUrl.includes('localhost') && !baseUrl.includes('127.0.0.1')) ? 'webhook' : 'polling';
 
     let html = '';
 
@@ -187,7 +188,7 @@ async function loadTelegram(baseUrl) {
         <div style="background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;padding:12px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
             <span style="color:#b8bb26;font-weight:600;font-size:13px;">● ${enabled ? 'Connected' : 'Disabled'}</span>
-            <span style="font-size:11px;color:${enabled ? '#b8bb26' : '#565f89'};">Token configured</span>
+            <span style="font-size:11px;color:#565f89;">${mode === 'polling' ? '🔄 Polling' : '📡 Webhook'} · Token configured</span>
           </div>
           <div style="display:flex;align-items:center;gap:4px;background:#16161e;border-radius:4px;padding:4px 6px;margin-bottom:6px;">
             <code style="flex:1;font-size:11px;color:#7dcfff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(webhookUrl)}</code>
@@ -258,11 +259,13 @@ async function loadTelegram(baseUrl) {
         });
         const result = await resp.json();
         if (result.status === 'ok') {
-          let msg = '✓ Token saved! Plugin enabled.';
-          if (result.webhook_registered) {
+          let mode = result.mode || 'webhook';
+          let modeIcon = mode === 'polling' ? '🔄' : '📡';
+          let msg = `✓ Token saved! Plugin enabled (${modeIcon} ${mode}).`;
+          if (mode === 'webhook' && result.webhook_registered) {
             msg += ' Webhook registered.';
-          } else {
-            msg += ' ⚠ Webhook not registered (set Webhook Base URL above).';
+          } else if (mode === 'webhook' && !result.webhook_registered) {
+            msg += ' ⚠ Webhook registration failed.';
           }
           tokenStatus.textContent = msg;
           tokenStatus.style.color = '#b8bb26';

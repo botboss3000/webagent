@@ -54,6 +54,19 @@ After **any** change that affects how the repo is structured, configured, or use
 - **Where to write:** Put **new** Markdown you create in this workspace (analysis drafts, scratch specs, ad-hoc notes, roadmap drafts, etc.) under **`temp/`** (for example `temp/my-notes.md`), unless the user explicitly tells you to use a different directory or path.
 - **Do not read by default:** **Do not** open, search, grep, or treat **`temp/`** as a source of truth for how the product works. It may contain obsolete, incorrect, or conflicting material that would confuse reasoning about the real codebase. **Only** read files there if the user clearly asks you to (e.g. “read my notes in `temp/…`”).
 
+## Explain Logic, Not Code
+
+The user is NOT a coder. When explaining how something works or proposing a change, explain in **logic and behavior** — what happens, why, in what order, what the data flow is. Avoid:
+- Code blocks (Python, SQL, bash)
+- Function signatures
+- Variable names
+- Import statements
+- Schema DDL syntax
+
+If code is needed to understand the logic (e.g. a schema change), describe the **shape** of the data and the **rules**, not the SQL/Python syntax. Use tables, bullet lists, flow descriptions, and plain English.
+
+When the user asks "show me" or "what would X look like", describe the steps and the outcome, don't print source files.
+
 ## Misc Directions
 
 - **Console logs:** If adding console logs to investigate issue, remove the logging after the issue is resolved
