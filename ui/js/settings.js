@@ -35,7 +35,7 @@ const SETTINGS_MODEL_SEARCH = document.getElementById('settings-model-search');
 const SETTINGS_MODEL_DROPDOWN = document.getElementById('settings-model-dropdown');
 const SETTINGS_MODEL_STATUS = document.getElementById('settings-model-status');
 
-const MASKED_PLACEHOLDER = '*******************************************';
+// No longer masking API keys — always show plaintext
 let allModels = [];
 let selectedModel = '';
 let keyHasBeenModified = false;
@@ -73,8 +73,7 @@ export function initSettings() {
     SETTINGS_CLEAR.addEventListener('click', clearSettings);
 
     SETTINGS_API_KEY.addEventListener('input', () => {
-        const val = SETTINGS_API_KEY.value;
-        keyHasBeenModified = !(val === MASKED_PLACEHOLDER || val === '');
+        keyHasBeenModified = SETTINGS_API_KEY.value !== '';
     });
 
     // Provider switch: save current to map, load new from map
@@ -134,14 +133,8 @@ export function initSettings() {
 
 function saveCurrentToMap(providerKey) {
     if (!providerKey || providerKey === '_custom') return;
-    let apiKey = SETTINGS_API_KEY.value;
-    if (apiKey === MASKED_PLACEHOLDER) {
-        // Preserve the key from the stored map (we can't read masked value)
-        const existing = providerConfigs[providerKey];
-        apiKey = existing ? existing.api_key || '' : '';
-    }
     providerConfigs[providerKey] = {
-        api_key: apiKey,
+        api_key: SETTINGS_API_KEY.value,
         model: selectedModel,
         base_url: SETTINGS_BASE_URL.value.trim(),
     };
@@ -187,7 +180,6 @@ async function loadSettings() {
         const res = await _authFetch(apiPath('/admin/settings/provider'));
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-
         // Store the full providers map from server
         providerConfigs = data.providers || {};
         currentProvider = data.provider || 'openrouter';
@@ -204,14 +196,9 @@ async function loadSettings() {
             SETTINGS_BASE_URL.value = data.base_url || '';
         }
 
-        // API key — show masked if saved, blank otherwise
-        if (data.api_key && data.api_key.length > 0) {
-            SETTINGS_API_KEY.value = MASKED_PLACEHOLDER;
-            SETTINGS_API_KEY.placeholder = '';
-        } else {
-            SETTINGS_API_KEY.value = '';
-            SETTINGS_API_KEY.placeholder = 'sk-...';
-        }
+        // API key — show plaintext always
+        SETTINGS_API_KEY.value = data.api_key || '';
+        SETTINGS_API_KEY.placeholder = 'sk-...';
 
         // Model
         selectedModel = data.model || '';
@@ -325,20 +312,7 @@ async function saveSettings() {
     }
 
     // Read current api_key from form
-    let apiKey = '';
-    if (keyHasBeenModified) {
-        apiKey = SETTINGS_API_KEY.value.trim();
-        if (!apiKey) {
-            showStatus('Please enter an API key', 'error');
-            return;
-        }
-    } else {
-        // Not modified — preserve from map
-        const saved = providerConfigs[provider];
-        if (saved && saved.api_key) {
-            apiKey = saved.api_key;
-        }
-    }
+    let apiKey = SETTINGS_API_KEY.value.trim();
 
     // Update current provider in map
     providerConfigs[provider] = {
@@ -346,17 +320,19 @@ async function saveSettings() {
         model: selectedModel,
     };
 
+    const payload = {
+        provider,
+        base_url: baseUrl,
+        api_key: apiKey,
+        model: selectedModel,
+        providers: providerConfigs,
+    };
+
     try {
         const res = await _authFetch(apiPath('/admin/settings/provider'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                provider,
-                base_url: baseUrl,
-                api_key: apiKey,
-                model: selectedModel,
-                providers: providerConfigs,
-            }),
+            body: JSON.stringify(payload),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();

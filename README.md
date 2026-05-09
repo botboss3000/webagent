@@ -5,7 +5,7 @@ A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional *
 ## Features
 
 - **Chat** — `POST /api/v1/chat` (and **`POST /api/v1/chat/stream`**): agent loop with tools; turns go to **`interactions`**. Prior turns for the same **`session_id`** are reloaded from the DB into the model context (browser refresh does not reset the conversation).
-- **WebSocket agent** — `GET` upgrade to `/api/v1/agent/ws`: streaming tokens, tool events, pipeline steps (**loopback clients only**).
+- **WebSocket agent** — `GET` upgrade to `/api/v1/agent/ws`: streaming tokens, tool events, pipeline steps.
 - **Context** — Prompt slices from `context_type` / `doc_type`; if a user has no rows, **`context_templates`** are copied into per-user context on first chat.
 - **Memory** — Hybrid search (FTS5 keyword + vector cosine similarity via embedding API) runs before each chat turn; results injected as `[BRAIN CONTEXT]` in the system prompt. Trivial messages (greetings, affirmations, commands) skip memory via regex gate. Page content auto-chunked and embedded on write. Background save of chat snippets into memory. See [`memory-upgrade.md`](memory-upgrade.md).
 - **Attachments** — Image, audio, video, and file uploads. Users attach files via the UI (📎 button in footer, drag & drop onto chat messages or footer area, 🎤 voice recording). Files upload via **`POST /api/v1/upload`** and bytes are persisted through **`app/db/attachments/`** (local filesystem in dev, Supabase Storage in production — see `app/db/SUPABASE_STORAGE.md`). Metadata is stored in the **`attachments`** table (local SQLite or Supabase). The agent accesses files with the **`read_attachment`** built-in tool. Supports image preview, audio/video players, and download links inline in chat bubbles. Attachments persist per-session and survive server restarts.
@@ -254,6 +254,29 @@ Common types include `agent`, `user`, `skills`, `tools`, `tasks`, and optionally
 ## Deployment
 
 Use any Python-capable host (Railway, Render, Fly.io, Docker, etc.). Set the same env vars; use **cloud** + Supabase when you run multiple app instances.
+
+### Google Cloud Run
+
+webAgent is designed to run on Cloud Run. The `Dockerfile` is Cloud Run-ready (`PORT` env var, health check, CORS).
+
+**Cloud Run compatibility checklist (maintain when changing code):**
+
+| Requirement | Why |
+|-------------|-----|
+| All new Python deps added to `requirements.txt` | Cloud Run builds from `pip install -r requirements.txt` — missing deps crash at runtime |
+| No dependency on persistent local filesystem | Container filesystem is **ephemeral** — use Supabase (cloud mode) for DB, Supabase Storage for uploads |
+| WebSocket endpoints accept remote clients | Both `/api/v1/agent/ws` and `/api/v1/terminal/ws` accept connections from any origin (no loopback guard) |
+| File writes backed by `git push` | Code changes on ephemeral disk are lost on container recycle — commit and push to persist |
+
+**Deploy (manual):**
+```bash
+gcloud run deploy webagent \
+  --source . \
+  --region europe-west1 \
+  --allow-unauthenticated
+```
+
+**Deploy (continuous deployment):** Connect your git repo in Cloud Run UI → push triggers auto-build + deploy.
 
 ## Administrator Tools
 
