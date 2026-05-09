@@ -11,7 +11,7 @@ Admin endpoints for managing communication plugins.
 import json
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from app.communications.manager import get_plugin_manager, reload_plugins
@@ -113,8 +113,9 @@ async def set_webhook_url(req: WebhookUrlRequest):
 
 
 @router.post("/plugins/{name}/token")
-async def set_plugin_token(name: str, req: WebhookUrlRequest):
-    """Set a bot token for a plugin. Saves to registry.json."""
+async def set_plugin_token(name: str, req: WebhookUrlRequest, http_request: Request):
+    """Set a bot token for a plugin. Saves to registry.json, auto-detects
+    the server URL from the incoming request, and registers the webhook."""
     pm = get_plugin_manager()
     plugin = pm.get_plugin(name)
     if not plugin:
@@ -130,15 +131,40 @@ async def set_plugin_token(name: str, req: WebhookUrlRequest):
     from pathlib import Path
     import json as _json
     reg_path = Path(__file__).resolve().parent.parent / "communications" / "registry.json"
+
+    # Auto-detect server URL from the incoming request if base URL not set
+    server_url = registry.get("webhook_base_url", "")
+    if not server_url:
+        # Build base URL from the request: scheme://host
+        scheme = str(http_request.url.scheme)
+        host = str(http_request.url.hostname)
+        port = http_request.url.port
+        if port and port not in (80, 443):
+            server_url = f"{scheme}://{host}:{port}"
+        else:
+            server_url = f"{scheme}://{host}"
+        registry["webhook_base_url"] = server_url
+        logger.info("Auto-detected server URL: %s", server_url)
+
     reg_path.write_text(_json.dumps(registry, indent=2), encoding="utf-8")
 
     # Re-init plugin so it picks up the new token
     plugin._bot_token = token
 
+    # Auto-enable the plugin (also registers webhook with Telegram)
+    pm.enable_plugin(name)
+    if hasattr(plugin, 'set_webhook_url') and server_url:
+        webhook_ok = await plugin.set_webhook_url(server_url)
+        logger.info("Telegram webhook registration at %s: %s", server_url + "/api/v1/webhooks/telegram", "ok" if webhook_ok else "failed")
+    else:
+        webhook_ok = False
+
     return {
         "status": "ok",
-        "message": f"Token saved for plugin '{name}'",
+        "message": f"Token saved for plugin '{name}', webhook auto-configured",
         "has_token": True,
+        "webhook_base_url": server_url,
+        "webhook_registered": webhook_ok,
     }
 
 

@@ -258,12 +258,15 @@ async function loadTelegram(baseUrl) {
         });
         const result = await resp.json();
         if (result.status === 'ok') {
-          tokenStatus.textContent = '✓ Token saved! Enabling plugin...';
+          let msg = '✓ Token saved! Plugin enabled.';
+          if (result.webhook_registered) {
+            msg += ' Webhook registered.';
+          } else {
+            msg += ' ⚠ Webhook not registered (set Webhook Base URL above).';
+          }
+          tokenStatus.textContent = msg;
           tokenStatus.style.color = '#b8bb26';
-          // Auto-enable
-          const enableResp = await fetch(apiPath('/admin/communications/plugins/telegram/enable'), { method: 'POST' });
-          await enableResp.json();
-          // Reload
+          // Reload the whole section to reflect new state
           await loadTelegram(baseUrl);
         } else {
           tokenStatus.textContent = 'Error: ' + (result.message || 'unknown');
