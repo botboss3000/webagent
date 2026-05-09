@@ -68,9 +68,12 @@ export function connectAgent() {
 
     try { logTool(event); } catch(e) { /* toolLog panel not mounted */ }
 
-    // Forward to loop visualizer if registered
+    // Forward to visualizers if registered
     if (app._loopHandler) {
       try { app._loopHandler(event); } catch(e) { /* ignore */ }
+    }
+    if (app._loopVisualHandler) {
+      try { app._loopVisualHandler(event); } catch(e) { /* ignore */ }
     }
 
     switch (event.type) {

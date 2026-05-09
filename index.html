@@ -10,6 +10,7 @@
 <link rel="stylesheet" href="./ui/css/app2.css">
 <link rel="stylesheet" href="./ui/css/app3.css">
 <link rel="stylesheet" href="./ui/css/loop.css">
+<link rel="stylesheet" href="./ui/css/loop-visual.css">
 </head>
 <body>
 
@@ -54,7 +55,8 @@
     <select id="main-tab-select" class="status-select">
       <option value="terminal">⌘ Terminal</option>
       <option value="stream" selected>📡 Stream</option>
-      <option value="loop">🔄 Loop</option>
+      <option value="flow">🔄 Flow</option>
+      <option value="loop-visual">🔁 Loop</option>
       <option value="database">📊 Database</option>
       <option value="github">🐙 GitHub</option>
 
@@ -99,7 +101,7 @@
         </div>
       </div>
     </div>
-    <div id="tab-loop" class="tab-content">
+    <div id="tab-flow" class="tab-content">
       <div id="loop-container">
         <div id="loop-toolbar">
           <span style="color:#565f89;font-size:11px;">🔄 Pipeline</span>
@@ -110,6 +112,23 @@
         </div>
         <div id="loop-list">
           <div class="loop-hint">Pipeline visualizer — connect to see agent flow</div>
+        </div>
+      </div>
+    </div>
+    <div id="tab-loop-visual" class="tab-content">
+      <div id="loop-visual-container">
+        <div id="loop-visual-toolbar">
+          <span style="color:#565f89;font-size:11px;">🔁 Agent Loop</span>
+          <div id="loop-visual-pages"></div>
+          <div id="loop-visual-legend">
+            <span class="lv-legend-item"><span class="lv-legend-dot" style="background:#2a2a4a;"></span> idle</span>
+            <span class="lv-legend-item"><span class="lv-legend-dot" style="background:#7dcfff;"></span> active</span>
+            <span class="lv-legend-item"><span class="lv-legend-dot" style="background:#9ece6a;"></span> done</span>
+            <span class="lv-legend-item"><span class="lv-legend-dot" style="background:#f7768e;"></span> error</span>
+          </div>
+        </div>
+        <div id="loop-visual-graph-area">
+          <div class="loop-visual-hint">Agent loop visualizer — connect to see events light up the graph</div>
         </div>
       </div>
     </div>
