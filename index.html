@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="./ui/css/app3.css">
 <link rel="stylesheet" href="./ui/css/loop.css">
 <link rel="stylesheet" href="./ui/css/loop-visual.css">
+<link rel="stylesheet" href="./ui/css/autoagent.css">
 </head>
 <body>
 
@@ -35,6 +36,10 @@
         <span>⚡ Optimizer</span>
       </div>
 
+      <div class="settings-menu-item" id="github-menu-item">
+        <span>🐙 GitHub</span>
+      </div>
+
       <hr style="border:none;border-top:1px solid #2a2a4a;margin:4px 0;">
 
       <div class="settings-menu-item" id="btn-signout" style="color:#fb4934;">
@@ -51,7 +56,8 @@
       <option value="flow">🔄 Flow</option>
       <option value="loop-visual">🔁 Loop</option>
       <option value="database">📊 Database</option>
-      <option value="github">🐙 GitHub</option>
+      <option value="github" style="display:none;">🐙 GitHub</option>
+      <option value="autoagent">🎨 AutoAgent</option>
 
     </select>
   </div>
@@ -65,8 +71,29 @@
   </div>
 
   <span id="status-right">
-    <span id="top-user-id" style="color: #7dcfff; font-weight: 600; display: flex; align-items: center; gap: 4px; font-size: 13px;"><span id="top-user-id-val">None</span></span>
-    <span id="btn-signout-header" style="cursor:pointer;color:#565f89;font-size:14px;" title="Sign out">➜]</span>
+    <div class="user-dropdown" id="user-dropdown">
+      <span id="top-user-id" class="user-dropdown-trigger" style="color: #7dcfff; font-weight: 600; display: flex; align-items: center; gap: 4px; font-size: 13px; cursor: pointer;">
+        <span id="top-user-id-val">None</span>
+        <span class="user-dropdown-arrow">▾</span>
+      </span>
+      <div id="user-dropdown-menu" class="user-dropdown-menu" style="display:none;">
+        <div class="user-dropdown-header">
+          <span id="dropdown-user-label">User</span>
+        </div>
+        <div class="theme-toggle-section">
+          <span class="theme-toggle-label">Theme</span>
+          <div class="theme-toggle-group">
+            <button class="theme-option" data-theme="light" title="Light">☀️</button>
+            <button class="theme-option" data-theme="dark" title="Dark">🌙</button>
+            <button class="theme-option" data-theme="system" title="System">💻</button>
+          </div>
+        </div>
+        <div class="user-dropdown-divider"></div>
+        <button id="btn-signout-header" class="user-dropdown-action">
+          <span class="user-dropdown-action-icon">🚪</span> Sign Out
+        </button>
+      </div>
+    </div>
   </span>
 </div>
 
@@ -252,6 +279,27 @@
         </div>
       </div>
     </div>
+    <div id="tab-autoagent" class="tab-content">
+      <div id="autoagent-container">
+        <div id="autoagent-prompt-bar">
+          <input type="text" id="autoagent-prompt-input" class="aa-prompt-input" placeholder="Describe what you want to create visually..." maxlength="2000">
+          <button id="autoagent-send-btn" class="aa-send-btn" title="Send to UI Agent">▶</button>
+        </div>
+        <div id="autoagent-viewport">
+          <div id="autoagent-placeholder" class="aa-placeholder">
+            <span class="aa-placeholder-icon">🎨</span>
+            <span class="aa-placeholder-text">Send a prompt to create a p5.js visualization</span>
+            <span class="aa-placeholder-hint">e.g. &quot;generate a particle field with purple and blue&quot;</span>
+          </div>
+          <iframe id="autoagent-iframe" class="aa-iframe" sandbox="allow-scripts allow-same-origin" style="display:none;" title="Visualization output"></iframe>
+          <div id="autoagent-loading" class="aa-loading" style="display:none;">
+            <span class="aa-spinner"></span>
+            <span>UI Agent is creating your visualization...</span>
+          </div>
+        </div>
+        <div id="autoagent-status" class="aa-status"></div>
+      </div>
+    </div>
     <div id="tab-database" class="tab-content">
       <div id="db-viewer">
         <div id="db-toolbar" style="display:none;">
@@ -415,10 +463,41 @@
 <!-- Optimizer modal -->
 <div id="optimizer-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:1000;">
   <div id="optimizer-backdrop" style="position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);"></div>
-  <div id="optimizer-panel" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:24px;width:700px;max-width:95vw;max-height:85vh;overflow-y:auto;color:#c0caf5;font-size:14px;">
+  <div id="optimizer-panel" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:24px;width:900px;max-width:95vw;max-height:85vh;overflow-y:auto;color:#c0caf5;font-size:14px;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
       <h2 style="margin:0;font-size:18px;font-weight:600;">⚡ Optimizer</h2>
       <button id="optimizer-close" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:20px;">&times;</button>
+    </div>
+
+    <!-- SESSION MANAGER -->
+    <div style="margin-bottom:20px;">
+      <label style="display:block;margin-bottom:8px;color:#a9b1d6;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">
+        📋 Session Manager
+        <span id="opt-session-count" style="font-weight:400;font-size:11px;color:#565f89;text-transform:none;letter-spacing:0;">— loading...</span>
+      </label>
+      <div style="padding:0;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:8px;overflow:hidden;">
+        <div style="overflow-x:auto;">
+          <table id="opt-session-table" style="width:100%;border-collapse:collapse;font-size:11px;">
+            <thead>
+              <tr style="background:#0d0d1a;border-bottom:1px solid #2a2a4a;">
+                <th style="padding:8px 10px;text-align:left;color:#a9b1d6;font-weight:600;white-space:nowrap;">Session</th>
+                <th style="padding:8px 10px;text-align:center;color:#a9b1d6;font-weight:600;white-space:nowrap;">Msgs</th>
+                <th style="padding:8px 10px;text-align:center;color:#a9b1d6;font-weight:600;white-space:nowrap;">Turns</th>
+                <th style="padding:8px 10px;text-align:right;color:#a9b1d6;font-weight:600;white-space:nowrap;">Tokens In</th>
+                <th style="padding:8px 10px;text-align:right;color:#a9b1d6;font-weight:600;white-space:nowrap;">Tokens Out</th>
+                <th style="padding:8px 10px;text-align:right;color:#a9b1d6;font-weight:600;white-space:nowrap;">Total</th>
+                <th style="padding:8px 10px;text-align:right;color:#a9b1d6;font-weight:600;white-space:nowrap;">Duration</th>
+                <th style="padding:8px 10px;text-align:right;color:#a9b1d6;font-weight:600;white-space:nowrap;">Cost</th>
+                <th style="padding:8px 10px;text-align:left;color:#a9b1d6;font-weight:600;white-space:nowrap;">Active</th>
+                <th style="padding:8px 10px;text-align:center;color:#a9b1d6;font-weight:600;white-space:nowrap;">Switch</th>
+              </tr>
+            </thead>
+            <tbody id="opt-session-tbody">
+              <tr><td colspan="10" style="padding:24px;text-align:center;color:#565f89;">Loading sessions...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
 
     <!-- MODE SELECTOR -->

@@ -526,6 +526,14 @@ class LocalBackend(StorageBackend):
                 conn.execute("ALTER TABLE interactions ADD COLUMN channel TEXT")
                 conn.commit()
 
+            # ── Migration: add source column to interactions (optimizer tracking) ──
+            cursor = conn.execute("PRAGMA table_info(interactions)")
+            cols2 = {row[1] for row in cursor.fetchall()}
+            if "source" not in cols2:
+                conn.execute("ALTER TABLE interactions ADD COLUMN source TEXT DEFAULT 'user'")
+                conn.commit()
+                logger.info("Added interactions.source column")
+
             conn.commit()
 
             # ── Post-migration: move data from old agents_v1 ──
@@ -558,11 +566,33 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Context templates migration complete")
 
+            # ── Seed: p5js visualizer skill template ──
+            self._seed_visualizer_template(conn)
+
         except Exception as e:
             logger.error("Error initializing local database: %s", e)
             raise
         finally:
             conn.close()
+
+    def _seed_visualizer_template(self, conn: sqlite3.Connection) -> None:
+        """Seed p5js visualizer skill as a context_templates row (one-time)."""
+        import os
+        skill_path = os.path.join(os.path.dirname(__file__), "..", "visualizer", "SKILL.md")
+        try:
+            with open(skill_path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except (FileNotFoundError, OSError):
+            logger.warning("Visualizer SKILL.md not found at %s — skipping seed", skill_path)
+            return
+
+        conn.execute(
+            """INSERT OR IGNORE INTO context_templates (id, context_type, title, content, tags)
+               VALUES (?, ?, ?, ?, ?)""",
+            (_uuid(), "p5js", "p5.js Creative Coding", content, '["p5js","creative-coding","visualizer"]'),
+        )
+        conn.commit()
+        logger.info("Seeded p5js visualizer skill template")
 
     def _migrate_context_documents_to_agent_id(self, conn: sqlite3.Connection) -> None:
         """Migrate legacy context_documents.user_id → agent_id (one-time)."""
@@ -723,14 +753,15 @@ class LocalBackend(StorageBackend):
         metadata: Optional[str] = None,
         input_data: Optional[str] = None,
         sender_id: Optional[str] = None,
+        source: Optional[str] = None,
     ) -> str:
         await self.assert_session_owned(user_id, session_id)
         conn = self._get_conn()
         try:
             interaction_id = _uuid()
             conn.execute(
-                "INSERT INTO interactions (id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (interaction_id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input_data),
+                "INSERT INTO interactions (id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (interaction_id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input_data, source or 'user'),
             )
             conn.commit()
             logger.debug("Inserted interaction %s", interaction_id)

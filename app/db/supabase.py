@@ -165,12 +165,45 @@ class SupabaseBackend(StorageBackend):
             logger.error("Error fetching context defaults: %s", e)
             raise
 
+    async def _ensure_p5js_template(self) -> None:
+        """Lazy-seed the p5js visualizer skill as a context_templates row."""
+        try:
+            existing = (
+                self._client.table("context_templates")
+                .select("id")
+                .eq("context_type", "p5js")
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                return  # Already seeded
+
+            import os
+            skill_path = os.path.join(os.path.dirname(__file__), "..", "visualizer", "SKILL.md")
+            with open(skill_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            self._client.table("context_templates").insert({
+                "context_type": "p5js",
+                "title": "p5.js Creative Coding",
+                "content": content,
+                "tags": ["p5js", "creative-coding", "visualizer"],
+            }).execute()
+            logger.info("Seeded p5js visualizer skill template")
+        except (FileNotFoundError, OSError):
+            logger.warning("Visualizer SKILL.md not found — skipping Supabase seed")
+        except Exception as e:
+            logger.warning("Failed to seed p5js template: %s", e)
+
     async def copy_defaults_to_agent(self, agent_id: str) -> int:
         """
         Copy template rows into context for this agent.
         Only copies rows that don't already exist for this agent (by context_type).
         """
         try:
+            # Ensure p5js visualizer template row exists (one-time lazy seed)
+            await self._ensure_p5js_template()
+
             agent_check = (
                 self._client.table("agents")
                 .select("id")

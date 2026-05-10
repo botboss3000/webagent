@@ -277,6 +277,149 @@ async def get_session_messages(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/session-stats")
+async def session_stats(
+    user_id: str = Query(..., description="User ID"),
+    db: str = Query("local.db", description="Database filename"),
+):
+    """
+    Return aggregated usage stats per session for a user.
+
+    Parses interactions.metadata JSON to extract:
+      - input_tokens, output_tokens (from assistant roles)
+      - duration_ms (from assistant roles — LLM call wall time)
+      - cost (from assistant roles, when available)
+      - turn count, message count, last active
+    """
+    db_path = _get_db_path(db)
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        # Fetch sessions for user
+        try:
+            cur.execute(
+                'SELECT id, title, created_at FROM sessions WHERE user_id = ? ORDER BY created_at DESC',
+                (user_id,)
+            )
+            session_rows = cur.fetchall()
+        except sqlite3.OperationalError:
+            session_rows = []
+
+        sessions_map = {
+            r["id"]: {"title": r["title"] or r["id"][:12], "created_at": r["created_at"]}
+            for r in session_rows
+        }
+
+        # If no sessions table rows, fall back to distinct session_ids from interactions
+        if not sessions_map:
+            try:
+                cur.execute(
+                    'SELECT DISTINCT session_id FROM interactions ORDER BY created_at DESC'
+                )
+                for row in cur.fetchall():
+                    sid = row[0]
+                    if sid and sid not in sessions_map:
+                        sessions_map[sid] = {"title": sid[:12], "created_at": None}
+            except sqlite3.OperationalError:
+                pass
+
+        if not sessions_map:
+            conn.close()
+            return {"sessions": [], "db": db}
+
+        session_ids = list(sessions_map.keys())
+
+        # Build stats per session
+        results = []
+        for sid in session_ids:
+            try:
+                cur.execute(
+                    'SELECT role, metadata, created_at FROM interactions WHERE session_id = ? ORDER BY created_at ASC',
+                    (sid,)
+                )
+                rows = cur.fetchall()
+            except sqlite3.OperationalError:
+                rows = []
+
+            total_input_tokens = 0
+            total_output_tokens = 0
+            total_duration_ms = 0
+            total_cost = 0.0
+            turn_count = 0
+            message_count = 0
+            has_cost = False
+            last_active = None
+
+            for row in rows:
+                message_count += 1
+                ts = row["created_at"]
+                if ts and (last_active is None or ts > last_active):
+                    last_active = ts
+
+                raw_meta = row["metadata"]
+                if not raw_meta:
+                    continue
+                try:
+                    meta = json.loads(raw_meta)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(meta, dict):
+                    continue
+
+                role = row["role"] or ""
+
+                if role == "assistant":
+                    in_tok = meta.get("input_tokens")
+                    out_tok = meta.get("output_tokens")
+                    dur = meta.get("duration_ms")
+                    cost_val = meta.get("cost")
+                    turn = meta.get("turn")
+
+                    if in_tok is not None:
+                        total_input_tokens += int(in_tok)
+                    if out_tok is not None:
+                        total_output_tokens += int(out_tok)
+                    if dur is not None:
+                        total_duration_ms += int(dur)
+                    if cost_val is not None:
+                        total_cost += float(cost_val)
+                        has_cost = True
+                    if turn is not None:
+                        # Use max turn value for this session
+                        turn_count = max(turn_count, int(turn) + 1)
+                    else:
+                        # Count assistant messages as turns
+                        turn_count += 1
+
+            # Count user+assistant turns that form "loops"
+            total_tokens = total_input_tokens + total_output_tokens
+
+            entry = {
+                "session_id": sid,
+                "title": sessions_map[sid]["title"],
+                "created_at": sessions_map[sid]["created_at"],
+                "last_active": last_active,
+                "message_count": message_count,
+                "turn_count": turn_count,
+                "total_input_tokens": total_input_tokens,
+                "total_output_tokens": total_output_tokens,
+                "total_tokens": total_tokens,
+                "total_duration_ms": total_duration_ms,
+                "total_cost": round(total_cost, 6) if has_cost else None,
+            }
+            results.append(entry)
+
+        # Sort by last_active descending
+        results.sort(key=lambda s: s["last_active"] or "", reverse=True)
+
+        conn.close()
+        return {"sessions": results, "db": db}
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/stream/interactions")
 async def stream_interactions(
     since: str = Query("", description="ISO timestamp — return rows with created_at > since"),

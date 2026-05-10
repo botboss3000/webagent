@@ -1,9 +1,9 @@
 'use strict';
 
 import { app } from './state.js';
-import { connectAgent } from './agentWs.js';
 import { loopSessionChanged } from './loop.js';
 import { loopVisualSessionChanged } from './loop-visual.js';
+import { autoAgentSessionChanged } from './autoagent.js';
 import { streamSessionChanged } from './stream.js';
 import { apiPath } from './config.js';
 
@@ -17,6 +17,13 @@ export async function populateUserSelect() {
   if (topUserIdVal) {
     topUserIdVal.textContent = app.currentUserId ? (app.currentUserId.length > 15 ? app.currentUserId.slice(0, 15) + '...' : app.currentUserId) : 'None';
     topUserIdVal.title = app.currentUserId || '';
+  }
+  // Update dropdown header label
+  const dropdownUserLabel = document.getElementById('dropdown-user-label');
+  if (dropdownUserLabel) {
+    const uid = app.currentUserId || 'Unknown';
+    dropdownUserLabel.textContent = uid;
+    dropdownUserLabel.title = uid;
   }
   // Populate session select for current user
   if (app.currentUserId) populateSessionSelect(app.currentUserId);
@@ -99,10 +106,95 @@ export function registerSessionApi() {
 }
 
 export function initSessions() {
+  // ── Theme system ──
+  const STORAGE_KEY = 'webagent_theme';
+
+  /** Set theme on <body>: 'light', 'dark', or 'system' (follow OS). */
+  function applyTheme(theme) {
+    const body = document.body;
+    if (theme === 'light') {
+      body.classList.add('light-mode');
+    } else if (theme === 'dark') {
+      body.classList.remove('light-mode');
+    } else {
+      // system — follow OS preference
+      const prefersLight = window.matchMedia('(prefers-color-scheme: light)').matches;
+      body.classList.toggle('light-mode', prefersLight);
+    }
+  }
+
+  /** Highlight the matching theme button. */
+  function highlightThemeOption(theme) {
+    document.querySelectorAll('.theme-option').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.theme === theme);
+    });
+  }
+
+  // Load saved theme on init
+  const savedTheme = localStorage.getItem(STORAGE_KEY) || 'dark';
+  applyTheme(savedTheme);
+  highlightThemeOption(savedTheme);
+
+  // Listen to system preference changes when in 'system' mode
+  const mq = window.matchMedia('(prefers-color-scheme: light)');
+  mq.addEventListener('change', () => {
+    const current = localStorage.getItem(STORAGE_KEY) || 'dark';
+    if (current === 'system') applyTheme('system');
+  });
+
+  // Wire theme buttons
+  document.querySelectorAll('.theme-option').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const theme = btn.dataset.theme;
+      localStorage.setItem(STORAGE_KEY, theme);
+      applyTheme(theme);
+      highlightThemeOption(theme);
+    });
+  });
+
+  // ── User dropdown toggle ──
+  const userDropdown = document.getElementById('user-dropdown');
+  const dropdownMenu = document.getElementById('user-dropdown-menu');
+  const trigger = document.querySelector('.user-dropdown-trigger');
+
+  if (trigger && dropdownMenu) {
+    trigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = dropdownMenu.style.display === 'block';
+      dropdownMenu.style.display = isOpen ? 'none' : 'block';
+      userDropdown.classList.toggle('open', !isOpen);
+    });
+
+    // Close dropdown on outside click
+    document.addEventListener('click', (e) => {
+      if (!userDropdown.contains(e.target)) {
+        dropdownMenu.style.display = 'none';
+        userDropdown.classList.remove('open');
+      }
+    });
+
+    // Close on Escape
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && dropdownMenu.style.display === 'block') {
+        dropdownMenu.style.display = 'none';
+        userDropdown.classList.remove('open');
+      }
+    });
+  }
+
+  // ── Update dropdown header with user id ──
+  const dropdownUserLabel = document.getElementById('dropdown-user-label');
+  if (dropdownUserLabel) {
+    const uid = app.currentUserId || 'Unknown';
+    dropdownUserLabel.textContent = uid;
+    dropdownUserLabel.title = uid;
+  }
+
   // ── Sign-out button in header ──
   const signoutBtn = document.getElementById('btn-signout-header');
   if (signoutBtn) {
-    signoutBtn.addEventListener('click', () => {
+    signoutBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
       localStorage.removeItem('auth_token');
       localStorage.removeItem('auth_username');
       localStorage.removeItem('auth_user_id');
@@ -152,7 +244,8 @@ export function initSessions() {
     streamSessionChanged();
     loopSessionChanged();
     loopVisualSessionChanged();
-    connectAgent();
+    autoAgentSessionChanged();
+    // WS is per-user — no reconnect needed on session switch
   });
 
   populateUserSelect().then(function () {
@@ -212,7 +305,6 @@ export function initSessions() {
           localStorage.setItem('terminalSessionId', app.currentSessionId);
           app.chatMessages.innerHTML = '';
           app.addChatBubble('agent', 'Session deleted. New session created.');
-          connectAgent();
         }
         populateSessionSelect(app.currentUserId);
       }

@@ -13,6 +13,11 @@
  */
 
 import { apiPath } from './config.js';
+import { app } from './state.js';
+import { loadSessionChat, populateSessionSelect } from './sessions.js';
+import { loopSessionChanged } from './loop.js';
+import { loopVisualSessionChanged } from './loop-visual.js';
+import { streamSessionChanged } from './stream.js';
 
 // ── DOM refs ──
 const MENU_ITEM  = document.getElementById('optimizer-menu-item');
@@ -20,6 +25,10 @@ const MODAL      = document.getElementById('optimizer-modal');
 const BACKDROP   = document.getElementById('optimizer-backdrop');
 const CLOSE_BTN  = document.getElementById('optimizer-close');
 const PANEL      = document.getElementById('optimizer-panel');
+
+// Session table refs
+const SESSION_TBODY   = document.getElementById('opt-session-tbody');
+const SESSION_COUNT   = document.getElementById('opt-session-count');
 
 const MODE_LIVE       = document.getElementById('opt-mode-live');
 const MODE_SCHEDULED  = document.getElementById('opt-mode-scheduled');
@@ -91,10 +100,141 @@ function showStatus(msg, color = '#9ece6a') {
 
 // ── Open / Close ──
 
+function _formatDuration(ms) {
+  if (!ms || ms <= 0) return '—';
+  if (ms < 1000) return ms + 'ms';
+  if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+  const min = Math.floor(ms / 60000);
+  const sec = Math.round((ms % 60000) / 1000);
+  return min + 'm ' + sec + 's';
+}
+
+function _formatDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  const now = new Date();
+  const diffMs = now - d;
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return diffMin + 'm ago';
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return diffHr + 'h ago';
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay < 7) return diffDay + 'd ago';
+  return d.toLocaleDateString();
+}
+
+function _formatTokens(n) {
+  if (!n || n <= 0) return '—';
+  if (n < 1000) return n.toString();
+  if (n < 1000000) return (n / 1000).toFixed(1) + 'K';
+  return (n / 1000000).toFixed(2) + 'M';
+}
+
+function _formatCost(c) {
+  if (c === null || c === undefined) return '—';
+  if (c < 0.001) return '$' + c.toFixed(6);
+  if (c < 0.01) return '$' + c.toFixed(4);
+  return '$' + c.toFixed(3);
+}
+
+async function _loadSessionStats() {
+  const userId = app.currentUserId;
+  if (!userId) {
+    SESSION_TBODY.innerHTML = '<tr><td colspan="10" style="padding:24px;text-align:center;color:#565f89;">No user selected</td></tr>';
+    SESSION_COUNT.textContent = '— no user';
+    return;
+  }
+
+  try {
+    const resp = await fetch(apiPath('/api/v1/db/session-stats?user_id=' + encodeURIComponent(userId) + '&db=local.db'));
+    if (!resp.ok) {
+      SESSION_TBODY.innerHTML = '<tr><td colspan="10" style="padding:24px;text-align:center;color:#fb4934;">Failed to load sessions</td></tr>';
+      return;
+    }
+    const data = await resp.json();
+    const sessions = data.sessions || [];
+    SESSION_COUNT.textContent = '— ' + sessions.length + ' session' + (sessions.length !== 1 ? 's' : '');
+
+    if (sessions.length === 0) {
+      SESSION_TBODY.innerHTML = '<tr><td colspan="10" style="padding:24px;text-align:center;color:#565f89;">No sessions found</td></tr>';
+      return;
+    }
+
+    const currentSid = app.currentSessionId;
+    SESSION_TBODY.innerHTML = sessions.map(s => {
+      const isActive = s.session_id === currentSid;
+      const rowBg = isActive ? 'rgba(125,207,255,0.06)' : 'transparent';
+      const borderLeft = isActive ? '3px solid #7dcfff' : '3px solid transparent';
+
+      return '<tr style="background:' + rowBg + ';border-bottom:1px solid #1a1a2e;transition:background 0.15s;" ' +
+        'onmouseover="this.style.background=\'rgba(125,207,255,0.04)\'" ' +
+        'onmouseout="this.style.background=\'' + rowBg + '\'">' +
+        '<td style="padding:8px 10px;color:#c0caf5;font-weight:600;border-left:' + borderLeft + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;" title="' + s.session_id + '">' +
+        _escapeHtml(s.title) +
+        '</td>' +
+        '<td style="padding:8px 10px;text-align:center;color:#a9b1d6;">' + s.message_count + '</td>' +
+        '<td style="padding:8px 10px;text-align:center;color:#a9b1d6;">' + s.turn_count + '</td>' +
+        '<td style="padding:8px 10px;text-align:right;color:#9ece6a;">' + _formatTokens(s.total_input_tokens) + '</td>' +
+        '<td style="padding:8px 10px;text-align:right;color:#7dcfff;">' + _formatTokens(s.total_output_tokens) + '</td>' +
+        '<td style="padding:8px 10px;text-align:right;color:#e0af68;font-weight:600;">' + _formatTokens(s.total_tokens) + '</td>' +
+        '<td style="padding:8px 10px;text-align:right;color:#bb9af7;">' + _formatDuration(s.total_duration_ms) + '</td>' +
+        '<td style="padding:8px 10px;text-align:right;color:' + (s.total_cost !== null ? '#9ece6a' : '#565f89') + ';">' + _formatCost(s.total_cost) + '</td>' +
+        '<td style="padding:8px 10px;color:#565f89;font-size:10px;white-space:nowrap;" title="' + (s.last_active || '') + '">' + _formatDate(s.last_active) + '</td>' +
+        '<td style="padding:8px 10px;text-align:center;">' +
+        '<button class="opt-session-switch" data-sid="' + s.session_id + '" ' +
+        'style="padding:4px 10px;background:' + (isActive ? 'rgba(125,207,255,0.1)' : 'transparent') + ';border:1px solid ' + (isActive ? '#7dcfff' : '#2a2a4a') + ';border-radius:4px;color:' + (isActive ? '#7dcfff' : '#565f89') + ';cursor:' + (isActive ? 'default' : 'pointer') + ';font-size:10px;font-family:inherit;' + (isActive ? '' : '') + '"' + (isActive ? 'disabled' : '') + '>' +
+        (isActive ? 'Active' : 'Switch') +
+        '</button>' +
+        '</td>' +
+        '</tr>';
+    }).join('');
+
+    // Wire up switch buttons
+    SESSION_TBODY.querySelectorAll('.opt-session-switch').forEach(btn => {
+      if (btn.disabled) return;
+      btn.addEventListener('click', () => _switchSession(btn.dataset.sid));
+    });
+  } catch (e) {
+    console.warn('Failed to load session stats:', e);
+    SESSION_TBODY.innerHTML = '<tr><td colspan="10" style="padding:24px;text-align:center;color:#fb4934;">Error loading sessions</td></tr>';
+  }
+}
+
+function _escapeHtml(str) {
+  const div = document.createElement('div');
+  div.appendChild(document.createTextNode(str || ''));
+  return div.innerHTML;
+}
+
+function _switchSession(sid) {
+  if (!sid || sid === app.currentSessionId) return;
+
+  app.currentSessionId = sid;
+  localStorage.setItem('terminalSessionId', sid);
+
+  // Reload chat messages for this session
+  loadSessionChat(sid);
+
+  // Update the header session dropdown to show the newly selected session
+  if (app.currentUserId) {
+    populateSessionSelect(app.currentUserId);
+  }
+
+  // Notify other UI components (WS is per-user, no reconnect needed)
+  streamSessionChanged();
+  loopSessionChanged();
+  loopVisualSessionChanged();
+
+  // Refresh session table to show active state
+  _loadSessionStats();
+}
+
 function openModal() {
   MODAL.style.display = 'block';
   _loadConfig();
   _loadModels();
+  _loadSessionStats();
 }
 
 function closeModal() {

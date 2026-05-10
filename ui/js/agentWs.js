@@ -1,15 +1,16 @@
 'use strict';
 
 import { app } from './state.js';
-import { agentWsUrl } from './config.js';
+import { agentWsUrl, apiPath } from './config.js';
 import { logTool } from './toolLog.js';
 
 let reconnectTimer = null;
 let reconnectAttempts = 0;
-const MAX_RECONNECT_DELAY = 30000; // 30s max
-const INITIAL_RECONNECT_DELAY = 500; // 500ms first retry
+const MAX_RECONNECT_DELAY = 30000;
+const INITIAL_RECONNECT_DELAY = 500;
 
 export function setAgentStatus(state) {
+  if (!app.aDot || !app.aStat) return;
   app.aDot.className = 'status-dot ' + state;
   app.aStat.textContent =
     state === 'green' ? 'Agent' : state === 'yellow' ? 'Connecting...' : 'Disconnected';
@@ -37,7 +38,13 @@ function scheduleAgentReconnect() {
 }
 
 export function connectAgent() {
+  if (!app.currentUserId) {
+    setAgentStatus('red');
+    return;
+  }
+
   setAgentStatus('yellow');
+
   if (app.agentWs) {
     app.agentWs.onclose = null;
     app.agentWs.onerror = null;
@@ -45,14 +52,12 @@ export function connectAgent() {
   }
 
   app.agentWs = new WebSocket(agentWsUrl());
-  app.agentBuffer = '';
 
   app.agentWs.onopen = () => {
-    setAgentStatus('green');
-    reconnectAttempts = 0; // Reset backoff on successful connection
-    if (typeof app.populateUserSelect === 'function') {
-      app.populateUserSelect();
-    }
+    app.agentWs.send(JSON.stringify({
+      mode: 'user_subscriber',
+      user_id: app.currentUserId,
+    }));
   };
 
   app.agentWs.onmessage = (ev) => {
@@ -63,74 +68,62 @@ export function connectAgent() {
       return;
     }
 
-    // Ignore heartbeat pings from server
     if (event.type === 'ping') return;
 
-    try { logTool(event); } catch(e) { /* toolLog panel not mounted */ }
+    if (event.type === 'subscribed') {
+      setAgentStatus('green');
+      reconnectAttempts = 0;
+      if (typeof app.populateUserSelect === 'function') {
+        app.populateUserSelect();
+      }
+      return;
+    }
 
-    // Forward to visualizers if registered
+    // Forward to tool log panel
+    try { logTool(event); } catch(e) { /* not mounted */ }
+
+    // Forward to stream/loop/flow debug panels (handles ALL event types)
     if (app._loopHandler) {
       try { app._loopHandler(event); } catch(e) { /* ignore */ }
     }
     if (app._loopVisualHandler) {
       try { app._loopVisualHandler(event); } catch(e) { /* ignore */ }
     }
+    if (app._autoAgentHandler) {
+      try { app._autoAgentHandler(event); } catch(e) { /* ignore */ }
+    }
+
+    // ── Chat bubble display is handled by SSE in chat.js ──
+    // WS does NOT update chat bubbles to avoid race with SSE.
+    // The only WS events that affect chat display are:
+    //   - "error" (when SSE connection failed and WS still sees error)
+    //   - "interrupted" (same)
+    // These are processed only if the event belongs to the current session.
+
+    const eventSessionId = event.session_id || event.sessionId || '';
 
     switch (event.type) {
-      case 'stream':
-        app.agentBuffer += event.content;
-        app.updateLastBubble(app.agentBuffer, 'streaming');
-        break;
-
-      case 'response':
-        app.agentBuffer = '';
-        app.updateLastBubble(event.content, '', app.lastScreenshotUri);
-        app.lastScreenshotUri = '';
-        app.isProcessing = false;
-        app.chatSend.disabled = false;
-        if (app.chatInput.value.trim()) app.chatSend.disabled = false;
-        // Refresh session list so new sessions appear in dropdown
-        if (typeof app.populateSessionSelect === 'function') {
-          app.populateSessionSelect(app.currentUserId);
-        }
-        break;
-
       case 'error':
+        // Only update if SSE isn't actively driving the current session
+        if (eventSessionId && eventSessionId !== app.currentSessionId) break;
+        if (window.__sseActive) break;
         app.updateLastBubble('Error: ' + event.message, 'error');
         app.agentBuffer = '';
         app.isProcessing = false;
-        app.chatSend.disabled = false;
+        if (app.chatSend) app.chatSend.disabled = false;
         break;
 
       case 'interrupted':
-        // Agent task was cancelled due to new user message (steering/interruption).
-        // Mark the current streaming bubble and reset the buffer so the new
-        // response starts fresh.
+        if (eventSessionId && eventSessionId !== app.currentSessionId) break;
+        if (window.__sseActive) break;
         app.updateLastBubble('(interrupted)', 'interrupted');
         app.agentBuffer = '';
         break;
 
-      case 'interrupt_ack':
-        // Acknowledgment that streaming stopped. No UI action needed.
-        break;
-
-      case 'attachment':
-        // Render attachment previews in the current agent bubble
-        if (event.attachments && event.attachments.length > 0) {
-          window.__streamAttachments = event.attachments;
-          // If there's an existing streaming bubble, mark it
-          const bubbles = app.chatMessages.querySelectorAll('.chat-bubble.agent');
-          const last = bubbles[bubbles.length - 1];
-          if (last && !last.classList.contains('has-attachments')) {
-            last.classList.add('has-attachments');
-          }
-        }
-        break;
-
-      case 'tool_call':
-      case 'tool_result':
-        break;
-
+      // All other event types (stream, response, tool_call, tool_result,
+      // pipeline, db, attachment) are handled by:
+      //   - SSE reader in chat.js (chat bubble updates)
+      //   - app._loopHandler / app._loopVisualHandler (debug panels)
       default:
         break;
     }
@@ -139,16 +132,16 @@ export function connectAgent() {
   app.agentWs.onclose = () => {
     setAgentStatus('red');
     if (app.isProcessing) {
-      app.updateLastBubble('Connection lost while processing.', 'error');
+      if (app.updateLastBubble) {
+        app.updateLastBubble('Connection lost.', 'error');
+      }
       app.isProcessing = false;
-      app.chatSend.disabled = false;
+      if (app.chatSend) app.chatSend.disabled = false;
     }
-    // Schedule reconnection with exponential backoff
     scheduleAgentReconnect();
   };
 
   app.agentWs.onerror = () => {
     setAgentStatus('red');
-    // onclose will fire after onerror, which triggers scheduleAgentReconnect
   };
 }
