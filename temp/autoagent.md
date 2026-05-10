@@ -128,6 +128,134 @@ read_source("app/db/system_prompt.md")
 - `guardrails.py` blocks access to `.env`, `.ssh/*`, and dangerous commands like `rm -rf /`. The agent could edit or delete `guardrails.py` to bypass this — a [alignment risk](https://en.wikipedia.org/wiki/Instrumental_convergence).
 - Deleting `app/admin/` directory removes all filesystem tools. The agent could restore it via `write_source`, but it can't call `write_source` if the tool doesn't exist — chicken-and-egg problem that acts as a kill switch.
 
+## Custom Workflow Patterns (AutoGen-Style)
+
+The self-modification loop isn't limited to UI tweaks. The agent can rewrite **its own execution loop** (`app/agent/loop.py`) to implement multi-agent workflows — AutoGen-style — where the LLM coordinates sub-agents instead of just calling tools.
+
+### Default: Single-Agent Loop
+
+```
+User message
+  → System prompt
+  → LLM call (think + tool calls)
+  → Execute tools
+  → LLM call again
+  → Final response
+```
+
+### After Mutation: Multi-Agent Workflow
+
+The agent rewrites `app/agent/loop.py` to implement a custom pipeline:
+
+```
+User message
+  → Orchestrator Agent
+      │
+      ├── Planner Agent
+      │     System prompt: "Design an approach. Output a plan."
+      │     Calls: db_query (user context), web_search (research)
+      │     Output: JSON plan
+      │
+      ├── Reviewer Agent
+      │     System prompt: "Check the plan for errors and gaps."
+      │     Calls: read_source (check existing code), db_query (history)
+      │     Output: critique + changes
+      │
+      ├── Executor Agent
+      │     System prompt: "Implement the approved plan."
+      │     Calls: edit_source, write_source, run_command, restart_server
+      │     Output: completion report
+      │
+      └── Orchestrator compiles final response
+```
+
+### How the agent builds it
+
+Since the agent can `read_source` + `write_source` + `restart_server`, it can:
+
+1. Read `app/agent/loop.py` → understand current loop structure
+2. Write a new loop that calls the LLM multiple times per turn, each with a different system prompt for a different "agent" role
+3. Each sub-agent call is just: `system_prompt_of_role + history → LLM → tool_calls` — the same `openai_compat.py` client, same tool pool
+4. Orchestrator passes state between sub-agents via Python variables or DB rows
+5. `restart_server` → new loop is live
+
+### User defines the workflow
+
+The user describes the pattern in natural language:
+
+> *"I want a research pipeline. You plan what to search, verify each source, then write a summary."*
+
+The agent writes `loop.py` with three sub-agent phases. This is the user's *exact flow*, not a pre-built template.
+
+### Code is lightweight
+
+It doesn't take much code to add a sub-agent phase:
+
+```python
+# Inside the turn loop — one "agent" is just a system prompt + LLM call
+plan = await call_llm(
+    system="You are a planner. Output a JSON plan.",
+    messages=history,
+    tools=allowed_tools,
+)
+review = await call_llm(
+    system="You are a reviewer. Validate the plan.",
+    messages=history + [plan],
+    tools=allowed_tools,
+)
+result = await call_llm(
+    system="You are an executor. Follow the approved plan.",
+    messages=history + [plan, review],
+    tools=allowed_tools,
+)
+```
+
+The agent writes this exact pattern, tailored to the user's description.
+
+## Superpower Integration (from `temp/superpower.md`)
+
+The Superpower system is a **meta-optimizer** — background subagents that analyze real usage and auto-improve skills. Cross it with AutoAgent's workflow mutation and you get:
+
+| Layer | What | Who builds it | Who optimizes it |
+|-------|------|--------------|------------------|
+| **Default loop** | Single-agent tool-calling | Shipped with webAgent | — |
+| **Custom workflow** | Multi-agent pipeline (plan/review/execute) | Agent writes it via `edit_source` | Superpower tunes sub-agent prompts, turn limits, token budgets |
+| **Superpower itself** | Background analyzer → proposer → validator → deployer | Agent writes it (or pre-built) | Superpower optimizes *itself* — meta-meta |
+
+### How Superpower optimizes a workflow
+
+1. **Analyzer** queries DB: *"Users who use the 'research' workflow average 8 turns per task and 12k tokens. High failure rate on step 2 (review)."*
+2. **Proposer** generates an improved reviewer sub-agent prompt: *"Make review stricter. Require citations. Reject vague plans."*
+3. **Validator** replays past interactions against the new prompt → tests if quality improves
+4. **Deployer** writes the new prompt to the DB → next user turn uses optimized reviewer
+5. If quality drops → **auto-rollback** to previous version
+
+### The chain
+
+```
+User: "I want a writing workflow — draft, critique, polish."
+  │
+  ▼
+Agent rewrites loop.py (3 sub-agents: drafter, critic, polisher)
+  │
+  ▼
+Agent restarts_server
+  │
+  ▼
+User uses the workflow for a week (hundreds of interactions logged)
+  │
+  ▼
+Superpower Analyzer: "The critic is too lenient. 40% of drafts have errors."
+  │
+  ▼
+Superpower Proposer: generates stricter critic prompt
+  │
+  ▼
+Superpower Deployer: writes it → next turn uses improved critic
+```
+
+The user never codes. The user expresses intent. The agent builds the exact workflow. Superpower iteratively improves it.
+
 ## What This Means
 
 The webAgent is not just a chatbot with tools. It's a **bootstrapped development environment where the product is its own source code.** The agent acts as:
