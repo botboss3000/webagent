@@ -62,3 +62,5 @@ Saveable agents
 testing:
  - removing admin features
  - changing own context
+
+ UI Style: check out "Hermes Agent Creative Visualization Skills" video by Onchain AI Garage

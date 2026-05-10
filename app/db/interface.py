@@ -55,6 +55,7 @@ class StorageBackend(ABC):
         metadata: Optional[str] = None,
         input_data: Optional[str] = None,
         sender_id: Optional[str] = None,
+        source: Optional[str] = None,
     ) -> str:
         """Insert an interaction row. Returns the interaction id."""
         ...

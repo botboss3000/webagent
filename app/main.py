@@ -69,6 +69,9 @@ from app.auth import router as auth_router
 # ── GitHub ──
 from app.api.github import router as github_router
 
+# ── Optimizer ──
+from app.admin.optimizer import router as optimizer_router
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -133,6 +136,9 @@ app.include_router(webhooks_router)
 # Register GitHub router
 app.include_router(github_router)
 
+# Register optimizer admin router
+app.include_router(optimizer_router)
+
 # ── Restart endpoint ──
 # POST /api/v1/restart shuts down the server process.
 # Works with webAgent.bat which loops uvicorn in a :restart cycle.
@@ -166,6 +172,14 @@ try:
     logger.info("Uploads directory mounted at /uploads")
 except Exception as e:
     logger.warning("Could not mount /uploads: %s", e)
+
+_VISUALS_DIR = _APP_DIR.parent / "visuals"
+_VISUALS_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    app.mount("/visuals", StaticFiles(directory=str(_VISUALS_DIR)), name="visuals")
+    logger.info("Visuals directory mounted at /visuals")
+except Exception as e:
+    logger.warning("Could not mount /visuals: %s", e)
 
 _UI_DIR = _APP_DIR.parent / "ui"
 app.mount("/ui", StaticFiles(directory=str(_UI_DIR)), name="ui")

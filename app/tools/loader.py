@@ -130,6 +130,39 @@ class ToolLoader:
             },
         )
 
+        # ── run_optimizer (trigger skill optimization manually) ──
+        async def _run_optimizer_wrapper(feedback: str = "", skill_name: str = ""):
+            from app.optimizer.runner import run_optimizer_async
+            from app.admin.settings import load_provider_for_user
+            db = get_db()
+            # If user gave feedback about a specific skill, log it first
+            if feedback and skill_name:
+                skill_id = await db.skill_get_id_by_name(user_id, skill_name)
+                if skill_id:
+                    await db.skill_add_feedback(
+                        skill_id=skill_id, user_id=user_id,
+                        feedback_type="correction", message=feedback,
+                    )
+            await load_provider_for_user(user_id)
+            result = await run_optimizer_async(user_id, "manual-user-trigger")
+            if result:
+                return json.dumps({"status": "completed", "optimizer_session_id": result,
+                                   "message": "Optimizer ran. Check the optimizer session for details."})
+            return json.dumps({"status": "skipped", "message": "No improvements needed or optimizer not in live mode."})
+
+        tools["run_optimizer"] = ToolInfo(
+            name="run_optimizer",
+            handler=_run_optimizer_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "skill_name": {"type": "string", "description": "Optional: specific skill to optimize (e.g. 'send_email'). If blank, analyzes all skills."},
+                    "feedback": {"type": "string", "description": "Optional: what to improve. E.g. 'make it use the API instead of scraping' or 'response was too verbose'"},
+                },
+                "required": [],
+            },
+        )
+
         # ── read_attachment (always available) ──
         from app.tools.read_attachment import read_attachment as _builtin_read_attachment, TOOL_DEFINITION as _ATTACH_TOOL_DEF
         tools["read_attachment"] = ToolInfo(
@@ -324,6 +357,13 @@ class ToolLoader:
             inject_source_tools(tools, user_id)
         except ImportError:
             pass  # admin/source_tools.py not available — source editing disabled
+
+        # ── Visualizer tools (p5.js creative coding) ──
+        try:
+            from app.visualizer import register_tools as _register_visualizer_tools
+            _register_visualizer_tools(tools, user_id)
+        except ImportError:
+            pass  # app/visualizer/ not available — visual rendering disabled
 
         # ═══════════════════════════════════════════════════════════════
         # Bootstrap core tools — always available from turn 1

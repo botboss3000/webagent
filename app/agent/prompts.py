@@ -7,6 +7,7 @@ from app.db.system_prompt_fragments import (
     format_tool_subheadings_markdown,
     get_prompt_fragments,
 )
+from app.optimizer.config import load_config
 import json
 
 # Section titles for public.context.context_type (Web Portal schema)
@@ -93,7 +94,7 @@ async def build_system_prompt(
     # ---- Tools header (bootstrap-only, tools discovered on demand) ----
     if user_id:
         sections.append("# [BOOTSTRAP TOOLS]")
-        sections.append("You have core tools always available: list_tools, search_tools, get_tool_definition, create_tool, web_search, browser_action, db_query, memory, session_search, get_time, get_date, get_weather, calculate, read_attachment, register_user. Use `list_tools` to discover additional tools, `search_tools` to find tools by keyword, and `get_tool_definition` to learn a tool's parameters.")
+        sections.append("You have core tools always available: list_tools, search_tools, get_tool_definition, create_tool, web_search, browser_action, db_query, memory, session_search, get_time, get_date, get_weather, calculate, read_attachment, render_visual, register_user, run_optimizer. Use `list_tools` to discover additional tools, `search_tools` to find tools by keyword, and `get_tool_definition` to learn a tool's parameters.")
         sections.append("")
     else:
         fallback = format_tool_subheadings_markdown(fr.get("fallback_tools") or "")
@@ -109,6 +110,16 @@ async def build_system_prompt(
             sections.append(intro + "\n")
         sections.append(brain_context)
         sections.append("")
+
+    # ---- Optimizer feedback prompt ----
+    try:
+        opt_cfg = load_config()
+        if opt_cfg.get("user_feedback") == "always":
+            sections.append("# [FEEDBACK]")
+            sections.append("After completing a complex multi-step task, briefly ask: 'How was that?' and accept ratings (good/needs-work/wrong) or short feedback. Rate with the `rate_skill` tool when users provide feedback.")
+            sections.append("")
+    except Exception:
+        pass
 
     return "\n".join(sections).strip()
 

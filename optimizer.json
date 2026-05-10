@@ -1,0 +1,46 @@
+{
+  "mode": "live",
+  "user_feedback": "always",
+  "intensity": 5,
+  "sessions": {
+    "show_in_list": true,
+    "allow_pause_for_input": true
+  },
+  "schedule": {
+    "interval": "per-interaction",
+    "min_interactions": 0
+  },
+  "models": {
+    "analyzer": null,
+    "proposer": null,
+    "validator": null
+  },
+  "target_metrics": [
+    "turns",
+    "tokens",
+    "time",
+    "failures",
+    "rating",
+    "size"
+  ],
+  "app_wide": {
+    "auto_deploy": true,
+    "min_sample": 1,
+    "min_skill_age_days": 0
+  },
+  "per_user": {
+    "auto_deploy": true,
+    "min_sample": 1,
+    "min_skill_age_days": 0
+  },
+  "notifications": {
+    "notify_user": true,
+    "notify_devs": false,
+    "channel": "email"
+  },
+  "state": {
+    "last_run_at": "2026-05-10T22:59:06.824065+00:00",
+    "improvements_deployed": 5,
+    "last_run_status": "success"
+  }
+}

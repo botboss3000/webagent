@@ -4,10 +4,11 @@ A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional *
 
 ## Features
 
-- **Chat** — `POST /api/v1/chat` (and **`POST /api/v1/chat/stream`**): agent loop with tools; turns go to **`interactions`**. Prior turns for the same **`session_id`** are reloaded from the DB into the model context (browser refresh does not reset the conversation).
-- **WebSocket agent** — `GET` upgrade to `/api/v1/agent/ws`: streaming tokens, tool events, pipeline steps.
+- **Chat** — `POST /api/v1/chat` (buffered) and **`POST /api/v1/chat/stream`** (SSE streaming): agent loop with tools; turns go to **`interactions`**. Prior turns for the same **`session_id`** are reloaded from the DB into the model context (browser refresh does not reset the conversation).
+- **WebSocket agent (receive-only)** — `GET` upgrade to `/api/v1/agent/ws`: per-user subscriber mode. Connects once per user, receives ALL agent events (stream, response, tool_call, tool_result, pipeline, db) for all of that user's sessions. **Does not send messages** — all user messages go through HTTP POST.
 - **Context** — Prompt slices from `context_type` / `doc_type`; if a user has no rows, **`context_templates`** are copied into per-user context on first chat.
 - **Memory** — Hybrid search (FTS5 keyword + vector cosine similarity via embedding API) runs before each chat turn; results injected as `[BRAIN CONTEXT]` in the system prompt. Trivial messages (greetings, affirmations, commands) skip memory via regex gate. Page content auto-chunked and embedded on write. Background save of chat snippets into memory. See [`memory-upgrade.md`](memory-upgrade.md).
+- **AutoAgent** — Visual creative coding tab 🎨. Send prompts to the "UI Agent" persona and get live-rendered p5.js sketches in an iframe. Supports generative art, particle systems, noise fields, interactive sketches, and more. Powered by `render_visual` tool in **`app/visualizer/`**. The p5.js skill is seeded as a `context_templates` row (`context_type="p5js"`). Output served from `/visuals/` (ephemeral, Cloud Run safe). See [`app/visualizer/SKILL.md`](app/visualizer/SKILL.md).
 - **Attachments** — Image, audio, video, and file uploads. Users attach files via the UI (📎 button in footer, drag & drop onto chat messages or footer area, 🎤 voice recording). Files upload via **`POST /api/v1/upload`** and bytes are persisted through **`app/db/attachments/`** (local filesystem in dev, Supabase Storage in production — see `app/db/SUPABASE_STORAGE.md`). Metadata is stored in the **`attachments`** table (local SQLite or Supabase). The agent accesses files with the **`read_attachment`** built-in tool. Supports image preview, audio/video players, and download links inline in chat bubbles. Attachments persist per-session and survive server restarts.
 - **Tools** — **Bootstrap + on-demand discovery model.** A small set of hardcoded core tools (list_tools, search_tools, get_tool_definition, web_search, http_request, browser_action, db_query, memory, session_search, get_time, get_date, get_weather, calculate, read_attachment) are always available from turn 1 via **`app/tools/loader.py`** + **`app/tools/core_tools.py`**. All other tools (user-created, admin, comm plugins, webhook management) are discovered on demand via `list_tools` / `search_tools` / `get_tool_definition`. Tool definitions no longer auto-populate the system prompt — only curated `context_type="skills"` docs provide behavioral guidance in the `# [SKILLS]` section.
 - **OpenRouter** — Model from `OPENROUTER_MODEL` (see `.env.example`; e.g. `deepseek/deepseek-v4-flash`).
@@ -18,62 +19,44 @@ A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional *
 
 ## Architecture and module map
 
-### Unified Agent Engine Workflow
+### HTTP + WebSocket Architecture
 
-The agent uses a single unified execution engine (`app/agent/loop.py`) that serves both streaming (WebSocket/SSE) and buffered (HTTP POST) requests:
+The agent loop (`app/agent/loop.py`) runs as an independent async task. All user messages enter via **HTTP POST** (no WebSocket sends). The WebSocket is a **receive-only subscriber** — connected once per user, it receives events for all of that user's sessions.
 
 ```text
        [CLIENT]
           |
-          | (Chooses Transport Protocol)
-          |
-          +-- (WebSocket) ----> [ app/api/agent.py ] (WS Route: live bidirectional)
-          |
-          +-- (HTTP SSE) -----> [ app/api/chat.py ]  (SSE Route: live unidirectional)
-          |
-          +-- (HTTP POST) ----> [ app/api/chat.py ]  (Sync Route: buffers until end)
-          |
-          +-- (HTTP Upload) --> [ app/api/uploads.py ]  (Multipart POST async from UI) <<<UPLOAD SHOULD BE AVAILABLE FROM ALL SOURCES, LIKE UI, TELEGRAM, AND OTHER CONNECTIONS (ONLY UI AND TELEGRAM FOR NOW, OTHERS TO COME)>>>
-          |                             |
-          |                     [ app/db/attachments/file_store.py ]
-          |                     store_file()  → bytes saved + DB row
-          |                             |
-          |                     Returns { attachment_id, url } to client
-          |                             |
-          +<--- attachment_ids included in next WS message
-                                        |
-                          <<<DOES IT GO TO DB FIRST? IF SO, DOE THE ENGINE GET NOTIFIED? THAT'S HOW IT WOULD WORK WITH FUTURE SUPABASE IMPLEMENTATION>>>
-                                        v
-                            +--------------------------+
-                            | ONE UNIFIED ENGINE       |
-                            | (app/agent/loop.py)      |
-                            +--------------------------+
-                                        |
-                                        +--> 0. Resolve attachment_ids → inject [USER ATTACHMENTS] into system prompt
-                                        |
-                                        +--> 1. Build System Prompt <<<NEED TO ELABORATE WHERE SYSTEM PROMPT IS COMING FROM. WHICH FILES, WHICH LOGIC, DB CELLS, ETC>>>
-                                        |
-                                        +--> 1. Fetch Memory <<<WHAT IS LOGIC FOR MEMORY FETCH? SEPERATE PY SCRIPT? HOW DOES IT PARSE, ETC>>>
-                                        |
-+------------------------------------+  +--> 2. While turn_count < max_turns:
-| INTERRUPT DB/CACHE                 |  |       |
-| Tracks flags for session_id        |  |       +-> Check Client Disconnect OR Interrupt Flag <<<CLIENT DISCONNECT SHOULD NOT BE A CONCERN. need to remove the disconnect logic.. AGENT SHOLD WORK OFFLINE AND SEND OUTPUT TO DB. INTERRUPT FLAG FROM WHICH CLIENT SOURCE?>>>
-+------------------------------------+  |       |    (If true: Break & Emit Interrupted)
-             ^                          |       |
-             |  (Sets Flag)             |       +-> Stream LLM Call (Tools = Auto) <<<what does tool=auto mean? where does it get the library of available tools and how to use them?>>>
- [ HTTP POST /api/v1/chat/interrupt ]   |       |
-             ^                          |       +-> Validate Tool Calls & Check Guardrails <<<need to show the guardrails>>>
-             |                          |       |
-          [CLIENT]                      |       +-> Execute Tools in Parallel <<<does this mean agent can call multiple tools?
-                                        |       |    read_attachment(attachment_id)
-                                        |       |      → read_file() from storage
-                                        |       |      → return content to agent
-                                        |       |
-                                        |       +-> Track Skill Execution & Save to DB <<<show logic>>>
-                                        |
-                                        +--> 3. Return Final Response (attachments rendered inline)
-                                        |
-                                        +--> 4. Async Background Memory Save <<<does it go to db, and then to user (ui or telegram)?>>>
+          |--- (HTTP POST) ---> [ app/api/chat.py ]   send message + wait for SSE stream
+          |                           |
+          |                    +-- POST /api/v1/chat         (buffered, returns final reply)
+          |                    +-- POST /api/v1/chat/stream  (SSE, streams tokens live)
+          |                    +-- POST /api/v1/chat/interrupt  (stop generation)
+          |                           |
+          |                    [ app/api/uploads.py ]        POST /api/v1/upload
+          |                    store_file()  → bytes saved + attachment row
+          |                           |
+          |                           v
+          |              +--------------------------+
+          |              | ONE UNIFIED ENGINE       |
+          |              | (app/agent/loop.py)      |
+          |              +--------------------------+
+          |                           |
+          |              events emitted to:
+          |              ├── SSE response body     (primary chat bubble display)
+          |              └── Listener registries:
+          |                    ├── _visualizer_listeners[session_id]   (per-session WS)
+          |                    └── _user_listeners[user_id]            (per-user WS)
+          |                           |
+          |                           v
+          |--- (WS receive-only) -> [ app/api/agent.py ]   /api/v1/agent/ws
+                                      mode: "user_subscriber"
+                                      receives: stream, response, tool_call,
+                                                tool_result, pipeline, db events
+                                      for ALL sessions belonging to user
+
+Events are routed on the frontend:
+  - "stream" / "response" events for the CURRENT session → chat bubble
+  - "tool_call" / "tool_result" / "pipeline" / "db" events → stream/loop/flow debug panels
 ```
 
 ### Backend (`app/`)
@@ -81,13 +64,13 @@ The agent uses a single unified execution engine (`app/agent/loop.py`) that serv
 | Module | Role |
 |--------|------|
 | **`main.py`** | FastAPI app: routers, CORS, no-cache for `/ui/` and `/index.html`, **`StaticFiles`** for `/ui/` and `/screenshots`, **`GET /` → redirect to `/index.html`**, **`GET /index.html`**, **`GET /test`**, **`GET /health`**, favicon from `ui/favicon.svg`, **`POST /api/v1/restart`**, shutdown (browser + terminal). |
-| **`api/chat.py`** | **`POST /api/v1/chat`**, **`POST /api/v1/chat/stream`**, **`POST /api/v1/chat/interrupt`** — context load, memory search, prompt build, attachment resolution, **`session_history`** → **`loop.stream_agent_events`** / **`run_agent_loop_buffered`**, **`interactions`**; pipeline events for visualizers. |
-| **`api/agent.py`** | **`WebSocket /api/v1/agent/ws`** — **`loop.stream_agent_events`**; reloads session from **`interactions`** each message; resolves attachment references from WS message. |
+| **`api/chat.py`** | **`POST /api/v1/chat`** (buffered), **`POST /api/v1/chat/stream`** (SSE), **`POST /api/v1/chat/interrupt`** — context load, memory search, prompt build, attachment resolution, history rebuild, agent loop execution. Also: **listener registries** — `register_user_listener()` / `register_visualizer_listener()` for per-user and per-session WebSocket broadcasting. |
+| **`api/agent.py`** | **`WebSocket /api/v1/agent/ws`** — **receive-only per-user subscriber**. Client sends `{"mode": "user_subscriber", "user_id": "..."}` to register. Server streams all agent events (stream, response, tool_call, tool_result, pipeline, db) for all of that user's sessions. No message processing — all sends go through HTTP POST. |
 | **`api/uploads.py`** | **`POST /api/v1/upload`** — multipart file upload (images, audio, video, PDF, text). **`GET /api/v1/upload/{id}`** — metadata lookup. **`DELETE /api/v1/upload/{id}`** — delete. File bytes stored via `app/db/attachments/`. |
 | **`api/terminal.py`** | **`WebSocket /api/v1/terminal/ws`** — browser shell (PTY / **`pywinpty`** on Windows). |
 | **`api/webhooks.py`** | **`POST /api/v1/webhooks/{plugin_name}`** — communication channel webhooks (Telegram, WhatsApp, etc.). Delegates to plugins for auth and parsing. |
 | **`api/webhooks_generic.py`** | **`POST /api/v1/webhooks/generic/{webhook_id}`** — generic inbound webhooks. Receives any external payload, routes to agent loop with custom instructions, returns agent reply. Logs all events for review. |
-| **`api/db_viewer.py`** | **`/api/v1/db/*`** — SQLite introspection; DB files under **`app/db/`** (default filename **`local.db`** for the UI query param `db=`). |
+| **`api/db_viewer.py`** | **`/api/v1/db/*`** — SQLite introspection; DB files under **`app/db/`** (default filename **`local.db`** for the UI query param `db=`). **`GET /api/v1/db/session-stats`** — aggregated per-session usage stats (tokens, duration, cost, turn count). |
 | **`agent/loop.py`** | Unified multi-turn loop (streaming + buffered): tool validation, parallel tool runs, pipeline events. Emits `attachment` event type for frontend file rendering. |
 | **`agent/session_history.py`** | Maps **`interactions`** rows → OpenAI-style **`messages`** for the active session (excludes internal memory tools). |
 | **`agent/prompts.py`** | System prompt from context, brain results, tools, attachment context. Includes **`format_attachments_for_prompt()`** helper. |
@@ -98,20 +81,22 @@ The agent uses a single unified execution engine (`app/agent/loop.py`) that serv
 | **`db/local.py`** | Local SQLite — schema init, FTS5 + vector hybrid search, embed-on-write, knowledge graph, timelines, **`webhook_registrations`** and **`webhook_event_log`** tables. |
 | **`db/attachments/`** | **`file_store.py`** — file byte storage abstraction. Dispatches to local filesystem (`uploads/`) or Supabase Storage based on `db_mode.json`. Exports `store_file()`, `read_file()`, `delete_file()`. See `app/db/SUPABASE_STORAGE.md` for cloud setup. |
 | **`db/interface.py`** | **`StorageBackend`** protocol with session, interaction, context, memory, skills, agent, attachment, interrupt, **webhook (register/get/list/delete/log)** abstract methods. |
-| **`tools/`** | **`loader`** (dynamic tool loading + built-in injection: http_request, register_webhook, list_webhooks, delete_webhook, get_webhook_log), **`core_tools`** (bootstrap tools: list_tools, search_tools, get_tool_definition, web_search, http_request, db_query, memory, session_search, get_time, get_date, get_weather, calculate), **`registry`** (create_tool, safety scanner, rating utilities), **`tracker`** (legacy execution tracker), **`browser`** (persistent Chromium), **`read_attachment**` (read uploaded files via `app/db/attachments/`). |
+| **`tools/`** | **`loader`** (dynamic tool loading + built-in injection: http_request, register_webhook, list_webhooks, delete_webhook, get_webhook_log, render_visual), **`core_tools`** (bootstrap tools: list_tools, search_tools, get_tool_definition, web_search, http_request, db_query, memory, session_search, get_time, get_date, get_weather, calculate), **`registry`** (create_tool, safety scanner, rating utilities), **`tracker`** (legacy execution tracker), **`browser`** (persistent Chromium), **`read_attachment**` (read uploaded files via `app/db/attachments/`). |
+| **`visualizer/`** | **`render_visual` tool** — saves p5.js HTML output to `/visuals/<session_id>/render.html` for the AutoAgent tab iframe. **`SKILL.md`** — p5.js creative coding skill (seeded as `context_templates` row). Self-contained — delete to disable. |
 | **`models/schemas.py`** | Pydantic models (`ChatRequest`, etc.). |
 | **`admin/`** | **`review`** (`/admin/tools` — list/deprecate DB tools), **`db_mode`** (`/admin/db/` — cloud/local switch), **`settings`** (provider config, model list, metadata toggle), **`guardrails`** (path/command deny-list for source tools), **`communications`** (Telegram/WhatsApp plugin mgmt), **`source`** + **`source_tools`** (optional privileged filesystem & shell access — delete to disable). See [Administrator Tools](#administrator-tools). |
 | **`openai_compat.py`** | OpenAI-compatible client wiring for OpenRouter. |
 
 ### Frontend (`ui/`)
 
-Single-page app: **`index.html`**, CSS (`app1.css`, `app2.css`, `app3.css`, `loop.css`), ES modules under **`js/`** — e.g. **`main.js`**, **`chat.js`**, **`agentWs.js`**, **`stream.js`**, **`loop.js`**, **`tabs.js`**, **`toolLog.js`**, **`terminal.js`**, **`dbMode.js`**, **`sessions.js`**, **`attachments.js`** (file upload, voice recording, drag & drop, preview chips), **`js/db/`** (data browser). **`test_interface.html`** is also here and is served at **`GET /test`**.
+Single-page app: **`index.html`**, CSS (`app1.css`, `app2.css`, `app3.css`, `loop.css`, `loop-visual.css`, `autoagent.css`), ES modules under **`js/`** — e.g. **`main.js`**, **`chat.js`** (sends messages via HTTP POST + SSE), **`agentWs.js`** (per-user receive-only WebSocket subscriber), **`stream.js`**, **`loop.js`**, **`tabs.js`**, **`toolLog.js`**, **`terminal.js`**, **`dbMode.js`**, **`sessions.js`**, **`attachments.js`** (file upload, voice recording, drag & drop, preview chips), **`autoagent.js`** (visualizer tab: iframe renderer, prompt bar, render_visual event listener), **`optimizer.js`** (session manager + optimizer config UI), **`js/db/`** (data browser). **`test_interface.html`** is also here and is served at **`GET /test`**.
 
 ### Directory tree (abbreviated)
 
 ```
 webAgent/
 ├── app/                    # Python package (see table above)
+│   ├── visualizer/         # AutoAgent p5.js creative coding (render_visual tool + SKILL.md)
 │   └── db/
 │       └── attachments/    # File storage abstraction (store_file / read_file / delete_file)
 ├── tests/                  # e.g. test_session_history.py (unittest)
@@ -197,6 +182,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 | `http://localhost:8080/index.html` | Full UI |
 | `http://localhost:8080/test` | Minimal HTML chat (`ui/test_interface.html`) |
 | `http://localhost:8080/uploads/` | Served uploaded files directory |
+| `http://localhost:8080/visuals/` | Served AutoAgent rendered sketches (ephemeral) |
 | `http://localhost:8080/docs` | Swagger UI (includes upload endpoint docs) |
 
 **Unix quick start (background + logs):** `bash scripts/start_webAgent.sh` (works from any cwd; script `cd`s to repo root).
@@ -219,7 +205,7 @@ Minimal JSON body:
 }
 ```
 
-**`session_id`** must exist in **`sessions`** for that **`user_id`**.
+**`session_id`** is auto-created if it doesn't exist (first message in a new session creates the row automatically).
 
 Optional fields include **`documents`**, legacy **`history`**, and **`attachment_ids`** (list of UUIDs from prior uploads) — see **`ChatRequest`** in **`app/models/schemas.py`**. When `attachment_ids` are provided, the agent sees a `[USER ATTACHMENTS]` section in its system prompt and can use the **`read_attachment`** tool to inspect file contents. **Model context is rebuilt from `interactions` in the DB** for that `session_id`; you do not need to resend **`history`** after a refresh (it is ignored for the transcript).
 

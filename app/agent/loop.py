@@ -26,6 +26,19 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from app.agent.error_classifier import classify_tool_error, ToolError
 from app.db import get_db
 from app.db.system_prompt_fragments import get_prompt_fragments
+from app.optimizer.runner import run_optimizer_async
+
+
+def _fire_optimizer(user_id: str, session_id: str, channel: Optional[str] = None) -> None:
+    """Fire-and-forget optimizer task with error trapping."""
+    async def _run():
+        try:
+            logger.info("Optimizer: triggering for session %s (user=%s, channel=%s)", session_id, user_id, channel)
+            result = await run_optimizer_async(user_id, session_id, channel)
+            logger.info("Optimizer: completed for session %s -> %s", session_id, result)
+        except Exception as e:
+            logger.error("Optimizer: crashed for session %s: %s", session_id, e, exc_info=True)
+    asyncio.create_task(_run())
 
 logger = logging.getLogger(__name__)
 
@@ -604,6 +617,8 @@ async def stream_agent_events(
                    "tool_name": None, "id": inter_id, "ms": db_dur}
 
             yield {"type": "response", "level": "agent", "content": collected_content}
+            # Fire-and-forget optimizer after successful completion
+            _fire_optimizer(user_id, session_id, channel)
             return
 
         # ── Max turns reached ──
@@ -615,13 +630,18 @@ async def stream_agent_events(
             "type": "response", "level": "agent",
             "content": "I've reached the maximum number of turns. What would you like to do next?",
         }
+        # Fire-and-forget optimizer after max turns
+        _fire_optimizer(user_id, session_id, channel)
     except asyncio.CancelledError as e:
         logger.info(f"Agent loop for session {session_id} cancelled: {e}")
         yield {"type": "interrupted", "level": "agent", "message": str(e)}
+        _fire_optimizer(user_id, session_id, channel)
         return
     except Exception as e:
         logger.error(f"Agent loop error: {e}", exc_info=True)
         yield {"type": "error", "level": "agent", "message": f"Unexpected error in agent loop: {e}"}
+        # Fire-and-forget optimizer even on error — may learn from failure
+        _fire_optimizer(user_id, session_id, channel)
         return
 
 

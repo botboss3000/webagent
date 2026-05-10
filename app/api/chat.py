@@ -39,6 +39,23 @@ def _should_skip_memory(message: str) -> bool:
     stripped = (message or "").strip()
     return bool(not stripped or _SKIP_MEMORY_PATTERN.match(stripped))
 
+
+async def _ensure_session(db, user_id: str, session_id: str) -> None:
+    """Create the session row if it doesn't exist yet."""
+    try:
+        await db.assert_session_owned(user_id, session_id)
+    except (PermissionError, Exception):
+        try:
+            raw = db.get_raw_client()
+            raw.table("sessions").insert({
+                "id": session_id,
+                "user_id": user_id,
+                "title": session_id[:12],
+            }).execute()
+            logger.info(f"Created session {session_id[:12]} for user {user_id[:12]}")
+        except Exception as create_err:
+            logger.warning(f"Session creation failed (may already exist): {create_err}")
+
 class InterruptRequest(BaseModel):
     session_id: str
 
@@ -64,6 +81,9 @@ async def chat(request: ChatRequest):
     """
     try:
         db = get_db()
+
+        # Ensure the session exists before inserting interactions
+        await _ensure_session(db, request.user_id, request.session_id)
 
         # Save user message and get its ID for parent linking
         user_interaction_id = await db.insert_interaction(
@@ -249,9 +269,9 @@ async def chat(request: ChatRequest):
             exclude_interaction_ids=exclude_ids,
         )
 
-        # Create event callback that pushes to visualizer listeners
+        # Create event callback that pushes to visualizer and user listeners
         async def event_callback(event: Dict[str, Any]):
-            await _emit_to_visualizers(request.session_id, event)
+            await _emit_to_visualizers(request.session_id, event, user_id=request.user_id)
 
         # Run the agent loop
         assistant_reply = await run_agent_loop_buffered(
@@ -295,6 +315,9 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
     Process a chat message using Server-Sent Events (SSE).
     """
     db = get_db()
+
+    # Ensure the session exists before inserting interactions
+    await _ensure_session(db, request.user_id, request.session_id)
     
     # Save user message and get its ID for parent linking
     user_interaction_id = await db.insert_interaction(
@@ -453,11 +476,13 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         # Start agent loop in the background!
         asyncio.create_task(run_agent_task())
 
-        # Stream from the queue
+        # Stream from the queue — also broadcast to session + user listeners
         while True:
             event = await q.get()
             if event is None:
                 break
+            # Broadcast to WebSocket listeners (session + user)
+            await _emit_to_visualizers(request.session_id, event, user_id=request.user_id)
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
@@ -494,15 +519,15 @@ async def _save_chat_to_memory(
             metadata=json.dumps({"brain": True, "slug": slug}),
         )
 
-        # Emit to visualizer
+        # Emit to visualizer and user listeners
         await _emit_to_visualizers(session_id, {
             "type": "pipeline", "level": "pipeline",
             "step": "memory_save_end", "slug": slug,
-        })
+        }, user_id=user_id)
         await _emit_to_visualizers(session_id, {
             "type": "db", "level": "db",
             "op": "memory_upsert", "slug": slug, "page_type": "meeting",
-        })
+        }, user_id=user_id)
         logger.debug("Saved chat to memory: %s", slug)
     except Exception as e:
         logger.warning("Failed to save chat to memory: %s", e)
@@ -530,8 +555,8 @@ def unregister_visualizer_listener(session_id: str, websocket: Any):
             del _visualizer_listeners[session_id]
 
 
-async def _emit_to_visualizers(session_id: str, event: Dict[str, Any]):
-    """Push an event to all visualizer listeners for a session."""
+async def _emit_to_visualizers(session_id: str, event: Dict[str, Any], user_id: Optional[str] = None):
+    """Push an event to all visualizer listeners for a session, and optionally user listeners."""
     import json
     listeners = _visualizer_listeners.get(session_id, [])
     disconnected = []
@@ -542,3 +567,41 @@ async def _emit_to_visualizers(session_id: str, event: Dict[str, Any]):
             disconnected.append(ws)
     for ws in disconnected:
         unregister_visualizer_listener(session_id, ws)
+    # Also broadcast to per-user listeners if user_id provided
+    if user_id:
+        await _emit_to_user_listeners(user_id, event)
+
+
+# ── User listener registry (per-user) ──
+_user_listeners: Dict[str, List[Any]] = {}  # user_id → list of WebSocket objects
+
+
+def register_user_listener(user_id: str, websocket: Any):
+    """Register a WebSocket that receives events for all of a user's sessions."""
+    if user_id not in _user_listeners:
+        _user_listeners[user_id] = []
+    _user_listeners[user_id].append(websocket)
+
+
+def unregister_user_listener(user_id: str, websocket: Any):
+    """Remove a WebSocket from the per-user listeners."""
+    if user_id in _user_listeners:
+        _user_listeners[user_id] = [
+            ws for ws in _user_listeners[user_id] if ws is not websocket
+        ]
+        if not _user_listeners[user_id]:
+            del _user_listeners[user_id]
+
+
+async def _emit_to_user_listeners(user_id: str, event: Dict[str, Any]):
+    """Push an event to all per-user listeners."""
+    import json
+    listeners = _user_listeners.get(user_id, [])
+    disconnected = []
+    for ws in listeners:
+        try:
+            await ws.send_text(json.dumps(event))
+        except Exception:
+            disconnected.append(ws)
+    for ws in disconnected:
+        unregister_user_listener(user_id, ws)
