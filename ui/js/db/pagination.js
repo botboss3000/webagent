@@ -2,11 +2,11 @@
 
 import { app } from '../state.js';
 import { queryTable, updatePageInfo, cancelEditing } from './query-render.js';
-import { fetchTables, updateTableCounts, renderTableList } from './tables.js';
+import { fetchTables, renderTableList } from './tables.js';
 import { apiPath } from '../config.js';
 import { authUrl } from '../left-login.js';
 
-const AUTO_REFRESH_MS = 5000;
+const AUTO_REFRESH_MS = 1000;
 
 export function stopAutoRefresh() {
   if (app.autoRefreshInterval) {
@@ -19,12 +19,13 @@ export function stopAutoRefresh() {
 export function startAutoRefresh() {
   stopAutoRefresh();
   if (!app.dbSelectedTable) return;
-  document.getElementById('db-auto-status').textContent = '⟳ auto 5s';
+  document.getElementById('db-auto-status').textContent = '⟳ auto 1s';
   app.autoRefreshInterval = setInterval(() => {
     if (app.dbSelectedTable && !app.editingCell) {
       queryTable(app.dbSelectedTable, { silent: true });
     }
-    updateTableCounts();
+    const dbName = document.getElementById('db-select').value;
+    fetchTables(dbName);
   }, AUTO_REFRESH_MS);
 }
 
@@ -102,8 +103,21 @@ export function initDbPaginationAndToolbar() {
         cancelEditing();
         stopAutoRefresh();
         await fetchTables(dbName);
-        document.getElementById('db-table-data').innerHTML =
-          '<div class="db-hint">Database reset (templates preserved)</div>';
+        // Default to interactions after reset
+        const tableToLoad = app.dbTables.some((t) => t.name === 'interactions')
+          ? 'interactions'
+          : null;
+        if (tableToLoad) {
+          app.dbSelectedTable = tableToLoad;
+          renderTableList();
+          localStorage.setItem('lastDbTable', tableToLoad);
+          document.getElementById('db-sort-col').value = 'created_at';
+          document.getElementById('db-sort-dir').value = 'DESC';
+          queryTable(tableToLoad).then(() => startAutoRefresh());
+        } else {
+          document.getElementById('db-table-data').innerHTML =
+            '<div class="db-hint">Database reset (templates preserved)</div>';
+        }
       } else {
         resetBtn.textContent = 'Reset DB';
         alert('Reset failed');
@@ -120,9 +134,26 @@ export function initDbPaginationAndToolbar() {
     app.dbCurrentResult = null;
     cancelEditing();
     stopAutoRefresh();
-    fetchTables(dbName);
-    document.getElementById('db-table-data').innerHTML =
-      '<div class="db-hint">Select a table to view its contents</div>';
+    fetchTables(dbName).then(() => {
+      // Default to interactions or saved table
+      const savedTable = localStorage.getItem('lastDbTable');
+      const tableToLoad =
+        savedTable && app.dbTables.some((t) => t.name === savedTable)
+          ? savedTable
+          : app.dbTables.some((t) => t.name === 'interactions')
+            ? 'interactions'
+            : null;
+      if (tableToLoad) {
+        app.dbSelectedTable = tableToLoad;
+        renderTableList();
+        document.getElementById('db-sort-col').value = 'created_at';
+        document.getElementById('db-sort-dir').value = 'DESC';
+        queryTable(tableToLoad).then(() => startAutoRefresh());
+      } else {
+        document.getElementById('db-table-data').innerHTML =
+          '<div class="db-hint">Select a table to view its contents</div>';
+      }
+    });
   });
   document.getElementById('db-select').addEventListener('change', () => {
     document.getElementById('db-refresh').click();

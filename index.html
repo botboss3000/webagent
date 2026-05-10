@@ -31,6 +31,10 @@
         <span>Database</span>
       </div>
 
+      <div class="settings-menu-item" id="optimizer-menu-item">
+        <span>⚡ Optimizer</span>
+      </div>
+
       <hr style="border:none;border-top:1px solid #2a2a4a;margin:4px 0;">
 
       <div class="settings-menu-item" id="btn-signout" style="color:#fb4934;">
@@ -408,6 +412,391 @@
   </div>
 </div>
 
+<!-- Optimizer modal -->
+<div id="optimizer-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:1000;">
+  <div id="optimizer-backdrop" style="position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);"></div>
+  <div id="optimizer-panel" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:24px;width:700px;max-width:95vw;max-height:85vh;overflow-y:auto;color:#c0caf5;font-size:14px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h2 style="margin:0;font-size:18px;font-weight:600;">⚡ Optimizer</h2>
+      <button id="optimizer-close" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:20px;">&times;</button>
+    </div>
+
+    <!-- MODE SELECTOR -->
+    <div style="margin-bottom:20px;">
+      <label style="display:block;margin-bottom:8px;color:#a9b1d6;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Run Mode</label>
+      <div style="display:flex;gap:8px;">
+        <button type="button" id="opt-mode-live" class="opt-mode-btn" data-mode="live" style="flex:1;padding:14px 12px;border:2px solid #7dcfff;border-radius:8px;background:rgba(125,207,255,0.08);cursor:pointer;color:#c0caf5;font-family:inherit;font-size:13px;font-weight:600;transition:all 0.15s;">
+          ⚡ Live<br><span style="font-weight:400;font-size:11px;color:#a9b1d6;display:block;margin-top:4px;">After every message</span>
+        </button>
+        <button type="button" id="opt-mode-scheduled" class="opt-mode-btn" data-mode="scheduled" style="flex:1;padding:14px 12px;border:2px solid #2a2a4a;border-radius:8px;background:transparent;cursor:pointer;color:#565f89;font-family:inherit;font-size:13px;font-weight:600;transition:all 0.15s;">
+          📅 Scheduled<br><span style="font-weight:400;font-size:11px;color:#565f89;display:block;margin-top:4px;">On a timer</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- SCHEDULE CONFIG (hidden in live mode) -->
+    <div id="opt-schedule-section" style="display:none;margin-bottom:20px;padding:12px;background:#0d0d1a;border-radius:8px;border:1px solid #2a2a4a;">
+      <label style="display:block;margin-bottom:8px;color:#a9b1d6;font-size:12px;font-weight:600;">Schedule</label>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <span style="font-size:12px;color:#565f89;">Run every</span>
+        <select id="opt-schedule-interval" style="padding:8px;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;color:#c0caf5;font-size:13px;font-family:inherit;">
+          <option value="per-interaction">Message</option>
+          <option value="hourly">Hour</option>
+          <option value="daily">Day</option>
+          <option value="weekly">Week</option>
+        </select>
+        <span style="font-size:12px;color:#565f89;">after at least</span>
+        <input type="number" id="opt-schedule-min-interactions" value="10" min="1" max="1000" style="width:60px;padding:8px;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;color:#c0caf5;font-size:13px;font-family:inherit;">
+        <span style="font-size:12px;color:#565f89;">interactions</span>
+      </div>
+    </div>
+
+    <!-- USER FEEDBACK MODE -->
+    <div style="margin-bottom:20px;">
+      <label style="display:block;margin-bottom:8px;color:#a9b1d6;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">User Feedback</label>
+      <div style="display:flex;gap:8px;">
+        <button type="button" id="opt-feedback-always" class="opt-feedback-btn" data-feedback="always" style="flex:1;padding:12px 8px;border:2px solid #7dcfff;border-radius:8px;background:rgba(125,207,255,0.08);cursor:pointer;color:#c0caf5;font-family:inherit;font-size:12px;font-weight:600;transition:all 0.15s;text-align:center;">
+          💬 Always ask<br><span style="font-weight:400;font-size:10px;color:#a9b1d6;display:block;margin-top:2px;">After every task</span>
+        </button>
+        <button type="button" id="opt-feedback-failure" class="opt-feedback-btn" data-feedback="failure" style="flex:1;padding:12px 8px;border:2px solid #2a2a4a;border-radius:8px;background:transparent;cursor:pointer;color:#565f89;font-family:inherit;font-size:12px;font-weight:600;transition:all 0.15s;text-align:center;">
+          ⚠️ On failure<br><span style="font-weight:400;font-size:10px;color:#565f89;display:block;margin-top:2px;">Only when something breaks</span>
+        </button>
+        <button type="button" id="opt-feedback-never" class="opt-feedback-btn" data-feedback="never" style="flex:1;padding:12px 8px;border:2px solid #2a2a4a;border-radius:8px;background:transparent;cursor:pointer;color:#565f89;font-family:inherit;font-size:12px;font-weight:600;transition:all 0.15s;text-align:center;">
+          🔇 Never<br><span style="font-weight:400;font-size:10px;color:#565f89;display:block;margin-top:2px;">Silent optimization</span>
+        </button>
+      </div>
+      <div style="margin-top:6px;font-size:10px;color:#565f89;">
+        When enabled, agent asks "How was that?" after tasks. Your feedback guides future optimizations — e.g. "too verbose," "missed Linda's deadline," "wrong format."
+      </div>
+    </div>
+
+    <!-- OPTIMIZATION VOLUME -->
+    <div style="margin-bottom:20px;">
+      <label style="display:block;margin-bottom:8px;color:#a9b1d6;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Optimization Intensity</label>
+      <div style="padding:14px;background:#0d0d1a;border-radius:8px;border:1px solid #2a2a4a;">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+          <span style="font-size:11px;color:#565f89;min-width:20px;">1</span>
+          <input type="range" id="opt-intensity" min="1" max="5" value="3" style="flex:1;height:8px;-webkit-appearance:none;appearance:none;background:linear-gradient(to right, #9ece6a, #e0af68, #fb4934);border-radius:4px;outline:none;cursor:pointer;">
+          <span style="font-size:11px;color:#565f89;min-width:20px;text-align:right;">5</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:#565f89;margin-bottom:8px;">
+          <span>Conservative</span><span>Balanced</span><span>Aggressive</span>
+        </div>
+        <div id="opt-intensity-label" style="font-size:11px;color:#e0af68;text-align:center;padding:6px;background:rgba(224,175,104,0.08);border-radius:4px;">
+          Balanced — optimize when ≥10% improvement expected. Standard thresholds. Moderate validation.
+        </div>
+      </div>
+    </div>
+
+    <!-- TWO-COLUMN: METRICS + MODELS -->
+    <div style="display:flex;gap:16px;margin-bottom:20px;flex-wrap:wrap;">
+
+      <!-- TARGET METRICS -->
+      <div style="flex:1;min-width:280px;">
+        <label style="display:block;margin-bottom:8px;color:#a9b1d6;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Target Metrics</label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+          <div class="opt-metric-card active" data-metric="turns" style="padding:10px;background:#0d0d1a;border:1px solid #7dcfff;border-radius:6px;cursor:pointer;user-select:none;transition:all 0.15s;">
+            <div style="font-size:13px;font-weight:600;color:#c0caf5;">🔄 Turn Count</div>
+            <div style="font-size:10px;color:#565f89;margin-top:2px;">Fewer turns per task</div>
+          </div>
+          <div class="opt-metric-card active" data-metric="tokens" style="padding:10px;background:#0d0d1a;border:1px solid #7dcfff;border-radius:6px;cursor:pointer;user-select:none;transition:all 0.15s;">
+            <div style="font-size:13px;font-weight:600;color:#c0caf5;">🪙 Token Usage</div>
+            <div style="font-size:10px;color:#565f89;margin-top:2px;">Cheaper LLM calls</div>
+          </div>
+          <div class="opt-metric-card active" data-metric="time" style="padding:10px;background:#0d0d1a;border:1px solid #7dcfff;border-radius:6px;cursor:pointer;user-select:none;transition:all 0.15s;">
+            <div style="font-size:13px;font-weight:600;color:#c0caf5;">⏱️ Response Time</div>
+            <div style="font-size:10px;color:#565f89;margin-top:2px;">Faster replies</div>
+          </div>
+          <div class="opt-metric-card active" data-metric="failures" style="padding:10px;background:#0d0d1a;border:1px solid #7dcfff;border-radius:6px;cursor:pointer;user-select:none;transition:all 0.15s;">
+            <div style="font-size:13px;font-weight:600;color:#c0caf5;">❌ Failure Rate</div>
+            <div style="font-size:10px;color:#565f89;margin-top:2px;">Fewer errors</div>
+          </div>
+          <div class="opt-metric-card active" data-metric="rating" style="padding:10px;background:#0d0d1a;border:1px solid #7dcfff;border-radius:6px;cursor:pointer;user-select:none;transition:all 0.15s;">
+            <div style="font-size:13px;font-weight:600;color:#c0caf5;">⭐ User Rating</div>
+            <div style="font-size:10px;color:#565f89;margin-top:2px;">Happier outcomes</div>
+          </div>
+          <div class="opt-metric-card" data-metric="size" style="padding:10px;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;cursor:pointer;user-select:none;transition:all 0.15s;">
+            <div style="font-size:13px;font-weight:600;color:#565f89;">📏 Skill Size</div>
+            <div style="font-size:10px;color:#565f89;margin-top:2px;">Smaller instructions</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- MODELS PER ROLE -->
+      <div style="flex:1;min-width:280px;">
+        <label style="display:block;margin-bottom:8px;color:#a9b1d6;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Models per Role</label>
+        <div style="padding:10px;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid #1a1a2e;">
+            <div>
+              <span style="font-size:12px;font-weight:600;color:#c0caf5;">🔍 Analyzer</span>
+              <span style="font-size:10px;color:#565f89;display:block;">Scans stats, ranks skills</span>
+            </div>
+            <select id="opt-model-analyzer" style="padding:6px 8px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:4px;color:#c0caf5;font-size:12px;font-family:inherit;max-width:160px;">
+              <option value="gpt-4o-mini">gpt-4o-mini</option>
+              <option value="claude-haiku">claude-haiku</option>
+              <option value="gemini-flash">gemini-flash</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid #1a1a2e;">
+            <div>
+              <span style="font-size:12px;font-weight:600;color:#c0caf5;">✏️ Proposer</span>
+              <span style="font-size:10px;color:#e0af68;display:block;">Writes improved code</span>
+            </div>
+            <select id="opt-model-proposer" style="padding:6px 8px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:4px;color:#e0af68;font-size:12px;font-family:inherit;max-width:160px;">
+              <option value="gpt-4o">gpt-4o</option>
+              <option value="claude-opus">claude-opus</option>
+              <option value="claude-sonnet">claude-sonnet</option>
+              <option value="gemini-pro">gemini-pro</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+            <div>
+              <span style="font-size:12px;font-weight:600;color:#c0caf5;">✅ Validator</span>
+              <span style="font-size:10px;color:#565f89;display:block;">Replays history</span>
+            </div>
+            <select id="opt-model-validator" style="padding:6px 8px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:4px;color:#c0caf5;font-size:12px;font-family:inherit;max-width:160px;">
+              <option value="gpt-4o-mini">gpt-4o-mini</option>
+              <option value="claude-haiku">claude-haiku</option>
+              <option value="gemini-flash">gemini-flash</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- SCAN SOURCES -->
+    <div style="margin-bottom:20px;">
+      <label style="display:block;margin-bottom:8px;color:#a9b1d6;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Scan Sources</label>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div class="opt-metric-card active" data-source="skills" style="padding:10px;background:#0d0d1a;border:1px solid #7dcfff;border-radius:6px;cursor:pointer;user-select:none;transition:all 0.15s;">
+          <div style="font-size:12px;font-weight:600;color:#c0caf5;">🔧 Skills</div>
+          <div style="font-size:9px;color:#565f89;margin-top:2px;">Custom tools + behavioral instructions</div>
+        </div>
+        <div class="opt-metric-card active" data-source="core_tools" style="padding:10px;background:#0d0d1a;border:1px solid #7dcfff;border-radius:6px;cursor:pointer;user-select:none;transition:all 0.15s;">
+          <div style="font-size:12px;font-weight:600;color:#c0caf5;">⚙️ Core Tools</div>
+          <div style="font-size:9px;color:#565f89;margin-top:2px;">get_time, http_request, web_search</div>
+        </div>
+        <div class="opt-metric-card active" data-source="llm_patterns" style="padding:10px;background:#0d0d1a;border:1px solid #7dcfff;border-radius:6px;cursor:pointer;user-select:none;transition:all 0.15s;">
+          <div style="font-size:12px;font-weight:600;color:#c0caf5;">🔁 LLM Patterns</div>
+          <div style="font-size:9px;color:#565f89;margin-top:2px;">Repetition, loops, tool storms</div>
+        </div>
+        <div class="opt-metric-card active" data-source="user_prefs" style="padding:10px;background:#0d0d1a;border:1px solid #7dcfff;border-radius:6px;cursor:pointer;user-select:none;transition:all 0.15s;">
+          <div style="font-size:12px;font-weight:600;color:#c0caf5;">👤 User Prefs</div>
+          <div style="font-size:9px;color:#565f89;margin-top:2px;">"I prefer X", "don't use Y"</div>
+        </div>
+      </div>
+      <div style="margin-top:6px;font-size:10px;color:#565f89;">
+        Choose what gets analyzed. Skills = custom tools. Core Tools = built-ins. LLM Patterns = repetition/loops. User Prefs = preference signals in your messages.
+      </div>
+    </div>
+
+    <!-- SCOPE -->
+    <div style="margin-bottom:20px;">
+      <label style="display:block;margin-bottom:8px;color:#a9b1d6;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Scope</label>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:260px;padding:12px;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;">
+          <div style="font-size:12px;font-weight:600;color:#7dcfff;margin-bottom:8px;">🌐 App-Wide (All Users)</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:11px;color:#a9b1d6;">
+            <span>Min</span>
+            <input type="number" id="opt-scope-app-sample" value="100" min="5" max="10000" style="width:60px;padding:6px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:4px;color:#c0caf5;font-size:11px;font-family:inherit;">
+            <span>executions</span>
+            <span style="margin-left:8px;">min</span>
+            <input type="number" id="opt-scope-app-age" value="14" min="1" max="90" style="width:50px;padding:6px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:4px;color:#c0caf5;font-size:11px;font-family:inherit;">
+            <span>days old</span>
+          </div>
+          <div style="margin-top:6px;font-size:10px;color:#565f89;">Optimizes official skills shared across all users</div>
+        </div>
+        <div style="flex:1;min-width:260px;padding:12px;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;">
+          <div style="font-size:12px;font-weight:600;color:#9ece6a;margin-bottom:8px;">👤 Per-User (Personal)</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:11px;color:#a9b1d6;">
+            <span>Min</span>
+            <input type="number" id="opt-scope-user-sample" value="10" min="3" max="1000" style="width:50px;padding:6px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:4px;color:#c0caf5;font-size:11px;font-family:inherit;">
+            <span>executions</span>
+            <span style="margin-left:8px;">min</span>
+            <input type="number" id="opt-scope-user-age" value="3" min="1" max="30" style="width:45px;padding:6px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:4px;color:#c0caf5;font-size:11px;font-family:inherit;">
+            <span>days old</span>
+          </div>
+          <div style="margin-top:6px;font-size:10px;color:#565f89;">Optimizes this user's personal and forked skills</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- WHAT WOULD CHANGE (skill preview) -->
+    <div style="margin-bottom:20px;">
+      <label style="display:block;margin-bottom:8px;color:#a9b1d6;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What Would Change</label>
+      <div id="opt-preview" style="padding:12px;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;font-size:12px;max-height:180px;overflow-y:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #1a1a2e;">
+          <span style="color:#c0caf5;">📧 send-email</span>
+          <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#e0af68;margin-right:6px;"></span>
+          <span style="color:#e0af68;font-size:11px;">degraded</span>
+          <span style="color:#565f89;font-size:11px;">connect Gmail → personal sender</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #1a1a2e;">
+          <span style="color:#c0caf5;">📧 send-email</span>
+          <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#fb4934;margin-right:6px;"></span>
+          <span style="color:#fb4934;font-size:11px;">15% failure</span>
+          <span style="color:#565f89;font-size:11px;">→ add retry, drop to ~3%</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #1a1a2e;">
+          <span style="color:#c0caf5;">🖼️ process-image</span>
+          <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#9ece6a;margin-right:6px;"></span>
+          <span style="color:#9ece6a;font-size:11px;">Good</span>
+          <span style="color:#565f89;font-size:11px;">—</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #1a1a2e;">
+          <span style="color:#c0caf5;">📅 check-calendar</span>
+          <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#e0af68;margin-right:6px;"></span>
+          <span style="color:#e0af68;font-size:11px;">4.2 turns avg</span>
+          <span style="color:#565f89;font-size:11px;">→ consolidate, -40%</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;">
+          <span style="color:#c0caf5;">📝 take-note</span>
+          <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#9ece6a;margin-right:6px;"></span>
+          <span style="color:#9ece6a;font-size:11px;">Good</span>
+          <span style="color:#565f89;font-size:11px;">—</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;">
+          <span style="color:#565f89;">🔒 check-slack</span>
+          <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#565f89;margin-right:6px;"></span>
+          <span style="color:#565f89;font-size:11px;">blocked</span>
+          <span style="color:#7dcfff;font-size:11px;cursor:pointer;">[Connect Slack]</span>
+        </div>
+      </div>
+      <div style="margin-top:6px;font-size:10px;color:#565f89;text-align:center;">Preview based on current interaction data. Updates as config changes.</div>
+    </div>
+
+    <!-- WORKFLOW DIAGRAM -->
+    <div style="margin-bottom:20px;">
+      <label style="display:block;margin-bottom:8px;color:#a9b1d6;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Workflow</label>
+      <div style="padding:16px 8px;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;overflow-x:auto;">
+        <div id="opt-workflow" style="display:flex;align-items:center;justify-content:center;gap:0;min-width:560px;flex-wrap:nowrap;">
+          <div class="opt-wf-step" data-step="msg" style="padding:10px 12px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:6px;text-align:center;font-size:11px;color:#c0caf5;min-width:70px;transition:all 0.15s;">
+            <div style="font-size:14px;">💬</div>
+            <div style="font-weight:600;">User Msg</div>
+          </div>
+          <div class="opt-wf-arrow" style="padding:0 3px;color:#2a2a4a;font-size:14px;">▸</div>
+          <div class="opt-wf-step" data-step="analyzer" style="padding:10px 12px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:6px;text-align:center;font-size:11px;color:#c0caf5;min-width:70px;transition:all 0.15s;">
+            <div style="font-size:14px;">🔍</div>
+            <div style="font-weight:600;">Analyzer</div>
+          </div>
+          <div class="opt-wf-arrow" style="padding:0 3px;color:#2a2a4a;font-size:14px;">▸</div>
+          <div class="opt-wf-step" data-step="proposer" style="padding:10px 12px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:6px;text-align:center;font-size:11px;color:#c0caf5;min-width:70px;transition:all 0.15s;">
+            <div style="font-size:14px;">✏️</div>
+            <div style="font-weight:600;">Proposer</div>
+          </div>
+          <div class="opt-wf-arrow" style="padding:0 3px;color:#2a2a4a;font-size:14px;">▸</div>
+          <div class="opt-wf-step" data-step="validator" style="padding:10px 12px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:6px;text-align:center;font-size:11px;color:#c0caf5;min-width:70px;transition:all 0.15s;">
+            <div style="font-size:14px;">✅</div>
+            <div style="font-weight:600;">Validator</div>
+          </div>
+          <div class="opt-wf-arrow" style="padding:0 3px;color:#2a2a4a;font-size:14px;">▸</div>
+          <div class="opt-wf-step" data-step="deployer" style="padding:10px 12px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:6px;text-align:center;font-size:11px;color:#c0caf5;min-width:70px;transition:all 0.15s;">
+            <div style="font-size:14px;">📦</div>
+            <div style="font-weight:600;">Deployer</div>
+          </div>
+          <div class="opt-wf-arrow" style="padding:0 3px;color:#2a2a4a;font-size:14px;">▸</div>
+          <div class="opt-wf-step" data-step="skill" style="padding:10px 12px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:6px;text-align:center;font-size:11px;color:#c0caf5;min-width:80px;transition:all 0.15s;">
+            <div style="font-size:14px;">✨</div>
+            <div style="font-weight:600;">Skill v2</div>
+          </div>
+        </div>
+        <div id="opt-workflow-labels" style="display:flex;justify-content:center;gap:0;margin-top:8px;font-size:9px;color:#565f89;min-width:560px;">
+          <span style="min-width:70px;text-align:center;">triggers</span>
+          <span style="min-width:16px;"></span>
+          <span style="min-width:70px;text-align:center;">reads DB</span>
+          <span style="min-width:16px;"></span>
+          <span style="min-width:70px;text-align:center;">generates v2</span>
+          <span style="min-width:16px;"></span>
+          <span style="min-width:70px;text-align:center;">replays</span>
+          <span style="min-width:16px;"></span>
+          <span style="min-width:70px;text-align:center;">writes to DB</span>
+          <span style="min-width:16px;"></span>
+          <span style="min-width:80px;text-align:center;">next msg uses v2</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ACTIVITY LOG (collapsed) -->
+    <div style="margin-bottom:20px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <label style="color:#a9b1d6;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Activity Log</label>
+        <button id="opt-toggle-log" style="background:none;border:none;color:#7dcfff;cursor:pointer;font-size:11px;font-family:inherit;">Show ▾</button>
+      </div>
+      <div id="opt-activity-log" style="display:none;padding:8px;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;font-size:11px;max-height:120px;overflow-y:auto;">
+        <div style="padding:4px 0;border-bottom:1px solid #1a1a2e;">
+          <span style="color:#9ece6a;">✓</span>
+          <span style="color:#565f89;">12min ago</span>
+          <span style="color:#c0caf5;">Optimized send-email</span>
+          <span style="color:#9ece6a;">-15% tokens, -22% time</span>
+        </div>
+        <div style="padding:4px 0;border-bottom:1px solid #1a1a2e;">
+          <span style="color:#e0af68;">⊗</span>
+          <span style="color:#565f89;">2h ago</span>
+          <span style="color:#c0caf5;">Proposed process-image v2 rejected</span>
+          <span style="color:#e0af68;">expected gain too small (3%)</span>
+        </div>
+        <div style="padding:4px 0;">
+          <span style="color:#9ece6a;">✓</span>
+          <span style="color:#565f89;">5h ago</span>
+          <span style="color:#c0caf5;">Optimized check-calendar</span>
+          <span style="color:#9ece6a;">-40% turns, -18 tokens</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- NOTIFICATIONS -->
+    <div style="margin-bottom:20px;">
+      <label style="display:block;margin-bottom:8px;color:#a9b1d6;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Notifications</label>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#c0caf5;cursor:pointer;">
+          <input type="checkbox" id="opt-notify-user" checked style="accent-color:#7dcfff;">
+          Notify user
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#c0caf5;cursor:pointer;">
+          <input type="checkbox" id="opt-notify-devs" checked style="accent-color:#fb4934;">
+          Notify devs
+        </label>
+        <span style="color:#565f89;font-size:11px;">via</span>
+        <select id="opt-notify-channel" style="padding:4px 6px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:4px;color:#c0caf5;font-size:11px;font-family:inherit;">
+          <option>email</option>
+          <option>telegram</option>
+          <option>webhook</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- PROMPT TEMPLATES -->
+    <div style="margin-bottom:20px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <label style="color:#a9b1d6;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Prompt Templates</label>
+        <button id="opt-toggle-prompts" style="background:none;border:none;color:#7dcfff;cursor:pointer;font-size:11px;font-family:inherit;">Show ▾</button>
+      </div>
+      <div id="opt-prompt-templates" style="display:none;padding:8px;background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;font-size:11px;">
+        <div id="opt-prompt-list" style="margin-bottom:8px;display:flex;gap:6px;flex-wrap:wrap;"></div>
+        <textarea id="opt-prompt-editor" readonly style="width:100%;height:200px;padding:10px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:6px;color:#c0caf5;font-size:12px;font-family:monospace;resize:vertical;box-sizing:border-box;"></textarea>
+        <div style="display:flex;gap:6px;margin-top:6px;align-items:center;">
+          <button id="opt-prompt-save" style="padding:6px 14px;background:#7dcfff;border:none;border-radius:4px;color:#0d0d1a;font-size:11px;font-weight:600;cursor:pointer;">Save</button>
+          <button id="opt-prompt-reset" style="padding:6px 14px;background:transparent;border:1px solid #565f89;border-radius:4px;color:#565f89;font-size:11px;cursor:pointer;">Reset to default</button>
+          <span id="opt-prompt-status" style="font-size:10px;color:#565f89;"></span>
+        </div>
+        <div style="margin-top:4px;font-size:9px;color:#565f89;">
+          These .md files control how the optimizer subagents think. Changes affect the next optimizer run.
+        </div>
+      </div>
+    </div>
+
+    <!-- ACTIONS -->
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <button id="opt-save" style="padding:10px 24px;background:#7dcfff;border:none;border-radius:6px;color:#0d0d1a;font-size:14px;font-weight:600;cursor:pointer;">Save</button>
+      <button id="opt-run-now" style="padding:10px 20px;background:transparent;border:1px solid #9ece6a;border-radius:6px;color:#9ece6a;font-size:13px;cursor:pointer;">▶ Run Now</button>
+      <button id="opt-view-history" style="padding:10px 20px;background:transparent;border:1px solid #565f89;border-radius:6px;color:#565f89;font-size:13px;cursor:pointer;">View History</button>
+      <span id="opt-status" style="margin-left:auto;font-size:11px;color:#9ece6a;display:none;"></span>
+    </div>
+
+  </div>
+</div>
+
 <!-- Connections modal -->
 <div id="connections-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:1000;">
   <div id="connections-backdrop" style="position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);"></div>
@@ -459,5 +848,6 @@
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links/lib/addon-web-links.js"></script>
 <script type="module" src="./ui/js/main.js"></script>
 <script type="module" src="./ui/js/attachments.js"></script>
+<script type="module" src="./ui/js/optimizer.js"></script>
 </body>
 </html>

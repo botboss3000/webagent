@@ -92,6 +92,11 @@ export function bindDom() {
     app.dbColumnOrder = {};
   }
 
+  try {
+    const savedWidths = localStorage.getItem('dbColWidths');
+    if (savedWidths) Object.assign(app.COL_WIDTHS, JSON.parse(savedWidths));
+  } catch (e) { /* ignore */ }
+
   const storedSessionId = localStorage.getItem('terminalSessionId');
   app.currentSessionId = storedSessionId || crypto.randomUUID();
   if (!storedSessionId) {

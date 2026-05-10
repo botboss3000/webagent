@@ -62,6 +62,8 @@ export function initGlobalColumnResizeListeners() {
 
     app.COL_WIDTHS[colName] = newWidth + 'px';
 
+    localStorage.setItem('dbColWidths', JSON.stringify(app.COL_WIDTHS));
+
     app.resizeData.th.querySelector('.th-resize')?.classList.remove('resizing');
     if (app.resizeData.line) app.resizeData.line.remove();
     document.body.style.cursor = '';

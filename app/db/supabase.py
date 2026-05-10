@@ -114,6 +114,7 @@ class SupabaseBackend(StorageBackend):
         tool_name: Optional[str] = None,
         tool_call_id: Optional[str] = None,
         channel: Optional[str] = None,
+        source: Optional[str] = None,
         metadata: Optional[str] = None,
         input_data: Optional[str] = None,
         sender_id: Optional[str] = None,
@@ -128,6 +129,7 @@ class SupabaseBackend(StorageBackend):
                 "tool_name": tool_name,
                 "tool_call_id": tool_call_id,
                 "channel": channel,
+                "source": source or "user",
                 "metadata": metadata,
                 "input": input_data,
             }
@@ -958,11 +960,12 @@ class SupabaseClient:
         user_id: str, session_id: str, role: str, content: str,
         parent_id: Optional[str] = None, tool_name: Optional[str] = None,
         tool_call_id: Optional[str] = None, channel: Optional[str] = None,
+        source: Optional[str] = None,
         metadata: Optional[str] = None, input_data: Optional[str] = None,
         sender_id: Optional[str] = None,
     ) -> str:
         return await SupabaseClient._get_backend().insert_interaction(
-            user_id, session_id, role, content, parent_id, tool_name, tool_call_id, channel, metadata, input_data, sender_id,
+            user_id, session_id, role, content, parent_id, tool_name, tool_call_id, channel, source, metadata, input_data, sender_id,
         )
 
     @staticmethod

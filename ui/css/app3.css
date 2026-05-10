@@ -15,10 +15,34 @@
   .db-row-even td { background: #14142a; }
   .db-table tr[style*="height:100px"] .db-cell-pre { max-height: 50px; }
 
-  /* Dark scrollbars on db cells — don't change on hover */
-  #db-table-data { scrollbar-width: thin; scrollbar-color: #2a2a4a transparent; }
-  #db-table-data::-webkit-scrollbar { width: 6px; }
-  #db-table-data::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+  /* All scrollbars inside DB table area — slim, consistent */
+  #db-table-data,
+  #db-table-data * {
+    scrollbar-width: thin !important;
+    scrollbar-color: #7dcfff33 transparent !important;
+  }
+  #db-table-data::-webkit-scrollbar,
+  #db-table-data *::-webkit-scrollbar {
+    width: 4px !important;
+    height: 4px !important;
+  }
+  #db-table-data::-webkit-scrollbar-track,
+  #db-table-data *::-webkit-scrollbar-track {
+    background: transparent !important;
+  }
+  #db-table-data::-webkit-scrollbar-thumb,
+  #db-table-data *::-webkit-scrollbar-thumb {
+    background: #7dcfff55 !important;
+    border-radius: 2px !important;
+  }
+  #db-table-data::-webkit-scrollbar-thumb:hover,
+  #db-table-data *::-webkit-scrollbar-thumb:hover {
+    background: #7dcfff99 !important;
+  }
+  #db-table-data::-webkit-scrollbar-corner,
+  #db-table-data *::-webkit-scrollbar-corner {
+    background: transparent !important;
+  }
   .db-cell { scrollbar-width: thin; scrollbar-color: #7dcfff33 transparent; }
   .db-cell::-webkit-scrollbar { width: 4px; height: 4px; }
   .db-cell::-webkit-scrollbar-thumb { background: #7dcfff55; border-radius: 2px; }
@@ -72,7 +96,7 @@
     font-size: 11px;
     cursor: pointer;
     border-radius: 3px;
-    opacity: 0;
+    opacity: 0.35;
     z-index: 5;
     padding: 0;
     transition: opacity 0.12s;
