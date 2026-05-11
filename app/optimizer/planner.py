@@ -67,6 +67,10 @@ async def propose_improvements(user_id, session_id, prefilter_data, mode="analyz
         if text.startswith("```"):
             parts = text.split("```")
             text = parts[1].replace("json", "", 1).strip() if len(parts) > 1 else text
+        if not text.startswith('{'):
+            brace = text.find('{')
+            if brace >= 0:
+                text = text[brace:]
         return json.loads(text)
     except Exception as e:
         logger.warning("Planner: LLM failed: %s", e)
@@ -81,6 +85,12 @@ def _build_analyze_prompt(pf, optimizer_history=None):
 
     lines = ["Review this session and propose at least 1 change."]
     lines.append(f"\nStats: {turns} turns, ~{tokens} tokens")
+
+    # Include rejection feedback from previous iteration if available
+    if optimizer_history:
+        lines.append("\n## Previous attempt was rejected")
+        lines.append(f"Feedback from Workers: {optimizer_history}")
+        lines.append("Your new proposal MUST address these rejection reasons.")
 
     lines.append("\nTranscript:")
     for t in transcript[-25:]:

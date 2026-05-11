@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS interactions (
     channel TEXT,
     metadata TEXT,
     input TEXT,
+    output TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -535,6 +536,14 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Added interactions.source column")
 
+            # ── Migration: add output column to interactions ──
+            cursor = conn.execute("PRAGMA table_info(interactions)")
+            cols3 = {row[1] for row in cursor.fetchall()}
+            if "output" not in cols3:
+                conn.execute("ALTER TABLE interactions ADD COLUMN output TEXT")
+                conn.commit()
+                logger.info("Added interactions.output column")
+
             # ── Migration: fix context_templates unique index (allow multiple per type) ──
             cursor = conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_context_templates_type'")
             row = cursor.fetchone()
@@ -751,7 +760,7 @@ class LocalBackend(StorageBackend):
         conn = self._get_conn()
         try:
             rows = conn.execute(
-                "SELECT id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, created_at FROM interactions WHERE session_id = ? ORDER BY created_at ASC",
+                "SELECT id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, created_at FROM interactions WHERE session_id = ? ORDER BY created_at ASC",
                 (session_id,),
             ).fetchall()
             return [InteractionRecord(**dict(r)) for r in rows]
@@ -770,6 +779,7 @@ class LocalBackend(StorageBackend):
         channel: Optional[str] = None,
         metadata: Optional[str] = None,
         input_data: Optional[str] = None,
+        output_data: Optional[str] = None,
         sender_id: Optional[str] = None,
         source: Optional[str] = None,
     ) -> str:
@@ -778,8 +788,8 @@ class LocalBackend(StorageBackend):
         try:
             interaction_id = _uuid()
             conn.execute(
-                "INSERT INTO interactions (id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (interaction_id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input_data, source or 'user'),
+                "INSERT INTO interactions (id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (interaction_id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input_data, output_data, source or 'user'),
             )
             conn.commit()
             logger.debug("Inserted interaction %s", interaction_id)

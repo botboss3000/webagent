@@ -51,7 +51,15 @@ TOOL CALLS: {json.dumps(tool_calls[-10:])}
 CHAT: {json.dumps(chat_lines[-5:])}
 TRIALS: {json.dumps(trial_data, indent=2)}
 
-Return JSON with winners, losers, summary."""
+OUTPUT FORMAT:
+First write a MESSAGE explaining your comparison, which trials won/lost, why, tradeoffs, and your recommendation.
+Then output JSON:
+{{
+  "message": "Your full conversational analysis here - walk through each trial, explain why it won or lost, discuss tradeoffs",
+  "winners": [],
+  "losers": [],
+  "summary": "1-line verdict"
+}}"""
 
     try:
         resp = await client.chat.completions.create(
@@ -63,6 +71,10 @@ Return JSON with winners, losers, summary."""
         if text.startswith("```"):
             parts = text.split("```")
             text = parts[1].replace("json", "", 1).strip() if len(parts) > 1 else text
+        if not text.startswith('{'):
+            brace = text.find('{')
+            if brace >= 0:
+                text = text[brace:]
         return json.loads(text)
     except Exception as e:
         logger.warning("Finalizer failed: %s", e)

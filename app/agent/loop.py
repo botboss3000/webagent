@@ -389,6 +389,7 @@ async def stream_agent_events(
                     assistant_content += f"\n\n[Tool calls: {tool_calls_summary}]"
                 meta_asst = _build_meta("assistant", input_tokens, output_tokens, llm_cost)
                 inp = _build_input()
+                outp = json.dumps({"role": "assistant", "content": collected_content, "tool_calls": full_tool_calls})
                 db_start = time.time()
                 asst_id = await get_db().insert_interaction(
                     user_id, session_id, role="assistant", content=assistant_content,
@@ -396,6 +397,7 @@ async def stream_agent_events(
                     channel=channel,
                     metadata=meta_asst,
                     input_data=inp,
+                    output_data=outp,
                 )
                 db_dur = int((time.time() - db_start) * 1000)
                 yield {"type": "db", "level": "db",
@@ -438,6 +440,7 @@ async def stream_agent_events(
                         messages.append(tool_msg)
                         
                         inp = _build_input()
+                        outp = json.dumps({"role": "tool", "content": tool_msg["content"], "tool_call_id": tc.id, "name": tool_name, "success": False})
                         db_start = time.time()
                         inter_id = await get_db().insert_interaction(
                             user_id, session_id, role="tool", content=tool_msg["content"],
@@ -446,6 +449,7 @@ async def stream_agent_events(
                             channel=channel,
                             metadata=json.dumps({"success": False, "duration_ms": 0, "input_params": tool_args, "error_message": "Validation failed"}),
                             input_data=inp,
+                            output_data=outp,
                         )
                         db_dur = int((time.time() - db_start) * 1000)
                         yield {"type": "db", "level": "db",
@@ -478,6 +482,7 @@ async def stream_agent_events(
                                 tool_msg = {"role": "tool", "content": f"Tool '{tool_name}' was blocked because user confirmation is required for destructive operations.", "tool_call_id": tc.id}
                                 messages.append(tool_msg)
                                 inp = _build_input()
+                                outp = json.dumps({"role": "tool", "content": tool_msg["content"], "tool_call_id": tc.id, "name": tool_name, "success": False})
                                 db_start = time.time()
                                 inter_id = await get_db().insert_interaction(
                                     user_id, session_id, role="tool", content=tool_msg["content"],
@@ -487,6 +492,7 @@ async def stream_agent_events(
                                     channel=channel,
                                     metadata=json.dumps({"success": False, "duration_ms": 0, "input_params": tool_args, "error_message": "Guardrail blocked — requires confirmation"}),
                                     input_data=inp,
+                                    output_data=outp,
                                 )
                                 db_dur = int((time.time() - db_start) * 1000)
                                 yield {"type": "db", "level": "db",
@@ -562,6 +568,7 @@ async def stream_agent_events(
                         messages.append(tool_msg)
                         
                         inp = _build_input()
+                        outp = json.dumps({"role": "tool", "content": result["content"][:10000], "tool_call_id": tc.id, "name": tool_name, "success": success, "duration_ms": result["duration_ms"]})
                         db_start = time.time()
                         inter_id = await get_db().insert_interaction(
                             user_id, session_id, role="tool", content=tool_msg["content"],
@@ -571,6 +578,7 @@ async def stream_agent_events(
                             channel=channel,
                             metadata=tool_exec_meta,
                             input_data=inp,
+                            output_data=outp,
                         )
                         db_dur = int((time.time() - db_start) * 1000)
                         yield {"type": "db", "level": "db",
@@ -613,6 +621,7 @@ async def stream_agent_events(
 
             meta_final = _build_meta("assistant", input_tokens, output_tokens, llm_cost)
             inp = _build_input()
+            outp = json.dumps({"role": "assistant", "content": collected_content})
             db_start = time.time()
             inter_id = await get_db().insert_interaction(
                 user_id, session_id, role="assistant", content=collected_content,
@@ -620,6 +629,7 @@ async def stream_agent_events(
                 channel=channel,
                 metadata=meta_final,
                 input_data=inp,
+                output_data=outp,
             )
             db_dur = int((time.time() - db_start) * 1000)
             yield {"type": "db", "level": "db",

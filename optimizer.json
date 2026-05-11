@@ -15,9 +15,6 @@
     "proposer": null,
     "validator": null
   },
-  "trials": {
-    "per_change": 2
-  },
   "target_metrics": [
     "turns",
     "tokens",
@@ -42,9 +39,12 @@
     "channel": "email"
   },
   "state": {
-    "last_run_at": "2026-05-11T20:15:40.413522+00:00",
-    "improvements_deployed": 31,
+    "last_run_at": "2026-05-11T22:29:01.633381+00:00",
+    "improvements_deployed": 34,
     "last_run_status": "success"
+  },
+  "trials": {
+    "per_change": 2
   },
   "criteria": {
     "time": 1,

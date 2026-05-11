@@ -83,6 +83,7 @@ class InteractionRecord(BaseModel):
     channel: Optional[str] = None         # source: 'webagent_ui' | 'telegram' | 'web_portal' | 'api'
     metadata: Optional[str] = None        # JSON: model, turn, duration, tokens
     input: Optional[str] = None           # JSON: the exact messages array sent to LLM
+    output: Optional[str] = None          # JSON: the complete response/result for this interaction
     created_at: datetime
 
 

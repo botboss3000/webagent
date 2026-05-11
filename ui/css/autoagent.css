@@ -158,3 +158,57 @@
 .aa-status-error {
   color: #f7768e;
 }
+
+/* ═══════════════════════════════════════════════
+   LIGHT MODE OVERRIDES
+   ═══════════════════════════════════════════════ */
+body.light-mode #tab-autoagent {
+  background: #fffaf5;
+}
+body.light-mode #autoagent-prompt-bar {
+  background: #fff2e6;
+  border-bottom-color: #ffdec4;
+}
+body.light-mode .aa-prompt-input {
+  background: #ffffff;
+  border-color: #ffdec4;
+  color: #3d2c2e;
+}
+body.light-mode .aa-prompt-input:focus {
+  border-color: #ff8c42;
+}
+body.light-mode .aa-prompt-input::placeholder {
+  color: #cca08a;
+}
+body.light-mode .aa-send-btn {
+  background: #ff8c42;
+  color: #ffffff;
+}
+body.light-mode .aa-send-btn:hover {
+  background: #ff7a2e;
+}
+body.light-mode .aa-send-btn:disabled {
+  background: #ffdec4;
+  color: #cca08a;
+}
+body.light-mode .aa-iframe {
+  background: #fffaf5;
+}
+body.light-mode .aa-placeholder {
+  color: #b09580;
+}
+body.light-mode .aa-placeholder-text {
+  color: #cc6a28;
+}
+body.light-mode .aa-placeholder-hint {
+  color: #cca08a;
+}
+body.light-mode .aa-spinner {
+  border-color: #ffdec4;
+  border-top-color: #ff8c42;
+}
+body.light-mode #autoagent-status {
+  color: #b09580;
+  background: #fffaf5;
+  border-top-color: #ffdec4;
+}
