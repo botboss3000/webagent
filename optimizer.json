@@ -39,8 +39,8 @@
     "channel": "email"
   },
   "state": {
-    "last_run_at": "2026-05-11T13:07:15.248345+00:00",
-    "improvements_deployed": 9,
+    "last_run_at": "2026-05-11T17:47:50.687704+00:00",
+    "improvements_deployed": 11,
     "last_run_status": "success"
   },
   "trials": {

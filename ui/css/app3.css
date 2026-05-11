@@ -223,8 +223,8 @@
     resize: none;
     outline: none;
     tab-size: 2;
-    white-space: pre;
-    overflow-wrap: normal;
+    white-space: pre-wrap;
+    word-break: break-word;
     overflow: auto;
   }
   #cell-modal-editor:focus { border-bottom-color: #7dcfff; }

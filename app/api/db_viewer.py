@@ -530,9 +530,10 @@ async def update_row(
 @router.delete("/reset")
 async def reset_database(
     db: str = Query("local.db", description="Database filename"),
+    exclude: list[str] = Query(default=["context_templates", "agent_templates"], description="List of tables to exclude from reset"),
     _auth: dict = Depends(require_db_auth),
 ):
-    """Delete ALL rows from ALL tables. Preserves context_templates and agent_templates."""
+    """Delete ALL rows from ALL tables. Skips excluded tables."""
     db_path = _get_db_path(db)
     try:
         conn = sqlite3.connect(str(db_path))
@@ -543,8 +544,10 @@ async def reset_database(
         all_tables = [row[0] for row in cur.fetchall()]
 
         # Preserve template/protected tables
-        exclude = {"context_templates", "agent_templates"}
-        to_truncate = [t for t in all_tables if t not in exclude]
+        # If a request sends ?exclude= (empty list via query param), it gets parsed as [""]
+        # So we filter out empty strings to allow unchecking ALL tables
+        exclude_set = set(e for e in exclude if e)
+        to_truncate = [t for t in all_tables if t not in exclude_set]
 
         results = {}
         for table in to_truncate:
@@ -745,6 +748,8 @@ async def query_table(
         query = f'SELECT * FROM "{table}"{where_clause}'
         if order_by and order_by in columns:
             query += f' ORDER BY "{order_by}" {order_dir}'
+        elif "created_at" in columns:
+            query += ' ORDER BY "created_at" DESC'
         query += f" LIMIT {limit} OFFSET {offset}"
 
         cur.execute(query, where_params)

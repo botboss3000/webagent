@@ -1,108 +1,18 @@
 """
-Executor — runs trials to measure the impact of proposed changes.
-Uses context_template "worker-prompt" as system prompt.
+Worker — estimates impact of proposed changes via LLM.
+Parallel execution via asyncio.gather.
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
-import logging
-import os
-from typing import Any, Dict, List, Optional
+import asyncio, json, logging, os
+from typing import Any, Dict, List
+from app.optimizer.prompt_loader import load_prompt
 
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_EXECUTOR_PROMPT = """You are an execution testing agent. Your job: simulate the impact
-of a proposed change by analyzing the change and estimating the resulting metrics.
-
-Given:
-- The proposed change (old vs new content)
-- The element type (context_document, tool_code, system_prompt)
-- The original interaction transcript
-
-Estimate how the change would affect:
-- Number of turns (would it eliminate unnecessary tool calls or confirmations?)
-- Token usage (is the new version shorter? Does it avoid verbose tool outputs?)
-- Response time (would it reduce round trips?)
-- Whether the task would still succeed (is the change backward-compatible?)
-
-Return JSON:
-{
-  "estimated_turns": N,
-  "estimated_tokens": N,
-  "estimated_time_ms": N,
-  "success_likely": true/false,
-  "confidence": 0.0-1.0,
-  "reasoning": "brief explanation"
-}
-"""
-
-
-async def _load_executor_prompt(user_id: str) -> str:
-    """Load the executor system prompt: agent-specific first, template, then file fallback."""
-    from app.db import get_db
-
-    db = get_db()
-    raw = getattr(db, "_get_conn", None)
-    if raw:
-        conn = raw()
-        try:
-            # Try agent-specific context document
-            conn.execute(
-                "SELECT id FROM agents WHERE user_id = ? LIMIT 1",
-                (user_id,),
-            )
-            agent_row = conn.fetchone()
-
-            if agent_row:
-                conn.execute(
-                    """SELECT content FROM context_documents
-                       WHERE context_type = 'optimizer' AND title = 'worker-prompt'
-                       AND agent_id = ? LIMIT 1""",
-                    (agent_row[0],),
-                )
-                row = conn.fetchone()
-                if row:
-                    return row[0]
-
-                # Try template fallback
-                conn.execute(
-                    """SELECT content FROM context_templates
-                   WHERE context_type = 'optimizer' AND title = 'worker-prompt'
-                   LIMIT 1""",
-                )
-                row = conn.fetchone()
-                if row:
-                    return row[0]
-        finally:
-            conn.close()
-
-    # Fallback to file
-    import os
-
-    md_path = os.path.join(
-        os.path.dirname(__file__), "prompts", "worker.md"
-    )
-    try:
-        if os.path.exists(md_path):
-            with open(md_path, encoding="utf-8") as f:
-                return f.read()
-    except Exception:
-        pass
-
-    return DEFAULT_EXECUTOR_PROMPT
-
-
-async def run_trials(
-    user_id: str,
-    changes: List[Dict[str, Any]],
-    transcript: List[str],
-    trials_per_change: int = 2,
-) -> List[Dict[str, Any]]:
-    """Run LLM-based trials for each proposed change in parallel."""
-
+async def run_trials(user_id, changes, transcript, trials_per_change=2):
     try:
         from openai import AsyncOpenAI
     except ImportError:
@@ -111,101 +21,74 @@ async def run_trials(
     base_url = os.environ.get("LLM_BASE_URL", "https://api.deepinfra.com/v1/openai")
     api_key = os.environ.get("LLM_API_KEY", "")
     model = os.environ.get("LLM_MODEL", "deepseek-ai/DeepSeek-V4-Flash")
-
     client = AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=30.0)
 
-    system_prompt = await _load_executor_prompt(user_id)
-
-    async def _run_single_trial(change: Dict[str, Any], trial_num: int):
-        """Run one trial for one change."""
+    async def _run_one(change, trial_num):
         element = change.get("element", "unknown")
         new_content = change.get("new_content", "")
         old_excerpt = change.get("old_excerpt", "")
-        element_type = change.get("element_type", "context_document")
 
-        prompt = (
-            f"Estimate the impact of this change:\n\n"
-            f"ELEMENT: {element} (type: {element_type})\n\n"
-            f"OLD:\n{old_excerpt[:500]}\n\n"
-            f"NEW:\n{new_content[:800]}\n\n"
-            f"RECENT INTERACTION:\n{chr(10).join(transcript[-15:])}\n\n"
-            f"Return JSON with estimated_turns, estimated_tokens, estimated_time_ms, success_likely, confidence, reasoning."
-        )
+        prompt = f"""Estimate impact of this change:
+
+ELEMENT: {element}
+
+OLD:
+{old_excerpt[:500]}
+
+NEW:
+{new_content[:800]}
+
+RECENT:
+{chr(10).join(transcript[-15:])}
+
+Return JSON with estimated_turns, estimated_tokens, estimated_time_ms, success_likely, confidence, reasoning."""
 
         try:
             resp = await client.chat.completions.create(
                 model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.2,
-                max_tokens=800,
-                response_format={"type": "json_object"},
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2, max_tokens=800,
             )
-            import json
-
-            return json.loads(resp.choices[0].message.content.strip())
+            text = resp.choices[0].message.content.strip()
+            if text.startswith("```"):
+                parts = text.split("```")
+                text = parts[1].replace("json", "", 1).strip() if len(parts) > 1 else text
+            return json.loads(text)
         except Exception as e:
-            logger.warning(
-                "Executor: trial %d for %s failed: %s", trial_num, element, e
-            )
+            logger.warning("Worker trial %d for %s failed: %s", trial_num, element, e)
             return None
 
-    # Build all trial tasks (max 4 changes, n trials each)
-    change_tasks = []
+    tasks = []
     for ci, change in enumerate(changes[:4]):
         for tn in range(trials_per_change):
-            task = _run_single_trial(change, tn)
-            change_tasks.append(((ci, tn), task))
+            tasks.append(((ci, tn), _run_one(change, tn)))
 
-    # Run all in parallel
-    results_raw = await asyncio.gather(
-        *[t for _, t in change_tasks], return_exceptions=True
-    )
+    results_raw = await asyncio.gather(*[t for _, t in tasks], return_exceptions=True)
 
-    # Process results
-    change_data: Dict[int, Dict[str, Any]] = {}
-    for idx, ((ci, tn), _) in enumerate(change_tasks):
+    change_data = {}
+    for idx, ((ci, tn), _) in enumerate(tasks):
         raw = results_raw[idx]
-        if isinstance(raw, Exception):
-            raw = None
-
+        if isinstance(raw, Exception): raw = None
         if ci not in change_data:
             change_data[ci] = {"estimates": [], "change": changes[ci]}
-
         if raw is not None:
             change_data[ci]["estimates"].append(raw)
 
-    # Average results per change
     results = []
     for ci in sorted(change_data.keys()):
         cd = change_data[ci]
-        estimates = cd["estimates"]
-        change = cd["change"]
-
-        if estimates:
+        est = cd["estimates"]
+        ch = cd["change"]
+        if est:
             avg = {
-                "turns": sum(e.get("estimated_turns", 0) for e in estimates) / len(estimates),
-                "tokens": sum(e.get("estimated_tokens", 0) for e in estimates) / len(estimates),
-                "time_ms": sum(e.get("estimated_time_ms", 0) for e in estimates) / len(estimates),
-                "success": all(e.get("success_likely", True) for e in estimates),
-                "confidence": sum(e.get("confidence", 0.5) for e in estimates) / len(estimates),
+                "turns": sum(e.get("estimated_turns", 0) for e in est) / len(est),
+                "tokens": sum(e.get("estimated_tokens", 0) for e in est) / len(est),
+                "time_ms": sum(e.get("estimated_time_ms", 0) for e in est) / len(est),
+                "success": all(e.get("success_likely", True) for e in est),
+                "confidence": sum(e.get("confidence", 0.5) for e in est) / len(est),
             }
         else:
-            avg = {
-                "turns": 0,
-                "tokens": 0,
-                "time_ms": 0,
-                "success": True,
-                "confidence": 0,
-            }
-
-        results.append({
-            "element": change.get("element", "unknown"),
-            "change": change,
-            "trials": estimates,
-            "averaged": avg,
-        })
+            avg = {"turns": 0, "tokens": 0, "time_ms": 0, "success": True, "confidence": 0}
+        results.append({"element": ch.get("element", "unknown"), "change": ch, "trials": est, "averaged": avg})
 
     return results
