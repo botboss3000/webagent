@@ -691,6 +691,7 @@ async def query_table(
                                 "col": spec["col"],
                                 "op": spec.get("op", "contains"),
                                 "val": spec.get("val", ""),
+                                "include_null": spec.get("include_null", False)
                             })
             except (json.JSONDecodeError, TypeError):
                 pass
@@ -708,13 +709,20 @@ async def query_table(
             val = spec["val"]
             if op == "not_in":
                 vals = [v.strip() for v in val.split(",") if v.strip()]
+                include_null = spec.get("include_null", False)
                 if vals:
                     if vals == ["__ALL__"]:
                         where_clauses.append("1=0")
                     else:
                         placeholders = ",".join("?" for _ in vals)
-                        where_clauses.append(f'"{col}" NOT IN ({placeholders})')
+                        clause = f'"{col}" NOT IN ({placeholders})'
+                        if include_null:
+                            clause = f'({clause} OR "{col}" IS NULL)'
+                        where_clauses.append(clause)
                         where_params.extend(vals)
+                else:
+                    if not include_null:
+                        where_clauses.append(f'"{col}" IS NOT NULL')
             elif op == "contains":
                 where_clauses.append(f'"{col}" LIKE ?')
                 where_params.append(f"%{val}%")

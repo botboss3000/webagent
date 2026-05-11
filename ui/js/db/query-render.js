@@ -120,6 +120,9 @@ async function openColPopup(th, tableName, colName) {
     </div>
     <div class="db-popup-items"></div>
     <div class="db-popup-status"></div>
+    <div class="db-popup-actions">
+      <button class="db-popup-apply-btn">Apply</button>
+    </div>
   `;
 
   // Position the popup
@@ -193,14 +196,12 @@ async function openColPopup(th, tableName, colName) {
           excl.clear();
           excl.add('__ALL__');
         }
-        // Persist exclusions
+        // Persist exclusions to localStorage but don't re-query yet
         if (!app.dbExclusions[tableName]) app.dbExclusions[tableName] = {};
         app.dbExclusions[tableName][colName] = Array.from(excl);
         saveExclusions();
-        // Re-render the checkbox list
+        // Re-render the checkbox list only
         renderItems(searchInput.value);
-        // Re-query the table
-        queryTable(tableName);
       });
     });
   }
@@ -216,25 +217,22 @@ async function openColPopup(th, tableName, colName) {
   popup.querySelector('.db-popup-select-all').addEventListener('click', (e) => {
     e.preventDefault();
     if (!app.dbColPopup) return;
-    app.dbColPopup.excluded.clear();  // clear everything, including __ALL__
+    app.dbColPopup.excluded.clear();
     if (!app.dbExclusions[tableName]) app.dbExclusions[tableName] = {};
     app.dbExclusions[tableName][colName] = [];
     saveExclusions();
     renderItems(searchInput.value);
-    queryTable(tableName);
   });
 
   // Clear (exclude all)
   popup.querySelector('.db-popup-clear').addEventListener('click', (e) => {
     e.preventDefault();
     if (!app.dbColPopup) return;
-    // Use special sentinel to exclude everything
     app.dbColPopup.excluded = new Set(['__ALL__']);
     if (!app.dbExclusions[tableName]) app.dbExclusions[tableName] = {};
     app.dbExclusions[tableName][colName] = ['__ALL__'];
     saveExclusions();
     renderItems(searchInput.value);
-    queryTable(tableName);
   });
 
   // Sort buttons
@@ -247,6 +245,12 @@ async function openColPopup(th, tableName, colName) {
       closeColPopup();
       queryTable(tableName);
     });
+  });
+
+  // Apply button — re-query with accumulated exclusions
+  popup.querySelector('.db-popup-apply-btn').addEventListener('click', () => {
+    closeColPopup();
+    queryTable(tableName);
   });
 
   // Prevent clicks inside popup from bubbling to document
@@ -263,7 +267,10 @@ function ensurePopupOutsideHandler() {
   _popupOutsideHandler = (e) => {
     if (app.dbColPopup && app.dbColPopup.el) {
       if (!app.dbColPopup.el.contains(e.target)) {
+        const tableName = app.dbColPopup.table;
+        const wasOpen = !!app.dbColPopup;
         closeColPopup();
+        if (wasOpen) queryTable(tableName);
       }
     }
   };
@@ -287,7 +294,14 @@ function getExclusionParams(tableName) {
   const specs = [];
   for (const [col, vals] of Object.entries(app.dbExclusions[tableName])) {
     if (!vals || vals.length === 0) continue;
-    specs.push({ col, op: 'not_in', val: vals.join(',') });
+    // Remove __NULL__ sentinel from the exclusion list — it needs special SQL handling
+    const realVals = vals.filter(v => v !== '__NULL__');
+    const includeNull = !vals.includes('__NULL__');
+    const spec = { col, op: 'not_in', include_null: includeNull };
+    if (realVals.length > 0) {
+      spec.val = realVals.join(',');
+    }
+    specs.push(spec);
   }
   if (specs.length === 0) return '';
   return 'filters_json=' + encodeURIComponent(JSON.stringify(specs));
@@ -363,8 +377,11 @@ function renderTableData(result, silent) {
     const hasFilter = app.dbExclusions[tableName] && app.dbExclusions[tableName][col] && app.dbExclusions[tableName][col].length > 0;
     const filterClass = hasFilter ? ' filtered' : '';
     html += `<th class="db-th${filterClass}" data-col="${col}"${style} draggable="true">
-      <span class="th-text" data-col="${col}">${col}${sortArrow}</span>
-      ${hasFilter ? '<span class="th-funnel">🔽</span>' : ''}
+      <span class="th-text" data-col="${col}">
+        <span class="th-name">${col}</span>
+        <span class="th-sort">${sortArrow}</span>
+        <span class="th-funnel">${hasFilter ? ' 🔽' : ''}</span>
+      </span>
       ${noResize ? '' : '<span class="th-resize"></span>'}
     </th>`;
   }
@@ -517,14 +534,12 @@ function renderTableData(result, silent) {
  */
 function updateHeaderSortArrows(tableName) {
   const sort = getSortForTable(tableName);
-  document.querySelectorAll('.db-th .th-text').forEach(span => {
-    const col = span.dataset.col;
-    // Remove existing arrows
-    const text = span.textContent.replace(/ [▲▼]/g, '');
+  document.querySelectorAll('.db-th .th-sort').forEach(span => {
+    const col = span.closest('.th-text').dataset.col;
     if (col === sort.col) {
-      span.textContent = text + (sort.dir === 'ASC' ? ' ▲' : ' ▼');
+      span.textContent = sort.dir === 'ASC' ? ' ▲' : ' ▼';
     } else {
-      span.textContent = text;
+      span.textContent = '';
     }
   });
 }
@@ -536,18 +551,13 @@ function updateFilterIndicators(tableName) {
   document.querySelectorAll('.db-th').forEach(th => {
     const col = th.dataset.col;
     const hasFilter = app.dbExclusions[tableName] && app.dbExclusions[tableName][col] && app.dbExclusions[tableName][col].length > 0;
+    const funnel = th.querySelector('.th-funnel');
     if (hasFilter) {
       th.classList.add('filtered');
-      if (!th.querySelector('.th-funnel')) {
-        const funnel = document.createElement('span');
-        funnel.className = 'th-funnel';
-        funnel.textContent = '🔽';
-        th.appendChild(funnel);
-      }
+      if (funnel) funnel.textContent = ' 🔽';
     } else {
       th.classList.remove('filtered');
-      const funnel = th.querySelector('.th-funnel');
-      if (funnel) funnel.remove();
+      if (funnel) funnel.textContent = '';
     }
   });
 }

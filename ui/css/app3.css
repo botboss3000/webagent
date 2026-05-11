@@ -114,8 +114,20 @@
     white-space: nowrap;
   }
   .db-th { position: relative; user-select: none; }
-  .th-text { overflow: hidden; text-overflow: ellipsis; display: block; cursor: pointer; border-radius: 3px; padding: 1px 4px; }
+  .th-text { 
+    overflow: hidden; 
+    text-overflow: ellipsis; 
+    display: inline-block; 
+    cursor: pointer; 
+    border-radius: 3px; 
+    padding: 1px 4px; 
+    white-space: nowrap;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
   .th-text:hover { background: #1e2040; }
+  .th-name { display: inline; }
+  .th-sort { color: #565f89; display: inline; font-size: 10px; margin-left: 2px; }
   .th-resize {
     position: absolute;
     top: 0; right: 0;
@@ -218,14 +230,12 @@
   #cell-modal-editor:focus { border-bottom-color: #7dcfff; }
 
   /* Column filter indicator */
-  .db-th.filtered .th-text { color: #7dcfff; }
+  .db-th.filtered .th-name { color: #7dcfff; }
   .th-funnel {
-    display: inline-block;
+    display: inline;
     margin-left: 2px;
     font-size: 9px;
     color: #7dcfff;
-    vertical-align: middle;
-    line-height: 1;
   }
 
   /* ── Column filter/sort popup (Google Sheets style) ── */
@@ -326,6 +336,24 @@
     color: #565f89;
     border-top: 1px solid #2a2a4a;
   }
+  .db-popup-actions {
+    padding: 6px 10px;
+    border-top: 1px solid #2a2a4a;
+    display: flex;
+    justify-content: flex-end;
+  }
+  .db-popup-apply-btn {
+    background: #7dcfff;
+    color: #0d0d1a;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 16px;
+    font-size: 12px;
+    font-family: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .db-popup-apply-btn:hover { background: #a0dbff; }
 
   /* Drag-to-reorder */
   .db-th.drop-target {
