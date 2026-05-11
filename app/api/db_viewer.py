@@ -595,6 +595,58 @@ async def truncate_table(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/column-values")
+async def column_values(
+    table: str = Query(..., description="Table name"),
+    column: str = Query(..., description="Column name"),
+    db: str = Query("local.db", description="Database filename"),
+    search: str = Query("", description="Search term to filter distinct values"),
+    _auth: dict = Depends(require_db_auth),
+):
+    """Get distinct values for a column (for filter popup)."""
+    db_path = _get_db_path(db)
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        # Verify table exists
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail=f"Table '{table}' not found")
+
+        # Verify column exists
+        cur.execute(f"PRAGMA table_info(\"{table}\")")
+        columns = [col[1] for col in cur.fetchall()]
+        if column not in columns:
+            raise HTTPException(status_code=404, detail=f"Column '{column}' not found in table '{table}'")
+
+        # Build query
+        if search:
+            query = f'SELECT DISTINCT "{column}" FROM "{table}" WHERE CAST("{column}" AS TEXT) LIKE ? ORDER BY "{column}" ASC'
+            cur.execute(query, [f"%{search}%"])
+        else:
+            query = f'SELECT DISTINCT "{column}" FROM "{table}" ORDER BY "{column}" ASC'
+            cur.execute(query)
+
+        values = [row[0] for row in cur.fetchall()]
+
+        # Total distinct count (without search)
+        cur.execute(f'SELECT COUNT(DISTINCT "{column}") FROM "{table}"')
+        total = cur.fetchone()[0]
+
+        conn.close()
+        return {
+            "table": table,
+            "column": column,
+            "values": values,
+            "total": total,
+            "db": db,
+        }
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/query")
 async def query_table(
     table: str = Query(..., description="Table name"),
@@ -603,8 +655,9 @@ async def query_table(
     order_by: Optional[str] = Query(None, description="Column to order by"),
     order_dir: str = Query("ASC", regex="^(ASC|DESC)$"),
     filter_col: Optional[str] = Query(None, description="Column to filter on"),
-    filter_op: str = Query("contains", regex="^(contains|equals|starts|gt|lt)$"),
-    filter_val: Optional[str] = Query(None, description="Filter value"),
+    filter_op: str = Query("contains", regex="^(contains|equals|starts|gt|lt|not_in)$"),
+    filter_val: Optional[str] = Query(None, description="Filter value (comma-separated for not_in)"),
+    filters_json: Optional[str] = Query(None, description="JSON array of {col, op, val} for multi-column filters"),
     db: str = Query("local.db", description="Database filename"),
     _auth: dict = Depends(require_db_auth),
 ):
@@ -624,25 +677,61 @@ async def query_table(
         cur.execute(f"PRAGMA table_info(\"{table}\")")
         columns = [col[1] for col in cur.fetchall()]
 
+        # Collect filter specs
+        filter_specs = []
+
+        # Parse multi-column filters from JSON
+        if filters_json:
+            try:
+                parsed = json.loads(filters_json)
+                if isinstance(parsed, list):
+                    for spec in parsed:
+                        if isinstance(spec, dict) and spec.get("col") in columns:
+                            filter_specs.append({
+                                "col": spec["col"],
+                                "op": spec.get("op", "contains"),
+                                "val": spec.get("val", ""),
+                            })
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Legacy single-filter support
+        if not filter_specs and filter_col and filter_col in columns and filter_val:
+            filter_specs.append({"col": filter_col, "op": filter_op, "val": filter_val})
+
         # Build WHERE clause
-        where_clause = ""
+        where_clauses = []
         where_params = []
-        if filter_col and filter_col in columns and filter_val:
-            if filter_op == "contains":
-                where_clause = f' WHERE "{filter_col}" LIKE ?'
-                where_params = [f"%{filter_val}%"]
-            elif filter_op == "equals":
-                where_clause = f' WHERE "{filter_col}" = ?'
-                where_params = [filter_val]
-            elif filter_op == "starts":
-                where_clause = f' WHERE "{filter_col}" LIKE ?'
-                where_params = [f"{filter_val}%"]
-            elif filter_op == "gt":
-                where_clause = f' WHERE "{filter_col}" > ?'
-                where_params = [filter_val]
-            elif filter_op == "lt":
-                where_clause = f' WHERE "{filter_col}" < ?'
-                where_params = [filter_val]
+        for spec in filter_specs:
+            col = spec["col"]
+            op = spec["op"]
+            val = spec["val"]
+            if op == "not_in":
+                vals = [v.strip() for v in val.split(",") if v.strip()]
+                if vals:
+                    if vals == ["__ALL__"]:
+                        where_clauses.append("1=0")
+                    else:
+                        placeholders = ",".join("?" for _ in vals)
+                        where_clauses.append(f'"{col}" NOT IN ({placeholders})')
+                        where_params.extend(vals)
+            elif op == "contains":
+                where_clauses.append(f'"{col}" LIKE ?')
+                where_params.append(f"%{val}%")
+            elif op == "equals":
+                where_clauses.append(f'"{col}" = ?')
+                where_params.append(val)
+            elif op == "starts":
+                where_clauses.append(f'"{col}" LIKE ?')
+                where_params.append(f"{val}%")
+            elif op == "gt":
+                where_clauses.append(f'"{col}" > ?')
+                where_params.append(val)
+            elif op == "lt":
+                where_clauses.append(f'"{col}" < ?')
+                where_params.append(val)
+
+        where_clause = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
         # Build query
         query = f'SELECT * FROM "{table}"{where_clause}'

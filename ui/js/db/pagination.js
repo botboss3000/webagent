@@ -1,7 +1,7 @@
 'use strict';
 
 import { app } from '../state.js';
-import { queryTable, updatePageInfo, cancelEditing } from './query-render.js';
+import { queryTable, updatePageInfo, cancelEditing, loadPersistedDbState, getSortForTable } from './query-render.js';
 import { fetchTables, renderTableList } from './tables.js';
 import { apiPath } from '../config.js';
 import { authUrl } from '../left-login.js';
@@ -111,8 +111,6 @@ export function initDbPaginationAndToolbar() {
           app.dbSelectedTable = tableToLoad;
           renderTableList();
           localStorage.setItem('lastDbTable', tableToLoad);
-          document.getElementById('db-sort-col').value = 'created_at';
-          document.getElementById('db-sort-dir').value = 'DESC';
           queryTable(tableToLoad).then(() => startAutoRefresh());
         } else {
           document.getElementById('db-table-data').innerHTML =
@@ -146,8 +144,6 @@ export function initDbPaginationAndToolbar() {
       if (tableToLoad) {
         app.dbSelectedTable = tableToLoad;
         renderTableList();
-        document.getElementById('db-sort-col').value = 'created_at';
-        document.getElementById('db-sort-dir').value = 'DESC';
         queryTable(tableToLoad).then(() => startAutoRefresh());
       } else {
         document.getElementById('db-table-data').innerHTML =
@@ -158,17 +154,10 @@ export function initDbPaginationAndToolbar() {
   document.getElementById('db-select').addEventListener('change', () => {
     document.getElementById('db-refresh').click();
   });
-  document.getElementById('db-sort-col').addEventListener('change', () => {
-    app.dbPageOffset = 0;
-    if (app.dbSelectedTable) queryTable(app.dbSelectedTable);
-  });
-  document.getElementById('db-sort-dir').addEventListener('change', () => {
-    app.dbPageOffset = 0;
-    if (app.dbSelectedTable) queryTable(app.dbSelectedTable);
-  });
 }
 
 export function runInitialDbTableLoad() {
+  loadPersistedDbState();
   fetchTables('local.db').then(() => {
     // Try saved table, fall back to 'interactions', else nothing
     const savedTable = localStorage.getItem('lastDbTable');
@@ -181,8 +170,6 @@ export function runInitialDbTableLoad() {
     if (tableToLoad) {
       app.dbSelectedTable = tableToLoad;
       renderTableList();
-      document.getElementById('db-sort-col').value = 'created_at';
-      document.getElementById('db-sort-dir').value = 'DESC';
       queryTable(tableToLoad).then(() => startAutoRefresh());
     }
   });

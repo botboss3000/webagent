@@ -114,7 +114,8 @@
     white-space: nowrap;
   }
   .db-th { position: relative; user-select: none; }
-  .th-text { overflow: hidden; text-overflow: ellipsis; display: block; }
+  .th-text { overflow: hidden; text-overflow: ellipsis; display: block; cursor: pointer; border-radius: 3px; padding: 1px 4px; }
+  .th-text:hover { background: #1e2040; }
   .th-resize {
     position: absolute;
     top: 0; right: 0;
@@ -216,50 +217,114 @@
   }
   #cell-modal-editor:focus { border-bottom-color: #7dcfff; }
 
-  /* Filter row */
-  .db-filter-input {
+  /* Column filter indicator */
+  .db-th.filtered .th-text { color: #7dcfff; }
+  .th-funnel {
+    display: inline-block;
+    margin-left: 2px;
+    font-size: 9px;
+    color: #7dcfff;
+    vertical-align: middle;
+    line-height: 1;
+  }
+
+  /* ── Column filter/sort popup (Google Sheets style) ── */
+  .db-col-popup {
+    position: absolute;
+    z-index: 100;
+    background: #14142a;
+    border: 1px solid #2a2a4a;
+    border-radius: 8px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+    padding: 6px 0;
+    max-height: 320px;
+    display: flex;
+    flex-direction: column;
+    min-width: 180px;
+  }
+  .db-popup-sort {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 6px;
+    border-bottom: 1px solid #2a2a4a;
+  }
+  .db-popup-sort-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: none;
+    border: none;
+    color: #c0caf5;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+    text-align: left;
+    width: 100%;
+  }
+  .db-popup-sort-btn:hover { background: #1e2040; }
+  .db-popup-sort-btn.active { color: #7dcfff; }
+  .db-popup-sort-arrow { font-size: 10px; display: inline-block; width: 14px; text-align: center; }
+  .db-popup-search-wrap {
+    padding: 6px 6px 4px;
+    border-bottom: 1px solid #2a2a4a;
+  }
+  .db-popup-search {
     width: 100%;
     background: #0d0d1a;
     border: 1px solid #2a2a4a;
-    border-radius: 3px;
-    padding: 2px 4px;
+    border-radius: 4px;
+    padding: 4px 8px;
     color: #c0caf5;
     font-size: 11px;
     font-family: inherit;
     box-sizing: border-box;
-  }
-  .db-filter-input:focus {
-    border-color: #7dcfff;
     outline: none;
   }
-  .db-filter-input::placeholder {
-    color: #3b4261;
+  .db-popup-search:focus { border-color: #7dcfff; }
+  .db-popup-search::placeholder { color: #3b4261; }
+  .db-popup-select-header {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 10px 2px;
+    font-size: 11px;
   }
-  .db-filter-th {
-    padding: 2px 4px;
-    background: #0a2f0a;
-    border-bottom: 1px solid #2a2a4a;
-  }
-
-  /* Sort arrows */
-  .th-sort-arrows {
-    display: inline-flex;
-    flex-direction: row;
-    vertical-align: middle;
-    margin-left: 4px;
-    gap: 1px;
-  }
-  .th-sort-arrow {
-    font-size: 10px;
-    color: #3b4261;
+  .db-popup-select-header a {
+    color: #7dcfff;
+    text-decoration: none;
     cursor: pointer;
+  }
+  .db-popup-select-header a:hover { text-decoration: underline; }
+  .db-popup-items {
+    flex: 1;
+    overflow-y: auto;
+    max-height: 180px;
+    padding: 2px 0;
+  }
+  .db-popup-items::-webkit-scrollbar { width: 4px; }
+  .db-popup-items::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 2px; }
+  .db-popup-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
     user-select: none;
   }
-  .th-sort-arrow:hover {
+  .db-popup-item:hover { background: #1e2040; }
+  .db-popup-item.unchecked .db-popup-val { opacity: 0.4; }
+  .db-popup-check { accent-color: #7dcfff; cursor: pointer; margin: 0; flex-shrink: 0; }
+  .db-popup-val { overflow: hidden; text-overflow: ellipsis; }
+  .db-popup-empty { padding: 10px; color: #565f89; font-size: 11px; text-align: center; }
+  .db-popup-status {
+    padding: 4px 10px;
+    font-size: 10px;
     color: #565f89;
-  }
-  .th-sort-arrow.active {
-    color: #7dcfff;
+    border-top: 1px solid #2a2a4a;
   }
 
   /* Drag-to-reorder */

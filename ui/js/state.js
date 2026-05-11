@@ -43,6 +43,9 @@ export const app = {
   dbTotalRows: 0,
   dbFilters: {},
   dbColumnOrder: {},
+  dbExclusions: {},
+  dbSortState: {},
+  dbColPopup: null,
   COL_WIDTHS: {
     created_at: '20px',
     session_id: '20px',
