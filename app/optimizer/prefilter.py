@@ -73,6 +73,14 @@ async def prefilter(user_id: str, session_id: str) -> Dict[str, Any]:
                 "issue_desc": f"Session took {len(assistant_turns)} assistant turns — too many round trips",
             })
 
+        # ALWAYS include the session — even if no tool errors, user may want to optimize
+        # response quality, tone, verbosity, or any subjective concern
+        if not opportunities:
+            opportunities.append({
+                "skill_name": "interaction_quality",
+                "issue_desc": "No tool errors detected. Ask the user what they want to improve — response quality, tone, verbosity, format, or other concerns.",
+            })
+
         conn.close()
         return {
             "transcript": transcript,

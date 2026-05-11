@@ -83,7 +83,7 @@ async def run_optimizer_async(
 
         opportunities = pf.get("opportunities", [])
         _insert_opt_msg(user_id, optimizer_session_id, "assistant", "optimizer:prefilter",
-                        f"Prefilter: {len(opportunities)} issues found across session tools. "
+                        f"System: {len(opportunities)} issues found across session tools. "
                         f"Baseline: {baseline}")
 
         if criteria and target > 0:
@@ -222,9 +222,9 @@ async def _run_standard(
     
     if not opportunities:
         _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:analyzer",
-                        "No optimization opportunities found. All skills are healthy.")
+                        "System: No optimization opportunities found. All skills are healthy.")
         _log_complete(run_id, "success", cfg, opt_sid,
-                     summary="No optimization opportunities found.",
+                     summary="System: No optimization opportunities found.",
                      skills_analyzed=len(pf.get("stats", [])))
         return opt_sid
 
