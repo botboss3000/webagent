@@ -53,9 +53,13 @@ export async function saveEdit(cell, newValue) {
 
 export function initDbCellEditors() {
   document.getElementById('db-table-data').addEventListener('click', (e) => {
-    const cell = e.target.closest('.db-cell');
+    const editBtn = e.target.closest('.db-cell-edit');
+    if (!editBtn) return;
+    
+    e.stopPropagation();
+    
+    const cell = editBtn.closest('.db-cell');
     if (!cell) return;
-    if (e.target.closest('.db-cell-expand')) return;
 
     const ri = parseInt(cell.dataset.row, 10);
     const col = cell.dataset.col;
@@ -105,9 +109,6 @@ export function initDbCellEditors() {
     const btn = e.target.closest('.db-cell-expand');
     if (!btn) return;
     e.stopPropagation();
-
-    // Admin-only: require authentication for expand editor
-    if (!isAuthenticated()) return;
 
     // Cancel any active inline editing before opening modal
     if (app.editingCell) {

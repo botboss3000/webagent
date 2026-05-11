@@ -301,6 +301,10 @@ function _applyConfig(cfg) {
   if (cfg.mode) setMode(cfg.mode);
   if (cfg.user_feedback) setFeedback(cfg.user_feedback);
   if (cfg.intensity) setIntensity(cfg.intensity);
+  if (cfg.trials && cfg.trials.per_change) {
+    const el = document.getElementById("opt-trials-per-change");
+    if (el) el.value = cfg.trials.per_change;
+  }
   if (cfg.metrics) {
     METRIC_CARDS.forEach(card => {
       const name = card.dataset.metric;
@@ -452,6 +456,7 @@ async function saveConfig() {
   });
 
   const payload = {
+    trials: { per_change: parseInt(document.getElementById("opt-trials-per-change")?.value || "2") },
     mode: currentMode,
     user_feedback: currentFeedback,
     intensity: currentIntensity,

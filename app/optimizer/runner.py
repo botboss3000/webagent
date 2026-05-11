@@ -33,13 +33,19 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
     if cfg.get("mode") != "live" and "manual" not in session_id:
         return None
 
-    max_iter = cfg.get("max_iterations", 3)
+    from app.db import get_db
+    ag = await get_db().get_agent_for_user(user_id)
+    max_iter = 3
+    if ag and ag.get("metadata"):
+        try: max_iter = int(json.loads(ag["metadata"]).get("optimizer_max_iterations", 3))
+        except: pass
+    if max_iter <= 0: max_iter = cfg.get("max_iterations", 3)
     intensity = cfg.get("intensity", 3)
     thresholds = get_intensity_thresholds(intensity)
     intensity_targets = thresholds.get("targets", {})
     manual_targets = cfg.get("criteria_targets", {})
     target = manual_targets.get(criteria, intensity_targets.get(criteria, 0)) if criteria else 0
-    trials_per_change = 2
+    trials_per_change = cfg.get("trials", {}).get("per_change", 2)
 
     opt_sid = f"optimizer-{session_id}"
     _ensure_session(user_id, opt_sid, session_id)
@@ -56,52 +62,77 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
         _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:prefilter",
                         f"Stats: {turns} turns, ~{tokens_est} tokens, {len(skill_state)} skills tracked.")
 
-        # Planner
-        proposal = await propose_improvements(user_id, session_id, pf, mode="analyze")
-        if not proposal or not proposal.get("changes"):
+
+        iteration = 0
+        while iteration < max_iter:
+            iteration += 1
+            _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:system", f"Iteration {iteration}/{max_iter} starting.")
+
+            # Planner
+            proposal = await propose_improvements(user_id, session_id, pf, mode="analyze", optimizer_history=None)
+            if not proposal or not proposal.get("changes"):
+                _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:planner",
+                                f"Planner: {proposal.get('analysis','No issues found.')}")
+                if iteration == 1:
+                    _log_complete(run_id, "success", cfg, opt_sid, summary=proposal.get("analysis","No changes needed."))
+                break
+
+            changes = proposal["changes"]
             _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:planner",
-                            f"Planner: {proposal.get('analysis','No issues found.')}")
-            _log_complete(run_id, "success", cfg, opt_sid, summary=proposal.get("analysis","No changes needed."))
-            return opt_sid
+                            f"Planner: {proposal.get('analysis','')[:200]}. Proposed {len(changes)} changes.")
 
-        changes = proposal["changes"]
-        _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:planner",
-                        f"Planner: {proposal.get('analysis','')[:200]}. Proposed {len(changes)} changes.")
+            # Workers
+            trials = await run_trials(user_id, changes, pf.get("transcript", []), trials_per_change)
+            confident = [t for t in trials if t.get("averaged", {}).get("confidence", 0) >= 0.5]
+            if not confident:
+                _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:worker",
+                                "Worker: All trials low confidence. Trying different approach next iteration.")
+                if iteration == max_iter:
+                    _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:system",
+                                    "No noticeable improvements after max iterations. Stopping to await user feedback.")
+                continue
 
-        # Workers
-        trials = await run_trials(user_id, changes, pf.get("transcript", []), trials_per_change)
-        confident = [t for t in trials if t.get("averaged", {}).get("confidence", 0) >= 0.5]
-        if not confident:
             _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:worker",
-                            "Worker: All trials low confidence. Try different approach.")
-            _log_complete(run_id, "success", cfg, opt_sid, proposals_generated=len(changes), proposals_deployed=0)
-            return opt_sid
+                            f"Worker: {len(confident)}/{len(trials)} trials passed confidence threshold.")
 
-        _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:worker",
-                        f"Worker: {len(confident)}/{len(trials)} trials passed confidence threshold.")
+            # Finalizer
+            review = await review_trials(user_id, confident, baseline, transcript=pf.get("transcript", []),
+                                         criteria=criteria, target=target, skill_state=skill_state)
+            user_feedback_setting = cfg.get("user_feedback", "always")
+            if user_feedback_setting == "always":
+                _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:system", f"Run paused. Found {len(review.get(\"winners\", []))} proposed deployments. Feedback policy is set to \"always\". Waiting for user approval.")
+                _log_complete(run_id, "pending_approval", cfg, opt_sid, proposals_generated=len(changes), summary=f"Pending approval. {review.get(\"summary\", \"\")}")
+                return opt_sid
+            winners, losers = review.get("winners", []), review.get("losers", [])
+            summary = review.get("summary", "")
 
-        # Finalizer
-        review = await review_trials(user_id, confident, baseline, transcript=pf.get("transcript", []),
-                                     criteria=criteria, target=target, skill_state=skill_state)
-        winners, losers = review.get("winners", []), review.get("losers", [])
-        summary = review.get("summary", "")
+            deployed = 0
+            for w in winners:
+                if isinstance(w, dict) and w.get("element"):
+                    for ch in changes:
+                        if ch.get("element") == w.get("element"):
+                            _deploy_change(user_id, opt_sid, ch, w)
+                            deployed += 1
 
-        deployed = 0
-        for w in winners:
-            if isinstance(w, dict) and w.get("element"):
-                for ch in changes:
-                    if ch.get("element") == w.get("element"):
-                        _deploy_change(user_id, opt_sid, ch, w)
-                        deployed += 1
+            _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:finalizer",
+                            f"Finalizer: {len(winners)} winners, {len(losers)} rejected. Deployed {deployed}. {summary}")
 
-        _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:finalizer",
-                        f"Finalizer: {len(winners)} winners, {len(losers)} rejected. Deployed {deployed}. {summary}")
+            if deployed > 0:
+                old_total = cfg.get("state", {}).get("improvements_deployed", 0)
+                _log_complete(run_id, "success", cfg, opt_sid,
+                              skills_analyzed=len(skill_state), proposals_generated=len(changes),
+                              proposals_deployed=deployed, summary=f"Deployed {deployed}. {summary}")
+                update_state(last_run_at=now, last_run_status="success", improvements_deployed=old_total + deployed)
+                   return opt_sid
+            else:
+                _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:system",
+                                "No deployments. Searching for new approaches next iteration.")
+                if iteration == max_iter:
+                    _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:system",
+                                    "No noticeable improvements after max iterations. Stopping to await user feedback.")
 
-        old_total = cfg.get("state", {}).get("improvements_deployed", 0)
-        _log_complete(run_id, "success", cfg, opt_sid,
-                      skills_analyzed=len(skill_state), proposals_generated=len(changes),
-                      proposals_deployed=deployed, summary=f"Deployed {deployed}. {summary}")
-        update_state(last_run_at=now, last_run_status="success", improvements_deployed=old_total + deployed)
+        if iteration <= max_iter and deployed == 0:
+             _log_complete(run_id, "success", cfg, opt_sid, proposals_generated=len(changes) if 'changes' in locals() else 0, proposals_deployed=0)
         return opt_sid
 
     except Exception as e:

@@ -65,12 +65,12 @@ class _AsyncOpenAICompat:
                 json=body,
                 headers=headers,
             )
-            response.raise_for_status()
+            # response.raise_for_status()
 
             if stream:
                 return self._StreamWrapper(response)
             else:
-                data = response.json()
+                print("RESPONSE", response.text); data = response.json()
                 return _Completion(data)
 
 

@@ -46,6 +46,7 @@ DEFAULTS: Dict[str, Any] = {
         "proposer": None,
         "validator": None,
     },
+    "trials": {"per_change": 2},
     "target_metrics": ["turns", "tokens", "time", "failures", "rating"],
     "app_wide": {
         "auto_deploy": True,

@@ -46,6 +46,8 @@ export const app = {
   dbExclusions: {},
   dbSortState: {},
   dbColPopup: null,
+  dbShowHidden: false,
+  dbHiddenCols: {},
   COL_WIDTHS: {
     created_at: '20px',
     session_id: '20px',

@@ -85,6 +85,14 @@ export function renderTableList() {
       app.dbSelectedTable = item.dataset.table;
       localStorage.setItem('lastDbTable', item.dataset.table);
       renderTableList();
+      
+      // Load user layout/settings before requerying DB
+      try {
+        const hidden = localStorage.getItem('dbHiddenCols');
+        if (hidden) app.dbHiddenCols = JSON.parse(hidden);
+        else app.dbHiddenCols = {};
+      } catch (e) { app.dbHiddenCols = {}; }
+      
       queryTable(app.dbSelectedTable).then(() => startAutoRefresh());
     });
   });

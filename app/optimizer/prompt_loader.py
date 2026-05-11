@@ -37,7 +37,7 @@ async def load_prompt(title: str) -> str:
                     cur = await cur
                 row = cur.fetchone()
                 if row:
-                    return row[0] if isinstance(row, tuple) else row
+                    return row[0]
             finally:
                 if hasattr(conn, 'close'):
                     conn.close()

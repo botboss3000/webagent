@@ -17,6 +17,7 @@ function qs(id) { return document.getElementById(id); }
 function bindDom() {
   DB = {
     menuItem: qs('database-menu-item'),
+    viewSettingsBtn: qs('db-settings-btn'),
     modal: qs('database-modal'),
     backdrop: qs('database-backdrop'),
     close: qs('database-close'),
@@ -26,6 +27,7 @@ function bindDom() {
     modeLabel: qs('database-current-mode'),
     statusEl: qs('database-modal-status'),
     dropdown: qs('settings-dropdown-menu'),
+    showHiddenCheckbox: qs('db-setting-show-hidden'),
   };
 }
 
@@ -130,6 +132,31 @@ async function loadAndDisplay() {
 export function initDbModeUi() {
   bindDom();
   if (!DB.menuItem || !DB.modal) return;
+
+  // View settings button click
+  if (DB.viewSettingsBtn) {
+    DB.viewSettingsBtn.addEventListener('click', () => {
+      openModal();
+    });
+  }
+
+  // Checkbox sync and toggle logic
+  if (DB.showHiddenCheckbox) {
+    DB.showHiddenCheckbox.checked = app.dbShowHidden;
+    DB.showHiddenCheckbox.addEventListener('change', async (e) => {
+      const isChecked = e.target.checked;
+      app.dbShowHidden = isChecked;
+      localStorage.setItem('dbShowHidden', isChecked ? 'true' : 'false');
+      
+      // Force UI reload so headers/columns rebuild
+      if (app.dbSelectedTable) {
+        const { queryTable, startAutoRefresh } = await import('./db/query-render.js');
+        queryTable(app.dbSelectedTable).then(() => {
+          // If auto refresh was doing things, optional hook here
+        });
+      }
+    });
+  }
 
   // Menu item → close dropdown → open modal (admin only)
   DB.menuItem.addEventListener('click', () => {
