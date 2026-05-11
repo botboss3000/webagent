@@ -326,9 +326,10 @@
           <div id="db-table-view">
             <div id="db-table-header" style="display:flex;justify-content:space-between;align-items:center;">
               <span id="db-page-info" style="color:#565f89;font-size:11px;"></span>
-              <span>
+              <span style="display:flex;align-items:center;gap:8px;">
                 <button id="db-page-prev" style="display:none;background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">◀</button>
                 <button id="db-page-next" style="display:none;background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">▶</button>
+                <button id="db-settings-btn" title="Database View Settings" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#565f89;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:14px;font-family:inherit;">⚙</button>
               </span>
             </div>
             <div id="db-table-data">
@@ -447,6 +448,18 @@
         <button type="button" id="modal-seg-local" class="submenu-item" style="flex:1;text-align:center;padding:12px;border:2px solid #2a2a4a;border-radius:8px;background:#0d0d1a;font-size:13px;font-weight:600;cursor:pointer;color:#c0caf5;font-family:inherit;transition:all 0.15s;">💻 Local<br><span style="font-weight:400;font-size:11px;color:#565f89;">SQLite</span></button>
       </div>
       <div id="database-modal-status" style="margin-top:8px;font-size:12px;color:#565f89;"></div>
+    </div>
+
+    <!-- DB UI Settings -->
+    <div style="margin-bottom:20px;padding:16px;background:#0d0d1a;border-radius:8px;border:1px solid #2a2a4a;">
+      <label style="display:block;margin-bottom:12px;color:#a9b1d6;font-size:13px;font-weight:600;">Display Settings</label>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <input type="checkbox" id="db-setting-show-hidden" style="cursor:pointer;width:16px;height:16px;accent-color:#7dcfff;">
+        <label for="db-setting-show-hidden" style="cursor:pointer;color:#c0caf5;font-size:13px;">Show Hidden Columns</label>
+      </div>
+      <div style="margin-top:6px;font-size:11px;color:#565f89;">
+        When enabled, you can toggle visibility of individual columns in the data view using the eye icon.
+      </div>
     </div>
 
     <div style="padding:12px;background:#0d0d1a;border-radius:8px;border-left:3px solid #7dcfff;font-size:12px;color:#a9b1d6;">
@@ -568,6 +581,14 @@
     </div>
 
     <!-- TWO-COLUMN: METRICS + MODELS -->
+    <div style="margin-bottom:20px;">
+      <label style="display:block;margin-bottom:8px;color:#a9b1d6;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Trials Per Change</label>
+      <div style="padding:14px;background:#0d0d1a;border-radius:8px;border:1px solid #2a2a4a;display:flex;align-items:center;justify-content:space-between;">
+        <div style="font-size:12px;color:#9aa5ce;">Number of worker trials run for each proposed change:</div>
+        <input type="number" id="opt-trials-per-change" value="2" min="1" max="20" style="width:60px;padding:6px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:4px;color:#c0caf5;font-size:13px;font-family:inherit;">
+      </div>
+    </div>
+
     <div style="display:flex;gap:16px;margin-bottom:20px;flex-wrap:wrap;">
 
       <!-- TARGET METRICS -->

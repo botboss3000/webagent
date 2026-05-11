@@ -71,6 +71,7 @@ from app.api.github import router as github_router
 
 # ── Optimizer ──
 from app.admin.optimizer import router as optimizer_router
+optimizer_router.prefix="/api/v1"
 
 # Configure logging
 logging.basicConfig(

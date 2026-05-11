@@ -27,6 +27,8 @@ class OptimizerConfigModel(BaseModel):
     schedule: Optional[Dict[str, Any]] = None
     models: Optional[Dict[str, Optional[str]]] = None
     target_metrics: Optional[list] = None
+    max_iterations: Optional[int] = None
+    trials: Optional[Dict[str, Any]] = None
     app_wide: Optional[Dict[str, Any]] = None
     per_user: Optional[Dict[str, Any]] = None
     notifications: Optional[Dict[str, Any]] = None
@@ -40,11 +42,25 @@ async def get_optimizer_config():
 
 
 @router.post("/optimizer")
-async def update_optimizer_config(body: OptimizerConfigModel):
+async def update_optimizer_config(body: OptimizerConfigModel, user_id: str = Header(default="test-user-1", alias="x-user-id")):
     """Update optimizer configuration. Merges with existing values."""
     current = load_config()
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
     current.update(updates)
+    if body.max_iterations is not None:
+        try:
+            from app.db import get_db
+            db = get_db()
+            conn = getattr(db, "_get_conn")()
+            agent = conn.execute("SELECT id, metadata FROM agents WHERE user_id=? LIMIT 1", (user_id,)).fetchone()
+            if agent:
+                meta = json.loads(agent[1] or "{}")
+                meta["optimizer_max_iterations"] = body.max_iterations
+                conn.execute("UPDATE agents SET metadata=? WHERE id=?", (json.dumps(meta), agent[0]))
+                conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error("Failed to update agent max_iterations: %s", e)
     save_config(current)
     return {"status": "saved", "config": current}
 

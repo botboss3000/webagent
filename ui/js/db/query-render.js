@@ -16,6 +16,9 @@ function saveSortState() {
 function saveExclusions() {
   localStorage.setItem('dbExclusions', JSON.stringify(app.dbExclusions));
 }
+export function saveHiddenCols() {
+  localStorage.setItem('dbHiddenCols', JSON.stringify(app.dbHiddenCols));
+}
 
 /**
  * Load sort + exclusion state from localStorage on init.
@@ -29,6 +32,14 @@ export function loadPersistedDbState() {
     const excl = localStorage.getItem('dbExclusions');
     if (excl) app.dbExclusions = JSON.parse(excl);
   } catch (e) { /* ignore */ }
+  try {
+    const hidden = localStorage.getItem('dbHiddenCols');
+    if (hidden) app.dbHiddenCols = JSON.parse(hidden);
+    else app.dbHiddenCols = {};
+  } catch (e) { app.dbHiddenCols = {}; }
+  
+  // Load show hidden config
+  app.dbShowHidden = localStorage.getItem('dbShowHidden') === 'true';
 }
 
 /**
@@ -376,7 +387,18 @@ function renderTableData(result, silent) {
     const sortArrow = isSortCol ? (sort.dir === 'ASC' ? ' ▲' : ' ▼') : '';
     const hasFilter = app.dbExclusions[tableName] && app.dbExclusions[tableName][col] && app.dbExclusions[tableName][col].length > 0;
     const filterClass = hasFilter ? ' filtered' : '';
+    
+    // Add eye/eye-off toggle only if setting is checked
+    let hideBtnHtml = '';
+    if (app.dbShowHidden) {
+      const isHiddenNow = app.dbHiddenCols[tableName] && app.dbHiddenCols[tableName].includes(col);
+      const icon = isHiddenNow ? '👁️‍🗨️' : '👁️'; 
+      const btnClass = isHiddenNow ? 'th-hide-btn hidden-col' : 'th-hide-btn';
+      hideBtnHtml = `<button class="${btnClass}" data-table="${tableName}" data-col="${col}" title="${isHiddenNow ? 'Show' : 'Hide'} column">${icon}</button>`;
+    }
+
     html += `<th class="db-th${filterClass}" data-col="${col}"${style} draggable="true">
+      ${hideBtnHtml}
       <span class="th-text" data-col="${col}">
         <span class="th-name">${col}</span>
         <span class="th-sort">${sortArrow}</span>
@@ -411,7 +433,11 @@ function renderTableData(result, silent) {
       const cls = val === null ? 'col-null' : '';
       const { html: display, isJson } = fmtCell(val);
       const safeVal = String(val).replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      html += `<td class="db-cell ${cls}"${style} data-row="${ri}" data-col="${col}" data-val="${safeVal}">${isJson ? `<div class="db-cell-json">${display}</div>` : `<pre class="db-cell-pre">${display}</pre>`}<button class="db-cell-expand" title="Expand editor">↗</button></td>`;
+      html += `<td class="db-cell ${cls}"${style} data-row="${ri}" data-col="${col}" data-val="${safeVal}">
+        <button class="db-cell-edit" title="Edit inline">✎</button>
+        ${isJson ? `<div class="db-cell-json">${display}</div>` : `<pre class="db-cell-pre">${display}</pre>`}
+        <button class="db-cell-expand" title="Open full viewer">↗</button>
+      </td>`;
     }
     html += '</tr>';
     html += `<tr class="db-row-resize-row" data-ri="${ri}"><td colspan="${displayCols.length}" class="db-row-resize-td"><div class="db-row-resize-handle" data-ri="${ri}"></div></td></tr>`;
@@ -426,6 +452,30 @@ function renderTableData(result, silent) {
       const th = span.closest('.db-th');
       const col = th.dataset.col;
       openColPopup(th, tableName, col);
+    });
+  });
+
+  // ── Column hide bindings ──
+  data.querySelectorAll('.th-hide-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const table = btn.dataset.table;
+      const col = btn.dataset.col;
+      
+      if (!app.dbHiddenCols[table]) app.dbHiddenCols[table] = [];
+      const idx = app.dbHiddenCols[table].indexOf(col);
+      
+      if (idx !== -1) {
+        // Unhide
+        app.dbHiddenCols[table].splice(idx, 1);
+      } else {
+        // Hide
+        app.dbHiddenCols[table].push(col);
+      }
+      
+      saveHiddenCols();
+      
+      queryTable(tableName); // Re-render table taking hidden into account
     });
   });
 

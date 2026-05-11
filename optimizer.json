@@ -15,6 +15,9 @@
     "proposer": null,
     "validator": null
   },
+  "trials": {
+    "per_change": 2
+  },
   "target_metrics": [
     "turns",
     "tokens",
@@ -39,12 +42,9 @@
     "channel": "email"
   },
   "state": {
-    "last_run_at": "2026-05-11T17:47:50.687704+00:00",
-    "improvements_deployed": 11,
+    "last_run_at": "2026-05-11T20:15:40.413522+00:00",
+    "improvements_deployed": 31,
     "last_run_status": "success"
-  },
-  "trials": {
-    "per_change": 2
   },
   "criteria": {
     "time": 1,
@@ -52,7 +52,7 @@
     "length": 0.5,
     "turns": 1
   },
-  "max_iterations": 3,
+  "max_iterations": 2,
   "max_turns": 10,
   "criteria_targets": {
     "turns": 3,

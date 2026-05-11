@@ -62,9 +62,12 @@ async def propose_improvements(user_id, session_id, prefilter_data, mode="analyz
             ],
             temperature=0.3,
             max_tokens=2000,
-            response_format={"type": "json_object"},
         )
-        return json.loads(resp.choices[0].message.content.strip())
+        text = resp.choices[0].message.content.strip()
+        if text.startswith("```"):
+            parts = text.split("```")
+            text = parts[1].replace("json", "", 1).strip() if len(parts) > 1 else text
+        return json.loads(text)
     except Exception as e:
         logger.warning("Planner: LLM failed: %s", e)
         return {"analysis": f"Planner error: {e}", "changes": []}
