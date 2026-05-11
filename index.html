@@ -310,9 +310,16 @@
         </div>
         <div id="db-panel">
           <div style="width:180px;min-width:140px;border-right:1px solid #2a2a4a;display:flex;flex-direction:column;flex-shrink:0;">
-            <div style="padding:8px 12px;border-bottom:1px solid #2a2a4a;display:flex;gap:8px;">
+            <div style="padding:8px 12px;border-bottom:1px solid #2a2a4a;display:flex;gap:8px;position:relative;">
               <button id="db-refresh" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">↻ Refresh</button>
-              <button id="db-reset" style="background:#cc241d;border:1px solid #fb4934;color:#fbf1c7;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">Reset DB</button>
+              <div style="position:relative;">
+                <button id="db-reset" style="background:#cc241d;border:1px solid #fb4934;color:#fbf1c7;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">Reset DB ▾</button>
+                <div id="db-reset-dropdown" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:4px;padding:8px;z-index:100;min-width:180px;box-shadow:0 4px 6px rgba(0,0,0,0.3);">
+                  <div style="font-size:11px;color:#c0caf5;margin-bottom:8px;font-weight:bold;">Select tables to RESET:</div>
+                  <div id="db-reset-options" style="display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto;margin-bottom:8px;"></div>
+                  <button id="db-reset-apply" style="width:100%;background:#cc241d;border:1px solid #fb4934;color:#fbf1c7;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">Confirm Reset</button>
+                </div>
+              </div>
             </div>
             <div id="db-table-list" style="width:100%;border-right:none;flex:1;"></div>
           </div>

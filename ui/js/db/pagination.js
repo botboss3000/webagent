@@ -57,52 +57,129 @@ export function initDbPaginationAndToolbar() {
     });
   }
 
-  // Reset DB button — two-click confirm (tables wiped except templates)
+  // Reset DB Dropdown
   const resetBtn = document.getElementById('db-reset');
-  let resetPending = false;
-  let resetTimer = null;
+  const resetDropdown = document.getElementById('db-reset-dropdown');
+  const resetOptions = document.getElementById('db-reset-options');
+  const resetApply = document.getElementById('db-reset-apply');
 
-  resetBtn.addEventListener('click', async () => {
-    if (!resetPending) {
-      resetPending = true;
-      resetBtn.textContent = 'PERMANENT RESET?';
-      resetBtn.style.background = '#9d0006';
-      resetBtn.style.borderColor = '#cc241d';
-      clearTimeout(resetTimer);
-      resetTimer = setTimeout(() => {
-        resetPending = false;
-        resetBtn.textContent = 'Reset DB';
-        resetBtn.style.background = '#cc241d';
-        resetBtn.style.borderColor = '#fb4934';
-      }, 4000);
-      return;
+  resetBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isVisible = resetDropdown.style.display === 'block';
+    
+    if (!isVisible) {
+      // Build options
+      resetOptions.innerHTML = '';
+      
+      // Load saved preferences
+      let savedResetPrefs = null;
+      try {
+        const saved = localStorage.getItem('dbResetExcludePrefs');
+        if (saved) savedResetPrefs = JSON.parse(saved);
+      } catch (err) {}
+      
+      app.dbTables.forEach(t => {
+        const div = document.createElement('div');
+        div.style.display = 'flex';
+        div.style.alignItems = 'center';
+        div.style.gap = '6px';
+        
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'db-reset-cb';
+        cb.value = t.name;
+        
+        // Use saved prefs if available, otherwise default logic (check everything except templates)
+        if (savedResetPrefs !== null) {
+          // If the table name is NOT in the excluded array, it should be checked (included for reset)
+          cb.checked = !savedResetPrefs.includes(t.name);
+        } else {
+          // Default check logic - everything except templates
+          if (t.name !== 'context_templates' && t.name !== 'agent_templates') {
+            cb.checked = true;
+          }
+        }
+        
+        const label = document.createElement('label');
+        label.textContent = t.name;
+        label.style.fontSize = '11px';
+        label.style.color = '#c0caf5';
+        label.style.cursor = 'pointer';
+        
+        // click label toggles checkbox
+        label.addEventListener('click', () => { cb.checked = !cb.checked; });
+
+        div.appendChild(cb);
+        div.appendChild(label);
+        resetOptions.appendChild(div);
+      });
+      
+      resetDropdown.style.display = 'block';
+    } else {
+      resetDropdown.style.display = 'none';
     }
-    // Second click — execute
-    resetPending = false;
-    clearTimeout(resetTimer);
-    resetBtn.textContent = 'Resetting...';
-    resetBtn.style.background = '#cc241d';
-    resetBtn.style.borderColor = '#fb4934';
+  });
+
+  // Close dropdown when clicking outside
+  document.addEventListener('click', (e) => {
+    if (!resetDropdown.contains(e.target) && e.target !== resetBtn) {
+      resetDropdown.style.display = 'none';
+    }
+  });
+
+  resetApply.addEventListener('click', async () => {
+    resetApply.textContent = 'Resetting...';
+    resetApply.style.background = '#9d0006';
+    resetApply.disabled = true;
+
     try {
       const dbName = document.getElementById('db-select').value;
-      const res = await fetch(authUrl(apiPath('/api/v1/db/reset?db=' + encodeURIComponent(dbName))), { method: 'DELETE' });
+      
+      // Compute excluded tables (what is NOT checked)
+      const excludeTables = [];
+      document.querySelectorAll('.db-reset-cb').forEach(cb => {
+        if (!cb.checked) {
+          excludeTables.push(cb.value);
+        }
+      });
+      
+      // Save preferences to localStorage
+      localStorage.setItem('dbResetExcludePrefs', JSON.stringify(excludeTables));
+      
+      const params = new URLSearchParams();
+      params.append('db', dbName);
+      
+      // If we unchecked everything, excludeTables is empty.
+      // If we don't pass 'exclude' in the URL, FastAPI will use the default value ["context_templates", "agent_templates"]
+      // To bypass the default and force an empty exclusion list (i.e. truncate ALL), we pass an empty exclude parameter.
+      if (excludeTables.length > 0) {
+        excludeTables.forEach(t => params.append('exclude', t));
+      } else {
+        params.append('exclude', '');
+      }
+
+      const res = await fetch(authUrl(apiPath('/api/v1/db/reset?' + params.toString())), { method: 'DELETE' });
       const result = await res.json();
+      
       if (result.success) {
         // Reload tables and refresh view
         const { fetchTables } = await import('./tables.js');
-        resetBtn.textContent = '✓ Reset';
-        resetBtn.style.background = '#689d6a';
-        resetBtn.style.borderColor = '#8ec07c';
+        resetApply.textContent = '✓ Done';
+        resetApply.style.background = '#689d6a';
+        
         setTimeout(() => {
-          resetBtn.textContent = 'Reset DB';
-          resetBtn.style.background = '#cc241d';
-          resetBtn.style.borderColor = '#fb4934';
-        }, 2000);
+          resetDropdown.style.display = 'none';
+          resetApply.textContent = 'Confirm Reset';
+          resetApply.style.background = '#cc241d';
+          resetApply.disabled = false;
+        }, 1500);
+
         app.dbSelectedTable = null;
         app.dbCurrentResult = null;
         cancelEditing();
         stopAutoRefresh();
         await fetchTables(dbName);
+        
         // Default to interactions after reset
         const tableToLoad = app.dbTables.some((t) => t.name === 'interactions')
           ? 'interactions'
@@ -114,15 +191,19 @@ export function initDbPaginationAndToolbar() {
           queryTable(tableToLoad).then(() => startAutoRefresh());
         } else {
           document.getElementById('db-table-data').innerHTML =
-            '<div class="db-hint">Database reset (templates preserved)</div>';
+            '<div class="db-hint">Database reset</div>';
         }
       } else {
-        resetBtn.textContent = 'Reset DB';
         alert('Reset failed');
+        resetApply.textContent = 'Confirm Reset';
+        resetApply.style.background = '#cc241d';
+        resetApply.disabled = false;
       }
     } catch (err) {
-      resetBtn.textContent = 'Reset DB';
       alert('Error: ' + err.message);
+      resetApply.textContent = 'Confirm Reset';
+      resetApply.style.background = '#cc241d';
+      resetApply.disabled = false;
     }
   });
 

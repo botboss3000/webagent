@@ -68,12 +68,15 @@ export function renderTableList() {
   }
   el.innerHTML = app.dbTables
     .map(
-      (t) =>
-        `<div class="db-table-item${app.dbSelectedTable === t.name ? ' active' : ''}" data-table="${t.name}">
-      <span>${t.name}</span>
+      (t) => {
+        const isBold = ['interactions', 'context_templates', 'agent_templates'].includes(t.name);
+        const fontStyle = isBold ? 'font-weight: bold;' : '';
+        return `<div class="db-table-item${app.dbSelectedTable === t.name ? ' active' : ''}" data-table="${t.name}">
+      <span style="${fontStyle}">${t.name}</span>
       <span class="count">${t.row_count}</span>
       <button class="db-table-reset-btn" data-table="${t.name}" title="Delete all rows">🗑️</button>
-    </div>`,
+    </div>`;
+      }
     )
     .join('');
   el.querySelectorAll('.db-table-item').forEach((item) => {
@@ -118,28 +121,4 @@ export function renderTableList() {
       }
     });
   });
-
-  // Show sign-out link if logged in
-  const token = getAuthToken();
-  const existing = el.querySelector('.db-logout-link');
-  if (token && !existing) {
-    const logoutLink = document.createElement('div');
-    logoutLink.className = 'db-logout-link';
-    logoutLink.style.cssText = 'padding:8px 12px; text-align:center;';
-    logoutLink.innerHTML = `<button id="db-logout-btn" style="
-      background:transparent; border:1px solid #565f89; color:#565f89;
-      padding:4px 14px; border-radius:4px; cursor:pointer; font-size:11px; font-family:inherit;
-    ">Sign Out</button>`;
-    el.appendChild(logoutLink);
-    document.getElementById('db-logout-btn')?.addEventListener('click', () => {
-      localStorage.removeItem('auth_token');
-      localStorage.removeItem('auth_username');
-      localStorage.removeItem('auth_user_id');
-      localStorage.removeItem('auth_display_name');
-      localStorage.removeItem('remember_token');
-      localStorage.removeItem('terminalUserId');
-      // Reload to fully reset to anonymous identity
-      window.location.reload();
-    });
-  }
 }
