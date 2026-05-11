@@ -7,14 +7,290 @@ import { formatJsonAsHtml } from "../json-tree.js";
 import { apiPath } from "../config.js";
 import { authUrl } from "../left-login.js";
 
+/**
+ * ── Persistence helpers ──
+ */
+function saveSortState() {
+  localStorage.setItem('dbSortState', JSON.stringify(app.dbSortState));
+}
+function saveExclusions() {
+  localStorage.setItem('dbExclusions', JSON.stringify(app.dbExclusions));
+}
+
+/**
+ * Load sort + exclusion state from localStorage on init.
+ */
+export function loadPersistedDbState() {
+  try {
+    const sort = localStorage.getItem('dbSortState');
+    if (sort) app.dbSortState = JSON.parse(sort);
+  } catch (e) { /* ignore */ }
+  try {
+    const excl = localStorage.getItem('dbExclusions');
+    if (excl) app.dbExclusions = JSON.parse(excl);
+  } catch (e) { /* ignore */ }
+}
+
+/**
+ * Get active sort for current table (from state or default).
+ */
+function getSortForTable(tableName) {
+  const s = app.dbSortState[tableName];
+  if (s && s.col && s.dir) return s;
+  return { col: 'created_at', dir: 'DESC' };
+}
+
+/**
+ * Get active exclusions for a column on current table.
+ */
+function getExclusionsForColumn(tableName, colName) {
+  if (app.dbExclusions[tableName] && app.dbExclusions[tableName][colName]) {
+    return new Set(app.dbExclusions[tableName][colName]);
+  }
+  return new Set();
+}
+
+/**
+ * Close any open column popup.
+ */
+function closeColPopup() {
+  if (app.dbColPopup && app.dbColPopup.el) {
+    app.dbColPopup.el.remove();
+    app.dbColPopup = null;
+  }
+  // Also remove any lingering popups
+  document.querySelectorAll('.db-col-popup').forEach(el => el.remove());
+}
+
+/**
+ * Build and show the column filter/sort popup.
+ */
+async function openColPopup(th, tableName, colName) {
+  // Close any existing popup first
+  closeColPopup();
+
+  // Fetch distinct values
+  let values = [];
+  let total = 0;
+  try {
+    const dbName = document.getElementById('db-select').value;
+    const url = authUrl(apiPath(
+      `/api/v1/db/column-values?db=${encodeURIComponent(dbName)}&table=${encodeURIComponent(tableName)}&column=${encodeURIComponent(colName)}`
+    ));
+    const res = await fetch(url);
+    if (res.status === 401) {
+      localStorage.removeItem('auth_token');
+      window.location.reload();
+      return;
+    }
+    const data = await res.json();
+    values = data.values || [];
+    total = data.total || 0;
+  } catch (e) {
+    values = [];
+    total = 0;
+  }
+
+  const excluded = getExclusionsForColumn(tableName, colName);
+  const sort = getSortForTable(tableName);
+
+  // Build popup element
+  const popup = document.createElement('div');
+  popup.className = 'db-col-popup';
+
+  // Sort section
+  const sortAscActive = sort.col === colName && sort.dir === 'ASC';
+  const sortDescActive = sort.col === colName && sort.dir === 'DESC';
+
+  popup.innerHTML = `
+    <div class="db-popup-sort">
+      <button class="db-popup-sort-btn ${sortAscActive ? 'active' : ''}" data-sort="ASC">
+        <span class="db-popup-sort-arrow">▲</span> Sort Ascending
+      </button>
+      <button class="db-popup-sort-btn ${sortDescActive ? 'active' : ''}" data-sort="DESC">
+        <span class="db-popup-sort-arrow">▼</span> Sort Descending
+      </button>
+    </div>
+    <div class="db-popup-search-wrap">
+      <input type="text" class="db-popup-search" placeholder="Filter by values..." />
+    </div>
+    <div class="db-popup-select-header">
+      <a href="#" class="db-popup-select-all">Select all</a>
+      <a href="#" class="db-popup-clear">Clear</a>
+    </div>
+    <div class="db-popup-items"></div>
+    <div class="db-popup-status"></div>
+  `;
+
+  // Position the popup
+  const thRect = th.getBoundingClientRect();
+  const viewer = document.getElementById('db-table-view');
+  const viewerRect = viewer.getBoundingClientRect();
+  popup.style.left = (thRect.left - viewerRect.left) + 'px';
+  popup.style.top = (thRect.bottom - viewerRect.top) + 'px';
+  popup.style.minWidth = Math.max(180, thRect.width) + 'px';
+
+  viewer.appendChild(popup);
+
+  const itemsEl = popup.querySelector('.db-popup-items');
+  const statusEl = popup.querySelector('.db-popup-status');
+  const searchInput = popup.querySelector('.db-popup-search');
+
+  // Save popup ref
+  app.dbColPopup = { el: popup, table: tableName, column: colName, values, excluded, total };
+
+  /**
+   * Render the checklist from current popup state.
+   */
+  function renderItems(filterText) {
+    if (!app.dbColPopup) return;
+    const { values: allValues, excluded } = app.dbColPopup;
+    const ft = (filterText || '').toLowerCase();
+    const isClearAll = excluded.has('__ALL__');
+
+    const filtered = ft
+      ? allValues.filter(v => v !== null && String(v).toLowerCase().includes(ft))
+      : allValues;
+
+    const selectedCount = isClearAll ? 0 : allValues.length - excluded.size;
+
+    let html = '';
+    for (const v of filtered) {
+      const valStr = v === null ? '__NULL__' : String(v);
+      const checked = isClearAll ? false : !excluded.has(valStr);
+      const display = v === null ? '<i>NULL</i>' : String(v).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      html += `<label class="db-popup-item ${checked ? '' : 'unchecked'}">
+        <input type="checkbox" class="db-popup-check" data-val="${valStr.replace(/"/g, '&quot;')}" ${checked ? 'checked' : ''} />
+        <span class="db-popup-val">${display}</span>
+      </label>`;
+    }
+
+    const shown = filtered.length;
+    const totalNote = isClearAll ? `${allValues.length} values` : `${allValues.length} values total`;
+    const filteredNote = ft && ft.length > 0
+      ? `${shown} of ${allValues.length} matched`
+      : totalNote;
+
+    itemsEl.innerHTML = html || '<div class="db-popup-empty">No matching values</div>';
+    statusEl.innerHTML = `${filteredNote} &nbsp;|&nbsp; ${selectedCount} selected` +
+      (excluded.size > 0 && !isClearAll ? ` &nbsp;<span style="color:#e9b143;">(${excluded.size} excluded)</span>` : '');
+
+    // Wire checkbox changes
+    itemsEl.querySelectorAll('.db-popup-check').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const val = cb.dataset.val;
+        if (!app.dbColPopup) return;
+        const excl = app.dbColPopup.excluded;
+        // Remove __ALL__ sentinel if present — we're now using individual exclusions
+        excl.delete('__ALL__');
+        if (cb.checked) {
+          excl.delete(val);
+        } else {
+          excl.add(val);
+        }
+        // If every value is now excluded, switch to __ALL__ sentinel
+        if (excl.size >= allValues.length) {
+          excl.clear();
+          excl.add('__ALL__');
+        }
+        // Persist exclusions
+        if (!app.dbExclusions[tableName]) app.dbExclusions[tableName] = {};
+        app.dbExclusions[tableName][colName] = Array.from(excl);
+        saveExclusions();
+        // Re-render the checkbox list
+        renderItems(searchInput.value);
+        // Re-query the table
+        queryTable(tableName);
+      });
+    });
+  }
+
+  renderItems('');
+
+  // Search input
+  searchInput.addEventListener('input', () => {
+    renderItems(searchInput.value);
+  });
+
+  // Select all
+  popup.querySelector('.db-popup-select-all').addEventListener('click', (e) => {
+    e.preventDefault();
+    if (!app.dbColPopup) return;
+    app.dbColPopup.excluded.clear();  // clear everything, including __ALL__
+    if (!app.dbExclusions[tableName]) app.dbExclusions[tableName] = {};
+    app.dbExclusions[tableName][colName] = [];
+    saveExclusions();
+    renderItems(searchInput.value);
+    queryTable(tableName);
+  });
+
+  // Clear (exclude all)
+  popup.querySelector('.db-popup-clear').addEventListener('click', (e) => {
+    e.preventDefault();
+    if (!app.dbColPopup) return;
+    // Use special sentinel to exclude everything
+    app.dbColPopup.excluded = new Set(['__ALL__']);
+    if (!app.dbExclusions[tableName]) app.dbExclusions[tableName] = {};
+    app.dbExclusions[tableName][colName] = ['__ALL__'];
+    saveExclusions();
+    renderItems(searchInput.value);
+    queryTable(tableName);
+  });
+
+  // Sort buttons
+  popup.querySelectorAll('.db-popup-sort-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const dir = btn.dataset.sort;
+      if (!app.dbSortState[tableName]) app.dbSortState[tableName] = {};
+      app.dbSortState[tableName] = { col: colName, dir };
+      saveSortState();
+      closeColPopup();
+      queryTable(tableName);
+    });
+  });
+
+  // Prevent clicks inside popup from bubbling to document
+  popup.addEventListener('click', (e) => e.stopPropagation());
+
+  // Focus search
+  setTimeout(() => searchInput.focus(), 50);
+}
+
+// Global click-outside handler — registered once
+let _popupOutsideHandler = null;
+function ensurePopupOutsideHandler() {
+  if (_popupOutsideHandler) return;
+  _popupOutsideHandler = (e) => {
+    if (app.dbColPopup && app.dbColPopup.el) {
+      if (!app.dbColPopup.el.contains(e.target)) {
+        closeColPopup();
+      }
+    }
+  };
+  document.addEventListener('click', _popupOutsideHandler);
+}
+
 function cancelEditing() {
   if (app.editingCell) {
-    // Re-render the table to discard edits
     app.editingCell = null;
     if (app.dbCurrentResult) {
       renderTableData(app.dbCurrentResult);
     }
   }
+}
+
+/**
+ * Build multi-column exclusion filters as JSON for the query URL.
+ */
+function getExclusionParams(tableName) {
+  if (!app.dbExclusions[tableName]) return '';
+  const specs = [];
+  for (const [col, vals] of Object.entries(app.dbExclusions[tableName])) {
+    if (!vals || vals.length === 0) continue;
+    specs.push({ col, op: 'not_in', val: vals.join(',') });
+  }
+  if (specs.length === 0) return '';
+  return 'filters_json=' + encodeURIComponent(JSON.stringify(specs));
 }
 
 async function queryWithFilters() {
@@ -25,6 +301,8 @@ function renderTableData(result, silent) {
   const data = document.getElementById('db-table-data');
   const pkCols = getPKColumns(result.table);
   const displayCols = getDisplayColumns(result.columns, result.table);
+  const tableName = result.table;
+  const sort = getSortForTable(tableName);
 
   if (silent) {
     const tbody = data.querySelector('table.db-table tbody');
@@ -48,24 +326,22 @@ function renderTableData(result, silent) {
       if (result.rows.length !== existingRows.length) {
         return renderTableData(result, false);
       }
+      // Update header arrows (sort state may have changed)
+      updateHeaderSortArrows(tableName);
+      // Update filter indicators
+      updateFilterIndicators(tableName);
       return;
     }
   }
 
   // ── Full render ──
-  // Get current sort from dropdowns
-  const curSortCol = document.getElementById('db-sort-col').value;
-  const curSortDir = document.getElementById('db-sort-dir').value;
 
-  // Column width strategy: name-width for most, overrides for a few
+  // Column width strategy
   function getColWidth(table, col) {
-    // Hard overrides — fixed 300px
     const contentTables = ['interactions', 'context_defaults', 'context_templates', 'context'];
     if (table === 'interactions' && col === 'input') return '300px';
     if (contentTables.includes(table) && col === 'content') return '300px';
-    // Already user-resized via drag?
     if (app.COL_WIDTHS[col]) return app.COL_WIDTHS[col];
-    // Default: width ≈ column name text (mono 12px ≈ 7.2px/char + padding)
     const px = Math.max(40, col.length * 7.5 + 20);
     return Math.round(px) + 'px';
   }
@@ -76,28 +352,23 @@ function renderTableData(result, silent) {
 
   let html = '<table class="db-table"><thead>';
 
-  // Header row (clickable to sort, draggable to reorder)
+  // Header row — column names clickable to open filter popup
   html += '<tr>';
   for (const col of displayCols) {
     const w = getColWidth(result.table, col);
     const style = w ? ` style="width:${w};min-width:${w};max-width:${w}"` : '';
-    const isActive = col === curSortCol;
-    const activeAsc = isActive && curSortDir === 'ASC';
-    const activeDesc = isActive && curSortDir === 'DESC';
     const noResize = isFixedCol(result.table, col);
-    html += `<th class="db-th" data-col="${col}"${style} draggable="true">
-      <span class="th-text">${col}</span>
-      <span class="th-sort-arrows">
-        <span class="th-sort-arrow th-sort-asc${activeAsc ? ' active' : ''}" title="Sort ascending">\u25B2</span>
-        <span class="th-sort-arrow th-sort-desc${activeDesc ? ' active' : ''}" title="Sort descending">\u25BC</span>
-      </span>
+    const isSortCol = col === sort.col;
+    const sortArrow = isSortCol ? (sort.dir === 'ASC' ? ' ▲' : ' ▼') : '';
+    const hasFilter = app.dbExclusions[tableName] && app.dbExclusions[tableName][col] && app.dbExclusions[tableName][col].length > 0;
+    const filterClass = hasFilter ? ' filtered' : '';
+    html += `<th class="db-th${filterClass}" data-col="${col}"${style} draggable="true">
+      <span class="th-text" data-col="${col}">${col}${sortArrow}</span>
+      ${hasFilter ? '<span class="th-funnel">🔽</span>' : ''}
       ${noResize ? '' : '<span class="th-resize"></span>'}
     </th>`;
   }
   html += '</tr>';
-
-  // Filter row (per-column filter inputs)
-
 
   html += '</thead><tbody>';
 
@@ -126,31 +397,18 @@ function renderTableData(result, silent) {
       html += `<td class="db-cell ${cls}"${style} data-row="${ri}" data-col="${col}" data-val="${safeVal}">${isJson ? `<div class="db-cell-json">${display}</div>` : `<pre class="db-cell-pre">${display}</pre>`}<button class="db-cell-expand" title="Expand editor">↗</button></td>`;
     }
     html += '</tr>';
-    // Resize handle after each row
     html += `<tr class="db-row-resize-row" data-ri="${ri}"><td colspan="${displayCols.length}" class="db-row-resize-td"><div class="db-row-resize-handle" data-ri="${ri}"></div></td></tr>`;
   }
   html += '</tbody></table>';
   data.innerHTML = html;
 
-  // ── Click sort arrows to sort ──
-  data.querySelectorAll('.th-sort-arrow').forEach(arrow => {
-    arrow.addEventListener('click', (e) => {
+  // ── Column name click → open popup ──
+  data.querySelectorAll('.th-text').forEach(span => {
+    span.addEventListener('click', (e) => {
       e.stopPropagation();
-      const th = arrow.closest('.db-th');
+      const th = span.closest('.db-th');
       const col = th.dataset.col;
-      const sortCol = document.getElementById('db-sort-col');
-      const sortDir = document.getElementById('db-sort-dir');
-      const dir = arrow.classList.contains('th-sort-asc') ? 'ASC' : 'DESC';
-
-      // If already sorting by this column+direction, reset to default
-      if (sortCol.value === col && sortDir.value === dir) {
-        sortCol.value = 'created_at';
-        sortDir.value = 'DESC';
-      } else {
-        sortCol.value = col;
-        sortDir.value = dir;
-      }
-      if (app.dbSelectedTable) queryTable(app.dbSelectedTable);
+      openColPopup(th, tableName, col);
     });
   });
 
@@ -170,13 +428,11 @@ function renderTableData(result, silent) {
       if (dragTh) dragTh.style.opacity = '';
       if (dragPlaceholder) dragPlaceholder.remove();
       dragCol = null; dragTh = null; dragPlaceholder = null;
-      // Reset all drop indicators
       data.querySelectorAll('.db-th').forEach(t => t.classList.remove('drop-target'));
     });
     th.addEventListener('dragover', (e) => {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
-      // Highlight drop target
       data.querySelectorAll('.db-th').forEach(t => t.classList.remove('drop-target'));
       th.classList.add('drop-target');
     });
@@ -187,20 +443,15 @@ function renderTableData(result, silent) {
       e.preventDefault();
       if (!dragCol || dragCol === th.dataset.col) return;
 
-      // Get current order
       const currentOrder = getDisplayColumns(result.columns, result.table);
       const fromIdx = currentOrder.indexOf(dragCol);
       const toIdx = currentOrder.indexOf(th.dataset.col);
       if (fromIdx === -1 || toIdx === -1) return;
 
-      // Move column
       currentOrder.splice(fromIdx, 1);
       currentOrder.splice(toIdx, 0, dragCol);
-
-      // Save order
       saveColumnOrder(result.table, currentOrder);
 
-      // Re-render
       if (dragTh) dragTh.style.opacity = '';
       dragCol = null; dragTh = null;
       data.querySelectorAll('.db-th').forEach(t => t.classList.remove('drop-target'));
@@ -208,66 +459,7 @@ function renderTableData(result, silent) {
     });
   });
 
-  // ── Click column name to toggle filter input ──
-  data.querySelectorAll('.th-text').forEach(span => {
-    const th = span.closest('.db-th');
-    const col = th.dataset.col;
-
-    // Create hidden filter input inside the th (if not already there)
-    let filterInput = th.querySelector('.db-filter-input');
-    if (!filterInput) {
-      filterInput = document.createElement('input');
-      filterInput.type = 'text';
-      filterInput.className = 'db-filter-input';
-      filterInput.dataset.col = col;
-      filterInput.placeholder = 'filter...';
-      filterInput.value = app.dbFilters[col] || '';
-      filterInput.style.display = 'none';
-      filterInput.style.marginTop = '4px';
-      filterInput.style.width = '100%';
-      filterInput.style.boxSizing = 'border-box';
-      th.appendChild(filterInput);
-
-      filterInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          applyFilter(col, filterInput.value);
-          if (!filterInput.value) filterInput.style.display = 'none';
-        }
-        if (e.key === 'Escape') {
-          filterInput.style.display = 'none';
-          filterInput.value = '';
-          applyFilter(col, '');
-        }
-      });
-      filterInput.addEventListener('blur', () => {
-        applyFilter(col, filterInput.value);
-      });
-    }
-
-    // Sync input value and visibility with current filter state
-    filterInput.value = app.dbFilters[col] || '';
-    filterInput.style.display = app.dbFilters[col] ? 'block' : 'none';
-
-    // Click on column name toggles the filter
-    span.addEventListener('click', (e) => {
-      e.stopPropagation();
-      data.querySelectorAll('.db-filter-input').forEach(inp => {
-        if (inp !== filterInput) inp.style.display = 'none';
-      });
-      const show = filterInput.style.display === 'none';
-      filterInput.style.display = show ? 'block' : 'none';
-      if (show) { filterInput.focus(); filterInput.select(); }
-    });
-  });
-
-  function applyFilter(col, val) {
-    if (val) app.dbFilters[col] = val;
-    else delete app.dbFilters[col];
-    if (app.dbSelectedTable) queryTable(app.dbSelectedTable);
-  }
-
-  // ── Drag row resize handles to adjust row height ──
+  // ── Drag row resize handles ──
   let resizeHandle = null;
   let resizeStartY = 0;
   let resizeStartHeight = 0;
@@ -317,31 +509,63 @@ function renderTableData(result, silent) {
   });
 
   initColumnResize();
-
-  // Event delegation for cell editing — registered once
-  // (handled outside renderTableData to avoid duplicates)
+  ensurePopupOutsideHandler();
 }
 
-function populateSortCol(columns, selectedCol) {
-  const sel = document.getElementById('db-sort-col');
-  sel.innerHTML = columns.map(c =>
-    `<option value="${c}"${c === selectedCol ? ' selected' : ''}>${c}</option>`
-  ).join('');
+/**
+ * Update sort arrows on existing header without full re-render.
+ */
+function updateHeaderSortArrows(tableName) {
+  const sort = getSortForTable(tableName);
+  document.querySelectorAll('.db-th .th-text').forEach(span => {
+    const col = span.dataset.col;
+    // Remove existing arrows
+    const text = span.textContent.replace(/ [▲▼]/g, '');
+    if (col === sort.col) {
+      span.textContent = text + (sort.dir === 'ASC' ? ' ▲' : ' ▼');
+    } else {
+      span.textContent = text;
+    }
+  });
+}
+
+/**
+ * Update filter funnel indicators on existing headers.
+ */
+function updateFilterIndicators(tableName) {
+  document.querySelectorAll('.db-th').forEach(th => {
+    const col = th.dataset.col;
+    const hasFilter = app.dbExclusions[tableName] && app.dbExclusions[tableName][col] && app.dbExclusions[tableName][col].length > 0;
+    if (hasFilter) {
+      th.classList.add('filtered');
+      if (!th.querySelector('.th-funnel')) {
+        const funnel = document.createElement('span');
+        funnel.className = 'th-funnel';
+        funnel.textContent = '🔽';
+        th.appendChild(funnel);
+      }
+    } else {
+      th.classList.remove('filtered');
+      const funnel = th.querySelector('.th-funnel');
+      if (funnel) funnel.remove();
+    }
+  });
 }
 
 async function queryTable(tableName, opts) {
   const dbName = document.getElementById('db-select').value;
-  const sortCol = document.getElementById('db-sort-col').value;
-  const sortDir = document.getElementById('db-sort-dir').value;
+  const sort = getSortForTable(tableName);
+  const sortCol = sort.col;
+  const sortDir = sort.dir;
   const data = document.getElementById('db-table-data');
   const silent = opts?.silent;
 
   if (!silent) {
     data.innerHTML = '';
     cancelEditing();
-    // Reset offset on non-silent (user-initiated) queries
+    closeColPopup();
     if (opts?.keepOffset) {
-      // keep current offset (used by pagination buttons)
+      // keep current offset
     } else {
       app.dbPageOffset = 0;
     }
@@ -350,7 +574,13 @@ async function queryTable(tableName, opts) {
   let url = apiPath(`/api/v1/db/query?db=${encodeURIComponent(dbName)}&table=${encodeURIComponent(tableName)}&limit=${app.dbPageLimit}&offset=${app.dbPageOffset}`);
   url += `&order_by=${encodeURIComponent(sortCol)}&order_dir=${sortDir}`;
 
-  // Add filter
+  // Add exclusion filters
+  const exclParams = getExclusionParams(tableName);
+  if (exclParams) {
+    url += '&' + exclParams;
+  }
+
+  // Legacy filter support (kept for backward compat, not used by new UI)
   const filterEntries = Object.entries(app.dbFilters);
   if (filterEntries.length > 0) {
     const [fCol, fVal] = filterEntries[0];
@@ -374,7 +604,6 @@ async function queryTable(tableName, opts) {
       updatePageInfo();
       return;
     }
-    populateSortCol(result.columns, sortCol);
     renderTableData(result, silent);
     updatePageInfo();
   } catch (e) {
@@ -405,4 +634,4 @@ function updatePageInfo() {
   nextBtn.disabled = app.dbPageOffset + app.dbPageLimit >= app.dbTotalRows;
 }
 
-export { cancelEditing, queryWithFilters, renderTableData, populateSortCol, queryTable, updatePageInfo };
+export { cancelEditing, queryWithFilters, renderTableData, queryTable, updatePageInfo, closeColPopup, getSortForTable };
