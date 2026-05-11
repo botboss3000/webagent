@@ -694,6 +694,7 @@ class SupabaseBackend(StorageBackend):
                 "assigned_at": now,
                 "created_at": now,
                 "updated_at": now,
+                "turn_count": 0,
             }
 
             res = self._client.table("agents").insert(agent_data).execute()
@@ -703,6 +704,19 @@ class SupabaseBackend(StorageBackend):
             raise ValueError("No data returned after agent insert")
         except Exception as e:
             logger.error("Error creating agent for user %s: %s", user_id, e)
+            raise
+
+    async def increment_agent_turn_count(self, agent_id: str) -> int:
+        try:
+            # Note: Supabase REST API doesn't have an atomic increment via standard RPC without a custom function.
+            # Here we do a select then update. In a high concurrency environment, a DB function would be better.
+            res = self._client.table("agents").select("turn_count").eq("id", agent_id).single().execute()
+            current_count = res.data.get("turn_count", 0) if res.data else 0
+            new_count = current_count + 1
+            up_res = self._client.table("agents").update({"turn_count": new_count}).eq("id", agent_id).execute()
+            return up_res.data[0]["turn_count"] if up_res.data else new_count
+        except Exception as e:
+            logger.error("Error incrementing turn count for agent %s: %s", agent_id, e)
             raise
 
     async def get_default_template(self) -> dict:

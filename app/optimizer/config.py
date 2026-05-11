@@ -71,11 +71,16 @@ DEFAULTS: Dict[str, Any] = {
 
 # ── Intensity threshold map ──
 INTENSITY_MAP: Dict[int, Dict[str, Any]] = {
-    1: {"min_improvement_pct": 20, "strictness": "strict",  "min_sample_multiplier": 2.0},
-    2: {"min_improvement_pct": 15, "strictness": "strict",  "min_sample_multiplier": 1.5},
-    3: {"min_improvement_pct": 10, "strictness": "balanced","min_sample_multiplier": 1.0},
-    4: {"min_improvement_pct": 7,  "strictness": "relaxed",  "min_sample_multiplier": 0.7},
-    5: {"min_improvement_pct": 5,  "strictness": "lenient",  "min_sample_multiplier": 0.5},
+    1: {"min_improvement_pct": 20, "strictness": "strict",  "min_sample_multiplier": 2.0,
+        "targets": {"failures": 10, "turns": 8, "tokens": 1000, "time_ms": 8000}},
+    2: {"min_improvement_pct": 15, "strictness": "strict",  "min_sample_multiplier": 1.5,
+        "targets": {"failures": 8,  "turns": 6, "tokens": 800,  "time_ms": 6000}},
+    3: {"min_improvement_pct": 10, "strictness": "balanced","min_sample_multiplier": 1.0,
+        "targets": {"failures": 5,  "turns": 4, "tokens": 500,  "time_ms": 5000}},
+    4: {"min_improvement_pct": 7,  "strictness": "relaxed", "min_sample_multiplier": 0.7,
+        "targets": {"failures": 3,  "turns": 3, "tokens": 300,  "time_ms": 3000}},
+    5: {"min_improvement_pct": 5,  "strictness": "lenient", "min_sample_multiplier": 0.5,
+        "targets": {"failures": 1,  "turns": 2, "tokens": 200,  "time_ms": 2000}},
 }
 
 

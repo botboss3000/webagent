@@ -131,7 +131,7 @@ class ToolLoader:
         )
 
         # ── run_optimizer (trigger skill optimization manually) ──
-        async def _run_optimizer_wrapper(feedback: str = "", skill_name: str = ""):
+        async def _run_optimizer_wrapper(feedback: str = "", skill_name: str = "", criteria: str = ""):
             from app.optimizer.runner import run_optimizer_async
             from app.admin.settings import load_provider_for_user
             db = get_db()
@@ -144,7 +144,9 @@ class ToolLoader:
                         feedback_type="correction", message=feedback,
                     )
             await load_provider_for_user(user_id)
-            result = await run_optimizer_async(user_id, "manual-user-trigger")
+            import uuid
+            sid = f"manual-{str(uuid.uuid4())[:8]}"
+            result = await run_optimizer_async(user_id, sid, criteria=criteria, feedback=feedback, skill_name=skill_name)
             if result:
                 return json.dumps({"status": "completed", "optimizer_session_id": result,
                                    "message": "Optimizer ran. Check the optimizer session for details."})
@@ -158,6 +160,7 @@ class ToolLoader:
                 "properties": {
                     "skill_name": {"type": "string", "description": "Optional: specific skill to optimize (e.g. 'send_email'). If blank, analyzes all skills."},
                     "feedback": {"type": "string", "description": "Optional: what to improve. E.g. 'make it use the API instead of scraping' or 'response was too verbose'"},
+                    "criteria": {"type": "string", "description": "Optional: which metric to optimize. 'turns' (fewer back-and-forths), 'tokens' (cheaper), or 'time' (faster). If blank, balances all."},
                 },
                 "required": [],
             },

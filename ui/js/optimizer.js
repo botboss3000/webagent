@@ -71,14 +71,15 @@ const STATUS_EL      = document.getElementById('opt-status');
 // ── State ──
 let currentMode = 'live';
 let currentFeedback = 'always';
+let currentTargetMetric = 'failures';
 let currentIntensity = 3;
 
 const INTENSITY_DESCRIPTIONS = {
-  1: 'Conservative — optimize only when ≥20% gain expected. High sample thresholds. Strict validation. Fewer changes, more certainty.',
-  2: 'Cautious — optimize when ≥15% gain expected. Higher sample thresholds. Careful validation.',
-  3: 'Balanced — optimize when ≥10% improvement expected. Standard thresholds. Moderate validation.',
-  4: 'Eager — optimize when ≥7% improvement expected. Lower thresholds. Relaxed validation.',
-  5: 'Aggressive — optimize for any improvement (≥5%). Minimal thresholds. Lenient validation. More changes, faster iteration.',
+  1: 'Conservative — optimize only when ≥20% gain. Failures ≤10%, turns ≤8. Strict validation.',
+  2: 'Cautious — optimize when ≥15% gain. Failures ≤8%, turns ≤6. Careful validation.',
+  3: 'Balanced — optimize when ≥10% improvement. Failures ≤5%, turns ≤4. Standard validation.',
+  4: 'Eager — optimize when ≥7% improvement. Failures ≤3%, turns ≤3. Relaxed validation.',
+  5: 'Aggressive — optimize for any improvement (≥5%). Failures ≤1%, turns ≤2. Lenient validation.',
 };
 
 // ── Helpers ──
@@ -454,6 +455,9 @@ async function saveConfig() {
     mode: currentMode,
     user_feedback: currentFeedback,
     intensity: currentIntensity,
+    target_metric: currentTargetMetric,
+    max_iterations: parseInt(document.getElementById('opt-max-iterations')?.value || '3'),
+    max_turns: parseInt(document.getElementById('opt-max-turns')?.value || '10'),
     metrics,
     scan_sources: scanSources,
     models: {

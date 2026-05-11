@@ -6,14 +6,21 @@ import { startLoop, stopLoop, setLoopLevel, toggleAutoScroll } from './loop.js';
 import { startLoopVisual, stopLoopVisual } from './loop-visual.js';
 import { initGithub, startGithub, stopGithub } from './github.js';
 import { startAutoAgent, stopAutoAgent } from './autoagent.js';
+
 export function initTabs() {
   const tabSelect = document.getElementById('main-tab-select');
   if (!tabSelect) return;
 
-  // ── Restore last active tab from localStorage ──
   const savedTab = localStorage.getItem('lastActiveTab');
   if (savedTab && tabSelect.querySelector(`option[value="${savedTab}"]`)) {
     tabSelect.value = savedTab;
+  }
+
+  function setChatSideVisible(visible) {
+    const chatSide = document.getElementById('chat-side');
+    if (chatSide) {
+      chatSide.style.display = visible ? '' : 'none';
+    }
   }
 
   function activateTab(tabValue) {
@@ -23,10 +30,11 @@ export function initTabs() {
       targetContent.classList.add('active');
     }
 
-    // Save tab preference
     localStorage.setItem('lastActiveTab', tabValue);
 
-    // Tab-specific setup
+    // Default: show chat side
+    setChatSideVisible(true);
+
     if (tabValue === 'terminal') {
       stopStream();
       stopLoop();
@@ -76,7 +84,6 @@ export function initTabs() {
     activateTab(e.target.value);
   });
 
-  // ── Wire up loop filter buttons ──
   document.querySelectorAll('.loop-filter-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.loop-filter-btn').forEach(b => b.classList.remove('active'));
@@ -85,23 +92,19 @@ export function initTabs() {
     });
   });
 
-  // ── Wire up auto-scroll toggle ──
   const autoScrollBtn = document.getElementById('loop-autoscroll');
   if (autoScrollBtn) {
     autoScrollBtn.addEventListener('click', toggleAutoScroll);
   }
 
-  // ── Wire up GitHub menu item ──
   const githubMenuItem = document.getElementById('github-menu-item');
   if (githubMenuItem) {
     githubMenuItem.addEventListener('click', () => {
-      // Close the config dropdown
       const dropdown = document.getElementById('settings-dropdown-menu');
       if (dropdown) dropdown.style.display = 'none';
       activateTab('github');
     });
   }
 
-  // Initial activation for the restored/default active tab
   activateTab(tabSelect.value);
 }

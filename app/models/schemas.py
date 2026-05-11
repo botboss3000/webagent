@@ -179,6 +179,7 @@ class AgentRecord(BaseModel):
     assigned_at: datetime
     created_at: datetime
     updated_at: datetime
+    turn_count: int = 0
 
 
 class CreateToolRequest(BaseModel):
