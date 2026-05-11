@@ -80,6 +80,10 @@ async function openColPopup(th, tableName, colName) {
   // Close any existing popup first
   closeColPopup();
 
+  // Indicate opening intent so rapid double clicks can cancel correctly
+  const popupIntent = { table: tableName, column: colName, isLoading: true, el: null };
+  app.dbColPopup = popupIntent;
+
   // Fetch distinct values
   let values = [];
   let total = 0;
@@ -101,6 +105,12 @@ async function openColPopup(th, tableName, colName) {
     values = [];
     total = 0;
   }
+
+  // Very crucial: Check if user already dismissed or opened another menu while fetching
+  if (app.dbColPopup !== popupIntent) return;
+  
+  // Verify TH is still in the document (avoids zombie popups during layout refreshes)
+  if (!document.body.contains(th)) return;
 
   const excluded = getExclusionsForColumn(tableName, colName);
   const sort = getSortForTable(tableName);
@@ -140,11 +150,34 @@ async function openColPopup(th, tableName, colName) {
   const thRect = th.getBoundingClientRect();
   const viewer = document.getElementById('db-table-view');
   const viewerRect = viewer.getBoundingClientRect();
-  popup.style.left = (thRect.left - viewerRect.left) + 'px';
+  
+  // Calculate horizontal position
+  let leftPos = thRect.left - viewerRect.left;
+  const minWidth = Math.max(180, thRect.width);
+  // Max width defined in CSS is 300px
+  const expectedWidth = Math.min(300, minWidth); 
+  
+  // If placing it starting from the left edge of the th pushes it past the 
+  // right edge of the table viewer, align it to the right edge of the th instead
+  if (leftPos + expectedWidth > viewerRect.width) {
+    leftPos = (thRect.right - viewerRect.left) - expectedWidth;
+    // Fallback if th is larger than the window or weirdly positioned: keep it inside bounds
+    if (leftPos < 0) leftPos = 0;
+  }
+
+  popup.style.left = leftPos + 'px';
   popup.style.top = (thRect.bottom - viewerRect.top) + 'px';
-  popup.style.minWidth = Math.max(180, thRect.width) + 'px';
+  popup.style.minWidth = minWidth + 'px';
 
   viewer.appendChild(popup);
+
+  // Re-adjust horizontal position after append to use actual width if it overflows
+  const popupWidth = popup.offsetWidth;
+  if (leftPos + popupWidth > viewerRect.width) {
+    leftPos = (thRect.right - viewerRect.left) - popupWidth;
+    if (leftPos < 0) leftPos = 0;
+    popup.style.left = leftPos + 'px';
+  }
 
   const itemsEl = popup.querySelector('.db-popup-items');
   const statusEl = popup.querySelector('.db-popup-status');
@@ -276,6 +309,12 @@ let _popupOutsideHandler = null;
 function ensurePopupOutsideHandler() {
   if (_popupOutsideHandler) return;
   _popupOutsideHandler = (e) => {
+    // If the click is on a th-text, let the th-text handler handle closing/toggling
+    // so we don't naturally close it here and then have the th-text handler re-open it
+    if (e.target.closest('.th-text')) {
+      return; 
+    }
+    
     if (app.dbColPopup && app.dbColPopup.el) {
       if (!app.dbColPopup.el.contains(e.target)) {
         const tableName = app.dbColPopup.table;
@@ -363,16 +402,12 @@ function renderTableData(result, silent) {
 
   // Column width strategy
   function getColWidth(table, col) {
+    if (app.COL_WIDTHS[col]) return app.COL_WIDTHS[col];
     const contentTables = ['interactions', 'context_defaults', 'context_templates', 'context'];
     if (table === 'interactions' && col === 'input') return '300px';
     if (contentTables.includes(table) && col === 'content') return '300px';
-    if (app.COL_WIDTHS[col]) return app.COL_WIDTHS[col];
     const px = Math.max(40, col.length * 7.5 + 20);
     return Math.round(px) + 'px';
-  }
-  function isFixedCol(table, col) {
-    const fixedCols = ['interactions/input', 'interactions/content', 'context_defaults/content', 'context_templates/content', 'context/content'];
-    return fixedCols.includes(table + '/' + col);
   }
 
   let html = '<table class="db-table"><thead>';
@@ -382,7 +417,6 @@ function renderTableData(result, silent) {
   for (const col of displayCols) {
     const w = getColWidth(result.table, col);
     const style = w ? ` style="width:${w};min-width:${w};max-width:${w}"` : '';
-    const noResize = isFixedCol(result.table, col);
     const isSortCol = col === sort.col;
     const sortArrow = isSortCol ? (sort.dir === 'ASC' ? ' ▲' : ' ▼') : '';
     const hasFilter = app.dbExclusions[tableName] && app.dbExclusions[tableName][col] && app.dbExclusions[tableName][col].length > 0;
@@ -404,7 +438,7 @@ function renderTableData(result, silent) {
         <span class="th-sort">${sortArrow}</span>
         <span class="th-funnel">${hasFilter ? ' 🔽' : ''}</span>
       </span>
-      ${noResize ? '' : '<span class="th-resize"></span>'}
+      <span class="th-resize"></span>
     </th>`;
   }
   html += '</tr>';
@@ -451,6 +485,12 @@ function renderTableData(result, silent) {
       e.stopPropagation();
       const th = span.closest('.db-th');
       const col = th.dataset.col;
+      
+      if (app.dbColPopup && app.dbColPopup.table === tableName && app.dbColPopup.column === col) {
+        closeColPopup();
+        return;
+      }
+      
       openColPopup(th, tableName, col);
     });
   });

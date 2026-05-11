@@ -41,7 +41,20 @@ NEW:
 RECENT:
 {chr(10).join(transcript[-15:])}
 
-Return JSON with estimated_turns, estimated_tokens, estimated_time_ms, success_likely, confidence, reasoning."""
+OUTPUT FORMAT:
+First write a MESSAGE explaining your analysis - what this change does, how it affects performance, risks.
+Then output JSON:
+{{
+  "message": "Your conversational analysis explaining your reasoning and confidence",
+  "estimated_turns": N,
+  "estimated_tokens": N,
+  "estimated_time_ms": N,
+  "success_likely": true/false,
+  "confidence": 0.0-1.0,
+  "confidence_reasoning": "If confidence is LOW (<0.5), explain EXACTLY why this change won't work. What is the root cause? What would need to be different? This goes back to the Planner to help them adjust their approach.",
+  "reasoning": "brief"
+}}"""
+        # Temporary: parse JSON from the response even if message prefix exists
 
         try:
             resp = await client.chat.completions.create(
@@ -53,6 +66,11 @@ Return JSON with estimated_turns, estimated_tokens, estimated_time_ms, success_l
             if text.startswith("```"):
                 parts = text.split("```")
                 text = parts[1].replace("json", "", 1).strip() if len(parts) > 1 else text
+            # Extract JSON from response — LLM may prepend a message before the JSON block
+            if not text.startswith('{'):
+                brace = text.find('{')
+                if brace >= 0:
+                    text = text[brace:]
             return json.loads(text)
         except Exception as e:
             logger.warning("Worker trial %d for %s failed: %s", trial_num, element, e)

@@ -54,6 +54,7 @@ class StorageBackend(ABC):
         channel: Optional[str] = None,
         metadata: Optional[str] = None,
         input_data: Optional[str] = None,
+        output_data: Optional[str] = None,
         sender_id: Optional[str] = None,
         source: Optional[str] = None,
     ) -> str:

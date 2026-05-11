@@ -64,44 +64,68 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
 
 
         iteration = 0
+        optimizer_history = None
         while iteration < max_iter:
             iteration += 1
             _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:system", f"Iteration {iteration}/{max_iter} starting.")
 
-            # Planner
-            proposal = await propose_improvements(user_id, session_id, pf, mode="analyze", optimizer_history=None)
+            # Planner — pass previous rejection feedback so it can adjust
+            proposal = await propose_improvements(user_id, session_id, pf, mode="analyze", optimizer_history=optimizer_history)
+            planner_msg = proposal.get('message') or f"Planner: {proposal.get('analysis','')[:200]}. Proposed {len(proposal.get('changes',[]))} changes."
             if not proposal or not proposal.get("changes"):
-                _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:planner",
-                                f"Planner: {proposal.get('analysis','No issues found.')}")
+                _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:planner", planner_msg)
                 if iteration == 1:
                     _log_complete(run_id, "success", cfg, opt_sid, summary=proposal.get("analysis","No changes needed."))
                 break
 
             changes = proposal["changes"]
-            _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:planner",
-                            f"Planner: {proposal.get('analysis','')[:200]}. Proposed {len(changes)} changes.")
+            _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:planner", planner_msg)
 
             # Workers
             trials = await run_trials(user_id, changes, pf.get("transcript", []), trials_per_change)
             confident = [t for t in trials if t.get("averaged", {}).get("confidence", 0) >= 0.5]
+            worker_msgs = []
+            for t in trials:
+                w_msg = t.get('message') or ''
+                if w_msg:
+                    worker_msgs.append(w_msg)
             if not confident:
-                _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:worker",
-                                "Worker: All trials low confidence. Trying different approach next iteration.")
+                # Collect rejection reasons from all workers for Planner feedback
+                rejection_lines = []
+                for t in trials:
+                    cr = t.get('confidence_reasoning') or ''
+                    if cr:
+                        rejection_lines.append(cr)
+                    msg = t.get('message') or ''
+                    if msg:
+                        rejection_lines.append(msg)
+                rejection_text = '; '.join(rejection_lines) if rejection_lines else 'Workers: low confidence — no specific reasoning given.'
+                # Build optimizer_history: show Planner what was proposed and why it failed
+                prev_element = changes[0].get('element', 'unknown') if changes else 'unknown'
+                prev_type = changes[0].get('change_type', 'unknown') if changes else 'unknown'
+                optimizer_history = (
+                    f"Your previous proposal (element={prev_element}, type={prev_type}) was rejected "
+                    f"by all Workers. Reasons: {rejection_text[:600]}. "
+                    f"Adjust your approach — try a fundamentally different change."
+                )
+                worker_text = '\n\n---\n\n'.join(worker_msgs) if worker_msgs else f"Worker: All trials low confidence. Trying different approach next iteration.\n\nFeedback for Planner: {rejection_text[:300]}"
+                _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:worker", worker_text)
                 if iteration == max_iter:
                     _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:system",
                                     "No noticeable improvements after max iterations. Stopping to await user feedback.")
                 continue
 
-            _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:worker",
-                            f"Worker: {len(confident)}/{len(trials)} trials passed confidence threshold.")
+            worker_text = '\n\n---\n\n'.join(worker_msgs) if worker_msgs else f"Worker: {len(confident)}/{len(trials)} trials passed confidence threshold."
+            _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:worker", worker_text)
 
             # Finalizer
             review = await review_trials(user_id, confident, baseline, transcript=pf.get("transcript", []),
                                          criteria=criteria, target=target, skill_state=skill_state)
+            finalizer_msg = review.get('message') or f"Finalizer: {len(review.get('winners',[]))} winners, {len(review.get('losers',[]))} rejected. {review.get('summary','')}"
             user_feedback_setting = cfg.get("user_feedback", "always")
             if user_feedback_setting == "always":
-                _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:system", f"Run paused. Found {len(review.get(\"winners\", []))} proposed deployments. Feedback policy is set to \"always\". Waiting for user approval.")
-                _log_complete(run_id, "pending_approval", cfg, opt_sid, proposals_generated=len(changes), summary=f"Pending approval. {review.get(\"summary\", \"\")}")
+                _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:finalizer", finalizer_msg)
+                _log_complete(run_id, "pending_approval", cfg, opt_sid, proposals_generated=len(changes), summary=f"Pending approval. {review.get('summary', '')}")
                 return opt_sid
             winners, losers = review.get("winners", []), review.get("losers", [])
             summary = review.get("summary", "")
@@ -114,8 +138,7 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
                             _deploy_change(user_id, opt_sid, ch, w)
                             deployed += 1
 
-            _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:finalizer",
-                            f"Finalizer: {len(winners)} winners, {len(losers)} rejected. Deployed {deployed}. {summary}")
+            _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:finalizer", finalizer_msg)
 
             if deployed > 0:
                 old_total = cfg.get("state", {}).get("improvements_deployed", 0)
@@ -123,7 +146,7 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
                               skills_analyzed=len(skill_state), proposals_generated=len(changes),
                               proposals_deployed=deployed, summary=f"Deployed {deployed}. {summary}")
                 update_state(last_run_at=now, last_run_status="success", improvements_deployed=old_total + deployed)
-                   return opt_sid
+                return opt_sid
             else:
                 _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:system",
                                 "No deployments. Searching for new approaches next iteration.")

@@ -459,7 +459,7 @@ async def stream_interactions(
         limit_clause = "" if since else "LIMIT 200"
 
         cur.execute(
-            f'SELECT id, session_id, role, content, tool_name, metadata, input, created_at '
+            f'SELECT id, session_id, role, content, tool_name, metadata, input, output, created_at '
             f'FROM interactions WHERE {where_clause} ORDER BY created_at ASC {limit_clause}',
             params
         )

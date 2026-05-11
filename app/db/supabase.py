@@ -117,6 +117,7 @@ class SupabaseBackend(StorageBackend):
         source: Optional[str] = None,
         metadata: Optional[str] = None,
         input_data: Optional[str] = None,
+        output_data: Optional[str] = None,
         sender_id: Optional[str] = None,
     ) -> str:
         try:
@@ -132,6 +133,7 @@ class SupabaseBackend(StorageBackend):
                 "source": source or "user",
                 "metadata": metadata,
                 "input": input_data,
+                "output": output_data,
             }
             response = self._client.table("interactions").insert(data).execute()
             if response.data and len(response.data) > 0:
@@ -1009,10 +1011,11 @@ class SupabaseClient:
         tool_call_id: Optional[str] = None, channel: Optional[str] = None,
         source: Optional[str] = None,
         metadata: Optional[str] = None, input_data: Optional[str] = None,
+        output_data: Optional[str] = None,
         sender_id: Optional[str] = None,
     ) -> str:
         return await SupabaseClient._get_backend().insert_interaction(
-            user_id, session_id, role, content, parent_id, tool_name, tool_call_id, channel, source, metadata, input_data, sender_id,
+            user_id, session_id, role, content, parent_id, tool_name, tool_call_id, channel, source, metadata, input_data, output_data, sender_id,
         )
 
     @staticmethod

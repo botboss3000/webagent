@@ -256,3 +256,29 @@
   from { opacity: 0; transform: translateY(-4px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+
+/* ═══════════════════════════════════════════════
+   LIGHT MODE OVERRIDES
+   ═══════════════════════════════════════════════ */
+body.light-mode .loop-show-more {
+  color: #cc6a28;
+  border-color: #ffdec4;
+}
+body.light-mode .loop-show-more:hover {
+  border-color: #ff8c42;
+  background: #ffeee0;
+}
+body.light-mode .loop-node:hover {
+  background: #fff5eb;
+}
+body.light-mode .loop-node.loop-streaming {
+  background: #fff5eb;
+  border-left-color: #ff8c42;
+}
+body.light-mode .loop-node.loop-executing {
+  background: #fff5eb;
+  border-left-color: #d4873a;
+}
+body.light-mode .loop-spinner {
+  color: #ff8c42;
+}
