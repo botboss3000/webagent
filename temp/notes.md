@@ -64,3 +64,5 @@ testing:
  - changing own context
 
  UI Style: check out "Hermes Agent Creative Visualization Skills" video by Onchain AI Garage
+
+ autoagent if modifying its own code would need to check that it can run first in a test 

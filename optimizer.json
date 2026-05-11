@@ -39,8 +39,26 @@
     "channel": "email"
   },
   "state": {
-    "last_run_at": "2026-05-10T22:59:06.824065+00:00",
-    "improvements_deployed": 5,
+    "last_run_at": "2026-05-11T13:07:15.248345+00:00",
+    "improvements_deployed": 9,
     "last_run_status": "success"
-  }
+  },
+  "trials": {
+    "per_change": 2
+  },
+  "criteria": {
+    "time": 1,
+    "tokens": 1,
+    "length": 0.5,
+    "turns": 1
+  },
+  "max_iterations": 3,
+  "max_turns": 10,
+  "criteria_targets": {
+    "turns": 3,
+    "tokens": 500,
+    "time_ms": 5000,
+    "failures": 5
+  },
+  "target_metric": "failures"
 }

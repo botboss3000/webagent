@@ -3,14 +3,11 @@
 import { app } from './state.js';
 import { apiPath } from './config.js';
 
-// ── State ──
 let autoAgentActive = false;
 
-// ── Init ──
 export function initAutoAgent() {
   app._autoAgentHandler = handleEvent;
 
-  // Wire prompt input
   const input = document.getElementById('autoagent-prompt-input');
   const sendBtn = document.getElementById('autoagent-send-btn');
   if (!input || !sendBtn) return;
@@ -24,72 +21,60 @@ export function initAutoAgent() {
   });
 }
 
-// ── Start (called when tab activates) ──
 export function startAutoAgent() {
   autoAgentActive = true;
+  const viewport = document.getElementById('autoagent-viewport');
+  if (viewport) viewport.style.display = 'block';
   syncIframe();
 }
 
-// ── Stop (called when tab deactivates) ──
 export function stopAutoAgent() {
   autoAgentActive = false;
 }
 
-// ── Session changed ──
 export function autoAgentSessionChanged() {
   if (!autoAgentActive) return;
   showPlaceholder();
 }
 
-// ── Handle WebSocket events ──
 function handleEvent(event) {
   if (!autoAgentActive) return;
 
-  // Detect render_visual tool result
   const isToolResult = event.type === 'tool_result' || event.type === 'tool_call';
   const toolName = event.tool || event.tool_name || '';
 
   if (isToolResult && toolName === 'render_visual') {
     if (event.type === 'tool_result') {
-      // Tool completed — load the iframe
       try {
         const result = typeof event.result === 'string'
           ? JSON.parse(event.result)
           : event.result;
-
         if (result && result.status === 'ok' && result.path) {
           showIframe(result.path, result.title || 'Visualization');
         }
       } catch (e) {
-        // If result is not JSON, check if it's a path string
         if (event.result && typeof event.result === 'string' && event.result.startsWith('/visuals/')) {
           showIframe(event.result, 'Visualization');
         }
       }
     } else if (event.type === 'tool_call') {
-      // Tool started — show loading
       showLoading();
     }
   }
 
-  // Detect pipeline events for progress
   if (event.type === 'pipeline') {
     if (event.step === 'llm_call_start') {
       updateStatus('UI Agent thinking...');
     } else if (event.step === 'execute_start' || event.step === 'execute_batch_start') {
       updateStatus('Rendering visualization...');
-    } else if (event.step === 'turn_end' || event.type === 'response') {
-      // Tool should have updated iframe by now
     }
   }
 
-  // Detect errors
   if (event.type === 'error') {
     showError(event.error || event.message || 'Unknown error');
   }
 }
 
-// ── Send prompt via SSE ──
 async function sendPrompt() {
   const input = document.getElementById('autoagent-prompt-input');
   const sendBtn = document.getElementById('autoagent-send-btn');
@@ -98,7 +83,6 @@ async function sendPrompt() {
   const text = input.value.trim();
   if (!text) return;
 
-  // Tag with agent identity
   const taggedPrompt = `[User → UI Agent]: ${text}`;
 
   input.value = '';
@@ -124,7 +108,6 @@ async function sendPrompt() {
       return;
     }
 
-    // Read SSE stream to completion (agent loop runs, WS events update iframe)
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -144,7 +127,7 @@ async function sendPrompt() {
             if (data.done) {
               updateStatus(data.reply ? 'Complete' : 'Finished');
             }
-          } catch (e) { /* ignore parse errors */ }
+          } catch (e) { /* ignore */ }
         }
       }
     }
@@ -157,7 +140,6 @@ async function sendPrompt() {
   }
 }
 
-// ── UI state helpers ──
 function showIframe(path, title) {
   const iframe = document.getElementById('autoagent-iframe');
   const placeholder = document.getElementById('autoagent-placeholder');
@@ -167,7 +149,6 @@ function showIframe(path, title) {
   if (loading) loading.style.display = 'none';
 
   if (iframe) {
-    // Add cache-busting query param for re-renders
     const url = path + (path.includes('?') ? '&' : '?') + '_t=' + Date.now();
     iframe.src = url;
     iframe.style.display = 'block';
@@ -211,7 +192,6 @@ function updateStatus(text, type) {
   if (type === 'error') status.classList.add('aa-status-error');
 }
 
-// ── Sync iframe from latest interaction on activate ──
 async function syncIframe() {
   const userId = app.currentUserId;
   const sessionId = app.currentSessionId;
@@ -225,7 +205,6 @@ async function syncIframe() {
     const data = await res.json();
     const rows = data.interactions || [];
 
-    // Find most recent render_visual tool result
     for (let i = rows.length - 1; i >= 0; i--) {
       const row = rows[i];
       if (row.role !== 'tool' || row.tool_name !== 'render_visual') continue;
@@ -236,12 +215,9 @@ async function syncIframe() {
           showIframe(result.path, result.title);
           return;
         }
-      } catch (e) {
-        // Not JSON
-      }
+      } catch (e) { /* not JSON */ }
     }
 
-    // No render found
     showPlaceholder();
   } catch (e) {
     showPlaceholder();

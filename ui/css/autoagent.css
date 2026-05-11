@@ -1,16 +1,21 @@
 /* ── AutoAgent Tab ── */
 
 #tab-autoagent {
-  display: flex;
+  display: none;
   flex-direction: column;
   height: 100%;
-  background: #0a0a0f;
+  background: #000;
+}
+
+#tab-autoagent.active {
+  display: flex;
 }
 
 #autoagent-container {
   display: flex;
   flex-direction: column;
   height: 100%;
+  width: 100%;
 }
 
 /* ── Prompt Bar ── */

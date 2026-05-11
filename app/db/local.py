@@ -129,7 +129,8 @@ CREATE TABLE IF NOT EXISTS agents (
     metadata TEXT NOT NULL DEFAULT '{}',
     assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    turn_count INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_agents_user ON agents(user_id);
@@ -158,7 +159,7 @@ CREATE TABLE IF NOT EXISTS context_templates (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_context_templates_type ON context_templates(context_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_context_templates_type ON context_templates(context_type, title);
 
 -- ============================================================
 -- Memory System: core knowledge brain
@@ -534,6 +535,15 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Added interactions.source column")
 
+            # ── Migration: fix context_templates unique index (allow multiple per type) ──
+            cursor = conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_context_templates_type'")
+            row = cursor.fetchone()
+            if row and '(context_type, title)' not in row[0]:
+                conn.execute("DROP INDEX IF EXISTS idx_context_templates_type")
+                conn.execute("CREATE UNIQUE INDEX idx_context_templates_type ON context_templates(context_type, title)")
+                conn.commit()
+                logger.info("Migrated context_templates unique index to (context_type, title)")
+
             conn.commit()
 
             # ── Post-migration: move data from old agents_v1 ──
@@ -565,6 +575,14 @@ class LocalBackend(StorageBackend):
                 """)
                 conn.commit()
                 logger.info("Context templates migration complete")
+
+            # ── Migration: add turn_count column to agents ──
+            cursor = conn.execute("PRAGMA table_info(agents)")
+            agent_cols = {row[1] for row in cursor.fetchall()}
+            if "turn_count" not in agent_cols:
+                conn.execute("ALTER TABLE agents ADD COLUMN turn_count INTEGER NOT NULL DEFAULT 0")
+                conn.commit()
+                logger.info("Added agents.turn_count column")
 
             # ── Seed: p5js visualizer skill template ──
             self._seed_visualizer_template(conn)
@@ -1911,6 +1929,26 @@ class LocalBackend(StorageBackend):
             return dict(row)
         except Exception as e:
             logger.error("Error creating agent for user %s: %s", user_id, e)
+            raise
+        finally:
+            conn.close()
+
+    async def increment_agent_turn_count(self, agent_id: str) -> int:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT turn_count FROM agents WHERE id = ?", (agent_id,)
+            ).fetchone()
+            current = row["turn_count"] if row else 0
+            new_count = current + 1
+            conn.execute(
+                "UPDATE agents SET turn_count = ?, updated_at = ? WHERE id = ?",
+                (new_count, _now_iso(), agent_id),
+            )
+            conn.commit()
+            return new_count
+        except Exception as e:
+            logger.error("Error incrementing turn count for agent %s: %s", agent_id, e)
             raise
         finally:
             conn.close()

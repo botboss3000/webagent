@@ -333,6 +333,11 @@ class StorageBackend(ABC):
         ...
 
     @abstractmethod
+    async def increment_agent_turn_count(self, agent_id: str) -> int:
+        """Increment the turn_count for an agent. Returns the new turn count."""
+        ...
+
+    @abstractmethod
     async def get_default_template(self) -> dict:
         """Get the default agent template (used as blueprint for new agents)."""
         ...
