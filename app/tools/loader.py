@@ -3,6 +3,7 @@ Tool loader for dynamic tool loading from database.
 """
 import json
 import logging
+import os
 from dataclasses import dataclass
 from typing import Dict, Any, Callable, List, Optional
 from app.db import get_db
@@ -153,7 +154,7 @@ class ToolLoader:
                 try:
                     async with httpx.AsyncClient(timeout=15.0) as hclient:
                         resp = await hclient.post(
-                            "http://127.0.0.1:8000/admin/settings/optimizer/run",
+                            f"http://127.0.0.1:{os.environ.get('PORT', '8080')}/admin/settings/optimizer/run",
                             params={"user_id": user_id, "session_id": "", "feedback": feedback},
                         )
                         result = resp.json()

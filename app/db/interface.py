@@ -330,6 +330,21 @@ class StorageBackend(ABC):
         ...
 
     @abstractmethod
+    async def fetch_agent_with_context(
+        self,
+        user_id: str,
+        context_types: Optional[List[str]] = None,
+    ) -> Optional[dict]:
+        """
+        Fetch agent + all context documents in one query.
+        Returns agent dict with additional key ``context_documents`` (list of dicts).
+        If no agent exists for user, returns None.
+        If ``context_types`` is None or empty, loads all types.
+        Caller should fall back to seeding + re-fetch if ``context_documents`` is empty.
+        """
+        ...
+
+    @abstractmethod
     async def create_agent_for_user(self, user_id: str) -> dict:
         """Create a new agent for a user by cloning the default template. Returns the new agent row."""
         ...

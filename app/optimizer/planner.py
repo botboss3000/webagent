@@ -64,6 +64,7 @@ async def propose_improvements(user_id, session_id, prefilter_data, mode="analyz
             max_tokens=2000,
         )
         text = resp.choices[0].message.content.strip()
+        logger.info("Planner RAW response (first 500 chars): %s", text[:500])
         if text.startswith("```"):
             parts = text.split("```")
             text = parts[1].replace("json", "", 1).strip() if len(parts) > 1 else text
@@ -75,11 +76,20 @@ async def propose_improvements(user_id, session_id, prefilter_data, mode="analyz
         last_brace = text.rfind('}')
         if last_brace >= 0:
             text = text[:last_brace+1]
+        if not text.strip():
+            logger.warning("Planner: empty text after JSON extraction")
+            return {"analysis": "Planner: empty LLM response", "changes": []}
         try:
             return json.loads(text)
-        except json.JSONDecodeError:
-            logger.warning("Planner: JSON decode failed on text=%s", text[:200])
-            return {"analysis": "Planner: JSON parse error", "changes": []}
+        except json.JSONDecodeError as je:
+            logger.warning("Planner: JSON decode failed: %s on text=%s", je, text[:300])
+            # Attempt to fix: escape newlines in string values
+            try:
+                import re
+                fixed = re.sub(r'(?<!\\)\n', '\\n', text)
+                return json.loads(fixed)
+            except json.JSONDecodeError:
+                return {"analysis": "Planner: JSON parse error", "changes": []}
     except Exception as e:
         logger.warning("Planner: LLM failed: %s", e)
         return {"analysis": f"Planner error: {e}", "changes": []}

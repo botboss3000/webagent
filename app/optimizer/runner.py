@@ -69,6 +69,7 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
 
         iteration = 0
         optimizer_history = None
+        deployed = 0  # init outside loop so it survives early break
         while iteration < max_iter:
             iteration += 1
             _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:system", f"Iteration {iteration}/{max_iter} starting.")

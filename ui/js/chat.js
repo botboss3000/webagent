@@ -320,7 +320,13 @@ export function initChat() {
       }
 
       for (const msg of toRender) {
-        addChatBubble(msg.role === 'user' ? 'user' : 'agent', msg.content || '');
+        let text = msg.content || '';
+        // Strip [Tool calls: ...] suffix baked in by loop.py for DB persistence
+        const toolCallIdx = text.indexOf('\n\n[Tool calls: ');
+        if (toolCallIdx !== -1) {
+          text = text.slice(0, toolCallIdx);
+        }
+        addChatBubble(msg.role === 'user' ? 'user' : 'agent', text);
       }
     } catch (e) { /* silent */ }
   }

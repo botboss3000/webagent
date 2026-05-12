@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Header, Query
@@ -168,7 +169,7 @@ async def trigger_optimizer_run(
                 import httpx
                 async with httpx.AsyncClient(timeout=60.0) as hclient:
                     await hclient.post(
-                        f"http://127.0.0.1:8000/api/v1/chat",
+                        f"http://127.0.0.1:{os.environ.get('PORT', '8080')}/api/v1/chat",
                         json={
                             "message": f"I need help optimizing this session. User feedback: {feedback or 'No specific feedback.'}",
                             "session_id": opt_sid,

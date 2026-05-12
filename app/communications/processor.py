@@ -104,19 +104,17 @@ async def _run_registration_agent(
         if agent is None:
             agent = await db.create_agent_for_user(user_id)
 
-        context_docs = await db.fetch_context_documents(
-            agent["id"], CONTEXT_SECTION_TYPES,
-        )
-        if not context_docs:
+        # ── Fetch agent + context docs in one query ──
+        agent_with_ctx = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
+        if agent_with_ctx:
+            agent = agent_with_ctx
+
+        if not agent.get("context_documents"):
             copied = await db.copy_defaults_to_agent(agent["id"])
             if copied > 0:
-                context_docs = await db.fetch_context_documents(
-                    agent["id"], CONTEXT_SECTION_TYPES,
-                )
+                agent = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
 
-        row = await db.get_agent_by_id(agent["id"])
-        if row:
-            agent = row
+        context_docs = agent.get("context_documents", [])
 
         registration_prompt = get_registration_system_prompt(identity)
         system_prompt = await build_system_prompt(
@@ -162,19 +160,17 @@ async def _run_agent_loop(
         if agent is None:
             agent = await db.create_agent_for_user(user_id)
 
-        row = await db.get_agent_by_id(agent["id"])
-        if row:
-            agent = row
+        # ── Fetch agent + context docs in one query ──
+        agent_with_ctx = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
+        if agent_with_ctx:
+            agent = agent_with_ctx
 
-        context_docs = await db.fetch_context_documents(
-            agent["id"], CONTEXT_SECTION_TYPES,
-        )
-        if not context_docs:
+        if not agent.get("context_documents"):
             copied = await db.copy_defaults_to_agent(agent["id"])
             if copied > 0:
-                context_docs = await db.fetch_context_documents(
-                    agent["id"], CONTEXT_SECTION_TYPES,
-                )
+                agent = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
+
+        context_docs = agent.get("context_documents", [])
 
         brain_results = await db.memory_search(user_id, message_text, limit=5)
         brain_context = None
