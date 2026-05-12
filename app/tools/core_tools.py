@@ -446,11 +446,14 @@ async def get_time(timezone: str = "UTC") -> str:
         Current time as a human-readable string.
     """
     from datetime import datetime
+    if not timezone:
+        timezone = "UTC"
     try:
         import zoneinfo
         tz = zoneinfo.ZoneInfo(timezone)
         now = datetime.now(tz)
-        return now.strftime("%I:%M:%S %p") if "America" in timezone else now.strftime("%H:%M:%S")
+        use_12h = now.strftime("%p") != ""
+        return now.strftime("%I:%M:%S %p") if use_12h else now.strftime("%H:%M:%S")
     except Exception as e:
         return f"Error: could not resolve timezone '{timezone}'. Use IANA format e.g. 'America/New_York'. ({e})"
 
@@ -467,6 +470,8 @@ async def get_date(timezone: str = "UTC", format: str = "full") -> str:
         Current date as a human-readable string.
     """
     from datetime import datetime
+    if not timezone:
+        timezone = "UTC"
     try:
         import zoneinfo
         tz = zoneinfo.ZoneInfo(timezone)
@@ -478,7 +483,7 @@ async def get_date(timezone: str = "UTC", format: str = "full") -> str:
         else:
             return now.strftime("%A, %B %d, %Y")
     except Exception as e:
-        return f"Error: could not resolve timezone '{timezone}'. ({e})"
+        return f"Error: could not resolve timezone '{timezone}'. Use IANA format e.g. 'America/New_York'. ({e})"
 
 
 # ── Weather ───────────────────────────────────────────────────────────────────

@@ -85,7 +85,7 @@ def run_test(change):
         
         try:
             resp = httpx.post(
-                "http://127.0.0.1:8000/api/v1/chat",
+                f"http://127.0.0.1:{os.environ.get('PORT', '8080')}/api/v1/chat",
                 json={"message": ORIGINAL_MESSAGE, "session_id": f"trial-{agent_id[:12]}", "user_id": test_user_id},
                 timeout=TIMEOUT_SEC,
             )

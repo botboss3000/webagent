@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
-API_BASE = "http://127.0.0.1:8000"
+API_BASE = f"http://127.0.0.1:{os.environ.get('PORT', '8080')}"
 TIMEOUT_SEC = int(os.environ.get("WORKER_TIMEOUT", "90"))
 TEST_DB = "app/db/local.db"
 

@@ -925,8 +925,8 @@ class LocalBackend(StorageBackend):
         Scan app/context/agents/*.json and upsert each into
         agent_templates table with full schema (id, system_prompt,
         max_turn_count, model, provider, temperature, max_tokens,
-        metadata). Uses UPDATE-then-INSERT so JSON files ALWAYS
-        win — changes take effect on restart.
+        metadata). Uses INSERT ... ON CONFLICT DO UPDATE so JSON
+        files ALWAYS win — changes take effect on restart.
         """
         from app.context.md_seeder import scan_agent_json_files
         templates = scan_agent_json_files()
@@ -934,34 +934,24 @@ class LocalBackend(StorageBackend):
             return
         now = _now_iso()
         for tpl in templates:
-            # Upsert: try to update existing row first
             conn.execute(
-                """UPDATE agent_templates SET
-                   system_prompt = ?,
-                   max_turn_count = ?,
-                   model = ?,
-                   provider = ?,
-                   temperature = ?,
-                   max_tokens = ?,
-                   metadata = ?,
-                   updated_at = ?
-                   WHERE id = ?""",
-                (tpl["system_prompt"], tpl["max_turn_count"],
-                 tpl["model"], tpl["provider"],
-                 tpl["temperature"], tpl["max_tokens"],
-                 tpl["metadata"], now, tpl["id"]),
+                """INSERT INTO agent_templates
+                   (id, system_prompt, max_turn_count, model, provider,
+                    temperature, max_tokens, metadata, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                    system_prompt = excluded.system_prompt,
+                    max_turn_count = excluded.max_turn_count,
+                    model = excluded.model,
+                    provider = excluded.provider,
+                    temperature = excluded.temperature,
+                    max_tokens = excluded.max_tokens,
+                    metadata = excluded.metadata,
+                    updated_at = excluded.updated_at""",
+                (tpl["id"], tpl["system_prompt"], tpl["max_turn_count"],
+                 tpl["model"], tpl["provider"], tpl["temperature"],
+                 tpl["max_tokens"], tpl["metadata"], now, now),
             )
-            # If no row was updated, insert new one
-            if conn.total_changes == 0:
-                conn.execute(
-                    """INSERT INTO agent_templates
-                       (id, system_prompt, max_turn_count, model, provider,
-                        temperature, max_tokens, metadata, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (tpl["id"], tpl["system_prompt"], tpl["max_turn_count"],
-                     tpl["model"], tpl["provider"], tpl["temperature"],
-                     tpl["max_tokens"], tpl["metadata"], now, now),
-                )
         conn.commit()
         logger.info(
             "Upserted %d agent template(s) from app/context/agents/*.json",
@@ -1150,34 +1140,30 @@ class LocalBackend(StorageBackend):
         agent_id: str,
         context_types: Optional[List[str]] = None,
     ) -> List[dict]:
-        agent = await self.get_agent_by_id(agent_id)
-        if not agent:
-            return []
-        uid = agent["user_id"]
         conn = self._get_conn()
         try:
             if context_types:
                 placeholders = ",".join("?" * len(context_types))
                 sql = (
-                    f"""SELECT id, user_id, context_type, title, content, tags,
+                    f"""SELECT id, agent_id, context_type, title, content, tags,
                                created_at, updated_at
                         FROM context_documents
-                        WHERE user_id = ? AND context_type IN ({placeholders})
+                        WHERE agent_id = ? AND context_type IN ({placeholders})
                         ORDER BY context_type, title"""
                 )
-                rows = conn.execute(sql, (uid, *context_types)).fetchall()
+                rows = conn.execute(sql, (agent_id, *context_types)).fetchall()
             else:
                 rows = conn.execute(
-                    """SELECT id, user_id, context_type, title, content, tags,
+                    """SELECT id, agent_id, context_type, title, content, tags,
                               created_at, updated_at
                        FROM context_documents
-                       WHERE user_id = ?
+                       WHERE agent_id = ?
                        ORDER BY context_type, title""",
-                    (uid,),
+                    (agent_id,),
                 ).fetchall()
             result: List[dict] = []
             keys = [
-                "id", "user_id", "context_type", "title", "content", "tags",
+                "id", "agent_id", "context_type", "title", "content", "tags",
                 "created_at", "updated_at",
             ]
             for row in rows:
@@ -1194,22 +1180,18 @@ class LocalBackend(StorageBackend):
     async def get_context_document_for_agent(
         self, agent_id: str, context_id: str
     ) -> Optional[dict]:
-        agent = await self.get_agent_by_id(agent_id)
-        if not agent:
-            return None
-        uid = agent["user_id"]
         conn = self._get_conn()
         try:
             row = conn.execute(
-                """SELECT id, user_id, context_type, title, content, tags,
+                """SELECT id, agent_id, context_type, title, content, tags,
                           created_at, updated_at
-                   FROM context_documents WHERE id = ? AND user_id = ?""",
-                (context_id, uid),
+                   FROM context_documents WHERE id = ? AND agent_id = ?""",
+                (context_id, agent_id),
             ).fetchone()
             if not row:
                 return None
             keys = [
-                "id", "user_id", "context_type", "title", "content", "tags",
+                "id", "agent_id", "context_type", "title", "content", "tags",
                 "created_at", "updated_at",
             ]
             d = dict(zip(keys, row))
@@ -1224,16 +1206,12 @@ class LocalBackend(StorageBackend):
     async def update_context_document_content_for_agent(
         self, agent_id: str, context_id: str, content: str
     ) -> None:
-        agent = await self.get_agent_by_id(agent_id)
-        if not agent:
-            raise PermissionError("Unknown agent")
-        uid = agent["user_id"]
         conn = self._get_conn()
         try:
             cursor = conn.execute(
                 """UPDATE context_documents SET content = ?, updated_at = ?
-                   WHERE id = ? AND user_id = ?""",
-                (content, _now_iso(), context_id, uid),
+                   WHERE id = ? AND agent_id = ?""",
+                (content, _now_iso(), context_id, agent_id),
             )
             conn.commit()
             if cursor.rowcount == 0:
@@ -1257,12 +1235,8 @@ class LocalBackend(StorageBackend):
         content: str,
         tags: Optional[List[str]] = None,
     ) -> str:
-        agent = await self.get_agent_by_id(agent_id)
-        if not agent:
-            raise PermissionError("Unknown agent")
-        uid = agent["user_id"]
         return await self.insert_document(
-            uid, context_type, title, content, tags=tags,
+            agent_id, context_type, title, content, tags=tags,
         )
 
     # ---- Memory System (knowledge brain) ----
@@ -2000,6 +1974,82 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
+    async def fetch_agent_with_context(
+        self,
+        user_id: str,
+        context_types: Optional[List[str]] = None,
+    ) -> Optional[dict]:
+        """
+        Fetch agent + all context documents in one query (LEFT JOIN + json_group_array).
+        Returns agent dict with added key ``context_documents`` (list of dicts).
+        Returns None if no agent for user.
+        """
+        conn = self._get_conn()
+        try:
+            if context_types:
+                placeholders = ",".join("?" for _ in context_types)
+                row = conn.execute(
+                    f"""SELECT a.*, (
+                        SELECT json_group_array(json_object(
+                            'id', cd.id,
+                            'context_type', cd.context_type,
+                            'title', cd.title,
+                            'content', cd.content,
+                            'tags', cd.tags,
+                            'created_at', cd.created_at,
+                            'updated_at', cd.updated_at
+                        ))
+                        FROM context_documents cd
+                        WHERE cd.agent_id = a.id
+                          AND cd.context_type IN ({placeholders})
+                    ) AS context_documents
+                    FROM agents a
+                    WHERE a.user_id = ?""",
+                    (*context_types, user_id),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """SELECT a.*, (
+                        SELECT json_group_array(json_object(
+                            'id', cd.id,
+                            'context_type', cd.context_type,
+                            'title', cd.title,
+                            'content', cd.content,
+                            'tags', cd.tags,
+                            'created_at', cd.created_at,
+                            'updated_at', cd.updated_at
+                        ))
+                        FROM context_documents cd
+                        WHERE cd.agent_id = a.id
+                    ) AS context_documents
+                    FROM agents a
+                    WHERE a.user_id = ?""",
+                    (user_id,),
+                ).fetchone()
+            if not row:
+                return None
+            agent_dict = dict(row)
+            # Parse context_documents JSON string
+            raw_json = agent_dict.pop("context_documents", None)
+            if raw_json:
+                docs = json.loads(raw_json)
+                # json_group_array returns [] when no rows match; filter nulls just in case
+                agent_dict["context_documents"] = [d for d in docs if d is not None]
+            else:
+                agent_dict["context_documents"] = []
+            # Parse tags in each doc
+            for doc in agent_dict["context_documents"]:
+                try:
+                    doc["tags"] = json.loads(doc["tags"])
+                except (json.JSONDecodeError, TypeError):
+                    doc["tags"] = []
+            return agent_dict
+        except Exception as e:
+            logger.error("Error fetching agent with context: %s", e)
+            raise
+        finally:
+            conn.close()
+
     async def create_agent_for_user(self, user_id: str) -> dict:
         conn = self._get_conn()
         try:
@@ -2124,7 +2174,7 @@ class LocalBackend(StorageBackend):
             after = conn.execute(
                 "SELECT COUNT(*) FROM agent_templates"
             ).fetchone()[0]
-            return max(after, before)
+            return after - before
         finally:
             conn.close()
 

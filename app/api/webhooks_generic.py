@@ -109,20 +109,17 @@ async def generic_webhook_handler(webhook_id: str, request: Request):
         if agent is None:
             agent = await db.create_agent_for_user(user_id)
 
-        row = await db.get_agent_by_id(agent["id"])
-        if row:
-            agent = row
+        # 6. Fetch agent + context docs in one query
+        agent_with_ctx = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
+        if agent_with_ctx:
+            agent = agent_with_ctx
 
-        # 6. Load context docs
-        context_docs = await db.fetch_context_documents(
-            agent["id"], CONTEXT_SECTION_TYPES,
-        )
-        if not context_docs:
+        if not agent.get("context_documents"):
             copied = await db.copy_defaults_to_agent(agent["id"])
             if copied > 0:
-                context_docs = await db.fetch_context_documents(
-                    agent["id"], CONTEXT_SECTION_TYPES,
-                )
+                agent = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
+
+        context_docs = agent.get("context_documents", [])
 
         # 7. Build system prompt — inject webhook instructions
         agent_system_prompt = agent.get("system_prompt", "")

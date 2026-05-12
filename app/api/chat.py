@@ -19,6 +19,7 @@ from app.agent.prompts import (
 
 from app.agent.loop import run_agent_loop_buffered, stream_agent_events
 from app.agent.session_history import build_openai_history_from_session
+from app.optimizer.runner import run_optimizer_async
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
@@ -60,6 +61,57 @@ async def _ensure_session(db, user_id: str, session_id: str) -> None:
 class InterruptRequest(BaseModel):
     session_id: str
 
+# ── /optimize command regex ──
+_OPTIMIZE_PATTERN = re.compile(r"^/optimize\s*(.*)$", re.IGNORECASE | re.DOTALL)
+
+
+async def _handle_optimize_command(
+    user_id: str,
+    session_id: str,
+    message: str,
+    channel: str,
+    db,
+) -> str:
+    """Handle /optimize or /optimize <feedback> command.
+    Runs the optimizer against the user's current session in the background.
+    Returns a user-facing message."""
+    m = _OPTIMIZE_PATTERN.match(message)
+    if not m:
+        return ""
+    feedback = m.group(1).strip()
+
+    # Find the user's most recent real session (not optimizer-*)
+    import sqlite3
+    try:
+        conn = sqlite3.connect("app/db/local.db")
+        row = conn.execute(
+            "SELECT id FROM sessions WHERE user_id=? AND id NOT LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1",
+            (user_id,)
+        ).fetchone()
+        target_session = row[0] if row else ""
+        conn.close()
+    except Exception:
+        target_session = ""
+
+    if not target_session:
+        return "No chat session found to optimize. Send a few messages first, then try /optimize."
+
+    # Fire optimizer in background — "manual-" prefix bypasses the live/scheduled mode check
+    target_sid = f"manual-{target_session}"
+    asyncio.create_task(run_optimizer_async(
+        user_id=user_id,
+        session_id=target_sid,
+        channel=channel,
+        feedback=feedback,
+    ))
+
+    msg = f"⚡ Optimization started for session {target_session[:8]}..."
+    if feedback:
+        msg += f"\nFeedback: {feedback}"
+    msg += "\nResults will appear in a new optimizer session. You can check progress there."
+    return msg
+
+
 @router.post("/interrupt")
 async def interrupt_chat(request: InterruptRequest):
     """Request an interruption for an ongoing chat session."""
@@ -82,6 +134,14 @@ async def chat(request: ChatRequest):
     """
     try:
         db = get_db()
+
+        # ── Handle /optimize slash command ──
+        if _OPTIMIZE_PATTERN.match(request.message or ""):
+            result = await _handle_optimize_command(
+                request.user_id, request.session_id,
+                request.message, "web_portal", db,
+            )
+            return ChatResponse(reply=result, response=result, session_id=request.session_id)
 
         # Ensure the session exists before inserting interactions
         await _ensure_session(db, request.user_id, request.session_id)
@@ -170,20 +230,17 @@ async def chat(request: ChatRequest):
             "content": request.message, "id": user_interaction_id,
         })
 
-        row = await db.get_agent_by_id(agent["id"])
-        if row:
-            agent = row
+        # ── Fetch agent + context docs in one query ──
+        agent_with_ctx = await db.fetch_agent_with_context(request.user_id, CONTEXT_SECTION_TYPES)
+        if agent_with_ctx:
+            agent = agent_with_ctx
 
-        # Fetch context documents; if empty, seed from templates for this agent
-        context_docs = await db.fetch_context_documents(
-            agent["id"], CONTEXT_SECTION_TYPES,
-        )
-        if not context_docs:
+        if not agent.get("context_documents"):
             copied = await db.copy_defaults_to_agent(agent["id"])
             if copied > 0:
-                context_docs = await db.fetch_context_documents(
-                    agent["id"], CONTEXT_SECTION_TYPES,
-                )
+                agent = await db.fetch_agent_with_context(request.user_id, CONTEXT_SECTION_TYPES)
+
+        context_docs = agent.get("context_documents", [])
 
         # ── Pipeline: context loaded ──
         doc_types = list(set(
@@ -383,6 +440,17 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
     """
     db = get_db()
 
+    # ── Handle /optimize slash command (streaming) ──
+    if _OPTIMIZE_PATTERN.match(request.message or ""):
+        result = await _handle_optimize_command(
+            request.user_id, request.session_id,
+            request.message, "web_portal", db,
+        )
+        async def _optimize_events():
+            yield f"data: {json.dumps({'type': 'stream', 'level': 'agent', 'content': result})}\n\n"
+            yield f"data: {json.dumps({'type': 'response', 'level': 'agent', 'content': result})}\n\n"
+        return StreamingResponse(_optimize_events(), media_type="text/event-stream")
+
     # Ensure the session exists before inserting interactions
     await _ensure_session(db, request.user_id, request.session_id)
     
@@ -401,23 +469,19 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
 
     async def event_generator():
         nonlocal agent
-        if "max_turn_count" not in agent:
-            # Re-fetch agent if creation dict missed it somehow (fallback)
-            row = await db.get_agent_by_id(agent["id"])
-            if row:
-                agent = row
+        # ── Fetch agent + context docs in one query ──
+        agent_with_ctx = await db.fetch_agent_with_context(request.user_id, CONTEXT_SECTION_TYPES)
+        if agent_with_ctx:
+            agent = agent_with_ctx
         
         yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'agent_assigned', 'agent_id': agent['id'], 'max_turn_count': agent.get('max_turn_count', 10)})}\n\n"
 
-        context_docs = await db.fetch_context_documents(
-            agent["id"], CONTEXT_SECTION_TYPES,
-        )
-        if not context_docs:
+        if not agent.get("context_documents"):
             copied = await db.copy_defaults_to_agent(agent["id"])
             if copied > 0:
-                context_docs = await db.fetch_context_documents(
-                    agent["id"], CONTEXT_SECTION_TYPES,
-                )
+                agent = await db.fetch_agent_with_context(request.user_id, CONTEXT_SECTION_TYPES)
+
+        context_docs = agent.get("context_documents", [])
 
         doc_types = list(set(
             (d.get("context_type") or d.get("doc_type") or "")

@@ -481,15 +481,11 @@ class SupabaseBackend(StorageBackend):
         agent_id: str,
         context_types: Optional[List[str]] = None,
     ) -> List[dict]:
-        agent = await self.get_agent_by_id(agent_id)
-        if not agent:
-            return []
-        uid = agent["user_id"]
         try:
             q = (
                 self._client.table("context")
-                .select("id, user_id, context_type, title, content, tags, created_at, updated_at")
-                .eq("user_id", uid)
+                .select("id, agent_id, context_type, title, content, tags, created_at, updated_at")
+                .eq("agent_id", agent_id)
             )
             if context_types:
                 q = q.in_("context_type", context_types)
@@ -502,16 +498,12 @@ class SupabaseBackend(StorageBackend):
     async def get_context_document_for_agent(
         self, agent_id: str, context_id: str
     ) -> Optional[dict]:
-        agent = await self.get_agent_by_id(agent_id)
-        if not agent:
-            return None
-        uid = agent["user_id"]
         try:
             response = (
                 self._client.table("context")
-                .select("id, user_id, context_type, title, content, tags, created_at, updated_at")
+                .select("id, agent_id, context_type, title, content, tags, created_at, updated_at")
                 .eq("id", context_id)
-                .eq("user_id", uid)
+                .eq("agent_id", agent_id)
                 .limit(1)
                 .execute()
             )
@@ -525,16 +517,12 @@ class SupabaseBackend(StorageBackend):
     async def update_context_document_content_for_agent(
         self, agent_id: str, context_id: str, content: str
     ) -> None:
-        agent = await self.get_agent_by_id(agent_id)
-        if not agent:
-            raise PermissionError("Unknown agent")
-        uid = agent["user_id"]
         try:
             response = (
                 self._client.table("context")
                 .update({"content": content, "updated_at": "now()"})
                 .eq("id", context_id)
-                .eq("user_id", uid)
+                .eq("agent_id", agent_id)
                 .execute()
             )
             rows = response.data or []
@@ -557,12 +545,8 @@ class SupabaseBackend(StorageBackend):
         content: str,
         tags: Optional[List[str]] = None,
     ) -> str:
-        agent = await self.get_agent_by_id(agent_id)
-        if not agent:
-            raise PermissionError("Unknown agent")
-        uid = agent["user_id"]
         return await self.insert_document(
-            uid, context_type, title, content, tags=tags,
+            agent_id, context_type, title, content, tags=tags,
         )
 
     # ---- Memories ----
@@ -748,6 +732,46 @@ class SupabaseBackend(StorageBackend):
             return res.data[0] if res.data else None
         except Exception as e:
             logger.error("Error getting agent by id %s: %s", agent_id, e)
+            raise
+
+    async def fetch_agent_with_context(
+        self,
+        user_id: str,
+        context_types: Optional[List[str]] = None,
+    ) -> Optional[dict]:
+        """
+        Fetch agent + context docs in one query via PostgREST nested embedding.
+        Returns agent dict with added key ``context_documents`` (list of dicts).
+        Returns None if no agent for user.
+        """
+        try:
+            # PostgREST embedding: relies on FK from context.agent_id -> agents.id
+            q = (
+                self._client.table("agents")
+                .select(
+                    "*, context(id, context_type, title, content, tags, created_at, updated_at)"
+                )
+                .eq("user_id", user_id)
+                .limit(1)
+            )
+            if context_types:
+                q = q.in_("context.context_type", context_types)
+            res = q.execute()
+            if not res.data:
+                return None
+            agent = res.data[0]
+            # Normalize: rename 'context' to 'context_documents'
+            agent["context_documents"] = agent.pop("context", None) or []
+            # Ensure tags are parsed (Supabase returns them as-is from JSONB)
+            for doc in agent["context_documents"]:
+                if isinstance(doc.get("tags"), str):
+                    try:
+                        doc["tags"] = json.loads(doc["tags"])
+                    except (json.JSONDecodeError, TypeError):
+                        doc["tags"] = []
+            return agent
+        except Exception as e:
+            logger.error("Error fetching agent with context: %s", e)
             raise
 
     async def create_agent_for_user(self, user_id: str) -> dict:
