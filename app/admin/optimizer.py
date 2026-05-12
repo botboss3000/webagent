@@ -91,17 +91,41 @@ async def trigger_optimizer_run(
     user_id: str = Query("_system"),
     session_id: str = Query("manual"),
 ):
-    """Manually trigger an optimizer run."""
+    """Start an interactive optimizer session. Creates chat session with Planner agent."""
     try:
-        # Load provider config so LLM env vars are set
         from app.admin.settings import load_provider_for_user
+        import uuid, json, sqlite3
+        from app.db import get_db
+        
         await load_provider_for_user(user_id)
         
-        opt_session = await run_optimizer_async(
-            user_id=user_id,
-            session_id=session_id,
+        # Create optimizer session ID
+        opt_sid = f"optimizer-{user_id[:8]}-{str(uuid.uuid4())[:8]}"
+        
+        db = get_db()
+        raw = getattr(db, '_get_conn', None)
+        conn = raw()
+        
+        # Ensure session exists
+        conn.execute("INSERT OR IGNORE INTO sessions (id,user_id,title,metadata,created_at,updated_at) VALUES (?,?,?,?,datetime('now'),datetime('now'))",
+                     (opt_sid, user_id, f"Optimizer - {opt_sid[:12]}", '{"opt_role": "planner"}'))
+        
+        # Get prefilter data (session stats) and inject as first message
+        from app.optimizer.prefilter import prefilter
+        import asyncio
+        pf = await prefilter(user_id, session_id)
+        turns = pf.get("turns", 1)
+        tokens = pf.get("tokens", 100)
+        
+        # Insert a system message with the prefilter data for the Planner
+        conn.execute(
+            "INSERT INTO interactions (id,session_id,role,content,source,channel,created_at) VALUES (?,?,'system',?,'optimizer:init','optimizer',datetime('now'))",
+            (str(uuid.uuid4()), opt_sid, f"Session to optimize: {turns} turns, ~{tokens} tokens. Transcript and tool errors attached.")
         )
-        return {"status": "completed", "optimizer_session_id": opt_session}
+        conn.commit()
+        conn.close()
+        
+        return {"status": "session_created", "optimizer_session_id": opt_sid}
     except Exception as e:
         logger.error("Manual optimizer run failed: %s", e)
         return {"status": "error", "message": str(e)}

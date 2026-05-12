@@ -1081,6 +1081,7 @@ async def run_agent_loop_buffered(
         session_id=session_id,
         user_message=user_message,
         system_prompt=system_prompt,
+        agent_id=agent_id,
         history=history,
         parent_interaction_id=parent_interaction_id,
         max_turns=max_turns,
