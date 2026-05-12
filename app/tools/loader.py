@@ -790,6 +790,76 @@ class ToolLoader:
             },
         )
 
+        # ── Optimizer tools (Planner / Finalizer subagents) ──
+        from app.tools.optimizer_tools import run_worker_trials, handoff_to_finalizer, deploy_optimization
+
+        async def _run_worker_trials_wrapper(changes_json: str = ""):
+            # Find the most recent optimizer session for this user
+            import sqlite3
+            db = sqlite3.connect("app/db/local.db")
+            row = db.execute(
+                "SELECT id FROM sessions WHERE user_id=? AND id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1",
+                (user_id,)
+            ).fetchone()
+            sid = row[0] if row else f"optimizer-{user_id[:8]}"
+            db.close()
+            return await run_worker_trials(changes_json=changes_json, user_id=user_id, session_id=sid)
+        tools["run_worker_trials"] = ToolInfo(
+            name="run_worker_trials",
+            handler=_run_worker_trials_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "changes_json": {"type": "string", "description": "JSON array of changes to test, where each change has element, element_type, change_type, old_excerpt, new_content, reasoning"},
+                },
+                "required": ["changes_json"],
+            },
+        )
+
+        async def _handoff_to_finalizer_wrapper(summary: str = ""):
+            import sqlite3
+            db = sqlite3.connect("app/db/local.db")
+            row = db.execute(
+                "SELECT id FROM sessions WHERE user_id=? AND id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1",
+                (user_id,)
+            ).fetchone()
+            sid = row[0] if row else f"optimizer-{user_id[:8]}"
+            db.close()
+            return await handoff_to_finalizer(summary=summary, user_id=user_id, session_id=sid)
+        tools["handoff_to_finalizer"] = ToolInfo(
+            name="handoff_to_finalizer",
+            handler=_handoff_to_finalizer_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string", "description": "Summary of what was discussed and decided to pass to the Finalizer"},
+                },
+                "required": ["summary"],
+            },
+        )
+
+        async def _deploy_optimization_wrapper(changes_json: str = ""):
+            import sqlite3
+            db = sqlite3.connect("app/db/local.db")
+            row = db.execute(
+                "SELECT id FROM sessions WHERE user_id=? AND id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1",
+                (user_id,)
+            ).fetchone()
+            sid = row[0] if row else f"optimizer-{user_id[:8]}"
+            db.close()
+            return await deploy_optimization(changes_json=changes_json, user_id=user_id, session_id=sid)
+        tools["deploy_optimization"] = ToolInfo(
+            name="deploy_optimization",
+            handler=_deploy_optimization_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "changes_json": {"type": "string", "description": "JSON array of approved changes to deploy to the target agent"},
+                },
+                "required": ["changes_json"],
+            },
+        )
+
 
     def _make_handler(self, row: dict, user_id: str) -> Callable:
         """Compile tool code and wrap it with user context."""

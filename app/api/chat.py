@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import uuid
 from typing import List, Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -85,8 +86,44 @@ async def chat(request: ChatRequest):
         # Ensure the session exists before inserting interactions
         await _ensure_session(db, request.user_id, request.session_id)
 
+        # ── Optimizer session: route to dedicated Planner/Finalizer agent ──
+        if request.session_id.startswith('optimizer-'):
+            conn = db._get_conn()
+            try:
+                meta_row = conn.execute(
+                    "SELECT metadata FROM sessions WHERE id=?", (request.session_id,)
+                ).fetchone()
+                metadata = json.loads(meta_row[0]) if meta_row and meta_row[0] else {}
+                opt_role = metadata.get('opt_role', 'planner')
+                opt_agent_user_id = f"opt_{opt_role}_{request.user_id}"
+                agent = await db.get_agent_for_user(opt_agent_user_id)
+                if agent is None:
+                    prompter = 'planner-prompt' if opt_role == 'planner' else 'finalizer-prompt'
+                    cur = conn.execute(
+                        "SELECT content FROM context_templates WHERE context_type='optimizer' AND title=? LIMIT 1",
+                        (prompter,)
+                    )
+                    template_row = cur.fetchone()
+                    system_prompt = template_row[0] if template_row else f'You are the webAgent {opt_role.title()} agent.'
+                    agent_id = str(uuid.uuid4())
+                    conn.execute(
+                        "INSERT INTO agents (id, user_id, system_prompt, max_turn_count, status, metadata, created_at, updated_at) VALUES (?, ?, ?, 1000, 'active', '{}', datetime('now'), datetime('now'))",
+                        (agent_id, opt_agent_user_id, system_prompt)
+                    )
+                    conn.commit()
+                    agent = await db.get_agent_for_user(opt_agent_user_id)
+            finally:
+                conn.close()
+            if agent:
+                # Skip normal agent assignment for optimizer sessions
+                pass
+            else:
+                # Fall through to normal assignment
+                pass
+
         # ── Assign agent first (context rows are keyed by agent_id) ──
-        agent = await db.get_agent_for_user(request.user_id)
+        if not request.session_id.startswith('optimizer-') or agent is None:
+            agent = await db.get_agent_for_user(request.user_id)
         if agent is None:
             agent = await db.create_agent_for_user(request.user_id)
             await _emit_to_visualizers(request.session_id, {
@@ -152,6 +189,8 @@ async def chat(request: ChatRequest):
                 tool_name="memory_search",
                 channel="web_portal",
                 metadata=json.dumps({"brain": True, "skipped": True}),
+                sender_id=agent["id"],
+                receiver_id=agent["id"],
             )
             await _emit_to_visualizers(request.session_id, {
                 "type": "pipeline", "level": "pipeline",
@@ -212,6 +251,8 @@ async def chat(request: ChatRequest):
                     "brain": True,
                     "has_results": bool(brain_results),
                 }),
+                sender_id=agent["id"],
+                receiver_id=agent["id"],
             )
 
             # Emit memory_search as a tool result
@@ -292,7 +333,7 @@ async def chat(request: ChatRequest):
         # ── PHASE 3: Background memory save (visible tool interaction) ──
         asyncio.create_task(_save_chat_to_memory(
             db, request.user_id, request.session_id,
-            request.message, assistant_reply, parent_id,
+            request.message, assistant_reply, agent["id"], parent_id,
         ))
 
         # ── Pipeline: memory save (async, fire-and-forget notification) ──
@@ -373,6 +414,8 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                 tool_name="memory_search",
                 channel="web_portal",
                 metadata=json.dumps({"brain": True, "skipped": True}),
+                sender_id=agent["id"],
+                receiver_id=agent["id"],
             )
             yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_search_end', 'results_count': 0, 'results': [], 'skipped': True})}\n\n"
         else:
@@ -415,6 +458,8 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                     "brain": True,
                     "has_results": bool(brain_results),
                 }),
+                sender_id=agent["id"],
+                receiver_id=agent["id"],
             )
 
             yield f"data: {json.dumps({'type': 'tool_result', 'level': 'agent', 'tool': 'memory_search', 'result': search_content[:2000], 'duration_ms': 0, 'error': False})}\n\n"
@@ -476,7 +521,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
 
                 asyncio.create_task(_save_chat_to_memory(
                     db, request.user_id, request.session_id,
-                    request.message, assistant_reply, parent_id,
+                    request.message, assistant_reply, agent["id"], parent_id,
                 ))
 
                 await q.put({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_save_start', 'slug': f'chat/{request.session_id[:8]}'})
@@ -500,7 +545,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
 
 async def _save_chat_to_memory(
     db, user_id: str, session_id: str,
-    user_message: str, assistant_reply: str,
+    user_message: str, assistant_reply: str, agent_id: str,
     parent_interaction_id: Optional[str] = None,
 ) -> None:
     """Save chat conversation to memory as visible tool interaction."""
@@ -527,6 +572,8 @@ async def _save_chat_to_memory(
             tool_name="memory_save",
             channel="web_portal",
             metadata=json.dumps({"brain": True, "slug": slug}),
+            sender_id=agent_id,
+            receiver_id=agent_id,
         )
 
         # Emit to visualizer and user listeners

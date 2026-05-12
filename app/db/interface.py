@@ -490,3 +490,15 @@ class StorageBackend(ABC):
         """Delete an auth element. Returns True if deleted."""
         ...
 
+
+    # ---- Provider Ratings ----
+
+    @abstractmethod
+    async def get_provider_ratings(self, user_id: str) -> dict:
+        """Get all provider ratings for a user. Returns dict: {(provider, model): rating}"""
+        pass
+
+    @abstractmethod
+    async def update_provider_rating(self, user_id: str, provider: str, model: str, delta: int) -> int:
+        """Increment/decrement a provider rating. Returns the new rating."""
+        pass

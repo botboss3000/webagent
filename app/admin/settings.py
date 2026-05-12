@@ -439,45 +439,49 @@ async def clear_provider(
 
 
 async def update_multi_provider_rating(user_id: str, provider: str, model: str, delta: int):
-    """Update a specific parallel provider's rating. If rating < -5, auto-disable."""
-    existing = _load_provider(user_id)
-    multi = existing.get("multi_providers", [])
-    changed = False
-    
-    for p in multi:
-        if p.get("provider") == provider and p.get("model") == model:
-            current_rating = p.get("rating", 0)
-            new_rating = current_rating + delta
-            p["rating"] = new_rating
-            if new_rating < -5 and p.get("enabled", True):
-                p["enabled"] = False
-                logger.info(f"Auto-disabled provider {provider} {model} due to rating {new_rating}")
-            changed = True
-            break
-            
-    if changed:
-        try:
-            from app.db import get_db
-            db = get_db()
-            db_config = {
-                "provider": existing.get("provider", ""),
-                "base_url": existing.get("base_url", ""),
-                "model": existing.get("model", ""),
-                "providers": existing.get("providers", {}),
-                "parallel_mode": existing.get("parallel_mode", False),
-                "multi_providers": multi,
-            }
-            await db.auth_element_set(
-                user_id=user_id,
-                service="llm",
-                config=db_config,
-                secret_ref=existing.get("api_key", ""),
-                label="default",
-            )
-        except Exception:
-            pass
-        _save_provider(user_id, existing)
+    """Update a specific parallel provider's rating in the dedicated DB table. If rating < -5, auto-disable in config."""
+    try:
+        from app.db import get_db
+        db = get_db()
+        new_rating = await db.update_provider_rating(user_id, provider, model, delta)
+    except Exception as e:
+        logger.warning(f"Failed to update provider rating table: {e}")
+        new_rating = None
 
+    if new_rating is not None and new_rating < -5:
+        # Actually disable them in the flat config structure
+        existing = _load_provider(user_id)
+        multi = existing.get("multi_providers", [])
+        changed = False
+        
+        for p in multi:
+            if p.get("provider") == provider and p.get("model") == model:
+                if p.get("enabled", True):
+                    p["enabled"] = False
+                    logger.info(f"Auto-disabled provider {provider} {model} due to rating {new_rating}")
+                    changed = True
+                break
+                
+        if changed:
+            try:
+                db_config = {
+                    "provider": existing.get("provider", ""),
+                    "base_url": existing.get("base_url", ""),
+                    "model": existing.get("model", ""),
+                    "providers": existing.get("providers", {}),
+                    "parallel_mode": existing.get("parallel_mode", False),
+                    "multi_providers": multi,
+                }
+                await db.auth_element_set(
+                    user_id=user_id,
+                    service="llm",
+                    config=db_config,
+                    secret_ref=existing.get("api_key", ""),
+                    label="default",
+                )
+            except Exception:
+                pass
+            _save_provider(user_id, existing)
 
 @router.get("/multi-providers")
 async def get_multi_providers(
@@ -514,7 +518,21 @@ async def get_multi_providers(
     parallel_mode = config.get("parallel_mode", False)
     raw_providers = config.get("multi_providers", [])
 
-    result_providers = raw_providers
+    # Fetch dedicated ratings
+    ratings_map = {}
+    try:
+        from app.db import get_db
+        db = get_db()
+        ratings_map = await db.get_provider_ratings(user_id)
+    except Exception as e:
+        logger.warning(f"Failed to fetch DB ratings: {e}")
+
+    result_providers = []
+    for p in raw_providers:
+        entry = dict(p)
+        db_rating = ratings_map.get((entry.get("provider"), entry.get("model")), 0)
+        entry["rating"] = db_rating
+        result_providers.append(entry)
 
     return {
         "parallel_mode": parallel_mode,

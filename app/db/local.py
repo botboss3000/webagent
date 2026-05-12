@@ -486,6 +486,19 @@ CREATE TABLE IF NOT EXISTS auth_elements (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_elements_user_service_label
     ON auth_elements(user_id, service, label);
 
+-- ============================================================
+-- Provider Ratings: Tracks the auto-updated ratings of parallel providers
+-- ============================================================
+CREATE TABLE IF NOT EXISTS provider_ratings (
+    user_id         TEXT NOT NULL,
+    provider        TEXT NOT NULL,
+    model           TEXT NOT NULL,
+    rating          INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, provider, model)
+);
+
 """
 
 
@@ -2327,13 +2340,51 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
+    # ---- Provider Ratings ----
+
+    async def get_provider_ratings(self, user_id: str) -> dict:
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT provider, model, rating FROM provider_ratings WHERE user_id = ?",
+                (user_id,)
+            )
+            return {(row[0], row[1]): row[2] for row in cur.fetchall()}
+        finally:
+            conn.close()
+
+    async def update_provider_rating(self, user_id: str, provider: str, model: str, delta: int) -> int:
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO provider_ratings (user_id, provider, model, rating)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, provider, model) DO UPDATE SET
+                    rating = rating + ?
+                RETURNING rating
+                """,
+                (user_id, provider, model, delta, delta)
+            )
+            row = cur.fetchone()
+            if row:
+                new_rating = row[0]
+            else:
+                 new_rating = delta
+            conn.commit()
+            return new_rating
+        finally:
+            conn.close()
+
 # ── Proxy for code that uses supabase.Client.table() directly ──────────────
 
 class _LocalTableProxy:
     """
     Emulates supabase.Client.table() so that code using the Supabase query builder
     (ToolLoader, ToolExecutionTracker, admin/review, registry) can work with SQLite.
-    
+
     Usage: proxy.table("tools").select("*").eq("status", "active").execute()
     """
 
