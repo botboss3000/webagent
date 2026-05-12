@@ -215,6 +215,14 @@ async def _race_llm_calls(
 
         except asyncio.CancelledError:
             with open("loser_fatal.log", "a") as f: f.write(f"Cancelled {prov_name}\n")
+            # Save partial results on cancellation
+            if save_loser_callback and (local_content or local_in_tok is not None):
+                await save_loser_callback(
+                    prov_name, model, local_content, local_tool_calls,
+                    local_in_tok, local_out_tok, local_cost,
+                    int((time.time() - start_time) * 1000),
+                    cancelled=True
+                )
         except Exception as e:
             with open("loser_fatal.log", "a") as f: f.write(f"Error {prov_name}: {e}\n")
             logger.error(f"[RACE] Provider {prov_name} error: {e}")
@@ -560,7 +568,7 @@ async def stream_agent_events(
             # ── Stream the LLM response ──
             llm_start = time.time()
 
-            async def _save_loser(p_name, m_name, l_content, l_tcs, l_in, l_out, l_cost, ms):
+            async def _save_loser(p_name, m_name, l_content, l_tcs, l_in, l_out, l_cost, ms, cancelled=False):
                 with open("loser_trace_db.log", "a") as f:
                     f.write(f"Triggered _save_loser for {p_name} {m_name}\n")
                 # Build an openai-style tool calls list
@@ -587,11 +595,12 @@ async def stream_agent_events(
                     "model": m_name,
                     "turn": turn_count,
                     "duration_ms": ms,
-                    "input_tokens": l_in,
-                    "output_tokens": l_out,
+                    "input_tokens": l_in or 0,
+                    "output_tokens": l_out or 0,
                     "role": "assistant",
                     "streaming": True,
                     "parallel_loser": True,
+                    "cancelled": cancelled,
                 }
                 if l_cost is not None:
                     meta_dict["cost"] = l_cost

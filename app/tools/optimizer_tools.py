@@ -5,31 +5,81 @@ Loaded into the webAgent's toolset when the user is chatting in an optimizer ses
 
 from __future__ import annotations
 
-import json, logging, sqlite3
+import json, logging, sqlite3, sys
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
 async def run_worker_trials(changes_json: str, user_id: str, session_id: str) -> str:
-    """Run worker trials against proposed changes and return results as JSON string."""
-    from app.optimizer.worker import run_trials
-
-    changes = json.loads(changes_json)
-
-    # Get transcript from current optimizer session for context
+    """Run worker trials as isolated subprocesses. Each worker spawns its own
+    Python process with its own event loop, DB connection, and HTTP client.
+    No deadlock because the subprocess is fully independent from the parent.
+    """
+    import json, os, asyncio
+    
+    changes = json.loads(changes_json) if isinstance(changes_json, str) else changes_json
+    if not isinstance(changes, list):
+        changes = [changes]
+    
+    # Get the original user message from the optimizer session
+    import sqlite3
     db = sqlite3.connect("app/db/local.db")
     try:
-        rows = db.execute(
-            "SELECT content FROM interactions WHERE session_id=? ORDER BY created_at ASC",
+        sys_rows = db.execute(
+            "SELECT content FROM interactions WHERE session_id=? AND role='system' AND source='optimizer:init' ORDER BY created_at ASC LIMIT 1",
             (session_id,),
         ).fetchall()
-        transcript = [r[0] for r in rows[-25:]]
+        original_message = "hi"
+        for r in sys_rows:
+            content = r[0]
+            if "[user]" in content:
+                for line in content.split('\\n'):
+                    if line.strip().startswith('[user]'):
+                        original_message = line.split(']', 1)[-1].strip()
+                        break
     finally:
         db.close()
-
-    trials = await run_trials(user_id, changes, transcript, trials_per_change=2)
-    return json.dumps(trials, indent=2, default=str)
+    
+    # Spawn subprocesses for each change (runs in parallel)
+    results = []
+    for change in changes:
+        changes_arg = json.dumps([change])
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "app/optimizer/worker_runner.py",
+                changes_arg, user_id, original_message, "120",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=130.0)
+            if proc.returncode == 0 and stdout:
+                trial_results = json.loads(stdout.decode())
+                results.extend(trial_results)
+            else:
+                error_msg = stderr.decode()[:200] if stderr else "process failed"
+                results.append({
+                    "element": change.get("element", "unknown"),
+                    "message": f"Worker subprocess failed: {error_msg}",
+                    "estimated_turns": 99, "estimated_tokens": 999,
+                    "estimated_time_ms": 99999, "success_likely": False,
+                    "confidence": 0.0, "reasoning": error_msg
+                })
+        except asyncio.TimeoutError:
+            proc.kill()
+            results.append({
+                "element": change.get("element", "unknown"),
+                "message": "Worker timed out after 130s",
+                "estimated_turns": 99,
+                "estimated_tokens": 999,
+                "estimated_time_ms": 130000,
+                "success_likely": False,
+                "confidence": 0.0,
+                "reasoning": "Worker subprocess timed out"
+            })
+    
+    return json.dumps(results, indent=2)
 
 
 async def handoff_to_finalizer(summary: str, user_id: str, session_id: str) -> str:

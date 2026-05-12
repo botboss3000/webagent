@@ -98,17 +98,46 @@ async def chat(request: ChatRequest):
                 opt_agent_user_id = f"opt_{opt_role}_{request.user_id}"
                 agent = await db.get_agent_for_user(opt_agent_user_id)
                 if agent is None:
-                    prompter = 'planner-prompt' if opt_role == 'planner' else 'finalizer-prompt'
+                    prompter = 'opt_planner' if opt_role == 'planner' else 'opt_finalizer'
                     cur = conn.execute(
-                        "SELECT content FROM context_templates WHERE context_type='optimizer' AND title=? LIMIT 1",
+                        "SELECT * FROM agent_templates WHERE id=? LIMIT 1",
                         (prompter,)
                     )
-                    template_row = cur.fetchone()
-                    system_prompt = template_row[0] if template_row else f'You are the webAgent {opt_role.title()} agent.'
+                    tpl = cur.fetchone()
+                    if tpl:
+                        tpl_data = {
+                            "system_prompt": tpl["system_prompt"],
+                            "max_turn_count": tpl["max_turn_count"],
+                            "model": tpl["model"],
+                            "provider": tpl["provider"],
+                            "temperature": tpl["temperature"],
+                            "max_tokens": tpl["max_tokens"],
+                            "metadata": tpl["metadata"],
+                        }
+                    else:
+                        tpl_data = {
+                            "system_prompt": f'You are the webAgent {opt_role.title()} agent.',
+                            "max_turn_count": 1000,
+                            "model": None,
+                            "provider": None,
+                            "temperature": 0.0,
+                            "max_tokens": 4096,
+                            "metadata": "{}",
+                        }
                     agent_id = str(uuid.uuid4())
                     conn.execute(
-                        "INSERT INTO agents (id, user_id, system_prompt, max_turn_count, status, metadata, created_at, updated_at) VALUES (?, ?, ?, 1000, 'active', '{}', datetime('now'), datetime('now'))",
-                        (agent_id, opt_agent_user_id, system_prompt)
+                        """INSERT INTO agents
+                           (id, user_id, system_prompt, max_turn_count, model, provider,
+                            temperature, max_tokens, status, metadata, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, datetime('now'), datetime('now'))""",
+                        (agent_id, opt_agent_user_id,
+                         tpl_data["system_prompt"],
+                         tpl_data["max_turn_count"],
+                         tpl_data["model"],
+                         tpl_data["provider"],
+                         tpl_data["temperature"],
+                         tpl_data["max_tokens"],
+                         tpl_data["metadata"]),
                     )
                     conn.commit()
                     agent = await db.get_agent_for_user(opt_agent_user_id)
@@ -134,12 +163,15 @@ async def chat(request: ChatRequest):
             })
 
         # Save user message and get its ID for parent linking
+        # Optimizer sessions get source='optimizer' to distinguish from normal chats
+        is_opt = request.session_id.startswith('optimizer-')
         user_interaction_id = await db.insert_interaction(
             request.user_id, request.session_id, role="user", content=request.message,
             channel="web_portal",
-            metadata=json.dumps({"source": "web_portal_chat"}),
+            metadata=json.dumps({"source": "optimizer" if is_opt else "web_portal_chat"}),
             sender_id=request.user_id,
             receiver_id=agent["id"],
+            source="optimizer" if is_opt else None,
         )
 
         # ── Emit user message to visualizer listeners ──

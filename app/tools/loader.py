@@ -130,41 +130,72 @@ class ToolLoader:
             },
         )
 
-        # ── run_optimizer (trigger skill optimization manually) ──
-        async def _run_optimizer_wrapper(feedback: str = "", skill_name: str = "", criteria: str = ""):
-            from app.optimizer.runner import run_optimizer_async
-            from app.admin.settings import load_provider_for_user
-            db = get_db()
-            # If user gave feedback about a specific skill, log it first
-            if feedback and skill_name:
-                skill_id = await db.skill_get_id_by_name(user_id, skill_name)
-                if skill_id:
-                    await db.skill_add_feedback(
-                        skill_id=skill_id, user_id=user_id,
-                        feedback_type="correction", message=feedback,
+        # ── run_optimizer (trigger interactive optimizer session) ──
+        # Skip registering for optimizer sub-agents to prevent recursion
+        if not user_id.startswith("opt_"):
+            async def _run_optimizer_wrapper(feedback: str = "", skill_name: str = "", criteria: str = ""):
+                """Start an interactive optimizer session. User chats with the Planner agent."""
+                # Safety check: if we're already in an optimizer session, don't create another
+                import sqlite3 as _sq3
+                _dbc = _sq3.connect("app/db/local.db")
+                _recent = _dbc.execute(
+                    "SELECT metadata FROM sessions WHERE user_id=? AND id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1",
+                    (user_id,)
+                ).fetchone()
+                _dbc.close()
+                if _recent and _recent[0]:
+                    import json as _jm
+                    _meta = _jm.loads(_recent[0])
+                    if _meta.get('opt_role'):
+                        # We're being called from within an optimizer session — skip
+                        return _jm.dumps({"status": "skipped", "message": "Already in an optimizer session."})
+                import httpx
+                try:
+                    async with httpx.AsyncClient(timeout=15.0) as hclient:
+                        resp = await hclient.post(
+                            "http://127.0.0.1:8000/admin/settings/optimizer/run",
+                            params={"user_id": user_id, "session_id": "", "feedback": feedback},
+                        )
+                        result = resp.json()
+                    if result.get("status") == "session_created":
+                        return json.dumps({
+                            "status": "completed",
+                            "optimizer_session_id": result["optimizer_session_id"],
+                            "message": f"Optimization session ready. Go to the optimizer session to talk to the Planner."
+                        })
+                    return json.dumps({"status": "error", "message": result.get("message", "Unknown error")})
+                except Exception as e:
+                    from app.admin.settings import load_provider_for_user
+                    import uuid, sqlite3, json as jmod
+                    await load_provider_for_user(user_id)
+                    opt_sid = f"optimizer-{user_id[:8]}-{str(uuid.uuid4())[:8]}"
+                    db_conn = sqlite3.connect('app/db/local.db')
+                    db_conn.execute(
+                        "INSERT OR IGNORE INTO sessions (id,user_id,title,metadata,created_at,updated_at) VALUES (?,?,?,?,datetime('now'),datetime('now'))",
+                        (opt_sid, user_id, f"Optimizer - {opt_sid[:12]}", jmod.dumps({"opt_role": "planner"}))
                     )
-            await load_provider_for_user(user_id)
-            import uuid
-            sid = f"manual-{str(uuid.uuid4())[:8]}"
-            result = await run_optimizer_async(user_id, sid, criteria=criteria, feedback=feedback, skill_name=skill_name)
-            if result:
-                return json.dumps({"status": "completed", "optimizer_session_id": result,
-                                   "message": "Optimizer ran. Check the optimizer session for details."})
-            return json.dumps({"status": "skipped", "message": "No improvements needed or optimizer not in live mode."})
+                    db_conn.execute(
+                        "INSERT INTO interactions (id,session_id,role,content,source,channel,created_at) VALUES (?,?,'user',?,'optimizer:trigger','optimizer',datetime('now'))",
+                        (str(uuid.uuid4()), opt_sid, f"I need help optimizing this session. Feedback: {feedback or 'General optimization'}.")
+                    )
+                    db_conn.commit()
+                    db_conn.close()
+                    return jmod.dumps({"status": "session_created", "optimizer_session_id": opt_sid,
+                                       "message": f"Optimization session created. Go to the optimizer session to talk to the Planner."})
 
-        tools["run_optimizer"] = ToolInfo(
-            name="run_optimizer",
-            handler=_run_optimizer_wrapper,
-            parameters={
-                "type": "object",
-                "properties": {
-                    "skill_name": {"type": "string", "description": "Optional: specific skill to optimize (e.g. 'send_email'). If blank, analyzes all skills."},
-                    "feedback": {"type": "string", "description": "Optional: what to improve. E.g. 'make it use the API instead of scraping' or 'response was too verbose'"},
-                    "criteria": {"type": "string", "description": "Optional: which metric to optimize. 'turns' (fewer back-and-forths), 'tokens' (cheaper), or 'time' (faster). If blank, balances all."},
+            tools["run_optimizer"] = ToolInfo(
+                name="run_optimizer",
+                handler=_run_optimizer_wrapper,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {"type": "string", "description": "Optional: specific skill to optimize (e.g. 'send_email'). If blank, analyzes all skills."},
+                        "feedback": {"type": "string", "description": "Optional: what to improve. E.g. 'make it use the API instead of scraping' or 'response was too verbose'"},
+                        "criteria": {"type": "string", "description": "Optional: which metric to optimize. 'turns' (fewer back-and-forths), 'tokens' (cheaper), or 'time' (faster). If blank, balances all."},
+                    },
+                    "required": [],
                 },
-                "required": [],
-            },
-        )
+            )
 
         # ── read_attachment (always available) ──
         from app.tools.read_attachment import read_attachment as _builtin_read_attachment, TOOL_DEFINITION as _ATTACH_TOOL_DEF

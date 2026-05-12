@@ -267,7 +267,8 @@ export function initDbPaginationAndToolbar() {
 
 export function runInitialDbTableLoad() {
   loadPersistedDbState();
-  fetchTables('local.db').then(() => {
+  const dbName = document.getElementById('db-select')?.value || 'local.db';
+  fetchTables(dbName).then(() => {
     // Try saved table, fall back to 'interactions', else nothing
     const savedTable = localStorage.getItem('lastDbTable');
     const tableToLoad =

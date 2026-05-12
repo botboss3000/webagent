@@ -370,40 +370,63 @@ async def session_search(
     try:
         from app.db import get_db
         db = get_db()
-        client = db.get_raw_client()
         q = query.lower()
-
-        # Search in interactions table for matching messages
-        rows = (
-            client.table("interactions")
-            .select("id, session_id, role, content, tool_name, created_at")
-            .eq("user_id", user_id)
-            .limit(100)
-            .order("created_at", desc=True)
-            .execute()
-        )
-        data = rows.data or []
+        
+        # Try Supabase client first
+        raw = getattr(db, 'get_raw_client', None)
+        if raw:
+            try:
+                client = raw()
+                rows = (
+                    client.table("interactions")
+                    .select("id, session_id, role, content, tool_name, created_at")
+                    .eq("user_id", user_id)
+                    .limit(100)
+                    .order("created_at", desc=True)
+                    .execute()
+                )
+                data = rows.data or []
+                matches = []
+                for r in data:
+                    content = r.get("content", "") or ""
+                    if q in content.lower():
+                        matches.append({
+                            "id": r.get("id"),
+                            "session_id": r.get("session_id"),
+                            "role": r.get("role"),
+                            "tool_name": r.get("tool_name"),
+                            "content": content[:500],
+                            "created_at": r.get("created_at"),
+                        })
+                    if len(matches) >= limit:
+                        break
+                return json.dumps({"status": "ok", "query": query, "count": len(matches), "results": matches})
+            except Exception as e:
+                logger.debug("Supabase session_search failed, falling back to local: %s", e)
+        
+        # Fallback: local SQLite (join through sessions table for user_id)
+        import sqlite3
+        conn = sqlite3.connect("app/db/local.db")
+        rows = conn.execute(
+            """SELECT i.id, i.session_id, i.role, i.content, i.tool_name, i.created_at
+               FROM interactions i
+               JOIN sessions s ON i.session_id = s.id
+               WHERE s.user_id = ? AND LOWER(i.content) LIKE ?
+               ORDER BY i.created_at DESC LIMIT ?""",
+            (user_id, f"%{q}%", limit)
+        ).fetchall()
+        conn.close()
         matches = []
-        for r in data:
-            content = r.get("content", "") or ""
-            if q in content.lower():
-                matches.append({
-                    "id": r.get("id"),
-                    "session_id": r.get("session_id"),
-                    "role": r.get("role"),
-                    "tool_name": r.get("tool_name"),
-                    "content": content[:500],
-                    "created_at": r.get("created_at"),
-                })
-            if len(matches) >= limit:
-                break
-
-        return json.dumps({
-            "status": "ok",
-            "query": query,
-            "count": len(matches),
-            "results": matches,
-        })
+        for r in rows:
+            matches.append({
+                "id": r[0],
+                "session_id": r[1],
+                "role": r[2],
+                "content": (r[3] or "")[:500],
+                "tool_name": r[4],
+                "created_at": r[5],
+            })
+        return json.dumps({"status": "ok", "query": query, "count": len(matches), "results": matches})
     except Exception as e:
         logger.error("session_search failed: %s", e)
         return json.dumps({"status": "error", "message": str(e)})
