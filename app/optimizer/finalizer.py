@@ -11,7 +11,7 @@ from app.optimizer.prompt_loader import load_prompt
 logger = logging.getLogger(__name__)
 
 
-async def review_trials(user_id, trials, baseline, transcript=None, criteria="", target=0, skill_state=None):
+async def review_trials(user_id, trials, baseline, transcript=None, criteria="", target=0, skill_state=None, partial_results=False):
     try:
         from openai import AsyncOpenAI
     except ImportError:
@@ -47,19 +47,23 @@ async def review_trials(user_id, trials, baseline, transcript=None, criteria="",
 
 BASELINE: {json.dumps(baseline)}
 TARGET: {criteria} <= {target} (if applicable)
+{"NOTE: These are PARTIAL RESULTS — some workers had low confidence. Evaluate whether there is enough signal to make a decision." if partial_results else ""}
 TOOL CALLS: {json.dumps(tool_calls[-10:])}
 CHAT: {json.dumps(chat_lines[-5:])}
 TRIALS: {json.dumps(trial_data, indent=2)}
 
 OUTPUT FORMAT:
-First write a MESSAGE explaining your comparison, which trials won/lost, why, tradeoffs, and your recommendation.
+First write a MESSAGE explaining your evaluation.
 Then output JSON:
 {{
-  "message": "Your full conversational analysis here - walk through each trial, explain why it won or lost, discuss tradeoffs",
+  "message": "Your analysis",
   "winners": [],
   "losers": [],
-  "summary": "1-line verdict"
-}}"""
+  "summary": "1-line verdict",
+  "insufficient_data": true or false
+}}
+
+{"RULES: If no trial shows >=10% improvement, set insufficient_data=true instead of forcing a winner." if partial_results else ""}"""
 
     try:
         resp = await client.chat.completions.create(
@@ -75,7 +79,14 @@ Then output JSON:
             brace = text.find('{')
             if brace >= 0:
                 text = text[brace:]
-        return json.loads(text)
+        last_brace = text.rfind('}')
+        if last_brace >= 0:
+            text = text[:last_brace+1]
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            logger.warning("Finalizer: JSON decode failed on text=%s", text[:200])
+            return {"winners": [], "losers": [], "summary": "JSON parse error"}
     except Exception as e:
         logger.warning("Finalizer failed: %s", e)
         return {"winners": [], "losers": [], "summary": str(e)}

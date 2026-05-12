@@ -24,6 +24,10 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
     from app.optimizer.templates import seed_optimizer_templates
     seed_optimizer_templates()
 
+    # Skip Worker test sessions to prevent recursive optimizer cascades
+    if session_id.startswith('worker-'):
+        return None
+
     if session_id in _recently_seen:
         if asyncio.get_event_loop().time() - _recently_seen[session_id] < _RECENT_WINDOW_SEC and not criteria:
             return None
@@ -89,37 +93,42 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
                 w_msg = t.get('message') or ''
                 if w_msg:
                     worker_msgs.append(w_msg)
-            if not confident:
-                # Collect rejection reasons from all workers for Planner feedback
-                rejection_lines = []
-                for t in trials:
-                    cr = t.get('confidence_reasoning') or ''
-                    if cr:
-                        rejection_lines.append(cr)
-                    msg = t.get('message') or ''
-                    if msg:
-                        rejection_lines.append(msg)
-                rejection_text = '; '.join(rejection_lines) if rejection_lines else 'Workers: low confidence — no specific reasoning given.'
-                # Build optimizer_history: show Planner what was proposed and why it failed
-                prev_element = changes[0].get('element', 'unknown') if changes else 'unknown'
-                prev_type = changes[0].get('change_type', 'unknown') if changes else 'unknown'
-                optimizer_history = (
-                    f"Your previous proposal (element={prev_element}, type={prev_type}) was rejected "
-                    f"by all Workers. Reasons: {rejection_text[:600]}. "
-                    f"Adjust your approach — try a fundamentally different change."
-                )
-                worker_text = '\n\n---\n\n'.join(worker_msgs) if worker_msgs else f"Worker: All trials low confidence. Trying different approach next iteration.\n\nFeedback for Planner: {rejection_text[:300]}"
+            # Build detailed rejection reasons regardless of confidence
+            rejection_lines = []
+            for t in trials:
+                cr = t.get('confidence_reasoning') or t.get('message') or ''
+                if cr:
+                    rejection_lines.append(cr)
+            rejection_text = '; '.join(rejection_lines[:5]) if rejection_lines else 'No specific reasoning given.'
+
+            if not confident and trials:
+                # Even low-confidence: pass to Finalizer with partial_results flag
+                _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:worker",
+                               f"Worker: {len(trials)} trials completed, all below 0.5 confidence. Passing to Finalizer for review.")
+                review = await review_trials(user_id, trials, baseline, transcript=pf.get("transcript", []),
+                                             criteria=criteria, target=target, skill_state=skill_state, partial_results=True)
+                # If Finalizer says insufficient, build optimizer_history for Planner
+                if review.get('insufficient_data'):
+                    prev_element = changes[0].get('element', 'unknown') if changes else 'unknown'
+                    prev_type = changes[0].get('change_type', 'unknown') if changes else 'unknown'
+                    optimizer_history = (
+                        f"Your previous proposal (element={prev_element}, type={prev_type}) was rejected. "
+                        f"Workers: {rejection_text[:600]}. "
+                        f"Adjust your approach — try a fundamentally different change."
+                    )
+                    _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:finalizer",
+                                    review.get('message', 'Finalizer: Insufficient data. Try a different approach.'))
+                    if iteration == max_iter:
+                        _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:system",
+                                        "No noticeable improvements after max iterations. Stopping to await user feedback.")
+                    continue
+                # Finalizer found enough signal despite low confidence
                 _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:worker", worker_text)
-                if iteration == max_iter:
-                    _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:system",
-                                    "No noticeable improvements after max iterations. Stopping to await user feedback.")
-                continue
-
-            worker_text = '\n\n---\n\n'.join(worker_msgs) if worker_msgs else f"Worker: {len(confident)}/{len(trials)} trials passed confidence threshold."
-            _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:worker", worker_text)
-
-            # Finalizer
-            review = await review_trials(user_id, confident, baseline, transcript=pf.get("transcript", []),
+            else:
+                worker_text = '\n\n---\n\n'.join(worker_msgs) if worker_msgs else f"Worker: {len(confident)}/{len(trials)} trials passed confidence threshold."
+                _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:worker", worker_text)
+                # Normal flow: pass confident trials to finalizer
+                review = await review_trials(user_id, confident, baseline, transcript=pf.get("transcript", []),
                                          criteria=criteria, target=target, skill_state=skill_state)
             finalizer_msg = review.get('message') or f"Finalizer: {len(review.get('winners',[]))} winners, {len(review.get('losers',[]))} rejected. {review.get('summary','')}"
             user_feedback_setting = cfg.get("user_feedback", "always")

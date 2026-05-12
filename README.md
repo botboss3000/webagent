@@ -12,6 +12,7 @@ A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional *
 - **Attachments** — Image, audio, video, and file uploads. Users attach files via the UI (📎 button in footer, drag & drop onto chat messages or footer area, 🎤 voice recording). Files upload via **`POST /api/v1/upload`** and bytes are persisted through **`app/db/attachments/`** (local filesystem in dev, Supabase Storage in production — see `app/db/SUPABASE_STORAGE.md`). Metadata is stored in the **`attachments`** table (local SQLite or Supabase). The agent accesses files with the **`read_attachment`** built-in tool. Supports image preview, audio/video players, and download links inline in chat bubbles. Attachments persist per-session and survive server restarts.
 - **Tools** — **Bootstrap + on-demand discovery model.** A small set of hardcoded core tools (list_tools, search_tools, get_tool_definition, web_search, http_request, browser_action, db_query, memory, session_search, get_time, get_date, get_weather, calculate, read_attachment) are always available from turn 1 via **`app/tools/loader.py`** + **`app/tools/core_tools.py`**. All other tools (user-created, admin, comm plugins, webhook management) are discovered on demand via `list_tools` / `search_tools` / `get_tool_definition`. Tool definitions no longer auto-populate the system prompt — only curated `context_type="skills"` docs provide behavioral guidance in the `# [SKILLS]` section.
 - **OpenRouter** — Model from `OPENROUTER_MODEL` (see `.env.example`; e.g. `deepseek/deepseek-v4-flash`).
+- **Parallel multi-provider** — Configure 2+ LLM providers in Settings. When enabled, the agent fans out each message to all providers simultaneously and uses the fastest complete response. Configured via `GET/POST /admin/settings/multi-providers`. Set `parallel_mode: true` and a list of provider entries (each with provider, base_url, api_key, model) in `provider.json` or DB `auth_elements`.
 - **Dual storage** — **`cloud`** (Supabase) vs **`local`** (SQLite file **`app/db/local.db`**). Mode is stored in **`app/db_mode.json`** and switched via **`/admin/db/*`**.
 - **Administrator tools** — Optional filesystem read/write/edit/delete, shell command execution, and server restart exposed as agent tools (**`read_source`**, **`write_source`**, **`edit_source`**, **`delete_source`**, **`run_command`**, **`restart_server`**). Powered by **`app/admin/source.py`** + **`app/admin/source_tools.py`**. **These are privileged debug tools — NOT available in normal user operation.** Deleting the `app/admin/` directory removes them entirely. See the [Administrator Tools](#administrator-tools) section.
 - **Web UI** — Main page at **`/index.html`** (chat, DB viewer, terminal, stream/loop). **`/terminal`** redirects to **`/index.html`**.
@@ -136,6 +137,8 @@ cp .env.example .env          # Windows (cmd): copy .env.example .env
 |----------|---------|
 | `OPENROUTER_API_KEY` | OpenRouter API key |
 | `OPENROUTER_MODEL` | Model id (default in `.env.example`: `deepseek/deepseek-v4-flash`) |
+| `PARALLEL_MODE` | Internal: set to `"true"` by settings module when parallel multi-provider is active (dynamic, not in `.env`) |
+| `MULTI_PROVIDERS` | Internal: JSON array of provider configs set by settings module when parallel mode is active (dynamic, not in `.env`) |
 | `OPENROUTER_REFERER` | Optional Referer header for OpenRouter |
 | `OPENROUTER_TITLE` | Optional app title for OpenRouter |
 | `SUPABASE_URL` | Supabase URL (**required in cloud mode**) |
@@ -150,6 +153,8 @@ cp .env.example .env          # Windows (cmd): copy .env.example .env
 In **local** mode, Supabase vars are not required for storage; you still need **`OPENROUTER_API_KEY`** (and usually **`OPENROUTER_MODEL`**) for LLM calls.
 
 Provider, API key, and model can **also** be configured at runtime via the ⚙️ **Settings** modal in the UI (gear icon next to Cloud/Local toggle). Changes are saved to **`provider.json`** in the project root and applied on next server start. The API key is masked in the UI after saving.
+
+**Multi-provider parallel mode:** When `parallel_mode: true` and 2+ entries in `multi_providers`, the agent fans out each LLM call to all configured providers in parallel and uses the first complete response. Configured via `POST /admin/settings/multi-providers` or directly in `provider.json`. Fallback: single-provider path is unchanged when parallel mode is off or < 2 providers.
 
 ## Installation
 
@@ -292,7 +297,7 @@ The **`app/admin/`** directory provides **privileged debug and management capabi
 | Router | Endpoints | Purpose |
 |--------|-----------|---------|
 | `review.py` | `GET /admin/tools`, `GET /admin/tools/{name}`, `DELETE /admin/tools/{id}` | List/get/deprecate tools in the DB |
-| `settings.py` | `GET/POST /admin/settings/provider`, `GET/POST /admin/settings/metadata`, `GET /admin/settings/models` | Switch AI provider, API key, model; toggle metadata logging |
+| `settings.py` | `GET/POST /admin/settings/provider`, `GET/POST /admin/settings/multi-providers`, `GET/POST /admin/settings/metadata`, `GET /admin/settings/models` | Switch AI provider, API key, model; toggle metadata logging; configure parallel multi-provider list |
 | `db_mode.py` | `GET /admin/db/mode`, `POST /admin/db/mode` | Toggle between Cloud (Supabase) and Local (SQLite) |
 | `communications.py` | `GET /admin/communications/plugins`, enable/disable, set webhook URL | Manage Telegram, WhatsApp plugins |
 

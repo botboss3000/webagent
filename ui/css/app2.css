@@ -197,6 +197,72 @@
   .json-num { color: #e0af68; }
   .json-bool { color: #bb9af7; }
   .json-null { color: #565f89; font-style: italic; }
+
+  /* ── Markdown-rendered content fields ── */
+  .json-content-md {
+    display: inline-block;
+    vertical-align: top;
+    padding: 8px 12px;
+    margin: 2px 0 2px 8px;
+    background: #0d0d1a;
+    border: 1px solid #2a2a4a;
+    border-radius: 6px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #c0caf5;
+    max-width: 100%;
+    overflow-x: auto;
+    min-width: 120px;
+  }
+  .json-content-md h1 { font-size: 16px; font-weight: 700; color: #7dcfff; margin: 8px 0 4px; }
+  .json-content-md h2 { font-size: 14px; font-weight: 700; color: #89ddff; margin: 6px 0 3px; }
+  .json-content-md h3 { font-size: 13px; font-weight: 600; color: #c0caf5; margin: 5px 0 2px; }
+  .json-content-md h4,
+  .json-content-md h5,
+  .json-content-md h6 { font-size: 12px; font-weight: 600; color: #a9b1d6; margin: 4px 0 2px; }
+  .json-content-md p { margin: 4px 0; }
+  .json-content-md pre {
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    border-radius: 4px;
+    padding: 8px 10px;
+    margin: 4px 0;
+    overflow-x: auto;
+    max-width: 100%;
+  }
+  .json-content-md code {
+    font-family: 'Fira Code', Menlo, monospace;
+    font-size: 11px;
+    background: #1a1a2e;
+    padding: 1px 4px;
+    border-radius: 3px;
+    color: #e0af68;
+  }
+  .json-content-md pre code {
+    background: none;
+    padding: 0;
+    border-radius: 0;
+    color: #c0caf5;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .json-content-md ul,
+  .json-content-md ol {
+    margin: 4px 0;
+    padding-left: 20px;
+  }
+  .json-content-md li { margin: 2px 0; }
+  .json-content-md strong { color: #c0caf5; font-weight: 700; }
+  .json-content-md em { font-style: italic; color: #a9b1d6; }
+  .json-content-md a { color: #7dcfff; text-decoration: underline; }
+  .json-content-md a:hover { color: #89ddff; }
+  .json-content-md br { content: ''; display: block; margin: 0; }
+  .json-content-md h1:first-child,
+  .json-content-md h2:first-child,
+  .json-content-md h3:first-child,
+  .json-content-md p:first-child { margin-top: 0; }
+  .json-content-md :last-child { margin-bottom: 0; }
   .db-cell-json {
     overflow: auto;
     max-height: 200px;

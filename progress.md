@@ -1,15 +1,14 @@
 # Progress
 
-## Status
-Workers testing trial system prompt (Approach 1)
+## Fix: Optimizer Auto-Trigger
 
-## Worker 3 — Results
-- estimated_turns: 1
-- estimated_tokens: 35
-- estimated_time_ms: 2500
-- success_likely: true
-- confidence: 0.92
-- reasoning: Additive greeting rule replaces verbose multi-sentence greeting with concise "Hi Human" opener, saving ~15-20 tokens and ~500ms per turn. No existing functionality removed. All tool access, critical rules, and capabilities preserved. Risk is extremely low — purely additive constraint with no behavioral conflicts.
+**File changed:** `app/agent/loop.py`
 
-## Next
-Await Judge review of all Worker trials.
+**Problem:** `_fire_optimizer()` was called unconditionally on every chat message (lines 921, 934, 938, 944). With optimizer config mode='live', this triggered the full optimizer pipeline on EVERY user message, causing cascading Worker test sessions and recursive optimizer runs.
+
+**Fix:** Added a config guard inside `_fire_optimizer()` (defined at line 32) that loads `optimizer.json` and checks the mode setting:
+- If mode is `'live'` → fires optimizer as normal
+- If mode is anything else (e.g. `'manual'`, `'scheduled'`, or unset) AND session_id doesn't contain `'manual'` → skips with a debug log
+- Also skips Worker test sessions (handled by existing `worker-` prefix guard in `runner.py`)
+
+This prevents the optimizer from running on casual chat messages while still allowing manual triggers and live-mode operation when explicitly configured.

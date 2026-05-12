@@ -3,6 +3,9 @@
 // ── Collapsible JSON tree renderer ──
 // Shared between stream view and database viewer
 
+// Keys whose string values should be rendered as markdown
+const CONTENT_KEYS = new Set(['content', 'description', 'text', 'message']);
+
 function escapeHtml(str) {
   if (!str) return '';
   return str
@@ -12,21 +15,87 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+/**
+ * Render a string containing markdown into styled HTML.
+ * Handles: headers, bold, italic, inline code, code blocks, links, lists.
+ */
+function renderContentMarkdown(text) {
+  if (!text) return '<span class="json-str">""</span>';
+
+  // Escape HTML entities first
+  let html = escapeHtml(text);
+
+  // Code blocks (```...```) — before other transformations
+  html = html.replace(/```([\s\S]*?)```/g, function(match, code) {
+    return '<pre><code>' + code + '</code></pre>';
+  });
+
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Headers
+  html = html.replace(/^###### (.+)$/gm, '<h6>$1</h6>');
+  html = html.replace(/^##### (.+)$/gm, '<h5>$1</h5>');
+  html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+  // Bold
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+  // Italic
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+  // Links [text](url)
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+  // Unordered list items
+  html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+  // Wrap consecutive <li> in <ul>
+  html = html.replace(/((?:<li>.*?<\/li>(?:\n|$))+)/g, '<ul>$1</ul>');
+
+  // Ordered list items
+  html = html.replace(/^\d+\.\s+(.+)$/gm, '<li>$1</li>');
+  // Wrap consecutive <li> in <ol>
+  html = html.replace(/((?:<li>.*?<\/li>(?:\n|$))+)/g, '<ol>$1</ol>');
+
+  // Double newlines → paragraph break
+  html = html.replace(/\n\n+/g, '</p><p>');
+
+  // Single newlines → <br>
+  html = html.replace(/\n/g, '<br>');
+
+  // Wrap in <p> if there's paragraph-worthy content and no block wrapper yet
+  // but avoid wrapping elements that are already block-level (pre, h1-h6, ul, ol)
+  const startsWithBlock = /^\s*(<(pre|h[1-6]|ul|ol|div))/i.test(html);
+  if (!startsWithBlock) {
+    html = '<p>' + html + '</p>';
+  }
+
+  return '<div class="json-content-md">' + html + '</div>';
+}
+
 const MAX_JSON_DEPTH = 20;
 
-function renderJsonTree(data, indent) {
+function renderJsonTree(data, indent, keyName) {
   if (indent === undefined) indent = 0;
   if (indent > MAX_JSON_DEPTH) return '<span class="json-str">"... (truncated)"</span>';
   const padInner = '  '.repeat(indent + 1);
   if (typeof data === 'boolean') return `<span class="json-bool">${data}</span>`;
   if (typeof data === 'number') return `<span class="json-num">${data}</span>`;
   if (typeof data === 'string') {
+    // Render as markdown if the key matches
+    if (keyName && CONTENT_KEYS.has(keyName) && data.length > 0) {
+      return renderContentMarkdown(data);
+    }
     return `<span class="json-str">"${escapeHtml(data)}"</span>`;
   }
 
   if (Array.isArray(data)) {
     if (data.length === 0) return '<span class="json-punc">[</span><span class="json-punc">]</span>';
     const items = data.map((v, i) => {
+      // Arrays don't pass a keyName for their values
       const val = renderJsonTree(v, indent + 1);
       const comma = i < data.length - 1 ? '<span class="json-punc">,</span>' : '';
       return `<div class="json-line">${padInner}${val}${comma}</div>`;
@@ -39,7 +108,8 @@ function renderJsonTree(data, indent) {
     if (keys.length === 0) return '<span class="json-punc">{</span><span class="json-punc">}</span>';
     const items = keys.map((k, i) => {
       const key = `<span class="json-key">"${escapeHtml(k)}"</span>`;
-      const val = renderJsonTree(data[k], indent + 1);
+      // Pass the key name so string values under known content keys render as markdown
+      const val = renderJsonTree(data[k], indent + 1, k);
       const comma = i < keys.length - 1 ? '<span class="json-punc">,</span>' : '';
       return `<div class="json-line">${padInner}${key}<span class="json-punc">:</span> ${val}${comma}</div>`;
     }).join('');

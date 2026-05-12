@@ -331,6 +331,22 @@
   .db-popup-sort-btn:hover { background: #1e2040; }
   .db-popup-sort-btn.active { color: #7dcfff; }
   .db-popup-sort-arrow { font-size: 10px; display: inline-block; width: 14px; text-align: center; }
+  .db-popup-unsort-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: none;
+    border: none;
+    color: #565f89;
+    font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+    text-align: left;
+    width: 100%;
+  }
+  .db-popup-unsort-btn:hover { background: #1e2040; color: #c0caf5; }
   .db-popup-search-wrap {
     padding: 6px 6px 4px;
     border-bottom: 1px solid #2a2a4a;
@@ -400,6 +416,26 @@
     border-top: 1px solid #2a2a4a;
     display: flex;
     justify-content: flex-end;
+  }
+  .db-popup-hide-row {
+    padding: 2px 10px;
+    border-top: 1px solid #2a2a4a;
+  }
+  .db-popup-hide-btn {
+    background: none;
+    border: none;
+    color: #565f89;
+    font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
+    padding: 4px 4px;
+    border-radius: 4px;
+    width: 100%;
+    text-align: left;
+  }
+  .db-popup-hide-btn:hover {
+    background: #1e2040;
+    color: #f7768e;
   }
   .db-popup-apply-btn {
     background: #7dcfff;
@@ -821,6 +857,13 @@ body.light-mode .db-popup-sort-btn:hover {
 body.light-mode .db-popup-sort-btn.active {
   color: #cc6a28;
 }
+body.light-mode .db-popup-unsort-btn {
+  color: #b09580;
+}
+body.light-mode .db-popup-unsort-btn:hover {
+  background: #fff5eb;
+  color: #3d2c2e;
+}
 body.light-mode .db-popup-search {
   background: #fffaf5;
   border-color: #ffdec4;
@@ -869,6 +912,16 @@ body.light-mode .db-popup-apply-btn:hover {
 }
 body.light-mode .th-text:hover {
   background: #fff5eb;
+}
+body.light-mode .db-popup-hide-row {
+  border-top-color: #ffdec4;
+}
+body.light-mode .db-popup-hide-btn {
+  color: #b09580;
+}
+body.light-mode .db-popup-hide-btn:hover {
+  background: #fff5eb;
+  color: #d65c5c;
 }
 body.light-mode .th-hide-btn {
   color: #cca08a;

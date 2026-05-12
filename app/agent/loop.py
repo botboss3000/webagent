@@ -30,7 +30,18 @@ from app.optimizer.runner import run_optimizer_async
 
 
 def _fire_optimizer(user_id: str, session_id: str, channel: Optional[str] = None) -> None:
-    """Fire-and-forget optimizer task with error trapping."""
+    """Fire-and-forget optimizer task with error trapping.
+    Only fires if optimizer config mode is 'live' or session_id contains 'manual'.
+    """
+    try:
+        from app.optimizer.config import load_config
+        cfg = load_config()
+        mode = cfg.get("mode", "")
+        if mode != "live" and "manual" not in (session_id or ""):
+            logger.debug("Optimizer: skipped for session %s (mode=%s)", session_id, mode)
+            return
+    except Exception:
+        pass
     async def _run():
         try:
             logger.info("Optimizer: triggering for session %s (user=%s, channel=%s)", session_id, user_id, channel)
@@ -73,6 +84,264 @@ def _get_client():
         _current_api_key = api_key
 
     return _client
+
+
+_active_race_tasks = set()
+
+async def _race_llm_calls(
+    messages: list,
+    tool_definitions: list,
+    multi_providers: list,
+    user_id: str,
+    save_loser_callback: Optional[Any] = None,
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """
+    Race N provider LLM calls in parallel.
+    Yields live stream events from the fastest provider that emits a content chunk.
+    All losers are cancelled. On all-fail, yields an error event.
+
+    The caller must collect content and tool_calls from yielded events:
+      - {"type": "stream", ...} — content chunk from winner
+      - {"type": "pipeline", "step": "parallel_winner", ...} — winner announcement
+      - {"type": "pipeline", "step": "parallel_complete", "content": str,
+         "tool_calls": dict, "provider": str, "model": str,
+         "input_tokens": int, "output_tokens": int, "cost": float} — final result
+      - {"type": "error", ...} — all providers failed
+    """
+    import json as _json
+
+    queue: asyncio.Queue = asyncio.Queue()
+
+    winner_idx: Optional[int] = None
+    winner_provider_name = ""
+    winner_model_name = ""
+    collected_content = ""
+    collected_tool_calls: Dict[int, Any] = {}
+    final_input_tokens: Optional[int] = None
+    final_output_tokens: Optional[int] = None
+    final_cost: Optional[float] = None
+
+    async def _stream_one(pid: int, cfg: dict) -> None:
+        """Stream from one provider, push events to queue."""
+        try:
+            base_url = cfg.get("base_url", "")
+            api_key = cfg.get("api_key", "")
+            model = cfg.get("model", "")
+            prov_name = cfg.get("provider", "unknown")
+
+            # Create an isolated client per provider
+            try:
+                from openai import AsyncOpenAI
+            except ImportError:
+                from app.openai_compat import AsyncOpenAI
+
+            client = AsyncOpenAI(
+                base_url=base_url,
+                api_key=api_key,
+                timeout=30.0,
+            )
+
+            # Debug log to verify task starts
+            logger.info(f"[RACE] Provider {prov_name} starting call")
+
+            stream = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=tool_definitions if tool_definitions else None,
+                tool_choice="auto" if tool_definitions else None,
+                temperature=0.0,
+                max_tokens=4096,
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+
+            local_content = ""
+            local_tool_calls: Dict[int, Any] = {}
+            local_in_tok = None
+            local_out_tok = None
+            local_cost = None
+
+            async for chunk in stream:
+                if chunk.usage:
+                    local_in_tok = chunk.usage.prompt_tokens
+                    local_out_tok = chunk.usage.completion_tokens
+                    extra = getattr(chunk.usage, 'model_extra', None)
+                    if extra and 'total_cost' in extra:
+                        local_cost = extra['total_cost']
+
+                if not chunk.choices:
+                    continue
+
+                delta = chunk.choices[0].delta
+                if not delta:
+                    continue
+
+                if delta.content:
+                    local_content += delta.content
+                    await queue.put(("chunk", pid, prov_name, model,
+                                     delta.content))
+
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        if idx not in local_tool_calls:
+                            local_tool_calls[idx] = tc
+                        else:
+                            existing = local_tool_calls[idx]
+                            if tc.function:
+                                if tc.function.name:
+                                    existing.function.name = tc.function.name
+                                if tc.function.arguments:
+                                    existing.function.arguments = (
+                                        (existing.function.arguments or "")
+                                        + tc.function.arguments
+                                    )
+
+            # Stream complete
+            await queue.put(("done", pid, prov_name, model,
+                             local_content, local_tool_calls,
+                             local_in_tok, local_out_tok, local_cost))
+            
+            # If we are a loser, save to DB in the background
+            logger.info(f"[RACE] Provider {prov_name} finished. winner_idx={winner_idx}")
+            if winner_idx is not None and pid != winner_idx:
+                logger.info(f"[RACE] Provider {prov_name} saving as loser.")
+                if save_loser_callback:
+                    await save_loser_callback(
+                        prov_name, model, local_content, local_tool_calls,
+                        local_in_tok, local_out_tok, local_cost,
+                        int((time.time() - start_time) * 1000)
+                    )
+
+        except asyncio.CancelledError:
+            with open("loser_fatal.log", "a") as f: f.write(f"Cancelled {prov_name}\n")
+        except Exception as e:
+            with open("loser_fatal.log", "a") as f: f.write(f"Error {prov_name}: {e}\n")
+            logger.error(f"[RACE] Provider {prov_name} error: {e}")
+            await queue.put(("error", pid, str(e)))
+            try:
+                from app.admin.settings import update_multi_provider_rating
+                await update_multi_provider_rating(user_id, prov_name, model, -1)
+            except Exception as rating_err:
+                logger.warning(f"Failed to lower rating for {prov_name}: {rating_err}")
+
+    start_time = time.time()
+    async def _safe_stream_one(pid: int, cfg: dict):
+        try:
+            await asyncio.shield(_stream_one(pid, cfg))
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+
+    # ── Launch all provider tasks ──
+    tasks = []
+    for i, prov in enumerate(multi_providers):
+        t = asyncio.create_task(_safe_stream_one(i, prov))
+        _active_race_tasks.add(t)
+        t.add_done_callback(_active_race_tasks.discard)
+        tasks.append(t)
+
+    # ── Consume queue until winner finishes or all fail ──
+    remaining = len(tasks)
+
+    while True:
+        item = await queue.get()
+        etype = item[0]
+        pid = item[1]
+
+        if etype == "chunk":
+            _prov_name = item[2]
+            _model_name = item[3]
+            _chunk_text = item[4]
+
+            if winner_idx is None:
+                # First chunk — this provider wins
+                winner_idx = pid
+                winner_provider_name = _prov_name
+                winner_model_name = _model_name
+                yield {"type": "pipeline", "level": "pipeline",
+                       "step": "parallel_winner",
+                       "provider": winner_provider_name,
+                       "model": winner_model_name}
+
+            if pid == winner_idx:
+                collected_content += _chunk_text
+                yield {"type": "stream", "level": "agent",
+                       "content": _chunk_text}
+
+        elif etype == "done":
+            _prov_name = item[2]
+            _model_name = item[3]
+            _content = item[4]
+            _tcs = item[5]
+            _in_tok = item[6]
+            _out_tok = item[7]
+            _cost = item[8]
+
+            if winner_idx is None:
+                # First to finish without any chunks
+                winner_idx = pid
+                winner_provider_name = _prov_name
+                winner_model_name = _model_name
+                collected_content = _content
+                collected_tool_calls = _tcs
+                final_input_tokens = _in_tok
+                final_output_tokens = _out_tok
+                final_cost = _cost
+                yield {"type": "pipeline", "level": "pipeline",
+                       "step": "parallel_winner",
+                       "provider": winner_provider_name,
+                       "model": winner_model_name}
+                break
+
+            if pid == winner_idx:
+                collected_content = _content
+                collected_tool_calls = _tcs
+                final_input_tokens = _in_tok
+                final_output_tokens = _out_tok
+                final_cost = _cost
+                break
+            # else: a loser finished, ignore. Background save handled in _stream_one.
+
+        elif etype == "error":
+            remaining -= 1
+            if remaining <= 0:
+                # All failed
+                err_msgs = []
+                # Collect err messages from finished tasks
+                for t in tasks:
+                    if t.done() and not t.cancelled():
+                        try:
+                            t.result()
+                        except Exception as exc:
+                            err_msgs.append(str(exc)[:200])
+                # Also include the immediate error
+                err_msgs.append(item[2][:200])
+                unique = list(dict.fromkeys(err_msgs))  # dedup, preserve order
+                joined = "; ".join(unique[:3])
+                yield {"type": "error", "level": "agent",
+                       "message": f"All {len(multi_providers)} providers failed: {joined}"}
+                # (No cancellation, tasks mostly failed already)
+                await asyncio.gather(*tasks, return_exceptions=True)
+                return
+
+    # ── Winner found — we do NOT cancel losers, let them finish and save ──
+    # (Loser tasks will simply run their course and fire save_loser_callback)
+
+    # ── Emit final result for the caller ──
+    yield {
+        "type": "pipeline",
+        "level": "pipeline",
+        "step": "parallel_complete",
+        "content": collected_content,
+        "tool_calls": collected_tool_calls,
+        "provider": winner_provider_name,
+        "model": winner_model_name,
+        "input_tokens": final_input_tokens,
+        "output_tokens": final_output_tokens,
+        "cost": final_cost,
+    }
 
 
 async def _check_interrupt(session_id: str, interrupt_event: Optional[asyncio.Event]):
@@ -155,6 +424,7 @@ async def stream_agent_events(
     session_id: str,
     user_message: str,
     system_prompt: str,
+    agent_id: str,
     history: Optional[List[Dict[str, Any]]] = None,
     parent_interaction_id: Optional[str] = None,
     interrupt_event: Optional[asyncio.Event] = None,
@@ -289,61 +559,173 @@ async def stream_agent_events(
 
             # ── Stream the LLM response ──
             llm_start = time.time()
-            try:
-                stream = await _get_client().chat.completions.create(
-                    model=model_name,
-                    messages=messages,
-                    tools=tool_definitions if tool_definitions else None,
-                    tool_choice="auto" if tool_definitions else None,
-                    temperature=0.0,
-                    max_tokens=4096,
-                    stream=True,
-                    stream_options={"include_usage": True},
-                )
-            except Exception as e:
-                yield {"type": "error", "level": "agent", "message": f"LLM call failed: {e}"}
-                return
+
+            async def _save_loser(p_name, m_name, l_content, l_tcs, l_in, l_out, l_cost, ms):
+                with open("loser_trace_db.log", "a") as f:
+                    f.write(f"Triggered _save_loser for {p_name} {m_name}\n")
+                # Build an openai-style tool calls list
+                loser_tcs = []
+                if l_tcs:
+                    for tc in l_tcs.values():
+                        loser_tcs.append({
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {"name": tc.function.name, "arguments": tc.function.arguments or "{}"},
+                        })
+                
+                # Suffix tool calls to content just like normal
+                save_content = l_content or ""
+                if loser_tcs:
+                    tc_summary = json.dumps([
+                        {"name": tc["function"]["name"], "args": tc["function"]["arguments"]}
+                        for tc in loser_tcs
+                    ])
+                    save_content += f"\n\n[Tool calls: {tc_summary}]"
+                
+                meta_dict = {
+                    "provider": p_name,
+                    "model": m_name,
+                    "turn": turn_count,
+                    "duration_ms": ms,
+                    "input_tokens": l_in,
+                    "output_tokens": l_out,
+                    "role": "assistant",
+                    "streaming": True,
+                    "parallel_loser": True,
+                }
+                if l_cost is not None:
+                    meta_dict["cost"] = l_cost
+
+                inp = json.dumps(messages)
+                outp = json.dumps({"role": "assistant", "content": l_content, "tool_calls": loser_tcs})
+                
+                from app.db import get_db
+                try:
+                    await get_db().insert_interaction(
+                        user_id, session_id, role="assistant", content=save_content,
+                        parent_id=parent_interaction_id,
+                        channel=channel,
+                        metadata=json.dumps(meta_dict),
+                        input_data=inp,
+                        output_data=outp,
+                        sender_id=agent_id,
+                        receiver_id=user_id,
+                    )
+                    with open("loser_trace_db.log", "a") as f:
+                        f.write(f"DB insert SUCCESS for {p_name}\n")
+                except Exception as e:
+                    with open("loser_trace_db.log", "a") as f:
+                        f.write(f"DB insert Exception: {e}\n")
+                    logger.warning("Failed to save parallel loser response: %s", e)
+                except BaseException as be:
+                    with open("loser_trace_db.log", "a") as f:
+                        f.write(f"DB insert BaseException (Cancelled?): {be}\n")
+
+            # ── Check for parallel multi-provider mode ──
+            _parallel_mode = os.environ.get("PARALLEL_MODE", "").lower() == "true"
+            _multi_providers_raw = os.environ.get("MULTI_PROVIDERS", "")
 
             collected_content = ""
             collected_tool_calls: Dict[int, Any] = {}
             input_tokens = None
             output_tokens = None
             llm_cost = None
+            _used_parallel = False
 
-            async for chunk in stream:
+            if _parallel_mode and _multi_providers_raw:
+                try:
+                    _multi_providers_list = json.loads(_multi_providers_raw)
+                except (json.JSONDecodeError, TypeError):
+                    _multi_providers_list = []
 
-                # Capture token usage if available (usually in the very last chunk for streaming)
-                if chunk.usage:
-                    input_tokens = chunk.usage.prompt_tokens
-                    output_tokens = chunk.usage.completion_tokens
-                    # Some providers (e.g. OpenRouter) include cost in extra fields
-                    extra = getattr(chunk.usage, 'model_extra', None)
-                    if extra and 'total_cost' in extra:
-                        llm_cost = extra['total_cost']
+                if len(_multi_providers_list) >= 2:
+                    _used_parallel = True
+                    _parallel_had_error = False
 
-                if not chunk.choices:
-                    continue
+                    async for _pe in _race_llm_calls(
+                        messages, tool_definitions, _multi_providers_list, user_id=user_id, save_loser_callback=_save_loser
+                    ):
+                        if _pe["type"] == "stream":
+                            collected_content += _pe["content"]
+                            yield _pe
+                        elif _pe["type"] == "pipeline":
+                            if _pe["step"] == "parallel_winner":
+                                # Update model_name and provider_name for metadata
+                                model_name = _pe.get("model", model_name)
+                                provider_name = _pe.get("provider", provider_name)
+                                yield _pe
+                            elif _pe["step"] == "parallel_complete":
+                                # Final result from race engine
+                                collected_content = _pe.get("content", collected_content)
+                                collected_tool_calls = _pe.get("tool_calls", collected_tool_calls)
+                                input_tokens = _pe.get("input_tokens")
+                                output_tokens = _pe.get("output_tokens")
+                                llm_cost = _pe.get("cost")
+                                model_name = _pe.get("model", model_name)
+                                provider_name = _pe.get("provider", provider_name)
+                                yield _pe
+                            else:
+                                yield _pe
+                        elif _pe["type"] == "error":
+                            yield _pe
+                            _parallel_had_error = True
+                            break
+                        # Forward other event types directly
+                        elif _pe["type"] in ("tool_call", "tool_result"):
+                            yield _pe
 
-                delta = chunk.choices[0].delta
-                if not delta:
-                    continue
+                    if _parallel_had_error:
+                        return
 
-                if delta.content:
-                    collected_content += delta.content
-                    yield {"type": "stream", "level": "agent", "content": delta.content}
+            if not _used_parallel:
+                # ── Single-provider path (original) ──
+                try:
+                    stream = await _get_client().chat.completions.create(
+                        model=model_name,
+                        messages=messages,
+                        tools=tool_definitions if tool_definitions else None,
+                        tool_choice="auto" if tool_definitions else None,
+                        temperature=0.0,
+                        max_tokens=4096,
+                        stream=True,
+                        stream_options={"include_usage": True},
+                    )
+                except Exception as e:
+                    yield {"type": "error", "level": "agent", "message": f"LLM call failed: {e}"}
+                    return
 
-                if delta.tool_calls:
-                    for tc in delta.tool_calls:
-                        idx = tc.index
-                        if idx not in collected_tool_calls:
-                            collected_tool_calls[idx] = tc
-                        else:
-                            existing = collected_tool_calls[idx]
-                            if tc.function:
-                                if tc.function.name:
-                                    existing.function.name = tc.function.name
-                                if tc.function.arguments:
-                                    existing.function.arguments = (existing.function.arguments or "") + tc.function.arguments
+                async for chunk in stream:
+
+                    if chunk.usage:
+                        input_tokens = chunk.usage.prompt_tokens
+                        output_tokens = chunk.usage.completion_tokens
+                        extra = getattr(chunk.usage, 'model_extra', None)
+                        if extra and 'total_cost' in extra:
+                            llm_cost = extra['total_cost']
+
+                    if not chunk.choices:
+                        continue
+
+                    delta = chunk.choices[0].delta
+                    if not delta:
+                        continue
+
+                    if delta.content:
+                        collected_content += delta.content
+                        yield {"type": "stream", "level": "agent", "content": delta.content}
+
+                    if delta.tool_calls:
+                        for tc in delta.tool_calls:
+                            idx = tc.index
+                            if idx not in collected_tool_calls:
+                                collected_tool_calls[idx] = tc
+                            else:
+                                existing = collected_tool_calls[idx]
+                                if tc.function:
+                                    if tc.function.name:
+                                        existing.function.name = tc.function.name
+                                    if tc.function.arguments:
+                                        existing.function.arguments = (existing.function.arguments or "") + tc.function.arguments
 
             llm_duration = int((time.time() - llm_start) * 1000)
 
@@ -398,6 +780,8 @@ async def stream_agent_events(
                     metadata=meta_asst,
                     input_data=inp,
                     output_data=outp,
+                    sender_id=agent_id,
+                    receiver_id=user_id,
                 )
                 db_dur = int((time.time() - db_start) * 1000)
                 yield {"type": "db", "level": "db",
@@ -450,6 +834,8 @@ async def stream_agent_events(
                             metadata=json.dumps({"success": False, "duration_ms": 0, "input_params": tool_args, "error_message": "Validation failed"}),
                             input_data=inp,
                             output_data=outp,
+                            sender_id=agent_id,
+                            receiver_id=agent_id,
                         )
                         db_dur = int((time.time() - db_start) * 1000)
                         yield {"type": "db", "level": "db",
@@ -493,6 +879,8 @@ async def stream_agent_events(
                                     metadata=json.dumps({"success": False, "duration_ms": 0, "input_params": tool_args, "error_message": "Guardrail blocked — requires confirmation"}),
                                     input_data=inp,
                                     output_data=outp,
+                                    sender_id=agent_id,
+                                    receiver_id=agent_id,
                                 )
                                 db_dur = int((time.time() - db_start) * 1000)
                                 yield {"type": "db", "level": "db",
@@ -579,6 +967,8 @@ async def stream_agent_events(
                             metadata=tool_exec_meta,
                             input_data=inp,
                             output_data=outp,
+                            sender_id=agent_id,
+                            receiver_id=agent_id,
                         )
                         db_dur = int((time.time() - db_start) * 1000)
                         yield {"type": "db", "level": "db",
@@ -630,6 +1020,8 @@ async def stream_agent_events(
                 metadata=meta_final,
                 input_data=inp,
                 output_data=outp,
+                sender_id=agent_id,
+                receiver_id=user_id,
             )
             db_dur = int((time.time() - db_start) * 1000)
             yield {"type": "db", "level": "db",
@@ -670,6 +1062,7 @@ async def run_agent_loop_buffered(
     session_id: str,
     user_message: str,
     system_prompt: str,
+    agent_id: str,
     history: Optional[List[Dict[str, Any]]] = None,
     parent_interaction_id: Optional[str] = None,
     max_turns: int = 10,
