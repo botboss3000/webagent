@@ -754,6 +754,9 @@ class SupabaseBackend(StorageBackend):
         from datetime import datetime, timezone
         import uuid
         try:
+            # Always seed from JSON files to ensure latest values
+            await self._seed_agent_templates_from_json_files()
+
             # Fetch default template
             tpl_res = (
                 self._client.table("agent_templates")
@@ -762,32 +765,26 @@ class SupabaseBackend(StorageBackend):
                 .limit(1)
                 .execute()
             )
-            tpl = tpl_res.data[0] if tpl_res.data else {}
-
-            # If template system_prompt is empty, seed from JSON files
-            if not tpl.get("system_prompt", "").strip():
-                await self._seed_agent_templates_from_json_files()
-                tpl_res = (
-                    self._client.table("agent_templates")
-                    .select("*")
-                    .eq("id", "default")
-                    .limit(1)
-                    .execute()
+            tpl = tpl_res.data[0] if tpl_res.data else None
+            if not tpl:
+                logger.warning(
+                    "No 'default' agent template found after JSON seeding — "
+                    "check app/context/agents/default.json"
                 )
-                tpl = tpl_res.data[0] if tpl_res.data else {}
+                raise ValueError("No default agent template available")
 
             now = datetime.now(timezone.utc).isoformat()
             agent_data = {
                 "id": str(uuid.uuid4()),
                 "user_id": user_id,
-                "system_prompt": tpl.get("system_prompt", ""),
-                "max_turn_count": tpl.get("max_turn_count", 10),
-                "model": tpl.get("model"),
-                "provider": tpl.get("provider"),
-                "temperature": tpl.get("temperature", 0.0),
-                "max_tokens": tpl.get("max_tokens", 4096),
+                "system_prompt": tpl["system_prompt"],
+                "max_turn_count": tpl["max_turn_count"],
+                "model": tpl["model"],
+                "provider": tpl["provider"],
+                "temperature": tpl["temperature"],
+                "max_tokens": tpl["max_tokens"],
                 "status": "active",
-                "metadata": tpl.get("metadata", "{}"),
+                "metadata": tpl["metadata"],
                 "assigned_at": now,
                 "created_at": now,
                 "updated_at": now,
@@ -796,7 +793,7 @@ class SupabaseBackend(StorageBackend):
 
             res = self._client.table("agents").insert(agent_data).execute()
             if res.data and len(res.data) > 0:
-                logger.info("Created agent %s for user %s", agent_data["id"], user_id)
+                logger.info("Created agent %s for user %s from JSON template", agent_data["id"], user_id)
                 return res.data[0]
             raise ValueError("No data returned after agent insert")
         except Exception as e:
@@ -827,7 +824,10 @@ class SupabaseBackend(StorageBackend):
             )
             if res.data:
                 return res.data[0]
-            # Return sensible defaults
+            logger.warning(
+                "No 'default' agent template in DB — check app/context/agents/default.json"
+            )
+            # Fallback: minimal dict — JSON is the real source of truth
             return {
                 "id": "default",
                 "system_prompt": "",
@@ -853,10 +853,25 @@ class SupabaseBackend(StorageBackend):
             )
             if res.data:
                 return res.data[0]["max_turn_count"]
+            logger.warning("Agent %s not found for max_turn_count lookup", agent_id)
             return 10
         except Exception as e:
             logger.error("Error getting max_turn_count for agent %s: %s", agent_id, e)
             raise
+
+    async def seed_agent_templates(self) -> int:
+        """Re-seed agent_templates from app/context/agents/*.json. Returns count."""
+        await self._seed_agent_templates_from_json_files()
+        try:
+            res = (
+                self._client.table("agent_templates")
+                .select("id")
+                .execute()
+            )
+            return len(res.data) if res.data else 0
+        except Exception as e:
+            logger.error("Error counting agent templates: %s", e)
+            return 0
 
     # ---- Interrupt Handling ----
 

@@ -349,6 +349,15 @@ class StorageBackend(ABC):
         """Get the max_turn_count for a given agent_id. DEPRECATED — use get_agent_for_user instead."""
         ...
 
+    @abstractmethod
+    async def seed_agent_templates(self) -> int:
+        """
+        Re-seed agent_templates from app/context/agents/*.json.
+        Upserts all template rows so JSON changes take effect.
+        Returns the number of templates seeded.
+        """
+        ...
+
     # ---- Attachments ----
 
     @abstractmethod

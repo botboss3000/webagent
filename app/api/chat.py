@@ -98,32 +98,22 @@ async def chat(request: ChatRequest):
                 opt_agent_user_id = f"opt_{opt_role}_{request.user_id}"
                 agent = await db.get_agent_for_user(opt_agent_user_id)
                 if agent is None:
+                    # Re-seed from JSON first so changes take effect
+                    await db.seed_agent_templates()
+
                     prompter = 'opt_planner' if opt_role == 'planner' else 'opt_finalizer'
                     cur = conn.execute(
                         "SELECT * FROM agent_templates WHERE id=? LIMIT 1",
                         (prompter,)
                     )
                     tpl = cur.fetchone()
-                    if tpl:
-                        tpl_data = {
-                            "system_prompt": tpl["system_prompt"],
-                            "max_turn_count": tpl["max_turn_count"],
-                            "model": tpl["model"],
-                            "provider": tpl["provider"],
-                            "temperature": tpl["temperature"],
-                            "max_tokens": tpl["max_tokens"],
-                            "metadata": tpl["metadata"],
-                        }
-                    else:
-                        tpl_data = {
-                            "system_prompt": f'You are the webAgent {opt_role.title()} agent.',
-                            "max_turn_count": 1000,
-                            "model": None,
-                            "provider": None,
-                            "temperature": 0.0,
-                            "max_tokens": 4096,
-                            "metadata": "{}",
-                        }
+                    if not tpl:
+                        logger.warning(
+                            "Optimizer template '%s' not found — check app/context/agents/%s.json",
+                            prompter, prompter,
+                        )
+                        raise ValueError(f"No agent template found for id '{prompter}'")
+
                     agent_id = str(uuid.uuid4())
                     conn.execute(
                         """INSERT INTO agents
@@ -131,13 +121,13 @@ async def chat(request: ChatRequest):
                             temperature, max_tokens, status, metadata, created_at, updated_at)
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, datetime('now'), datetime('now'))""",
                         (agent_id, opt_agent_user_id,
-                         tpl_data["system_prompt"],
-                         tpl_data["max_turn_count"],
-                         tpl_data["model"],
-                         tpl_data["provider"],
-                         tpl_data["temperature"],
-                         tpl_data["max_tokens"],
-                         tpl_data["metadata"]),
+                         tpl["system_prompt"],
+                         tpl["max_turn_count"],
+                         tpl["model"],
+                         tpl["provider"],
+                         tpl["temperature"],
+                         tpl["max_tokens"],
+                         tpl["metadata"]),
                     )
                     conn.commit()
                     agent = await db.get_agent_for_user(opt_agent_user_id)
@@ -348,7 +338,7 @@ async def chat(request: ChatRequest):
         async def event_callback(event: Dict[str, Any]):
             await _emit_to_visualizers(request.session_id, event, user_id=request.user_id)
 
-        # Run the agent loop
+        # Run the agent loop (with 5-minute timeout)
         assistant_reply = await run_agent_loop_buffered(
             user_id=request.user_id,
             session_id=request.session_id,
@@ -360,6 +350,7 @@ async def chat(request: ChatRequest):
             event_callback=event_callback,
             max_turns=agent.get("max_turn_count", 10),
             channel="web_portal",
+            timeout_seconds=300,
         )
 
         # ── PHASE 3: Background memory save (visible tool interaction) ──
@@ -530,26 +521,32 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
 
         async def run_agent_task():
             assistant_reply = ""
+            TIMEOUT_SEC = 300  # 5 min total timeout for the agent loop
             try:
-                async for event in stream_agent_events(
-                    user_id=request.user_id,
-                    session_id=request.session_id,
-                    user_message=request.message,
-                    system_prompt=system_prompt,
-                    agent_id=agent["id"],
-                    history=history,
-                    parent_interaction_id=parent_id,
-                    max_turns=agent.get("max_turn_count", 10),
-                    channel="web_portal",
-                ):
-                    await q.put(event)
-                    
-                    if event["type"] == "response":
-                        assistant_reply = event["content"]
-                    elif event["type"] == "error" and not assistant_reply:
-                        assistant_reply = f"I encountered an error: {event['message']}"
-                    elif event["type"] == "interrupted" and not assistant_reply:
-                        assistant_reply = f"I was interrupted: {event['message']}"
+                async def _run():
+                    nonlocal assistant_reply
+                    async for event in stream_agent_events(
+                        user_id=request.user_id,
+                        session_id=request.session_id,
+                        user_message=request.message,
+                        system_prompt=system_prompt,
+                        agent_id=agent["id"],
+                        history=history,
+                        parent_interaction_id=parent_id,
+                        max_turns=agent.get("max_turn_count", 10),
+                        channel="web_portal",
+                    ):
+                        await q.put(event)
+
+                        if event["type"] == "response":
+                            assistant_reply = event["content"]
+                        elif event["type"] == "error" and not assistant_reply:
+                            assistant_reply = f"I encountered an error: {event['message']}"
+                        elif event["type"] == "interrupted" and not assistant_reply:
+                            assistant_reply = f"I was interrupted: {event['message']}"
+
+                # Wrap the agent loop with a timeout
+                await asyncio.wait_for(_run(), timeout=TIMEOUT_SEC)
 
                 asyncio.create_task(_save_chat_to_memory(
                     db, request.user_id, request.session_id,
@@ -557,8 +554,14 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                 ))
 
                 await q.put({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_save_start', 'slug': f'chat/{request.session_id[:8]}'})
+            except asyncio.TimeoutError:
+                logger.warning("SSE agent task timed out for session %s", request.session_id)
+                await q.put({
+                    "type": "error", "level": "agent",
+                    "message": f"The request timed out after {TIMEOUT_SEC} seconds. Please try again or simplify your request.",
+                })
             finally:
-                await q.put(None) # Signal end of stream
+                await q.put(None)  # Signal end of stream
         
         # Start agent loop in the background!
         asyncio.create_task(run_agent_task())
