@@ -127,11 +127,34 @@ async def trigger_optimizer_run(
         pf = await prefilter(user_id, session_id)
         turns = pf.get("turns", 1)
         tokens = pf.get("tokens", 100)
-        transcript = pf.get("transcript", [])
         
-        # Insert a system message with the prefilter data for the Planner
-        init_content = f"Session to optimize has {turns} turns, ~{tokens} tokens.\n\nUser feedback: {feedback or '(none)'}\n\nTranscript:\n"
-        init_content += "\n".join(transcript[-25:])
+        # Build enriched init message so Planner has everything without discovery tools
+        parts = []
+        parts.append(f"Session stats: {turns} assistant turns, ~{tokens} tokens.")
+        parts.append(f"User feedback: {feedback or '(none)'}")
+        
+        original_message = pf.get("original_message", "")
+        if original_message:
+            parts.append(f"Original user message: {original_message}")
+        
+        tool_defs = pf.get("tool_definitions", [])
+        if tool_defs:
+            parts.append("\nTools used in session:")
+            for td in tool_defs:
+                parts.append(f"  - {td['name']}: {td.get('description', 'N/A')[:200]}")
+        
+        context_docs = pf.get("context_docs", [])
+        if context_docs:
+            parts.append("\nYour active context documents:")
+            for cd in context_docs:
+                parts.append(f"  - [{cd['type']}] {cd['title']}: {cd.get('excerpt', '')[:200]}")
+        
+        full_transcript = pf.get("full_transcript", [])
+        parts.append("\nFull transcript:")
+        for line in full_transcript:
+            parts.append(line)
+        
+        init_content = "\n".join(parts)
         conn.execute(
             "INSERT INTO interactions (id,session_id,role,content,source,channel,created_at) VALUES (?,?,'system',?,'optimizer:init','optimizer',datetime('now'))",
             (str(uuid.uuid4()), opt_sid, init_content)

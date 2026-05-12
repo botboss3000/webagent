@@ -1077,42 +1077,64 @@ async def run_agent_loop_buffered(
     max_turns: int = 10,
     event_callback: Optional[Any] = None,
     channel: Optional[str] = None,
+    timeout_seconds: Optional[int] = None,
 ) -> str:
     """
     Compatibility wrapper that runs the streaming loop internally,
     discards intermediate string chunks (stream events), and returns the final string.
     Sends all other events to event_callback.
+
+    If timeout_seconds is set, raises asyncio.TimeoutError if the agent loop
+    does not complete within that time.
     """
     final_response = ""
     
-    async for event in stream_agent_events(
-        user_id=user_id,
-        session_id=session_id,
-        user_message=user_message,
-        system_prompt=system_prompt,
-        agent_id=agent_id,
-        history=history,
-        parent_interaction_id=parent_interaction_id,
-        max_turns=max_turns,
-        channel=channel,
-    ):
-        if event_callback:
-            try:
-                await event_callback(event)
-            except Exception:
-                pass
-                
-        if event["type"] == "response":
-            final_response = event["content"]
-        elif event["type"] == "error":
-            # If an error happens before final response, return the error message as final response.
+    async def _run():
+        nonlocal final_response
+        async for event in stream_agent_events(
+            user_id=user_id,
+            session_id=session_id,
+            user_message=user_message,
+            system_prompt=system_prompt,
+            agent_id=agent_id,
+            history=history,
+            parent_interaction_id=parent_interaction_id,
+            max_turns=max_turns,
+            channel=channel,
+        ):
+            if event_callback:
+                try:
+                    await event_callback(event)
+                except Exception:
+                    pass
+                    
+            if event["type"] == "response":
+                final_response = event["content"]
+            elif event["type"] == "error":
+                if not final_response:
+                    final_response = f"I encountered an error: {event['message']}"
+            elif event["type"] == "interrupted":
+                if not final_response:
+                    final_response = f"I was interrupted: {event['message']}"
+                    
+        if not final_response:
+            final_response = "I completed the analysis but produced no output."
+
+    if timeout_seconds is not None:
+        try:
+            await asyncio.wait_for(_run(), timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Agent loop timed out after %ds for session %s",
+                timeout_seconds, session_id,
+            )
             if not final_response:
-                final_response = f"I encountered an error: {event['message']}"
-        elif event["type"] == "interrupted":
-            if not final_response:
-                final_response = f"I was interrupted: {event['message']}"
-                
-    if not final_response:
-        final_response = "I completed the analysis but produced no output."
+                final_response = (
+                    f"I'm sorry, the request timed out after {timeout_seconds} seconds. "
+                    f"The analysis was taking too long and had to be stopped. "
+                    f"Please try a more specific request or use the stream endpoint for long-running tasks."
+                )
+    else:
+        await _run()
         
     return final_response

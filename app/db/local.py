@@ -117,8 +117,7 @@ CREATE TABLE IF NOT EXISTS agent_templates (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-INSERT OR IGNORE INTO agent_templates (id, system_prompt, max_turn_count)
-VALUES ('default', '', 10);
+-- Agent templates seeded from app/context/agents/*.json — no hardcoded defaults
 
 CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY,
@@ -507,6 +506,7 @@ class LocalBackend(StorageBackend):
 
     def __init__(self, db_path: Optional[str] = None):
         self._db_path = db_path or DEFAULT_DB_PATH
+        self._write_lock = asyncio.Lock()
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -817,21 +817,22 @@ class LocalBackend(StorageBackend):
         # Optimizer sessions get source='optimizer' for all interactions
         if source is None and session_id.startswith('optimizer-'):
             source = 'optimizer'
-        conn = self._get_conn()
-        try:
-            interaction_id = _uuid()
-            conn.execute(
-                "INSERT INTO interactions (id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, source, from_id, to_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (interaction_id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input_data, output_data, source or 'user', sender_id, receiver_id),
-            )
-            conn.commit()
-            logger.debug("Inserted interaction %s", interaction_id)
-            return interaction_id
-        except Exception as e:
-            logger.error("Error inserting interaction: %s", e)
-            raise
-        finally:
-            conn.close()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                interaction_id = _uuid()
+                conn.execute(
+                    "INSERT INTO interactions (id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, source, from_id, to_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (interaction_id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input_data, output_data, source or 'user', sender_id, receiver_id),
+                )
+                conn.commit()
+                logger.debug("Inserted interaction %s", interaction_id)
+                return interaction_id
+            except Exception as e:
+                logger.error("Error inserting interaction: %s", e)
+                raise
+            finally:
+                conn.close()
 
     # ---- Context Defaults ----
 
@@ -921,11 +922,11 @@ class LocalBackend(StorageBackend):
 
     def _seed_agent_templates_from_json_files(self, conn: sqlite3.Connection) -> None:
         """
-        Scan app/context/agents/*.json and seed each into
+        Scan app/context/agents/*.json and upsert each into
         agent_templates table with full schema (id, system_prompt,
         max_turn_count, model, provider, temperature, max_tokens,
-        metadata). Uses INSERT OR IGNORE so existing templates
-        are preserved.
+        metadata). Uses UPDATE-then-INSERT so JSON files ALWAYS
+        win — changes take effect on restart.
         """
         from app.context.md_seeder import scan_agent_json_files
         templates = scan_agent_json_files()
@@ -933,18 +934,37 @@ class LocalBackend(StorageBackend):
             return
         now = _now_iso()
         for tpl in templates:
+            # Upsert: try to update existing row first
             conn.execute(
-                """INSERT OR IGNORE INTO agent_templates
-                   (id, system_prompt, max_turn_count, model, provider,
-                    temperature, max_tokens, metadata, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) """,
-                (tpl["id"], tpl["system_prompt"], tpl["max_turn_count"],
-                 tpl["model"], tpl["provider"], tpl["temperature"],
-                 tpl["max_tokens"], tpl["metadata"], now),
+                """UPDATE agent_templates SET
+                   system_prompt = ?,
+                   max_turn_count = ?,
+                   model = ?,
+                   provider = ?,
+                   temperature = ?,
+                   max_tokens = ?,
+                   metadata = ?,
+                   updated_at = ?
+                   WHERE id = ?""",
+                (tpl["system_prompt"], tpl["max_turn_count"],
+                 tpl["model"], tpl["provider"],
+                 tpl["temperature"], tpl["max_tokens"],
+                 tpl["metadata"], now, tpl["id"]),
             )
+            # If no row was updated, insert new one
+            if conn.total_changes == 0:
+                conn.execute(
+                    """INSERT INTO agent_templates
+                       (id, system_prompt, max_turn_count, model, provider,
+                        temperature, max_tokens, metadata, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (tpl["id"], tpl["system_prompt"], tpl["max_turn_count"],
+                     tpl["model"], tpl["provider"], tpl["temperature"],
+                     tpl["max_tokens"], tpl["metadata"], now, now),
+                )
         conn.commit()
         logger.info(
-            "Seeded %d agent template(s) from app/context/agents/*.json",
+            "Upserted %d agent template(s) from app/context/agents/*.json",
             len(templates),
         )
 
@@ -1257,66 +1277,67 @@ class LocalBackend(StorageBackend):
         timeline: str = "",
         frontmatter: Optional[dict] = None,
     ) -> dict:
-        conn = self._get_conn()
-        try:
-            now = _now_iso()
-            existing = conn.execute(
-                "SELECT id FROM memories WHERE user_id = ? AND slug = ?",
-                (user_id, slug),
-            ).fetchone()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                now = _now_iso()
+                existing = conn.execute(
+                    "SELECT id FROM memories WHERE user_id = ? AND slug = ?",
+                    (user_id, slug),
+                ).fetchone()
 
-            data = {
-                "user_id": user_id,
-                "slug": slug,
-                "page_type": page_type,
-                "title": title,
-                "compiled_truth": compiled_truth,
-                "timeline": timeline,
-                "frontmatter": json.dumps(frontmatter or {}),
-                "updated_at": now,
-            }
+                data = {
+                    "user_id": user_id,
+                    "slug": slug,
+                    "page_type": page_type,
+                    "title": title,
+                    "compiled_truth": compiled_truth,
+                    "timeline": timeline,
+                    "frontmatter": json.dumps(frontmatter or {}),
+                    "updated_at": now,
+                }
 
-            if existing:
-                set_parts = [f"{k} = ?" for k in data]
-                set_vals = list(data.values())
-                conn.execute(
-                    f"UPDATE memories SET {', '.join(set_parts)} WHERE id = ?",
-                    set_vals + [existing["id"]],
-                )
-                data["id"] = existing["id"]
-            else:
-                data["id"] = _uuid()
-                data["created_at"] = now
-                cols = ", ".join(data.keys())
-                placeholders = ", ".join("?" for _ in data)
-                conn.execute(
-                    f"INSERT INTO memories ({cols}) VALUES ({placeholders})",
-                    list(data.values()),
-                )
+                if existing:
+                    set_parts = [f"{k} = ?" for k in data]
+                    set_vals = list(data.values())
+                    conn.execute(
+                        f"UPDATE memories SET {', '.join(set_parts)} WHERE id = ?",
+                        set_vals + [existing["id"]],
+                    )
+                    data["id"] = existing["id"]
+                else:
+                    data["id"] = _uuid()
+                    data["created_at"] = now
+                    cols = ", ".join(data.keys())
+                    placeholders = ", ".join("?" for _ in data)
+                    conn.execute(
+                        f"INSERT INTO memories ({cols}) VALUES ({placeholders})",
+                        list(data.values()),
+                    )
 
-            conn.commit()
-            memory_id = data["id"]
+                conn.commit()
+                memory_id = data["id"]
 
-            # ── Embed on write: chunk + embed + store ──
-            embed_sources = []
-            if compiled_truth and compiled_truth.strip():
-                embed_sources.append((compiled_truth, "compiled_truth"))
-            if timeline and timeline.strip():
-                embed_sources.append((timeline, "timeline"))
-            if embed_sources:
-                for text, source in embed_sources:
-                    try:
-                        await self._embed_and_store_chunks(conn, memory_id, text, source)
-                    except Exception as chunk_err:
-                        logger.warning("Chunk+embed failed for memory %s (%s): %s", slug, source, chunk_err)
+                # ── Embed on write: chunk + embed + store ──
+                embed_sources = []
+                if compiled_truth and compiled_truth.strip():
+                    embed_sources.append((compiled_truth, "compiled_truth"))
+                if timeline and timeline.strip():
+                    embed_sources.append((timeline, "timeline"))
+                if embed_sources:
+                    for text, source in embed_sources:
+                        try:
+                            await self._embed_and_store_chunks(conn, memory_id, text, source)
+                        except Exception as chunk_err:
+                            logger.warning("Chunk+embed failed for memory %s (%s): %s", slug, source, chunk_err)
 
-            logger.debug("Memory upserted: %s (%s)", slug, "updated" if existing else "created")
-            return data
-        except Exception as e:
-            logger.error("Error upserting memory %s: %s", slug, e)
-            raise
-        finally:
-            conn.close()
+                logger.debug("Memory upserted: %s (%s)", slug, "updated" if existing else "created")
+                return data
+            except Exception as e:
+                logger.error("Error upserting memory %s: %s", slug, e)
+                raise
+            finally:
+                conn.close()
 
     async def memory_get(self, user_id: str, slug: str) -> Optional[dict]:
         conn = self._get_conn()
@@ -1822,27 +1843,28 @@ class LocalBackend(StorageBackend):
         steps_to_complete: int = 1,
     ) -> str:
         """Record a skill execution. Returns the execution id."""
-        conn = self._get_conn()
-        try:
-            eid = _uuid()
-            now = _now_iso()
-            conn.execute(
-                """INSERT INTO skill_executions
-                   (id, skill_id, user_id, session_id, interaction_id,
-                    success, duration_ms, steps_to_complete, error_message,
-                    input_params, output_summary, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (eid, skill_id, user_id, session_id, interaction_id,
-                 1 if success else 0, duration_ms, steps_to_complete, error_message,
-                 json.dumps(input_params or {}), output_summary, now),
-            )
-            conn.commit()
-            return eid
-        except Exception as e:
-            logger.error("Error tracking skill execution: %s", e)
-            raise
-        finally:
-            conn.close()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                eid = _uuid()
+                now = _now_iso()
+                conn.execute(
+                    """INSERT INTO skill_executions
+                       (id, skill_id, user_id, session_id, interaction_id,
+                        success, duration_ms, steps_to_complete, error_message,
+                        input_params, output_summary, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (eid, skill_id, user_id, session_id, interaction_id,
+                     1 if success else 0, duration_ms, steps_to_complete, error_message,
+                     json.dumps(input_params or {}), output_summary, now),
+                )
+                conn.commit()
+                return eid
+            except Exception as e:
+                logger.error("Error tracking skill execution: %s", e)
+                raise
+            finally:
+                conn.close()
 
     async def skill_get_rating(
         self, skill_id: str, user_id: Optional[str] = None
@@ -1981,33 +2003,21 @@ class LocalBackend(StorageBackend):
     async def create_agent_for_user(self, user_id: str) -> dict:
         conn = self._get_conn()
         try:
+            # Always seed from JSON files to ensure latest values
+            self._seed_agent_templates_from_json_files(conn)
+
             # Clone the default template
             tpl = conn.execute(
                 "SELECT * FROM agent_templates WHERE id = 'default'"
             ).fetchone()
             if not tpl:
-                # Fallback: inline default values
-                tpl_data = {
-                    "system_prompt": "",
-                    "max_turn_count": 10,
-                    "model": None,
-                    "provider": None,
-                    "temperature": 0.0,
-                    "max_tokens": 4096,
-                    "metadata": "{}",
-                }
-            else:
-                tpl_data = dict(tpl)
+                logger.warning(
+                    "No 'default' agent template found after JSON seeding — "
+                    "check app/context/agents/default.json"
+                )
+                raise ValueError("No default agent template available")
 
-            # If template system_prompt is empty, seed from JSON files
-            if not tpl_data.get("system_prompt", "").strip():
-                self._seed_agent_templates_from_json_files(conn)
-                tpl = conn.execute(
-                    "SELECT * FROM agent_templates WHERE id = 'default'"
-                ).fetchone()
-                if tpl:
-                    tpl_data = dict(tpl)
-
+            tpl_data = dict(tpl)
             now = _now_iso()
             agent_id = _uuid()
             conn.execute(
@@ -2017,13 +2027,13 @@ class LocalBackend(StorageBackend):
                     assigned_at, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)""",
                 (agent_id, user_id,
-                 tpl_data.get("system_prompt", ""),
-                 tpl_data.get("max_turn_count", 10),
-                 tpl_data.get("model"),
-                 tpl_data.get("provider"),
-                 tpl_data.get("temperature", 0.0),
-                 tpl_data.get("max_tokens", 4096),
-                 tpl_data.get("metadata", "{}"),
+                 tpl_data["system_prompt"],
+                 tpl_data["max_turn_count"],
+                 tpl_data["model"],
+                 tpl_data["provider"],
+                 tpl_data["temperature"],
+                 tpl_data["max_tokens"],
+                 tpl_data["metadata"],
                  now, now, now),
             )
             conn.commit()
@@ -2031,7 +2041,10 @@ class LocalBackend(StorageBackend):
             row = conn.execute(
                 "SELECT * FROM agents WHERE id = ?", (agent_id,)
             ).fetchone()
-            logger.info("Created agent %s for user %s", agent_id, user_id)
+            logger.info(
+                "Created agent %s for user %s from JSON template",
+                agent_id, user_id,
+            )
             return dict(row)
         except Exception as e:
             logger.error("Error creating agent for user %s: %s", user_id, e)
@@ -2040,24 +2053,25 @@ class LocalBackend(StorageBackend):
             conn.close()
 
     async def increment_agent_turn_count(self, agent_id: str) -> int:
-        conn = self._get_conn()
-        try:
-            row = conn.execute(
-                "SELECT turn_count FROM agents WHERE id = ?", (agent_id,)
-            ).fetchone()
-            current = row["turn_count"] if row else 0
-            new_count = current + 1
-            conn.execute(
-                "UPDATE agents SET turn_count = ?, updated_at = ? WHERE id = ?",
-                (new_count, _now_iso(), agent_id),
-            )
-            conn.commit()
-            return new_count
-        except Exception as e:
-            logger.error("Error incrementing turn count for agent %s: %s", agent_id, e)
-            raise
-        finally:
-            conn.close()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT turn_count FROM agents WHERE id = ?", (agent_id,)
+                ).fetchone()
+                current = row["turn_count"] if row else 0
+                new_count = current + 1
+                conn.execute(
+                    "UPDATE agents SET turn_count = ?, updated_at = ? WHERE id = ?",
+                    (new_count, _now_iso(), agent_id),
+                )
+                conn.commit()
+                return new_count
+            except Exception as e:
+                logger.error("Error incrementing turn count for agent %s: %s", agent_id, e)
+                raise
+            finally:
+                conn.close()
 
     async def get_default_template(self) -> dict:
         conn = self._get_conn()
@@ -2067,7 +2081,10 @@ class LocalBackend(StorageBackend):
             ).fetchone()
             if row:
                 return dict(row)
-            # Return sensible defaults if table empty
+            logger.warning(
+                "No 'default' agent template in DB — check app/context/agents/default.json"
+            )
+            # Fallback: minimal dict — JSON is the real source of truth
             return {
                 "id": "default",
                 "system_prompt": "",
@@ -2091,41 +2108,59 @@ class LocalBackend(StorageBackend):
             ).fetchone()
             if row:
                 return row["max_turn_count"]
-            return 10  # Default if agent not found
+            logger.warning("Agent %s not found for max_turn_count lookup", agent_id)
+            return 10
+        finally:
+            conn.close()
+
+    async def seed_agent_templates(self) -> int:
+        """Re-seed agent_templates from app/context/agents/*.json. Returns count."""
+        conn = self._get_conn()
+        try:
+            before = conn.execute(
+                "SELECT COUNT(*) FROM agent_templates"
+            ).fetchone()[0]
+            self._seed_agent_templates_from_json_files(conn)
+            after = conn.execute(
+                "SELECT COUNT(*) FROM agent_templates"
+            ).fetchone()[0]
+            return max(after, before)
         finally:
             conn.close()
 
     # ---- Interrupt Handling ----
 
     async def set_interrupt(self, session_id: str) -> None:
-        conn = self._get_conn()
-        try:
-            conn.execute(
-                """INSERT INTO session_interrupts (session_id, interrupt_requested, created_at) 
-                   VALUES (?, 1, ?) 
-                   ON CONFLICT(session_id) DO UPDATE SET interrupt_requested = 1, created_at = ?""",
-                (session_id, _now_iso(), _now_iso())
-            )
-            conn.commit()
-        except Exception as e:
-            logger.error("Error setting interrupt for %s: %s", session_id, e)
-            raise
-        finally:
-            conn.close()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """INSERT INTO session_interrupts (session_id, interrupt_requested, created_at) 
+                       VALUES (?, 1, ?) 
+                       ON CONFLICT(session_id) DO UPDATE SET interrupt_requested = 1, created_at = ?""",
+                    (session_id, _now_iso(), _now_iso())
+                )
+                conn.commit()
+            except Exception as e:
+                logger.error("Error setting interrupt for %s: %s", session_id, e)
+                raise
+            finally:
+                conn.close()
 
     async def clear_interrupt(self, session_id: str) -> None:
-        conn = self._get_conn()
-        try:
-            conn.execute(
-                "DELETE FROM session_interrupts WHERE session_id = ?",
-                (session_id,)
-            )
-            conn.commit()
-        except Exception as e:
-            logger.error("Error clearing interrupt for %s: %s", session_id, e)
-            raise
-        finally:
-            conn.close()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "DELETE FROM session_interrupts WHERE session_id = ?",
+                    (session_id,)
+                )
+                conn.commit()
+            except Exception as e:
+                logger.error("Error clearing interrupt for %s: %s", session_id, e)
+                raise
+            finally:
+                conn.close()
 
     # ---- Attachments ----
 
