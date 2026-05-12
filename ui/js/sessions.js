@@ -26,7 +26,14 @@ export async function populateUserSelect() {
     dropdownUserLabel.title = uid;
   }
   // Populate session select for current user
-  if (app.currentUserId) populateSessionSelect(app.currentUserId);
+  if (app.currentUserId) {
+    // Preserve current dropdown state (open/focused)
+    const activeElement = document.activeElement;
+    const isSelectActive = activeElement && activeElement.id === 'session-select';
+    if (!isSelectActive) {
+      populateSessionSelect(app.currentUserId);
+    }
+  }
 }
 
 export async function populateSessionSelect(userId) {
@@ -189,6 +196,17 @@ export function initSessions() {
     dropdownUserLabel.textContent = uid;
     dropdownUserLabel.title = uid;
   }
+
+  // Auto-poll sessions dropdown every 1s
+  setInterval(() => {
+    if (app.currentUserId) {
+      // Don't auto-refresh while the select is focused/open to avoid layout thrashing
+      const activeElement = document.activeElement;
+      if (!activeElement || activeElement.id !== 'session-select') {
+        populateSessionSelect(app.currentUserId);
+      }
+    }
+  }, 1000);
 
   // ── Sign-out button in header ──
   const signoutBtn = document.getElementById('btn-signout-header');
