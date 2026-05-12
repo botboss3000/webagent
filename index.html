@@ -303,9 +303,6 @@
     <div id="tab-database" class="tab-content">
       <div id="db-viewer">
         <div id="db-toolbar" style="display:none;">
-          <select id="db-select">
-            <option value="local.db">local.db</option>
-          </select>
           <button id="db-show-hidden-btn" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#565f89;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;margin-left:auto;">👁 Hide hidden</button>
           <span id="db-auto-status"></span>
         </div>
@@ -330,7 +327,11 @@
               <span style="display:flex;align-items:center;gap:8px;">
                 <button id="db-page-prev" style="display:none;background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">◀</button>
                 <button id="db-page-next" style="display:none;background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">▶</button>
+                <select id="db-select" title="Switch database" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:2px 6px;border-radius:4px;font-size:11px;font-family:inherit;cursor:pointer;max-width:130px;">
+                  <option value="local.db">local.db</option>
+                </select>
                 <button id="db-settings-btn" title="Database View Settings" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#565f89;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:14px;font-family:inherit;">⚙</button>
+                <button id="db-download-btn" title="Download local.db" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#565f89;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:14px;font-family:inherit;">⬇</button>
               </span>
             </div>
             <div id="db-table-data">
@@ -365,6 +366,7 @@
       </div>
     </div>
     <div id="chat-input-area" class="chat-footer-drop-target">
+      <button id="chat-expand-btn" title="Expand input" class="chat-expand-btn">↗</button>
       <div id="chat-preview-bar" style="display:none;"></div>
       <div id="chat-input-row">
         <button id="chat-attach-btn" title="Attach files (or drag & drop onto chat)">📎</button>
@@ -376,6 +378,24 @@
       <div id="chat-footer-drop-overlay">
         <span>Drop files here</span>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Chat expand modal (full-screen textarea) -->
+<div id="chat-expand-modal">
+  <div id="chat-expand-backdrop"></div>
+  <div id="chat-expand-panel">
+    <div id="chat-expand-header">
+      <span id="chat-expand-title">Compose message</span>
+      <span id="chat-expand-actions">
+        <button id="chat-expand-send" disabled>Send</button>
+        <button id="chat-expand-close">&times;</button>
+      </span>
+    </div>
+    <textarea id="chat-expand-editor" spellcheck="false"></textarea>
+    <div id="chat-expand-footer">
+      <span id="chat-expand-hint">Ctrl+Enter to send &nbsp;·&nbsp; Esc to close</span>
     </div>
   </div>
 </div>
@@ -953,6 +973,50 @@
 <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm/lib/xterm.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit/lib/addon-fit.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    // ── Populate db-select dropdown ──
+    async function populateDbList() {
+      var sel = document.getElementById('db-select');
+      if (!sel) return;
+      var token = localStorage.getItem('auth_token');
+      try {
+        var res = await fetch('/api/v1/db/list?token=' + encodeURIComponent(token || ''));
+        if (!res.ok) return;
+        var data = await res.json();
+        sel.innerHTML = '';
+        data.databases.forEach(function(name) {
+          var opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          sel.appendChild(opt);
+        });
+        // If local.db exists in list, select it by default
+        if (data.databases.includes('local.db')) {
+          sel.value = 'local.db';
+        }
+      } catch(e) {
+        console.warn('Failed to load db list:', e);
+      }
+    }
+
+    // ── Download button ──
+    var downloadBtn = document.getElementById('db-download-btn');
+    if (downloadBtn) {
+      downloadBtn.addEventListener('click', function() {
+        var sel = document.getElementById('db-select');
+        var dbName = sel ? sel.value : 'local.db';
+        var token = localStorage.getItem('auth_token');
+        var url = '/api/v1/db/download?db=' + encodeURIComponent(dbName);
+        if (token) url += '&token=' + encodeURIComponent(token);
+        window.open(url, '_blank');
+      });
+    }
+
+    // ── Populate on first db tab appearance ──
+    populateDbList();
+  });
+</script>
 <script type="module" src="./ui/js/main.js"></script>
 <script type="module" src="./ui/js/attachments.js"></script>
 <script type="module" src="./ui/js/optimizer.js"></script>

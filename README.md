@@ -76,6 +76,8 @@ Events are routed on the frontend:
 | **`agent/session_history.py`** | Maps **`interactions`** rows → OpenAI-style **`messages`** for the active session (excludes internal memory tools). |
 | **`agent/prompts.py`** | System prompt from context, brain results, tools, attachment context. Includes **`format_attachments_for_prompt()`** helper. |
 | **`agent/error_classifier.py`** | Structured tool errors (**used on the WebSocket / streaming path**). |
+| **`context/agents/`** | **Agent template JSON files** — seed `agent_templates` table with full schema (id, system_prompt, max_turn_count, model, provider, temperature, max_tokens, metadata). Each `.json` file defines one agent template. Default: `default.json`, `optimizer-planner.json`, `optimizer-finalizer.json`. Scanned on first agent creation for a user. |
+| **`context/context_templates/`** | **Context template .md files** — seed `context_templates` table per context_type (agent, user, skills, tools, tasks, memory, project, jobs). Copied to user context on first chat. |
 | **`agent/embed.py`** | Embedding utility using same provider config as chat. Returns configurable-dimension vectors (`EMBED_DIM`, default 1536). |
 | **`db/__init__.py`** | **`get_db()`** → **`SupabaseBackend`** or **`LocalBackend`** from persisted mode. |
 | **`db/supabase.py`** | Cloud: **`sessions`**, **`interactions`**, **`context`**, **`context_templates`**, **`attachments`**, memories / tools / skills per shared schema. |

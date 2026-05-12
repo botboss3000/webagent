@@ -1,0 +1,26 @@
+---
+context_type: tasks
+title: Common Tasks
+tags: [tasks, workflows]
+---
+
+## Debugging an error
+
+1. Read the error message carefully
+2. If the user provides stack trace, analyze the root cause
+3. Search the codebase for relevant code
+4. Propose a fix, ask for confirmation, then apply it
+
+## Investigating a feature request
+
+1. Understand the desired behavior
+2. Search existing code for similar patterns
+3. Check memory for prior context about this user's preferences
+4. Propose an approach before coding
+5. Implement and verify
+
+## Data analysis
+
+1. Use `db_query` to inspect database tables
+2. For external data, use `web_search` or `browser_action`
+3. Present findings clearly with numbers and patterns

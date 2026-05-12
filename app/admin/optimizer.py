@@ -90,6 +90,7 @@ async def get_optimizer_runs(limit: int = Query(20, ge=1, le=100)):
 async def trigger_optimizer_run(
     user_id: str = Query("_system"),
     session_id: str = Query("manual"),
+    feedback: str = Query(""),
 ):
     """Start an interactive optimizer session. Creates chat session with Planner agent."""
     try:
@@ -106,25 +107,55 @@ async def trigger_optimizer_run(
         raw = getattr(db, '_get_conn', None)
         conn = raw()
         
-        # Ensure session exists
+        # Ensure session exists with planner role
         conn.execute("INSERT OR IGNORE INTO sessions (id,user_id,title,metadata,created_at,updated_at) VALUES (?,?,?,?,datetime('now'),datetime('now'))",
                      (opt_sid, user_id, f"Optimizer - {opt_sid[:12]}", '{"opt_role": "planner"}'))
         
         # Get prefilter data (session stats) and inject as first message
         from app.optimizer.prefilter import prefilter
-        import asyncio
+        # If session_id is empty, find the most recent session for this user
+        if not session_id:
+            import sqlite3 as _sq3
+            _conn = _sq3.connect("app/db/local.db")
+            _row = _conn.execute(
+                "SELECT id FROM sessions WHERE user_id=? AND id NOT LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1",
+                (user_id,)
+            ).fetchone()
+            if _row:
+                session_id = _row[0]
+            _conn.close()
         pf = await prefilter(user_id, session_id)
         turns = pf.get("turns", 1)
         tokens = pf.get("tokens", 100)
+        transcript = pf.get("transcript", [])
         
         # Insert a system message with the prefilter data for the Planner
+        init_content = f"Session to optimize has {turns} turns, ~{tokens} tokens.\n\nUser feedback: {feedback or '(none)'}\n\nTranscript:\n"
+        init_content += "\n".join(transcript[-25:])
         conn.execute(
             "INSERT INTO interactions (id,session_id,role,content,source,channel,created_at) VALUES (?,?,'system',?,'optimizer:init','optimizer',datetime('now'))",
-            (str(uuid.uuid4()), opt_sid, f"Session to optimize: {turns} turns, ~{tokens} tokens. Transcript and tool errors attached.")
+            (str(uuid.uuid4()), opt_sid, init_content)
         )
         conn.commit()
         conn.close()
-        
+
+        # Fire-and-forget: auto-trigger the Planner to respond
+        async def _auto_trigger_planner():
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=60.0) as hclient:
+                    await hclient.post(
+                        f"http://127.0.0.1:8000/api/v1/chat",
+                        json={
+                            "message": f"I need help optimizing this session. User feedback: {feedback or 'No specific feedback.'}",
+                            "session_id": opt_sid,
+                            "user_id": user_id
+                        },
+                    )
+            except Exception as trigger_e:
+                logger.warning("Auto-trigger Planner first response failed (non-fatal): %s", trigger_e)
+        asyncio.create_task(_auto_trigger_planner())
+
         return {"status": "session_created", "optimizer_session_id": opt_sid}
     except Exception as e:
         logger.error("Manual optimizer run failed: %s", e)

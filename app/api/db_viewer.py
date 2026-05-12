@@ -12,6 +12,7 @@ from typing import Optional
 from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from app.auth.db_auth import require_db_auth
 
 logger = logging.getLogger(__name__)
@@ -771,3 +772,29 @@ async def query_table(
         }
     except sqlite3.Error as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/download")
+async def download_db(
+    db: str = Query("local.db", description="Database filename"),
+    _auth=Depends(require_db_auth),
+):
+    """Download the SQLite database file."""
+    db_path = _get_db_path(db)
+    return FileResponse(
+        path=str(db_path),
+        filename=db,
+        media_type="application/octet-stream",
+    )
+
+
+@router.get("/list")
+async def list_databases(
+    _auth=Depends(require_db_auth),
+):
+    """List all .db files in the db directory."""
+    files = sorted([
+        f.name for f in _DB_FILES_DIR.iterdir()
+        if f.suffix == ".db"
+    ])
+    return {"databases": files}

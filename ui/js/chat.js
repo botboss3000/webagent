@@ -105,6 +105,11 @@ async function sendMessage() {
   app.chatInput.value = '';
   app.chatSend.disabled = true;
 
+  // Advance the poll cursor so auto-poll doesn't re-render this message
+  if (window.__chatPollLastAt !== undefined) {
+    window.__chatPollLastAt = new Date().toISOString();
+  }
+
   addChatBubble('user', text);
   addChatBubble('agent', '\u2026', 'streaming');
   app.isProcessing = true;
@@ -204,6 +209,29 @@ async function sendMessage() {
   }
 }
 
+function openChatExpand() {
+  const modal = document.getElementById('chat-expand-modal');
+  const editor = document.getElementById('chat-expand-editor');
+  const sendBtn = document.getElementById('chat-expand-send');
+  editor.value = app.chatInput.value;
+  sendBtn.disabled = !editor.value.trim();
+  modal.classList.add('open');
+  setTimeout(() => { editor.focus(); }, 100);
+}
+
+function closeChatExpand() {
+  document.getElementById('chat-expand-modal').classList.remove('open');
+}
+
+function sendFromExpand() {
+  const editor = document.getElementById('chat-expand-editor');
+  const text = editor.value;
+  if (!text.trim()) return;
+  app.chatInput.value = text;
+  closeChatExpand();
+  sendMessage();
+}
+
 export function initChat() {
   app.addChatBubble = addChatBubble;
   app.updateLastBubble = updateLastBubble;
@@ -218,6 +246,104 @@ export function initChat() {
   app.chatInput.addEventListener('input', () => {
     app.chatSend.disabled = !app.chatInput.value.trim();
   });
+
+  // ── Expand button ──
+  document.getElementById('chat-expand-btn').addEventListener('click', openChatExpand);
+
+  // ── Expand modal events ──
+  const expandEditor = document.getElementById('chat-expand-editor');
+  const expandSend = document.getElementById('chat-expand-send');
+  expandSend.addEventListener('click', sendFromExpand);
+  expandEditor.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      sendFromExpand();
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeChatExpand();
+    }
+  });
+  expandEditor.addEventListener('input', () => {
+    expandSend.disabled = !expandEditor.value.trim();
+  });
+  document.getElementById('chat-expand-close').addEventListener('click', closeChatExpand);
+  document.getElementById('chat-expand-backdrop').addEventListener('click', closeChatExpand);
+
+  // ── Auto-fetch new messages for the current session ──
+  let lastPollSessionId = null;
+  let pollTimer = null;
+
+  async function pollNewMessages() {
+    if (!app.currentSessionId) return;
+    if (app.isProcessing) return;
+
+    // Detect session switch — reset cursor
+    if (lastPollSessionId !== app.currentSessionId) {
+      lastPollSessionId = app.currentSessionId;
+      window.__chatPollLastAt = null;
+    }
+
+    try {
+      let url = apiPath(`/api/v1/db/stream/interactions?db=local.db&session_id=${encodeURIComponent(app.currentSessionId)}`);
+      if (window.__chatPollLastAt) {
+        url += `&since=${encodeURIComponent(window.__chatPollLastAt)}`;
+      } else {
+        url += '&limit=100';
+      }
+
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const data = await res.json();
+      const all = data.interactions || [];
+      if (all.length === 0) return;
+
+      // On first poll, just record timestamp and bail
+      if (!window.__chatPollLastAt) {
+        for (const msg of all) {
+          if (msg.created_at && (!window.__chatPollLastAt || msg.created_at > window.__chatPollLastAt)) {
+            window.__chatPollLastAt = msg.created_at;
+          }
+        }
+        return;
+      }
+
+      // Update timestamp and render new messages
+      const toRender = [];
+      for (const msg of all) {
+        if (msg.created_at && msg.created_at > window.__chatPollLastAt) {
+          window.__chatPollLastAt = msg.created_at;
+        }
+        if (msg.role === 'user' || msg.role === 'assistant') {
+          toRender.push(msg);
+        }
+      }
+
+      for (const msg of toRender) {
+        addChatBubble(msg.role === 'user' ? 'user' : 'agent', msg.content || '');
+      }
+    } catch (e) { /* silent */ }
+  }
+
+  // Start polling (every 2 seconds)
+  function startPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(pollNewMessages, 2000);
+  }
+
+  function stopPolling() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  // Expose for cleanup
+  app._chatPollStop = stopPolling;
+
+  // Start polling on init, stop on page unload
+  startPolling();
+  window.addEventListener('beforeunload', stopPolling);
 }
 
 export { escapeHtml };

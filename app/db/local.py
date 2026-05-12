@@ -514,6 +514,7 @@ class LocalBackend(StorageBackend):
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
@@ -620,6 +621,9 @@ class LocalBackend(StorageBackend):
 
             # ── Seed: p5js visualizer skill template ──
             self._seed_visualizer_template(conn)
+
+            # ── Seed: agent templates from app/context/agents/*.json (full schema) ──
+            self._seed_agent_templates_from_json_files(conn)
 
         except Exception as e:
             logger.error("Error initializing local database: %s", e)
@@ -810,6 +814,9 @@ class LocalBackend(StorageBackend):
         source: Optional[str] = None,
     ) -> str:
         await self.assert_session_owned(user_id, session_id)
+        # Optimizer sessions get source='optimizer' for all interactions
+        if source is None and session_id.startswith('optimizer-'):
+            source = 'optimizer'
         conn = self._get_conn()
         try:
             interaction_id = _uuid()
@@ -874,7 +881,12 @@ class LocalBackend(StorageBackend):
             ).fetchall()
 
             if not defaults:
-                return 0
+                self._seed_context_templates_from_md_files(conn)
+                defaults = conn.execute(
+                    "SELECT context_type, title, content, tags FROM context_templates"
+                ).fetchall()
+                if not defaults:
+                    return 0
 
             existing_types = set(
                 r["context_type"]
@@ -906,6 +918,55 @@ class LocalBackend(StorageBackend):
             raise
         finally:
             conn.close()
+
+    def _seed_agent_templates_from_json_files(self, conn: sqlite3.Connection) -> None:
+        """
+        Scan app/context/agents/*.json and seed each into
+        agent_templates table with full schema (id, system_prompt,
+        max_turn_count, model, provider, temperature, max_tokens,
+        metadata). Uses INSERT OR IGNORE so existing templates
+        are preserved.
+        """
+        from app.context.md_seeder import scan_agent_json_files
+        templates = scan_agent_json_files()
+        if not templates:
+            return
+        now = _now_iso()
+        for tpl in templates:
+            conn.execute(
+                """INSERT OR IGNORE INTO agent_templates
+                   (id, system_prompt, max_turn_count, model, provider,
+                    temperature, max_tokens, metadata, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) """,
+                (tpl["id"], tpl["system_prompt"], tpl["max_turn_count"],
+                 tpl["model"], tpl["provider"], tpl["temperature"],
+                 tpl["max_tokens"], tpl["metadata"], now),
+            )
+        conn.commit()
+        logger.info(
+            "Seeded %d agent template(s) from app/context/agents/*.json",
+            len(templates),
+        )
+
+    def _seed_context_templates_from_md_files(self, conn: sqlite3.Connection) -> None:
+        """
+        Scan app/context/context_templates/*.md and seed them into
+        context_templates table. Uses INSERT OR IGNORE so duplicates
+        are skipped silently.
+        """
+        from app.context.md_seeder import scan_context_files
+        rows = scan_context_files()
+        if not rows:
+            return
+        for row in rows:
+            conn.execute(
+                """INSERT OR IGNORE INTO context_templates (id, context_type, title, content, tags)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (_uuid(), row["context_type"], row["title"], row["content"],
+                 json.dumps(row["tags"], ensure_ascii=False)),
+            )
+        conn.commit()
+        logger.info("Seeded %d context templates from .md files", len(rows))
 
     # ---- Context Documents ----
 
@@ -1937,6 +1998,15 @@ class LocalBackend(StorageBackend):
                 }
             else:
                 tpl_data = dict(tpl)
+
+            # If template system_prompt is empty, seed from JSON files
+            if not tpl_data.get("system_prompt", "").strip():
+                self._seed_agent_templates_from_json_files(conn)
+                tpl = conn.execute(
+                    "SELECT * FROM agent_templates WHERE id = 'default'"
+                ).fetchone()
+                if tpl:
+                    tpl_data = dict(tpl)
 
             now = _now_iso()
             agent_id = _uuid()

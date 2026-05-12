@@ -225,7 +225,14 @@ class SupabaseBackend(StorageBackend):
                 .execute()
             )
             if not defaults.data:
-                return 0
+                await self._seed_context_templates_from_md_files()
+                defaults = (
+                    self._client.table("context_templates")
+                    .select("context_type, title, content, tags")
+                    .execute()
+                )
+                if not defaults.data:
+                    return 0
 
             existing = (
                 self._client.table("context")
@@ -257,6 +264,79 @@ class SupabaseBackend(StorageBackend):
         except Exception as e:
             logger.error("Error copying defaults to agent: %s", e)
             raise
+
+    async def _seed_agent_templates_from_json_files(self) -> None:
+        """
+        Scan app/context/agents/*.json and seed each into
+        agent_templates table with full schema (id, system_prompt,
+        max_turn_count, model, provider, temperature, max_tokens,
+        metadata). Upserts via insert+update to preserve existing
+        rows while adding new ones.
+        """
+        from app.context.md_seeder import scan_agent_json_files
+        templates = scan_agent_json_files()
+        if not templates:
+            return
+        try:
+            for tpl in templates:
+                # Check if template exists
+                existing = self._client.table("agent_templates").select(
+                    "id"
+                ).eq("id", tpl["id"]).limit(1).execute()
+                new_data = {
+                    "system_prompt": tpl["system_prompt"],
+                    "max_turn_count": tpl["max_turn_count"],
+                    "model": tpl["model"],
+                    "provider": tpl["provider"],
+                    "temperature": tpl["temperature"],
+                    "max_tokens": tpl["max_tokens"],
+                    "metadata": tpl["metadata"],
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if existing.data and len(existing.data) > 0:
+                    self._client.table("agent_templates").update(
+                        new_data
+                    ).eq("id", tpl["id"]).execute()
+                else:
+                    new_data["id"] = tpl["id"]
+                    new_data["created_at"] = datetime.now(timezone.utc).isoformat()
+                    self._client.table("agent_templates").insert(
+                        new_data
+                    ).execute()
+            logger.info(
+                "Seeded %d agent template(s) from app/context/agents/*.json",
+                len(templates),
+            )
+        except Exception as e:
+            logger.debug(
+                "Agent template seeding from JSON files failed: %s", e
+            )
+
+    async def _seed_context_templates_from_md_files(self) -> None:
+        """
+        Scan app/context/context_templates/*.md and seed them into
+        context_templates table. Skips duplicates silently
+        (unique index on context_type + title).
+        """
+        from app.context.md_seeder import scan_context_files
+        rows = scan_context_files()
+        if not rows:
+            return
+        for row in rows:
+            try:
+                self._client.table("context_templates").insert({
+                    "context_type": row["context_type"],
+                    "title": row["title"],
+                    "content": row["content"],
+                    "tags": row["tags"],  # Supabase accepts native list
+                }).execute()
+            except Exception as e:
+                # Likely unique constraint on (context_type, title)
+                logger.debug(
+                    "Skipping duplicate template %s/%s: %s",
+                    row["context_type"], row["title"], e,
+                )
+        logger.info("Seeded %d context templates from .md files", len(rows))
 
     # ---- Context Documents ----
 
@@ -683,6 +763,18 @@ class SupabaseBackend(StorageBackend):
                 .execute()
             )
             tpl = tpl_res.data[0] if tpl_res.data else {}
+
+            # If template system_prompt is empty, seed from JSON files
+            if not tpl.get("system_prompt", "").strip():
+                await self._seed_agent_templates_from_json_files()
+                tpl_res = (
+                    self._client.table("agent_templates")
+                    .select("*")
+                    .eq("id", "default")
+                    .limit(1)
+                    .execute()
+                )
+                tpl = tpl_res.data[0] if tpl_res.data else {}
 
             now = datetime.now(timezone.utc).isoformat()
             agent_data = {

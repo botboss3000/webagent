@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 API_BASE = "http://127.0.0.1:8000"
 TIMEOUT_SEC = int(os.environ.get("WORKER_TIMEOUT", "90"))
-TEST_DB = "app/db/tests.db"
+TEST_DB = "app/db/local.db"
 
 
 def _init_test_db():
