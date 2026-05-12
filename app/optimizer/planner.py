@@ -71,7 +71,15 @@ async def propose_improvements(user_id, session_id, prefilter_data, mode="analyz
             brace = text.find('{')
             if brace >= 0:
                 text = text[brace:]
-        return json.loads(text)
+        # Trim trailing content after the last closing brace
+        last_brace = text.rfind('}')
+        if last_brace >= 0:
+            text = text[:last_brace+1]
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            logger.warning("Planner: JSON decode failed on text=%s", text[:200])
+            return {"analysis": "Planner: JSON parse error", "changes": []}
     except Exception as e:
         logger.warning("Planner: LLM failed: %s", e)
         return {"analysis": f"Planner error: {e}", "changes": []}
@@ -86,14 +94,21 @@ def _build_analyze_prompt(pf, optimizer_history=None):
     lines = ["Review this session and propose at least 1 change."]
     lines.append(f"\nStats: {turns} turns, ~{tokens} tokens")
 
+    # Include tool errors section - extract all lines containing errors
+    tool_errors = [t for t in transcript if "Error:" in t or "failed" in t.lower() or "traceback" in t.lower()]
+    if tool_errors:
+        lines.append("\n## Tool Errors Found in Session")
+        for err in tool_errors:
+            lines.append(f"  - {err[:200]}")
+
     # Include rejection feedback from previous iteration if available
     if optimizer_history:
         lines.append("\n## Previous attempt was rejected")
         lines.append(f"Feedback from Workers: {optimizer_history}")
         lines.append("Your new proposal MUST address these rejection reasons.")
 
-    lines.append("\nTranscript:")
-    for t in transcript[-25:]:
+    lines.append("\nFull Transcript:")
+    for t in transcript[:40]:
         lines.append(t)
 
     return "\n".join(lines)

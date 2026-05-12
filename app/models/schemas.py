@@ -84,6 +84,8 @@ class InteractionRecord(BaseModel):
     metadata: Optional[str] = None        # JSON: model, turn, duration, tokens
     input: Optional[str] = None           # JSON: the exact messages array sent to LLM
     output: Optional[str] = None          # JSON: the complete response/result for this interaction
+    from_id: Optional[str] = None         # user id or agent id who sent it
+    to_id: Optional[str] = None           # user id or agent id who received it
     created_at: datetime
 
 

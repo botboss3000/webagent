@@ -85,19 +85,6 @@ async def chat(request: ChatRequest):
         # Ensure the session exists before inserting interactions
         await _ensure_session(db, request.user_id, request.session_id)
 
-        # Save user message and get its ID for parent linking
-        user_interaction_id = await db.insert_interaction(
-            request.user_id, request.session_id, role="user", content=request.message,
-            channel="web_portal",
-            metadata=json.dumps({"source": "web_portal_chat"}),
-        )
-
-        # ── Emit user message to visualizer listeners ──
-        await _emit_to_visualizers(request.session_id, {
-            "type": "user_message", "level": "user",
-            "content": request.message, "id": user_interaction_id,
-        })
-
         # ── Assign agent first (context rows are keyed by agent_id) ──
         agent = await db.get_agent_for_user(request.user_id)
         if agent is None:
@@ -108,6 +95,21 @@ async def chat(request: ChatRequest):
                 "agent_id": agent["id"],
                 "max_turn_count": agent["max_turn_count"],
             })
+
+        # Save user message and get its ID for parent linking
+        user_interaction_id = await db.insert_interaction(
+            request.user_id, request.session_id, role="user", content=request.message,
+            channel="web_portal",
+            metadata=json.dumps({"source": "web_portal_chat"}),
+            sender_id=request.user_id,
+            receiver_id=agent["id"],
+        )
+
+        # ── Emit user message to visualizer listeners ──
+        await _emit_to_visualizers(request.session_id, {
+            "type": "user_message", "level": "user",
+            "content": request.message, "id": user_interaction_id,
+        })
 
         row = await db.get_agent_by_id(agent["id"])
         if row:
@@ -279,10 +281,11 @@ async def chat(request: ChatRequest):
             session_id=request.session_id,
             user_message=request.message,
             system_prompt=system_prompt,
+            agent_id=agent["id"],
             history=history,
             parent_interaction_id=parent_id,
             event_callback=event_callback,
-            max_turns=agent["max_turn_count"],
+            max_turns=agent.get("max_turn_count", 10),
             channel="web_portal",
         )
 
@@ -319,22 +322,28 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
     # Ensure the session exists before inserting interactions
     await _ensure_session(db, request.user_id, request.session_id)
     
+    agent = await db.get_agent_for_user(request.user_id)
+    if agent is None:
+        agent = await db.create_agent_for_user(request.user_id)
+
     # Save user message and get its ID for parent linking
     user_interaction_id = await db.insert_interaction(
         request.user_id, request.session_id, role="user", content=request.message,
         channel="web_portal",
         metadata=json.dumps({"source": "web_portal_chat_sse"}),
+        sender_id=request.user_id,
+        receiver_id=agent["id"],
     )
 
     async def event_generator():
-        agent = await db.get_agent_for_user(request.user_id)
-        if agent is None:
-            agent = await db.create_agent_for_user(request.user_id)
-            yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'agent_assigned', 'agent_id': agent['id'], 'max_turn_count': agent['max_turn_count']})}\n\n"
-
-        row = await db.get_agent_by_id(agent["id"])
-        if row:
-            agent = row
+        nonlocal agent
+        if "max_turn_count" not in agent:
+            # Re-fetch agent if creation dict missed it somehow (fallback)
+            row = await db.get_agent_by_id(agent["id"])
+            if row:
+                agent = row
+        
+        yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'agent_assigned', 'agent_id': agent['id'], 'max_turn_count': agent.get('max_turn_count', 10)})}\n\n"
 
         context_docs = await db.fetch_context_documents(
             agent["id"], CONTEXT_SECTION_TYPES,
@@ -450,9 +459,10 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                     session_id=request.session_id,
                     user_message=request.message,
                     system_prompt=system_prompt,
+                    agent_id=agent["id"],
                     history=history,
                     parent_interaction_id=parent_id,
-                    max_turns=agent["max_turn_count"],
+                    max_turns=agent.get("max_turn_count", 10),
                     channel="web_portal",
                 ):
                     await q.put(event)

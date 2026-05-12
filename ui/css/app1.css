@@ -794,6 +794,33 @@
   body.light-mode .json-num { color: #d4873a; }
   body.light-mode .json-bool { color: #8a5acf; }
   body.light-mode .json-toggle:hover { color: #ff8c42; }
+  body.light-mode .json-content-md {
+    background: #fffaf5;
+    border-color: #ffdec4;
+    color: #3d2c2e;
+  }
+  body.light-mode .json-content-md h1 { color: #cc6a28; }
+  body.light-mode .json-content-md h2 { color: #d4873a; }
+  body.light-mode .json-content-md h3 { color: #3d2c2e; }
+  body.light-mode .json-content-md h4,
+  body.light-mode .json-content-md h5,
+  body.light-mode .json-content-md h6 { color: #5c4a4a; }
+  body.light-mode .json-content-md pre {
+    background: #fff2e6;
+    border-color: #ffdec4;
+  }
+  body.light-mode .json-content-md code {
+    background: #fff2e6;
+    color: #d4873a;
+  }
+  body.light-mode .json-content-md pre code {
+    background: none;
+    color: #3d2c2e;
+  }
+  body.light-mode .json-content-md strong { color: #3d2c2e; }
+  body.light-mode .json-content-md em { color: #5c4a4a; }
+  body.light-mode .json-content-md a { color: #cc6a28; }
+  body.light-mode .json-content-md a:hover { color: #ff8c42; }
 
   body.light-mode #settings-panel,
   body.light-mode #connections-panel,

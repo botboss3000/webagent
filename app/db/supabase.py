@@ -87,7 +87,7 @@ class SupabaseBackend(StorageBackend):
             await self.assert_session_owned(user_id, session_id)
             response = (
                 self._client.table("interactions")
-                .select("id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, created_at")
+                .select("id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, from_id, to_id, created_at")
                 .eq("session_id", session_id)
                 .order("created_at", desc=False)
                 .execute()
@@ -119,6 +119,7 @@ class SupabaseBackend(StorageBackend):
         input_data: Optional[str] = None,
         output_data: Optional[str] = None,
         sender_id: Optional[str] = None,
+        receiver_id: Optional[str] = None,
     ) -> str:
         try:
             await self.assert_session_owned(user_id, session_id)
@@ -130,10 +131,12 @@ class SupabaseBackend(StorageBackend):
                 "tool_name": tool_name,
                 "tool_call_id": tool_call_id,
                 "channel": channel,
-                "source": source or "user",
+                "source": source or 'user',
                 "metadata": metadata,
                 "input": input_data,
                 "output": output_data,
+                "from_id": sender_id,
+                "to_id": receiver_id,
             }
             response = self._client.table("interactions").insert(data).execute()
             if response.data and len(response.data) > 0:
@@ -1013,9 +1016,10 @@ class SupabaseClient:
         metadata: Optional[str] = None, input_data: Optional[str] = None,
         output_data: Optional[str] = None,
         sender_id: Optional[str] = None,
+        receiver_id: Optional[str] = None,
     ) -> str:
         return await SupabaseClient._get_backend().insert_interaction(
-            user_id, session_id, role, content, parent_id, tool_name, tool_call_id, channel, source, metadata, input_data, output_data, sender_id,
+            user_id, session_id, role, content, parent_id, tool_name, tool_call_id, channel, source, metadata, input_data, output_data, sender_id, receiver_id,
         )
 
     @staticmethod

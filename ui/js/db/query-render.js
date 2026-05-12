@@ -131,6 +131,7 @@ async function openColPopup(th, tableName, colName) {
       <button class="db-popup-sort-btn ${sortDescActive ? 'active' : ''}" data-sort="DESC">
         <span class="db-popup-sort-arrow">▼</span> Sort Descending
       </button>
+      <button class="db-popup-unsort-btn">✕ Unsort</button>
     </div>
     <div class="db-popup-search-wrap">
       <input type="text" class="db-popup-search" placeholder="Filter by values..." />
@@ -141,6 +142,9 @@ async function openColPopup(th, tableName, colName) {
     </div>
     <div class="db-popup-items"></div>
     <div class="db-popup-status"></div>
+    <div class="db-popup-hide-row">
+      <button class="db-popup-hide-btn">Hide column «${colName}»</button>
+    </div>
     <div class="db-popup-actions">
       <button class="db-popup-apply-btn">Apply</button>
     </div>
@@ -291,8 +295,26 @@ async function openColPopup(th, tableName, colName) {
     });
   });
 
+  // Unsort button — reset to default (created_at DESC)
+  popup.querySelector('.db-popup-unsort-btn').addEventListener('click', () => {
+    delete app.dbSortState[tableName];
+    saveSortState();
+    closeColPopup();
+    queryTable(tableName);
+  });
+
   // Apply button — re-query with accumulated exclusions
   popup.querySelector('.db-popup-apply-btn').addEventListener('click', () => {
+    closeColPopup();
+    queryTable(tableName);
+  });
+
+  // Hide column button
+  popup.querySelector('.db-popup-hide-btn').addEventListener('click', () => {
+    if (!app.dbHiddenCols[tableName]) app.dbHiddenCols[tableName] = [];
+    const idx = app.dbHiddenCols[tableName].indexOf(colName);
+    if (idx === -1) app.dbHiddenCols[tableName].push(colName);
+    saveHiddenCols();
     closeColPopup();
     queryTable(tableName);
   });

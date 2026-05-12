@@ -40,6 +40,8 @@ DEFAULT_PROVIDER = {
     "api_key": "",
     "model": "",
     "providers": {},
+    "parallel_mode": False,
+    "multi_providers": [],
 }
 
 PROVIDER_PRESETS = {
@@ -214,7 +216,9 @@ def apply_provider_config() -> None:
 
 
 def _apply_config_to_env(config: dict) -> None:
-    """Apply provider config dict to environment variables."""
+    """Apply provider config dict to environment variables.
+    Also sets MULTI_PROVIDERS and PARALLEL_MODE for the race engine.
+    """
     provider = config.get("provider", "")
     base_url = config.get("base_url")
     if not base_url and provider in PROVIDER_PRESETS:
@@ -242,6 +246,27 @@ def _apply_config_to_env(config: dict) -> None:
         os.environ.pop("LLM_MODEL", None)
         os.environ.pop("OPENROUTER_MODEL", None)
 
+    # Multi-provider env vars for the race engine
+    parallel_mode = config.get("parallel_mode", False)
+    multi_providers = config.get("multi_providers", [])
+    os.environ["PARALLEL_MODE"] = "true" if parallel_mode and len(multi_providers) >= 2 else "false"
+    if parallel_mode and multi_providers:
+            # Sanitize: ensure each entry has required fields, strip None
+        # Only include enabled providers
+        cleaned = []
+        for p in multi_providers:
+            if p.get("enabled", True) and p.get("api_key") and p.get("base_url"):
+                cleaned.append({
+                    "provider": p.get("provider", "custom"),
+                    "base_url": p["base_url"],
+                    "api_key": p["api_key"],
+                    "model": p.get("model", ""),
+                    "rating": p.get("rating", 0),
+                })
+        os.environ["MULTI_PROVIDERS"] = json.dumps(cleaned)
+    else:
+        os.environ.pop("MULTI_PROVIDERS", None)
+
 
 def _is_metadata_enabled() -> bool:
     return METADATA_FLAG.exists()
@@ -260,6 +285,20 @@ class ProviderConfig(BaseModel):
     api_key: str
     model: str = ""
     providers: dict = {}
+
+
+class MultiProviderEntry(BaseModel):
+    provider: str
+    base_url: str = ""
+    api_key: str = ""
+    model: str = ""
+    enabled: bool = True
+    rating: int = 0
+
+
+class MultiProvidersRequest(BaseModel):
+    parallel_mode: bool = False
+    providers: list[MultiProviderEntry] = []
 
 
 class MetadataSetting(BaseModel):
@@ -399,27 +438,186 @@ async def clear_provider(
     return {"status": "ok", "message": "Provider settings cleared", "user": user_id}
 
 
+async def update_multi_provider_rating(user_id: str, provider: str, model: str, delta: int):
+    """Update a specific parallel provider's rating. If rating < -5, auto-disable."""
+    existing = _load_provider(user_id)
+    multi = existing.get("multi_providers", [])
+    changed = False
+    
+    for p in multi:
+        if p.get("provider") == provider and p.get("model") == model:
+            current_rating = p.get("rating", 0)
+            new_rating = current_rating + delta
+            p["rating"] = new_rating
+            if new_rating < -5 and p.get("enabled", True):
+                p["enabled"] = False
+                logger.info(f"Auto-disabled provider {provider} {model} due to rating {new_rating}")
+            changed = True
+            break
+            
+    if changed:
+        try:
+            from app.db import get_db
+            db = get_db()
+            db_config = {
+                "provider": existing.get("provider", ""),
+                "base_url": existing.get("base_url", ""),
+                "model": existing.get("model", ""),
+                "providers": existing.get("providers", {}),
+                "parallel_mode": existing.get("parallel_mode", False),
+                "multi_providers": multi,
+            }
+            await db.auth_element_set(
+                user_id=user_id,
+                service="llm",
+                config=db_config,
+                secret_ref=existing.get("api_key", ""),
+                label="default",
+            )
+        except Exception:
+            pass
+        _save_provider(user_id, existing)
+
+
+@router.get("/multi-providers")
+async def get_multi_providers(
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Get multi-provider parallel config for the requesting user.
+    Returns parallel_mode flag and list of provider entries.
+    """
+    user_id = _resolve_user_id(authorization or "", token or "")
+    config = None
+
+    # Try DB first
+    try:
+        from app.db import get_db
+        db = get_db()
+        elem = await db.auth_element_get(user_id, "llm", "default")
+        if elem:
+            cfg = json.loads(elem.get("config", "{}"))
+            cfg["api_key"] = elem.get("secret_ref", "")
+            config = cfg
+        else:
+            elem = await db.auth_element_get("admin_default", "llm", "default")
+            if elem:
+                cfg = json.loads(elem.get("config", "{}"))
+                cfg["api_key"] = elem.get("secret_ref", "")
+                config = cfg
+    except Exception:
+        pass
+
+    if config is None:
+        config = _load_provider(user_id)
+
+    parallel_mode = config.get("parallel_mode", False)
+    raw_providers = config.get("multi_providers", [])
+
+    result_providers = raw_providers
+
+    return {
+        "parallel_mode": parallel_mode,
+        "providers": result_providers,
+    }
+
+
+@router.post("/multi-providers", response_model=dict)
+async def set_multi_providers(
+    body: MultiProvidersRequest,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Set multi-provider parallel config for the requesting user.
+    Saves to both DB auth_elements and provider.json.
+    When parallel_mode is off or providers has < 2 entries,
+    system falls back to the existing single-provider path.
+    """
+    user_id = _resolve_user_id(authorization or "", token or "")
+    existing = _load_provider(user_id)
+
+    merged = dict(existing)
+    merged["parallel_mode"] = body.parallel_mode
+    merged["multi_providers"] = [p.model_dump() for p in body.providers]
+
+    # Also mirror the first provider's key up to root for backward compat
+    if body.providers:
+        first = body.providers[0]
+        merged["provider"] = first.provider
+        if first.base_url:
+            merged["base_url"] = first.base_url
+        if first.api_key:
+            merged["api_key"] = first.api_key
+        if first.model:
+            merged["model"] = first.model
+
+    # Save to DB (auth_elements table)
+    try:
+        from app.db import get_db
+        db = get_db()
+        db_config = {
+            "provider": merged.get("provider", ""),
+            "base_url": merged.get("base_url", ""),
+            "model": merged.get("model", ""),
+            "providers": merged.get("providers", {}),
+            "parallel_mode": merged.get("parallel_mode", False),
+            "multi_providers": merged.get("multi_providers", []),
+        }
+        await db.auth_element_set(
+            user_id=user_id,
+            service="llm",
+            config=db_config,
+            secret_ref=merged.get("api_key", ""),
+            label="default",
+        )
+    except Exception as e:
+        logger.warning("Failed to save multi-providers to DB: %s", e)
+
+    # Save to provider.json (fallback)
+    _save_provider(user_id, merged)
+
+    count = len(body.providers)
+    mode = "parallel" if body.parallel_mode and count >= 2 else "single"
+    logger.info("Multi-provider config saved for user %s: mode=%s, count=%d", user_id[:12], mode, count)
+    return {
+        "status": "ok",
+        "mode": mode,
+        "count": count,
+        "message": f"Multi-provider config saved. Mode: {mode}, {count} provider(s).",
+    }
+
+
 @router.get("/models")
 async def get_models(
     provider: str = "",
+    api_key: str = Query("", alias="api_key"),
+    base_url: str = Query("", alias="base_url"),
     authorization: Optional[str] = Header(None),
     token: Optional[str] = Query(None),
 ):
     """Fetch available models from the configured provider's API.
-    Uses the requesting user's saved config.
+    Uses the requesting user's saved config, or the explicit api_key/base_url
+    params passed by the frontend (for per-row model fetching in parallel providers UI).
     """
     user_id = _resolve_user_id(authorization or "", token or "")
-    config = _load_provider(user_id)
-    api_key = config.get("api_key", "")
-    if not api_key:
-        return {"error": "No API key configured", "models": []}
 
-    prov = provider or config.get("provider", "openrouter")
-    base_url = config.get("base_url", "")
+    # Explicit params override saved config (used by parallel provider rows)
+    if api_key and base_url:
+        # Use the explicitly provided key and URL directly
+        pass
+    else:
+        # Fall back to saved provider config
+        config = _load_provider(user_id)
+        api_key = config.get("api_key", "")
+        if not api_key:
+            return {"error": "No API key configured", "models": []}
 
-    # If no saved base_url, get from preset
-    if not base_url and prov in PROVIDER_PRESETS:
-        base_url = PROVIDER_PRESETS[prov]["base_url"]
+        prov = provider or config.get("provider", "openrouter")
+        base_url = config.get("base_url", "")
+
+        # If no saved base_url, get from preset
+        if not base_url and prov in PROVIDER_PRESETS:
+            base_url = PROVIDER_PRESETS[prov]["base_url"]
 
     if not base_url:
         return {"error": "No base URL configured for this provider", "models": []}

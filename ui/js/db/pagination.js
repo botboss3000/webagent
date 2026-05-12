@@ -178,6 +178,17 @@ export function initDbPaginationAndToolbar() {
         app.dbCurrentResult = null;
         cancelEditing();
         stopAutoRefresh();
+
+        // Clear the webchat too
+        const chatEl = document.getElementById('chat-messages-inner');
+        if (chatEl) chatEl.innerHTML = '';
+        // Start a fresh session so next chat doesn't load stale history
+        app.currentSessionId = crypto.randomUUID();
+        localStorage.setItem('terminalSessionId', app.currentSessionId);
+        if (typeof app.populateSessionSelect === 'function') {
+          app.populateSessionSelect(app.currentUserId);
+        }
+
         await fetchTables(dbName);
         
         // Default to interactions after reset
@@ -235,6 +246,23 @@ export function initDbPaginationAndToolbar() {
   document.getElementById('db-select').addEventListener('change', () => {
     document.getElementById('db-refresh').click();
   });
+
+  // Show Hidden toggle
+  const showHiddenBtn = document.getElementById('db-show-hidden-btn');
+  function updateShowHiddenBtn() {
+    const isShowing = localStorage.getItem('dbShowHidden') === 'true';
+    showHiddenBtn.textContent = isShowing ? '👁 Hide hidden' : '👁‍🗨 Show hidden';
+    showHiddenBtn.style.color = isShowing ? '#7dcfff' : '#565f89';
+  }
+  if (showHiddenBtn) {
+    updateShowHiddenBtn();
+    showHiddenBtn.addEventListener('click', () => {
+      app.dbShowHidden = !app.dbShowHidden;
+      localStorage.setItem('dbShowHidden', app.dbShowHidden);
+      updateShowHiddenBtn();
+      if (app.dbSelectedTable) queryTable(app.dbSelectedTable);
+    });
+  }
 }
 
 export function runInitialDbTableLoad() {

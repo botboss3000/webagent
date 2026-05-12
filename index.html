@@ -21,7 +21,7 @@
     <div id="settings-dropdown-menu" class="settings-dropdown-content" style="display:none;">
       
       <div class="settings-menu-item" id="llm-menu-item">
-        <span>LLM</span>
+        <span>🤖 LLM</span>
       </div>
 
       <div class="settings-menu-item" id="connections-menu-item">
@@ -29,7 +29,7 @@
       </div>
 
       <div class="settings-menu-item" id="database-menu-item">
-        <span>Database</span>
+        <span>🗄️ Database</span>
       </div>
 
       <div class="settings-menu-item" id="optimizer-menu-item">
@@ -306,6 +306,7 @@
           <select id="db-select">
             <option value="local.db">local.db</option>
           </select>
+          <button id="db-show-hidden-btn" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#565f89;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;margin-left:auto;">👁 Hide hidden</button>
           <span id="db-auto-status"></span>
         </div>
         <div id="db-panel">
@@ -424,11 +425,17 @@
       </div>
       <div id="settings-model-status" style="margin-top:4px;font-size:11px;color:#565f89;"></div>
     </div>
-    <div style="display:flex;gap:8px;">
+
+    <div style="display:flex;gap:8px;margin-bottom:16px;">
       <button id="settings-save" style="flex:1;padding:10px;background:#7dcfff;border:none;border-radius:6px;color:#0d0d1a;font-size:14px;font-weight:600;cursor:pointer;">Save</button>
       <button id="settings-clear" style="flex:0 0 auto;padding:10px 16px;background:transparent;border:1px solid #565f89;border-radius:6px;color:#565f89;font-size:13px;cursor:pointer;">Clear</button>
     </div>
-    <div id="settings-status" style="margin-top:8px;font-size:12px;color:#9ece6a;display:none;"></div>
+    <div id="settings-status" style="margin-bottom:8px;font-size:12px;color:#9ece6a;display:none;"></div>
+
+    <!-- ── Saved Providers List ── -->
+    <div id="settings-saved-list" style="display:flex;flex-direction:column;gap:6px;">
+      <!-- JS will populate rows here -->
+    </div>
   </div>
 </div>
 

@@ -82,6 +82,9 @@ CREATE TABLE IF NOT EXISTS interactions (
     metadata TEXT,
     input TEXT,
     output TEXT,
+    source TEXT,
+    from_id TEXT,
+    to_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -544,6 +547,15 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Added interactions.output column")
 
+            # ── Migration: add from_id and to_id columns to interactions ──
+            cursor = conn.execute("PRAGMA table_info(interactions)")
+            cols_ft = {row[1] for row in cursor.fetchall()}
+            if "from_id" not in cols_ft:
+                conn.execute("ALTER TABLE interactions ADD COLUMN from_id TEXT")
+                conn.execute("ALTER TABLE interactions ADD COLUMN to_id TEXT")
+                conn.commit()
+                logger.info("Added interactions.from_id and to_id columns")
+
             # ── Migration: fix context_templates unique index (allow multiple per type) ──
             cursor = conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_context_templates_type'")
             row = cursor.fetchone()
@@ -760,7 +772,7 @@ class LocalBackend(StorageBackend):
         conn = self._get_conn()
         try:
             rows = conn.execute(
-                "SELECT id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, created_at FROM interactions WHERE session_id = ? ORDER BY created_at ASC",
+                "SELECT id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, from_id, to_id, created_at FROM interactions WHERE session_id = ? ORDER BY created_at ASC",
                 (session_id,),
             ).fetchall()
             return [InteractionRecord(**dict(r)) for r in rows]
@@ -781,6 +793,7 @@ class LocalBackend(StorageBackend):
         input_data: Optional[str] = None,
         output_data: Optional[str] = None,
         sender_id: Optional[str] = None,
+        receiver_id: Optional[str] = None,
         source: Optional[str] = None,
     ) -> str:
         await self.assert_session_owned(user_id, session_id)
@@ -788,8 +801,8 @@ class LocalBackend(StorageBackend):
         try:
             interaction_id = _uuid()
             conn.execute(
-                "INSERT INTO interactions (id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (interaction_id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input_data, output_data, source or 'user'),
+                "INSERT INTO interactions (id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, source, from_id, to_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (interaction_id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input_data, output_data, source or 'user', sender_id, receiver_id),
             )
             conn.commit()
             logger.debug("Inserted interaction %s", interaction_id)
