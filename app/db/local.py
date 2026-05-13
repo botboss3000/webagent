@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     title TEXT,
+    metadata TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -569,6 +570,14 @@ class LocalBackend(StorageBackend):
                 conn.execute("ALTER TABLE interactions ADD COLUMN to_id TEXT")
                 conn.commit()
                 logger.info("Added interactions.from_id and to_id columns")
+
+            # ── Migration: add metadata column to sessions (for optimizer tracking) ──
+            cursor = conn.execute("PRAGMA table_info(sessions)")
+            sess_cols = {row[1] for row in cursor.fetchall()}
+            if "metadata" not in sess_cols:
+                conn.execute("ALTER TABLE sessions ADD COLUMN metadata TEXT")
+                conn.commit()
+                logger.info("Added sessions.metadata column")
 
             # ── Migration: fix context_templates unique index (allow multiple per type) ──
             cursor = conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_context_templates_type'")

@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 API_BASE = f"http://127.0.0.1:{os.environ.get('PORT', '8080')}"
 TIMEOUT_SEC = int(os.environ.get("WORKER_TIMEOUT", "90"))
-TEST_DB = "app/db/local.db"
+TEST_DB = "app/db/tests.db"
 
 
 def _init_test_db():
@@ -98,9 +98,11 @@ async def run_trials(user_id, changes, transcript, trials_per_change=2):
 
     original_message = "what time is it"
     for line in transcript:
-        if line.startswith("User: ") or line.startswith("user: "):
-            original_message = line.split(":", 1)[1].strip()
-            break
+        if "[user]" in line.lower():
+            parts = line.split("] ", 1)
+            if len(parts) > 1:
+                original_message = parts[1].strip()
+                break
 
     async def _run_one(change, trial_num):
         element = change.get("element", "unknown")
