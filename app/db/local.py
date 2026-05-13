@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     user_id TEXT NOT NULL,
     title TEXT,
     metadata TEXT,
+    agent_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -123,6 +124,7 @@ CREATE TABLE IF NOT EXISTS agent_templates (
 CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL UNIQUE,
+    template_id TEXT,
     system_prompt TEXT NOT NULL DEFAULT '',
     max_turn_count INTEGER NOT NULL DEFAULT 10,
     model TEXT,
@@ -142,6 +144,7 @@ CREATE INDEX IF NOT EXISTS idx_agents_user ON agents(user_id);
 CREATE TABLE IF NOT EXISTS context_documents (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents(id),
+    template_id TEXT,
     context_type TEXT NOT NULL,
     title TEXT NOT NULL,
     content TEXT NOT NULL,
@@ -628,6 +631,30 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Added agents.turn_count column")
 
+            # ── Migration: add agent_id column to sessions ──
+            cursor = conn.execute("PRAGMA table_info(sessions)")
+            sess_cols = {row[1] for row in cursor.fetchall()}
+            if "agent_id" not in sess_cols:
+                conn.execute("ALTER TABLE sessions ADD COLUMN agent_id TEXT")
+                conn.commit()
+                logger.info("Added sessions.agent_id column")
+
+            # ── Migration: add template_id column to context_documents ──
+            cursor = conn.execute("PRAGMA table_info(context_documents)")
+            cd_cols = {row[1] for row in cursor.fetchall()}
+            if "template_id" not in cd_cols:
+                conn.execute("ALTER TABLE context_documents ADD COLUMN template_id TEXT")
+                conn.commit()
+                logger.info("Added context_documents.template_id column")
+
+            # ── Migration: add template_id column to agents ──
+            cursor = conn.execute("PRAGMA table_info(agents)")
+            agent_cols = {row[1] for row in cursor.fetchall()}
+            if "template_id" not in agent_cols:
+                conn.execute("ALTER TABLE agents ADD COLUMN template_id TEXT")
+                conn.commit()
+                logger.info("Added agents.template_id column")
+
             # ── Seed: p5js visualizer skill template ──
             self._seed_visualizer_template(conn)
 
@@ -700,6 +727,7 @@ class LocalBackend(StorageBackend):
             CREATE TABLE IF NOT EXISTS context_documents_new (
                 id TEXT PRIMARY KEY,
                 agent_id TEXT NOT NULL REFERENCES agents(id),
+                template_id TEXT,
                 context_type TEXT NOT NULL,
                 title TEXT NOT NULL,
                 content TEXT NOT NULL,
@@ -711,8 +739,8 @@ class LocalBackend(StorageBackend):
         )
         conn.execute(
             """
-            INSERT INTO context_documents_new (id, agent_id, context_type, title, content, tags, created_at, updated_at)
-            SELECT id, agent_id, context_type, title, content, tags, created_at, updated_at FROM context_documents
+            INSERT INTO context_documents_new (id, agent_id, template_id, context_type, title, content, tags, created_at, updated_at)
+            SELECT id, agent_id, NULL, context_type, title, content, tags, created_at, updated_at FROM context_documents
             """
         )
         conn.execute("DROP TABLE context_documents")
@@ -798,7 +826,7 @@ class LocalBackend(StorageBackend):
         conn = self._get_conn()
         try:
             rows = conn.execute(
-                "SELECT id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, from_id, to_id, created_at FROM interactions WHERE session_id = ? ORDER BY created_at ASC",
+                "SELECT id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, from_id, to_id, source, created_at FROM interactions WHERE session_id = ? ORDER BY created_at ASC",
                 (session_id,),
             ).fetchall()
             return [InteractionRecord(**dict(r)) for r in rows]
@@ -873,11 +901,20 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
-    async def copy_defaults_to_agent(self, agent_id: str) -> int:
+    async def copy_defaults_to_agent(self, agent_id: str, template_id: Optional[str] = None) -> int:
         """
         Copy template rows into context_documents for this agent.
         Only copies types not already present for this agent.
+
+        Isolation gate: non-default templates do NOT inherit webAgent context docs.
         """
+        # Isolation gate: only 'default' templates inherit webAgent context docs
+        if template_id is not None and template_id != "default":
+            logger.info(
+                "Skipping context doc copy for template_id=%s (agent=%s)",
+                template_id, agent_id[:8],
+            )
+            return 0
         conn = self._get_conn()
         try:
             exists = conn.execute(
@@ -911,9 +948,9 @@ class LocalBackend(StorageBackend):
                 if d["context_type"] in existing_types:
                     continue
                 conn.execute(
-                    """INSERT INTO context_documents (id, agent_id, context_type, title, content, tags)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (_uuid(), agent_id, d["context_type"], d["title"], d["content"], d["tags"]),
+                    """INSERT INTO context_documents (id, agent_id, template_id, context_type, title, content, tags)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (_uuid(), agent_id, template_id, d["context_type"], d["title"], d["content"], d["tags"]),
                 )
                 copied += 1
 
@@ -2059,6 +2096,81 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
+    async def fetch_agent_by_id_with_context(
+        self,
+        agent_id: str,
+        context_types: Optional[List[str]] = None,
+    ) -> Optional[dict]:
+        """
+        Same as ``fetch_agent_with_context`` but queries by agent ``id`` (PK) instead of ``user_id``.
+        Direct FK lookup — no naming convention, no inference chain, no fallback.
+        Returns None if agent_id not found.
+        """
+        conn = self._get_conn()
+        try:
+            if context_types:
+                placeholders = ",".join("?" for _ in context_types)
+                row = conn.execute(
+                    f"""SELECT a.*, (
+                        SELECT json_group_array(json_object(
+                            'id', cd.id,
+                            'context_type', cd.context_type,
+                            'title', cd.title,
+                            'content', cd.content,
+                            'tags', cd.tags,
+                            'created_at', cd.created_at,
+                            'updated_at', cd.updated_at
+                        ))
+                        FROM context_documents cd
+                        WHERE cd.agent_id = a.id
+                          AND cd.context_type IN ({placeholders})
+                    ) AS context_documents
+                    FROM agents a
+                    WHERE a.id = ?""",
+                    (*context_types, agent_id),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """SELECT a.*, (
+                        SELECT json_group_array(json_object(
+                            'id', cd.id,
+                            'context_type', cd.context_type,
+                            'title', cd.title,
+                            'content', cd.content,
+                            'tags', cd.tags,
+                            'created_at', cd.created_at,
+                            'updated_at', cd.updated_at
+                        ))
+                        FROM context_documents cd
+                        WHERE cd.agent_id = a.id
+                    ) AS context_documents
+                    FROM agents a
+                    WHERE a.id = ?""",
+                    (agent_id,),
+                ).fetchone()
+            if not row:
+                return None
+            agent_dict = dict(row)
+            # Parse context_documents JSON string
+            raw_json = agent_dict.pop("context_documents", None)
+            if raw_json:
+                docs = json.loads(raw_json)
+                agent_dict["context_documents"] = [d for d in docs if d is not None]
+            else:
+                agent_dict["context_documents"] = []
+            # Parse tags in each doc
+            for doc in agent_dict["context_documents"]:
+                try:
+                    doc["tags"] = json.loads(doc["tags"])
+                except (json.JSONDecodeError, TypeError):
+                    doc["tags"] = []
+            return agent_dict
+        except Exception as e:
+            logger.error("Error fetching agent by id with context: %s", e)
+            raise
+        finally:
+            conn.close()
+
     async def create_agent_for_user(self, user_id: str) -> dict:
         conn = self._get_conn()
         try:
@@ -2186,6 +2298,164 @@ class LocalBackend(StorageBackend):
             return after - before
         finally:
             conn.close()
+
+    # ---- Agent Resolution & Session Binding ----
+
+    async def resolve_agent(self, user_id: str, template_id: str) -> dict:
+        """
+        Resolve an agent for a user + template combo.
+
+        1. Look for existing active agent row with matching user_id + template_id.
+        2. If found as 'active', return it (with status 'active').
+        3. If not found, return a virtual dict with status='template' and all
+           fields from the agent_templates table, ready for the caller to
+           materialize into a real agents row.
+        4. If no template found, raise ValueError.
+        """
+        conn = self._get_conn()
+        try:
+            # Ensure templates are seeded from JSON
+            self._seed_agent_templates_from_json_files(conn)
+
+            # Check for existing agent with matching user_id + template_id
+            agent_user_id = f"{template_id}_{user_id}"
+            row = conn.execute(
+                "SELECT * FROM agents WHERE user_id = ? AND template_id = ? LIMIT 1",
+                (agent_user_id, template_id),
+            ).fetchone()
+            if row:
+                ad = dict(row)
+                if ad.get("status") == "active":
+                    return ad
+
+            # Look up the template
+            tpl = conn.execute(
+                "SELECT * FROM agent_templates WHERE id = ?", (template_id,)
+            ).fetchone()
+            if not tpl:
+                raise ValueError(f"No agent template found for id '{template_id}'")
+
+            tpl_data = dict(tpl)
+            return {
+                "status": "template",
+                "template_id": template_id,
+                "system_prompt": tpl_data.get("system_prompt", ""),
+                "max_turn_count": tpl_data.get("max_turn_count", 10),
+                "model": tpl_data.get("model"),
+                "provider": tpl_data.get("provider"),
+                "temperature": tpl_data.get("temperature", 0.0),
+                "max_tokens": tpl_data.get("max_tokens", 4096),
+                "metadata": tpl_data.get("metadata", "{}"),
+            }
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error("Error resolving agent: %s", e)
+            raise RuntimeError(
+                f"Failed to resolve agent for template_id={template_id}: {e}"
+            )
+        finally:
+            conn.close()
+
+    async def bind_session_to_agent(self, session_id: str, agent_id: str) -> None:
+        """Bind a session to an agent by setting sessions.agent_id."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE sessions SET agent_id = ?, updated_at = ? WHERE id = ?",
+                    (agent_id, _now_iso(), session_id),
+                )
+                conn.commit()
+                logger.debug("Bound session %s to agent %s", session_id, agent_id)
+            except Exception as e:
+                logger.error("Error binding session to agent: %s", e)
+                raise
+            finally:
+                conn.close()
+
+    async def get_session_agent_id(self, session_id: str) -> Optional[str]:
+        """Get the agent_id bound to a session."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT agent_id FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            return row["agent_id"] if row else None
+        except Exception as e:
+            logger.error("Error getting session agent_id: %s", e)
+            raise
+        finally:
+            conn.close()
+
+    async def get_or_resolve_session_agent(
+        self,
+        session_id: str,
+        user_id: str,
+        template_id: Optional[str] = None,
+    ) -> Optional[dict]:
+        """
+        Get the agent for a session, creating/binding it if needed.
+
+        1. If ``sessions.agent_id`` is set → ``fetch_agent_by_id_with_context(agent_id)``
+           (direct FK lookup, zero inference chain).
+        2. If not set → ``resolve_agent(user_id, template_id)`` to obtain the agent.
+           - If status is 'template' or 'filesystem', materialize a real ``agents`` row.
+           - Call ``bind_session_to_agent(session_id, agent_id)``.
+           - Return ``fetch_agent_by_id_with_context(agent_id)``.
+        """
+        # Check existing binding first
+        existing_id = await self.get_session_agent_id(session_id)
+        if existing_id:
+            agent = await self.fetch_agent_by_id_with_context(existing_id)
+            if agent:
+                return agent
+            logger.warning(
+                "Session %s bound to agent %s but agent not found — re-resolving",
+                session_id[:8], existing_id[:8],
+            )
+
+        # No binding or agent gone — resolve and bind
+        agent = await self.resolve_agent(user_id, template_id)
+
+        # If virtual (template/filesystem), materialize as real agents row
+        if agent.get("status") in ("template", "filesystem"):
+            agent_user_id = f"{template_id}_{user_id}"
+            agent_id = _uuid()
+            conn = self._get_conn()
+            try:
+                now = _now_iso()
+                conn.execute(
+                    """INSERT INTO agents
+                       (id, user_id, template_id, system_prompt, max_turn_count, model, provider,
+                        temperature, max_tokens, status, metadata, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
+                    (agent_id, agent_user_id, template_id,
+                     agent.get("system_prompt", ""),
+                     agent.get("max_turn_count", 10),
+                     agent.get("model"),
+                     agent.get("provider"),
+                     agent.get("temperature", 0.0),
+                     agent.get("max_tokens", 4096),
+                     json.dumps(agent.get("metadata", {})),
+                     now, now),
+                )
+                conn.commit()
+            except Exception as e:
+                logger.error("Error materializing agent: %s", e)
+                raise
+            finally:
+                conn.close()
+            agent["id"] = agent_id
+
+        # Bind session to agent
+        if agent.get("id"):
+            await self.bind_session_to_agent(session_id, agent["id"])
+
+        # Fetch with context (by ID, not user_id)
+        if agent.get("id"):
+            return await self.fetch_agent_by_id_with_context(agent["id"])
+        return agent
 
     # ---- Interrupt Handling ----
 

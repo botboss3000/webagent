@@ -116,7 +116,8 @@ webAgent/
 ├── tasks/                  # Small Node helper (package.json, run-all.ts)
 ├── temp/                   # Scratch files incl. Markdown drafts (see agent.md); roadmap: temp/FUTURE_PLANS.md
 ├── .github/workflows/      # CI (e.g. APK build)
-├── webAgent.bat            # Windows: uvicorn loop + restart support
+├── webAgent.bat            # Windows: uvicorn loop + restart support (uses run.py)
+├── run.py                  # Pre-opens port with SO_REUSEADDR for zombie-port resilience
 ├── uploads/                # Uploaded attachments directory (auto-created, gitignored)
 ├── Dockerfile
 ├── requirements.txt
@@ -179,6 +180,10 @@ pip install -r requirements.txt
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 ```
+
+**Windows users:** Use **`webAgent.bat`** (double-click) for auto-restart support. It uses `run.py` which pre-opens port 8080 with `SO_REUSEADDR` to work around orphaned TCP entries (process dead but port still bound).
+
+**Unix:** `bash scripts/start_webAgent.sh` (background + logs).
 
 **Useful URLs**
 

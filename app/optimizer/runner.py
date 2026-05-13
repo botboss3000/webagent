@@ -8,7 +8,7 @@ import asyncio, json, logging, uuid
 from datetime import datetime, timezone
 from typing import Any, Dict
 
-from app.optimizer.config import load_config, update_state, get_intensity_thresholds
+from app.optimizer.config import load_config
 from app.optimizer.prefilter import prefilter
 
 logger = logging.getLogger(__name__)
@@ -62,34 +62,43 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
     turns = pf.get("turns", 1)
     tokens_est = pf.get("tokens", 100)
 
-    # ── Insert init interactions ──
-    # NOTE: role='assistant' so build_openai_history_from_session includes it
-    # (system-role interactions are skipped by history builder).
-    transcript_text = "\n".join(pf.get("transcript", [])[:30])
-    docs_text = ""
-    for d in pf.get("context_docs", []):
-        docs_text += f"- [{d.get('type','?')}] {d.get('title','?')}: {d.get('excerpt','')[:100]}\n"
-    _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:init",
-                    f"📊 **Optimization Analysis**\n\n"
-                    f"**Target session:** `{session_id}`\n"
-                    f"**Stats:** {turns} turns, ~{tokens_est} tokens\n\n"
-                    f"**Transcript:**\n{transcript_text}\n\n"
-                    f"**Context documents:**\n{docs_text or '(none)'}\n\n"
-                    f"Review this session. Use `list_agent_context_documents` and `session_search` to dive deeper. "
-                    f"Propose changes by discussing with me.")
-
-    _insert_opt_msg(user_id, opt_sid, "assistant", "optimizer:prefilter",
-                    f"Stats: {turns} turns, ~{tokens_est} tokens.")
-
     if feedback:
         _insert_opt_msg(user_id, opt_sid, "user", "optimizer:user_feedback",
-                        f"User feedback: {feedback}")
+                        f"User feedback: {feedback}",
+                        from_id=user_id)
+
+    # ── Auto-kickstart: trigger the Planner to analyze immediately ──
+    # Sends a user message to the optimizer session — chat.py routes it to
+    # the opt_planner agent (via resolve_agent/session binding), which
+    # auto-starts its analysis per its system prompt rules.
+    asyncio.create_task(_kickstart_planner(user_id, opt_sid))
 
     # ── Log and return ──
     _log_start(run_id, cfg, opt_sid)
     _log_complete(run_id, "running", cfg, opt_sid,
                   summary=f"Session created. {turns} turns, ~{tokens_est} tokens in target session.")
     return opt_sid
+
+
+async def _kickstart_planner(user_id: str, opt_sid: str) -> None:
+    """Auto-trigger the Planner by sending a user message to the optimizer session.
+    chat.py routes messages to the opt_planner agent via resolve_agent()."""
+    import httpx, os, logging as _log
+    try:
+        port = os.environ.get('PORT', '8080')
+        _log.warning(f"Kickstarting Planner for session {opt_sid}")
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                f"http://127.0.0.1:{port}/api/v1/chat",
+                json={
+                    "message": "Please analyze the session above and propose improvements.",
+                    "user_id": user_id,
+                    "session_id": opt_sid,
+                },
+            )
+            _log.warning(f"Kickstart Planner responded: {resp.status_code}")
+    except Exception as e:
+        _log.warning(f"Kickstart Planner failed (non-fatal): {e}")
 
 
 # ── Helpers ──
@@ -144,7 +153,7 @@ def _ensure_session(uid, sid, orig):
         _retry_db_write(_do)
 
 
-def _insert_opt_msg(uid, sid, role, source, content):
+def _insert_opt_msg(uid, sid, role, source, content, *, from_id=None, to_id=None, input_data=None, output_data=None):
     from app.db import get_db
     db = get_db()
     raw = getattr(db, '_get_conn', None)
@@ -152,14 +161,17 @@ def _insert_opt_msg(uid, sid, role, source, content):
         def _do():
             c = raw()
             c.execute(
-                "INSERT INTO interactions (id,session_id,role,content,source,channel,created_at) "
-                "VALUES (?,?,?,?,?,'optimizer',datetime('now'))",
-                (str(uuid.uuid4()), sid, role, content, source),
+                "INSERT INTO interactions (id,session_id,role,content,source,channel,from_id,to_id,input,output,created_at) "
+                "VALUES (?,?,?,?,?,'optimizer',?,?,?,?,datetime('now'))",
+                (str(uuid.uuid4()), sid, role, content, source, from_id, to_id, input_data, output_data),
             )
             c.commit()
             c.close()
 
         _retry_db_write(_do)
+
+
+
 
 
 def _log_start(rid, cfg, sid):

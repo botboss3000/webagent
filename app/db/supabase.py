@@ -200,7 +200,7 @@ class SupabaseBackend(StorageBackend):
         except Exception as e:
             logger.warning("Failed to seed p5js template: %s", e)
 
-    async def copy_defaults_to_agent(self, agent_id: str) -> int:
+    async def copy_defaults_to_agent(self, agent_id: str, template_id: Optional[str] = None) -> int:
         """
         Copy template rows into context for this agent.
         Only copies rows that don't already exist for this agent (by context_type).
@@ -774,6 +774,41 @@ class SupabaseBackend(StorageBackend):
             logger.error("Error fetching agent with context: %s", e)
             raise
 
+    async def fetch_agent_by_id_with_context(
+        self,
+        agent_id: str,
+        context_types: Optional[List[str]] = None,
+    ) -> Optional[dict]:
+        """
+        Same as ``fetch_agent_with_context`` but queries by agent ``id`` (PK) instead of ``user_id``.
+        """
+        try:
+            q = (
+                self._client.table("agents")
+                .select(
+                    "*, context(id, context_type, title, content, tags, created_at, updated_at)"
+                )
+                .eq("id", agent_id)
+                .limit(1)
+            )
+            if context_types:
+                q = q.in_("context.context_type", context_types)
+            res = q.execute()
+            if not res.data:
+                return None
+            agent = res.data[0]
+            agent["context_documents"] = agent.pop("context", None) or []
+            for doc in agent["context_documents"]:
+                if isinstance(doc.get("tags"), str):
+                    try:
+                        doc["tags"] = json.loads(doc["tags"])
+                    except (json.JSONDecodeError, TypeError):
+                        doc["tags"] = []
+            return agent
+        except Exception as e:
+            logger.error("Error fetching agent by id with context: %s", e)
+            raise
+
     async def create_agent_for_user(self, user_id: str) -> dict:
         from datetime import datetime, timezone
         import uuid
@@ -896,6 +931,60 @@ class SupabaseBackend(StorageBackend):
         except Exception as e:
             logger.error("Error counting agent templates: %s", e)
             return 0
+
+    # ---- Agent Resolution & Session Binding ----
+
+    async def resolve_agent(self, user_id: str, template_id: str) -> dict:
+        """
+        Resolve an agent for a user + template combo.
+        Delegates to local backend for cross-source resolution.
+        """
+        from app.db.local import LocalBackend
+        lb = LocalBackend()
+        return await lb.resolve_agent(user_id, template_id)
+
+    async def get_session_agent_id(self, session_id: str) -> Optional[str]:
+        """Get the agent_id bound to a session from sessions table."""
+        try:
+            res = (
+                self._client.table("sessions")
+                .select("agent_id")
+                .eq("id", session_id)
+                .limit(1)
+                .execute()
+            )
+            if res.data and res.data[0].get("agent_id"):
+                return res.data[0]["agent_id"]
+            return None
+        except Exception as e:
+            logger.error("Error getting session agent_id: %s", e)
+            return None
+
+    async def bind_session_to_agent(self, session_id: str, agent_id: str) -> None:
+        """Bind a session to an agent by setting sessions.agent_id."""
+        try:
+            self._client.table("sessions").upsert(
+                {"id": session_id, "agent_id": agent_id},
+                on_conflict="id",
+            ).execute()
+            logger.debug("Bound session %s to agent %s", session_id[:8], agent_id[:8])
+        except Exception as e:
+            logger.error("Error binding session to agent: %s", e)
+            raise
+
+    async def get_or_resolve_session_agent(
+        self,
+        session_id: str,
+        user_id: str,
+        template_id: Optional[str] = None,
+    ) -> Optional[dict]:
+        """
+        Get the agent for a session, creating/binding it if needed.
+        Delegates to the local backend for the full resolution logic.
+        """
+        from app.db.local import LocalBackend
+        lb = LocalBackend()
+        return await lb.get_or_resolve_session_agent(session_id, user_id, template_id)
 
     # ---- Interrupt Handling ----
 
@@ -1160,8 +1249,8 @@ class SupabaseClient:
         )
 
     @staticmethod
-    async def copy_defaults_to_agent(agent_id: str) -> int:
-        return await SupabaseClient._get_backend().copy_defaults_to_agent(agent_id)
+    async def copy_defaults_to_agent(agent_id: str, template_id: Optional[str] = None) -> int:
+        return await SupabaseClient._get_backend().copy_defaults_to_agent(agent_id, template_id=template_id)
 
     @staticmethod
     async def fetch_context_documents(
@@ -1324,4 +1413,35 @@ class SupabaseClient:
     ) -> bool:
         return await SupabaseClient._get_backend().auth_element_delete(
             user_id, service, label
+        )
+
+    @staticmethod
+    async def resolve_agent(user_id: str, template_id: str) -> dict:
+        return await SupabaseClient._get_backend().resolve_agent(user_id, template_id)
+
+    @staticmethod
+    async def get_session_agent_id(session_id: str) -> Optional[str]:
+        return await SupabaseClient._get_backend().get_session_agent_id(session_id)
+
+    @staticmethod
+    async def bind_session_to_agent(session_id: str, agent_id: str) -> None:
+        return await SupabaseClient._get_backend().bind_session_to_agent(session_id, agent_id)
+
+    @staticmethod
+    async def fetch_agent_by_id_with_context(
+        agent_id: str,
+        context_types: Optional[List[str]] = None,
+    ) -> Optional[dict]:
+        return await SupabaseClient._get_backend().fetch_agent_by_id_with_context(
+            agent_id, context_types,
+        )
+
+    @staticmethod
+    async def get_or_resolve_session_agent(
+        session_id: str,
+        user_id: str,
+        template_id: Optional[str] = None,
+    ) -> Optional[dict]:
+        return await SupabaseClient._get_backend().get_or_resolve_session_agent(
+            session_id, user_id, template_id,
         )
