@@ -1058,7 +1058,8 @@
   body.light-mode .chat-attachment-link:hover { background: #ffe4cc; }
 
   body.light-mode #cell-modal-header { border-bottom-color: #ffdec4; }
-  body.light-mode #cell-modal-editor {
+  body.light-mode #cell-modal-editor,
+  body.light-mode #cell-modal-viewer {
     background: #fffaf5;
     color: #3d2c2e;
   }

@@ -405,10 +405,14 @@
   <div id="cell-modal-backdrop"></div>
   <div id="cell-modal-panel">
     <div id="cell-modal-header">
-      <span id="cell-modal-title">Edit cell</span>
-      <button id="cell-modal-close">&times;</button>
+      <span id="cell-modal-title">Cell viewer</span>
+      <div style="margin-left:auto; display:flex; gap:8px; align-items:center;">
+        <button id="cell-modal-edit-toggle" class="status-btn" style="padding: 2px 8px;">✎ Edit</button>
+        <button id="cell-modal-close" style="background:none; border:none; color:#565f89; cursor:pointer; font-size:18px; line-height:1;">&times;</button>
+      </div>
     </div>
-    <textarea id="cell-modal-editor" spellcheck="false"></textarea>
+    <div id="cell-modal-viewer"></div>
+    <textarea id="cell-modal-editor" spellcheck="false" style="display:none;"></textarea>
   </div>
 </div>
 

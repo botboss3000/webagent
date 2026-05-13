@@ -256,6 +256,22 @@
     overflow: auto;
   }
   #cell-modal-editor:focus { border-bottom-color: #7dcfff; }
+  #cell-modal-viewer {
+    flex: 1;
+    overflow: auto;
+    padding: 16px;
+    font-family: 'Fira Code', Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    background: #0d0d1a;
+  }
+  #cell-modal-viewer .json-root {
+    font-size: 12px;
+  }
+  #cell-modal-viewer .json-content-md {
+    font-size: 13px;
+    max-width: 800px;
+  }
 
   /* ── Chat expand modal ── */
   #chat-expand-modal { display: none; position: fixed; inset: 0; z-index: 999; }
