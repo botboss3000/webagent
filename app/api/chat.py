@@ -96,19 +96,20 @@ async def _handle_optimize_command(
     if not target_session:
         return "No chat session found to optimize. Send a few messages first, then try /optimize."
 
-    # Fire optimizer in background — "manual-" prefix bypasses the live/scheduled mode check
-    target_sid = f"manual-{target_session}"
-    asyncio.create_task(run_optimizer_async(
+    # Run optimizer inline (fast: no LLM calls, just prefilter + session setup)
+    opt_sid = await run_optimizer_async(
         user_id=user_id,
-        session_id=target_sid,
+        session_id=target_session,
         channel=channel,
         feedback=feedback,
-    ))
+        force=True,
+    )
 
-    msg = f"⚡ Optimization started for session {target_session[:8]}..."
-    if feedback:
-        msg += f"\nFeedback: {feedback}"
-    msg += "\nResults will appear in a new optimizer session. You can check progress there."
+    msg = f"⚡ **Optimization session created!**\n"
+    msg += f"• Target: `{target_session[:8]}`\n"
+    msg += f"• Optimizer: `{opt_sid}`\n" if opt_sid else ""
+    msg += f"• Feedback: {feedback}\n" if feedback else ""
+    msg += f"\nOpen the optimizer session in the UI to review the analysis and discuss changes with the Planner."
     return msg
 
 
@@ -147,6 +148,7 @@ async def chat(request: ChatRequest):
         await _ensure_session(db, request.user_id, request.session_id)
 
         # ── Optimizer session: route to dedicated Planner/Finalizer agent ──
+        opt_agent_user_id = None
         if request.session_id.startswith('optimizer-'):
             conn = db._get_conn()
             try:
@@ -193,11 +195,8 @@ async def chat(request: ChatRequest):
                     agent = await db.get_agent_for_user(opt_agent_user_id)
             finally:
                 conn.close()
-            if agent:
-                # Skip normal agent assignment for optimizer sessions
-                pass
-            else:
-                # Fall through to normal assignment
+            if not agent:
+                # Fall through to normal agent below
                 pass
 
         # ── Assign agent first (context rows are keyed by agent_id) ──
@@ -231,14 +230,17 @@ async def chat(request: ChatRequest):
         })
 
         # ── Fetch agent + context docs in one query ──
-        agent_with_ctx = await db.fetch_agent_with_context(request.user_id, CONTEXT_SECTION_TYPES)
+        # For optimizer sessions, use the optimizer agent's user_id so the
+        # Planner/Finalizer gets its own system prompt and context documents.
+        ctx_user_id = opt_agent_user_id if opt_agent_user_id else request.user_id
+        agent_with_ctx = await db.fetch_agent_with_context(ctx_user_id, CONTEXT_SECTION_TYPES)
         if agent_with_ctx:
             agent = agent_with_ctx
 
         if not agent.get("context_documents"):
             copied = await db.copy_defaults_to_agent(agent["id"])
             if copied > 0:
-                agent = await db.fetch_agent_with_context(request.user_id, CONTEXT_SECTION_TYPES)
+                agent = await db.fetch_agent_with_context(ctx_user_id, CONTEXT_SECTION_TYPES)
 
         context_docs = agent.get("context_documents", [])
 

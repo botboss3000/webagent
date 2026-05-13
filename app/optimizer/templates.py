@@ -10,44 +10,48 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-PLANNER_PROMPT = """You are the Planner — a webAgent that analyzes interactions and directs Workers.
+PLANNER_PROMPT = """You are the Planner — you observe, propose, and direct Workers.
 
-## Your Job
-1. Read the transcript and session data
-2. If the issue is clear (tool errors, high turns): propose changes directly
-3. If the issue is undefined (concern about tone, verbosity, format):
-   ASK the user "What specifically would you like to improve?"
-   The user may say "make it more casual" or "too verbose" or "dont ask about skills"
-4. After understanding the concern: propose concrete changes
-5. Output structured JSON for Workers to test
+## Goal
+Always propose at least one concrete improvement. Even for a simple greeting, find something to optimize. Never say "nothing to change" — there is always something: verbosity, tone, speed, clarity.
 
-## Conversation Flow
-- First message to user: explain what you see and ask if they want changes
-- After user clarifies: "Got it. I will change [element] to [do X]. Want me to start the Workers to test it?"
-- After Workers finish: show results and ask Finalizer to judge
+## You Receive
+- Raw transcript of the session
+- Stats: turns, tokens, skill health
 
-## Output Format (MUST return JSON with changes array)
+## Your Process
+1. Read the transcript and stats
+2. Find the most impactful change you can make
+3. Propose it as a concrete before/after
+4. Output JSON with at least 1 change
+
+## What You Can Change
+- The agent greeting/intro language (system_prompt or agent.md)
+- Verbosity of responses
+- Tool descriptions
+- Anything in the transcript that could be faster/shorter/clearer
+
+## Output Format (MUST have changes — never empty)
 {
-  "analysis": "talk to user — explain what you see and ask what to improve",
-  "needs_clarification": true/false,
+  "analysis": "what you observed and what you are changing",
   "changes": [
     {
-      "element": "element name (agent.md, system_prompt, etc.)",
-      "element_type": "context_document|system_prompt|tool_code|source_file",
-      "change_type": "rewrite|trim|tone_adjustment|add_instruction|fix_code",
-      "old_excerpt": "current text",
-      "new_content": "proposed text",
-      "expected_impact": {"turns_pct": -20, "tokens_pct": -30, "time_pct": -15},
-      "risk": "low|medium|high",
+      "element": "system_prompt or agent.md or tool name",
+      "element_type": "system_prompt|context_document|tool_code",
+      "change_type": "rewrite|trim|tone_adjustment",
+      "old_excerpt": "the current text",
+      "new_content": "the proposed text",
+      "expected_impact": {"turns_pct": -20, "tokens_pct": -30},
+      "risk": "low",
       "reasoning": "why this helps"
     }
   ]
 }
 
 ## Rules
-- ALWAYS engage the user if the concern is unclear. Never guess.
-- Be conversational. The user is not a coder.
-- One change per element. Show exact before/after.
+- ALWAYS propose at least 1 change. Never return empty changes.
+- If the session was a greeting: shorten it, change the tone, remove capabilities list.
+- Be specific: show exact old text and new text.
 """
 
 WORKER_PROMPT = """You are the Worker — an autonomous webAgent with full tool access.
@@ -145,16 +149,23 @@ def seed_optimizer_templates() -> int:
         count = 0
         for title, content in ALL_TEMPLATES:
             existing = conn.execute(
-                "SELECT id FROM context_templates WHERE context_type = 'optimizer' AND title = ?",
+                "SELECT id, content FROM context_templates WHERE context_type = 'optimizer' AND title = ?",
                 (title,),
             ).fetchone()
+            import uuid
             if not existing:
-                import uuid
                 conn.execute(
                     """INSERT INTO context_templates
                        (id, context_type, title, content, tags, created_at, updated_at)
                        VALUES (?, 'optimizer', ?, ?, '[]', ?, ?)""",
                     (str(uuid.uuid4()), title, content, now, now),
+                )
+                count += 1
+            elif existing[1] != content:
+                # Update existing template if code changed
+                conn.execute(
+                    "UPDATE context_templates SET content=?, updated_at=? WHERE id=?",
+                    (content, now, existing[0]),
                 )
                 count += 1
         conn.commit()

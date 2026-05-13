@@ -11,39 +11,19 @@ from app.optimizer.prompt_loader import load_prompt
 
 logger = logging.getLogger(__name__)
 
-PLANNER_PROMPT = """You are the Planner. You MUST output JSON with at least 1 change. Never ask questions. Never return empty changes.
 
-PROPOSE A CONCRETE CHANGE NOW. Even for a simple greeting, propose shortening it.
-
-JSON format (REQUIRED):
-{
-  "analysis": "1-sentence observation",
-  "changes": [
-    {
-      "element": "system_prompt",
-      "element_type": "system_prompt",
-      "change_type": "trim",
-      "old_excerpt": "the greeting text from the transcript",
-      "new_content": "Hi Human.",
-      "expected_impact": {"turns_pct": 0, "tokens_pct": -80},
-      "risk": "low",
-      "reasoning": "shorter greeting"
-    }
-  ]
-}
-DO NOT ask questions. DO NOT return empty changes. RETURN JSON NOW."""
-
-
-
-PLANNER_PROMPT = """Fallback — loaded from prompt_loader."""
 
 
 async def propose_improvements(user_id, session_id, prefilter_data, mode="analyze",
-                               reviewer_data=None, optimizer_history=None):
+                               reviewer_data=None, optimizer_history=None, feedback=""):
     try:
         from openai import AsyncOpenAI
     except ImportError:
         from app.openai_compat import AsyncOpenAI
+
+    # Load provider config using same mechanism as main agent loop
+    from app.admin.settings import load_provider_for_user
+    await load_provider_for_user(user_id)
 
     base_url = os.environ.get("LLM_BASE_URL", "https://api.deepinfra.com/v1/openai")
     api_key = os.environ.get("LLM_API_KEY", "")
@@ -51,7 +31,7 @@ async def propose_improvements(user_id, session_id, prefilter_data, mode="analyz
 
     client = AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=45.0)
     system_prompt = await load_prompt("planner-prompt")
-    user_prompt = _build_analyze_prompt(prefilter_data, optimizer_history)
+    user_prompt = _build_analyze_prompt(prefilter_data, optimizer_history, feedback)
 
     try:
         resp = await client.chat.completions.create(
@@ -95,7 +75,7 @@ async def propose_improvements(user_id, session_id, prefilter_data, mode="analyz
         return {"analysis": f"Planner error: {e}", "changes": []}
 
 
-def _build_analyze_prompt(pf, optimizer_history=None):
+def _build_analyze_prompt(pf, optimizer_history=None, feedback=""):
     transcript = pf.get("transcript", [])
     turns = pf.get("turns", 1)
     tokens = pf.get("tokens", 100)
@@ -110,6 +90,11 @@ def _build_analyze_prompt(pf, optimizer_history=None):
         lines.append("\n## Tool Errors Found in Session")
         for err in tool_errors:
             lines.append(f"  - {err[:200]}")
+
+    # Include user's explicit feedback from /optimize command, if given
+    if feedback:
+        lines.append(f"\n## User Feedback\n{feedback}")
+        lines.append("This is what the user wants changed. Your proposal MUST address this.")
 
     # Include rejection feedback from previous iteration if available
     if optimizer_history:

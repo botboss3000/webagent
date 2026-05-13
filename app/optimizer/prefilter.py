@@ -61,12 +61,16 @@ async def prefilter(user_id: str, session_id: str) -> Dict[str, Any]:
         tool_definitions = []
         if tool_names_used:
             placeholders = ",".join("?" for _ in tool_names_used)
-            rows = conn.execute(
-                f"SELECT name, description, source FROM tools WHERE name IN ({placeholders})",
-                list(tool_names_used),
-            ).fetchall()
-            for name, desc, src in rows:
-                tool_definitions.append({"name": name, "description": desc[:200] if desc else "", "source": src[:100] if src else ""})
+            try:
+                rows = conn.execute(
+                    f"SELECT name, description FROM tools WHERE name IN ({placeholders})",
+                    list(tool_names_used),
+                ).fetchall()
+                for name, desc in rows:
+                    tool_definitions.append({"name": name, "description": desc[:200] if desc else "", "source": ""})
+            except Exception:
+                # tools table may have different schema in some DBs
+                pass
 
         # Get context documents for this user's agent
         context_docs = []

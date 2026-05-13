@@ -31,17 +31,18 @@ from app.optimizer.runner import run_optimizer_async
 
 def _fire_optimizer(user_id: str, session_id: str, channel: Optional[str] = None) -> None:
     """Fire-and-forget optimizer task with error trapping.
-    Only fires if optimizer config mode is 'live' or session_id contains 'manual'.
+    Only fires if optimizer config mode is 'live'.
     """
     try:
         from app.optimizer.config import load_config
         cfg = load_config()
         mode = cfg.get("mode", "")
-        if mode != "live" and "manual" not in (session_id or ""):
+        if mode != "live":
             logger.debug("Optimizer: skipped for session %s (mode=%s)", session_id, mode)
             return
     except Exception:
-        pass
+        logger.debug("Optimizer: skipped for session %s (load_config failed)", session_id)
+        return
     async def _run():
         try:
             logger.info("Optimizer: triggering for session %s (user=%s, channel=%s)", session_id, user_id, channel)

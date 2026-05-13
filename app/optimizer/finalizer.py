@@ -17,6 +17,10 @@ async def review_trials(user_id, trials, baseline, transcript=None, criteria="",
     except ImportError:
         from app.openai_compat import AsyncOpenAI
 
+    # Load provider config using same mechanism as main agent loop
+    from app.admin.settings import load_provider_for_user
+    await load_provider_for_user(user_id)
+
     base_url = os.environ.get("LLM_BASE_URL", "https://api.deepinfra.com/v1/openai")
     api_key = os.environ.get("LLM_API_KEY", "")
     model = os.environ.get("LLM_MODEL", "deepseek-ai/DeepSeek-V4-Flash")

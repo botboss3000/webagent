@@ -826,14 +826,13 @@ class ToolLoader:
         from app.tools.optimizer_tools import run_worker_trials, handoff_to_finalizer, deploy_optimization
 
         async def _run_worker_trials_wrapper(changes_json: str = ""):
-            # Find the most recent optimizer session for this user
-            import sqlite3
+            # Find the most recent optimizer session (may be under original user, not opt_* agent)
+            import sqlite3, uuid as _uid
             db = sqlite3.connect("app/db/local.db")
             row = db.execute(
-                "SELECT id FROM sessions WHERE user_id=? AND id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1",
-                (user_id,)
+                "SELECT id FROM sessions WHERE id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1"
             ).fetchone()
-            sid = row[0] if row else f"optimizer-{user_id[:8]}"
+            sid = row[0] if row else f"optimizer-{str(_uid.uuid4())[:8]}"
             db.close()
             return await run_worker_trials(changes_json=changes_json, user_id=user_id, session_id=sid)
         tools["run_worker_trials"] = ToolInfo(
@@ -849,13 +848,12 @@ class ToolLoader:
         )
 
         async def _handoff_to_finalizer_wrapper(summary: str = ""):
-            import sqlite3
+            import sqlite3, uuid as _uid
             db = sqlite3.connect("app/db/local.db")
             row = db.execute(
-                "SELECT id FROM sessions WHERE user_id=? AND id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1",
-                (user_id,)
+                "SELECT id FROM sessions WHERE id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1"
             ).fetchone()
-            sid = row[0] if row else f"optimizer-{user_id[:8]}"
+            sid = row[0] if row else f"optimizer-{str(_uid.uuid4())[:8]}"
             db.close()
             return await handoff_to_finalizer(summary=summary, user_id=user_id, session_id=sid)
         tools["handoff_to_finalizer"] = ToolInfo(
@@ -871,13 +869,12 @@ class ToolLoader:
         )
 
         async def _deploy_optimization_wrapper(changes_json: str = ""):
-            import sqlite3
+            import sqlite3, uuid as _uid
             db = sqlite3.connect("app/db/local.db")
             row = db.execute(
-                "SELECT id FROM sessions WHERE user_id=? AND id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1",
-                (user_id,)
+                "SELECT id FROM sessions WHERE id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1"
             ).fetchone()
-            sid = row[0] if row else f"optimizer-{user_id[:8]}"
+            sid = row[0] if row else f"optimizer-{str(_uid.uuid4())[:8]}"
             db.close()
             return await deploy_optimization(changes_json=changes_json, user_id=user_id, session_id=sid)
         tools["deploy_optimization"] = ToolInfo(

@@ -27,7 +27,7 @@ async def run_worker_trials(changes_json: str, user_id: str, session_id: str) ->
     db = sqlite3.connect("app/db/local.db")
     try:
         sys_rows = db.execute(
-            "SELECT content FROM interactions WHERE session_id=? AND role='system' AND source='optimizer:init' ORDER BY created_at ASC LIMIT 1",
+            "SELECT content FROM interactions WHERE session_id=? AND source='optimizer:init' ORDER BY created_at ASC LIMIT 1",
             (session_id,),
         ).fetchall()
         original_message = "hi"
@@ -108,6 +108,13 @@ async def deploy_optimization(changes_json: str, user_id: str, session_id: str) 
     """Deploy approved optimization changes to the target user's agent."""
     import uuid
 
+    # Resolve real user_id from optimizer agent user_id (opt_role_realuser -> realuser)
+    real_user_id = user_id
+    if user_id.startswith('opt_'):
+        parts = user_id.split('_', 2)
+        if len(parts) == 3:
+            real_user_id = parts[2]
+
     changes = json.loads(changes_json)
     db = sqlite3.connect("app/db/local.db")
     c = db.cursor()
@@ -119,21 +126,21 @@ async def deploy_optimization(changes_json: str, user_id: str, session_id: str) 
         element_type = ch.get("element_type", "system_prompt")
 
         if element_type == "system_prompt":
-            cur = c.execute("SELECT system_prompt FROM agents WHERE user_id=? LIMIT 1", (user_id,))
+            cur = c.execute("SELECT system_prompt FROM agents WHERE user_id=? LIMIT 1", (real_user_id,))
             row = cur.fetchone()
             old = row[0] if row else ""
             new_full = old + "\n\n" + new_content if old else new_content
-            c.execute("UPDATE agents SET system_prompt=?, updated_at=datetime('now') WHERE user_id=?", (new_full, user_id))
+            c.execute("UPDATE agents SET system_prompt=?, updated_at=datetime('now') WHERE user_id=?", (new_full, real_user_id))
             deployed.append(f"Updated system_prompt: {element}")
         elif element_type == "context_document":
-            agent = c.execute("SELECT id FROM agents WHERE user_id=? LIMIT 1", (user_id,)).fetchone()
+            agent = c.execute("SELECT id FROM agents WHERE user_id=? LIMIT 1", (real_user_id,)).fetchone()
             if agent:
                 existing = c.execute("SELECT id FROM context_documents WHERE agent_id=? AND title=?", (agent[0], element)).fetchone()
                 if existing:
                     c.execute("UPDATE context_documents SET content=?, updated_at=datetime('now') WHERE id=?", (new_content, existing[0]))
                 else:
                     c.execute("INSERT INTO context_documents (id,agent_id,context_type,title,content,tags,created_at,updated_at) VALUES (?,(SELECT id FROM agents WHERE user_id=? LIMIT 1),'skills',?,?,'[]',datetime('now'),datetime('now'))",
-                              (str(uuid.uuid4()), user_id, element, new_content))
+                              (str(uuid.uuid4()), real_user_id, element, new_content))
                 deployed.append(f"Updated context document: {element}")
 
     c.execute("INSERT INTO skill_improvements (id,skill_id,old_version,new_version,opportunity_type,proposer_reasoning,deployed_at) VALUES (?,?,?,?,?,?,datetime('now'))",
