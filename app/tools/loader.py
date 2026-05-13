@@ -422,8 +422,21 @@ class ToolLoader:
         )
 
         # ── Tool discovery ──
+        BUILTIN_TOOLS = {
+            "run_worker_trials": "Run isolated worker test agents to test proposed optimization changes. Each worker creates a test agent, sends the original user message, and returns the full transcript + metrics.",
+            "handoff_to_finalizer": "Hand off optimization results to the Finalizer agent. Pass summary, judging_criteria, baseline_transcript, and worker_results.",
+            "deploy_optimization": "Deploy approved optimization changes to the user's agent. Pass changes_json with element, element_type, and new_content.",
+        }
+
         async def _list_tools_wrapper():
-            return await _core_list_tools(user_id=user_id)
+            result = json.loads(await _core_list_tools(user_id=user_id))
+            for name, desc in BUILTIN_TOOLS.items():
+                if name not in [t.get("name") for t in result.get("tools", [])]:
+                    if "tools" not in result:
+                        result["tools"] = []
+                    result["tools"].append({"name": name, "description": desc})
+                    result["count"] = len(result["tools"])
+            return json.dumps(result)
 
         tools["list_tools"] = ToolInfo(
             name="list_tools",
@@ -436,7 +449,16 @@ class ToolLoader:
         )
 
         async def _search_tools_wrapper(query: str):
-            return await _core_search_tools(query=query, user_id=user_id)
+            result = json.loads(await _core_search_tools(query=query, user_id=user_id))
+            matches = result.get("tools", [])
+            q = query.lower()
+            for name, desc in BUILTIN_TOOLS.items():
+                if q in name.lower() or q in desc.lower():
+                    if name not in [t.get("name") for t in matches]:
+                        matches.append({"name": name, "description": desc})
+            result["tools"] = matches
+            result["count"] = len(matches)
+            return json.dumps(result)
 
         tools["search_tools"] = ToolInfo(
             name="search_tools",
@@ -451,6 +473,8 @@ class ToolLoader:
         )
 
         async def _get_tool_definition_wrapper(tool_name: str):
+            if tool_name in BUILTIN_TOOLS:
+                return json.dumps({"status": "ok", "name": tool_name, "description": BUILTIN_TOOLS[tool_name]})
             return await _core_get_tool_definition(tool_name=tool_name, user_id=user_id)
 
         tools["get_tool_definition"] = ToolInfo(
@@ -826,15 +850,25 @@ class ToolLoader:
         from app.tools.optimizer_tools import run_worker_trials, handoff_to_finalizer, deploy_optimization
 
         async def _run_worker_trials_wrapper(changes_json: str = ""):
-            # Find the most recent optimizer session (may be under original user, not opt_* agent)
-            import sqlite3, uuid as _uid
-            db = sqlite3.connect("app/db/local.db")
-            row = db.execute(
-                "SELECT id FROM sessions WHERE id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1"
-            ).fetchone()
-            sid = row[0] if row else f"optimizer-{str(_uid.uuid4())[:8]}"
-            db.close()
-            return await run_worker_trials(changes_json=changes_json, user_id=user_id, session_id=sid)
+            import logging as _log
+            import sqlite3, uuid as _uid, traceback as _tb
+            _log.warning(f"_WRAPPER CALLED: user_id={user_id}")
+            try:
+                # Find latest optimizer session
+                db = sqlite3.connect("app/db/local.db")
+                row = db.execute(
+                    "SELECT id FROM sessions WHERE id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1"
+                ).fetchone()
+                sid = row[0] if row else f"optimizer-{str(_uid.uuid4())[:8]}"
+                db.close()
+                _log.warning(f"_WRAPPER: sid={sid}")
+                result = await run_worker_trials(changes_json=changes_json, user_id=user_id, session_id=sid)
+                _log.warning(f"_WRAPPER SUCCESS: len={len(result)}")
+                return result
+            except Exception as e:
+                tb_str = _tb.format_exc()
+                _log.error(f"_WRAPPER EXCEPTION: {type(e).__name__}: {e}\n{tb_str[:500]}")
+                return json.dumps({"status": "error", "message": f"{type(e).__name__}: {e}", "traceback": tb_str[:500]})
         tools["run_worker_trials"] = ToolInfo(
             name="run_worker_trials",
             handler=_run_worker_trials_wrapper,
@@ -847,7 +881,8 @@ class ToolLoader:
             },
         )
 
-        async def _handoff_to_finalizer_wrapper(summary: str = ""):
+        async def _handoff_to_finalizer_wrapper(summary: str = "", judging_criteria: str = "",
+                                                  baseline_transcript: str = "", worker_results: str = ""):
             import sqlite3, uuid as _uid
             db = sqlite3.connect("app/db/local.db")
             row = db.execute(
@@ -855,7 +890,12 @@ class ToolLoader:
             ).fetchone()
             sid = row[0] if row else f"optimizer-{str(_uid.uuid4())[:8]}"
             db.close()
-            return await handoff_to_finalizer(summary=summary, user_id=user_id, session_id=sid)
+            return await handoff_to_finalizer(
+                summary=summary, user_id=user_id, session_id=sid,
+                judging_criteria=judging_criteria,
+                baseline_transcript=baseline_transcript,
+                worker_results=worker_results,
+            )
         tools["handoff_to_finalizer"] = ToolInfo(
             name="handoff_to_finalizer",
             handler=_handoff_to_finalizer_wrapper,
@@ -863,6 +903,9 @@ class ToolLoader:
                 "type": "object",
                 "properties": {
                     "summary": {"type": "string", "description": "Summary of what was discussed and decided to pass to the Finalizer"},
+                    "judging_criteria": {"type": "string", "description": "Criteria used to judge worker trial quality, set by Planner + user"},
+                    "baseline_transcript": {"type": "string", "description": "Original user question + agent answer transcript before optimization"},
+                    "worker_results": {"type": "string", "description": "Worker trial results and transcripts for each proposed change"},
                 },
                 "required": ["summary"],
             },

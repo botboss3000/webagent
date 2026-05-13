@@ -534,9 +534,15 @@ async def stream_agent_events(
                     },
                 })
 
-            # ── Pipeline: tool definitions built ──
+            # ── Pipeline + log: tool definitions built ──
+            logger.debug("LLM TOOL DEFINITIONS (%d): %s", len(tool_definitions),
+                         json.dumps([{"name": td["function"]["name"], "desc": td["function"]["description"][:80]}
+                                     for td in tool_definitions], indent=2))
             yield {"type": "pipeline", "level": "pipeline",
-                   "step": "tool_defs_built", "count": len(tool_definitions)}
+                   "step": "tool_defs_built", "count": len(tool_definitions),
+                   "tool_definitions": [{"name": td["function"]["name"],
+                                          "description": td["function"]["description"][:120]}
+                                         for td in tool_definitions]}
 
             llm_start_time = time.time()
 

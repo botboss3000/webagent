@@ -3,7 +3,9 @@
 import asyncio
 import json
 import logging
+import os
 import re
+import sqlite3
 import uuid
 from typing import List, Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Request
@@ -148,59 +150,38 @@ async def chat(request: ChatRequest):
         await _ensure_session(db, request.user_id, request.session_id)
 
         # ── Optimizer session: route to dedicated Planner/Finalizer agent ──
-        opt_agent_user_id = None
+        agent = None
+        opt_role = None
+        opt_template_id = None
+        opt_metadata = {}
         if request.session_id.startswith('optimizer-'):
             conn = db._get_conn()
             try:
                 meta_row = conn.execute(
                     "SELECT metadata FROM sessions WHERE id=?", (request.session_id,)
                 ).fetchone()
-                metadata = json.loads(meta_row[0]) if meta_row and meta_row[0] else {}
-                opt_role = metadata.get('opt_role', 'planner')
-                opt_agent_user_id = f"opt_{opt_role}_{request.user_id}"
-                agent = await db.get_agent_for_user(opt_agent_user_id)
-                if agent is None:
-                    # Re-seed from JSON first so changes take effect
-                    await db.seed_agent_templates()
-
-                    prompter = 'opt_planner' if opt_role == 'planner' else 'opt_finalizer'
-                    cur = conn.execute(
-                        "SELECT * FROM agent_templates WHERE id=? LIMIT 1",
-                        (prompter,)
-                    )
-                    tpl = cur.fetchone()
-                    if not tpl:
-                        logger.warning(
-                            "Optimizer template '%s' not found — check app/context/agents/%s.json",
-                            prompter, prompter,
-                        )
-                        raise ValueError(f"No agent template found for id '{prompter}'")
-
-                    agent_id = str(uuid.uuid4())
-                    conn.execute(
-                        """INSERT INTO agents
-                           (id, user_id, system_prompt, max_turn_count, model, provider,
-                            temperature, max_tokens, status, metadata, created_at, updated_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, datetime('now'), datetime('now'))""",
-                        (agent_id, opt_agent_user_id,
-                         tpl["system_prompt"],
-                         tpl["max_turn_count"],
-                         tpl["model"],
-                         tpl["provider"],
-                         tpl["temperature"],
-                         tpl["max_tokens"],
-                         tpl["metadata"]),
-                    )
-                    conn.commit()
-                    agent = await db.get_agent_for_user(opt_agent_user_id)
+                opt_metadata = json.loads(meta_row[0]) if meta_row and meta_row[0] else {}
+                opt_role = opt_metadata.get('opt_role', 'planner')
+                opt_template_id = 'opt_planner' if opt_role == 'planner' else 'opt_finalizer'
             finally:
                 conn.close()
+
+            # Single call: resolve or re-use the session-bound agent.
+            # If already bound, does direct FK lookup by sessions.agent_id.
+            # If not bound, resolves via priority chain, materializes, binds.
+            agent = await db.get_or_resolve_session_agent(
+                session_id=request.session_id,
+                user_id=request.user_id,
+                template_id=opt_template_id,
+            )
             if not agent:
-                # Fall through to normal agent below
-                pass
+                raise RuntimeError(
+                    f"Failed to resolve optimizer agent (role={opt_role}) for user {request.user_id}. "
+                    f"Check that agent template '{opt_template_id}' exists."
+                )
 
         # ── Assign agent first (context rows are keyed by agent_id) ──
-        if not request.session_id.startswith('optimizer-') or agent is None:
+        if agent is None:
             agent = await db.get_agent_for_user(request.user_id)
         if agent is None:
             agent = await db.create_agent_for_user(request.user_id)
@@ -218,6 +199,7 @@ async def chat(request: ChatRequest):
             request.user_id, request.session_id, role="user", content=request.message,
             channel="web_portal",
             metadata=json.dumps({"source": "optimizer" if is_opt else "web_portal_chat"}),
+            input_data=json.dumps(request.model_dump(), default=str),
             sender_id=request.user_id,
             receiver_id=agent["id"],
             source="optimizer" if is_opt else None,
@@ -229,20 +211,15 @@ async def chat(request: ChatRequest):
             "content": request.message, "id": user_interaction_id,
         })
 
-        # ── Fetch agent + context docs in one query ──
-        # For optimizer sessions, use the optimizer agent's user_id so the
-        # Planner/Finalizer gets its own system prompt and context documents.
-        ctx_user_id = opt_agent_user_id if opt_agent_user_id else request.user_id
-        agent_with_ctx = await db.fetch_agent_with_context(ctx_user_id, CONTEXT_SECTION_TYPES)
-        if agent_with_ctx:
-            agent = agent_with_ctx
-
-        if not agent.get("context_documents"):
-            copied = await db.copy_defaults_to_agent(agent["id"])
-            if copied > 0:
-                agent = await db.fetch_agent_with_context(ctx_user_id, CONTEXT_SECTION_TYPES)
-
+        # ── Agent context docs (already included by get_or_resolve_session_agent / get_agent_for_user) ──
         context_docs = agent.get("context_documents", [])
+
+        # Non-optimizer agents: copy defaults if no context docs exist
+        if not context_docs and not is_opt:
+            copied = await db.copy_defaults_to_agent(agent["id"], template_id='default')
+            if copied > 0:
+                agent = await db.fetch_agent_with_context(request.user_id, CONTEXT_SECTION_TYPES)
+                context_docs = agent.get("context_documents", [])
 
         # ── Pipeline: context loaded ──
         doc_types = list(set(
@@ -270,6 +247,7 @@ async def chat(request: ChatRequest):
                 tool_name="memory_search",
                 channel="web_portal",
                 metadata=json.dumps({"brain": True, "skipped": True}),
+                input_data=json.dumps({"query": request.message, "skipped": True}),
                 sender_id=agent["id"],
                 receiver_id=agent["id"],
             )
@@ -332,6 +310,8 @@ async def chat(request: ChatRequest):
                     "brain": True,
                     "has_results": bool(brain_results),
                 }),
+                input_data=json.dumps({"query": request.message}),
+                output_data=search_content,
                 sender_id=agent["id"],
                 receiver_id=agent["id"],
             )
@@ -388,10 +368,60 @@ async def chat(request: ChatRequest):
 
         # DB-backed conversation history (same session survives browser refresh)
         exclude_ids = {user_interaction_id} if user_interaction_id else set()
-        history = await build_openai_history_from_session(
-            db, request.user_id, request.session_id,
-            exclude_interaction_ids=exclude_ids,
-        )
+        if request.session_id.startswith('optimizer-') and opt_role == 'finalizer':
+            # Inject only the relevant data — no Planner conversation
+            judging_criteria = opt_metadata.get('judging_criteria', '')
+            baseline_transcript = opt_metadata.get('baseline_transcript', '')
+            worker_results = opt_metadata.get('worker_results', '')
+            test_db_paths = opt_metadata.get('test_db_paths', [])
+
+            # Read raw trial transcripts from per-worker temp database files
+            trial_transcripts = []
+            for rel_path in test_db_paths:
+                try:
+                    _api_dir = os.path.dirname(os.path.abspath(__file__))  # app/api
+                    _project_root = os.path.normpath(os.path.join(_api_dir, "..", ".."))
+                    abs_path = os.path.normpath(os.path.join(_project_root, rel_path))
+                    if not os.path.exists(abs_path):
+                        trial_transcripts.append(f"\n### Trial: {rel_path}\n(db file not found)")
+                        continue
+                    _conn = sqlite3.connect(abs_path)
+                    _conn.row_factory = sqlite3.Row
+                    rows = _conn.execute(
+                        "SELECT role, content FROM interactions ORDER BY created_at"
+                    ).fetchall()
+                    _conn.close()
+                    trans_lines = []
+                    for r in rows:
+                        role_label = "User" if r["role"] == "user" else "Assistant"
+                        trans_lines.append(f"**{role_label}**: {r['content'][:500]}")
+                    if trans_lines:
+                        trial_transcripts.append(
+                            f"\n### Trial: {os.path.basename(rel_path)}\n" + "\n".join(trans_lines)
+                        )
+                except Exception as e:
+                    trial_transcripts.append(f"\n### Trial: {rel_path}\n(error reading: {e})")
+
+            trial_transcripts_text = "\n".join(trial_transcripts) if trial_transcripts else ""
+
+            finalizer_context = f"""## Judging Criteria (agreed by Planner + user)
+{judging_criteria}
+
+## Baseline (original interaction)
+{baseline_transcript}
+
+## Worker Trial Results
+{worker_results}
+"""
+            if trial_transcripts_text:
+                finalizer_context += f"\n## Raw Trial Transcripts (from temp databases)\n{trial_transcripts_text}\n"
+
+            history = [{"role": "system", "content": finalizer_context}]
+        else:
+            history = await build_openai_history_from_session(
+                db, request.user_id, request.session_id,
+                exclude_interaction_ids=exclude_ids,
+            )
 
         # Create event callback that pushes to visualizer and user listeners
         async def event_callback(event: Dict[str, Any]):
@@ -455,31 +485,70 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
 
     # Ensure the session exists before inserting interactions
     await _ensure_session(db, request.user_id, request.session_id)
-    
-    agent = await db.get_agent_for_user(request.user_id)
-    if agent is None:
-        agent = await db.create_agent_for_user(request.user_id)
+
+    # ── Optimizer session: route to dedicated Planner/Finalizer agent ──
+    opt_template_id = None
+    if request.session_id.startswith('optimizer-'):
+        conn = db._get_conn()
+        try:
+            meta_row = conn.execute(
+                "SELECT metadata FROM sessions WHERE id=?", (request.session_id,)
+            ).fetchone()
+            opt_metadata = json.loads(meta_row[0]) if meta_row and meta_row[0] else {}
+            opt_role = opt_metadata.get('opt_role', 'planner')
+            opt_template_id = 'opt_planner' if opt_role == 'planner' else 'opt_finalizer'
+        finally:
+            conn.close()
+
+        # Single call: resolve or re-use the session-bound agent.
+        # Uses sessions.agent_id (direct FK lookup) if already bound.
+        agent = await db.get_or_resolve_session_agent(
+            session_id=request.session_id,
+            user_id=request.user_id,
+            template_id=opt_template_id,
+        )
+        if not agent:
+            raise RuntimeError(
+                f"Failed to resolve optimizer agent (role={opt_role}) for user {request.user_id}. "
+                f"Check that agent template '{opt_template_id}' exists."
+            )
+    else:
+        agent = await db.get_agent_for_user(request.user_id)
+        if agent is None:
+            agent = await db.create_agent_for_user(request.user_id)
+
+    # -- Bind session to agent --
+    existing_agent_id = await db.get_session_agent_id(request.session_id)
+    if existing_agent_id is None:
+        await db.bind_session_to_agent(request.session_id, agent["id"])
+    elif existing_agent_id != agent["id"]:
+        raise RuntimeError(
+            f"Session {request.session_id[:8]} bound to agent {existing_agent_id[:8]}, "
+            f"but resolved agent is {agent['id'][:8]}. Cannot respond."
+        )
 
     # Save user message and get its ID for parent linking
     user_interaction_id = await db.insert_interaction(
         request.user_id, request.session_id, role="user", content=request.message,
         channel="web_portal",
         metadata=json.dumps({"source": "web_portal_chat_sse"}),
+        input_data=json.dumps(request.model_dump(), default=str),
         sender_id=request.user_id,
         receiver_id=agent["id"],
     )
 
     async def event_generator():
         nonlocal agent
-        # ── Fetch agent + context docs in one query ──
-        agent_with_ctx = await db.fetch_agent_with_context(request.user_id, CONTEXT_SECTION_TYPES)
-        if agent_with_ctx:
-            agent = agent_with_ctx
+        # Re-fetch to include context_documents (for non-optimizer agents that
+        # went through get_agent_for_user rather than get_or_resolve_session_agent).
+        # For optimizer agents, get_or_resolve_session_agent already includes them.
+        if not agent.get("context_documents"):
+            agent = await db.fetch_agent_with_context(request.user_id, CONTEXT_SECTION_TYPES)
         
         yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'agent_assigned', 'agent_id': agent['id'], 'max_turn_count': agent.get('max_turn_count', 10)})}\n\n"
 
         if not agent.get("context_documents"):
-            copied = await db.copy_defaults_to_agent(agent["id"])
+            copied = await db.copy_defaults_to_agent(agent["id"], template_id='default')
             if copied > 0:
                 agent = await db.fetch_agent_with_context(request.user_id, CONTEXT_SECTION_TYPES)
 
@@ -503,6 +572,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                 tool_name="memory_search",
                 channel="web_portal",
                 metadata=json.dumps({"brain": True, "skipped": True}),
+                input_data=json.dumps({"query": request.message, "skipped": True}),
                 sender_id=agent["id"],
                 receiver_id=agent["id"],
             )
@@ -547,6 +617,8 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                     "brain": True,
                     "has_results": bool(brain_results),
                 }),
+                input_data=json.dumps({"query": request.message}),
+                output_data=search_content,
                 sender_id=agent["id"],
                 receiver_id=agent["id"],
             )
@@ -673,6 +745,8 @@ async def _save_chat_to_memory(
             tool_name="memory_save",
             channel="web_portal",
             metadata=json.dumps({"brain": True, "slug": slug}),
+            input_data=json.dumps({"user_message": user_message[:200], "assistant_reply": assistant_reply[:200]}),
+            output_data=save_content,
             sender_id=agent_id,
             receiver_id=agent_id,
         )

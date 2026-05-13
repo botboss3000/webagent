@@ -14,6 +14,7 @@ import json
 CONTEXT_TYPE_TO_TITLE = {
     "agent": "AGENT IDENTITY",
     "user": "USER",
+    "optimizer": "OPTIMIZER INSTRUCTIONS",
     "skills": "SKILLS",
     "tools": "TOOLS",
     "tasks": "TASKS",
@@ -60,7 +61,7 @@ async def build_system_prompt(
             continue
         grouped.setdefault(ct, []).append(doc)
 
-    order = ["agent", "user", "skills", "tools", "tasks", "memory", "project", "jobs"]
+    order = ["agent", "user", "optimizer", "skills", "tools", "tasks", "memory", "project", "jobs"]
     for context_type in order:
         if context_type not in grouped:
             continue

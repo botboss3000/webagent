@@ -73,7 +73,7 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def copy_defaults_to_agent(
-        self, agent_id: str
+        self, agent_id: str, template_id: Optional[str] = None
     ) -> int:
         """
         Copy template rows into context storage for this agent.
@@ -320,6 +320,37 @@ class StorageBackend(ABC):
     # ---- Agent Assignment ----
 
     @abstractmethod
+    async def resolve_agent(
+        self, user_id: str, template_id: str
+    ) -> dict:
+        """
+        Resolve an agent for a user + template combo.
+
+        1. Look for existing active agent row where user_id == template_id + user_id suffix
+           AND template_id matches.
+        2. If found as 'active', return it.
+        3. If found as 'template' or 'filesystem' (virtual), create a real agent row
+           from the template and return it.
+        4. If not found, return a virtual dict with status='template' and all fields
+           from the template, ready for the caller to materialize.
+
+        Returns a dict with at minimum:
+          id, user_id, template_id, system_prompt, max_turn_count, model, provider,
+          temperature, max_tokens, metadata, status
+        """
+        ...
+
+    @abstractmethod
+    async def get_session_agent_id(self, session_id: str) -> Optional[str]:
+        """Return the agent_id bound to this session, or None."""
+        ...
+
+    @abstractmethod
+    async def bind_session_to_agent(self, session_id: str, agent_id: str) -> None:
+        """Bind a session to an agent (insert or update the binding row)."""
+        ...
+
+    @abstractmethod
     async def get_agent_for_user(self, user_id: str) -> Optional[dict]:
         """Get the assigned agent for a user. Returns None if not assigned yet."""
         ...
@@ -341,6 +372,40 @@ class StorageBackend(ABC):
         If no agent exists for user, returns None.
         If ``context_types`` is None or empty, loads all types.
         Caller should fall back to seeding + re-fetch if ``context_documents`` is empty.
+        """
+        ...
+
+    @abstractmethod
+    async def fetch_agent_by_id_with_context(
+        self,
+        agent_id: str,
+        context_types: Optional[List[str]] = None,
+    ) -> Optional[dict]:
+        """
+        Same as ``fetch_agent_with_context`` but queries by agent ``id`` (PK) instead of ``user_id``.
+        Direct FK lookup — no naming convention, no inference chain, no fallback.
+        Returns None if agent_id not found.
+        """
+        ...
+
+    @abstractmethod
+    async def get_or_resolve_session_agent(
+        self,
+        session_id: str,
+        user_id: str,
+        template_id: Optional[str] = None,
+    ) -> Optional[dict]:
+        """
+        Get the agent for a session, creating/binding it if needed.
+
+        1. If ``sessions.agent_id`` is set → ``fetch_agent_by_id_with_context(agent_id)``
+           (direct FK lookup, zero inference chain).
+        2. If not set → ``resolve_agent(user_id, template_id)`` to obtain the agent.
+           - If status is 'template' or 'filesystem', materialize a real ``agents`` row.
+           - Call ``bind_session_to_agent(session_id, agent_id)``.
+           - Return ``fetch_agent_by_id_with_context(agent_id)``.
+
+        Returns None only if resolution fails entirely (should raise instead).
         """
         ...
 

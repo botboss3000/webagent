@@ -15,10 +15,10 @@ echo.
 
 :: ── Kill any stale server on this port ──
 :restart
-for /f "tokens=5*" %%a in ('netstat -ano ^| findstr ":8080" ^| findstr LISTEN') do (
-    if not "%%b"=="" (
-        echo [webAgent] Killing stale process PID %%b on port 8080...
-        taskkill /F /PID %%b >nul 2>nul
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8080" ^| findstr LISTEN') do (
+    if not "%%a"=="" (
+        echo [webAgent] Killing stale process PID %%a on port 8080...
+        taskkill /F /PID %%a >nul 2>nul
     )
 )
 ping -n 2 127.0.0.1 >nul
@@ -27,7 +27,7 @@ ping -n 2 127.0.0.1 >nul
 echo [webAgent] Server running. Press Ctrl+C to stop permanently.
 echo [webAgent] Use the "Restart" button in the terminal page to restart.
 echo.
-.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --ws wsproto
+.venv\Scripts\python.exe run.py
 
 :: If uvicorn exits (e.g. via /api/v1/restart), restart the loop
 echo.
