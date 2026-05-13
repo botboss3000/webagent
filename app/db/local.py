@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     title TEXT,
     metadata TEXT,
     agent_id TEXT,
+    participants TEXT DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -639,6 +640,14 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Added sessions.agent_id column")
 
+            # ── Migration: add participants column to sessions ──
+            cursor = conn.execute("PRAGMA table_info(sessions)")
+            sess_cols = {row[1] for row in cursor.fetchall()}
+            if "participants" not in sess_cols:
+                conn.execute("ALTER TABLE sessions ADD COLUMN participants TEXT DEFAULT '[]'")
+                conn.commit()
+                logger.info("Added sessions.participants column")
+
             # ── Migration: add template_id column to context_documents ──
             cursor = conn.execute("PRAGMA table_info(context_documents)")
             cd_cols = {row[1] for row in cursor.fetchall()}
@@ -851,8 +860,8 @@ class LocalBackend(StorageBackend):
         source: Optional[str] = None,
     ) -> str:
         await self.assert_session_owned(user_id, session_id)
-        # Optimizer sessions get source='optimizer' for all interactions
-        if source is None and session_id.startswith('optimizer-'):
+        # Optimizer/Finalizer sessions get source='optimizer' for all interactions
+        if source is None and (session_id.startswith('optimizer-') or session_id.startswith('finalizer-')):
             source = 'optimizer'
         async with self._write_lock:
             conn = self._get_conn()
@@ -2388,6 +2397,79 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
+    # ---- Session Participants ----
+
+    async def add_session_participant(
+        self, session_id: str, participant_id: str, role: str
+    ) -> None:
+        """Add a participant to a session. role is 'user' or 'agent'."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT participants FROM sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            participants = json.loads(row[0]) if row and row[0] else []
+            # Don't add duplicate
+            if not any(p.get("id") == participant_id for p in participants):
+                participants.append({"id": participant_id, "role": role})
+                conn.execute(
+                    "UPDATE sessions SET participants=? WHERE id=?",
+                    (json.dumps(participants), session_id),
+                )
+                conn.commit()
+        finally:
+            conn.close()
+
+    async def remove_session_participant(
+        self, session_id: str, participant_id: str
+    ) -> None:
+        """Remove a participant from a session by id."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT participants FROM sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            participants = json.loads(row[0]) if row and row[0] else []
+            participants = [p for p in participants if p.get("id") != participant_id]
+            conn.execute(
+                "UPDATE sessions SET participants=? WHERE id=?",
+                (json.dumps(participants), session_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    async def is_session_participant(
+        self, session_id: str, participant_id: str, role: Optional[str] = None
+    ) -> bool:
+        """Check if participant_id is in a session. If role specified, also checks role matches."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT participants FROM sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            participants = json.loads(row[0]) if row and row[0] else []
+            for p in participants:
+                if p.get("id") == participant_id:
+                    if role is None or p.get("role") == role:
+                        return True
+            return False
+        finally:
+            conn.close()
+
+    async def get_session_participants(
+        self, session_id: str
+    ) -> List[dict]:
+        """Return the full participants array for a session."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT participants FROM sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            return json.loads(row[0]) if row and row[0] else []
+        finally:
+            conn.close()
+
     async def get_or_resolve_session_agent(
         self,
         session_id: str,
@@ -2451,6 +2533,11 @@ class LocalBackend(StorageBackend):
         # Bind session to agent
         if agent.get("id"):
             await self.bind_session_to_agent(session_id, agent["id"])
+            # Auto-register user and agent as participants
+            if not await self.is_session_participant(session_id, agent["id"], 'agent'):
+                await self.add_session_participant(session_id, agent["id"], 'agent')
+            if not await self.is_session_participant(session_id, user_id, 'user'):
+                await self.add_session_participant(session_id, user_id, 'user')
 
         # Fetch with context (by ID, not user_id)
         if agent.get("id"):

@@ -960,6 +960,68 @@ class SupabaseBackend(StorageBackend):
             logger.error("Error getting session agent_id: %s", e)
             return None
 
+    # ---- Session Participants ----
+
+    async def add_session_participant(
+        self, session_id: str, participant_id: str, role: str
+    ) -> None:
+        """Add a participant to a session. role is 'user' or 'agent'."""
+        try:
+            res = self._client.table("sessions").select("participants").eq("id", session_id).limit(1).execute()
+            participants = json.loads(res.data[0]["participants"]) if res.data and res.data[0].get("participants") else []
+            if not any(p.get("id") == participant_id for p in participants):
+                participants.append({"id": participant_id, "role": role})
+                self._client.table("sessions").upsert(
+                    {"id": session_id, "participants": json.dumps(participants)},
+                    on_conflict="id",
+                ).execute()
+        except Exception as e:
+            logger.error("Error adding session participant: %s", e)
+            raise
+
+    async def remove_session_participant(
+        self, session_id: str, participant_id: str
+    ) -> None:
+        """Remove a participant from a session by id."""
+        try:
+            res = self._client.table("sessions").select("participants").eq("id", session_id).limit(1).execute()
+            participants = json.loads(res.data[0]["participants"]) if res.data and res.data[0].get("participants") else []
+            participants = [p for p in participants if p.get("id") != participant_id]
+            self._client.table("sessions").upsert(
+                {"id": session_id, "participants": json.dumps(participants)},
+                on_conflict="id",
+            ).execute()
+        except Exception as e:
+            logger.error("Error removing session participant: %s", e)
+            raise
+
+    async def is_session_participant(
+        self, session_id: str, participant_id: str, role: Optional[str] = None
+    ) -> bool:
+        """Check if participant_id is in a session. If role specified, also checks role matches."""
+        try:
+            res = self._client.table("sessions").select("participants").eq("id", session_id).limit(1).execute()
+            participants = json.loads(res.data[0]["participants"]) if res.data and res.data[0].get("participants") else []
+            for p in participants:
+                if p.get("id") == participant_id:
+                    if role is None or p.get("role") == role:
+                        return True
+            return False
+        except Exception as e:
+            logger.error("Error checking session participant: %s", e)
+            return False
+
+    async def get_session_participants(
+        self, session_id: str
+    ) -> List[dict]:
+        """Return the full participants array for a session."""
+        try:
+            res = self._client.table("sessions").select("participants").eq("id", session_id).limit(1).execute()
+            return json.loads(res.data[0]["participants"]) if res.data and res.data[0].get("participants") else []
+        except Exception as e:
+            logger.error("Error getting session participants: %s", e)
+            return []
+
     async def bind_session_to_agent(self, session_id: str, agent_id: str) -> None:
         """Bind a session to an agent by setting sessions.agent_id."""
         try:
@@ -1422,6 +1484,22 @@ class SupabaseClient:
     @staticmethod
     async def get_session_agent_id(session_id: str) -> Optional[str]:
         return await SupabaseClient._get_backend().get_session_agent_id(session_id)
+
+    @staticmethod
+    async def add_session_participant(session_id: str, participant_id: str, role: str) -> None:
+        return await SupabaseClient._get_backend().add_session_participant(session_id, participant_id, role)
+
+    @staticmethod
+    async def remove_session_participant(session_id: str, participant_id: str) -> None:
+        return await SupabaseClient._get_backend().remove_session_participant(session_id, participant_id)
+
+    @staticmethod
+    async def is_session_participant(session_id: str, participant_id: str, role: Optional[str] = None) -> bool:
+        return await SupabaseClient._get_backend().is_session_participant(session_id, participant_id, role)
+
+    @staticmethod
+    async def get_session_participants(session_id: str) -> List[dict]:
+        return await SupabaseClient._get_backend().get_session_participants(session_id)
 
     @staticmethod
     async def bind_session_to_agent(session_id: str, agent_id: str) -> None:

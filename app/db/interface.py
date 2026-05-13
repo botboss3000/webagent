@@ -346,6 +346,34 @@ class StorageBackend(ABC):
         ...
 
     @abstractmethod
+    async def add_session_participant(
+        self, session_id: str, participant_id: str, role: str
+    ) -> None:
+        """Add a participant to a session. role is 'user' or 'agent'."""
+        ...
+
+    @abstractmethod
+    async def remove_session_participant(
+        self, session_id: str, participant_id: str
+    ) -> None:
+        """Remove a participant from a session by id."""
+        ...
+
+    @abstractmethod
+    async def is_session_participant(
+        self, session_id: str, participant_id: str, role: Optional[str] = None
+    ) -> bool:
+        """Check if participant_id is in a session. If role specified, also checks role matches."""
+        ...
+
+    @abstractmethod
+    async def get_session_participants(
+        self, session_id: str
+    ) -> List[dict]:
+        """Return the full participants array for a session."""
+        ...
+
+    @abstractmethod
     async def bind_session_to_agent(self, session_id: str, agent_id: str) -> None:
         """Bind a session to an agent (insert or update the binding row)."""
         ...
