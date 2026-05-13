@@ -72,6 +72,10 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
     _opt_conn.commit()
     _opt_conn.close()
 
+    # ── Inject target session data + webAgent context into temp DB ──
+    # This gives the Planner the full picture without needing tool calls
+    _inject_session_context(user_id, session_id, temp_db_path, opt_sid)
+
     # ── Create optimizer session in local.db ──
     _ensure_session(user_id, opt_sid, session_id)
     _store_optimizer_metadata(user_id, opt_sid, session_id, temp_db_path=temp_db_path)  # sets opt_role='planner'
@@ -100,18 +104,90 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
     return opt_sid
 
 
-async def _kickstart_planner(user_id: str, opt_sid: str) -> None:
+def _inject_session_context(user_id: str, session_id: str, temp_db_path: str, opt_sid: str) -> None:
+    """Inject target session interactions + webAgent context docs into the optimizer temp DB.
+    Limits to last 50 interactions so long sessions don't bloat the prompt."""
+    import json
+
+    ctx_data = []
+    try:
+        local = sqlite3.connect(
+            os.path.join(os.path.dirname(temp_db_path), "local.db")
+        )
+        local.row_factory = sqlite3.Row
+
+        # Get last 50 target session interactions
+        ics = local.execute(
+            "SELECT role, content, tool_name FROM interactions WHERE session_id=? ORDER BY created_at DESC LIMIT 50",
+            (session_id,)
+        ).fetchall()
+        ics.reverse()
+        if ics:
+            ctx_data.append("## Target Session Interactions")
+            for ic in ics:
+                role = ic['role']
+                content = str(ic['content'] or '')[:500]
+                if role == 'user':
+                    ctx_data.append(f"[user]: {content}")
+                elif role == 'assistant':
+                    ctx_data.append(f"[assistant]: {content}")
+                elif role == 'tool':
+                    tn = ic['tool_name'] or ''
+                    ctx_data.append(f"[tool] ({tn}): {content[:200]}")
+
+        # Get webAgent context documents (always injected)
+        agent = local.execute(
+            "SELECT id FROM agents WHERE user_id=? LIMIT 1", (user_id,)
+        ).fetchone()
+        if agent:
+            docs = local.execute(
+                "SELECT context_type, title, substr(content,1,500) as content FROM context_documents WHERE agent_id=? ORDER BY context_type",
+                (agent['id'],)
+            ).fetchall()
+            if docs:
+                ctx_data.append("")
+                ctx_data.append("## WebAgent Context Documents")
+                for d in docs:
+                    ctx_data.append(f"### {d['title']} ({d['context_type']})")
+                    ctx_data.append(d['content'])
+
+        local.close()
+    except Exception as e:
+        logging.warning("Failed to inject session context: %s", e)
+
+    if ctx_data:
+        content = "\n".join(ctx_data)
+        try:
+            c = sqlite3.connect(temp_db_path)
+            c.execute(
+                "INSERT INTO interactions (id,session_id,role,content,source,channel,from_id,created_at) "
+                "VALUES (?,?,'assistant',?,'context','optimizer',?,datetime('now'))",
+                (str(uuid.uuid4()), opt_sid, content, user_id),
+            )
+            c.commit()
+            c.close()
+        except Exception as e:
+            logging.warning("Failed to write context injection: %s", e)
+
+
+async def _kickstart_planner(user_id: str, opt_sid: str, feedback: str = "") -> None:
     """Auto-trigger the Planner by sending a user message to the optimizer session.
     chat.py routes messages to the opt_planner agent via resolve_agent()."""
     import httpx, os, logging as _log
     try:
         port = os.environ.get('PORT', '8080')
         _log.warning(f"Kickstarting Planner for session {opt_sid}")
+        
+        # Build message: include user feedback if provided
+        msg = "Please analyze the main session and propose improvements."
+        if feedback:
+            msg += f" The user's feedback: {feedback}"
+        
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
                 f"http://127.0.0.1:{port}/api/v1/chat",
                 json={
-                    "message": "Please analyze the session above and propose improvements.",
+                    "message": msg,
                     "user_id": user_id,
                     "session_id": opt_sid,
                 },
@@ -177,7 +253,25 @@ def _ensure_session(uid, sid, orig):
         _retry_db_write(_do)
 
 
-def _insert_opt_msg(uid, sid, role, source, content, *, from_id=None, to_id=None, input_data=None, output_data=None):
+def _insert_opt_msg(uid, sid, role, source, content, *, from_id=None, to_id=None, input_data=None, output_data=None, temp_db_path=None):
+    """Insert an interaction into the optimizer's temp DB (or local.db fallback)."""
+    import json
+    
+    if temp_db_path:
+        # Write to the optimizer's temp DB so the Planner sees it
+        def _do_temp():
+            c = sqlite3.connect(temp_db_path)
+            c.execute(
+                "INSERT INTO interactions (id,session_id,role,content,source,channel,from_id,to_id,input,output,created_at) "
+                "VALUES (?,?,?,?,?,'optimizer',?,?,?,?,datetime('now'))",
+                (str(uuid.uuid4()), sid, role, content, source, from_id, to_id, input_data, output_data),
+            )
+            c.commit()
+            c.close()
+        _retry_db_write(_do_temp)
+        return
+    
+    # Fallback: write to local.db (for legacy code paths)
     from app.db import get_db
     db = get_db()
     raw = getattr(db, '_get_conn', None)
@@ -191,7 +285,6 @@ def _insert_opt_msg(uid, sid, role, source, content, *, from_id=None, to_id=None
             )
             c.commit()
             c.close()
-
         _retry_db_write(_do)
 
 
