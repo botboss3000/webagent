@@ -4,7 +4,7 @@ Optimizer Runner — creates sessions, hands off to chat.py routing.
 
 from __future__ import annotations
 
-import asyncio, json, logging, uuid
+import asyncio, json, logging, os, sqlite3, uuid
 from datetime import datetime, timezone
 from typing import Any, Dict
 
@@ -53,9 +53,28 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
     run_id = str(uuid.uuid4())
     opt_sid = f"optimizer-{str(uuid.uuid4())[:8]}"
 
-    # ── Create optimizer session ──
+    # ── Create optimizer temp DB ──
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _db_dir = os.path.normpath(os.path.join(_here, "..", "db"))
+    os.makedirs(_db_dir, exist_ok=True)
+    temp_db_name = f"optimizer_{uuid.uuid4().hex[:16]}.db"
+    temp_db_path = os.path.join(_db_dir, temp_db_name)
+    # Initialize temp DB schema (creates all tables via LocalBackend.__init__)
+    from app.db.local import LocalBackend as _OptBackend
+    _OptBackend(db_path=temp_db_path)
+    # Insert session row into temp DB so chat.py can find it
+    _opt_conn = sqlite3.connect(temp_db_path)
+    _opt_conn.execute(
+        "INSERT OR IGNORE INTO sessions (id, user_id, title, metadata, created_at, updated_at) "
+        "VALUES (?, ?, ?, '{}', datetime('now'), datetime('now'))",
+        (opt_sid, user_id, f"Optimizer \u2014 {session_id[:12]}")
+    )
+    _opt_conn.commit()
+    _opt_conn.close()
+
+    # ── Create optimizer session in local.db ──
     _ensure_session(user_id, opt_sid, session_id)
-    _store_optimizer_metadata(user_id, opt_sid, session_id)  # sets opt_role='planner'
+    _store_optimizer_metadata(user_id, opt_sid, session_id, temp_db_path=temp_db_path)  # sets opt_role='planner'
 
     # ── Prefilter target session ──
     pf = await prefilter(user_id, session_id)
@@ -65,13 +84,14 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
     if feedback:
         _insert_opt_msg(user_id, opt_sid, "user", "optimizer:user_feedback",
                         f"User feedback: {feedback}",
+                        temp_db_path=temp_db_path,
                         from_id=user_id)
 
     # ── Auto-kickstart: trigger the Planner to analyze immediately ──
     # Sends a user message to the optimizer session — chat.py routes it to
     # the opt_planner agent (via resolve_agent/session binding), which
     # auto-starts its analysis per its system prompt rules.
-    asyncio.create_task(_kickstart_planner(user_id, opt_sid))
+    asyncio.create_task(_kickstart_planner(user_id, opt_sid, feedback=feedback))
 
     # ── Log and return ──
     _log_start(run_id, cfg, opt_sid)
@@ -115,13 +135,17 @@ def _retry_db_write(fn, max_attempts=5, delay=0.3):
                 raise
 
 
-def _store_optimizer_metadata(uid, sid, target_sid):
-    """Store the original target session in optimizer session metadata."""
+def _store_optimizer_metadata(uid, sid, target_sid, temp_db_path=None):
+    """Store the original target session + temp_db_path in optimizer session metadata."""
     from app.db import get_db
     db = get_db()
     raw = getattr(db, '_get_conn', None)
     if raw:
-        meta = json.dumps({"opt_role": "planner", "target_session": target_sid})
+        meta = json.dumps({
+            "opt_role": "planner",
+            "target_session": target_sid,
+            "temp_db_path": temp_db_path,
+        })
 
         def _do():
             c = raw()

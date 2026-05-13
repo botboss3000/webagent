@@ -5,7 +5,7 @@ Loaded into the webAgent's toolset when the user is chatting in an optimizer ses
 
 from __future__ import annotations
 
-import asyncio, json, logging, sqlite3, sys
+import asyncio, json, logging, os, sqlite3, sys
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -309,72 +309,186 @@ async def handoff_to_finalizer(summary: str = "", user_id: str = "", session_id:
                                 judging_criteria: str = "", baseline_transcript: str = "",
                                 worker_results: str = "") -> str:
     """Hand off the optimization to the Finalizer agent for review.
-    Sets session metadata so future messages in this session route to the Finalizer agent.
-    Stores judging criteria, baseline transcript, and worker trial results so the
-    Finalizer can evaluate without seeing the Planner's conversation.
+    Creates a NEW finalizer-<uuid8> session completely separate from the Planner session.
+    Stores judging criteria, baseline transcript, worker trial results, and test_db_paths
+    in the new session's metadata so the Finalizer can evaluate without seeing
+    the Planner's conversation.
+    Returns a JSON dict with status, finalizer_session_id, summary.
     """
-    db = sqlite3.connect("app/db/local.db")
+    import uuid as _uuid_mod
+
+    # Resolve real user_id from optimizer agent user_id (opt_role_realuser -> realuser)
+    real_user_id = user_id
+    if user_id.startswith('opt_'):
+        parts = user_id.split('_', 2)
+        if len(parts) == 3:
+            real_user_id = parts[2]
+    logger.warning(f"handoff_to_finalizer: real_user_id={real_user_id}")
+
+    # Generate finalizer session ID (completely separate from optimizer session)
+    finalizer_sid = f"finalizer-{_uuid_mod.uuid4().hex[:8]}"
+
+    # Build metadata payload
+    metadata = {
+        "opt_role": "finalizer",
+        "source_optimizer_session": session_id,
+        "planner_summary": summary,
+        "judging_criteria": judging_criteria,
+        "baseline_transcript": baseline_transcript,
+        "worker_results": worker_results,
+    }
+
+    # Extract test_db_paths from worker_results so Finalizer can read raw trial data
+    test_db_paths = []
     try:
-        meta_row = db.execute(
-            "SELECT metadata FROM sessions WHERE id=?", (session_id,)
-        ).fetchone()
-        metadata = json.loads(meta_row[0]) if meta_row and meta_row[0] else {}
-        metadata["opt_role"] = "finalizer"
-        metadata["planner_summary"] = summary
-        metadata["judging_criteria"] = judging_criteria
-        metadata["baseline_transcript"] = baseline_transcript
-        metadata["worker_results"] = worker_results
+        worker_data = json.loads(worker_results) if isinstance(worker_results, str) else worker_results
+        if isinstance(worker_data, list):
+            for entry in worker_data:
+                if isinstance(entry, dict) and entry.get("test_db_path"):
+                    test_db_paths.append(entry["test_db_path"])
+    except (json.JSONDecodeError, TypeError):
+        pass
+    if test_db_paths:
+        metadata["test_db_paths"] = test_db_paths
 
-        # Extract test_db_paths from worker_results so Finalizer can read raw trial data
-        test_db_paths = []
-        try:
-            worker_data = json.loads(worker_results) if isinstance(worker_results, str) else worker_results
-            if isinstance(worker_data, list):
-                for entry in worker_data:
-                    if isinstance(entry, dict) and entry.get("test_db_path"):
-                        test_db_paths.append(entry["test_db_path"])
-        except (json.JSONDecodeError, TypeError):
-            pass
-        if test_db_paths:
-            metadata["test_db_paths"] = test_db_paths
+    from app.db import get_db
+    backend = get_db()
 
-        db.execute(
-            "UPDATE sessions SET metadata=? WHERE id=?",
-            (json.dumps(metadata), session_id),
+    # ── Create finalizer temp DB ──
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _db_dir = os.path.normpath(os.path.join(_here, "..", "db"))
+    _local_path = os.path.join(_db_dir, "local.db")
+    os.makedirs(_db_dir, exist_ok=True)
+    temp_db_name = f"finalizer_{_uuid_mod.uuid4().hex[:16]}.db"
+    temp_db_path = os.path.join(_db_dir, temp_db_name)
+
+    # Initialize temp DB schema
+    from app.db.local import LocalBackend as _FinalizerBackend, SCHEMA_SQL as _FSQL
+    _fb = _FinalizerBackend(db_path=temp_db_path)  # __init__ calls _init_db, seeds schemas+templates
+    _temp_conn = sqlite3.connect(temp_db_path)
+    try:
+        # Insert session row into temp DB
+        _temp_conn.execute(
+            "INSERT OR IGNORE INTO sessions (id, user_id, title, metadata, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))",
+            (finalizer_sid, real_user_id,
+             f"Finalizer \u2014 {session_id[:12]}",
+             json.dumps(metadata)),
         )
-        db.commit()
+        _temp_conn.commit()
     finally:
-        db.close()
-    # Auto-kickstart the Finalizer
+        _temp_conn.close()
+
+    # ── Step 1: Store session row in local.db (with temp_db_path in metadata) ──
+    metadata["temp_db_path"] = temp_db_path
+    conn = sqlite3.connect(_local_path)
     try:
-        import httpx, os, logging as _log
+        conn.execute(
+            "INSERT OR IGNORE INTO sessions (id, user_id, title, metadata, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))",
+            (finalizer_sid, real_user_id,
+             f"Finalizer \u2014 {session_id[:12]}",
+             json.dumps(metadata)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # ── Step 2: Use temp backend for agent resolution, materialization, binding ──
+    # get_or_resolve_session_agent does resolve_agent -> materialize -> bind -> participants
+    # all operations run against the temp DB
+    finalizer_agent = await _fb.get_or_resolve_session_agent(
+        session_id=finalizer_sid,
+        user_id=real_user_id,
+        template_id="opt_finalizer",
+    )
+    if not finalizer_agent:
+        # Fallback: try resolve_agent directly
+        finalizer_agent = await _fb.resolve_agent(
+            user_id=real_user_id, template_id="opt_finalizer"
+        )
+        if finalizer_agent.get("status") in ("template", "filesystem"):
+            agent_user_id = f"opt_finalizer_{real_user_id}"
+            agent_id = str(_uuid_mod.uuid4())
+            _temp_c = sqlite3.connect(temp_db_path)
+            try:
+                from datetime import datetime as _dt2, timezone as _tz2
+                now = _dt2.now(_tz2.utc).isoformat()
+                _temp_c.execute(
+                    """INSERT INTO agents
+                       (id, user_id, template_id, system_prompt, max_turn_count, model, provider,
+                        temperature, max_tokens, status, metadata, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
+                    (agent_id, agent_user_id, "opt_finalizer",
+                     finalizer_agent.get("system_prompt", ""),
+                     finalizer_agent.get("max_turn_count", 10),
+                     finalizer_agent.get("model"),
+                     finalizer_agent.get("provider"),
+                     finalizer_agent.get("temperature", 0.0),
+                     finalizer_agent.get("max_tokens", 4096),
+                     json.dumps(finalizer_agent.get("metadata", {})),
+                     now, now),
+                )
+                _temp_c.execute(
+                    "UPDATE sessions SET agent_id=?, updated_at=datetime('now') WHERE id=?",
+                    (agent_id, finalizer_sid),
+                )
+                _temp_c.commit()
+            finally:
+                _temp_c.close()
+            finalizer_agent["id"] = agent_id
+
+        # Bind + participants
+        if finalizer_agent.get("id"):
+            _fb_temp = sqlite3.connect(temp_db_path)
+            try:
+                _fb_temp.execute(
+                    "UPDATE sessions SET agent_id=?, updated_at=datetime('now') WHERE id=?",
+                    (finalizer_agent["id"], finalizer_sid),
+                )
+                # Add participants via direct SQL
+                _fb_temp.execute(
+                    "UPDATE sessions SET participants=? WHERE id=?",
+                    (json.dumps([{"id": real_user_id, "role": "user"}, {"id": finalizer_agent["id"], "role": "agent"}]), finalizer_sid),
+                )
+                _fb_temp.commit()
+            finally:
+                _fb_temp.close()
+
+    logger.warning(f"Finalizer session created: {finalizer_sid} (user={real_user_id}, agent={finalizer_agent.get('id', '?')[:8]})")
+
+    # ── Step 5: Auto-kickstart the Finalizer ──
+    try:
         port = os.environ.get('PORT', '8080')
-        _log.warning(f"Kickstarting Finalizer for session {session_id}")
-        asyncio.create_task(_fire_finalizer(user_id, session_id, summary))
+        asyncio.create_task(_kickstart_finalizer(real_user_id, finalizer_sid, summary))
     except Exception:
         pass
-    return f"Handed off to Finalizer. Summary: {summary}"
+
+    return json.dumps({
+        "status": "ok",
+        "finalizer_session_id": finalizer_sid,
+        "summary": summary,
+    })
 
 
-def _fire_finalizer(user_id: str, session_id: str, summary: str) -> None:
-    """Fire the Finalizer via API to auto-evaluate."""
-    import httpx, os, asyncio, logging as _log
-    async def _run():
-        try:
-            port = os.environ.get('PORT', '8080')
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                resp = await client.post(
-                    f"http://127.0.0.1:{port}/api/v1/chat",
-                    json={
-                        "message": f"Please evaluate the optimization results and recommend next steps.",
-                        "user_id": user_id,
-                        "session_id": session_id,
-                    },
-                )
-                _log.warning(f"Kickstart Finalizer responded: {resp.status_code}")
-        except Exception as e:
-            _log.warning(f"Kickstart Finalizer failed: {e}")
-    asyncio.create_task(_run())
+async def _kickstart_finalizer(user_id: str, finalizer_sid: str, summary: str) -> None:
+    """Kickstart the Finalizer by sending a POST to the chat API."""
+    import httpx, os, logging as _log
+    try:
+        port = os.environ.get('PORT', '8080')
+        _log.warning(f"Kickstarting Finalizer {finalizer_sid}")
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                f"http://127.0.0.1:{port}/api/v1/chat",
+                json={
+                    "message": f"Evaluate the optimization results using the criteria, baseline, and worker data stored in this session's metadata.",
+                    "user_id": user_id,
+                    "session_id": finalizer_sid,
+                },
+            )
+            _log.warning(f"Kickstart Finalizer responded: {resp.status_code}")
+    except Exception as e:
+        _log.warning(f"Kickstart Finalizer failed (non-fatal): {e}")
 
 
 async def deploy_optimization(changes_json: str, user_id: str, session_id: str) -> str:
@@ -426,24 +540,15 @@ async def deploy_optimization(changes_json: str, user_id: str, session_id: str) 
         raw.commit()
         raw.close()
 
-    # Cleanup: remove temp trial databases after successful deployment
+    # Cleanup: remove all temp databases after successful deployment
     import glob as _glob, os as _os
     _here = _os.path.dirname(_os.path.abspath(__file__))
     _db_dir = _os.path.normpath(_os.path.join(_here, "..", "db"))
-    for _f in _glob.glob(_os.path.join(_db_dir, "test_*.db")):
-        try:
-            _os.remove(_f)
-        except Exception:
-            pass
-    for _f in _glob.glob(_os.path.join(_db_dir, "test_*.db-wal")):
-        try:
-            _os.remove(_f)
-        except Exception:
-            pass
-    for _f in _glob.glob(_os.path.join(_db_dir, "test_*.db-shm")):
-        try:
-            _os.remove(_f)
-        except Exception:
-            pass
+    for _pattern in ("test_*.db*", "optimizer_*.db*", "finalizer_*.db*"):
+        for _f in _glob.glob(_os.path.join(_db_dir, _pattern)):
+            try:
+                _os.remove(_f)
+            except Exception:
+                pass
 
     return f"Deployed {len(deployed)} changes: " + "; ".join(deployed)

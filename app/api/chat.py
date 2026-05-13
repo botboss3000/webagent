@@ -138,6 +138,24 @@ async def chat(request: ChatRequest):
     try:
         db = get_db()
 
+        # ── Temp DB resolution for optimizer/finalizer sessions ──
+        _temp_db_path = None
+        if request.session_id.startswith('optimizer-') or request.session_id.startswith('finalizer-'):
+            _meta_conn = db._get_conn()
+            try:
+                _meta_row = _meta_conn.execute(
+                    "SELECT metadata FROM sessions WHERE id=?", (request.session_id,)
+                ).fetchone()
+                if _meta_row and _meta_row[0]:
+                    _meta = json.loads(_meta_row[0])
+                    _temp_db_path = _meta.get('temp_db_path')
+            finally:
+                _meta_conn.close()
+            if _temp_db_path:
+                from app.db.local import LocalBackend as _OptBackend
+                db = _OptBackend(db_path=_temp_db_path)
+                logger.info("Using temp DB for %s session: %s", request.session_id[:12], _temp_db_path)
+
         # ── Handle /optimize slash command ──
         if _OPTIMIZE_PATTERN.match(request.message or ""):
             result = await _handle_optimize_command(
@@ -149,20 +167,24 @@ async def chat(request: ChatRequest):
         # Ensure the session exists before inserting interactions
         await _ensure_session(db, request.user_id, request.session_id)
 
-        # ── Optimizer session: route to dedicated Planner/Finalizer agent ──
+        # ── Optimizer / Finalizer session: route to dedicated agent ──
         agent = None
         opt_role = None
         opt_template_id = None
         opt_metadata = {}
-        if request.session_id.startswith('optimizer-'):
+        if request.session_id.startswith('optimizer-') or request.session_id.startswith('finalizer-'):
             conn = db._get_conn()
             try:
                 meta_row = conn.execute(
                     "SELECT metadata FROM sessions WHERE id=?", (request.session_id,)
                 ).fetchone()
                 opt_metadata = json.loads(meta_row[0]) if meta_row and meta_row[0] else {}
-                opt_role = opt_metadata.get('opt_role', 'planner')
-                opt_template_id = 'opt_planner' if opt_role == 'planner' else 'opt_finalizer'
+                if request.session_id.startswith('finalizer-'):
+                    opt_role = 'finalizer'
+                    opt_template_id = 'opt_finalizer'
+                else:
+                    opt_role = opt_metadata.get('opt_role', 'planner')
+                    opt_template_id = 'opt_planner' if opt_role == 'planner' else 'opt_finalizer'
             finally:
                 conn.close()
 
@@ -192,9 +214,16 @@ async def chat(request: ChatRequest):
                 "max_turn_count": agent["max_turn_count"],
             })
 
+        # ── Participants enforcement ──
+        # Ensure the user and agent are registered as participants
+        if not await db.is_session_participant(request.session_id, request.user_id, 'user'):
+            await db.add_session_participant(request.session_id, request.user_id, 'user')
+        if not await db.is_session_participant(request.session_id, agent["id"], 'agent'):
+            await db.add_session_participant(request.session_id, agent["id"], 'agent')
+
         # Save user message and get its ID for parent linking
-        # Optimizer sessions get source='optimizer' to distinguish from normal chats
-        is_opt = request.session_id.startswith('optimizer-')
+        # Optimizer/Finalizer sessions get source='optimizer' to distinguish from normal chats
+        is_opt = request.session_id.startswith('optimizer-') or request.session_id.startswith('finalizer-')
         user_interaction_id = await db.insert_interaction(
             request.user_id, request.session_id, role="user", content=request.message,
             channel="web_portal",
@@ -218,7 +247,7 @@ async def chat(request: ChatRequest):
         if not context_docs and not is_opt:
             copied = await db.copy_defaults_to_agent(agent["id"], template_id='default')
             if copied > 0:
-                agent = await db.fetch_agent_with_context(request.user_id, CONTEXT_SECTION_TYPES)
+                agent = await db.fetch_agent_by_id_with_context(agent["id"], CONTEXT_SECTION_TYPES)
                 context_docs = agent.get("context_documents", [])
 
         # ── Pipeline: context loaded ──
@@ -368,7 +397,7 @@ async def chat(request: ChatRequest):
 
         # DB-backed conversation history (same session survives browser refresh)
         exclude_ids = {user_interaction_id} if user_interaction_id else set()
-        if request.session_id.startswith('optimizer-') and opt_role == 'finalizer':
+        if (request.session_id.startswith('optimizer-') and opt_role == 'finalizer') or request.session_id.startswith('finalizer-'):
             # Inject only the relevant data — no Planner conversation
             judging_criteria = opt_metadata.get('judging_criteria', '')
             baseline_transcript = opt_metadata.get('baseline_transcript', '')
@@ -472,6 +501,24 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
     """
     db = get_db()
 
+    # ── Temp DB resolution for optimizer/finalizer sessions ──
+    _temp_db_path = None
+    if request.session_id.startswith('optimizer-') or request.session_id.startswith('finalizer-'):
+        _meta_conn = db._get_conn()
+        try:
+            _meta_row = _meta_conn.execute(
+                "SELECT metadata FROM sessions WHERE id=?", (request.session_id,)
+            ).fetchone()
+            if _meta_row and _meta_row[0]:
+                _meta = json.loads(_meta_row[0])
+                _temp_db_path = _meta.get('temp_db_path')
+        finally:
+            _meta_conn.close()
+        if _temp_db_path:
+            from app.db.local import LocalBackend as _OptBackend
+            db = _OptBackend(db_path=_temp_db_path)
+            logger.info("Using temp DB for %s session: %s", request.session_id[:12], _temp_db_path)
+
     # ── Handle /optimize slash command (streaming) ──
     if _OPTIMIZE_PATTERN.match(request.message or ""):
         result = await _handle_optimize_command(
@@ -486,17 +533,22 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
     # Ensure the session exists before inserting interactions
     await _ensure_session(db, request.user_id, request.session_id)
 
-    # ── Optimizer session: route to dedicated Planner/Finalizer agent ──
+    # ── Optimizer / Finalizer session: route to dedicated agent ──
     opt_template_id = None
-    if request.session_id.startswith('optimizer-'):
+    opt_metadata = {}
+    if request.session_id.startswith('optimizer-') or request.session_id.startswith('finalizer-'):
         conn = db._get_conn()
         try:
             meta_row = conn.execute(
                 "SELECT metadata FROM sessions WHERE id=?", (request.session_id,)
             ).fetchone()
             opt_metadata = json.loads(meta_row[0]) if meta_row and meta_row[0] else {}
-            opt_role = opt_metadata.get('opt_role', 'planner')
-            opt_template_id = 'opt_planner' if opt_role == 'planner' else 'opt_finalizer'
+            if request.session_id.startswith('finalizer-'):
+                opt_role = 'finalizer'
+                opt_template_id = 'opt_finalizer'
+            else:
+                opt_role = opt_metadata.get('opt_role', 'planner')
+                opt_template_id = 'opt_planner' if opt_role == 'planner' else 'opt_finalizer'
         finally:
             conn.close()
 
@@ -527,6 +579,12 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             f"but resolved agent is {agent['id'][:8]}. Cannot respond."
         )
 
+    # ── Participants enforcement ──
+    if not await db.is_session_participant(request.session_id, request.user_id, 'user'):
+        await db.add_session_participant(request.session_id, request.user_id, 'user')
+    if not await db.is_session_participant(request.session_id, agent["id"], 'agent'):
+        await db.add_session_participant(request.session_id, agent["id"], 'agent')
+
     # Save user message and get its ID for parent linking
     user_interaction_id = await db.insert_interaction(
         request.user_id, request.session_id, role="user", content=request.message,
@@ -543,14 +601,14 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         # went through get_agent_for_user rather than get_or_resolve_session_agent).
         # For optimizer agents, get_or_resolve_session_agent already includes them.
         if not agent.get("context_documents"):
-            agent = await db.fetch_agent_with_context(request.user_id, CONTEXT_SECTION_TYPES)
+            agent = await db.fetch_agent_by_id_with_context(agent["id"], CONTEXT_SECTION_TYPES)
         
         yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'agent_assigned', 'agent_id': agent['id'], 'max_turn_count': agent.get('max_turn_count', 10)})}\n\n"
 
         if not agent.get("context_documents"):
             copied = await db.copy_defaults_to_agent(agent["id"], template_id='default')
             if copied > 0:
-                agent = await db.fetch_agent_with_context(request.user_id, CONTEXT_SECTION_TYPES)
+                agent = await db.fetch_agent_by_id_with_context(agent["id"], CONTEXT_SECTION_TYPES)
 
         context_docs = agent.get("context_documents", [])
 
@@ -650,10 +708,59 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'build_prompt', 'sections': ['SYSTEM'], 'brain_injected': bool(brain_context), 'tool_count_in_prompt': len(tools)})}\n\n"
 
         exclude_ids = {user_interaction_id} if user_interaction_id else set()
-        history = await build_openai_history_from_session(
-            db, request.user_id, request.session_id,
-            exclude_interaction_ids=exclude_ids,
-        )
+        if request.session_id.startswith('finalizer-') or (request.session_id.startswith('optimizer-') and opt_role == 'finalizer'):
+            # Inject only the relevant data — no Planner conversation
+            judging_criteria = opt_metadata.get('judging_criteria', '')
+            baseline_transcript = opt_metadata.get('baseline_transcript', '')
+            worker_results = opt_metadata.get('worker_results', '')
+            test_db_paths = opt_metadata.get('test_db_paths', [])
+
+            trial_transcripts = []
+            for rel_path in test_db_paths:
+                try:
+                    _api_dir = os.path.dirname(os.path.abspath(__file__))
+                    _project_root = os.path.normpath(os.path.join(_api_dir, "..", ".."))
+                    abs_path = os.path.normpath(os.path.join(_project_root, rel_path))
+                    if not os.path.exists(abs_path):
+                        trial_transcripts.append(f"\n### Trial: {rel_path}\n(db file not found)")
+                        continue
+                    _conn = sqlite3.connect(abs_path)
+                    _conn.row_factory = sqlite3.Row
+                    rows = _conn.execute(
+                        "SELECT role, content FROM interactions ORDER BY created_at"
+                    ).fetchall()
+                    _conn.close()
+                    trans_lines = []
+                    for r in rows:
+                        role_label = "User" if r["role"] == "user" else "Assistant"
+                        trans_lines.append(f"**{role_label}**: {r['content'][:500]}")
+                    if trans_lines:
+                        trial_transcripts.append(
+                            f"\n### Trial: {os.path.basename(rel_path)}\n" + "\n".join(trans_lines)
+                        )
+                except Exception as e:
+                    trial_transcripts.append(f"\n### Trial: {rel_path}\n(error reading: {e})")
+
+            trial_transcripts_text = "\n".join(trial_transcripts) if trial_transcripts else ""
+
+            finalizer_context = f"""## Judging Criteria (agreed by Planner + user)
+{judging_criteria}
+
+## Baseline (original interaction)
+{baseline_transcript}
+
+## Worker Trial Results
+{worker_results}
+"""
+            if trial_transcripts_text:
+                finalizer_context += f"\n## Raw Trial Transcripts (from temp databases)\n{trial_transcripts_text}\n"
+
+            history = [{"role": "system", "content": finalizer_context}]
+        else:
+            history = await build_openai_history_from_session(
+                db, request.user_id, request.session_id,
+                exclude_interaction_ids=exclude_ids,
+            )
 
         q = asyncio.Queue()
 

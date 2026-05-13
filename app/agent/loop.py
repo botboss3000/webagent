@@ -476,12 +476,7 @@ async def stream_agent_events(
     try:
         from app.db import get_db
         db = get_db()
-        agent = await db.get_agent_for_user(user_id)
-        if agent is not None:
-            agent_id = agent.get("id")
-        else:
-            agent_id = None
-        
+
         while turn_count < max_turns:
             await _check_interrupt(session_id, interrupt_event)
 
