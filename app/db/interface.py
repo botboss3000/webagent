@@ -619,3 +619,73 @@ class StorageBackend(ABC):
     async def update_provider_rating(self, user_id: str, provider: str, model: str, delta: int) -> int:
         """Increment/decrement a provider rating. Returns the new rating."""
         pass
+
+
+    # ---- User Profiles ----
+
+    @abstractmethod
+    async def get_user_profile(self, user_id: str) -> Optional[dict]:
+        """Return the user_profiles row for user_id, or None if not found."""
+        ...
+
+    @abstractmethod
+    async def is_user_admin(self, user_id: str) -> bool:
+        """Return True if the user has is_admin=True in user_profiles."""
+        ...
+
+    # ---- Multi-Agent Management ----
+
+    @abstractmethod
+    async def list_agent_templates(self, include_admin: bool = False) -> List[dict]:
+        """
+        Return agent_templates that are user-visible (is_pipeline=0).
+        If include_admin=False, excludes access_level='admin_only' templates.
+        """
+        ...
+
+    @abstractmethod
+    async def list_agents_for_user(self, user_id: str, include_admin: bool = False) -> List[dict]:
+        """
+        Return all agents visible to a user: system templates + user's custom agents.
+        Each item includes a 'source' key: 'template' or 'custom'.
+        """
+        ...
+
+    @abstractmethod
+    async def create_custom_agent(self, user_id: str, name: str, description: str = "") -> dict:
+        """
+        Create a new custom agent for a user, cloned from the default template.
+        Returns the new agents row as a dict (with source='custom').
+        """
+        ...
+
+    @abstractmethod
+    async def delete_custom_agent(self, agent_id: str, owner_user_id: str) -> bool:
+        """
+        Delete a custom agent owned by owner_user_id.
+        Returns True if a row was deleted, False if not found or not owned.
+        """
+        ...
+
+    @abstractmethod
+    async def get_user_default_agent_id(self, user_id: str) -> Optional[str]:
+        """Return the user's preferred default_agent_id, or None if not set."""
+        ...
+
+    @abstractmethod
+    async def set_user_default_agent(self, user_id: str, agent_id: str) -> None:
+        """Set the user's preferred default agent in user_profiles."""
+        ...
+
+    @abstractmethod
+    async def update_agent_fields(
+        self,
+        agent_id: str,
+        owner_user_id: str,
+        updates: dict,
+    ) -> Optional[dict]:
+        """
+        Update editable fields on a custom agent owned by owner_user_id.
+        Returns the updated agent row dict, or None if not found/not owned.
+        """
+        ...

@@ -8,14 +8,17 @@ A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional *
 - **WebSocket agent (receive-only)** — `GET` upgrade to `/api/v1/agent/ws`: per-user subscriber mode. Connects once per user, receives ALL agent events (stream, response, tool_call, tool_result, pipeline, db) for all of that user's sessions. **Does not send messages** — all user messages go through HTTP POST.
 - **Context** — Prompt slices from `context_type` / `doc_type`; if a user has no rows, **`context_templates`** are copied into per-user context on first chat.
 - **Memory** — Hybrid search (FTS5 keyword + vector cosine similarity via embedding API) runs before each chat turn; results injected as `[BRAIN CONTEXT]` in the system prompt. Trivial messages (greetings, affirmations, commands) skip memory via regex gate. Page content auto-chunked and embedded on write. Background save of chat snippets into memory. See [`memory-upgrade.md`](memory-upgrade.md).
-- **AutoAgent** — Visual creative coding tab 🎨. Send prompts to the "UI Agent" persona and get live-rendered p5.js sketches in an iframe. Supports generative art, particle systems, noise fields, interactive sketches, and more. Powered by `render_visual` tool in **`app/visualizer/`**. The p5.js skill is seeded as a `context_templates` row (`context_type="p5js"`). Output served from `/visuals/` (ephemeral, Cloud Run safe). See [`app/visualizer/SKILL.md`](app/visualizer/SKILL.md).
+- **AutoAgent** — Multi-page workspace tab 🎨. Each user has a persistent set of named pages (home, dashboard, notes, custom). Pages stored per-user under `visuals/users/<user_id>/` with a `pages.json` manifest. The **home** page is auto-seeded with a webAgent onboarding/info page. Users add pages via the **+** dropdown nav button; each page gets its own dedicated agent persona (`agent_context` field in manifest). Prompts are tagged `[User → UI Agent → Page: "<title>" | Context: "..."]` so the agent knows its role and writes to the right page. Powered by `render_visual`, `list_pages`, `create_page`, `delete_page` tools in **`app/visualizer/`**. REST API at **`/api/v1/pages`**. Visuals served from `/visuals/users/` (ephemeral, Cloud Run safe). See [`app/visualizer/SKILL.md`](app/visualizer/SKILL.md).
 - **Attachments** — Image, audio, video, and file uploads. Users attach files via the UI (📎 button in footer, drag & drop onto chat messages or footer area, 🎤 voice recording). Files upload via **`POST /api/v1/upload`** and bytes are persisted through **`app/db/attachments/`** (local filesystem in dev, Supabase Storage in production — see `app/db/SUPABASE_STORAGE.md`). Metadata is stored in the **`attachments`** table (local SQLite or Supabase). The agent accesses files with the **`read_attachment`** built-in tool. Supports image preview, audio/video players, and download links inline in chat bubbles. Attachments persist per-session and survive server restarts.
 - **Tools** — **Bootstrap + on-demand discovery model.** A small set of hardcoded core tools (list_tools, search_tools, get_tool_definition, web_search, http_request, browser_action, db_query, memory, session_search, get_time, get_date, get_weather, calculate, read_attachment) are always available from turn 1 via **`app/tools/loader.py`** + **`app/tools/core_tools.py`**. All other tools (user-created, admin, comm plugins, webhook management) are discovered on demand via `list_tools` / `search_tools` / `get_tool_definition`. Tool definitions no longer auto-populate the system prompt — only curated `context_type="skills"` docs provide behavioral guidance in the `# [SKILLS]` section.
 - **OpenRouter** — Model from `OPENROUTER_MODEL` (see `.env.example`; e.g. `deepseek/deepseek-v4-flash`).
 - **Parallel multi-provider** — Configure 2+ LLM providers in Settings. When enabled, the agent fans out each message to all providers simultaneously and uses the fastest complete response. Configured via `GET/POST /admin/settings/multi-providers`. Set `parallel_mode: true` and a list of provider entries (each with provider, base_url, api_key, model) in `provider.json` or DB `auth_elements`.
 - **Dual storage** — **`cloud`** (Supabase) vs **`local`** (SQLite file **`app/db/local.db`**). Mode is stored in **`app/db_mode.json`** and switched via **`/admin/db/*`**.
 - **Administrator tools** — Optional filesystem read/write/edit/delete, shell command execution, and server restart exposed as agent tools (**`read_source`**, **`write_source`**, **`edit_source`**, **`delete_source`**, **`run_command`**, **`restart_server`**). Powered by **`app/admin/source.py`** + **`app/admin/source_tools.py`**. **These are privileged debug tools — NOT available in normal user operation.** Deleting the `app/admin/` directory removes them entirely. See the [Administrator Tools](#administrator-tools) section.
-- **Web UI** — Main page at **`/index.html`** (chat, DB viewer, terminal, stream/loop). **`/terminal`** redirects to **`/index.html`**.
+- **Multi-agent system** — Multiple agent templates can be defined in `context/agents/`. Each user can have their own default agent. The agent loop supports **mid-turn delegation**: the `delegate_to_agent` tool lets the active agent hand off to another agent within the same session (rebinds session, reloads tools, injects a system-prompt switch message). Pipeline events (`agent_delegation`) are emitted to the Loop/Flow panel for visibility. Non-pipeline agents always receive the `delegate_to_agent` and `list_delegatable_agents` tools.
+- **Agent Management UI** — **Agents tab** in the main UI (🤖) for browsing, creating, editing, and deleting agent templates. Two-column layout: list panel + detail/edit panel. Supports all template fields (name, description, icon, system prompt, model, temperature, max tokens, trigger description, access level, pipeline flag). Light mode aware.
+- **Admin users** — User admin flag stored in `user_profiles.is_admin`. The first admin is bootstrapped via `BOOTSTRAP_ADMIN_ID` env var. Admin users have access to the `admin-agent` template (a privileged agent with filesystem/shell tools). `GET /admin/users` and `POST /admin/users/{user_id}/set-admin` manage the admin list (admin-only endpoints).
+- **Web UI** — Main page at **`/index.html`** (chat, DB viewer, terminal, stream/loop, agents). **`/terminal`** redirects to **`/index.html`**.
 - **Minimal tester** — **`GET /test`** serves **`ui/test_interface.html`** (same origin as the API).
 
 ## Architecture and module map
@@ -76,7 +79,7 @@ Events are routed on the frontend:
 | **`agent/session_history.py`** | Maps **`interactions`** rows → OpenAI-style **`messages`** for the active session (excludes internal memory tools). |
 | **`agent/prompts.py`** | System prompt from context, brain results, tools, attachment context. Includes **`format_attachments_for_prompt()`** helper. |
 | **`agent/error_classifier.py`** | Structured tool errors (**used on the WebSocket / streaming path**). |
-| **`context/agents/`** | **Agent template JSON files** — seed `agent_templates` table with full schema (id, system_prompt, max_turn_count, model, provider, temperature, max_tokens, metadata). Each `.json` file defines one agent template. Default: `default.json`, `optimizer-planner.json`, `optimizer-finalizer.json`. Scanned on first agent creation for a user. |
+| **`context/agents/`** | **Agent template JSON files** — seed `agent_templates` table with full schema (id, system_prompt, max_turn_count, model, provider, temperature, max_tokens, metadata, plus new fields: `name`, `description`, `icon`, `trigger_description`, `can_be_default`, `is_system`, `is_pipeline`, `access_level`). Each `.json` file defines one agent template. Included: `default.json`, `optimizer-planner.json`, `optimizer-finalizer.json`, `admin-agent.json`. Scanned on first agent creation for a user. |
 | **`context/context_templates/`** | **Context template .md files** — seed `context_templates` table per context_type (agent, user, skills, tools, tasks, memory, project, jobs). Copied to user context on first chat. |
 | **`agent/embed.py`** | Embedding utility using same provider config as chat. Returns configurable-dimension vectors (`EMBED_DIM`, default 1536). |
 | **`db/__init__.py`** | **`get_db()`** → **`SupabaseBackend`** or **`LocalBackend`** from persisted mode. |
@@ -84,15 +87,16 @@ Events are routed on the frontend:
 | **`db/local.py`** | Local SQLite — schema init, FTS5 + vector hybrid search, embed-on-write, knowledge graph, timelines, **`webhook_registrations`** and **`webhook_event_log`** tables. |
 | **`db/attachments/`** | **`file_store.py`** — file byte storage abstraction. Dispatches to local filesystem (`uploads/`) or Supabase Storage based on `db_mode.json`. Exports `store_file()`, `read_file()`, `delete_file()`. See `app/db/SUPABASE_STORAGE.md` for cloud setup. |
 | **`db/interface.py`** | **`StorageBackend`** protocol with session, interaction, context, memory, skills, agent, attachment, interrupt, **webhook (register/get/list/delete/log)** abstract methods. |
-| **`tools/`** | **`loader`** (dynamic tool loading + built-in injection: http_request, register_webhook, list_webhooks, delete_webhook, get_webhook_log, render_visual), **`core_tools`** (bootstrap tools: list_tools, search_tools, get_tool_definition, web_search, http_request, db_query, memory, session_search, get_time, get_date, get_weather, calculate), **`registry`** (create_tool, safety scanner, rating utilities), **`tracker`** (legacy execution tracker), **`browser`** (persistent Chromium), **`read_attachment**` (read uploaded files via `app/db/attachments/`). |
-| **`visualizer/`** | **`render_visual` tool** — saves p5.js HTML output to `/visuals/<session_id>/render.html` for the AutoAgent tab iframe. **`SKILL.md`** — p5.js creative coding skill (seeded as `context_templates` row). Self-contained — delete to disable. |
+| **`tools/`** | **`loader`** (dynamic tool loading + built-in injection: http_request, register_webhook, list_webhooks, delete_webhook, get_webhook_log, render_visual, plus **`delegate_to_agent` / `list_delegatable_agents`** for non-pipeline agents), **`core_tools`** (bootstrap tools: list_tools, search_tools, get_tool_definition, web_search, http_request, db_query, memory, session_search, get_time, get_date, get_weather, calculate), **`registry`** (create_tool, safety scanner, rating utilities), **`tracker`** (legacy execution tracker), **`browser`** (persistent Chromium), **`read_attachment`** (read uploaded files via `app/db/attachments/`), **`delegation.py`** (builds `delegate_to_agent` + `list_delegatable_agents` handlers; returns delegation sentinel JSON detected by the loop). |
+| **`visualizer/`** | **Multi-page workspace tools** — `render_visual`, `list_pages`, `create_page`, `delete_page`. Pages stored per-user at `visuals/users/<user_id>/<slug>.html` with a `pages.json` manifest. `pages.py` handles all page CRUD; `tool.py` implements `render_visual`. **`SKILL.md`** — agent guide for page building. Self-contained — delete to disable. |
 | **`models/schemas.py`** | Pydantic models (`ChatRequest`, etc.). |
-| **`admin/`** | **`review`** (`/admin/tools` — list/deprecate DB tools), **`db_mode`** (`/admin/db/` — cloud/local switch), **`settings`** (provider config, model list, metadata toggle), **`guardrails`** (path/command deny-list for source tools), **`communications`** (Telegram/WhatsApp plugin mgmt), **`source`** + **`source_tools`** (optional privileged filesystem & shell access — delete to disable). See [Administrator Tools](#administrator-tools). |
+| **`admin/`** | **`review`** (`/admin/tools` — list/deprecate DB tools), **`db_mode`** (`/admin/db/` — cloud/local switch), **`settings`** (provider config, model list, metadata toggle), **`guardrails`** (path/command deny-list for source tools), **`communications`** (Telegram/WhatsApp plugin mgmt), **`source`** + **`source_tools`** (optional privileged filesystem & shell access — delete to disable), **`users.py`** (`GET /admin/users`, `POST /admin/users/{user_id}/set-admin` — admin user management). See [Administrator Tools](#administrator-tools). |
+| **`api/agents.py`** | **`GET /api/v1/agents/templates`** — list all agent templates. **`POST /api/v1/agents/templates`** — create a template (admin only). **`PUT /api/v1/agents/templates/{id}`** — update a template (admin only). **`DELETE /api/v1/agents/templates/{id}`** — delete a template (admin only). **`GET /api/v1/agents/my-agent`** — get the current user's active agent. **`POST /api/v1/agents/set-default`** — set the user's default agent template. |
 | **`openai_compat.py`** | OpenAI-compatible client wiring for OpenRouter. |
 
 ### Frontend (`ui/`)
 
-Single-page app: **`index.html`**, CSS (`app1.css`, `app2.css`, `app3.css`, `loop.css`, `loop-visual.css`, `autoagent.css`), ES modules under **`js/`** — e.g. **`main.js`**, **`chat.js`** (sends messages via HTTP POST + SSE), **`agentWs.js`** (per-user receive-only WebSocket subscriber), **`stream.js`**, **`loop.js`**, **`tabs.js`**, **`toolLog.js`**, **`terminal.js`**, **`dbMode.js`**, **`sessions.js`**, **`attachments.js`** (file upload, voice recording, drag & drop, preview chips), **`autoagent.js`** (visualizer tab: iframe renderer, prompt bar, render_visual event listener), **`optimizer.js`** (session manager + optimizer config UI), **`js/db/`** (data browser). **`test_interface.html`** is also here and is served at **`GET /test`**.
+Single-page app: **`index.html`**, CSS (`app1.css`, `app2.css`, `app3.css`, `loop.css`, `loop-visual.css`, `autoagent.css`, `agents.css`), ES modules under **`js/`** — e.g. **`main.js`**, **`chat.js`** (sends messages via HTTP POST + SSE), **`agentWs.js`** (per-user receive-only WebSocket subscriber), **`stream.js`**, **`loop.js`**, **`tabs.js`**, **`toolLog.js`**, **`terminal.js`**, **`dbMode.js`**, **`sessions.js`**, **`attachments.js`** (file upload, voice recording, drag & drop, preview chips), **`autoagent.js`** (visualizer tab: iframe renderer, prompt bar, render_visual event listener), **`optimizer.js`** (session manager + optimizer config UI), **`agents.js`** (Agent Management tab: list/create/edit/delete agent templates, calls `/api/v1/agents/templates`), **`js/db/`** (data browser). **`test_interface.html`** is also here and is served at **`GET /test`**.
 
 ### Directory tree (abbreviated)
 
@@ -109,7 +113,7 @@ webAgent/
 │   ├── start_webAgent.sh            # Unix: cd to repo root, background uvicorn (default :8080, PORT= overrides)
 │   ├── backfill_embeddings.py       # One-off: embed existing memory pages
 │   └── seed_tools.py                # Optional tool DB seeding
-├── migrations/             # Ad-hoc SQL snapshots (includes 007_channel_identities, 008_linking_codes); see migrations/README.md
+├── migrations/             # Ad-hoc SQL snapshots (includes 007_channel_identities, 008_linking_codes, 009_multi_agent_system); see migrations/README.md
 ├── supabase/migrations/    # e.g. 005_memory_system.sql (Supabase CLI / team workflow)
 ├── screenshots/            # Mounted at /screenshots
 ├── android/                # Optional Android wrapper (Java + embedded Python)
@@ -152,6 +156,7 @@ cp .env.example .env          # Windows (cmd): copy .env.example .env
 | `EMBED_DIM` | Embedding vector dimension (default: `1536`) |
 | `MAX_UPLOAD_SIZE_MB` | Max file upload size in MB (default: 25) |
 | `UPLOAD_DIR` | Directory for uploaded files (default: `uploads`) |
+| `BOOTSTRAP_ADMIN_ID` | User ID to auto-promote to admin on server start (first admin bootstrapping). Once an admin exists in `user_profiles`, this var has no further effect. |
 
 In **local** mode, Supabase vars are not required for storage; you still need **`OPENROUTER_API_KEY`** (and usually **`OPENROUTER_MODEL`**) for LLM calls.
 
@@ -175,6 +180,8 @@ pip install -r requirements.txt
 
   > **New (v0.3+):** `007_create_channel_identities.sql` and `008_create_linking_codes.sql` add tables for the communication plugin system (Telegram, WhatsApp, SMS). The **local** backend auto-creates these; on **Supabase**, apply via the SQL editor.
 
+  > **New (v0.4+):** `009_multi_agent_system.sql` adds the `user_profiles` table (admin flag, default agent), extends `agent_templates` with `name`, `description`, `icon`, `trigger_description`, `can_be_default`, `is_system`, `is_pipeline`, `access_level` columns, extends `agents` with `template_id`, `owner_user_id`, `is_user_default`, `is_pipeline` columns, and seeds the default/optimizer/admin-agent templates. The **local** SQLite backend auto-applies these columns; on **Supabase**, run via SQL editor.
+
 4. Run the server:
 
 ```bash
@@ -194,7 +201,8 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 | `http://localhost:8080/index.html` | Full UI |
 | `http://localhost:8080/test` | Minimal HTML chat (`ui/test_interface.html`) |
 | `http://localhost:8080/uploads/` | Served uploaded files directory |
-| `http://localhost:8080/visuals/` | Served AutoAgent rendered sketches (ephemeral) |
+| `http://localhost:8080/visuals/users/<uid>/<slug>.html` | Served AutoAgent page output (ephemeral) |
+| `http://localhost:8080/api/v1/pages?user_id=...` | AutoAgent pages REST API |
 | `http://localhost:8080/docs` | Swagger UI (includes upload endpoint docs) |
 
 **Unix quick start (background + logs):** `bash scripts/start_webAgent.sh` (works from any cwd; script `cd`s to repo root).
@@ -307,6 +315,13 @@ The **`app/admin/`** directory provides **privileged debug and management capabi
 | `settings.py` | `GET/POST /admin/settings/provider`, `GET/POST /admin/settings/multi-providers`, `GET/POST /admin/settings/metadata`, `GET /admin/settings/models` | Switch AI provider, API key, model; toggle metadata logging; configure parallel multi-provider list |
 | `db_mode.py` | `GET /admin/db/mode`, `POST /admin/db/mode` | Toggle between Cloud (Supabase) and Local (SQLite) |
 | `communications.py` | `GET /admin/communications/plugins`, enable/disable, set webhook URL | Manage Telegram, WhatsApp plugins |
+| `users.py` | `GET /admin/users`, `POST /admin/users/{user_id}/set-admin` | List all users with admin status; promote or demote a user to/from admin. Both endpoints require the calling user to be an admin. |
+
+### Admin user bootstrapping
+
+To make the first admin, set `BOOTSTRAP_ADMIN_ID=<your-user-id>` in `.env`. On server start, the backend checks whether any admin exists in `user_profiles`; if not, it creates or updates that user's profile with `is_admin = true`. Once at least one admin exists, `BOOTSTRAP_ADMIN_ID` has no further effect and can be removed.
+
+The **`admin-agent`** template (seeded by `009_multi_agent_system.sql`) is a special agent persona restricted to admin users. When `agent_template_id = "admin-agent"` is requested in a chat call, the backend validates the calling user is an admin; non-admin users receive a 403. The admin-agent inherits all standard tools plus the source management and shell tools from `app/admin/`.
 
 ### Disabling administrator tools
 

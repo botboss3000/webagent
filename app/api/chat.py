@@ -521,7 +521,17 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                 f"Check that agent template '{opt_template_id}' exists."
             )
     else:
-        agent = await db.get_agent_for_user(request.user_id)
+        req_template = getattr(request, 'agent_template_id', None)
+        if req_template == 'admin-agent':
+            if not await db.is_user_admin(request.user_id):
+                raise HTTPException(status_code=403, detail="Admin agent is only available to admin users.")
+            agent = await db.get_or_resolve_session_agent(
+                session_id=request.session_id,
+                user_id=request.user_id,
+                template_id='admin-agent',
+            )
+        else:
+            agent = await db.get_agent_for_user(request.user_id)
         if agent is None:
             agent = await db.create_agent_for_user(request.user_id)
 
@@ -692,6 +702,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                         max_turns=agent.get("max_turn_count", 10),
                         channel="web_portal",
                         db=db,
+                        agent_template_id=agent.get("template_id"),
                     ):
                         await q.put(event)
 
