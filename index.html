@@ -12,6 +12,7 @@
 <link rel="stylesheet" href="./ui/css/loop.css">
 <link rel="stylesheet" href="./ui/css/loop-visual.css">
 <link rel="stylesheet" href="./ui/css/autoagent.css">
+<link rel="stylesheet" href="./ui/css/agents.css">
 </head>
 <body>
 
@@ -58,6 +59,7 @@
       <option value="database">📊 Database</option>
       <option value="github" style="display:none;">🐙 GitHub</option>
       <option value="autoagent">🎨 AutoAgent</option>
+      <option value="agents">🤖 Agents</option>
 
     </select>
   </div>
@@ -281,23 +283,101 @@
     </div>
     <div id="tab-autoagent" class="tab-content">
       <div id="autoagent-container">
-        <div id="autoagent-prompt-bar">
-          <input type="text" id="autoagent-prompt-input" class="aa-prompt-input" placeholder="Describe what you want to create visually..." maxlength="2000">
-          <button id="autoagent-send-btn" class="aa-send-btn" title="Send to UI Agent">▶</button>
+
+        <!-- Page nav: dropdown + new / delete buttons -->
+        <div id="autoagent-page-nav">
+          <select id="autoagent-page-select" class="aa-page-select" title="Switch page"></select>
+          <button id="autoagent-new-page-btn" class="aa-icon-btn" title="New page">+</button>
+          <button id="autoagent-delete-page-btn" class="aa-icon-btn aa-delete-btn" title="Delete page" disabled>🗑</button>
         </div>
+
+        <!-- New-page dialog (hidden by default) -->
+        <div id="aa-new-page-dialog">
+          <div class="aa-dialog-box">
+            <h3>New Page</h3>
+            <input type="text" id="aa-dialog-input" class="aa-dialog-input" placeholder="Page title (e.g. Dashboard, Notes)" maxlength="60">
+            <div class="aa-dialog-actions">
+              <button id="aa-dialog-cancel" class="aa-dialog-btn aa-dialog-btn-cancel">Cancel</button>
+              <button id="aa-dialog-confirm" class="aa-dialog-btn aa-dialog-btn-primary">Create</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Prompt bar -->
+        <div id="autoagent-prompt-bar">
+          <input type="text" id="autoagent-prompt-input" class="aa-prompt-input" placeholder="Tell the page agent what to build or change..." maxlength="2000">
+          <button id="autoagent-send-btn" class="aa-send-btn" title="Send to page agent">&#9654;</button>
+        </div>
+
+        <!-- Viewport -->
         <div id="autoagent-viewport">
           <div id="autoagent-placeholder" class="aa-placeholder">
             <span class="aa-placeholder-icon">🎨</span>
-            <span class="aa-placeholder-text">Send a prompt to create a p5.js visualization</span>
-            <span class="aa-placeholder-hint">e.g. &quot;generate a particle field with purple and blue&quot;</span>
+            <span class="aa-placeholder-text">Loading your pages...</span>
+            <span class="aa-placeholder-hint">Each page has its own dedicated agent</span>
           </div>
-          <iframe id="autoagent-iframe" class="aa-iframe" sandbox="allow-scripts allow-same-origin" style="display:none;" title="Visualization output"></iframe>
+          <iframe id="autoagent-iframe" class="aa-iframe" sandbox="allow-scripts allow-same-origin" style="display:none;" title="Page output"></iframe>
           <div id="autoagent-loading" class="aa-loading" style="display:none;">
             <span class="aa-spinner"></span>
-            <span>UI Agent is creating your visualization...</span>
+            <span>Page agent is working...</span>
           </div>
         </div>
+
         <div id="autoagent-status" class="aa-status"></div>
+      </div>
+    </div>
+    <div id="tab-agents" class="tab-content">
+      <div id="agents-layout">
+        <div id="agents-list-panel">
+          <div id="agents-list-header">
+            <span>Agents</span>
+            <button id="btn-new-agent">+ New</button>
+          </div>
+          <div id="agents-list"></div>
+        </div>
+        <div id="agents-detail-panel">
+          <div id="agents-detail-empty">Select an agent to view details</div>
+          <div id="agents-detail-content" style="display:none;">
+            <div id="agents-detail-header">
+              <span id="agents-detail-icon"></span>
+              <div id="agents-detail-title-area">
+                <div id="agents-detail-name"></div>
+                <div id="agents-detail-description"></div>
+              </div>
+              <div id="agents-detail-actions">
+                <button class="agents-btn default-active" id="btn-set-default" style="display:none;">&#9733; Set Default</button>
+                <button class="agents-btn danger" id="btn-delete-agent" style="display:none;">Delete</button>
+              </div>
+            </div>
+            <div id="agents-detail-tabs">
+              <button class="agents-detail-tab active" data-tab="config">Config</button>
+              <button class="agents-detail-tab" data-tab="tools">Tools</button>
+              <button class="agents-detail-tab" data-tab="test">Test</button>
+            </div>
+            <div id="agents-detail-body"></div>
+            <div class="agents-save-bar" id="agents-save-bar" style="display:none;">
+              <button class="agents-btn primary" id="btn-save-agent">Save Changes</button>
+              <span class="agents-save-msg" id="agents-save-msg"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="agents-create-modal" class="hidden">
+        <div id="agents-create-box">
+          <h3>New Agent</h3>
+          <div class="agents-create-row">
+            <label for="agents-create-name">Name</label>
+            <input type="text" id="agents-create-name" class="agents-input" placeholder="My Custom Agent" maxlength="60">
+          </div>
+          <div class="agents-create-row">
+            <label for="agents-create-desc">Description</label>
+            <input type="text" id="agents-create-desc" class="agents-input" placeholder="Optional description" maxlength="200">
+          </div>
+          <div id="agents-create-actions">
+            <button class="agents-btn" id="btn-create-cancel">Cancel</button>
+            <button class="agents-btn primary" id="btn-create-confirm">Create</button>
+          </div>
+        </div>
       </div>
     </div>
     <div id="tab-database" class="tab-content">

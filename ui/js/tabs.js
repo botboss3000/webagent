@@ -6,6 +6,7 @@ import { startLoop, stopLoop, setLoopLevel, toggleAutoScroll } from './loop.js';
 import { startLoopVisual, stopLoopVisual } from './loop-visual.js';
 import { initGithub, startGithub, stopGithub } from './github.js';
 import { startAutoAgent, stopAutoAgent } from './autoagent.js';
+import { startAgents, stopAgents } from './agents.js';
 
 export function initTabs() {
   const tabSelect = document.getElementById('main-tab-select');
@@ -40,6 +41,7 @@ export function initTabs() {
       stopLoop();
       stopLoopVisual();
       stopAutoAgent();
+      stopAgents();
       setTimeout(() => {
         if (app && app.fitAddon) {
           app.fitAddon.fit();
@@ -49,16 +51,19 @@ export function initTabs() {
       stopLoop();
       stopLoopVisual();
       stopAutoAgent();
+      stopAgents();
       startStream();
     } else if (tabValue === 'flow') {
       stopStream();
       stopLoopVisual();
       stopAutoAgent();
+      stopAgents();
       startLoop();
     } else if (tabValue === 'loop-visual') {
       stopStream();
       stopLoop();
       stopAutoAgent();
+      stopAgents();
       startLoopVisual();
     } else if (tabValue === 'database') {
       stopStream();
@@ -66,17 +71,27 @@ export function initTabs() {
       stopLoopVisual();
       stopGithub();
       stopAutoAgent();
+      stopAgents();
     } else if (tabValue === 'github') {
       stopStream();
       stopLoop();
       stopLoopVisual();
+      stopAgents();
       startGithub();
     } else if (tabValue === 'autoagent') {
       stopStream();
       stopLoop();
       stopLoopVisual();
       stopGithub();
+      stopAgents();
       startAutoAgent();
+    } else if (tabValue === 'agents') {
+      stopStream();
+      stopLoop();
+      stopLoopVisual();
+      stopGithub();
+      stopAutoAgent();
+      startAgents();
     }
   }
 

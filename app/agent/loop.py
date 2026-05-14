@@ -440,9 +440,11 @@ async def stream_agent_events(
     max_turns: int = 10,
     channel: Optional[str] = None,
     db: Optional[Any] = None,
+    agent_template_id: Optional[str] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Run the unified agent loop and yield structured events.
+    agent_template_id is used to gate admin-only tools (e.g. 'admin-agent').
     """
     from app.tools.loader import load_tools
     from app.admin.settings import load_provider_for_user
@@ -454,7 +456,7 @@ async def stream_agent_events(
     provider_name = os.environ.get("LLM_PROVIDER", "openrouter")
 
     load_start = time.time()
-    tools = await load_tools(user_id)
+    tools = await load_tools(user_id, agent_template_id=agent_template_id)
     load_duration = int((time.time() - load_start) * 1000)
 
     # ── Pipeline: tools loaded ──
@@ -987,6 +989,55 @@ async def stream_agent_events(
                         yield {"type": "db", "level": "db",
                                "op": "insert_interaction", "role": "tool",
                                "tool_name": tool_name, "id": inter_id, "ms": db_dur}
+
+                        # ── Delegation check ──────────────────────────────
+                        try:
+                            import json as _json
+                            _res_obj = _json.loads(result["content"])
+                            if isinstance(_res_obj, dict) and _res_obj.get("__delegate__"):
+                                _tpl_id  = _res_obj["target_template_id"]
+                                _ag_id   = _res_obj["target_agent_id"]
+                                _ag_name = _res_obj.get("target_name", _tpl_id)
+                                _ctx     = _res_obj.get("context", "")
+
+                                # Rebind session to new agent
+                                await db.bind_session_to_agent(session_id, _ag_id)
+
+                                # Emit delegation pipeline event
+                                yield {
+                                    "type": "pipeline", "level": "pipeline",
+                                    "step": "agent_delegation",
+                                    "from_agent_id":       agent_id,
+                                    "from_template_id":    agent_template_id,
+                                    "to_agent_id":         _ag_id,
+                                    "to_template_id":      _tpl_id,
+                                    "to_agent_name":       _ag_name,
+                                    "context":             _ctx,
+                                }
+
+                                # Switch loop state to new agent
+                                agent_id         = _ag_id
+                                agent_template_id = _tpl_id
+
+                                # Reload tools for the new template
+                                from app.tools.loader import load_tools as _load_tools
+                                tools = await _load_tools(user_id, agent_template_id=_tpl_id)
+
+                                # Inject new agent's system prompt as a system message
+                                try:
+                                    _new_agents = await db.list_agents_for_user(user_id, include_admin=True)
+                                    _new_agent  = next((a for a in _new_agents if a.get("id") == _ag_id), None)
+                                    if _new_agent:
+                                        _new_sp = (_new_agent.get("system_prompt") or "").strip()
+                                        if _new_sp:
+                                            _switch_msg = "[AGENT SWITCH] You are now acting as " + _ag_name + ".\n\n" + _new_sp
+                                            messages.append({"role": "system", "content": _switch_msg})
+                                        if _ctx:
+                                            messages.append({"role": "system", "content": f"Delegation context: {_ctx}"})
+                                except Exception as _spe:
+                                    logger.warning("Could not inject new agent system prompt: %s", _spe)
+                        except (ValueError, KeyError, TypeError):
+                            pass  # not a delegation signal
 
                         try:
                             db = db or get_db()

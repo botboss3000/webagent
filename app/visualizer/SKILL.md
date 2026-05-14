@@ -1,83 +1,84 @@
-# p5.js Creative Coding — Visualizer Skill
+# AutoAgent Page Workspace — Skill Guide
 
-Use when user requests: p5.js sketches, creative coding, generative art, interactive visualizations, canvas animations, data viz, shader effects, 3D scenes, audio-reactive visuals, or kinetic typography.
+Use when the user sends a prompt via the AutoAgent tab. Prompts arrive tagged with the current page and its agent context:
 
-## Creative Standard
+```
+[User → UI Agent → Page: "dashboard" | Context: "You are the dashboard agent..."]: <message>
+```
 
-This is visual art rendered in the browser. The canvas is the medium; the algorithm is the brush.
+Read the page name and context from the tag. Your job is to build or update that specific page.
 
-**Before writing a single line of code**, articulate the creative concept. What does this piece communicate? What makes the viewer stop scrolling? What separates this from a code tutorial example?
+## Page Agent Roles
 
-**First-render excellence is non-negotiable.** The output must be visually striking on first load.
+Each page has its own agent with a specific purpose:
 
-**Dense, layered, considered.** Every frame should reward viewing. Never flat white backgrounds. Always compositional hierarchy. Always intentional color. Always micro-detail that only appears on close inspection.
+| Page | Default Role |
+|------|-------------|
+| **home** | webAgent onboarding & info page |
+| **dashboard** | Live data display, charts, stats widgets |
+| **notes** | Note-taking, lists, markdown-style content |
+| **any custom** | Defined by the `agent_context` in the prompt tag |
 
-**Be proactively creative.** If user asks for "a particle system," deliver a particle system with emergent flocking behavior, trailing ghost echoes, palette-shifted depth fog, and a background noise field that breathes. Include at least one visual detail the user didn't ask for but will appreciate.
-
-**Cohesive aesthetic over feature count.** All elements must serve a unified visual language — shared color temperature, consistent stroke weight vocabulary, harmonious motion speeds. A sketch with ten unrelated effects is worse than one with three that belong together.
-
-## Modes
-
-| Mode | Input | Output |
-|------|-------|--------|
-| **Generative art** | Seed / parameters / description | Procedural visual composition (still or animated) |
-| **Data visualization** | Dataset / description | Interactive charts, graphs, custom data displays |
-| **Interactive experience** | Description | Mouse/keyboard/touch-driven sketch |
-| **Animation / motion graphics** | Concept / storyboard | Timed sequences, kinetic typography, transitions |
-| **3D scene** | Concept description | WebGL geometry, lighting, camera, materials |
-| **Image processing** | Image / description | Pixel manipulation, filters, pointillism |
-| **Audio-reactive** | Description | Sound-driven generative visuals |
-
-## Stack
-
-Single self-contained HTML file per project. No build step required.
-
-| Layer | Tool | Purpose |
-|-------|------|---------|
-| Core | p5.js 1.11.3 (CDN) | Canvas rendering, math, transforms, event handling |
-| 3D | p5.js WebGL mode | 3D geometry, camera, lighting, GLSL shaders |
-| Audio | p5.sound.js (CDN) | FFT analysis, amplitude, mic input, oscillators |
-| Export | `saveCanvas()` / `saveGif()` | PNG, GIF output |
-| Fonts | Google Fonts / `loadFont()` | Custom typography |
+Honour the agent context from the prompt tag — it defines who you are for that page.
 
 ## Pipeline
 
-Every project follows the same path:
+**READ TAG → CONCEPT → CODE → RENDER**
 
-**CONCEPT → CODE → RENDER**
+1. **Read** the `Page:` and `Context:` fields from the tag
+2. **Concept** — articulate what the page should show/do
+3. **Code** — write a single self-contained HTML file
+4. **Render** — call `render_visual` with `page_name` matching the tag
 
-1. **CONCEPT** — Articulate the creative vision: mood, color world, motion vocabulary, what makes this unique
-2. **CODE** — Write single HTML file with inline p5.js. Structure: globals → `preload()` → `setup()` → `draw()` → helpers → classes → event handlers
-3. **RENDER** — Call `render_visual` tool with the HTML string. User sees result in AutoAgent tab.
+## render_visual Usage
 
-## Creative Direction
+Always pass `page_name` so the output goes to the right page:
 
-### Aesthetic Dimensions
+```python
+render_visual(
+    html="<!DOCTYPE html>...",
+    title="My Dashboard",
+    page_name="dashboard"   # ← must match the Page: from the prompt tag
+)
+```
 
-| Dimension | Options |
-|-----------|---------|
-| **Color system** | HSB/HSL, RGB, named palettes, procedural harmony, gradient interpolation |
-| **Noise vocabulary** | Perlin noise, simplex, fractal (octaved), domain warping, curl noise |
-| **Particle systems** | Physics-based, flocking, trail-drawing, attractor-driven, flow-field following |
-| **Shape language** | Geometric primitives, custom vertices, bezier curves |
-| **Motion style** | Eased, spring-based, noise-driven, physics sim, lerped, stepped |
-| **Typography** | System fonts, loaded OTF, `textToPoints()` particle text, kinetic |
-| **Shader effects** | GLSL fragment/vertex, filter shaders, post-processing |
-| **Composition** | Grid, radial, golden ratio, rule of thirds, organic scatter, tiled |
-| **Interaction model** | Mouse follow, click spawn, drag, keyboard state, scroll-driven |
-| **Blend modes** | `BLEND`, `ADD`, `MULTIPLY`, `SCREEN`, `DIFFERENCE`, `EXCLUSION`, `OVERLAY` |
-| **Layering** | `createGraphics()` offscreen buffers, alpha compositing, masking |
+`page_name` defaults to `"home"` if omitted — only omit it when the user is on the Home page.
 
-### Core Rules
+## Page Management Tools
 
-- **Custom color palette always** — never raw `fill(255,0,0)`. Design a 3-7 color palette
-- **Background treatment** — never plain `background(0)` or `background(255)`. Texture, gradient, or layered
-- **Stroke weight vocabulary** — thin (0.5), medium (1-2), bold (3-5)
-- **Motion variety** — different speeds for different elements
-- **Seeded randomness** — always `randomSeed()` + `noiseSeed()` for reproducibility
-- **Color mode** — use `colorMode(HSB, 360, 100, 100, 100)` for intuitive control
+| Tool | When to use |
+|------|------------|
+| `list_pages` | User asks "what pages do I have?" |
+| `create_page(slug, title, agent_context, initial_html)` | User asks to make a new page |
+| `delete_page(slug)` | User asks to delete a page (home is protected) |
+| `render_visual(html, title, page_name)` | Any time you want to render/update a page |
 
-## HTML Template
+## HTML Guidelines
+
+### For informational/app pages (home, notes, docs)
+
+Standard HTML/CSS/JS. No external dependencies needed.
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Page Title</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: #0a0a0f; color: #c0caf5;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  </style>
+</head>
+<body>
+  <!-- content -->
+</body>
+</html>
+```
+
+### For creative / generative / p5.js pages
 
 ```html
 <!DOCTYPE html>
@@ -96,7 +97,6 @@ Every project follows the same path:
 <body>
 <script>
 const CONFIG = { seed: 42 };
-const PALETTE = { bg: '#0a0a0f', primary: '#e8d5b7' };
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
@@ -106,7 +106,7 @@ function setup() {
 }
 
 function draw() {
-  // Render frame
+  // render frame
 }
 
 function windowResized() {
@@ -117,10 +117,32 @@ function windowResized() {
 </html>
 ```
 
+## webAgent Aesthetic
+
+When designing pages, match the app's look:
+
+| Token | Value |
+|-------|-------|
+| Background | `#0a0a0f` |
+| Surface | `#0d0d1e` |
+| Border | `#1e1e3a` |
+| Text primary | `#c0caf5` |
+| Text muted | `#565f89` |
+| Accent blue | `#7aa2f7` |
+| Accent cyan | `#7dcfff` |
+| Accent purple | `#bb9af7` |
+| Error / red | `#f7768e` |
+
+## Design Rules (for all page types)
+
+- **Custom color palette always** — design 3–7 intentional colors
+- **Canvas fills window** — use `createCanvas(windowWidth, windowHeight)` for p5.js, `height: 100vh` for HTML pages
+- **Never plain backgrounds** — texture, gradient, or layered treatment
+- **Be proactively creative** — if asked for "a chart", deliver a chart with animation, tooltips, and a polished layout. Include at least one detail the user didn't ask for but will appreciate.
+
 ## Important
 
-- **Canvas fits the window** — use `createCanvas(windowWidth, windowHeight)` and handle `windowResized()`
-- **Disable FES** — always `p5.disableFriendlyErrors = true;` before `setup()`
-- **No external dependencies** beyond p5.js CDN
-- **Call `render_visual`** with the full HTML string when ready
-- **Iterate** — if user gives feedback, edit the HTML and call `render_visual` again
+- **Always call `render_visual`** — that's how the output appears in the iframe
+- **Match `page_name` to the tagged page** — don't render to "home" when the user is on "dashboard"
+- **Iterate on feedback** — when the user says "change X", fetch the current state from the prompt context and update it
+- **First-render quality** — the page must look great on first load, no blank states or errors

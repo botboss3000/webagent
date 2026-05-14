@@ -55,6 +55,9 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "run_worker_trials":             {"stages": ["opt_validate"],                                "destructive": False, "agent_types": ["optimizer-planner"]},
     "handoff_to_finalizer":          {"stages": ["opt_propose"],                                 "destructive": False, "agent_types": ["optimizer-planner"]},
     "deploy_optimization":           {"stages": ["opt_apply"],                                   "destructive": True,  "agent_types": ["optimizer-finalizer"]},
+    # ── Delegation ──
+    "delegate_to_agent":             {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    "list_delegatable_agents":       {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     # ── Admin/source (privileged) — write/exec tools pass through guardrails ──
     "read_source":                   {"stages": ["execute_tools"],                               "destructive": False, "agent_types": ["admin"]},
     "write_source":                  {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "agent_types": ["admin"]},
@@ -92,13 +95,14 @@ class ToolLoader:
     def __init__(self):
         self._client = get_db().get_raw_client()
 
-    async def load_tools(self, user_id: str) -> Dict[str, 'ToolInfo']:
+    async def load_tools(self, user_id: str, agent_template_id: Optional[str] = None) -> Dict[str, 'ToolInfo']:
         """
         Load all active tools for a user from the tools table.
         Each tool's `code` field contains the full async function to execute.
 
         Args:
             user_id: The user ID to load tools for
+            agent_template_id: Active agent template id — gates admin-only tools.
 
         Returns:
             Dictionary mapping tool names to ToolInfo objects
@@ -465,12 +469,15 @@ class ToolLoader:
             },
         )
 
-        # ── Source management tools (in admin/ — delete to lock down) ──
-        try:
-            from app.admin.source_tools import inject_source_tools
-            inject_source_tools(tools, user_id)
-        except ImportError:
-            pass  # admin/source_tools.py not available — source editing disabled
+        # ── Source management tools — only injected for admin-agent sessions ──
+        # These are privileged tools (read/write/edit/delete files, run commands).
+        # They are scoped exclusively to sessions running the 'admin-agent' template.
+        if agent_template_id == "admin-agent":
+            try:
+                from app.admin.source_tools import inject_source_tools
+                inject_source_tools(tools, user_id)
+            except ImportError:
+                pass  # admin/source_tools.py not present — source editing disabled
 
         # ── Visualizer tools (p5.js creative coding) ──
         try:
@@ -478,6 +485,38 @@ class ToolLoader:
             _register_visualizer_tools(tools, user_id)
         except ImportError:
             pass  # app/visualizer/ not available — visual rendering disabled
+
+        # ── Delegation tools — injected for non-pipeline agents ──
+        # Allows agents to hand off to each other mid-conversation.
+        _is_pipeline = agent_template_id in ("opt_planner", "opt_finalizer")
+        if not _is_pipeline:
+            try:
+                from app.tools.delegation import build_delegation_tools
+                _delegation = build_delegation_tools(user_id)
+                _delegation_schemas = {
+                    "delegate_to_agent": {
+                        "type": "object",
+                        "properties": {
+                            "agent_template_id": {"type": "string", "description": "Template ID of the agent to delegate to (e.g. 'admin-agent')."},
+                            "context": {"type": "string", "description": "Context or reason for the delegation — passed to the new agent."},
+                        },
+                        "required": ["agent_template_id"],
+                    },
+                    "list_delegatable_agents": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                    },
+                }
+                for _dname, _dhandler in _delegation.items():
+                    tools[_dname] = ToolInfo(
+                        name=_dname,
+                        handler=_dhandler,
+                        description=_dhandler.__doc__ or "",
+                        parameters=_delegation_schemas.get(_dname, {"type": "object", "properties": {}, "required": []}),
+                    )
+            except Exception as _de:
+                logger.warning("Delegation tools unavailable: %s", _de)
 
         # ═══════════════════════════════════════════════════════════════
         # Bootstrap core tools — always available from turn 1

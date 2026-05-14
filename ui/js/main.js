@@ -18,6 +18,7 @@ import { initConnections } from './connections.js';
 import { initOptimizer } from './optimizer.js';
 import { initGithub } from './github.js';
 import { initAutoAgent } from './autoagent.js';
+import { initAgents } from './agents.js';
 import { isAuthenticated, showLeftOverlay, hideLeftOverlay } from './left-login.js';
 
 bindDom();
@@ -48,6 +49,7 @@ initLoopVisual();
 initDbViewer();
 initGithub();
 initAutoAgent();
+initAgents();
 initSettings();
 initConnections();
 initOptimizer();

@@ -518,6 +518,17 @@ CREATE TABLE IF NOT EXISTS provider_ratings (
     PRIMARY KEY (user_id, provider, model)
 );
 
+-- ============================================================
+-- User Profiles: admin flag and per-user preferences
+-- ============================================================
+CREATE TABLE IF NOT EXISTS user_profiles (
+    user_id             TEXT PRIMARY KEY,
+    is_admin            INTEGER NOT NULL DEFAULT 0,
+    default_agent_id    TEXT,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 """
 
 
@@ -774,6 +785,58 @@ class LocalBackend(StorageBackend):
                                 logger.warning("Could not drop %s.%s: %s", tbl, old_col, drop_err)
                     conn.commit()
                     logger.info("Dropped _ctx columns from %s", tbl)
+
+            # ── Migration: add multi-agent fields to agent_templates ──
+            at_cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_templates)").fetchall()}
+            _at_new_cols = [
+                ("name",          "TEXT NOT NULL DEFAULT ''"),
+                ("description",   "TEXT NOT NULL DEFAULT ''"),
+                ("icon",          "TEXT NOT NULL DEFAULT ''"),
+                ("can_be_default","INTEGER NOT NULL DEFAULT 1"),
+                ("is_system",     "INTEGER NOT NULL DEFAULT 0"),
+                ("is_pipeline",   "INTEGER NOT NULL DEFAULT 0"),
+                ("access_level",  "TEXT NOT NULL DEFAULT 'all'"),
+                ("trigger_description", "TEXT NOT NULL DEFAULT ''"),
+            ]
+            for col, col_def in _at_new_cols:
+                if col not in at_cols:
+                    conn.execute(f"ALTER TABLE agent_templates ADD COLUMN {col} {col_def}")
+                    logger.info("Added agent_templates.%s column", col)
+            conn.commit()
+
+            # ── Migration: add multi-agent fields to agents ──
+            ag_cols = {row[1] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
+            _ag_new_cols = [
+                ("owner_user_id",  "TEXT"),
+                ("is_user_default","INTEGER NOT NULL DEFAULT 0"),
+                ("name",           "TEXT NOT NULL DEFAULT ''"),
+                ("description",    "TEXT NOT NULL DEFAULT ''"),
+            ]
+            for col, col_def in _ag_new_cols:
+                if col not in ag_cols:
+                    conn.execute(f"ALTER TABLE agents ADD COLUMN {col} {col_def}")
+                    logger.info("Added agents.%s column", col)
+            conn.commit()
+
+            # ── Migration: backfill agents.owner_user_id for existing default agents ──
+            # Default agents have user_id = actual_user_id (no underscore prefix from template)
+            # Optimizer agents have user_id like "opt_planner_USER_ID" — leave owner_user_id NULL
+            conn.execute(
+                """UPDATE agents SET owner_user_id = user_id
+                   WHERE owner_user_id IS NULL
+                   AND (template_id = 'default' OR template_id IS NULL)
+                   AND user_id NOT LIKE 'opt_%'"""
+            )
+            conn.commit()
+
+            # ── Migration: set is_user_default=1 for existing default agents ──
+            conn.execute(
+                """UPDATE agents SET is_user_default = 1
+                   WHERE (template_id = 'default' OR template_id IS NULL)
+                   AND user_id NOT LIKE 'opt_%'
+                   AND is_user_default = 0"""
+            )
+            conn.commit()
 
             # ── Seed: p5js visualizer skill template ──
             self._seed_visualizer_template(conn)
@@ -1089,12 +1152,16 @@ class LocalBackend(StorageBackend):
         for tpl in templates:
             conn.execute(
                 """INSERT INTO agent_templates
-                   (id, system_prompt, max_turn_count, model, provider,
+                   (id, name, description, icon, system_prompt, max_turn_count, model, provider,
                     temperature, max_tokens, metadata,
                     agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
-                    bootstrap_tools, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    bootstrap_tools, can_be_default, is_system, is_pipeline, access_level,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    description = excluded.description,
+                    icon = excluded.icon,
                     system_prompt = excluded.system_prompt,
                     max_turn_count = excluded.max_turn_count,
                     model = excluded.model,
@@ -1108,13 +1175,21 @@ class LocalBackend(StorageBackend):
                     tasks_prompt = excluded.tasks_prompt,
                     misc_prompt = excluded.misc_prompt,
                     bootstrap_tools = excluded.bootstrap_tools,
+                    can_be_default = excluded.can_be_default,
+                    is_system = excluded.is_system,
+                    is_pipeline = excluded.is_pipeline,
+                    access_level = excluded.access_level,
                     updated_at = excluded.updated_at""",
-                (tpl["id"], tpl["system_prompt"], tpl["max_turn_count"],
+                (tpl["id"], tpl.get("name", tpl["id"]), tpl.get("description", ""),
+                 tpl.get("icon", ""), tpl["system_prompt"], tpl["max_turn_count"],
                  tpl["model"], tpl["provider"], tpl["temperature"],
                  tpl["max_tokens"], tpl["metadata"],
                  tpl.get("agent_prompt", ""), tpl.get("user_prompt", ""),
                  tpl.get("skills_prompt", ""), tpl.get("tasks_prompt", ""),
-                 tpl.get("misc_prompt", ""), tpl.get("bootstrap_tools", ""), now, now),
+                 tpl.get("misc_prompt", ""), tpl.get("bootstrap_tools", ""),
+                 tpl.get("can_be_default", 1), tpl.get("is_system", 0),
+                 tpl.get("is_pipeline", 0), tpl.get("access_level", "all"),
+                 now, now),
             )
         conn.commit()
         logger.info(
@@ -2889,7 +2964,285 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
-# ── Proxy for code that uses supabase.Client.table() directly ──────────────
+    # ──────────────────────────────────────────────────────────────────────────
+    # User Profiles
+    # ──────────────────────────────────────────────────────────────────────────
+
+    async def get_user_profile(self, user_id: str) -> Optional[dict]:
+        """Return the user_profiles row for user_id, or None if not found."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM user_profiles WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def upsert_user_profile(self, user_id: str, **kwargs) -> dict:
+        """Create or update a user_profiles row. Returns the full updated row."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                now = _now_iso()
+                existing = conn.execute(
+                    "SELECT * FROM user_profiles WHERE user_id = ?", (user_id,)
+                ).fetchone()
+                if existing:
+                    if kwargs:
+                        sets = ", ".join(f"{k} = ?" for k in kwargs)
+                        vals = list(kwargs.values()) + [now, user_id]
+                        conn.execute(
+                            f"UPDATE user_profiles SET {sets}, updated_at = ? WHERE user_id = ?",
+                            vals,
+                        )
+                else:
+                    cols = ["user_id", "created_at", "updated_at"] + list(kwargs.keys())
+                    placeholders = ", ".join("?" for _ in cols)
+                    vals = [user_id, now, now] + list(kwargs.values())
+                    conn.execute(
+                        f"INSERT INTO user_profiles ({', '.join(cols)}) VALUES ({placeholders})",
+                        vals,
+                    )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT * FROM user_profiles WHERE user_id = ?", (user_id,)
+                ).fetchone()
+                return dict(row)
+            finally:
+                conn.close()
+
+    async def is_user_admin(self, user_id: str) -> bool:
+        """Return True if the user has is_admin = 1."""
+        profile = await self.get_user_profile(user_id)
+        return bool(profile and profile.get("is_admin"))
+
+    async def set_user_admin(self, user_id: str, is_admin: bool) -> dict:
+        """Set the is_admin flag for a user. Creates the profile row if needed."""
+        return await self.upsert_user_profile(user_id, is_admin=1 if is_admin else 0)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Multi-agent: template listing and custom agent CRUD
+    # ──────────────────────────────────────────────────────────────────────────
+
+    async def list_agent_templates(self, include_admin: bool = False) -> List[dict]:
+        """
+        Return agent_templates that are user-visible (is_pipeline=0).
+        If include_admin=False, excludes access_level='admin_only' templates.
+        """
+        conn = self._get_conn()
+        try:
+            if include_admin:
+                rows = conn.execute(
+                    "SELECT * FROM agent_templates WHERE is_pipeline = 0 ORDER BY is_system DESC, name ASC"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM agent_templates WHERE is_pipeline = 0 AND access_level != 'admin_only' ORDER BY is_system DESC, name ASC"
+                ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def list_agents_for_user(self, user_id: str, include_admin: bool = False) -> List[dict]:
+        """
+        Return all agents visible to a user:
+        - System agent templates (is_pipeline=0), filtered by access_level
+        - User's own custom agents (owner_user_id = user_id, is_system=0 equivalent)
+        Each item includes a 'source' key: 'template' or 'custom'.
+        Custom agents also carry their is_user_default flag.
+        """
+        # 1. System templates the user can see
+        templates = await self.list_agent_templates(include_admin=include_admin)
+        result = []
+        for tpl in templates:
+            entry = dict(tpl)
+            entry["source"] = "template"
+            entry["is_user_default"] = 0
+            result.append(entry)
+
+        # 2. User's custom agents
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM agents WHERE owner_user_id = ? ORDER BY created_at ASC",
+                (user_id,),
+            ).fetchall()
+            for row in rows:
+                entry = dict(row)
+                entry["source"] = "custom"
+                result.append(entry)
+        finally:
+            conn.close()
+
+        # Mark the user's current default
+        profile = await self.get_user_profile(user_id)
+        default_id = profile.get("default_agent_id") if profile else None
+        for entry in result:
+            if default_id and entry.get("id") == default_id:
+                entry["is_user_default"] = 1
+        return result
+
+    # ── Custom agent CRUD ─────────────────────────────────────────────────────
+
+    async def create_custom_agent(
+        self, user_id: str, name: str, description: str = ""
+    ) -> dict:
+        """
+        Create a new custom agent for a user, cloned from the default template.
+        Returns the new agents row as a dict (with source='custom').
+        """
+        import uuid as _uuid_mod
+        # Load default template fields
+        conn = self._get_conn()
+        try:
+            tpl_row = conn.execute(
+                "SELECT * FROM agent_templates WHERE id = 'default'"
+            ).fetchone()
+            tpl = dict(tpl_row) if tpl_row else {}
+        finally:
+            conn.close()
+
+        agent_id = str(_uuid_mod.uuid4())
+        now = _now_iso()
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                """INSERT INTO agents
+                   (id, user_id, owner_user_id, name, description,
+                    system_prompt, max_turn_count, model, provider,
+                    temperature, max_tokens, metadata,
+                    agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
+                    bootstrap_tools, template_id, is_user_default, is_pipeline,
+                    created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?)""",
+                (
+                    agent_id, user_id, user_id, name, description,
+                    tpl.get("system_prompt", ""),
+                    tpl.get("max_turn_count", 40),
+                    tpl.get("model", ""),
+                    tpl.get("provider", ""),
+                    tpl.get("temperature", 0.7),
+                    tpl.get("max_tokens", 8192),
+                    tpl.get("metadata", "{}"),
+                    tpl.get("agent_prompt", ""),
+                    tpl.get("user_prompt", ""),
+                    tpl.get("skills_prompt", ""),
+                    tpl.get("tasks_prompt", ""),
+                    tpl.get("misc_prompt", ""),
+                    tpl.get("bootstrap_tools", ""),
+                    "default",
+                    now, now,
+                ),
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        finally:
+            conn.close()
+
+        result = dict(row) if row else {"id": agent_id}
+        result["source"] = "custom"
+        return result
+
+    async def delete_custom_agent(self, agent_id: str, owner_user_id: str) -> bool:
+        """
+        Delete a custom agent owned by owner_user_id.
+        System agents (template rows) cannot be deleted via this path.
+        Returns True if a row was deleted, False if not found or not owned.
+        """
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                """DELETE FROM agents
+                   WHERE id = ? AND owner_user_id = ?
+                   AND (is_user_default = 0 OR owner_user_id IS NOT NULL)""",
+                (agent_id, owner_user_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    async def get_user_default_agent_id(self, user_id: str) -> Optional[str]:
+        """Return the user's preferred default_agent_id, or None if not set."""
+        profile = await self.get_user_profile(user_id)
+        if profile:
+            return profile.get("default_agent_id")
+        return None
+
+    async def set_user_default_agent(self, user_id: str, agent_id: str) -> None:
+        """
+        Set the user's preferred default agent.
+        Upserts a user_profiles row and updates default_agent_id.
+        """
+        now = _now_iso()
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                """INSERT INTO user_profiles (user_id, is_admin, default_agent_id, created_at, updated_at)
+                   VALUES (?, 0, ?, ?, ?)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                     default_agent_id = excluded.default_agent_id,
+                     updated_at = excluded.updated_at""",
+                (user_id, agent_id, now, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    async def update_agent_fields(
+        self,
+        agent_id: str,
+        owner_user_id: str,
+        updates: dict,
+    ) -> Optional[dict]:
+        """
+        Update editable fields on a custom agent owned by owner_user_id.
+        Allowed fields: name, description, max_turn_count,
+                        agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt.
+        Returns the updated agent row dict, or None if not found/not owned.
+        """
+        ALLOWED = {
+            "name", "description", "max_turn_count",
+            "agent_prompt", "user_prompt", "skills_prompt",
+            "tasks_prompt", "misc_prompt",
+        }
+        safe = {k: v for k, v in updates.items() if k in ALLOWED}
+        if not safe:
+            # Nothing to update; return current state
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM agents WHERE id = ? AND owner_user_id = ?",
+                    (agent_id, owner_user_id),
+                ).fetchone()
+            finally:
+                conn.close()
+            return dict(row) if row else None
+
+        now = _now_iso()
+        safe["updated_at"] = now
+        set_clause = ", ".join(f"{k} = ?" for k in safe)
+        values = list(safe.values()) + [agent_id, owner_user_id]
+
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                f"UPDATE agents SET {set_clause} WHERE id = ? AND owner_user_id = ?",
+                values,
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                return None
+            row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        finally:
+            conn.close()
+
+        result = dict(row) if row else None
+        if result:
+            result["source"] = "custom"
+        return result
+
 
 class _LocalTableProxy:
     """

@@ -62,6 +62,8 @@ except ImportError:
 
 from app.admin.communications import router as admin_communications_router
 from app.admin.webhooks_admin import router as admin_webhooks_router
+from app.api.agents import router as agents_router
+from app.admin.users import router as admin_users_router
 
 # ── Auth ──
 from app.auth import router as auth_router
@@ -71,6 +73,7 @@ from app.api.github import router as github_router
 
 # ── Optimizer ──
 from app.admin.optimizer import router as optimizer_router
+from app.api.pages import router as pages_router
 optimizer_router.prefix="/api/v1"
 
 # Configure logging
@@ -124,6 +127,8 @@ app.include_router(admin_communications_router)
 
 # Register generic webhook admin router
 app.include_router(admin_webhooks_router)
+app.include_router(agents_router)
+app.include_router(admin_users_router)
 
 # Register auth router
 app.include_router(auth_router)
@@ -139,6 +144,9 @@ app.include_router(github_router)
 
 # Register optimizer admin router
 app.include_router(optimizer_router)
+
+# Register AutoAgent pages router
+app.include_router(pages_router)
 
 # ── Restart endpoint ──
 # POST /api/v1/restart shuts down the server process.

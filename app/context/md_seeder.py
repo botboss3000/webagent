@@ -314,6 +314,10 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
             "tasks_prompt": data.get("tasks_prompt", ""),
             "misc_prompt": data.get("misc_prompt", ""),
             "bootstrap_tools": data.get("bootstrap_tools", ""),
+            "can_be_default": 1 if data.get("can_be_default", True) else 0,
+            "is_system": 1 if data.get("is_system", False) else 0,
+            "is_pipeline": 1 if data.get("is_pipeline", False) else 0,
+            "access_level": data.get("access_level", "all"),
         }
 
         results.append(row)

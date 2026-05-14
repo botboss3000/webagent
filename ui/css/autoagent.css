@@ -1,5 +1,159 @@
 /* ── AutoAgent Tab ── */
 
+/* ── Page Nav Bar ── */
+
+#autoagent-page-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  background: #0d0d1e;
+  border-bottom: 1px solid #1e1e3a;
+  flex-shrink: 0;
+}
+
+.aa-page-select {
+  flex: 1;
+  min-width: 0;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 5px;
+  color: #c0caf5;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23565f89'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 24px;
+}
+
+.aa-page-select:focus {
+  border-color: #7aa2f7;
+}
+
+.aa-icon-btn {
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 5px;
+  color: #7aa2f7;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+  padding: 0;
+}
+
+.aa-icon-btn:hover {
+  background: #222240;
+  border-color: #7aa2f7;
+}
+
+.aa-icon-btn:disabled {
+  color: #3b3f66;
+  border-color: #1e1e3a;
+  cursor: not-allowed;
+  background: #12121e;
+}
+
+.aa-delete-btn { color: #f7768e; }
+.aa-delete-btn:hover { border-color: #f7768e; background: #1e1218; }
+.aa-delete-btn:disabled { color: #3b3f66; }
+
+/* ── New Page Dialog ── */
+
+#aa-new-page-dialog {
+  display: none;
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.65);
+  z-index: 200;
+  align-items: center;
+  justify-content: center;
+}
+
+.aa-dialog-box {
+  background: #12121e;
+  border: 1px solid #2a2a4a;
+  border-radius: 10px;
+  padding: 22px 24px;
+  width: 320px;
+  max-width: 90%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.aa-dialog-box h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e0def4;
+}
+
+.aa-dialog-input {
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  color: #c0caf5;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.aa-dialog-input:focus {
+  border-color: #7aa2f7;
+}
+
+.aa-dialog-input::placeholder { color: #3b3f66; }
+
+.aa-dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.aa-dialog-btn {
+  padding: 6px 16px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s;
+}
+
+.aa-dialog-btn-primary {
+  background: #7aa2f7;
+  color: #0a0a0f;
+  border-color: #7aa2f7;
+}
+
+.aa-dialog-btn-primary:hover { background: #9ab8ff; }
+
+.aa-dialog-btn-cancel {
+  background: transparent;
+  color: #565f89;
+  border-color: #2a2a4a;
+}
+
+.aa-dialog-btn-cancel:hover { background: #1a1a2e; color: #c0caf5; }
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+
 #tab-autoagent {
   display: none;
   flex-direction: column;
@@ -212,3 +366,49 @@ body.light-mode #autoagent-status {
   background: #fffaf5;
   border-top-color: #ffdec4;
 }
+body.light-mode #autoagent-page-nav {
+  background: #fff7f0;
+  border-bottom-color: #ffdec4;
+}
+body.light-mode .aa-page-select {
+  background: #ffffff;
+  border-color: #ffdec4;
+  color: #3d2c2e;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23cca08a'/%3E%3C/svg%3E");
+}
+body.light-mode .aa-icon-btn {
+  background: #ffffff;
+  border-color: #ffdec4;
+  color: #cc6a28;
+}
+body.light-mode .aa-icon-btn:hover {
+  background: #fff2e6;
+  border-color: #ff8c42;
+}
+body.light-mode .aa-icon-btn:disabled {
+  color: #cca08a;
+  background: #fffaf5;
+  border-color: #ffdec4;
+}
+body.light-mode .aa-delete-btn { color: #d95c5c; }
+body.light-mode .aa-delete-btn:hover { border-color: #d95c5c; background: #fff0f0; }
+body.light-mode .aa-dialog-box {
+  background: #ffffff;
+  border-color: #ffdec4;
+}
+body.light-mode .aa-dialog-box h3 { color: #3d2c2e; }
+body.light-mode .aa-dialog-input {
+  background: #fffaf5;
+  border-color: #ffdec4;
+  color: #3d2c2e;
+}
+body.light-mode .aa-dialog-input:focus { border-color: #ff8c42; }
+body.light-mode .aa-dialog-btn-primary {
+  background: #ff8c42;
+  border-color: #ff8c42;
+}
+body.light-mode .aa-dialog-btn-cancel {
+  border-color: #ffdec4;
+  color: #b09580;
+}
+body.light-mode .aa-dialog-btn-cancel:hover { background: #fff2e6; color: #3d2c2e; }

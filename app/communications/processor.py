@@ -9,6 +9,14 @@ Avoids duplicating the agent loop logic.
 import json
 import logging
 
+# Display names for each channel — shown as the session title in the UI
+CHANNEL_DISPLAY_NAMES: dict[str, str] = {
+    "telegram": "Telegram",
+    "whatsapp": "WhatsApp",
+    "sms": "SMS",
+}
+
+
 from app.communications.auth import (
     get_or_create_identity,
     get_registration_system_prompt,
@@ -61,7 +69,7 @@ async def process_channel_message(
         raw.table("sessions").insert({
             "id": session_id,
             "user_id": user_id,
-            "title": f"{channel}:{external_id[-8:]}",
+            "title": CHANNEL_DISPLAY_NAMES.get(channel, channel.capitalize()),
         }).execute()
         logger.info("Created session %s for channel user %s", session_id, user_id)
 

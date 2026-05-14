@@ -50,6 +50,7 @@ const STEP_ICONS = {
   memory_save_start: '💾',
   memory_save_end:   '💾',
   user_message:      '👤',
+  agent_delegation:  '🔀',
 };
 
 // ── Level colors ──
@@ -529,6 +530,15 @@ function handlePipeline(event) {
     case 'memory_save_end':
       summary = `Memory saved: ${event.slug || '?'}`;
       break;
+    case 'agent_delegation': {
+      const toName = event.to_agent_name || event.to_template_id || '?';
+      const ctx = event.context ? ' — ' + event.context.substring(0, 60) : '';
+      summary = 'Delegating to ' + toName + ctx;
+      node.style.borderLeftColor = '#bb9af7';
+      node.style.backgroundColor = '#bb9af710';
+      node.style.fontWeight = '600';
+      break;
+    }
     default:
       summary = step;
       break;
