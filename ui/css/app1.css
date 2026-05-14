@@ -821,8 +821,8 @@
   body.light-mode .str-role,
   body.light-mode .str-time,
   body.light-mode .str-session,
-  body.light-mode .json-punc,
-  body.light-mode .json-null { color: #cca08a; }
+  body.light-mode .json-punc { color: #cca08a; }
+  body.light-mode .json-null { color: #cca08a; font-style: italic; }
   body.light-mode .str-tool { color: #d4873a; }
   body.light-mode .json-key { color: #cc6a28; }
   body.light-mode .json-str { color: #5a8a4a; }

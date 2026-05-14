@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional
 
-_MD_PATH = Path(__file__).resolve().parent / "system_prompt.md"
+_MD_PATH = Path(__file__).resolve().parent / "prompt_fragments.md"
 
 _cache: Optional[Dict[str, str]] = None
 

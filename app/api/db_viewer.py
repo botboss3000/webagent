@@ -825,3 +825,42 @@ async def list_databases(
         if f.suffix == ".db"
     ])
     return {"databases": files}
+
+
+@router.delete("/file")
+async def delete_database_file(
+    db: str = Query(..., description="Database filename to delete"),
+    _auth=Depends(require_db_auth),
+):
+    """Delete a .db file (plus sidecar -wal/-shm) from the db directory.
+
+    Refuses to delete local.db (primary app database).
+    """
+    # Reject path-traversal / non-plain names
+    if Path(db).name != db:
+        raise HTTPException(status_code=400, detail="Database name must be a plain filename")
+    if not db.endswith(".db"):
+        raise HTTPException(status_code=400, detail="Only .db files may be deleted")
+    if db == "local.db":
+        raise HTTPException(status_code=400, detail="Refusing to delete local.db")
+
+    db_path = _DB_FILES_DIR / db
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail=f"Database '{db}' not found")
+
+    removed = []
+    errors = {}
+    for suffix in ("", "-wal", "-shm"):
+        target = _DB_FILES_DIR / (db + suffix)
+        if target.exists():
+            try:
+                target.unlink()
+                removed.append(target.name)
+            except OSError as e:
+                errors[target.name] = str(e)
+
+    if errors and not removed:
+        raise HTTPException(status_code=500, detail=f"Failed to delete: {errors}")
+
+    logger.info(f"Deleted database files: {removed} (errors: {errors})")
+    return {"success": True, "deleted": removed, "errors": errors}

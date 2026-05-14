@@ -72,18 +72,24 @@ async def prefilter(user_id: str, session_id: str) -> Dict[str, Any]:
                 # tools table may have different schema in some DBs
                 pass
 
-        # Get context documents for this user's agent
+        # Get context from agent context columns
         context_docs = []
         agent_row = conn.execute(
-            "SELECT id FROM agents WHERE user_id=? LIMIT 1", (user_id,)
+            "SELECT agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt FROM agents WHERE user_id=? LIMIT 1",
+            (user_id,)
         ).fetchone()
         if agent_row:
-            doc_rows = conn.execute(
-                "SELECT context_type, title, substr(content, 1, 300) FROM context_documents WHERE agent_id=?",
-                (agent_row[0],),
-            ).fetchall()
-            for ct, title, content_snip in doc_rows:
-                context_docs.append({"type": ct, "title": title, "excerpt": content_snip})
+            col_map = [
+                ("agent_prompt", "agent", "Agent Identity"),
+                ("user_prompt", "user", "User"),
+                ("skills_prompt", "skills", "Core Skills"),
+                ("tasks_prompt", "tasks", "Common Tasks"),
+                ("misc_prompt", "misc", "Misc"),
+            ]
+            for col, ct, title in col_map:
+                content = agent_row[col] or ""
+                if content.strip():
+                    context_docs.append({"type": ct, "title": title, "excerpt": content[:300]})
 
         conn.close()
         return {

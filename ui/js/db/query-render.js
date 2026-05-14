@@ -390,6 +390,37 @@ function renderTableData(result, silent) {
   const tableName = result.table;
   const sort = getSortForTable(tableName);
 
+  // Backend appends "\n\n[Tool calls: ...]" suffix to assistant content
+  // for history reconstruction. Hide it in the display.
+  function stripToolCallsSuffix(s) {
+    if (typeof s !== 'string') return s;
+    const idx = s.indexOf('\n\n[Tool calls: ');
+    return idx >= 0 ? s.slice(0, idx) : s;
+  }
+
+  function fmtCell(val) {
+    if (val === null) return { html: 'NULL', isJson: false };
+    if (typeof val === 'string') {
+      val = stripToolCallsSuffix(val);
+      if (val.length > 1) {
+        const trimmed = val.trim();
+        if (trimmed && (trimmed[0] === '{' || trimmed[0] === '[')) {
+          const jsonHtml = formatJsonAsHtml(trimmed);
+          if (jsonHtml) return { html: jsonHtml, isJson: true };
+        }
+      }
+    }
+    return { html: String(val).replace(/</g, '&lt;').replace(/>/g, '&gt;'), isJson: false };
+  }
+
+  function cellInnerHtml(val) {
+    const { html: display, isJson } = fmtCell(val);
+    const inner = isJson
+      ? `<div class="db-cell-json">${display}</div>`
+      : `<pre class="db-cell-pre">${display}</pre>`;
+    return `<button class="db-cell-edit" title="Edit inline">✎</button>${inner}<button class="db-cell-expand" title="Open full viewer">↗</button>`;
+  }
+
   if (silent) {
     const tbody = data.querySelector('table.db-table tbody');
     if (tbody) {
@@ -400,10 +431,9 @@ function renderTableData(result, silent) {
         for (let ci = 0; ci < displayCols.length && ci < cells.length; ci++) {
           const col = displayCols[ci];
           const val = row[col];
-          const display = val === null ? 'NULL' : String(val);
           const cell = cells[ci];
           if (cell.dataset.val !== String(val)) {
-            cell.textContent = display;
+            cell.innerHTML = cellInnerHtml(val);
             cell.dataset.val = val === null ? 'null' : String(val);
             cell.className = 'db-cell' + (val === null ? ' col-null' : '');
           }
@@ -466,15 +496,6 @@ function renderTableData(result, silent) {
   html += '</tr>';
 
   html += '</thead><tbody>';
-
-  function fmtCell(val) {
-    if (val === null) return { html: 'NULL', isJson: false };
-    if (typeof val === 'string' && val.length > 1 && (val[0] === '{' || val[0] === '[')) {
-      const jsonHtml = formatJsonAsHtml(val);
-      if (jsonHtml) return { html: jsonHtml, isJson: true };
-    }
-    return { html: String(val).replace(/</g, '&lt;').replace(/>/g, '&gt;'), isJson: false };
-  }
 
   for (let ri = 0; ri < result.rows.length; ri++) {
     const row = result.rows[ri];
@@ -674,13 +695,33 @@ function updateFilterIndicators(tableName) {
   });
 }
 
+function getActiveDbsLocal() {
+  const f = typeof window.getCheckedDbs === 'function' ? window.getCheckedDbs() : null;
+  if (f && f.length) return f;
+  const sel = document.getElementById('db-select');
+  return sel && sel.value ? [sel.value] : [];
+}
+
+function buildQueryUrl(dbName, tableName, limit, offset, sortCol, sortDir, exclParams, legacyFilter) {
+  let url = apiPath(`/api/v1/db/query?db=${encodeURIComponent(dbName)}&table=${encodeURIComponent(tableName)}&limit=${limit}&offset=${offset}`);
+  url += `&order_by=${encodeURIComponent(sortCol)}&order_dir=${sortDir}`;
+  if (exclParams) url += '&' + exclParams;
+  if (legacyFilter) {
+    const [fCol, fVal] = legacyFilter;
+    url += `&filter_col=${encodeURIComponent(fCol)}&filter_op=contains&filter_val=${encodeURIComponent(fVal)}`;
+  }
+  return url;
+}
+
 async function queryTable(tableName, opts) {
-  const dbName = document.getElementById('db-select').value;
+  const dbs = getActiveDbsLocal();
   const sort = getSortForTable(tableName);
   const sortCol = sort.col;
   const sortDir = sort.dir;
   const data = document.getElementById('db-table-data');
   const silent = opts?.silent;
+  const multi = dbs.length > 1;
+  app.dbMultiMode = multi;
 
   if (!silent) {
     data.innerHTML = '';
@@ -693,39 +734,105 @@ async function queryTable(tableName, opts) {
     }
   }
 
-  let url = apiPath(`/api/v1/db/query?db=${encodeURIComponent(dbName)}&table=${encodeURIComponent(tableName)}&limit=${app.dbPageLimit}&offset=${app.dbPageOffset}`);
-  url += `&order_by=${encodeURIComponent(sortCol)}&order_dir=${sortDir}`;
-
-  // Add exclusion filters
   const exclParams = getExclusionParams(tableName);
-  if (exclParams) {
-    url += '&' + exclParams;
-  }
-
-  // Legacy filter support (kept for backward compat, not used by new UI)
   const filterEntries = Object.entries(app.dbFilters);
-  if (filterEntries.length > 0) {
-    const [fCol, fVal] = filterEntries[0];
-    url += `&filter_col=${encodeURIComponent(fCol)}&filter_op=contains&filter_val=${encodeURIComponent(fVal)}`;
-  }
+  const legacyFilter = filterEntries.length > 0 ? filterEntries[0] : null;
 
   try {
-    const res = await fetch(authUrl(url));
-    if (res.status === 401) {
-      localStorage.removeItem('auth_token');
-      window.location.reload();
-      return;
-    }
-    const result = await res.json();
-    app.dbTotalRows = result.total || 0;
-    app.dbCurrentResult = result;
-    if (!result.columns || !result.columns.length) {
-      if (!silent) {
-        data.innerHTML = '<div class="db-hint">Empty or invalid table</div>';
+    if (!multi) {
+      const dbName = dbs[0] || document.getElementById('db-select').value;
+      const url = buildQueryUrl(dbName, tableName, app.dbPageLimit, app.dbPageOffset, sortCol, sortDir, exclParams, legacyFilter);
+      const res = await fetch(authUrl(url));
+      if (res.status === 401) {
+        localStorage.removeItem('auth_token');
+        window.location.reload();
+        return;
       }
+      const result = await res.json();
+      app.dbTotalRows = result.total || 0;
+      app.dbCurrentResult = result;
+      if (!result.columns || !result.columns.length) {
+        if (!silent) data.innerHTML = '<div class="db-hint">Empty or invalid table</div>';
+        updatePageInfo();
+        return;
+      }
+      renderTableData(result, silent);
       updatePageInfo();
       return;
     }
+
+    // Multi-mode: fetch each DB (no offset; bigger cap), merge, sort, slice.
+    const PER_DB_CAP = 1000;
+    const perDbResults = await Promise.all(dbs.map(async (db) => {
+      const url = buildQueryUrl(db, tableName, PER_DB_CAP, 0, sortCol, sortDir, exclParams, legacyFilter);
+      try {
+        const r = await fetch(authUrl(url));
+        if (!r.ok) return { db, columns: [], rows: [], total: 0 };
+        const j = await r.json();
+        return { db, columns: j.columns || [], rows: j.rows || [], total: j.total || 0 };
+      } catch (e) {
+        return { db, columns: [], rows: [], total: 0 };
+      }
+    }));
+
+    // Skip DBs that don't have this table (empty columns) — they still report total=0 anyway
+    const usable = perDbResults.filter((r) => r.columns.length);
+    if (!usable.length) {
+      app.dbTotalRows = 0;
+      app.dbCurrentResult = { table: tableName, columns: [], rows: [], total: 0, multi: true };
+      if (!silent) data.innerHTML = '<div class="db-hint">No matching tables in selected DBs</div>';
+      updatePageInfo();
+      return;
+    }
+
+    // Union of columns (preserve order from first usable), prepend `_db`.
+    const colSet = new Set();
+    const colOrder = ['_db'];
+    usable.forEach((r) => r.columns.forEach((c) => {
+      if (!colSet.has(c)) { colSet.add(c); colOrder.push(c); }
+    }));
+
+    // Tag rows with _db
+    const allRows = [];
+    usable.forEach((r) => {
+      r.rows.forEach((row) => {
+        const tagged = Object.assign({ _db: r.db }, row);
+        allRows.push(tagged);
+      });
+    });
+
+    // Client-side sort on sortCol (works for strings, numbers, dates as strings)
+    if (sortCol) {
+      const dir = sortDir === 'DESC' ? -1 : 1;
+      allRows.sort((a, b) => {
+        const av = a[sortCol];
+        const bv = b[sortCol];
+        if (av == null && bv == null) return 0;
+        if (av == null) return 1;
+        if (bv == null) return -1;
+        if (av < bv) return -1 * dir;
+        if (av > bv) return 1 * dir;
+        return 0;
+      });
+    }
+
+    const total = perDbResults.reduce((s, r) => s + (r.total || 0), 0);
+    const start = Math.min(app.dbPageOffset, Math.max(0, allRows.length - 1));
+    const pageRows = allRows.slice(start, start + app.dbPageLimit);
+
+    const result = {
+      table: tableName,
+      columns: colOrder,
+      rows: pageRows,
+      total: total,
+      limit: app.dbPageLimit,
+      offset: app.dbPageOffset,
+      multi: true,
+      // Hint to consumers: data is already paginated client-side
+      _allRows: allRows,
+    };
+    app.dbTotalRows = allRows.length; // for pagination math against what we actually have
+    app.dbCurrentResult = result;
     renderTableData(result, silent);
     updatePageInfo();
   } catch (e) {

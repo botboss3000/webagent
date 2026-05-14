@@ -243,9 +243,23 @@ export function initDbPaginationAndToolbar() {
       }
     });
   });
-  document.getElementById('db-select').addEventListener('change', () => {
-    document.getElementById('db-refresh').click();
-  });
+  // Soft refresh on db-select changes (avoids hard reset that drops selected table)
+  let __dbChangeTimer = null;
+  const softRefreshActiveDbs = () => {
+    if (__dbChangeTimer) clearTimeout(__dbChangeTimer);
+    __dbChangeTimer = setTimeout(async () => {
+      const dbName = document.getElementById('db-select').value;
+      await fetchTables(dbName);
+      if (app.dbSelectedTable && app.dbTables.some((t) => t.name === app.dbSelectedTable)) {
+        queryTable(app.dbSelectedTable, { silent: true, keepOffset: true });
+      } else if (app.dbTables.some((t) => t.name === 'interactions')) {
+        app.dbSelectedTable = 'interactions';
+        renderTableList();
+        queryTable('interactions', { silent: true });
+      }
+    }, 80);
+  };
+  document.getElementById('db-select').addEventListener('change', softRefreshActiveDbs);
 
   // Show Hidden toggle
   const showHiddenBtn = document.getElementById('db-show-hidden-btn');

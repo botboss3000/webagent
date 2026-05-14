@@ -17,21 +17,40 @@ function openCellPopup(cell, ri, col, originalValue) {
 
   titleEl.textContent = 'Viewing: ' + col;
   
+  // Strip the backend "\n\n[Tool calls: ...]" suffix for display only.
+  // Editor keeps the original so save round-trip preserves the marker.
+  let viewerValue = originalValue;
+  if (typeof viewerValue === 'string') {
+    const idx = viewerValue.indexOf('\n\n[Tool calls: ');
+    if (idx >= 0) viewerValue = viewerValue.slice(0, idx);
+  }
+
   let formattedHtml = null;
   let displayValue = originalValue;
 
-  if (typeof originalValue === 'string' && originalValue.length > 0) {
-    if (originalValue[0] === '{' || originalValue[0] === '[') {
-      formattedHtml = formatJsonAsHtml(originalValue);
+  if (typeof viewerValue === 'string' && viewerValue.length > 0) {
+    const trimmed = viewerValue.trim();
+    if (trimmed && (trimmed[0] === '{' || trimmed[0] === '[')) {
       try {
-        const parsed = JSON.parse(originalValue);
-        displayValue = JSON.stringify(parsed, null, 2);
-      } catch (e) { /* ignore */ }
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object') {
+          formattedHtml = formatJsonAsHtml(trimmed);
+          displayValue = JSON.stringify(parsed, null, 2);
+        }
+      } catch (e) { /* not JSON, fall through to plain editor */ }
     }
   }
 
   if (formattedHtml) {
     viewer.innerHTML = formattedHtml;
+    viewer.style.display = 'block';
+    editor.style.display = 'none';
+    toggleBtn.textContent = '✎ Edit';
+    toggleBtn.style.display = 'block';
+  } else if (viewerValue !== originalValue && viewerValue.length > 0) {
+    // Plain (non-JSON) content with a stripped tool-calls suffix: show it
+    // in the viewer as text so the user isn't dropped straight into edit mode.
+    viewer.textContent = viewerValue;
     viewer.style.display = 'block';
     editor.style.display = 'none';
     toggleBtn.textContent = '✎ Edit';

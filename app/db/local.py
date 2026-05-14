@@ -116,6 +116,12 @@ CREATE TABLE IF NOT EXISTS agent_templates (
     temperature REAL NOT NULL DEFAULT 0.0,
     max_tokens INTEGER NOT NULL DEFAULT 4096,
     metadata TEXT NOT NULL DEFAULT '{}',
+    agent_prompt TEXT NOT NULL DEFAULT '',
+    user_prompt TEXT NOT NULL DEFAULT '',
+    skills_prompt TEXT NOT NULL DEFAULT '',
+    tasks_prompt TEXT NOT NULL DEFAULT '',
+    misc_prompt TEXT NOT NULL DEFAULT '',
+    bootstrap_tools TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -134,6 +140,12 @@ CREATE TABLE IF NOT EXISTS agents (
     max_tokens INTEGER NOT NULL DEFAULT 4096,
     status TEXT NOT NULL DEFAULT 'active',
     metadata TEXT NOT NULL DEFAULT '{}',
+    agent_prompt TEXT NOT NULL DEFAULT '',
+    user_prompt TEXT NOT NULL DEFAULT '',
+    skills_prompt TEXT NOT NULL DEFAULT '',
+    tasks_prompt TEXT NOT NULL DEFAULT '',
+    misc_prompt TEXT NOT NULL DEFAULT '',
+    bootstrap_tools TEXT NOT NULL DEFAULT '',
     assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -506,6 +518,38 @@ CREATE TABLE IF NOT EXISTS provider_ratings (
 """
 
 
+# ── Context column helpers ────────────────────────────────────────────────────
+
+# Maps context column name → (context_type, display title)
+_PROMPT_COLS = [
+    ("agent_prompt",  "agent",  "Agent Identity"),
+    ("user_prompt",   "user",   "User"),
+    ("skills_prompt", "skills", "Core Skills"),
+    ("tasks_prompt",  "tasks",  "Common Tasks"),
+    ("misc_prompt",   "misc",   "Misc"),
+]
+
+# Forward and reverse maps for update routing
+_COL_TO_TYPE = {col: ct for col, ct, _ in _PROMPT_COLS}
+_TYPE_TO_COL = {ct: col for col, ct, _ in _PROMPT_COLS}
+
+
+def _agent_prompt_to_docs(agent_dict: dict) -> List[dict]:
+    """Convert agent context columns to a context_documents list for prompt assembly."""
+    docs = []
+    for col, ct, title in _PROMPT_COLS:
+        content = agent_dict.get(col, "") or ""
+        if content.strip():
+            docs.append({
+                "id": col,          # stable synthetic id — the column name itself
+                "context_type": ct,
+                "title": title,
+                "content": content,
+                "tags": [],
+            })
+    return docs
+
+
 class LocalBackend(StorageBackend):
     """SQLite implementation of StorageBackend."""
 
@@ -663,6 +707,60 @@ class LocalBackend(StorageBackend):
                 conn.execute("ALTER TABLE agents ADD COLUMN template_id TEXT")
                 conn.commit()
                 logger.info("Added agents.template_id column")
+
+            # ── Migration: add context columns to agent_templates ──
+            cursor = conn.execute("PRAGMA table_info(agent_templates)")
+            at_cols = {row[1] for row in cursor.fetchall()}
+            for col in ("agent_prompt", "user_prompt", "skills_prompt", "tasks_prompt", "misc_prompt"):
+                if col not in at_cols:
+                    conn.execute(f"ALTER TABLE agent_templates ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+            conn.commit()
+
+            # ── Migration: add context columns to agents ──
+            cursor = conn.execute("PRAGMA table_info(agents)")
+            ag_cols = {row[1] for row in cursor.fetchall()}
+            for col in ("agent_prompt", "user_prompt", "skills_prompt", "tasks_prompt", "misc_prompt"):
+                if col not in ag_cols:
+                    conn.execute(f"ALTER TABLE agents ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+            conn.commit()
+
+            # ── Migration: add bootstrap_tools column ──
+            for tbl in ("agents", "agent_templates"):
+                tbl_cols = {row[1] for row in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
+                if "bootstrap_tools" not in tbl_cols:
+                    conn.execute(f"ALTER TABLE {tbl} ADD COLUMN bootstrap_tools TEXT NOT NULL DEFAULT ''")
+                    logger.info("Added bootstrap_tools column to %s", tbl)
+            conn.commit()
+
+            # ── Migration: copy _ctx → _prompt and drop old _ctx columns ──
+            _ctx_map = [
+                ("agent_ctx",  "agent_prompt"),
+                ("user_ctx",   "user_prompt"),
+                ("skills_ctx", "skills_prompt"),
+                ("tasks_ctx",  "tasks_prompt"),
+                ("misc_ctx",   "misc_prompt"),
+            ]
+            for tbl in ("agents", "agent_templates"):
+                tbl_cols = {row[1] for row in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
+                old_cols_present = [old for old, _ in _ctx_map if old in tbl_cols]
+                if old_cols_present:
+                    # Copy data: only overwrite _prompt where it's currently empty
+                    for old_col, new_col in _ctx_map:
+                        if old_col in tbl_cols:
+                            conn.execute(
+                                f"UPDATE {tbl} SET {new_col} = {old_col} "
+                                f"WHERE ({new_col} IS NULL OR {new_col} = '') AND {old_col} != ''"
+                            )
+                    conn.commit()
+                    # Drop the old columns (requires SQLite 3.35+)
+                    for old_col, _ in _ctx_map:
+                        if old_col in tbl_cols:
+                            try:
+                                conn.execute(f"ALTER TABLE {tbl} DROP COLUMN {old_col}")
+                            except Exception as drop_err:
+                                logger.warning("Could not drop %s.%s: %s", tbl, old_col, drop_err)
+                    conn.commit()
+                    logger.info("Dropped _ctx columns from %s", tbl)
 
             # ── Seed: p5js visualizer skill template ──
             self._seed_visualizer_template(conn)
@@ -912,63 +1010,50 @@ class LocalBackend(StorageBackend):
 
     async def copy_defaults_to_agent(self, agent_id: str, template_id: Optional[str] = None) -> int:
         """
-        Copy template rows into context_documents for this agent.
-        Only copies types not already present for this agent.
+        Copy context columns from agent_templates into this agent's context columns.
+        Only copies if the agent's columns are currently empty.
 
-        Isolation gate: non-default templates do NOT inherit webAgent context docs.
+        Isolation gate: non-default templates do NOT inherit webAgent context.
         """
-        # Isolation gate: only 'default' templates inherit webAgent context docs
+        # Isolation gate: only 'default' templates inherit webAgent context
         if template_id is not None and template_id != "default":
             logger.info(
-                "Skipping context doc copy for template_id=%s (agent=%s)",
+                "Skipping context copy for template_id=%s (agent=%s)",
                 template_id, agent_id[:8],
             )
             return 0
         conn = self._get_conn()
         try:
-            exists = conn.execute(
-                "SELECT 1 FROM agents WHERE id = ?", (agent_id,)
+            agent = conn.execute(
+                "SELECT agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt FROM agents WHERE id = ?",
+                (agent_id,),
             ).fetchone()
-            if not exists:
+            if not agent:
                 return 0
 
-            defaults = conn.execute(
-                "SELECT context_type, title, content, tags FROM context_templates"
-            ).fetchall()
+            # Skip if any context column is already populated
+            if any(agent[col] for col in ("agent_prompt", "user_prompt", "skills_prompt", "tasks_prompt", "misc_prompt")):
+                logger.debug("Agent %s already has context columns — skipping copy", agent_id[:8])
+                return 0
 
-            if not defaults:
-                self._seed_context_templates_from_md_files(conn)
-                defaults = conn.execute(
-                    "SELECT context_type, title, content, tags FROM context_templates"
-                ).fetchall()
-                if not defaults:
-                    return 0
+            tpl = conn.execute(
+                "SELECT agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt, bootstrap_tools FROM agent_templates WHERE id = 'default'"
+            ).fetchone()
+            if not tpl:
+                logger.warning("No default agent template found for context copy")
+                return 0
 
-            existing_types = set(
-                r["context_type"]
-                for r in conn.execute(
-                    "SELECT DISTINCT context_type FROM context_documents WHERE agent_id = ?",
-                    (agent_id,),
-                ).fetchall()
+            conn.execute(
+                """UPDATE agents SET
+                    agent_prompt = ?, user_prompt = ?, skills_prompt = ?,
+                    tasks_prompt = ?, misc_prompt = ?, bootstrap_tools = ?, updated_at = ?
+                   WHERE id = ?""",
+                (tpl["agent_prompt"], tpl["user_prompt"], tpl["skills_prompt"],
+                 tpl["tasks_prompt"], tpl["misc_prompt"], tpl["bootstrap_tools"], _now_iso(), agent_id),
             )
-
-            copied = 0
-            for d in defaults:
-                if d["context_type"] in existing_types:
-                    continue
-                conn.execute(
-                    """INSERT INTO context_documents (id, agent_id, template_id, context_type, title, content, tags)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (_uuid(), agent_id, template_id, d["context_type"], d["title"], d["content"], d["tags"]),
-                )
-                copied += 1
-
             conn.commit()
-            if copied > 0:
-                logger.info(
-                    "Copied %s default context rows to agent %s", copied, agent_id
-                )
-            return copied
+            logger.info("Copied context columns from default template to agent %s", agent_id[:8])
+            return 1
         except Exception as e:
             logger.error("Error copying defaults to agent: %s", e)
             raise
@@ -992,8 +1077,10 @@ class LocalBackend(StorageBackend):
             conn.execute(
                 """INSERT INTO agent_templates
                    (id, system_prompt, max_turn_count, model, provider,
-                    temperature, max_tokens, metadata, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    temperature, max_tokens, metadata,
+                    agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
+                    bootstrap_tools, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                     system_prompt = excluded.system_prompt,
                     max_turn_count = excluded.max_turn_count,
@@ -1002,10 +1089,19 @@ class LocalBackend(StorageBackend):
                     temperature = excluded.temperature,
                     max_tokens = excluded.max_tokens,
                     metadata = excluded.metadata,
+                    agent_prompt = excluded.agent_prompt,
+                    user_prompt = excluded.user_prompt,
+                    skills_prompt = excluded.skills_prompt,
+                    tasks_prompt = excluded.tasks_prompt,
+                    misc_prompt = excluded.misc_prompt,
+                    bootstrap_tools = excluded.bootstrap_tools,
                     updated_at = excluded.updated_at""",
                 (tpl["id"], tpl["system_prompt"], tpl["max_turn_count"],
                  tpl["model"], tpl["provider"], tpl["temperature"],
-                 tpl["max_tokens"], tpl["metadata"], now, now),
+                 tpl["max_tokens"], tpl["metadata"],
+                 tpl.get("agent_prompt", ""), tpl.get("user_prompt", ""),
+                 tpl.get("skills_prompt", ""), tpl.get("tasks_prompt", ""),
+                 tpl.get("misc_prompt", ""), tpl.get("bootstrap_tools", ""), now, now),
             )
         conn.commit()
         logger.info(
@@ -1040,37 +1136,22 @@ class LocalBackend(StorageBackend):
         agent_id: str,
         context_types: Optional[List[str]] = None,
     ) -> List[dict]:
+        """Return context as a synthesized list from the agent's context columns."""
         conn = self._get_conn()
         try:
+            row = conn.execute(
+                "SELECT agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt FROM agents WHERE id = ?",
+                (agent_id,),
+            ).fetchone()
+            if not row:
+                return []
+            agent_dict = dict(row)
+            agent_dict["id"] = agent_id
+            docs = _agent_prompt_to_docs(agent_dict)
             if context_types:
-                placeholders = ",".join("?" for _ in context_types)
-                rows = conn.execute(
-                    f"""SELECT id, agent_id, context_type, title, content, tags, created_at, updated_at
-                        FROM context_documents
-                        WHERE agent_id = ? AND context_type IN ({placeholders})
-                        ORDER BY context_type, title""",
-                    (agent_id, *context_types),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    """SELECT id, agent_id, context_type, title, content, tags, created_at, updated_at
-                       FROM context_documents
-                       WHERE agent_id = ?
-                       ORDER BY context_type, title""",
-                    (agent_id,),
-                ).fetchall()
-            result = []
-            for r in rows:
-                d = dict(r)
-                try:
-                    d["tags"] = json.loads(d["tags"])
-                except (json.JSONDecodeError, TypeError):
-                    d["tags"] = []
-                result.append(d)
-            logger.debug(
-                "Fetched %s context rows for agent %s", len(result), agent_id
-            )
-            return result
+                docs = [d for d in docs if d["context_type"] in context_types]
+            logger.debug("Synthesized %s context docs for agent %s", len(docs), agent_id)
+            return docs
         except Exception as e:
             logger.error("Error fetching context documents: %s", e)
             raise
@@ -1080,45 +1161,31 @@ class LocalBackend(StorageBackend):
     async def get_context_document(
         self, agent_id: str, context_id: str
     ) -> Optional[dict]:
-        conn = self._get_conn()
-        try:
-            row = conn.execute(
-                """SELECT id, agent_id, context_type, title, content, tags,
-                          created_at, updated_at
-                   FROM context_documents WHERE id = ? AND agent_id = ?""",
-                (context_id, agent_id),
-            ).fetchone()
-            if not row:
-                return None
-            d = dict(row)
-            try:
-                d["tags"] = json.loads(d["tags"])
-            except (json.JSONDecodeError, TypeError):
-                d["tags"] = []
-            return d
-        finally:
-            conn.close()
+        """Return a synthesized context doc by id (the id is the column name, e.g. 'agent_prompt')."""
+        docs = await self.fetch_context_documents(agent_id)
+        for doc in docs:
+            if doc["id"] == context_id:
+                return doc
+        return None
 
     async def update_context_document_content(
         self, agent_id: str, context_id: str, content: str
     ) -> None:
+        """Update a context column by its id (column name) or context_type."""
+        # context_id can be the column name (agent_prompt) or context_type (agent)
+        col = _TYPE_TO_COL.get(context_id) or (context_id if context_id in _COL_TO_TYPE else None)
+        if not col:
+            raise PermissionError(f"Unknown context id '{context_id}' — must be a column name or context_type")
         conn = self._get_conn()
         try:
-            cursor = conn.execute(
-                """UPDATE context_documents SET content = ?, updated_at = ?
-                   WHERE id = ? AND agent_id = ?""",
-                (content, _now_iso(), context_id, agent_id),
+            conn.execute(
+                f"UPDATE agents SET {col} = ?, updated_at = ? WHERE id = ?",
+                (content, _now_iso(), agent_id),
             )
             conn.commit()
-            if cursor.rowcount == 0:
-                raise PermissionError(
-                    "Context document not found or not owned by this agent",
-                )
-            logger.debug("Updated context row %s for agent %s", context_id, agent_id)
-        except PermissionError:
-            raise
+            logger.debug("Updated %s for agent %s", col, agent_id)
         except Exception as e:
-            logger.error("Error updating context row: %s", e)
+            logger.error("Error updating context column: %s", e)
             raise
         finally:
             conn.close()
@@ -2035,69 +2102,20 @@ class LocalBackend(StorageBackend):
         context_types: Optional[List[str]] = None,
     ) -> Optional[dict]:
         """
-        Fetch agent + all context documents in one query (LEFT JOIN + json_group_array).
-        Returns agent dict with added key ``context_documents`` (list of dicts).
+        Fetch agent row and synthesize ``context_documents`` from context columns.
+        Returns agent dict with ``context_documents`` key (list of dicts).
         Returns None if no agent for user.
         """
         conn = self._get_conn()
         try:
-            if context_types:
-                placeholders = ",".join("?" for _ in context_types)
-                row = conn.execute(
-                    f"""SELECT a.*, (
-                        SELECT json_group_array(json_object(
-                            'id', cd.id,
-                            'context_type', cd.context_type,
-                            'title', cd.title,
-                            'content', cd.content,
-                            'tags', cd.tags,
-                            'created_at', cd.created_at,
-                            'updated_at', cd.updated_at
-                        ))
-                        FROM context_documents cd
-                        WHERE cd.agent_id = a.id
-                          AND cd.context_type IN ({placeholders})
-                    ) AS context_documents
-                    FROM agents a
-                    WHERE a.user_id = ?""",
-                    (*context_types, user_id),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    """SELECT a.*, (
-                        SELECT json_group_array(json_object(
-                            'id', cd.id,
-                            'context_type', cd.context_type,
-                            'title', cd.title,
-                            'content', cd.content,
-                            'tags', cd.tags,
-                            'created_at', cd.created_at,
-                            'updated_at', cd.updated_at
-                        ))
-                        FROM context_documents cd
-                        WHERE cd.agent_id = a.id
-                    ) AS context_documents
-                    FROM agents a
-                    WHERE a.user_id = ?""",
-                    (user_id,),
-                ).fetchone()
+            row = conn.execute("SELECT * FROM agents WHERE user_id = ?", (user_id,)).fetchone()
             if not row:
                 return None
             agent_dict = dict(row)
-            # Parse context_documents JSON string
-            raw_json = agent_dict.pop("context_documents", None)
-            if raw_json:
-                docs = json.loads(raw_json)
-                # json_group_array returns [] when no rows match; filter nulls just in case
-                agent_dict["context_documents"] = [d for d in docs if d is not None]
-            else:
-                agent_dict["context_documents"] = []
-            # Parse tags in each doc
-            for doc in agent_dict["context_documents"]:
-                try:
-                    doc["tags"] = json.loads(doc["tags"])
-                except (json.JSONDecodeError, TypeError):
-                    doc["tags"] = []
+            docs = _agent_prompt_to_docs(agent_dict)
+            if context_types:
+                docs = [d for d in docs if d["context_type"] in context_types]
+            agent_dict["context_documents"] = docs
             return agent_dict
         except Exception as e:
             logger.error("Error fetching agent with context: %s", e)
@@ -2111,68 +2129,20 @@ class LocalBackend(StorageBackend):
         context_types: Optional[List[str]] = None,
     ) -> Optional[dict]:
         """
-        Same as ``fetch_agent_with_context`` but queries by agent ``id`` (PK) instead of ``user_id``.
+        Same as ``fetch_agent_with_context`` but queries by agent ``id`` (PK).
         Direct FK lookup — no naming convention, no inference chain, no fallback.
         Returns None if agent_id not found.
         """
         conn = self._get_conn()
         try:
-            if context_types:
-                placeholders = ",".join("?" for _ in context_types)
-                row = conn.execute(
-                    f"""SELECT a.*, (
-                        SELECT json_group_array(json_object(
-                            'id', cd.id,
-                            'context_type', cd.context_type,
-                            'title', cd.title,
-                            'content', cd.content,
-                            'tags', cd.tags,
-                            'created_at', cd.created_at,
-                            'updated_at', cd.updated_at
-                        ))
-                        FROM context_documents cd
-                        WHERE cd.agent_id = a.id
-                          AND cd.context_type IN ({placeholders})
-                    ) AS context_documents
-                    FROM agents a
-                    WHERE a.id = ?""",
-                    (*context_types, agent_id),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    """SELECT a.*, (
-                        SELECT json_group_array(json_object(
-                            'id', cd.id,
-                            'context_type', cd.context_type,
-                            'title', cd.title,
-                            'content', cd.content,
-                            'tags', cd.tags,
-                            'created_at', cd.created_at,
-                            'updated_at', cd.updated_at
-                        ))
-                        FROM context_documents cd
-                        WHERE cd.agent_id = a.id
-                    ) AS context_documents
-                    FROM agents a
-                    WHERE a.id = ?""",
-                    (agent_id,),
-                ).fetchone()
+            row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
             if not row:
                 return None
             agent_dict = dict(row)
-            # Parse context_documents JSON string
-            raw_json = agent_dict.pop("context_documents", None)
-            if raw_json:
-                docs = json.loads(raw_json)
-                agent_dict["context_documents"] = [d for d in docs if d is not None]
-            else:
-                agent_dict["context_documents"] = []
-            # Parse tags in each doc
-            for doc in agent_dict["context_documents"]:
-                try:
-                    doc["tags"] = json.loads(doc["tags"])
-                except (json.JSONDecodeError, TypeError):
-                    doc["tags"] = []
+            docs = _agent_prompt_to_docs(agent_dict)
+            if context_types:
+                docs = [d for d in docs if d["context_type"] in context_types]
+            agent_dict["context_documents"] = docs
             return agent_dict
         except Exception as e:
             logger.error("Error fetching agent by id with context: %s", e)
@@ -2204,8 +2174,9 @@ class LocalBackend(StorageBackend):
                 """INSERT INTO agents
                    (id, user_id, system_prompt, max_turn_count, model, provider,
                     temperature, max_tokens, status, metadata,
-                    assigned_at, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)""",
+                    agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
+                    bootstrap_tools, assigned_at, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (agent_id, user_id,
                  tpl_data["system_prompt"],
                  tpl_data["max_turn_count"],
@@ -2214,6 +2185,12 @@ class LocalBackend(StorageBackend):
                  tpl_data["temperature"],
                  tpl_data["max_tokens"],
                  tpl_data["metadata"],
+                 tpl_data.get("agent_prompt", ""),
+                 tpl_data.get("user_prompt", ""),
+                 tpl_data.get("skills_prompt", ""),
+                 tpl_data.get("tasks_prompt", ""),
+                 tpl_data.get("misc_prompt", ""),
+                 tpl_data.get("bootstrap_tools", ""),
                  now, now, now),
             )
             conn.commit()
@@ -3071,6 +3048,7 @@ class _LocalQueryBuilder:
                 conn.commit()
                 return _LocalQueryResult([data])
 
+            # ---- SELECT (default) ----
             # ---- SELECT (default) ----
             sql = f"SELECT {self._select_cols} FROM {self._table_name}"
             where_clause, where_params = self._build_where()

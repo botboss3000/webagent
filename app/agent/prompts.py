@@ -7,7 +7,6 @@ from app.db.system_prompt_fragments import (
     format_tool_subheadings_markdown,
     get_prompt_fragments,
 )
-from app.optimizer.config import load_config
 import json
 
 # Section titles for public.context.context_type (Web Portal schema)
@@ -35,6 +34,7 @@ async def build_system_prompt(
     brain_context: Optional[str] = None,
     user_id: Optional[str] = None,
     agent_system_prompt: Optional[str] = None,
+    bootstrap_tools: Optional[str] = None,
 ) -> str:
     """
     Assemble a system prompt from context rows, brain context, and tool descriptions.
@@ -44,6 +44,7 @@ async def build_system_prompt(
         brain_context: Optional formatted brain search results to inject
         user_id: User ID for loading personal tools (optional)
         agent_system_prompt: Non-editable system prompt from the agent record (injected first)
+        bootstrap_tools: Non-editable tool list from the agent record (not optimizer-modifiable)
     """
     sections: List[str] = []
 
@@ -86,18 +87,12 @@ async def build_system_prompt(
 
     fr = get_prompt_fragments()
 
-    # ---- CONFIRMATION RULE (from app/db/system_prompt.md) ----
-    critical = (fr.get("critical_rule") or "").strip()
-    if critical:
-        sections.append(critical)
+    # ---- Bootstrap tools (non-editable, from agent record) ----
+    if bootstrap_tools and bootstrap_tools.strip():
+        sections.append(bootstrap_tools.strip())
         sections.append("")
-
-    # ---- Tools header (bootstrap-only, tools discovered on demand) ----
-    if user_id:
-        sections.append("# [BOOTSTRAP TOOLS]")
-        sections.append("You have core tools always available: list_tools, search_tools, get_tool_definition, create_tool, web_search, browser_action, db_query, memory, session_search, get_time, get_date, get_weather, calculate, read_attachment, render_visual, register_user, run_optimizer. Use `list_tools` to discover additional tools, `search_tools` to find tools by keyword, and `get_tool_definition` to learn a tool's parameters.")
-        sections.append("")
-    else:
+    elif not user_id:
+        # Fallback tool list for unauthenticated paths
         fallback = format_tool_subheadings_markdown(fr.get("fallback_tools") or "")
         if fallback:
             sections.append(fallback)
@@ -111,16 +106,6 @@ async def build_system_prompt(
             sections.append(intro + "\n")
         sections.append(brain_context)
         sections.append("")
-
-    # ---- Optimizer feedback prompt ----
-    try:
-        opt_cfg = load_config()
-        if opt_cfg.get("user_feedback") == "always":
-            sections.append("# [FEEDBACK]")
-            sections.append("After completing a complex multi-step task, briefly ask: 'How was that?' and accept ratings (good/needs-work/wrong) or short feedback. Rate with the `rate_skill` tool when users provide feedback.")
-            sections.append("")
-    except Exception:
-        pass
 
     return "\n".join(sections).strip()
 

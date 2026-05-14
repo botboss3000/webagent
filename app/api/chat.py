@@ -378,6 +378,7 @@ async def chat(request: ChatRequest):
         system_prompt = await build_system_prompt(
             context_docs, brain_context, request.user_id,
             agent_system_prompt=agent.get("system_prompt"),
+            bootstrap_tools=agent.get("bootstrap_tools", ""),
         )
         if attachment_context:
             system_prompt = system_prompt + "\n\n" + attachment_context
@@ -397,60 +398,14 @@ async def chat(request: ChatRequest):
 
         # DB-backed conversation history (same session survives browser refresh)
         exclude_ids = {user_interaction_id} if user_interaction_id else set()
-        if (request.session_id.startswith('optimizer-') and opt_role == 'finalizer') or request.session_id.startswith('finalizer-'):
-            # Inject only the relevant data — no Planner conversation
-            judging_criteria = opt_metadata.get('judging_criteria', '')
-            baseline_transcript = opt_metadata.get('baseline_transcript', '')
-            worker_results = opt_metadata.get('worker_results', '')
-            test_db_paths = opt_metadata.get('test_db_paths', [])
-
-            # Read raw trial transcripts from per-worker temp database files
-            trial_transcripts = []
-            for rel_path in test_db_paths:
-                try:
-                    _api_dir = os.path.dirname(os.path.abspath(__file__))  # app/api
-                    _project_root = os.path.normpath(os.path.join(_api_dir, "..", ".."))
-                    abs_path = os.path.normpath(os.path.join(_project_root, rel_path))
-                    if not os.path.exists(abs_path):
-                        trial_transcripts.append(f"\n### Trial: {rel_path}\n(db file not found)")
-                        continue
-                    _conn = sqlite3.connect(abs_path)
-                    _conn.row_factory = sqlite3.Row
-                    rows = _conn.execute(
-                        "SELECT role, content FROM interactions ORDER BY created_at"
-                    ).fetchall()
-                    _conn.close()
-                    trans_lines = []
-                    for r in rows:
-                        role_label = "User" if r["role"] == "user" else "Assistant"
-                        trans_lines.append(f"**{role_label}**: {r['content'][:500]}")
-                    if trans_lines:
-                        trial_transcripts.append(
-                            f"\n### Trial: {os.path.basename(rel_path)}\n" + "\n".join(trans_lines)
-                        )
-                except Exception as e:
-                    trial_transcripts.append(f"\n### Trial: {rel_path}\n(error reading: {e})")
-
-            trial_transcripts_text = "\n".join(trial_transcripts) if trial_transcripts else ""
-
-            finalizer_context = f"""## Judging Criteria (agreed by Planner + user)
-{judging_criteria}
-
-## Baseline (original interaction)
-{baseline_transcript}
-
-## Worker Trial Results
-{worker_results}
-"""
-            if trial_transcripts_text:
-                finalizer_context += f"\n## Raw Trial Transcripts (from temp databases)\n{trial_transcripts_text}\n"
-
-            history = [{"role": "system", "content": finalizer_context}]
-        else:
-            history = await build_openai_history_from_session(
-                db, request.user_id, request.session_id,
-                exclude_interaction_ids=exclude_ids,
-            )
+        # Build conversation history from DB. For finalizer sessions, all context
+        # (judging criteria, baseline, trial transcripts) is pre-injected as real
+        # interaction rows in the temp DB by handoff_to_finalizer, so the standard
+        # history builder works for both planner and finalizer sessions.
+        history = await build_openai_history_from_session(
+            db, request.user_id, request.session_id,
+            exclude_interaction_ids=exclude_ids,
+        )
 
         # Create event callback that pushes to visualizer and user listeners
         async def event_callback(event: Dict[str, Any]):
@@ -699,6 +654,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         system_prompt = await build_system_prompt(
             context_docs, brain_context, request.user_id,
             agent_system_prompt=agent.get("system_prompt"),
+            bootstrap_tools=agent.get("bootstrap_tools", ""),
         )
         if attachment_context:
             system_prompt = system_prompt + "\n\n" + attachment_context

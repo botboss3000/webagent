@@ -19,6 +19,7 @@ export async function saveEdit(cell, newValue) {
   }
   if (!Object.keys(where).length) {
     for (const col of app.dbCurrentResult.columns) {
+      if (col === '_db') continue;
       where[col] = row[col];
     }
   }
@@ -27,7 +28,8 @@ export async function saveEdit(cell, newValue) {
   values[app.editingCell.colName] = newValue;
 
   try {
-    const dbName = document.getElementById('db-select').value;
+    // In multi-mode rows carry _db; route update to source DB.
+    const dbName = row && row._db ? row._db : document.getElementById('db-select').value;
     const res = await fetch(apiPath('/api/v1/db/update'), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
