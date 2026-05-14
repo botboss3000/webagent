@@ -31,6 +31,24 @@ def _get_db_path(name: str = "local.db") -> Path:
     return db_path
 
 
+def _resolve_session_db(session_id: str, fallback_db: str = "local.db") -> str:
+    """If a session has temp_db_path in local.db metadata, route to that temp DB.
+    Otherwise return fallback_db."""
+    try:
+        conn = sqlite3.connect(str(_DB_FILES_DIR / "local.db"))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT metadata FROM sessions WHERE id=?", (session_id,)).fetchone()
+        conn.close()
+        if row and row['metadata']:
+            meta = json.loads(row['metadata'])
+            tdb = meta.get('temp_db_path', '')
+            if tdb:
+                return os.path.basename(tdb)
+    except Exception:
+        pass
+    return fallback_db
+
+
 @router.get("/tables")
 async def list_tables(
     db: str = Query("local.db", description="Database filename"),
@@ -228,6 +246,10 @@ async def get_session_messages(
     db: str = Query("local.db", description="Database filename"),
 ):
     """Get all messages for a session, ordered by created_at ASC."""
+    # Route to temp DB if session has one
+    resolved_db = _resolve_session_db(session_id, db)
+    if resolved_db != db:
+        db = resolved_db
     db_path = _get_db_path(db)
     try:
         conn = sqlite3.connect(str(db_path))
@@ -429,6 +451,11 @@ async def stream_interactions(
     session_id: str = Query("", description="Filter by session_id (optional)"),
 ):
     """Return interactions. Used by Stream tab and Loop visualizer."""
+    # If session has a temp_db_path, route to that DB transparently
+    if session_id:
+        resolved_db = _resolve_session_db(session_id, db)
+        if resolved_db != db:
+            db = resolved_db
     db_path = _get_db_path(db)
     try:
         conn = sqlite3.connect(str(db_path))

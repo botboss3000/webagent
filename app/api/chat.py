@@ -469,6 +469,7 @@ async def chat(request: ChatRequest):
             max_turns=agent.get("max_turn_count", 10),
             channel="web_portal",
             timeout_seconds=300,
+            db=db,
         )
 
         # ── PHASE 3: Background memory save (visible tool interaction) ──
@@ -780,6 +781,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                         parent_interaction_id=parent_id,
                         max_turns=agent.get("max_turn_count", 10),
                         channel="web_portal",
+                        db=db,
                     ):
                         await q.put(event)
 
