@@ -1134,6 +1134,7 @@ async def run_agent_loop_buffered(
     channel: Optional[str] = None,
     timeout_seconds: Optional[int] = None,
     db: Optional[Any] = None,
+    agent_template_id: Optional[str] = None,
 ) -> str:
     """
     Compatibility wrapper that runs the streaming loop internally,
@@ -1144,7 +1145,7 @@ async def run_agent_loop_buffered(
     does not complete within that time.
     """
     final_response = ""
-    
+
     async def _run():
         nonlocal final_response
         async for event in stream_agent_events(
@@ -1158,6 +1159,7 @@ async def run_agent_loop_buffered(
             max_turns=max_turns,
             channel=channel,
             db=db,
+            agent_template_id=agent_template_id,
         ):
             if event_callback:
                 try:

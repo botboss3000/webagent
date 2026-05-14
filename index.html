@@ -380,38 +380,42 @@
       </div>
     </div>
     <div id="tab-agents" class="tab-content">
-      <div id="agents-layout">
-        <div id="agents-list-panel">
-          <div id="agents-list-header">
-            <span>Agents</span>
-            <button id="btn-new-agent">+ New</button>
-          </div>
-          <div id="agents-list"></div>
+      <!-- Toolbar -->
+      <div id="agents-toolbar">
+        <div id="agents-toolbar-left">
+          <span id="agents-toolbar-title">Agents</span>
+          <span id="agents-toolbar-sub"> &middot; Agent templates &middot; system prompts &middot; model assignments</span>
         </div>
-        <div id="agents-detail-panel">
-          <div id="agents-detail-empty">Select an agent to view details</div>
-          <div id="agents-detail-content" style="display:none;">
-            <div id="agents-detail-header">
-              <span id="agents-detail-icon"></span>
-              <div id="agents-detail-title-area">
-                <div id="agents-detail-name"></div>
-                <div id="agents-detail-description"></div>
-              </div>
-              <div id="agents-detail-actions">
-                <button class="agents-btn default-active" id="btn-set-default" style="display:none;">&#9733; Set Default</button>
-                <button class="agents-btn danger" id="btn-delete-agent" style="display:none;">Delete</button>
-              </div>
+        <button id="btn-new-agent">+ New agent</button>
+      </div>
+
+      <!-- Card grid -->
+      <div id="agents-grid"></div>
+
+      <!-- Inline expand panel — JS moves this after the clicked card -->
+      <div id="agents-card-detail" class="hidden">
+        <div id="agents-detail-content">
+          <div id="agents-detail-header">
+            <span id="agents-detail-icon"></span>
+            <div id="agents-detail-title-area">
+              <div id="agents-detail-name"></div>
+              <div id="agents-detail-description"></div>
             </div>
-            <div id="agents-detail-tabs">
-              <button class="agents-detail-tab active" data-tab="config">Config</button>
-              <button class="agents-detail-tab" data-tab="tools">Tools</button>
-              <button class="agents-detail-tab" data-tab="test">Test</button>
+            <div id="agents-detail-actions">
+              <button class="agents-btn default-active" id="btn-set-default" style="display:none;">&#9733; Set Default</button>
+              <button class="agents-btn danger" id="btn-delete-agent" style="display:none;">Delete</button>
+              <button class="agents-btn" id="btn-collapse-detail">&#8963; Collapse</button>
             </div>
-            <div id="agents-detail-body"></div>
-            <div class="agents-save-bar" id="agents-save-bar" style="display:none;">
-              <button class="agents-btn primary" id="btn-save-agent">Save Changes</button>
-              <span class="agents-save-msg" id="agents-save-msg"></span>
-            </div>
+          </div>
+          <div id="agents-detail-tabs">
+            <button class="agents-detail-tab active" data-tab="config">Config</button>
+            <button class="agents-detail-tab" data-tab="tools">Tools</button>
+            <button class="agents-detail-tab" data-tab="test">Agent Loop</button>
+          </div>
+          <div id="agents-detail-body"></div>
+          <div class="agents-save-bar" id="agents-save-bar" style="display:none;">
+            <button class="agents-btn primary" id="btn-save-agent">Save Changes</button>
+            <span class="agents-save-msg" id="agents-save-msg"></span>
           </div>
         </div>
       </div>
@@ -441,12 +445,12 @@
         </div>
         <div id="db-panel">
           <div style="width:180px;min-width:140px;border-right:1px solid #2a2a4a;display:flex;flex-direction:column;flex-shrink:0;">
-            <div style="padding:8px 12px;border-bottom:1px solid #2a2a4a;display:flex;gap:8px;position:relative;">
+            <div style="padding:8px 12px;border-bottom:1px solid #2a2a4a;display:flex;gap:8px;position:relative;align-items:center;min-height:42px;box-sizing:border-box;">
               <button id="db-refresh" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">↻ Refresh</button>
               <div style="position:relative;">
                 <button id="db-reset" style="background:#cc241d;border:1px solid #fb4934;color:#fbf1c7;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">Reset DB ▾</button>
-                <div id="db-reset-dropdown" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:4px;padding:8px;z-index:100;min-width:180px;box-shadow:0 4px 6px rgba(0,0,0,0.3);">
-                  <div style="font-size:11px;color:#c0caf5;margin-bottom:8px;font-weight:bold;">Select tables to RESET:</div>
+                <div id="db-reset-dropdown" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:var(--bg-elev);border:1px solid var(--border);border-radius:4px;padding:8px;z-index:100;min-width:180px;box-shadow:var(--shadow-md);">
+                  <div style="font-size:11px;color:var(--fg-1);margin-bottom:8px;font-weight:bold;">Select tables to RESET:</div>
                   <div id="db-reset-options" style="display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto;margin-bottom:8px;"></div>
                   <button id="db-reset-apply" style="width:100%;background:#cc241d;border:1px solid #fb4934;color:#fbf1c7;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">Confirm Reset</button>
                 </div>
@@ -458,20 +462,20 @@
             <div id="db-table-header" style="display:flex;justify-content:space-between;align-items:center;">
               <span id="db-page-info" style="color:#565f89;font-size:11px;"></span>
               <span style="display:flex;align-items:center;gap:8px;">
-                <button id="db-page-prev" style="display:none;background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">◀</button>
-                <button id="db-page-next" style="display:none;background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">▶</button>
+                <button id="db-page-prev" style="display:none;background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-1);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">◀</button>
+                <button id="db-page-next" style="display:none;background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-1);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">▶</button>
                 <div id="db-select-wrap" style="position:relative;display:inline-block;">
                   <select id="db-select" title="Switch database" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;">
                     <option value="local.db">local.db</option>
                   </select>
-                  <button type="button" id="db-select-trigger" title="Switch database" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:2px 6px;border-radius:4px;font-size:11px;font-family:inherit;cursor:pointer;max-width:160px;display:inline-flex;align-items:center;gap:6px;">
+                  <button type="button" id="db-select-trigger" title="Switch database" style="background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-1);padding:0 8px;border-radius:4px;font-size:11px;font-family:inherit;cursor:pointer;max-width:160px;display:inline-flex;align-items:center;gap:6px;height:24px;box-sizing:border-box;">
                     <span id="db-select-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:120px;">local.db</span>
-                    <span style="color:#565f89;font-size:9px;">▼</span>
+                    <span style="color:var(--fg-3);font-size:9px;">▼</span>
                   </button>
-                  <ul id="db-select-menu" role="listbox" style="display:none;position:fixed;top:0;left:0;margin:0;padding:4px;list-style:none;background:#15152a;border:1px solid #2a2a4a;border-radius:6px;box-shadow:0 6px 18px rgba(0,0,0,0.45);z-index:9999;min-width:240px;max-height:300px;overflow-y:auto;font-size:11px;"></ul>
+                  <ul id="db-select-menu" role="listbox" style="display:none;position:fixed;top:0;left:0;margin:0;padding:4px;list-style:none;background:var(--bg-1);border:1px solid var(--border);border-radius:6px;box-shadow:var(--shadow-md);z-index:9999;min-width:240px;max-height:300px;overflow-y:auto;font-size:11px;"></ul>
                 </div>
-                <button id="db-settings-btn" title="Database View Settings" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#565f89;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:14px;font-family:inherit;">⚙</button>
-                <button id="db-download-btn" title="Download local.db" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#565f89;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:14px;font-family:inherit;">⬇</button>
+                <button id="db-settings-btn" title="Database View Settings" style="background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-3);padding:0 6px;border-radius:4px;cursor:pointer;font-size:14px;font-family:inherit;height:24px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;line-height:1;">⚙</button>
+                <button id="db-download-btn" title="Download local.db" style="background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-3);padding:0 6px;border-radius:4px;cursor:pointer;font-size:14px;font-family:inherit;height:24px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;line-height:1;">⬇</button>
               </span>
             </div>
             <div id="db-table-data">
@@ -1175,12 +1179,12 @@
 
       // ── Header row: "All databases" master toggle ──
       var header = document.createElement('li');
-      header.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #2a2a4a;margin-bottom:4px;color:#7aa2f7;font-weight:bold;';
+      header.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid var(--border);margin-bottom:4px;color:var(--accent);font-weight:bold;';
       var allCb = document.createElement('input');
       allCb.type = 'checkbox';
       allCb.checked = getShowAllDbs();
       allCb.title = 'Auto-select all databases (regular polling)';
-      allCb.style.cssText = 'margin:0;cursor:pointer;accent-color:#7aa2f7;';
+      allCb.style.cssText = 'margin:0;cursor:pointer;accent-color:var(--accent);';
       allCb.addEventListener('click', function(ev) { ev.stopPropagation(); });
       allCb.addEventListener('change', function() {
         setShowAllDbs(allCb.checked);
@@ -1210,13 +1214,13 @@
       delAll.type = 'button';
       delAll.textContent = '🗑';
       delAll.title = 'Delete all databases (keeps local.db)';
-      delAll.style.cssText = 'background:transparent;border:none;color:#565f89;cursor:pointer;font-size:13px;line-height:1;padding:0 4px;border-radius:3px;';
+      delAll.style.cssText = 'background:transparent;border:none;color:var(--fg-3);cursor:pointer;font-size:13px;line-height:1;padding:0 4px;border-radius:3px;';
       delAll.addEventListener('mouseenter', function() {
-        delAll.style.color = '#f7768e';
-        delAll.style.background = '#2a1a1f';
+        delAll.style.color = 'var(--danger)';
+        delAll.style.background = 'var(--danger-soft)';
       });
       delAll.addEventListener('mouseleave', function() {
-        delAll.style.color = '#565f89';
+        delAll.style.color = 'var(--fg-3)';
         delAll.style.background = 'transparent';
       });
       delAll.addEventListener('click', async function(ev) {
@@ -1262,15 +1266,15 @@
         var li = document.createElement('li');
         li.setAttribute('role', 'option');
         li.dataset.dbName = name;
-        li.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:4px;cursor:pointer;color:#c0caf5;';
+        li.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:4px;cursor:pointer;color:var(--fg-1);';
         if (name === sel.value) {
-          li.style.background = '#1f2348';
+          li.style.background = 'var(--bg-tint)';
         }
         li.addEventListener('mouseenter', function() {
-          if (name !== sel.value) li.style.background = '#1a1a2e';
+          if (name !== sel.value) li.style.background = 'var(--bg-elev)';
         });
         li.addEventListener('mouseleave', function() {
-          li.style.background = (name === sel.value) ? '#1f2348' : 'transparent';
+          li.style.background = (name === sel.value) ? 'var(--bg-tint)' : 'transparent';
         });
 
         // Checkbox — multi-select for merged view
@@ -1278,7 +1282,7 @@
         cb.type = 'checkbox';
         cb.checked = checked.has(name);
         cb.title = 'Include in merged view';
-        cb.style.cssText = 'margin:0;cursor:pointer;accent-color:#7aa2f7;';
+        cb.style.cssText = 'margin:0;cursor:pointer;accent-color:var(--accent);';
         cb.addEventListener('click', function(ev) {
           ev.stopPropagation();
         });
@@ -1294,7 +1298,7 @@
           // Update only the highlight on the active row without rebuilding menu
           Array.from(menu.querySelectorAll('li[role="option"]')).forEach(function(rowEl) {
             var rowName = rowEl.dataset.dbName;
-            rowEl.style.background = (rowName === sel.value) ? '#1f2348' : 'transparent';
+            rowEl.style.background = (rowName === sel.value) ? 'var(--bg-tint)' : 'transparent';
           });
           refreshDbSelectLabel();
           // Soft notify — pagination.js debounces and does silent re-query.
@@ -1318,13 +1322,13 @@
           x.type = 'button';
           x.textContent = '×';
           x.title = 'Delete ' + name;
-          x.style.cssText = 'background:transparent;border:none;color:#565f89;cursor:pointer;font-size:14px;line-height:1;padding:0 4px;border-radius:3px;';
+          x.style.cssText = 'background:transparent;border:none;color:var(--fg-3);cursor:pointer;font-size:14px;line-height:1;padding:0 4px;border-radius:3px;';
           x.addEventListener('mouseenter', function() {
-            x.style.color = '#f7768e';
-            x.style.background = '#2a1a1f';
+            x.style.color = 'var(--danger)';
+            x.style.background = 'var(--danger-soft)';
           });
           x.addEventListener('mouseleave', function() {
-            x.style.color = '#565f89';
+            x.style.color = 'var(--fg-3)';
             x.style.background = 'transparent';
           });
           x.addEventListener('click', async function(ev) {
@@ -1586,11 +1590,8 @@
   if (tabContents.length) {
     var observer = new MutationObserver(function () {
       var active = document.querySelector('.tab-content.active');
-      if (!active) return;
-      var tabId = active.id.replace(/^tab-/, '');
-      if (tabId !== nativeSelect.value) {
-        nativeSelect.value = tabId;
-        syncBtn(tabId);
+      if (active) {
+        syncBtn(active.id.replace('tab-', ''));
       }
     });
     tabContents.forEach(function (el) {
@@ -1598,9 +1599,11 @@
     });
   }
 
-  // Initialise button label to the currently active tab
-  syncBtn(nativeSelect.value || 'stream');
-}());
+  // Sync pill to whatever tab is currently active on load
+  var initActive = document.querySelector('.tab-content.active');
+  if (initActive) syncBtn(initActive.id.replace('tab-', ''));
+
+})();
 </script>
 </body>
 </html>

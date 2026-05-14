@@ -178,7 +178,7 @@ code, pre, .mono, .t-mono {
   box-shadow: var(--shadow-rest);
   padding: 8px 18px;
   position: relative;
-  z-index: 10;
+  z-index: 1000;
 }
 
 body.light-mode #status-bar {
@@ -586,7 +586,7 @@ body.light-mode *::-webkit-scrollbar-thumb:hover {
     0 1px 0 rgba(255,255,255,0.04) inset;
   min-width: 200px;
   padding: 8px;
-  z-index: 200;
+  z-index: 9999;
   animation: pop-in 0.18s ease;
 }
 .tab-option {

@@ -3061,15 +3061,21 @@ class LocalBackend(StorageBackend):
             entry["is_user_default"] = 0
             result.append(entry)
 
-        # 2. User's custom agents
+        # 2. User's agents — both assigned (user_id) and custom-created (owner_user_id)
         conn = self._get_conn()
         try:
             rows = conn.execute(
-                "SELECT * FROM agents WHERE owner_user_id = ? ORDER BY created_at ASC",
-                (user_id,),
+                """SELECT * FROM agents
+                   WHERE user_id = ? OR owner_user_id = ?
+                   ORDER BY created_at ASC""",
+                (user_id, user_id),
             ).fetchall()
+            seen_ids = set()
             for row in rows:
                 entry = dict(row)
+                if entry["id"] in seen_ids:
+                    continue
+                seen_ids.add(entry["id"])
                 entry["source"] = "custom"
                 result.append(entry)
         finally:

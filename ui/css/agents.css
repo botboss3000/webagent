@@ -1,107 +1,193 @@
 /* ── Agent Management Panel ─────────────────────────────────────────────── */
 
-/* display is controlled by .tab-content / .tab-content.active in app2.css */
 #tab-agents {
   flex-direction: column;
   height: 100%;
   overflow: hidden;
   background: #0d0d1a;
+  position: relative;
 }
 
-/* ── Two-column layout: list + detail ── */
-#agents-layout {
-  display: flex;
-  flex: 1;
-  overflow: hidden;
-}
-
-/* ── Left: agent list ── */
-#agents-list-panel {
-  width: 260px;
-  min-width: 220px;
-  flex-shrink: 0;
-  border-right: 1px solid #2a2a4a;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-#agents-list-header {
+/* ── Toolbar ── */
+#agents-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 14px 10px;
-  border-bottom: 1px solid #2a2a4a;
+  padding: 14px 20px 12px;
+  border-bottom: 1px solid #1e1e3a;
   flex-shrink: 0;
 }
-
-#agents-list-header span {
-  font-size: 12px;
-  font-weight: 600;
-  color: #7aa2f7;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+#agents-toolbar-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #c0caf5;
 }
-
+#agents-toolbar-sub {
+  font-size: 12px;
+  color: #3a3a5a;
+  font-weight: 400;
+}
 #btn-new-agent {
-  background: #1a1a3a;
-  border: 1px solid #2a2a4a;
-  color: #7aa2f7;
-  padding: 3px 10px;
-  border-radius: 4px;
-  font-size: 11px;
+  background: #7aa2f7;
+  border: none;
+  color: #0d0d1a;
+  padding: 7px 16px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
   font-family: inherit;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background 0.15s, opacity 0.15s;
 }
-#btn-new-agent:hover { background: #2a2a5a; border-color: #7aa2f7; }
+#btn-new-agent:hover { background: #89b4fa; }
 
-#agents-list {
+/* ── Card grid ── */
+#agents-grid {
   flex: 1;
   overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   scrollbar-width: thin;
   scrollbar-color: #2a2a4a transparent;
 }
-#agents-list::-webkit-scrollbar { width: 5px; }
-#agents-list::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+#agents-grid::-webkit-scrollbar { width: 5px; }
+#agents-grid::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
 
-.agent-list-item {
+/* ── Empty state ── */
+.agents-empty {
+  color: #565f89;
+  font-size: 13px;
+  text-align: center;
+  padding: 40px 20px;
+}
+
+/* ── Row wrapper — one per agent; receives the grid gap ── */
+.agent-row {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Agent card ── */
+.agent-card {
+  background: #12122a;
+  border: 1px solid #1e1e3a;
+  border-radius: 10px;
+  padding: 16px 18px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, border-radius 0.15s;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.agent-card:hover { border-color: #3a3a6a; background: #14142e; }
+.agent-card.active { border-color: #7aa2f7; background: #13132e; }
+
+/* When the detail panel is open inside the same row, flatten the connecting edges */
+.agent-row #agents-card-detail {
+  border-top: none;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+.agent-row .agent-card.active {
+  border-bottom-color: #1e1e3a; /* subtle section divider */
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.agent-card-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+.agent-card-icon-wrap {
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  cursor: pointer;
-  border-bottom: 1px solid #1a1a2e;
-  transition: background 0.12s;
+  justify-content: center;
+  font-size: 20px;
+  flex-shrink: 0;
 }
-.agent-list-item:hover { background: #13132a; }
-.agent-list-item.active { background: #1a1a3e; border-left: 3px solid #7aa2f7; padding-left: 11px; }
+.agent-card-icon-wrap.color-teal    { background: #0d2a2a; }
+.agent-card-icon-wrap.color-purple  { background: #1e1030; }
+.agent-card-icon-wrap.color-red     { background: #2a0d14; }
+.agent-card-icon-wrap.color-blue    { background: #0d1a2a; }
+.agent-card-icon-wrap.color-gray    { background: #1a1a2a; }
 
-.agent-list-icon { font-size: 18px; flex-shrink: 0; }
-
-.agent-list-info { flex: 1; min-width: 0; }
-.agent-list-name {
-  font-size: 13px;
-  font-weight: 600;
+.agent-card-meta {
+  flex: 1;
+  min-width: 0;
+}
+.agent-card-name-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 2px;
+}
+.agent-card-name {
+  font-size: 15px;
+  font-weight: 700;
   color: #c0caf5;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
-.agent-list-meta {
+.agent-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #9ece6a;
+  flex-shrink: 0;
+}
+.agent-status-dot.inactive { background: #3a3a5a; }
+
+.agent-card-model {
   font-size: 11px;
   color: #565f89;
-  margin-top: 2px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-family: 'SF Mono', 'Fira Code', monospace;
 }
 
+.agent-card-badge-wrap {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.agent-card-desc {
+  font-size: 12px;
+  color: #7a8ab0;
+  line-height: 1.5;
+  padding-left: 56px;
+}
+
+.agent-card-stats {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding-left: 56px;
+  flex-wrap: wrap;
+}
+.agent-stat {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #565f89;
+  font-weight: 500;
+}
+.agent-stat-icon { font-size: 12px; opacity: 0.7; }
+.agent-stat-time { margin-left: auto; }
+
+/* ── Badges ── */
 .agent-badge {
   font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   flex-shrink: 0;
 }
 .agent-badge.system  { background: #1a2a1a; color: #9ece6a; border: 1px solid #2a4a2a; }
@@ -109,55 +195,45 @@
 .agent-badge.admin   { background: #2a1a1a; color: #f7768e; border: 1px solid #4a2a2a; }
 .agent-badge.default { background: #1a2a2a; color: #7dcfff; border: 1px solid #2a4a4a; }
 
-/* ── Right: detail / editor ── */
-#agents-detail-panel {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
+/* ── Inline expand panel ── */
+#agents-card-detail {
+  background: #0f0f22;
+  border: 1px solid #7aa2f7;
+  border-radius: 10px;
   overflow: hidden;
-  min-width: 0;
+  animation: agents-expand 0.18s ease;
 }
+#agents-card-detail.hidden { display: none; }
 
-#agents-detail-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 1;
-  color: #565f89;
-  font-size: 13px;
+@keyframes agents-expand {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 #agents-detail-content {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  overflow: hidden;
+  height: 520px;
+  min-height: 0;
 }
 
-/* ── Detail header ── */
 #agents-detail-header {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px 18px 12px;
+  padding: 16px 18px 12px;
   border-bottom: 1px solid #2a2a4a;
   flex-shrink: 0;
 }
-
-#agents-detail-icon { font-size: 24px; }
-
+#agents-detail-icon { font-size: 22px; }
 #agents-detail-title-area { flex: 1; min-width: 0; }
 #agents-detail-name {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 700;
   color: #c0caf5;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 #agents-detail-description { font-size: 12px; color: #565f89; margin-top: 3px; }
-
-#agents-detail-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+#agents-detail-actions { display: flex; gap: 7px; align-items: center; flex-shrink: 0; }
 
 .agents-btn {
   background: #1a1a3a;
@@ -177,15 +253,12 @@
 .agents-btn.danger:hover { background: #2a1a1a; }
 .agents-btn.default-active { border-color: #7dcfff; color: #7dcfff; background: #1a2a2a; }
 
-/* ── Detail body (tabs: Config + Tools + Test) ── */
 #agents-detail-tabs {
   display: flex;
-  gap: 0;
   border-bottom: 1px solid #2a2a4a;
   padding: 0 18px;
   flex-shrink: 0;
 }
-
 .agents-detail-tab {
   background: none;
   border: none;
@@ -204,6 +277,7 @@
 
 #agents-detail-body {
   flex: 1;
+  min-height: 0; /* required for overflow-y: auto to work inside a flex child */
   overflow-y: auto;
   padding: 18px;
   scrollbar-width: thin;
@@ -212,9 +286,8 @@
 #agents-detail-body::-webkit-scrollbar { width: 5px; }
 #agents-detail-body::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
 
-/* ── Config tab: prompt fields ── */
+/* ── Config fields ── */
 .agents-field-group { margin-bottom: 20px; }
-
 .agents-field-label {
   display: block;
   font-size: 11px;
@@ -224,31 +297,25 @@
   letter-spacing: 0.05em;
   margin-bottom: 6px;
 }
-.agents-field-hint {
-  font-size: 11px;
-  color: #565f89;
-  margin-bottom: 6px;
-}
-
+.agents-field-hint { font-size: 11px; color: #565f89; margin-bottom: 6px; }
 .agents-textarea {
   width: 100%;
   background: #1a1a2e;
   border: 1px solid #2a2a4a;
   border-radius: 5px;
   color: #c0caf5;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 12px;
   line-height: 1.5;
   padding: 10px 12px;
   resize: vertical;
   min-height: 80px;
   transition: border-color 0.15s;
+  box-sizing: border-box;
 }
 .agents-textarea:focus { outline: none; border-color: #7aa2f7; }
 .agents-textarea[readonly] { opacity: 0.5; cursor: not-allowed; }
-
 .agents-input {
-  width: 100%;
   background: #1a1a2e;
   border: 1px solid #2a2a4a;
   border-radius: 5px;
@@ -268,14 +335,13 @@
   padding: 10px 18px;
   border-top: 1px solid #2a2a4a;
   flex-shrink: 0;
-  background: #0d0d1a;
+  background: #0f0f22;
 }
 .agents-save-msg { font-size: 12px; color: #9ece6a; }
 .agents-save-msg.error { color: #f7768e; }
 
 /* ── Tools tab ── */
 .agents-tools-list { display: flex; flex-direction: column; gap: 6px; }
-
 .agents-tool-item {
   display: flex;
   align-items: flex-start;
@@ -285,27 +351,21 @@
   border: 1px solid #2a2a4a;
   border-radius: 5px;
 }
-.agents-tool-name {
-  font-size: 12px;
-  font-weight: 600;
-  color: #7aa2f7;
-  min-width: 140px;
-  flex-shrink: 0;
-}
+.agents-tool-name { font-size: 12px; font-weight: 600; color: #7aa2f7; min-width: 140px; flex-shrink: 0; }
 .agents-tool-desc { font-size: 11px; color: #565f89; flex: 1; }
-.agents-tool-badge {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  flex-shrink: 0;
-}
+.agents-tool-badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; flex-shrink: 0; }
 .agents-tool-badge.destructive { background: #2a1a1a; color: #f7768e; border: 1px solid #4a2a2a; }
 .agents-tool-badge.safe        { background: #1a2a1a; color: #9ece6a; border: 1px solid #2a4a2a; }
 
 /* ── Test tab ── */
-#agents-test-area { display: flex; flex-direction: column; gap: 14px; }
-
-#agents-test-input-row { display: flex; gap: 8px; }
+#agents-test-area {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;   /* fill the scrollable body so the loop can take remaining space */
+  min-height: 0;
+}
+#agents-test-input-row { display: flex; gap: 8px; flex-shrink: 0; }
 #agents-test-input {
   flex: 1;
   background: #1a1a2e;
@@ -317,19 +377,54 @@
   padding: 8px 12px;
 }
 #agents-test-input:focus { outline: none; border-color: #7aa2f7; }
+#agents-test-status { font-size: 11px; color: #565f89; min-height: 14px; flex-shrink: 0; }
 
-#agents-test-response {
-  background: #13132a;
-  border: 1px solid #2a2a4a;
-  border-radius: 5px;
-  padding: 12px 14px;
-  font-size: 13px;
-  color: #c0caf5;
+/* Loop diagram panel — scrollable in both axes to fit 1120px canvas */
+.agents-test-loop {
+  flex: 1;
   min-height: 80px;
-  white-space: pre-wrap;
-  line-height: 1.55;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  overflow: auto;
+  padding: 14px 20px 20px;
+  background: #0d0d1a;
+  font-family: 'Fira Code', Menlo, monospace;
+  font-size: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: #2a2a4a transparent;
 }
-#agents-test-status { font-size: 11px; color: #565f89; }
+
+/* Back-to-blueprint button (inline in status line after a test run) */
+.agents-blueprint-back-inline {
+  display: inline-block;
+  font-size: 10px;
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid #2a2a4a;
+  color: #7dcfff;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  vertical-align: middle;
+}
+.agents-blueprint-back-inline:hover {
+  background: #1e1e3a;
+}
+
+/* Light mode */
+body.light-mode #agents-test-input              { background: #fffaf5; border-color: #ffdec4; color: #3d2c2e; }
+body.light-mode #agents-test-input:focus        { border-color: #ff8c42; }
+body.light-mode .agents-test-loop               { background: #f5f5f5; border-color: #ffdec4; }
+body.light-mode .agents-blueprint-back-inline   { border-color: #ffdec4; color: #c06030; }
+body.light-mode .agents-blueprint-back-inline:hover { background: #fff2e6; }
+body.light-mode .agents-test-loop .lv-node         { background: #f0f0f8; border-color: #ccccdd; color: #888899; }
+body.light-mode .agents-test-loop .lv-type-input   { background: #e8f5ff; border-color: #aaddff; color: #4499cc; }
+body.light-mode .agents-test-loop .lv-type-output  { background: #eeffee; border-color: #aaddaa; color: #449944; }
+body.light-mode .agents-test-loop .lv-type-llm     { background: #f5eeff; border-color: #cc99ff; color: #7744cc; }
+body.light-mode .agents-test-loop .lv-type-guard   { background: #fff8ee; border-color: #ffcc88; color: #cc8844; }
+body.light-mode .agents-test-loop .lv-node.lv-done { border-color: #44aa44 !important; background: #eeffee !important; color: #44aa44 !important; }
+body.light-mode .agents-test-loop .lv-node.lv-active { border-color: #2288cc !important; background: #e0f0ff !important; color: #2288cc !important; }
+body.light-mode .agents-test-loop .lv-node.lv-error  { border-color: #cc4455 !important; background: #ffeeee !important; color: #cc4455 !important; }
 
 /* ── Create modal ── */
 #agents-create-modal {
@@ -342,7 +437,6 @@
   z-index: 999;
 }
 #agents-create-modal.hidden { display: none; }
-
 #agents-create-box {
   background: #13132a;
   border: 1px solid #2a2a4a;
@@ -354,108 +448,50 @@
   gap: 14px;
 }
 #agents-create-box h3 { font-size: 15px; font-weight: 700; color: #c0caf5; }
-
 .agents-create-row { display: flex; flex-direction: column; gap: 5px; }
 .agents-create-row label { font-size: 11px; color: #7aa2f7; font-weight: 600; text-transform: uppercase; }
-
 #agents-create-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
-/* ── Light Mode ───────────────────────────────────────────────────────────── */
-
+/* ── Light mode ── */
 body.light-mode #tab-agents           { background: #fffaf5; }
-
-body.light-mode #agents-list-panel    { border-right-color: #ffdec4; }
-
-body.light-mode #agents-list-header   { border-bottom-color: #ffdec4; }
-body.light-mode #agents-list-header span { color: #cc6a28; }
-
-body.light-mode #btn-new-agent {
-  background: #fffaf5;
-  border-color: #ffdec4;
-  color: #cc6a28;
-}
-body.light-mode #btn-new-agent:hover  { background: #ffeee0; border-color: #ff8c42; }
-
-body.light-mode .agent-list-item      { border-bottom-color: #ffeee0; }
-body.light-mode .agent-list-item:hover { background: #fff5eb; }
-body.light-mode .agent-list-item.active {
-  background: #ffe4cc;
-  border-left-color: #ff8c42;
-}
-body.light-mode .agent-list-name      { color: #3d2c2e; }
-body.light-mode .agent-list-meta      { color: #b09580; }
-
+body.light-mode #agents-toolbar       { border-bottom-color: #ffdec4; }
+body.light-mode #agents-toolbar-title { color: #3d2c2e; }
+body.light-mode #agents-toolbar-sub   { color: #d0b0a0; }
+body.light-mode #btn-new-agent        { background: #ff8c42; color: #fff; }
+body.light-mode #btn-new-agent:hover  { background: #e07030; }
+body.light-mode .agent-card           { background: #fff7f0; border-color: #ffdec4; }
+body.light-mode .agent-card:hover     { background: #fff2e6; border-color: #ffb880; }
+body.light-mode .agent-card.active    { border-color: #ff8c42; }
+body.light-mode .agent-row .agent-card.active { border-bottom-color: #ffdec4; }
+body.light-mode #agents-card-detail   { background: #fff7f0; border-color: #ff8c42; }
+body.light-mode .agent-card-name      { color: #3d2c2e; }
+body.light-mode .agent-card-model     { color: #b09080; }
+body.light-mode .agent-card-desc      { color: #7a5a4a; }
+body.light-mode .agent-stat           { color: #b09080; }
 body.light-mode .agent-badge.system   { background: #f0fff0; color: #3a7a3a; border-color: #c0e0c0; }
 body.light-mode .agent-badge.custom   { background: #fff2e6; color: #cc6a28; border-color: #ffdec4; }
 body.light-mode .agent-badge.admin    { background: #fff0f0; color: #cc3333; border-color: #ffcccc; }
 body.light-mode .agent-badge.default  { background: #e6f8ff; color: #2288aa; border-color: #b8e8f8; }
-
+body.light-mode #agents-drawer-panel  { background: #fff7f0; border-left-color: #ffdec4; }
 body.light-mode #agents-detail-header { border-bottom-color: #ffdec4; }
 body.light-mode #agents-detail-name   { color: #3d2c2e; }
 body.light-mode #agents-detail-description { color: #b09580; }
-
-body.light-mode #agents-detail-empty  { color: #b09580; }
-
-body.light-mode .agents-btn {
-  background: #fffaf5;
-  border-color: #ffdec4;
-  color: #3d2c2e;
-}
+body.light-mode .agents-btn           { background: #fffaf5; border-color: #ffdec4; color: #3d2c2e; }
 body.light-mode .agents-btn:hover     { background: #ffeee0; border-color: #ff8c42; }
 body.light-mode .agents-btn.primary   { background: #fff2e6; border-color: #ff8c42; color: #cc6a28; }
-body.light-mode .agents-btn.primary:hover { background: #ffdec4; }
 body.light-mode .agents-btn.danger    { border-color: #cc3333; color: #cc3333; }
-body.light-mode .agents-btn.danger:hover  { background: #fff0f0; }
 body.light-mode .agents-btn.default-active { border-color: #2288aa; color: #2288aa; background: #e6f8ff; }
-
 body.light-mode #agents-detail-tabs   { border-bottom-color: #ffdec4; }
 body.light-mode .agents-detail-tab    { color: #b09580; }
-body.light-mode .agents-detail-tab:hover { color: #3d2c2e; }
 body.light-mode .agents-detail-tab.active { color: #ff8c42; border-bottom-color: #ff8c42; }
-
 body.light-mode .agents-field-label   { color: #cc6a28; }
-body.light-mode .agents-field-hint    { color: #b09580; }
-
-body.light-mode .agents-textarea {
-  background: #fffaf5;
-  border-color: #ffdec4;
-  color: #3d2c2e;
-}
+body.light-mode .agents-textarea      { background: #fffaf5; border-color: #ffdec4; color: #3d2c2e; }
 body.light-mode .agents-textarea:focus { border-color: #ff8c42; }
-body.light-mode .agents-textarea[readonly] { opacity: 0.6; }
-
-body.light-mode .agents-input {
-  background: #fffaf5;
-  border-color: #ffdec4;
-  color: #3d2c2e;
-}
-body.light-mode .agents-input:focus   { border-color: #ff8c42; }
-
+body.light-mode .agents-input         { background: #fffaf5; border-color: #ffdec4; color: #3d2c2e; }
 body.light-mode .agents-save-bar      { background: #fff2e6; border-top-color: #ffdec4; }
-body.light-mode .agents-save-msg      { color: #3a7a3a; }
-body.light-mode .agents-save-msg.error { color: #cc3333; }
-
 body.light-mode .agents-tool-item     { background: #fff2e6; border-color: #ffdec4; }
 body.light-mode .agents-tool-name     { color: #cc6a28; }
 body.light-mode .agents-tool-desc     { color: #7a5a4a; }
-body.light-mode .agents-tool-badge.destructive { background: #fff0f0; color: #cc3333; border-color: #ffcccc; }
-body.light-mode .agents-tool-badge.safe       { background: #f0fff0; color: #3a7a3a; border-color: #c0e0c0; }
-
-body.light-mode #agents-test-input {
-  background: #fffaf5;
-  border-color: #ffdec4;
-  color: #3d2c2e;
-}
-body.light-mode #agents-test-input:focus { border-color: #ff8c42; }
-body.light-mode #agents-test-response {
-  background: #fff7f0;
-  border-color: #ffdec4;
-  color: #3d2c2e;
-}
-body.light-mode #agents-test-status  { color: #b09580; }
-
-body.light-mode #agents-create-modal  { background: rgba(200,170,150,0.5); }
 body.light-mode #agents-create-box    { background: #fff7f0; border-color: #ffdec4; }
 body.light-mode #agents-create-box h3 { color: #3d2c2e; }
-body.light-mode .agents-create-row label { color: #cc6a28; }
 body.light-mode .agents-create-row label { color: #cc6a28; }

@@ -103,7 +103,7 @@ export function initDbPaginationAndToolbar() {
         const label = document.createElement('label');
         label.textContent = t.name;
         label.style.fontSize = '11px';
-        label.style.color = '#c0caf5';
+        label.style.color = 'var(--fg-1)';
         label.style.cursor = 'pointer';
         
         // click label toggles checkbox

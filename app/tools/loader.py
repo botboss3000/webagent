@@ -127,11 +127,11 @@ class ToolLoader:
             logger.debug(f"Loaded tool {name} for user {user_id}")
 
         # ── Inject built-in tools (override any DB versions) ──
-        self._inject_builtin_tools(tools, user_id)
+        self._inject_builtin_tools(tools, user_id, agent_template_id=agent_template_id)
 
         return tools
 
-    def _inject_builtin_tools(self, tools: Dict[str, ToolInfo], user_id: str) -> None:
+    def _inject_builtin_tools(self, tools: Dict[str, ToolInfo], user_id: str, agent_template_id: Optional[str] = None) -> None:
         """Inject built-in tools that are always available regardless of DB state."""
 
         # ── create_tool (always available) ──
