@@ -385,7 +385,7 @@ async def chat(request: ChatRequest):
 
         # ── Pipeline: prompt built ──
         from app.tools.loader import load_tools
-        tools = await load_tools(request.user_id)
+        tools = await load_tools(request.user_id, agent_template_id=agent.get("template_id") if agent else None)
         tool_count_for_prompt = len(tools)
         section_names = ["SYSTEM"]  # Simplified section count — actual sections are dynamic
 
@@ -672,7 +672,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             system_prompt = system_prompt + "\n\n" + attachment_context
 
         from app.tools.loader import load_tools
-        tools = await load_tools(request.user_id)
+        tools = await load_tools(request.user_id, agent_template_id=agent.get("template_id") if agent else None)
         
         yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'build_prompt', 'sections': ['SYSTEM'], 'brain_injected': bool(brain_context), 'tool_count_in_prompt': len(tools)})}\n\n"
 

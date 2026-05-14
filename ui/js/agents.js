@@ -95,15 +95,30 @@ function _toolsForAgent(agent) {
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 export async function initAgents() {
-  if (!app.userId) return;
+  if (!app.currentUserId) return;
   await _loadProfile();
   await _loadAgents();
   _renderList();
   _bindCreateModal();
+  _bindDetailTabs();
+}
+
+function _bindDetailTabs() {
+  document.querySelectorAll('.agents-detail-tab').forEach(btn => {
+    // Remove any previously bound listener by replacing the node clone
+    const fresh = btn.cloneNode(true);
+    btn.replaceWith(fresh);
+    fresh.addEventListener('click', () => {
+      _activeTab = fresh.dataset.tab;
+      const oldBar = document.getElementById('agents-save-bar-dynamic');
+      if (oldBar) oldBar.remove();
+      _renderTabBody();
+    });
+  });
 }
 
 export function startAgents() {
-  if (!app.userId) return;
+  if (!app.currentUserId) return;
   initAgents();
 }
 
@@ -115,7 +130,7 @@ export function stopAgents() {
 
 async function _loadProfile() {
   try {
-    const res = await fetch(`/api/v1/user/profile?user_id=${encodeURIComponent(app.userId)}`);
+    const res = await fetch(`/api/v1/user/profile?user_id=${encodeURIComponent(app.currentUserId)}`);
     if (res.ok) {
       const data = await res.json();
       _userIsAdmin = !!data.is_admin;
@@ -128,7 +143,7 @@ async function _loadProfile() {
 
 async function _loadAgents() {
   try {
-    const res = await fetch(`/api/v1/agents?user_id=${encodeURIComponent(app.userId)}`);
+    const res = await fetch(`/api/v1/agents?user_id=${encodeURIComponent(app.currentUserId)}`);
     if (res.ok) {
       const data = await res.json();
       _agents = data.agents || [];
@@ -140,39 +155,95 @@ async function _loadAgents() {
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
+function _iconColor(agent) {
+  if (agent.access_level === 'admin_only') return 'color-red';
+  const id = (agent.id || '').toLowerCase();
+  if (id.includes('planner') || id.includes('finalizer') || id.includes('opt')) return 'color-purple';
+  if (agent.source === 'custom') return 'color-blue';
+  return 'color-teal';
+}
+
+function _timeAgo(iso) {
+  if (!iso) return '';
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diff < 60)   return 'just now';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
+}
+
 function _renderList() {
-  const list = document.getElementById('agents-list');
-  if (!list) return;
-  list.innerHTML = '';
+  const grid   = document.getElementById('agents-grid');
+  const detail = document.getElementById('agents-card-detail');
+  if (!grid) return;
+
+  // Rescue the detail panel before wiping the grid so it isn't destroyed
+  if (detail && grid.contains(detail)) {
+    grid.after(detail);
+  }
+
+  grid.innerHTML = '';
+
+  if (_agents.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'agents-empty';
+    empty.textContent = 'No agents assigned to this user yet.';
+    grid.appendChild(empty);
+    return;
+  }
 
   for (const agent of _agents) {
-    const item = document.createElement('div');
-    item.className = 'agent-list-item';
-    if (_selected && (_selected.id === agent.id || _selected.user_id === agent.user_id)) {
-      item.classList.add('active');
-    }
+    const isSelected = _selected && _selected.id === agent.id;
+    const isDefault  = agent.is_user_default || agent.id === _defaultAgentId;
 
-    const isDefault = agent.is_user_default || agent.id === _defaultAgentId;
-    const badgeType = agent.access_level === 'admin_only' ? 'admin'
-                    : agent.source === 'custom'            ? 'custom'
-                    : 'system';
+    const badgeType  = agent.access_level === 'admin_only' ? 'admin'
+                     : agent.source === 'custom'            ? 'custom'
+                     : 'system';
     const badgeLabel = agent.access_level === 'admin_only' ? 'Admin'
                      : agent.source === 'custom'            ? 'Custom'
                      : 'System';
 
-    item.innerHTML = `
-      <span class="agent-list-icon">${agent.icon || '🤖'}</span>
-      <div class="agent-list-info">
-        <div class="agent-list-name">${_esc(agent.name || agent.id)}</div>
-        <div class="agent-list-meta">${_esc(agent.description || '')}</div>
+    const toolCount = _toolsForAgent(agent).length;
+    const temp      = agent.temperature != null ? agent.temperature : '—';
+    const turns     = agent.max_turn_count || '—';
+    const model     = agent.model || '';
+    const timeAgo   = _timeAgo(agent.updated_at || agent.created_at || '');
+
+    const card = document.createElement('div');
+    card.className = 'agent-card' + (isSelected ? ' active' : '');
+    card.innerHTML = `
+      <div class="agent-card-top">
+        <div class="agent-card-icon-wrap ${_iconColor(agent)}">
+          ${agent.icon || '🤖'}
+        </div>
+        <div class="agent-card-meta">
+          <div class="agent-card-name-row">
+            <span class="agent-card-name">${_esc(agent.name || agent.id)}</span>
+            <span class="agent-status-dot"></span>
+          </div>
+          ${model ? `<div class="agent-card-model">${_esc(model)}</div>` : ''}
+        </div>
+        <div class="agent-card-badge-wrap">
+          <span class="agent-badge ${badgeType}">${badgeLabel}</span>
+          ${isDefault ? '<span class="agent-badge default">Default</span>' : ''}
+        </div>
       </div>
-      <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-end">
-        <span class="agent-badge ${badgeType}">${badgeLabel}</span>
-        ${isDefault ? '<span class="agent-badge default">Default</span>' : ''}
+      ${agent.description ? `<div class="agent-card-desc">${_esc(agent.description)}</div>` : ''}
+      <div class="agent-card-stats">
+        <span class="agent-stat"><span class="agent-stat-icon">↻</span>${turns} turns</span>
+        <span class="agent-stat"><span class="agent-stat-icon">⋮</span>${temp}</span>
+        <span class="agent-stat"><span class="agent-stat-icon">🔧</span>${toolCount} tools</span>
+        ${timeAgo ? `<span class="agent-stat agent-stat-time"><span class="agent-stat-icon">🕐</span>${timeAgo}</span>` : ''}
       </div>
     `;
-    item.addEventListener('click', () => _selectAgent(agent));
-    list.appendChild(item);
+    card.addEventListener('click', () => _selectAgent(agent));
+
+    // Wrap each card in an .agent-row so the detail panel can live beside
+    // it inside the same container (no grid gap between card and detail).
+    const row = document.createElement('div');
+    row.className = 'agent-row';
+    row.appendChild(card);
+    grid.appendChild(row);
   }
 }
 
@@ -180,19 +251,48 @@ function _selectAgent(agent) {
   _selected = agent;
   _dirty = false;
   _renderList();
+  _openAccordion();
   _renderDetail();
 }
 
-function _renderDetail() {
-  const empty   = document.getElementById('agents-detail-empty');
-  const content = document.getElementById('agents-detail-content');
-  if (!_selected) {
-    if (empty)   empty.style.display = '';
-    if (content) content.style.display = 'none';
-    return;
+function _openAccordion() {
+  const detail = document.getElementById('agents-card-detail');
+  const grid   = document.getElementById('agents-grid');
+  if (!detail || !grid) return;
+
+  // Place the detail panel inside the same .agent-row as the active card
+  // so they share a container with no gap between them.
+  const activeCard = grid.querySelector('.agent-card.active');
+  if (activeCard) {
+    const row = activeCard.closest('.agent-row');
+    if (row) {
+      row.appendChild(detail);
+    } else {
+      activeCard.after(detail);
+    }
+  } else {
+    grid.appendChild(detail);
   }
-  if (empty)   empty.style.display = 'none';
-  if (content) content.style.display = '';
+  detail.classList.remove('hidden');
+}
+
+function _closeAccordion() {
+  const detail = document.getElementById('agents-card-detail');
+  const grid   = document.getElementById('agents-grid');
+  if (detail) {
+    detail.classList.add('hidden');
+    // Move the panel back outside the grid so it isn't destroyed on re-render
+    if (grid && grid.parentElement) {
+      grid.after(detail);
+    }
+  }
+  _selected = null;
+  _renderList();
+}
+
+function _renderDetail() {
+  const content = document.getElementById('agents-detail-content');
+  if (!_selected || !content) return;
 
   // Header
   document.getElementById('agents-detail-icon').textContent    = _selected.icon || '🤖';
@@ -288,9 +388,11 @@ function _renderConfigTab(container) {
 
   // Save bar (only for custom agents)
   if (isEditable) {
+    const existingBar = document.getElementById('agents-save-bar-dynamic');
+    if (existingBar) existingBar.remove();
     const bar = document.createElement('div');
     bar.className = 'agents-save-bar';
-    bar.id = 'agents-save-bar';
+    bar.id = 'agents-save-bar-dynamic';
     const saveBtn = _btn('Save Changes', 'agents-btn primary');
     saveBtn.addEventListener('click', _saveChanges);
     const msg = document.createElement('span');
@@ -298,7 +400,9 @@ function _renderConfigTab(container) {
     msg.id = 'agents-save-msg';
     bar.appendChild(saveBtn);
     bar.appendChild(msg);
-    container.parentElement.parentElement.appendChild(bar);
+    // Append after the body inside agents-detail-content
+    const detailContent = document.getElementById('agents-detail-content');
+    if (detailContent) detailContent.appendChild(bar);
   }
 
   // Change tracking
@@ -365,16 +469,12 @@ function _renderToolsTab(container) {
 function _renderTestTab(container) {
   container.innerHTML = `
     <div id="agents-test-area">
-      <div style="font-size:12px;color:#565f89;line-height:1.5;margin-bottom:4px;">
-        Send a sample message to see how this agent would respond with its current configuration.
-        This runs a real single-turn inference and does not save to any session.
-      </div>
       <div id="agents-test-input-row">
-        <input id="agents-test-input" class="agents-input" placeholder="Type a test message…" />
+        <input id="agents-test-input" class="agents-input" placeholder="Type a test message and press Run to live-test this pipeline…" />
         <button class="agents-btn primary" id="agents-test-run">Run</button>
       </div>
       <div id="agents-test-status"></div>
-      <div id="agents-test-response" style="display:none;"></div>
+      <div id="agents-test-loop" class="agents-test-loop"></div>
     </div>
   `;
 
@@ -382,42 +482,440 @@ function _renderTestTab(container) {
   document.getElementById('agents-test-input').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); _runTest(); }
   });
+
+  // Immediately render the static pipeline diagram (all nodes idle)
+  _drawAgentLoopDiagram(document.getElementById('agents-test-loop'), new Map());
 }
 
 async function _runTest() {
-  const input  = document.getElementById('agents-test-input');
-  const status = document.getElementById('agents-test-status');
-  const resp   = document.getElementById('agents-test-response');
-  if (!input || !status || !resp) return;
+  const input   = document.getElementById('agents-test-input');
+  const status  = document.getElementById('agents-test-status');
+  const loopEl  = document.getElementById('agents-test-loop');
+  if (!input || !status || !loopEl) return;
 
   const msg = input.value.trim();
   if (!msg) return;
 
-  const agentId = _selected.source === 'custom' ? _selected.id : _selected.id;
   status.textContent = '⏳ Running…';
-  resp.style.display = 'none';
-  resp.textContent   = '';
+  // Show all nodes in "active" state while waiting
+  _drawAgentLoopDiagram(loopEl, new Map([
+    ['user_input', 'active'], ['load_context', 'active'],
+    ['memory_search', 'active'], ['build_prompt', 'active'], ['llm_call', 'active'],
+  ]));
 
   try {
     const res = await fetch('/api/v1/agents/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: app.userId, agent_id: agentId, message: msg }),
+      body: JSON.stringify({ user_id: app.currentUserId, agent_id: _selected.id, message: msg }),
     });
     const data = await res.json();
-    status.textContent = res.ok ? '✓ Response received' : `Error ${res.status}`;
-    resp.textContent   = data.reply || data.detail || JSON.stringify(data);
-    resp.style.display = '';
+
+    if (!res.ok) {
+      status.innerHTML = `Error ${res.status}: ${data.detail || 'unknown'} &nbsp; <button class="agents-blueprint-back agents-blueprint-back-inline" id="agents-blueprint-reset">← Blueprint</button>`;
+      document.getElementById('agents-blueprint-reset')?.addEventListener('click', () => {
+        status.textContent = '';
+        _drawAgentLoopDiagram(loopEl, new Map());
+      });
+      _drawAgentLoopDiagram(loopEl, new Map([['llm_call', 'error']]));
+      return;
+    }
+
+    const rows = data.interactions || [];
+    const nodeStates = _interactionsToNodeStates(rows);
+    _drawAgentLoopDiagram(loopEl, nodeStates);
+
+    const stepCount = rows.length;
+    status.innerHTML = `✓ Complete — ${stepCount} step(s) &nbsp; <button class="agents-blueprint-back agents-blueprint-back-inline" id="agents-blueprint-reset">← Blueprint</button>`;
+    document.getElementById('agents-blueprint-reset')?.addEventListener('click', () => {
+      status.textContent = '';
+      _drawAgentLoopDiagram(loopEl, new Map());
+    });
   } catch (e) {
-    status.textContent = `Error: ${e.message}`;
+    status.innerHTML = `Error: ${_esc(e.message)} &nbsp; <button class="agents-blueprint-back agents-blueprint-back-inline" id="agents-blueprint-reset">← Blueprint</button>`;
+    document.getElementById('agents-blueprint-reset')?.addEventListener('click', () => {
+      status.textContent = '';
+      _drawAgentLoopDiagram(loopEl, new Map());
+    });
+    _drawAgentLoopDiagram(loopEl, new Map([['llm_call', 'error']]));
   }
+}
+
+// ── Agent loop diagram — matches the dedicated Loop View tab ──────────────────
+
+const _LV_W = 1120;
+const _LV_H = 295;
+
+const _LV_STAGES = [
+  { label: 'INPUT',     x1: 0,    x2: 118,  color: '#7dcfff' },
+  { label: 'CONTEXT',   x1: 126,  x2: 306,  color: '#c0caf5' },
+  { label: 'INFERENCE', x1: 314,  x2: 466,  color: '#bb9af7' },
+  { label: 'ROUTING',   x1: 474,  x2: 664,  color: '#e0af68' },
+  { label: 'EXECUTION', x1: 672,  x2: 826,  color: '#a9b1d6' },
+  { label: 'CONTINUE?', x1: 834,  x2: 966,  color: '#e0af68' },
+  { label: 'OUTPUT',    x1: 974,  x2: 1120, color: '#9ece6a' },
+];
+
+const _LV_NODES = [
+  { id: 'user_input',     label: 'User Input',     type: 'input',    cx: 59,   cy: 150, hw: 52, hh: 18 },
+  { id: 'load_context',   label: 'Load Context',   type: 'process',  cx: 216,  cy: 112, hw: 62, hh: 14 },
+  { id: 'memory_search',  label: 'Memory Search',  type: 'process',  cx: 216,  cy: 150, hw: 62, hh: 14 },
+  { id: 'build_prompt',   label: 'Build Prompt',   type: 'process',  cx: 216,  cy: 188, hw: 62, hh: 14 },
+  { id: 'llm_call',       label: 'LLM Call',       type: 'llm',      cx: 390,  cy: 150, hw: 55, hh: 20 },
+  { id: 'validate_tools', label: 'Validate',       type: 'process',  cx: 569,  cy: 122, hw: 62, hh: 14 },
+  { id: 'guardrails',     label: 'Guardrails',     type: 'guard',    cx: 569,  cy: 165, hw: 62, hh: 14 },
+  { id: 'execute_tools',  label: 'Execute Tools',  type: 'process',  cx: 749,  cy: 150, hw: 62, hh: 18 },
+  { id: 'check_continue', label: 'Continue?',      type: 'decision', cx: 900,  cy: 150, hw: 58, hh: 18 },
+  { id: 'final_response', label: 'Final Response', type: 'output',   cx: 1047, cy: 115, hw: 63, hh: 14 },
+  { id: 'memory_save',    label: 'Memory Save',    type: 'process',  cx: 1047, cy: 162, hw: 63, hh: 14 },
+];
+
+const _LV_EDGES = [
+  { from: 'user_input',     to: 'load_context'   },
+  { from: 'user_input',     to: 'memory_search'  },
+  { from: 'user_input',     to: 'build_prompt'   },
+  { from: 'load_context',   to: 'llm_call'       },
+  { from: 'memory_search',  to: 'llm_call'       },
+  { from: 'build_prompt',   to: 'llm_call'       },
+  { from: 'llm_call',       to: 'validate_tools', label: 'tools?' },
+  { from: 'llm_call',       to: 'check_continue', label: 'no tools', above: true },
+  { from: 'validate_tools', to: 'guardrails',     label: 'valid', vertical: true },
+  { from: 'guardrails',     to: 'execute_tools',  label: 'pass'  },
+  { from: 'guardrails',     to: 'check_continue', label: 'blocked', below: true },
+  { from: 'execute_tools',  to: 'llm_call',       label: '↺ loop',     loopback: 245 },
+  { from: 'check_continue', to: 'final_response', label: 'stop'  },
+  { from: 'check_continue', to: 'llm_call',       label: '↺ continue', loopback: 278 },
+  { from: 'final_response', to: 'memory_save',    vertical: true },
+];
+
+function _lvEdgePath(edge) {
+  const src = _LV_NODES.find(n => n.id === edge.from);
+  const dst = _LV_NODES.find(n => n.id === edge.to);
+  if (!src || !dst) return null;
+  if (edge.vertical) {
+    const x = src.cx, y1 = src.cy + src.hh, y2 = dst.cy - dst.hh;
+    return { d: `M ${x} ${y1} L ${x} ${y2}`, labelX: x + 14, labelY: (y1 + y2) / 2 + 4 };
+  }
+  if (edge.above) {
+    const arcY = 40, x1 = src.cx + src.hw, y1 = src.cy, x2 = dst.cx - dst.hw, y2 = dst.cy;
+    return { d: `M ${x1} ${y1} C ${x1} ${arcY}, ${x2} ${arcY}, ${x2} ${y2}`,
+             labelX: (x1 + x2) / 2, labelY: arcY - 6 };
+  }
+  if (edge.below) {
+    const arcY = 218, x1 = src.cx + src.hw, y1 = src.cy, x2 = dst.cx - dst.hw, y2 = dst.cy;
+    return { d: `M ${x1} ${y1} C ${x1} ${arcY}, ${x2} ${arcY}, ${x2} ${y2}`,
+             labelX: (x1 + x2) / 2, labelY: arcY + 12 };
+  }
+  if (edge.loopback) {
+    const arcY = edge.loopback, x1 = src.cx, y1 = src.cy + src.hh, x2 = dst.cx, y2 = dst.cy + dst.hh;
+    return { d: `M ${x1} ${y1} C ${x1} ${arcY}, ${x2} ${arcY}, ${x2} ${y2}`,
+             labelX: (x1 + x2) / 2, labelY: arcY + 11 };
+  }
+  const x1 = src.cx + src.hw, y1 = src.cy, x2 = dst.cx - dst.hw, y2 = dst.cy, mx = (x1 + x2) / 2;
+  return { d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`,
+           labelX: mx, labelY: (y1 < y2 ? y1 : y2) - 5 };
+}
+
+let _lvActivePanelEl = null;
+let _lvActivePanelNodeId = null;
+
+function _lvHidePanel() {
+  if (_lvActivePanelEl) { _lvActivePanelEl.remove(); _lvActivePanelEl = null; }
+  _lvActivePanelNodeId = null;
+  document.removeEventListener('click', _lvHidePanel);
+}
+
+/**
+ * Draw the same horizontal swimlane diagram shown in the dedicated Loop View.
+ * nodeStates = Map<nodeId, 'active'|'done'|'error'> — pass new Map() for the
+ * static blueprint (all nodes idle), or a populated map after a test run.
+ */
+function _drawAgentLoopDiagram(loopEl, nodeStates) {
+  loopEl.innerHTML = '';
+  _lvHidePanel();
+
+  const root = document.createElement('div');
+  root.style.cssText = `position:relative;width:${_LV_W}px;min-height:${_LV_H}px;flex-shrink:0;`;
+  loopEl.appendChild(root);
+
+  // ── SVG layer: stage bands, dividers, labels, arrows ──
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('width',   _LV_W);
+  svg.setAttribute('height',  _LV_H);
+  svg.setAttribute('viewBox', `0 0 ${_LV_W} ${_LV_H}`);
+  svg.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:0;overflow:visible;';
+  root.appendChild(svg);
+
+  // Arrowhead markers (unique IDs so they don't clash with the loop-view tab)
+  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+  defs.innerHTML = `
+    <marker id="ag-ah"        markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#3a3a5a"/></marker>
+    <marker id="ag-ah-active" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#7dcfff"/></marker>
+    <marker id="ag-ah-done"   markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#9ece6a"/></marker>
+  `;
+  svg.appendChild(defs);
+
+  // Stage column backgrounds, dividers, labels
+  _LV_STAGES.forEach((stage, i) => {
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x', stage.x1 + 1);
+    rect.setAttribute('y', 28);
+    rect.setAttribute('width', stage.x2 - stage.x1 - 2);
+    rect.setAttribute('height', 252);
+    rect.setAttribute('fill', i % 2 === 0 ? '#ffffff03' : '#00000008');
+    rect.setAttribute('rx', '3');
+    svg.appendChild(rect);
+
+    if (i > 0) {
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      line.setAttribute('x1', stage.x1); line.setAttribute('y1', 28);
+      line.setAttribute('x2', stage.x1); line.setAttribute('y2', 280);
+      line.setAttribute('stroke', '#1e2035'); line.setAttribute('stroke-width', '1');
+      svg.appendChild(line);
+    }
+
+    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    text.setAttribute('x', (stage.x1 + stage.x2) / 2);
+    text.setAttribute('y', 20);
+    text.setAttribute('text-anchor', 'middle');
+    text.setAttribute('class', 'lv-stage-label');
+    text.setAttribute('fill', stage.color);
+    text.setAttribute('fill-opacity', '0.45');
+    text.textContent = stage.label;
+    svg.appendChild(text);
+  });
+
+  // Edges
+  for (const edge of _LV_EDGES) {
+    const fromState = nodeStates.get(edge.from);
+    const toState   = nodeStates.get(edge.to);
+    let edgeState = '';
+    if (fromState === 'done' && (toState === 'done' || toState === 'active')) edgeState = 'done';
+    else if (fromState === 'active' || fromState === 'done') edgeState = 'active';
+
+    const pi = _lvEdgePath(edge);
+    if (!pi) continue;
+
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', pi.d);
+    path.setAttribute('fill', 'none');
+    let cls = 'lv-arrow';
+    if (edge.above || edge.loopback || edge.below) cls += ' lv-arrow-alt';
+    if (edgeState === 'done')        cls += ' lv-arrow-done';
+    else if (edgeState === 'active') cls += ' lv-arrow-active';
+    path.setAttribute('class', cls);
+    const mSuffix = edgeState === 'done' ? '-done' : edgeState === 'active' ? '-active' : '';
+    path.setAttribute('marker-end', `url(#ag-ah${mSuffix})`);
+    svg.appendChild(path);
+
+    if (edge.label) {
+      const lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      lbl.setAttribute('x', pi.labelX); lbl.setAttribute('y', pi.labelY);
+      lbl.setAttribute('text-anchor', 'middle');
+      lbl.setAttribute('class', edgeState ? 'lv-arrow-label lv-arrow-label-active' : 'lv-arrow-label');
+      lbl.textContent = edge.label;
+      svg.appendChild(lbl);
+    }
+  }
+
+  // HTML nodes (absolutely positioned on top of SVG)
+  for (const nd of _LV_NODES) {
+    const state = nodeStates.get(nd.id) || '';
+    const el = document.createElement('div');
+    el.className = `lv-node lv-type-${nd.type}`;
+    if (state === 'active')      el.classList.add('lv-active');
+    else if (state === 'done')   el.classList.add('lv-done');
+    else if (state === 'error')  el.classList.add('lv-error');
+
+    el.style.left   = (nd.cx - nd.hw) + 'px';
+    el.style.top    = (nd.cy - nd.hh) + 'px';
+    el.style.width  = (nd.hw * 2) + 'px';
+    el.style.height = (nd.hh * 2) + 'px';
+    el.style.cursor = 'pointer';
+
+    const label = document.createElement('span');
+    label.className = 'lv-node-label';
+    label.textContent = nd.label;
+    el.appendChild(label);
+
+    const detail = document.createElement('div');
+    detail.className = 'lv-node-detail';
+    detail.textContent = _lvNodeHint(nd);
+    el.appendChild(detail);
+
+    el.addEventListener('click', e => {
+      e.stopPropagation();
+      if (_lvActivePanelNodeId === nd.id) { _lvHidePanel(); return; }
+      _lvShowPanel(nd, el, root);
+    });
+
+    root.appendChild(el);
+  }
+
+  // Dismiss panel on click outside nodes
+  root.addEventListener('click', () => _lvHidePanel());
+}
+
+function _lvNodeHint(nd) {
+  if (!_selected) return '';
+  switch (nd.id) {
+    case 'user_input':     return 'User message enters the pipeline';
+    case 'load_context': {
+      const pf = ['agent_prompt','user_prompt','skills_prompt','tasks_prompt','misc_prompt'];
+      const n = pf.filter(f => _selected[f] && String(_selected[f]).trim()).length;
+      return `${n} of 5 prompt sections configured`;
+    }
+    case 'memory_search':  return 'Semantic search over past interactions';
+    case 'build_prompt':   return 'Assembles system prompt from context sections';
+    case 'llm_call':       return `Model: ${_selected.model || 'claude-3-5-sonnet'}`;
+    case 'validate_tools': return 'Validates requested tool calls';
+    case 'guardrails':     return 'Safety checks before tool execution';
+    case 'execute_tools':  return `${_toolsForAgent(_selected).length} tools — click for list`;
+    case 'check_continue': return `Max turns: ${_selected.max_turn_count || 10}`;
+    case 'final_response': return 'Final reply delivered to user';
+    case 'memory_save':    return 'Key facts stored for future sessions';
+    default: return '';
+  }
+}
+
+function _lvShowPanel(nd, nodeEl, container) {
+  _lvHidePanel();
+  if (!_selected) return;
+
+  const PANEL_W = 310;
+  let left = nd.cx - PANEL_W / 2;
+  const top  = nd.cy + nd.hh + 10;
+  left = Math.max(4, Math.min(left, _LV_W - PANEL_W - 4));
+
+  const panel = document.createElement('div');
+  panel.className = 'lv-tool-panel';
+  panel.style.cssText = `left:${left}px;top:${top}px;width:${PANEL_W}px;`;
+
+  const header = document.createElement('div');
+  header.className = 'lv-tool-panel-header';
+  const title = document.createElement('span');
+  title.className = 'lv-tool-panel-title';
+  title.textContent = nd.label;
+  const close = document.createElement('button');
+  close.className = 'lv-tool-panel-close';
+  close.textContent = '✕';
+  close.addEventListener('click', e => { e.stopPropagation(); _lvHidePanel(); });
+  header.appendChild(title);
+  header.appendChild(close);
+  panel.appendChild(header);
+
+  const list = document.createElement('div');
+  list.className = 'lv-tool-panel-list';
+
+  if (nd.id === 'execute_tools') {
+    // Show this agent's exact tools
+    _toolsForAgent(_selected).forEach(name => {
+      _lvAppendItem(list, {
+        name,
+        type: DESTRUCTIVE.has(name) ? 'guarded' : 'tool',
+        desc: TOOL_DESCRIPTIONS[name] || '',
+      });
+    });
+  } else if (nd.id === 'llm_call') {
+    _lvAppendItem(list, { name: _selected.model || 'claude-3-5-sonnet', type: 'tool', desc: 'LLM model for this agent' });
+    _lvAppendItem(list, { name: `Max ${_selected.max_turn_count || 10} turns`, type: 'tool', desc: 'Tool-calling turn limit per session' });
+  } else if (nd.id === 'load_context' || nd.id === 'build_prompt') {
+    [
+      { key: 'agent_prompt',  label: 'Identity & Personality' },
+      { key: 'user_prompt',   label: 'User Preferences' },
+      { key: 'skills_prompt', label: 'Skills & Tools' },
+      { key: 'tasks_prompt',  label: 'Task Workflows' },
+      { key: 'misc_prompt',   label: 'Miscellaneous' },
+    ].forEach(f => {
+      const val = _selected[f.key];
+      const filled = val && String(val).trim();
+      _lvAppendItem(list, {
+        name: f.label,
+        type: filled ? 'tool' : 'command',
+        desc: filled ? String(val).trim().substring(0, 90) + '…' : '(empty — configure in Config tab)',
+      });
+    });
+  } else if (nd.id === 'check_continue') {
+    _lvAppendItem(list, { name: `Max turns: ${_selected.max_turn_count || 10}`, type: 'tool',
+      desc: 'Agent stops looping after this many tool-calling turns' });
+  } else {
+    const hint = _lvNodeHint(nd);
+    if (hint) _lvAppendItem(list, { name: nd.label, type: 'tool', desc: hint });
+  }
+
+  panel.appendChild(list);
+  container.appendChild(panel);
+  _lvActivePanelNodeId = nd.id;
+  _lvActivePanelEl = panel;
+
+  setTimeout(() => document.addEventListener('click', _lvHidePanel, { once: true }), 0);
+}
+
+function _lvAppendItem(listEl, tool) {
+  const BADGE_LABELS = { command: 'empty', tool: 'tool', guarded: '🛡 guarded' };
+  const item = document.createElement('div');
+  item.className = `lv-tool-item lv-tool-${tool.type}`;
+
+  const nameRow = document.createElement('div');
+  nameRow.className = 'lv-tool-name-row';
+  const badge = document.createElement('span');
+  badge.className = `lv-tool-badge lv-badge-${tool.type}`;
+  badge.textContent = BADGE_LABELS[tool.type] || tool.type;
+  const name = document.createElement('span');
+  name.className = 'lv-tool-name';
+  name.textContent = tool.name;
+  nameRow.appendChild(badge);
+  nameRow.appendChild(name);
+
+  const desc = document.createElement('div');
+  desc.className = 'lv-tool-desc';
+  desc.textContent = tool.desc;
+
+  item.appendChild(nameRow);
+  item.appendChild(desc);
+  listEl.appendChild(item);
+}
+
+/** Convert DB interaction rows → nodeStates map for the diagram. */
+function _interactionsToNodeStates(rows) {
+  const s = new Map();
+  for (const row of rows) {
+    const role = row.role || '';
+    const toolName = row.tool_name || '';
+    if (role === 'user') {
+      s.set('user_input', 'done');
+      s.set('load_context', 'done');
+      s.set('memory_search', 'done');
+      s.set('build_prompt', 'done');
+    } else if (role === 'assistant') {
+      s.set('llm_call', 'done');
+      s.set('validate_tools', 'done');
+      s.set('check_continue', 'done');
+      s.set('final_response', 'done');
+    } else if (role === 'tool') {
+      if (toolName === 'memory_search') {
+        s.set('memory_search', 'done');
+      } else if (toolName === 'memory_save') {
+        s.set('memory_save', 'done');
+      } else {
+        let meta = {};
+        try { meta = JSON.parse(row.metadata || '{}'); } catch (_) {}
+        const success = meta.success !== false;
+        s.set('validate_tools', 'done');
+        s.set('guardrails', 'done');
+        s.set('execute_tools', success ? 'done' : 'error');
+        s.set('check_continue', 'done');
+      }
+    }
+  }
+  return s;
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 
 async function _saveChanges() {
   if (!_selected || _selected.source !== 'custom') return;
-  const msg = document.getElementById('agents-save-msg');
+  const msg = document.getElementById('agents-save-msg'); // lives inside agents-save-bar-dynamic
   if (msg) { msg.textContent = ''; msg.className = 'agents-save-msg'; }
 
   const updates = {};
@@ -438,7 +936,7 @@ async function _saveChanges() {
     const res = await fetch(`/api/v1/agents/${_selected.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: app.userId, ...updates }),
+      body: JSON.stringify({ user_id: app.currentUserId, ...updates }),
     });
     const data = await res.json();
     if (res.ok) {
@@ -462,7 +960,7 @@ async function _setDefault() {
     const res = await fetch(`/api/v1/agents/${_selected.id}/set-default`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: app.userId }),
+      body: JSON.stringify({ user_id: app.currentUserId }),
     });
     if (res.ok) {
       _defaultAgentId = _selected.id;
@@ -481,7 +979,7 @@ async function _deleteAgent() {
 
   try {
     const res = await fetch(
-      `/api/v1/agents/${_selected.id}?user_id=${encodeURIComponent(app.userId)}`,
+      `/api/v1/agents/${_selected.id}?user_id=${encodeURIComponent(app.currentUserId)}`,
       { method: 'DELETE' }
     );
     if (res.ok) {
@@ -498,18 +996,20 @@ async function _deleteAgent() {
 // ── Create modal ──────────────────────────────────────────────────────────────
 
 function _bindCreateModal() {
-  const newBtn   = document.getElementById('btn-new-agent');
-  const modal    = document.getElementById('agents-create-modal');
-  const cancelBtn = document.getElementById('agents-create-cancel');
-  const createBtn = document.getElementById('agents-create-confirm');
+  const newBtn      = document.getElementById('btn-new-agent');
+  const modal       = document.getElementById('agents-create-modal');
+  const cancelBtn   = document.getElementById('btn-create-cancel');
+  const createBtn   = document.getElementById('btn-create-confirm');
+  const collapseBtn = document.getElementById('btn-collapse-detail');
 
-  if (newBtn)    newBtn.addEventListener('click', () => modal && modal.classList.remove('hidden'));
-  if (cancelBtn) cancelBtn.addEventListener('click', () => modal && modal.classList.add('hidden'));
+  if (collapseBtn) collapseBtn.addEventListener('click', _closeAccordion);
+  if (newBtn)      newBtn.addEventListener('click', () => modal && modal.classList.remove('hidden'));
+  if (cancelBtn)   cancelBtn.addEventListener('click', () => modal && modal.classList.add('hidden'));
 
   if (createBtn) {
     createBtn.addEventListener('click', async () => {
       const nameEl = document.getElementById('agents-create-name');
-      const descEl = document.getElementById('agents-create-description');
+      const descEl = document.getElementById('agents-create-desc');
       const name   = nameEl ? nameEl.value.trim() : '';
       if (!name) { nameEl && nameEl.focus(); return; }
 
@@ -518,7 +1018,7 @@ function _bindCreateModal() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            user_id: app.userId,
+            user_id: app.currentUserId,
             name,
             description: descEl ? descEl.value.trim() : '',
           }),
@@ -541,19 +1041,7 @@ function _bindCreateModal() {
   }
 }
 
-// ── Tab switching ─────────────────────────────────────────────────────────────
-
-export function initAgentTabs() {
-  document.querySelectorAll('.agents-detail-tab').forEach(btn => {
-    btn.addEventListener('click', () => {
-      _activeTab = btn.dataset.tab;
-      // Remove stale save bar if switching away from config
-      const oldBar = document.getElementById('agents-save-bar');
-      if (oldBar) oldBar.remove();
-      _renderTabBody();
-    });
-  });
-}
+// ── Tab switching (bound inside _bindDetailTabs, called from initAgents) ─────
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 

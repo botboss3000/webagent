@@ -65,8 +65,7 @@ class TestAgentRequest(BaseModel):
 
 def _safe_agent(agent: dict) -> dict:
     """Strip locked/internal fields before returning to client."""
-    HIDDEN = {"system_prompt", "bootstrap_tools", "model", "provider",
-              "temperature", "max_tokens", "metadata"}
+    HIDDEN = {"system_prompt", "bootstrap_tools", "provider", "max_tokens", "metadata"}
     return {k: v for k, v in agent.items() if k not in HIDDEN}
 
 
@@ -113,16 +112,18 @@ async def list_agent_templates(
 @router.get("/agents")
 async def list_agents(user_id: str = Query(...)):
     """
-    List all agents visible to the user:
-    - System agent templates (non-pipeline)
-    - User's own custom agents
-    Admin-only templates are included only for admin users.
-    Each entry includes a 'source' field: 'template' or 'custom'.
+    List agents from the agents table that are assigned to the user
+    (user_id = this user or owner_user_id = this user).
+    System templates are excluded — only actual agent rows are returned.
+    Each entry includes a 'source' field: 'custom'.
     """
     db = get_db()
     is_admin = await db.is_user_admin(user_id)
-    agents = await db.list_agents_for_user(user_id, include_admin=is_admin)
-    return {"agents": [_safe_agent(a) for a in agents]}
+    all_agents = await db.list_agents_for_user(user_id, include_admin=is_admin)
+    # Only return rows that came from the agents table (source='custom'),
+    # not system template entries.
+    user_agents = [a for a in all_agents if a.get("source") == "custom"]
+    return {"agents": [_safe_agent(a) for a in user_agents]}
 
 
 @router.post("/agents")
@@ -256,4 +257,25 @@ async def test_agent(req: TestAgentRequest):
         db=db,
         agent_template_id=target.get("template_id") or target.get("id"),
     )
-    return {"reply": result, "session_id": test_session_id}
+
+    # Fetch the interactions stored during this test run so the UI can render
+    # a pipeline loop without a separate round-trip (avoids session-ownership checks).
+    interactions: List[Dict[str, Any]] = []
+    try:
+        import sqlite3 as _sqlite3
+        from pathlib import Path as _Path
+        _db_path = _Path(__file__).resolve().parent.parent / "db" / "local.db"
+        if _db_path.exists():
+            _conn = _sqlite3.connect(str(_db_path))
+            _conn.row_factory = _sqlite3.Row
+            _rows = _conn.execute(
+                "SELECT id, session_id, role, content, tool_name, metadata, created_at "
+                "FROM interactions WHERE session_id = ? ORDER BY created_at ASC",
+                (test_session_id,),
+            ).fetchall()
+            _conn.close()
+            interactions = [dict(r) for r in _rows]
+    except Exception:
+        pass  # frontend falls back to plain reply display
+
+    return {"reply": result, "session_id": test_session_id, "interactions": interactions}
