@@ -85,7 +85,7 @@
 .agent-card.active { border-color: #7aa2f7; background: #13132e; }
 
 /* When the detail panel is open inside the same row, flatten the connecting edges */
-.agent-row #agents-card-detail {
+.agent-row .agent-detail-panel {
   border-top: none;
   border-top-left-radius: 0;
   border-top-right-radius: 0;
@@ -195,45 +195,58 @@
 .agent-badge.admin   { background: #2a1a1a; color: #f7768e; border: 1px solid #4a2a2a; }
 .agent-badge.default { background: #1a2a2a; color: #7dcfff; border: 1px solid #2a4a4a; }
 
-/* ── Inline expand panel ── */
-#agents-card-detail {
+/* ── Inline card action buttons (Set Default / Delete) ── */
+.agent-card-action-btn {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  font-family: inherit;
+  transition: opacity 0.15s, background 0.15s;
+}
+.agent-card-action-btn.set-default-btn {
+  background: #1a2a2a;
+  color: #7dcfff;
+  border: 1px solid #2a4a4a;
+}
+.agent-card-action-btn.set-default-btn:hover {
+  background: #223a3a;
+}
+.agent-card-action-btn.delete-btn {
+  background: #2a1a1a;
+  color: #f7768e;
+  border: 1px solid #4a2a2a;
+}
+.agent-card-action-btn.delete-btn:hover {
+  background: #3a1a1a;
+}
+
+body.light-mode .agent-card-action-btn.set-default-btn { background: #e6f8ff; color: #2288aa; border-color: #b8e8f8; }
+body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; color: #cc3333; border-color: #ffcccc; }
+
+/* ── Per-row inline expand panel ── */
+.agent-detail-panel {
   background: #0f0f22;
   border: 1px solid #7aa2f7;
   border-radius: 10px;
   overflow: hidden;
   animation: agents-expand 0.18s ease;
 }
-#agents-card-detail.hidden { display: none; }
 
 @keyframes agents-expand {
   from { opacity: 0; transform: translateY(-6px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 
-#agents-detail-content {
+.agent-detail-content {
   display: flex;
   flex-direction: column;
   height: 520px;
   min-height: 0;
 }
 
-#agents-detail-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 16px 18px 12px;
-  border-bottom: 1px solid #2a2a4a;
-  flex-shrink: 0;
-}
-#agents-detail-icon { font-size: 22px; }
-#agents-detail-title-area { flex: 1; min-width: 0; }
-#agents-detail-name {
-  font-size: 15px;
-  font-weight: 700;
-  color: #c0caf5;
-}
-#agents-detail-description { font-size: 12px; color: #565f89; margin-top: 3px; }
-#agents-detail-actions { display: flex; gap: 7px; align-items: center; flex-shrink: 0; }
 
 .agents-btn {
   background: #1a1a3a;
@@ -253,7 +266,7 @@
 .agents-btn.danger:hover { background: #2a1a1a; }
 .agents-btn.default-active { border-color: #7dcfff; color: #7dcfff; background: #1a2a2a; }
 
-#agents-detail-tabs {
+.agent-detail-tabs {
   display: flex;
   border-bottom: 1px solid #2a2a4a;
   padding: 0 18px;
@@ -275,7 +288,7 @@
 .agents-detail-tab:hover { color: #c0caf5; }
 .agents-detail-tab.active { color: #7aa2f7; border-bottom-color: #7aa2f7; }
 
-#agents-detail-body {
+.agent-detail-body {
   flex: 1;
   min-height: 0; /* required for overflow-y: auto to work inside a flex child */
   overflow-y: auto;
@@ -283,8 +296,8 @@
   scrollbar-width: thin;
   scrollbar-color: #2a2a4a transparent;
 }
-#agents-detail-body::-webkit-scrollbar { width: 5px; }
-#agents-detail-body::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+.agent-detail-body::-webkit-scrollbar { width: 5px; }
+.agent-detail-body::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
 
 /* ── Config fields ── */
 .agents-field-group { margin-bottom: 20px; }
@@ -358,15 +371,15 @@
 .agents-tool-badge.safe        { background: #1a2a1a; color: #9ece6a; border: 1px solid #2a4a2a; }
 
 /* ── Test tab ── */
-#agents-test-area {
+.agents-test-area {
   display: flex;
   flex-direction: column;
   gap: 8px;
   height: 100%;   /* fill the scrollable body so the loop can take remaining space */
   min-height: 0;
 }
-#agents-test-input-row { display: flex; gap: 8px; flex-shrink: 0; }
-#agents-test-input {
+.agents-test-input-row { display: flex; gap: 8px; flex-shrink: 0; }
+.agents-test-input {
   flex: 1;
   background: #1a1a2e;
   border: 1px solid #2a2a4a;
@@ -376,8 +389,8 @@
   font-size: 13px;
   padding: 8px 12px;
 }
-#agents-test-input:focus { outline: none; border-color: #7aa2f7; }
-#agents-test-status { font-size: 11px; color: #565f89; min-height: 14px; flex-shrink: 0; }
+.agents-test-input:focus { outline: none; border-color: #7aa2f7; }
+.agents-test-status { font-size: 11px; color: #565f89; min-height: 14px; flex-shrink: 0; }
 
 /* Loop diagram panel — scrollable in both axes to fit 1120px canvas */
 .agents-test-loop {
@@ -412,8 +425,8 @@
 }
 
 /* Light mode */
-body.light-mode #agents-test-input              { background: #fffaf5; border-color: #ffdec4; color: #3d2c2e; }
-body.light-mode #agents-test-input:focus        { border-color: #ff8c42; }
+body.light-mode .agents-test-input              { background: #fffaf5; border-color: #ffdec4; color: #3d2c2e; }
+body.light-mode .agents-test-input:focus        { border-color: #ff8c42; }
 body.light-mode .agents-test-loop               { background: #f5f5f5; border-color: #ffdec4; }
 body.light-mode .agents-blueprint-back-inline   { border-color: #ffdec4; color: #c06030; }
 body.light-mode .agents-blueprint-back-inline:hover { background: #fff2e6; }
@@ -463,7 +476,7 @@ body.light-mode .agent-card           { background: #fff7f0; border-color: #ffde
 body.light-mode .agent-card:hover     { background: #fff2e6; border-color: #ffb880; }
 body.light-mode .agent-card.active    { border-color: #ff8c42; }
 body.light-mode .agent-row .agent-card.active { border-bottom-color: #ffdec4; }
-body.light-mode #agents-card-detail   { background: #fff7f0; border-color: #ff8c42; }
+body.light-mode .agent-detail-panel   { background: #fff7f0; border-color: #ff8c42; }
 body.light-mode .agent-card-name      { color: #3d2c2e; }
 body.light-mode .agent-card-model     { color: #b09080; }
 body.light-mode .agent-card-desc      { color: #7a5a4a; }
@@ -472,16 +485,13 @@ body.light-mode .agent-badge.system   { background: #f0fff0; color: #3a7a3a; bor
 body.light-mode .agent-badge.custom   { background: #fff2e6; color: #cc6a28; border-color: #ffdec4; }
 body.light-mode .agent-badge.admin    { background: #fff0f0; color: #cc3333; border-color: #ffcccc; }
 body.light-mode .agent-badge.default  { background: #e6f8ff; color: #2288aa; border-color: #b8e8f8; }
-body.light-mode #agents-drawer-panel  { background: #fff7f0; border-left-color: #ffdec4; }
-body.light-mode #agents-detail-header { border-bottom-color: #ffdec4; }
-body.light-mode #agents-detail-name   { color: #3d2c2e; }
-body.light-mode #agents-detail-description { color: #b09580; }
+
 body.light-mode .agents-btn           { background: #fffaf5; border-color: #ffdec4; color: #3d2c2e; }
 body.light-mode .agents-btn:hover     { background: #ffeee0; border-color: #ff8c42; }
 body.light-mode .agents-btn.primary   { background: #fff2e6; border-color: #ff8c42; color: #cc6a28; }
 body.light-mode .agents-btn.danger    { border-color: #cc3333; color: #cc3333; }
 body.light-mode .agents-btn.default-active { border-color: #2288aa; color: #2288aa; background: #e6f8ff; }
-body.light-mode #agents-detail-tabs   { border-bottom-color: #ffdec4; }
+body.light-mode .agent-detail-tabs    { border-bottom-color: #ffdec4; }
 body.light-mode .agents-detail-tab    { color: #b09580; }
 body.light-mode .agents-detail-tab.active { color: #ff8c42; border-bottom-color: #ff8c42; }
 body.light-mode .agents-field-label   { color: #cc6a28; }

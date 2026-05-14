@@ -392,33 +392,7 @@
       <!-- Card grid -->
       <div id="agents-grid"></div>
 
-      <!-- Inline expand panel — JS moves this after the clicked card -->
-      <div id="agents-card-detail" class="hidden">
-        <div id="agents-detail-content">
-          <div id="agents-detail-header">
-            <span id="agents-detail-icon"></span>
-            <div id="agents-detail-title-area">
-              <div id="agents-detail-name"></div>
-              <div id="agents-detail-description"></div>
-            </div>
-            <div id="agents-detail-actions">
-              <button class="agents-btn default-active" id="btn-set-default" style="display:none;">&#9733; Set Default</button>
-              <button class="agents-btn danger" id="btn-delete-agent" style="display:none;">Delete</button>
-              <button class="agents-btn" id="btn-collapse-detail">&#8963; Collapse</button>
-            </div>
-          </div>
-          <div id="agents-detail-tabs">
-            <button class="agents-detail-tab active" data-tab="config">Config</button>
-            <button class="agents-detail-tab" data-tab="tools">Tools</button>
-            <button class="agents-detail-tab" data-tab="test">Agent Loop</button>
-          </div>
-          <div id="agents-detail-body"></div>
-          <div class="agents-save-bar" id="agents-save-bar" style="display:none;">
-            <button class="agents-btn primary" id="btn-save-agent">Save Changes</button>
-            <span class="agents-save-msg" id="agents-save-msg"></span>
-          </div>
-        </div>
-      </div>
+      <!-- Per-agent inline panels are generated dynamically by agents.js -->
       <div id="agents-create-modal" class="hidden">
         <div id="agents-create-box">
           <h3>New Agent</h3>
@@ -440,13 +414,13 @@
     <div id="tab-database" class="tab-content">
       <div id="db-viewer">
         <div id="db-toolbar" style="display:none;">
-          <button id="db-show-hidden-btn" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#565f89;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;margin-left:auto;">👁 Hide hidden</button>
+          <button id="db-show-hidden-btn" style="background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-3);padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;margin-left:auto;">👁 Hide hidden</button>
           <span id="db-auto-status"></span>
         </div>
         <div id="db-panel">
-          <div style="width:180px;min-width:140px;border-right:1px solid #2a2a4a;display:flex;flex-direction:column;flex-shrink:0;">
-            <div style="padding:8px 12px;border-bottom:1px solid #2a2a4a;display:flex;gap:8px;position:relative;align-items:center;min-height:42px;box-sizing:border-box;">
-              <button id="db-refresh" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">↻ Refresh</button>
+          <div style="width:180px;min-width:140px;border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;">
+            <div style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;gap:8px;position:relative;align-items:center;min-height:42px;box-sizing:border-box;">
+              <button id="db-refresh" style="background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-1);padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">↻ Refresh</button>
               <div style="position:relative;">
                 <button id="db-reset" style="background:#cc241d;border:1px solid #fb4934;color:#fbf1c7;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">Reset DB ▾</button>
                 <div id="db-reset-dropdown" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:var(--bg-elev);border:1px solid var(--border);border-radius:4px;padding:8px;z-index:100;min-width:180px;box-shadow:var(--shadow-md);">
@@ -460,7 +434,7 @@
           </div>
           <div id="db-table-view">
             <div id="db-table-header" style="display:flex;justify-content:space-between;align-items:center;">
-              <span id="db-page-info" style="color:#565f89;font-size:11px;"></span>
+              <span id="db-page-info" style="color:var(--fg-3);font-size:11px;"></span>
               <span style="display:flex;align-items:center;gap:8px;">
                 <button id="db-page-prev" style="display:none;background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-1);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">◀</button>
                 <button id="db-page-next" style="display:none;background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-1);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">▶</button>

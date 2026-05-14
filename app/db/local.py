@@ -130,8 +130,12 @@ CREATE TABLE IF NOT EXISTS agent_templates (
 
 CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL,
     template_id TEXT,
+    owner_user_id TEXT,
+    name TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    is_user_default INTEGER NOT NULL DEFAULT 0,
     system_prompt TEXT NOT NULL DEFAULT '',
     max_turn_count INTEGER NOT NULL DEFAULT 10,
     model TEXT,
@@ -818,6 +822,53 @@ class LocalBackend(StorageBackend):
                     logger.info("Added agents.%s column", col)
             conn.commit()
 
+            # ── Migration: drop UNIQUE constraint on agents.user_id ──
+            # Original schema enforced one agent per user. Multi-agent model
+            # allows many rows per user_id; recreate table without UNIQUE.
+            ag_sql_row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='agents'"
+            ).fetchone()
+            if ag_sql_row and "user_id TEXT NOT NULL UNIQUE" in (ag_sql_row[0] or ""):
+                cols = [r[1] for r in conn.execute("PRAGMA table_info(agents)").fetchall()]
+                col_list = ", ".join(cols)
+                conn.execute("PRAGMA foreign_keys = OFF")
+                conn.executescript(f"""
+                    CREATE TABLE agents_new (
+                        id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        template_id TEXT,
+                        owner_user_id TEXT,
+                        name TEXT NOT NULL DEFAULT '',
+                        description TEXT NOT NULL DEFAULT '',
+                        is_user_default INTEGER NOT NULL DEFAULT 0,
+                        system_prompt TEXT NOT NULL DEFAULT '',
+                        max_turn_count INTEGER NOT NULL DEFAULT 10,
+                        model TEXT,
+                        provider TEXT,
+                        temperature REAL NOT NULL DEFAULT 0.0,
+                        max_tokens INTEGER NOT NULL DEFAULT 4096,
+                        status TEXT NOT NULL DEFAULT 'active',
+                        metadata TEXT NOT NULL DEFAULT '{{}}',
+                        agent_prompt TEXT NOT NULL DEFAULT '',
+                        user_prompt TEXT NOT NULL DEFAULT '',
+                        skills_prompt TEXT NOT NULL DEFAULT '',
+                        tasks_prompt TEXT NOT NULL DEFAULT '',
+                        misc_prompt TEXT NOT NULL DEFAULT '',
+                        bootstrap_tools TEXT NOT NULL DEFAULT '',
+                        assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        turn_count INTEGER NOT NULL DEFAULT 0
+                    );
+                    INSERT INTO agents_new ({col_list}) SELECT {col_list} FROM agents;
+                    DROP TABLE agents;
+                    ALTER TABLE agents_new RENAME TO agents;
+                    CREATE INDEX IF NOT EXISTS idx_agents_user ON agents(user_id);
+                """)
+                conn.execute("PRAGMA foreign_keys = ON")
+                conn.commit()
+                logger.info("Dropped UNIQUE constraint on agents.user_id")
+
             # ── Migration: backfill agents.owner_user_id for existing default agents ──
             # Default agents have user_id = actual_user_id (no underscore prefix from template)
             # Optimizer agents have user_id like "opt_planner_USER_ID" — leave owner_user_id NULL
@@ -837,6 +888,16 @@ class LocalBackend(StorageBackend):
                    AND is_user_default = 0"""
             )
             conn.commit()
+
+            # ── Migration 010: backfill agents.name for user-owned agents ──
+            # Any agent with owner_user_id set but no name yet gets the default 'autoAgent'.
+            conn.execute(
+                """UPDATE agents SET name = 'autoAgent'
+                   WHERE (name IS NULL OR name = '')
+                   AND owner_user_id IS NOT NULL"""
+            )
+            conn.commit()
+            logger.info("Backfilled agents.name = 'autoAgent' for user-owned agents")
 
             # ── Seed: p5js visualizer skill template ──
             self._seed_visualizer_template(conn)
@@ -2260,12 +2321,13 @@ class LocalBackend(StorageBackend):
             agent_id = _uuid()
             conn.execute(
                 """INSERT INTO agents
-                   (id, user_id, system_prompt, max_turn_count, model, provider,
+                   (id, user_id, owner_user_id, name,
+                    system_prompt, max_turn_count, model, provider,
                     temperature, max_tokens, status, metadata,
                     agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
-                    bootstrap_tools, assigned_at, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (agent_id, user_id,
+                    bootstrap_tools, is_user_default, assigned_at, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
+                (agent_id, user_id, user_id, tpl_data.get("name", "autoAgent"),
                  tpl_data["system_prompt"],
                  tpl_data["max_turn_count"],
                  tpl_data["model"],
@@ -2413,6 +2475,7 @@ class LocalBackend(StorageBackend):
             return {
                 "status": "template",
                 "template_id": template_id,
+                "name": tpl_data.get("name", ""),
                 "system_prompt": tpl_data.get("system_prompt", ""),
                 "max_turn_count": tpl_data.get("max_turn_count", 10),
                 "model": tpl_data.get("model"),
@@ -2574,10 +2637,11 @@ class LocalBackend(StorageBackend):
                 now = _now_iso()
                 conn.execute(
                     """INSERT INTO agents
-                       (id, user_id, template_id, system_prompt, max_turn_count, model, provider,
+                       (id, user_id, template_id, name, system_prompt, max_turn_count, model, provider,
                         temperature, max_tokens, status, metadata, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
                     (agent_id, agent_user_id, template_id,
+                     agent.get("name", ""),
                      agent.get("system_prompt", ""),
                      agent.get("max_turn_count", 10),
                      agent.get("model"),
@@ -3099,15 +3163,24 @@ class LocalBackend(StorageBackend):
         Returns the new agents row as a dict (with source='custom').
         """
         import uuid as _uuid_mod
-        # Load default template fields
+        # Load default template fields. Seed from JSON first so the row is
+        # fresh; fall back to reading default.json directly if no row exists.
         conn = self._get_conn()
         try:
+            self._seed_agent_templates_from_json_files(conn)
             tpl_row = conn.execute(
                 "SELECT * FROM agent_templates WHERE id = 'default'"
             ).fetchone()
             tpl = dict(tpl_row) if tpl_row else {}
         finally:
             conn.close()
+
+        if not tpl:
+            from app.context.md_seeder import scan_agent_json_files
+            for entry in scan_agent_json_files():
+                if entry.get("id") == "default":
+                    tpl = entry
+                    break
 
         agent_id = str(_uuid_mod.uuid4())
         now = _now_iso()
