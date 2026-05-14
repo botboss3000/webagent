@@ -3,25 +3,19 @@
 /**
  * Agent Management panel.
  *
- * Renders a two-column layout:
- *  Left  — scrollable list of agents (system templates + user's custom agents)
- *  Right — detail/editor: Config tab (editable prompts + turn count),
- *                          Tools tab (read-only tool breakdown),
- *                          Test tab  (sandbox test runner)
- *
- * Non-editable fields (system_prompt, bootstrap_tools, model, etc.) are never
- * shown to the user — they are stripped server-side and never rendered here.
+ * Each agent card lives in an .agent-row wrapper.  Clicking a card toggles
+ * an inline .agent-detail-panel that is appended directly to that row, so
+ * multiple rows can be open simultaneously and each panel is fully
+ * independent.  There is no shared / floating panel element.
  */
 
 import { app } from './state.js';
 import { fetchAllToolMeta } from './loop-visual.js';
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let _agents        = [];   // full list from server
-let _selected      = null; // currently selected agent/template entry
-let _activeTab     = 'config';
-let _dirty         = false;
-let _userIsAdmin   = false;
+let _agents         = [];   // full list from server
+let _expandedAgents = new Map(); // Map<agentId, { tab: string }>
+let _userIsAdmin    = false;
 let _defaultAgentId = null;
 
 // Tool descriptions for the Tools tab (matches BUILTIN_TOOL_METADATA keys)
@@ -101,23 +95,7 @@ export async function initAgents() {
   await _loadAgents();
   _renderList();
   _bindCreateModal();
-  _bindDetailTabs();
   _restoreViewState();
-}
-
-function _bindDetailTabs() {
-  document.querySelectorAll('.agents-detail-tab').forEach(btn => {
-    // Remove any previously bound listener by replacing the node clone
-    const fresh = btn.cloneNode(true);
-    btn.replaceWith(fresh);
-    fresh.addEventListener('click', () => {
-      _activeTab = fresh.dataset.tab;
-      const oldBar = document.getElementById('agents-save-bar-dynamic');
-      if (oldBar) oldBar.remove();
-      _renderTabBody();
-      _saveViewState();
-    });
-  });
 }
 
 export function startAgents() {
@@ -136,7 +114,7 @@ async function _loadProfile() {
     const res = await fetch(`/api/v1/user/profile?user_id=${encodeURIComponent(app.currentUserId)}`);
     if (res.ok) {
       const data = await res.json();
-      _userIsAdmin = !!data.is_admin;
+      _userIsAdmin    = !!data.is_admin;
       _defaultAgentId = data.default_agent_id || 'default';
     }
   } catch (e) {
@@ -169,21 +147,19 @@ function _iconColor(agent) {
 function _timeAgo(iso) {
   if (!iso) return '';
   const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 60)   return 'just now';
-  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 60)    return 'just now';
+  if (diff < 3600)  return Math.floor(diff / 60) + 'm ago';
   if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
   return Math.floor(diff / 86400) + 'd ago';
 }
 
-function _renderList() {
-  const grid   = document.getElementById('agents-grid');
-  const detail = document.getElementById('agents-card-detail');
-  if (!grid) return;
+function _displayName(agent) {
+  return agent.name || (agent.source === 'custom' ? 'Fallback Name' : agent.id);
+}
 
-  // Rescue the detail panel before wiping the grid so it isn't destroyed
-  if (detail && grid.contains(detail)) {
-    grid.after(detail);
-  }
+function _renderList() {
+  const grid = document.getElementById('agents-grid');
+  if (!grid) return;
 
   grid.innerHTML = '';
 
@@ -196,7 +172,7 @@ function _renderList() {
   }
 
   for (const agent of _agents) {
-    const isSelected = _selected && _selected.id === agent.id;
+    const isExpanded = _expandedAgents.has(agent.id);
     const isDefault  = agent.is_user_default || agent.id === _defaultAgentId;
 
     const badgeType  = agent.access_level === 'admin_only' ? 'admin'
@@ -212,8 +188,11 @@ function _renderList() {
     const model     = agent.model || '';
     const timeAgo   = _timeAgo(agent.updated_at || agent.created_at || '');
 
+    const canDefault = agent.can_be_default !== false && agent.can_be_default !== 0;
+    const isCustom   = agent.source === 'custom';
+
     const card = document.createElement('div');
-    card.className = 'agent-card' + (isSelected ? ' active' : '');
+    card.className = 'agent-card' + (isExpanded ? ' active' : '');
     card.innerHTML = `
       <div class="agent-card-top">
         <div class="agent-card-icon-wrap ${_iconColor(agent)}">
@@ -221,7 +200,7 @@ function _renderList() {
         </div>
         <div class="agent-card-meta">
           <div class="agent-card-name-row">
-            <span class="agent-card-name">${_esc(agent.name || agent.id)}</span>
+            <span class="agent-card-name">${_esc(_displayName(agent))}</span>
             <span class="agent-status-dot"></span>
           </div>
           ${model ? `<div class="agent-card-model">${_esc(model)}</div>` : ''}
@@ -229,6 +208,8 @@ function _renderList() {
         <div class="agent-card-badge-wrap">
           <span class="agent-badge ${badgeType}">${badgeLabel}</span>
           ${isDefault ? '<span class="agent-badge default">Default</span>' : ''}
+          ${canDefault && !isDefault ? '<button class="agent-card-action-btn set-default-btn">Set Default</button>' : ''}
+          ${isCustom ? '<button class="agent-card-action-btn delete-btn">Delete</button>' : ''}
         </div>
       </div>
       ${agent.description ? `<div class="agent-card-desc">${_esc(agent.description)}</div>` : ''}
@@ -239,135 +220,122 @@ function _renderList() {
         ${timeAgo ? `<span class="agent-stat agent-stat-time"><span class="agent-stat-icon">🕐</span>${timeAgo}</span>` : ''}
       </div>
     `;
+
+    // Wire inline action buttons — stopPropagation so click doesn't toggle the panel
+    const setDefaultBtn = card.querySelector('.set-default-btn');
+    if (setDefaultBtn) {
+      setDefaultBtn.addEventListener('click', e => { e.stopPropagation(); _setDefault(agent); });
+    }
+    const deleteBtn = card.querySelector('.delete-btn');
+    if (deleteBtn) {
+      deleteBtn.addEventListener('click', e => { e.stopPropagation(); _deleteAgent(agent); });
+    }
+
     card.addEventListener('click', () => _selectAgent(agent));
 
-    // Wrap each card in an .agent-row so the detail panel can live beside
-    // it inside the same container (no grid gap between card and detail).
+    // Each agent gets its own .agent-row; the detail panel lives inside it
     const row = document.createElement('div');
     row.className = 'agent-row';
+    row.dataset.agentId = agent.id;
     row.appendChild(card);
+
+    if (isExpanded) {
+      row.appendChild(_buildDetailPanel(agent));
+    }
+
     grid.appendChild(row);
   }
 }
 
+// ── Selection / toggle ────────────────────────────────────────────────────────
+
 function _selectAgent(agent) {
-  // Clicking the already-selected agent collapses the panel (toggle behaviour)
-  if (_selected && _selected.id === agent.id) {
-    _closeAccordion();
-    return;
+  if (_expandedAgents.has(agent.id)) {
+    _expandedAgents.delete(agent.id);
+  } else {
+    _expandedAgents.set(agent.id, { tab: 'config' });
   }
-  _selected = agent;
-  _dirty = false;
   _renderList();
-  _openAccordion();
-  _renderDetail();
   _saveViewState();
 }
 
-function _openAccordion() {
-  const detail = document.getElementById('agents-card-detail');
-  const grid   = document.getElementById('agents-grid');
-  if (!detail || !grid) return;
+// ── Per-row detail panel ──────────────────────────────────────────────────────
 
-  // Place the detail panel inside the same .agent-row as the active card
-  // so they share a container with no gap between them.
-  const activeCard = grid.querySelector('.agent-card.active');
-  if (activeCard) {
-    const row = activeCard.closest('.agent-row');
-    if (row) {
-      row.appendChild(detail);
-    } else {
-      activeCard.after(detail);
-    }
-  } else {
-    grid.appendChild(detail);
+function _buildDetailPanel(agent) {
+  const state = _expandedAgents.get(agent.id);
+  const activeTab = state?.tab || 'config';
+
+  const panel = document.createElement('div');
+  panel.className = 'agent-detail-panel';
+  panel.dataset.agentId = agent.id;
+
+  const content = document.createElement('div');
+  content.className = 'agent-detail-content';
+  panel.appendChild(content);
+
+  // Tab bar
+  const tabBar = document.createElement('div');
+  tabBar.className = 'agent-detail-tabs';
+  for (const [key, label] of [['config','Config'],['tools','Tools'],['test','Agent Loop']]) {
+    const btn = document.createElement('button');
+    btn.className = 'agents-detail-tab' + (activeTab === key ? ' active' : '');
+    btn.dataset.tab = key;
+    btn.textContent = label;
+    btn.addEventListener('click', () => {
+      const entry = _expandedAgents.get(agent.id);
+      if (entry) entry.tab = key;
+      _renderPanelBody(agent, panel);
+      _saveViewState();
+    });
+    tabBar.appendChild(btn);
   }
-  detail.classList.remove('hidden');
+  content.appendChild(tabBar);
+
+  // Scrollable body
+  const body = document.createElement('div');
+  body.className = 'agent-detail-body';
+  content.appendChild(body);
+
+  // Render initial tab content
+  _renderPanelBody(agent, panel);
+
+  return panel;
 }
 
-function _closeAccordion() {
-  const detail = document.getElementById('agents-card-detail');
-  const grid   = document.getElementById('agents-grid');
-  if (detail) {
-    detail.classList.add('hidden');
-    // Move the panel back outside the grid so it isn't destroyed on re-render
-    if (grid && grid.parentElement) {
-      grid.after(detail);
-    }
-  }
-  _selected = null;
-  _clearViewState();
-  _renderList();
-}
+function _renderPanelBody(agent, panelEl) {
+  const state = _expandedAgents.get(agent.id);
+  const tab   = state?.tab || 'config';
 
-function _renderDetail() {
-  const content = document.getElementById('agents-detail-content');
-  if (!_selected || !content) return;
-
-  // Header
-  document.getElementById('agents-detail-icon').textContent    = _selected.icon || '🤖';
-  document.getElementById('agents-detail-name').textContent    = _selected.name || _selected.id;
-  document.getElementById('agents-detail-description').textContent = _selected.description || '';
-
-  // Actions
-  _renderActions();
-
-  // Tab body
-  _renderTabBody();
-}
-
-function _renderActions() {
-  const bar = document.getElementById('agents-detail-actions');
-  if (!bar) return;
-  bar.innerHTML = '';
-
-  const isCustom   = _selected.source === 'custom';
-  const canDefault = _selected.can_be_default !== false && _selected.can_be_default !== 0;
-  const isDefault  = _selected.is_user_default || _selected.id === _defaultAgentId;
-
-  if (canDefault && !isDefault) {
-    const btn = _btn('Set as Default', 'agents-btn');
-    btn.addEventListener('click', _setDefault);
-    bar.appendChild(btn);
-  } else if (isDefault) {
-    const lbl = _btn('✓ Default', 'agents-btn default-active');
-    lbl.disabled = true;
-    bar.appendChild(lbl);
-  }
-
-  if (isCustom) {
-    const del = _btn('Delete', 'agents-btn danger');
-    del.addEventListener('click', _deleteAgent);
-    bar.appendChild(del);
-  }
-}
-
-function _renderTabBody() {
-  // Sync active tab button
-  document.querySelectorAll('.agents-detail-tab').forEach(t => {
-    t.classList.toggle('active', t.dataset.tab === _activeTab);
+  // Sync tab-button active states
+  panelEl.querySelectorAll('.agents-detail-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.tab === tab);
   });
 
-  const body = document.getElementById('agents-detail-body');
+  const body = panelEl.querySelector('.agent-detail-body');
   if (!body) return;
   body.innerHTML = '';
 
-  if (_activeTab === 'config')  _renderConfigTab(body);
-  else if (_activeTab === 'tools') _renderToolsTab(body);
-  else if (_activeTab === 'test')  _renderTestTab(body);
+  // Remove any previously appended save bar
+  const content   = panelEl.querySelector('.agent-detail-content');
+  const oldSaveBar = content ? content.querySelector(':scope > .agents-save-bar') : null;
+  if (oldSaveBar) oldSaveBar.remove();
+
+  if (tab === 'config')       _renderConfigTab(body, agent, panelEl);
+  else if (tab === 'tools')   _renderToolsTab(body, agent);
+  else if (tab === 'test')    _renderTestTab(body, agent);
 }
 
 // ── Config tab ────────────────────────────────────────────────────────────────
 
-function _renderConfigTab(container) {
-  const isEditable = _selected.source === 'custom';
+function _renderConfigTab(body, agent, panelEl) {
+  const isEditable = agent.source === 'custom';
 
-  // Name + description (editable for custom agents)
+  // Name + description (editable for custom agents only)
   if (isEditable) {
-    _addField(container, 'Name', 'agents-input', 'agents-field-name',
-      _selected.name || '', false);
-    _addField(container, 'Description', 'agents-textarea', 'agents-field-desc',
-      _selected.description || '', false, 2);
+    _addField(body, 'Name', 'agents-input', 'name',
+      agent.name || (agent.source === 'custom' ? 'autoAgent' : ''), false);
+    _addField(body, 'Description', 'agents-textarea', 'desc',
+      agent.description || '', false, 2);
   }
 
   // Turn count
@@ -376,63 +344,56 @@ function _renderConfigTab(container) {
   tcGroup.innerHTML = `
     <label class="agents-field-label">Max Turn Count</label>
     <span class="agents-field-hint">Maximum number of tool-calling turns per session.</span>
-    <input type="number" class="agents-input" id="agents-field-max_turn_count"
-      value="${_selected.max_turn_count || 10}" min="1" max="99999"
+    <input type="number" class="agents-input" data-field="max_turn_count"
+      value="${agent.max_turn_count || 10}" min="1" max="99999"
       ${!isEditable ? 'readonly' : ''} style="width:100px">
   `;
-  container.appendChild(tcGroup);
+  body.appendChild(tcGroup);
 
-  // Five prompt fields
+  // Five prompt sections
   const FIELDS = [
-    { key: 'agent_prompt',  label: 'Identity & Personality',    hint: "Defines this agent's character, tone, and core operating style." },
-    { key: 'user_prompt',   label: 'User Preferences',          hint: 'What this agent knows about the user — their preferences and context.' },
-    { key: 'skills_prompt', label: 'Skills & Tools Guidance',   hint: 'Which capabilities this agent should focus on and how to use them.' },
-    { key: 'tasks_prompt',  label: 'Task Workflows',            hint: 'How this agent handles common task types step-by-step.' },
-    { key: 'misc_prompt',   label: 'Miscellaneous Context',     hint: 'Any additional guidance or context for this agent.' },
+    { key: 'agent_prompt',  label: 'Identity & Personality',  hint: "Defines this agent's character, tone, and core operating style." },
+    { key: 'user_prompt',   label: 'User Preferences',        hint: 'What this agent knows about the user — their preferences and context.' },
+    { key: 'skills_prompt', label: 'Skills & Tools Guidance', hint: 'Which capabilities this agent should focus on and how to use them.' },
+    { key: 'tasks_prompt',  label: 'Task Workflows',          hint: 'How this agent handles common task types step-by-step.' },
+    { key: 'misc_prompt',   label: 'Miscellaneous Context',   hint: 'Any additional guidance or context for this agent.' },
   ];
-
-  for (const field of FIELDS) {
-    _addField(container, field.label, 'agents-textarea', `agents-field-${field.key}`,
-      _selected[field.key] || '', !isEditable, 6, field.hint);
+  for (const f of FIELDS) {
+    _addField(body, f.label, 'agents-textarea', f.key,
+      agent[f.key] || '', !isEditable, 6, f.hint);
   }
 
-  // Save bar (only for custom agents)
+  // Save bar (sticky at bottom of content — outside the scrollable body)
   if (isEditable) {
-    const existingBar = document.getElementById('agents-save-bar-dynamic');
-    if (existingBar) existingBar.remove();
+    const content = panelEl.querySelector('.agent-detail-content');
     const bar = document.createElement('div');
     bar.className = 'agents-save-bar';
-    bar.id = 'agents-save-bar-dynamic';
     const saveBtn = _btn('Save Changes', 'agents-btn primary');
-    saveBtn.addEventListener('click', _saveChanges);
     const msg = document.createElement('span');
     msg.className = 'agents-save-msg';
-    msg.id = 'agents-save-msg';
+    saveBtn.addEventListener('click', () => _saveChanges(agent, bar, panelEl));
     bar.appendChild(saveBtn);
     bar.appendChild(msg);
-    // Append after the body inside agents-detail-content
-    const detailContent = document.getElementById('agents-detail-content');
-    if (detailContent) detailContent.appendChild(bar);
-  }
-
-  // Change tracking
-  if (isEditable) {
-    container.querySelectorAll('input,textarea').forEach(el => {
-      el.addEventListener('input', () => { _dirty = true; });
-    });
+    if (content) content.appendChild(bar);
   }
 }
 
-function _addField(container, label, tag, id, value, readonly, rows = 4, hint = '') {
+function _addField(container, label, tag, fieldKey, value, readonly, rows = 4, hint = '') {
   const group = document.createElement('div');
   group.className = 'agents-field-group';
-  group.innerHTML = `
-    <label class="agents-field-label" for="${id}">${label}</label>
-    ${hint ? `<span class="agents-field-hint">${hint}</span>` : ''}
-  `;
+  const labelEl = document.createElement('label');
+  labelEl.className = 'agents-field-label';
+  labelEl.textContent = label;
+  group.appendChild(labelEl);
+  if (hint) {
+    const hintEl = document.createElement('span');
+    hintEl.className = 'agents-field-hint';
+    hintEl.textContent = hint;
+    group.appendChild(hintEl);
+  }
   const el = document.createElement(tag === 'agents-textarea' ? 'textarea' : 'input');
   el.className = tag;
-  el.id = id;
+  el.dataset.field = fieldKey; // scope by data-field so multiple panels don't conflict
   if (tag === 'agents-textarea') {
     el.rows = rows;
     el.value = value;
@@ -447,8 +408,8 @@ function _addField(container, label, tag, id, value, readonly, rows = 4, hint = 
 
 // ── Tools tab ─────────────────────────────────────────────────────────────────
 
-function _renderToolsTab(container) {
-  const tools = _toolsForAgent(_selected);
+function _renderToolsTab(body, agent) {
+  const tools = _toolsForAgent(agent);
   const section = document.createElement('div');
   section.className = 'agents-tools-list';
 
@@ -471,84 +432,92 @@ function _renderToolsTab(container) {
     section.appendChild(item);
   }
 
-  container.appendChild(section);
+  body.appendChild(section);
 }
 
-// ── Test tab ──────────────────────────────────────────────────────────────────
+// ── Agent Loop (Test) tab ─────────────────────────────────────────────────────
 
-function _renderTestTab(container) {
-  container.innerHTML = `
-    <div id="agents-test-area">
-      <div id="agents-test-input-row">
-        <input id="agents-test-input" class="agents-input" placeholder="Type a test message and press Run to live-test this pipeline…" />
-        <button class="agents-btn primary" id="agents-test-run">Run</button>
-      </div>
-      <div id="agents-test-status"></div>
-      <div id="agents-test-loop" class="agents-test-loop"></div>
+function _renderTestTab(body, agent) {
+  const area = document.createElement('div');
+  area.className = 'agents-test-area';
+  area.innerHTML = `
+    <div class="agents-test-input-row">
+      <input class="agents-input agents-test-input" placeholder="Type a test message and press Run to live-test this pipeline…" />
+      <button class="agents-btn primary agents-test-run">Run</button>
     </div>
+    <div class="agents-test-status"></div>
+    <div class="agents-test-loop"></div>
   `;
 
-  document.getElementById('agents-test-run').addEventListener('click', _runTest);
-  document.getElementById('agents-test-input').addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); _runTest(); }
+  const input  = area.querySelector('.agents-test-input');
+  const runBtn = area.querySelector('.agents-test-run');
+  const loopEl = area.querySelector('.agents-test-loop');
+
+  runBtn.addEventListener('click', () => _runTest(agent, area));
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); _runTest(agent, area); }
   });
 
-  // Immediately render the static pipeline diagram (all nodes idle)
-  _drawAgentLoopDiagram(document.getElementById('agents-test-loop'), new Map());
+  // Render static blueprint immediately
+  _drawAgentLoopDiagram(loopEl, new Map(), agent);
+
+  body.appendChild(area);
 }
 
-async function _runTest() {
-  const input   = document.getElementById('agents-test-input');
-  const status  = document.getElementById('agents-test-status');
-  const loopEl  = document.getElementById('agents-test-loop');
+async function _runTest(agent, areaEl) {
+  const input  = areaEl.querySelector('.agents-test-input');
+  const status = areaEl.querySelector('.agents-test-status');
+  const loopEl = areaEl.querySelector('.agents-test-loop');
   if (!input || !status || !loopEl) return;
 
   const msg = input.value.trim();
   if (!msg) return;
 
   status.textContent = '⏳ Running…';
-  // Show all nodes in "active" state while waiting
   _drawAgentLoopDiagram(loopEl, new Map([
     ['user_input', 'active'], ['load_context', 'active'],
     ['memory_search', 'active'], ['build_prompt', 'active'], ['llm_call', 'active'],
-  ]));
+  ]), agent);
+
+  const resetToBlueprint = () => {
+    status.textContent = '';
+    _drawAgentLoopDiagram(loopEl, new Map(), agent);
+  };
 
   try {
     const res = await fetch('/api/v1/agents/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: app.currentUserId, agent_id: _selected.id, message: msg }),
+      body: JSON.stringify({ user_id: app.currentUserId, agent_id: agent.id, message: msg }),
     });
     const data = await res.json();
 
     if (!res.ok) {
-      status.innerHTML = `Error ${res.status}: ${data.detail || 'unknown'} &nbsp; <button class="agents-blueprint-back agents-blueprint-back-inline" id="agents-blueprint-reset">← Blueprint</button>`;
-      document.getElementById('agents-blueprint-reset')?.addEventListener('click', () => {
-        status.textContent = '';
-        _drawAgentLoopDiagram(loopEl, new Map());
-      });
-      _drawAgentLoopDiagram(loopEl, new Map([['llm_call', 'error']]));
+      _drawAgentLoopDiagram(loopEl, new Map([['llm_call', 'error']]), agent);
+      status.innerHTML = `Error ${res.status}: ${_esc(data.detail || 'unknown')} &nbsp;`;
+      const resetBtn = _backBtn(); resetBtn.addEventListener('click', resetToBlueprint);
+      status.appendChild(resetBtn);
       return;
     }
 
     const rows = data.interactions || [];
-    const nodeStates = _interactionsToNodeStates(rows);
-    _drawAgentLoopDiagram(loopEl, nodeStates);
-
-    const stepCount = rows.length;
-    status.innerHTML = `✓ Complete — ${stepCount} step(s) &nbsp; <button class="agents-blueprint-back agents-blueprint-back-inline" id="agents-blueprint-reset">← Blueprint</button>`;
-    document.getElementById('agents-blueprint-reset')?.addEventListener('click', () => {
-      status.textContent = '';
-      _drawAgentLoopDiagram(loopEl, new Map());
-    });
+    _drawAgentLoopDiagram(loopEl, _interactionsToNodeStates(rows), agent);
+    status.innerHTML = `✓ Complete — ${rows.length} step(s) &nbsp;`;
+    const resetBtn = _backBtn(); resetBtn.addEventListener('click', resetToBlueprint);
+    status.appendChild(resetBtn);
   } catch (e) {
-    status.innerHTML = `Error: ${_esc(e.message)} &nbsp; <button class="agents-blueprint-back agents-blueprint-back-inline" id="agents-blueprint-reset">← Blueprint</button>`;
-    document.getElementById('agents-blueprint-reset')?.addEventListener('click', () => {
-      status.textContent = '';
-      _drawAgentLoopDiagram(loopEl, new Map());
-    });
-    _drawAgentLoopDiagram(loopEl, new Map([['llm_call', 'error']]));
+    _drawAgentLoopDiagram(loopEl, new Map([['llm_call', 'error']]), agent);
+    status.innerHTML = `Error: ${_esc(e.message)} &nbsp;`;
+    const resetBtn = _backBtn(); resetBtn.addEventListener('click', resetToBlueprint);
+    status.appendChild(resetBtn);
   }
+}
+
+function _backBtn() {
+  const b = document.createElement('button');
+  b.className = 'agents-blueprint-back-inline';
+  b.textContent = '← Blueprint';
+  return b;
 }
 
 // ── Agent loop diagram — matches the dedicated Loop View tab ──────────────────
@@ -626,7 +595,8 @@ function _lvEdgePath(edge) {
            labelX: mx, labelY: (y1 < y2 ? y1 : y2) - 5 };
 }
 
-let _lvActivePanelEl = null;
+// One active node-info panel at a time (shared across all loop diagrams)
+let _lvActivePanelEl     = null;
 let _lvActivePanelNodeId = null;
 
 function _lvHidePanel() {
@@ -637,10 +607,10 @@ function _lvHidePanel() {
 
 /**
  * Draw the same horizontal swimlane diagram shown in the dedicated Loop View.
- * nodeStates = Map<nodeId, 'active'|'done'|'error'> — pass new Map() for the
- * static blueprint (all nodes idle), or a populated map after a test run.
+ * nodeStates = Map<nodeId, 'active'|'done'|'error'>  — new Map() = static blueprint.
+ * agent is passed for tool-list filtering and node hints.
  */
-function _drawAgentLoopDiagram(loopEl, nodeStates) {
+function _drawAgentLoopDiagram(loopEl, nodeStates, agent) {
   loopEl.innerHTML = '';
   _lvHidePanel();
 
@@ -648,7 +618,7 @@ function _drawAgentLoopDiagram(loopEl, nodeStates) {
   root.style.cssText = `position:relative;width:${_LV_W}px;min-height:${_LV_H}px;flex-shrink:0;`;
   loopEl.appendChild(root);
 
-  // ── SVG layer: stage bands, dividers, labels, arrows ──
+  // ── SVG layer ──
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('width',   _LV_W);
   svg.setAttribute('height',  _LV_H);
@@ -670,7 +640,7 @@ function _drawAgentLoopDiagram(loopEl, nodeStates) {
     const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
     rect.setAttribute('x', stage.x1 + 1);
     rect.setAttribute('y', 28);
-    rect.setAttribute('width', stage.x2 - stage.x1 - 2);
+    rect.setAttribute('width',  stage.x2 - stage.x1 - 2);
     rect.setAttribute('height', 252);
     rect.setAttribute('fill', i % 2 === 0 ? '#ffffff03' : '#00000008');
     rect.setAttribute('rx', '3');
@@ -733,9 +703,9 @@ function _drawAgentLoopDiagram(loopEl, nodeStates) {
     const state = nodeStates.get(nd.id) || '';
     const el = document.createElement('div');
     el.className = `lv-node lv-type-${nd.type}`;
-    if (state === 'active')      el.classList.add('lv-active');
-    else if (state === 'done')   el.classList.add('lv-done');
-    else if (state === 'error')  el.classList.add('lv-error');
+    if (state === 'active')     el.classList.add('lv-active');
+    else if (state === 'done')  el.classList.add('lv-done');
+    else if (state === 'error') el.classList.add('lv-error');
 
     el.style.left   = (nd.cx - nd.hw) + 'px';
     el.style.top    = (nd.cy - nd.hh) + 'px';
@@ -743,20 +713,20 @@ function _drawAgentLoopDiagram(loopEl, nodeStates) {
     el.style.height = (nd.hh * 2) + 'px';
     el.style.cursor = 'pointer';
 
-    const label = document.createElement('span');
-    label.className = 'lv-node-label';
-    label.textContent = nd.label;
-    el.appendChild(label);
+    const labelEl = document.createElement('span');
+    labelEl.className = 'lv-node-label';
+    labelEl.textContent = nd.label;
+    el.appendChild(labelEl);
 
     const detail = document.createElement('div');
     detail.className = 'lv-node-detail';
-    detail.textContent = _lvNodeHint(nd);
+    detail.textContent = _lvNodeHint(nd, agent);
     el.appendChild(detail);
 
     el.addEventListener('click', e => {
       e.stopPropagation();
       if (_lvActivePanelNodeId === nd.id) { _lvHidePanel(); return; }
-      _lvShowPanel(nd, el, root);
+      _lvShowPanel(nd, el, root, agent);
     });
 
     root.appendChild(el);
@@ -766,22 +736,22 @@ function _drawAgentLoopDiagram(loopEl, nodeStates) {
   root.addEventListener('click', () => _lvHidePanel());
 }
 
-function _lvNodeHint(nd) {
-  if (!_selected) return '';
+function _lvNodeHint(nd, agent) {
+  if (!agent) return '';
   switch (nd.id) {
     case 'user_input':     return 'User message enters the pipeline';
     case 'load_context': {
       const pf = ['agent_prompt','user_prompt','skills_prompt','tasks_prompt','misc_prompt'];
-      const n = pf.filter(f => _selected[f] && String(_selected[f]).trim()).length;
+      const n = pf.filter(f => agent[f] && String(agent[f]).trim()).length;
       return `${n} of 5 prompt sections configured`;
     }
     case 'memory_search':  return 'Semantic search over past interactions';
     case 'build_prompt':   return 'Assembles system prompt from context sections';
-    case 'llm_call':       return `Model: ${_selected.model || 'claude-3-5-sonnet'}`;
+    case 'llm_call':       return `Model: ${agent.model || 'claude-3-5-sonnet'}`;
     case 'validate_tools': return 'Validates requested tool calls';
     case 'guardrails':     return 'Safety checks before tool execution';
-    case 'execute_tools':  return `${_toolsForAgent(_selected).length} tools — click for list`;
-    case 'check_continue': return `Max turns: ${_selected.max_turn_count || 10}`;
+    case 'execute_tools':  return `${_toolsForAgent(agent).length} tools — click for list`;
+    case 'check_continue': return `Max turns: ${agent.max_turn_count || 10}`;
     case 'final_response': return 'Final reply delivered to user';
     case 'memory_save':    return 'Key facts stored for future sessions';
     default: return '';
@@ -812,13 +782,12 @@ const _LV_NODE_STATIC_ITEMS = {
   ],
 };
 
-function _lvShowPanel(nd, nodeEl, container) {
+function _lvShowPanel(nd, nodeEl, container, agent) {
   _lvHidePanel();
-  if (!_selected) return;
 
   const PANEL_W = 310;
   let left = nd.cx - PANEL_W / 2;
-  const top  = nd.cy + nd.hh + 10;
+  const top = nd.cy + nd.hh + 10;
   left = Math.max(4, Math.min(left, _LV_W - PANEL_W - 4));
 
   const panel = document.createElement('div');
@@ -839,7 +808,7 @@ function _lvShowPanel(nd, nodeEl, container) {
   header.appendChild(close);
   panel.appendChild(header);
 
-  // ── Static items (slash commands + Settings shortcuts) ──
+  // Static items (slash commands + settings shortcuts)
   const staticItems = _LV_NODE_STATIC_ITEMS[nd.id] || [];
   if (staticItems.length > 0) {
     const lbl = document.createElement('div');
@@ -852,11 +821,9 @@ function _lvShowPanel(nd, nodeEl, container) {
     panel.appendChild(staticList);
   }
 
-  // ── Live tools section — real DB data filtered to this node's stage
-  //    AND to only what this agent is allowed to use ──
-  const agentToolNames = new Set(_toolsForAgent(_selected));
+  // Live tools section — real DB data filtered to this node's stage AND this agent's tools
+  const agentToolNames = new Set(_toolsForAgent(agent));
 
-  // Special-case nodes that don't have "tools" in the DB sense
   if (nd.id === 'load_context' || nd.id === 'build_prompt') {
     const lbl = document.createElement('div');
     lbl.className = 'lv-tool-section-label';
@@ -871,7 +838,7 @@ function _lvShowPanel(nd, nodeEl, container) {
       { key: 'tasks_prompt',  label: 'Task Workflows' },
       { key: 'misc_prompt',   label: 'Miscellaneous' },
     ].forEach(f => {
-      const val = _selected[f.key];
+      const val   = agent[f.key];
       const filled = val && String(val).trim();
       _lvAppendItem(ctxList, {
         name: f.label,
@@ -888,13 +855,12 @@ function _lvShowPanel(nd, nodeEl, container) {
     const cfgList = document.createElement('div');
     cfgList.className = 'lv-tool-panel-list';
     _lvAppendItem(cfgList, {
-      name: `Max turns: ${_selected.max_turn_count || 10}`,
+      name: `Max turns: ${agent.max_turn_count || 10}`,
       type: 'tool',
       desc: 'Agent stops looping after this many tool-calling turns',
     });
     panel.appendChild(cfgList);
   } else {
-    // Standard nodes: fetch tools from DB, filter by stage + agent access
     const toolsLbl = document.createElement('div');
     toolsLbl.className = 'lv-tool-section-label lv-tool-section-live';
     toolsLbl.innerHTML = 'Tools <span class="lv-live-dot"></span>';
@@ -909,7 +875,6 @@ function _lvShowPanel(nd, nodeEl, container) {
     panel.appendChild(toolsList);
 
     fetchAllToolMeta().then(allTools => {
-      // Filter: must map to this pipeline stage AND be accessible to this agent
       const nodeTools = allTools.filter(t => {
         const stages = Array.isArray(t.stages)
           ? t.stages
@@ -927,7 +892,6 @@ function _lvShowPanel(nd, nodeEl, container) {
         return;
       }
 
-      // Sort: skills first, then built-ins
       nodeTools.sort((a, b) => {
         const aS = a.source === 'skill' ? 0 : 1;
         const bS = b.source === 'skill' ? 0 : 1;
@@ -936,7 +900,7 @@ function _lvShowPanel(nd, nodeEl, container) {
 
       nodeTools.forEach(t => {
         const isDestructive = t.destructive === 1 || t.destructive === true;
-        const isSkill = t.source === 'skill';
+        const isSkill       = t.source === 'skill';
         _lvAppendItem(toolsList, {
           name: t.name,
           type: isDestructive ? 'guarded' : isSkill ? 'skill' : 'tool',
@@ -948,7 +912,7 @@ function _lvShowPanel(nd, nodeEl, container) {
 
   container.appendChild(panel);
   _lvActivePanelNodeId = nd.id;
-  _lvActivePanelEl = panel;
+  _lvActivePanelEl     = panel;
 
   setTimeout(() => document.addEventListener('click', _lvHidePanel, { once: true }), 0);
 }
@@ -982,7 +946,7 @@ function _lvAppendItem(listEl, tool) {
 function _interactionsToNodeStates(rows) {
   const s = new Map();
   for (const row of rows) {
-    const role = row.role || '';
+    const role     = row.role || '';
     const toolName = row.tool_name || '';
     if (role === 'user') {
       s.set('user_input', 'done');
@@ -1015,39 +979,33 @@ function _interactionsToNodeStates(rows) {
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 
-async function _saveChanges() {
-  if (!_selected || _selected.source !== 'custom') return;
-  const msg = document.getElementById('agents-save-msg'); // lives inside agents-save-bar-dynamic
+async function _saveChanges(agent, barEl, panelEl) {
+  if (agent.source !== 'custom') return;
+  const msg = barEl.querySelector('.agents-save-msg');
   if (msg) { msg.textContent = ''; msg.className = 'agents-save-msg'; }
 
   const updates = {};
-  const nameEl   = document.getElementById('agents-field-name');
-  const descEl   = document.getElementById('agents-field-desc');
-  const tcEl     = document.getElementById('agents-field-max_turn_count');
-
-  if (nameEl)  updates.name          = nameEl.value.trim();
-  if (descEl)  updates.description   = descEl.value;
-  if (tcEl)    updates.max_turn_count = parseInt(tcEl.value, 10) || 10;
-
-  for (const key of ['agent_prompt','user_prompt','skills_prompt','tasks_prompt','misc_prompt']) {
-    const el = document.getElementById(`agents-field-${key}`);
-    if (el) updates[key] = el.value;
+  const fv = key => { const el = panelEl.querySelector(`[data-field="${key}"]`); return el ? el.value : undefined; };
+  const nameVal = fv('name');        if (nameVal !== undefined) updates.name          = nameVal.trim();
+  const descVal = fv('desc');        if (descVal !== undefined) updates.description   = descVal;
+  const tcVal   = fv('max_turn_count'); if (tcVal !== undefined) updates.max_turn_count = parseInt(tcVal, 10) || 10;
+  for (const k of ['agent_prompt','user_prompt','skills_prompt','tasks_prompt','misc_prompt']) {
+    const v = fv(k); if (v !== undefined) updates[k] = v;
   }
 
   try {
-    const res = await fetch(`/api/v1/agents/${_selected.id}`, {
+    const res = await fetch(`/api/v1/agents/${agent.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_id: app.currentUserId, ...updates }),
     });
     const data = await res.json();
     if (res.ok) {
-      // Update local state
-      Object.assign(_selected, data.agent);
-      _dirty = false;
+      // Patch the local agents array so re-render shows fresh values
+      const idx = _agents.findIndex(a => a.id === agent.id);
+      if (idx !== -1) Object.assign(_agents[idx], data.agent);
+      Object.assign(agent, data.agent); // also update the closure reference
       if (msg) { msg.textContent = '✓ Saved'; msg.className = 'agents-save-msg'; }
-      await _loadAgents();
-      _renderList();
     } else {
       if (msg) { msg.textContent = data.detail || 'Save failed'; msg.className = 'agents-save-msg error'; }
     }
@@ -1056,39 +1014,38 @@ async function _saveChanges() {
   }
 }
 
-async function _setDefault() {
-  if (!_selected) return;
+async function _setDefault(agent) {
   try {
-    const res = await fetch(`/api/v1/agents/${_selected.id}/set-default`, {
+    const res = await fetch(`/api/v1/agents/${agent.id}/set-default`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_id: app.currentUserId }),
     });
     if (res.ok) {
-      _defaultAgentId = _selected.id;
+      _defaultAgentId = agent.id;
       await _loadAgents();
       _renderList();
-      _renderDetail();
     }
   } catch (e) {
     console.warn('agents: set-default failed', e);
   }
 }
 
-async function _deleteAgent() {
-  if (!_selected || _selected.source !== 'custom') return;
-  if (!confirm(`Delete agent "${_selected.name || _selected.id}"? This cannot be undone.`)) return;
+async function _deleteAgent(agent) {
+  if (agent.source !== 'custom') return;
+  const displayName = _displayName(agent);
+  if (!confirm(`Delete agent "${displayName}"? This cannot be undone.`)) return;
 
   try {
     const res = await fetch(
-      `/api/v1/agents/${_selected.id}?user_id=${encodeURIComponent(app.currentUserId)}`,
+      `/api/v1/agents/${agent.id}?user_id=${encodeURIComponent(app.currentUserId)}`,
       { method: 'DELETE' }
     );
     if (res.ok) {
-      _selected = null;
+      _expandedAgents.delete(agent.id);
       await _loadAgents();
       _renderList();
-      _renderDetail();
+      _saveViewState();
     }
   } catch (e) {
     console.warn('agents: delete failed', e);
@@ -1098,15 +1055,17 @@ async function _deleteAgent() {
 // ── Create modal ──────────────────────────────────────────────────────────────
 
 function _bindCreateModal() {
-  const newBtn      = document.getElementById('btn-new-agent');
-  const modal       = document.getElementById('agents-create-modal');
-  const cancelBtn   = document.getElementById('btn-create-cancel');
-  const createBtn   = document.getElementById('btn-create-confirm');
-  const collapseBtn = document.getElementById('btn-collapse-detail');
-
-  if (collapseBtn) collapseBtn.addEventListener('click', _closeAccordion);
-  if (newBtn)      newBtn.addEventListener('click', () => modal && modal.classList.remove('hidden'));
-  if (cancelBtn)   cancelBtn.addEventListener('click', () => modal && modal.classList.add('hidden'));
+  // initAgents may run multiple times (page load + tab switch). Replace each
+  // button with a clone to drop any prior listeners, then bind fresh.
+  let newBtn    = document.getElementById('btn-new-agent');
+  const modal   = document.getElementById('agents-create-modal');
+  let cancelBtn = document.getElementById('btn-create-cancel');
+  let createBtn = document.getElementById('btn-create-confirm');
+  if (newBtn)    { const c = newBtn.cloneNode(true);    newBtn.replaceWith(c);    newBtn    = c; }
+  if (cancelBtn) { const c = cancelBtn.cloneNode(true); cancelBtn.replaceWith(c); cancelBtn = c; }
+  if (createBtn) { const c = createBtn.cloneNode(true); createBtn.replaceWith(c); createBtn = c; }
+  if (newBtn)    newBtn.addEventListener('click',    () => modal && modal.classList.remove('hidden'));
+  if (cancelBtn) cancelBtn.addEventListener('click', () => modal && modal.classList.add('hidden'));
 
   if (createBtn) {
     createBtn.addEventListener('click', async () => {
@@ -1131,10 +1090,13 @@ function _bindCreateModal() {
           if (nameEl) nameEl.value = '';
           if (descEl) descEl.value = '';
           await _loadAgents();
-          _renderList();
-          // Auto-select the new agent
+          // Auto-expand the new agent
           const newAgent = _agents.find(a => a.id === data.agent?.id);
-          if (newAgent) _selectAgent(newAgent);
+          if (newAgent) {
+            _expandedAgents.set(newAgent.id, { tab: 'config' });
+            _saveViewState();
+          }
+          _renderList();
         }
       } catch (e) {
         console.warn('agents: create failed', e);
@@ -1143,41 +1105,35 @@ function _bindCreateModal() {
   }
 }
 
-// ── Tab switching (bound inside _bindDetailTabs, called from initAgents) ─────
-
 // ── Persisted view state ──────────────────────────────────────────────────────
 
 const _STORAGE_KEY = 'agents_view_state';
 
 function _saveViewState() {
   try {
-    const state = {
-      agentId: _selected ? _selected.id : null,
-      tab:     _activeTab,
-    };
-    localStorage.setItem(_STORAGE_KEY, JSON.stringify(state));
+    const expanded = {};
+    for (const [agentId, state] of _expandedAgents) {
+      expanded[agentId] = { tab: state.tab || 'config' };
+    }
+    localStorage.setItem(_STORAGE_KEY, JSON.stringify({ expanded }));
   } catch (_) {}
-}
-
-function _clearViewState() {
-  try { localStorage.removeItem(_STORAGE_KEY); } catch (_) {}
 }
 
 function _restoreViewState() {
   try {
     const raw = localStorage.getItem(_STORAGE_KEY);
     if (!raw) return;
-    const { agentId, tab } = JSON.parse(raw);
-    if (tab) _activeTab = tab;
-    if (agentId) {
-      const agent = _agents.find(a => a.id === agentId);
-      if (agent) {
-        _selected = agent;
-        _renderList();
-        _openAccordion();
-        _renderDetail();
+    const { expanded } = JSON.parse(raw);
+    if (!expanded || typeof expanded !== 'object') return;
+    let changed = false;
+    for (const [agentId, state] of Object.entries(expanded)) {
+      // Only restore if the agent still exists
+      if (_agents.find(a => a.id === agentId)) {
+        _expandedAgents.set(agentId, { tab: state.tab || 'config' });
+        changed = true;
       }
     }
+    if (changed) _renderList();
   } catch (_) {}
 }
 

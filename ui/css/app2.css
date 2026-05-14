@@ -392,7 +392,7 @@
     flex: 1;
     display: flex;
     flex-direction: column;
-    background: #0d0d1a;
+    background: var(--bg-0);
     font-size: 12px;
     min-height: 0;
   }
@@ -400,32 +400,32 @@
     display: flex;
     gap: 8px;
     padding: 8px 12px;
-    border-bottom: 1px solid #2a2a4a;
+    border-bottom: 1px solid var(--border);
     align-items: center;
     flex-shrink: 0;
   }
   #db-toolbar select {
-    background: #1a1a2e;
-    border: 1px solid #2a2a4a;
-    color: #c0caf5;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    color: var(--fg-1);
     padding: 4px 8px;
     border-radius: 4px;
     font-size: 12px;
     outline: none;
     font-family: inherit;
   }
-  #db-toolbar select:focus { border-color: #7dcfff; }
+  #db-toolbar select:focus { border-color: var(--accent); }
   #db-refresh {
-    background: #1a1a2e;
-    border: 1px solid #2a2a4a;
-    color: #c0caf5;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    color: var(--fg-1);
     padding: 4px 12px;
     border-radius: 4px;
     cursor: pointer;
     font-size: 12px;
     font-family: inherit;
   }
-  #db-refresh:hover { border-color: #7dcfff; color: #7dcfff; }
+  #db-refresh:hover { border-color: var(--accent); color: var(--accent); }
   #db-panel {
     flex: 1;
     display: flex;
@@ -435,7 +435,7 @@
   #db-table-list {
     width: 180px;
     min-width: 140px;
-    border-right: 1px solid #2a2a4a;
+    border-right: 1px solid var(--border);
     overflow-y: auto;
     padding: 4px 0;
     flex-shrink: 0;
@@ -443,21 +443,21 @@
   .db-table-item {
     padding: 6px 14px;
     cursor: pointer;
-    color: #a9b1d6;
+    color: var(--fg-2);
     display: flex;
     justify-content: space-between;
     font-size: 12px;
   }
-  .db-table-item:hover { background: #1a1a2e; }
-  .db-table-item.active { background: #7dcfff15; color: #7dcfff; }
+  .db-table-item:hover { background: var(--bg-elev); }
+  .db-table-item.active { background: var(--accent-soft); color: var(--accent); }
   .db-table-item .count {
-    color: #565f89;
+    color: var(--fg-3);
     font-size: 11px;
   }
   .db-table-reset-btn {
     background: none;
     border: none;
-    color: #565f89;
+    color: var(--fg-3);
     cursor: pointer;
     font-size: 10px;
     padding: 0 4px;
@@ -469,7 +469,7 @@
     opacity: 1;
   }
   .db-table-reset-btn:hover {
-    color: #f7768e;
+    color: var(--danger);
   }
   #db-table-view {
     flex: 1;
@@ -480,8 +480,8 @@
   }
   #db-table-header {
     padding: 8px 12px;
-    border-bottom: 1px solid #2a2a4a;
-    color: #565f89;
+    border-bottom: 1px solid var(--border);
+    color: var(--fg-3);
     font-size: 11px;
     flex-shrink: 0;
     white-space: nowrap;
@@ -496,7 +496,7 @@
     padding: 0;
   }
   .db-hint {
-    color: #565f89;
+    color: var(--fg-3);
     text-align: center;
     padding: 40px 20px;
     font-size: 13px;
@@ -510,8 +510,8 @@
     font-family: 'Fira Code', Menlo, monospace;
   }
   .db-table th {
-    background: #1a1a2e;
-    color: #7dcfff;
+    background: var(--bg-elev);
+    color: var(--accent);
     padding: 6px 10px;
     text-align: left;
     font-weight: 600;
