@@ -1136,14 +1136,16 @@ class ToolLoader:
 _tool_loader = ToolLoader()
 
 
-async def load_tools(user_id: str) -> Dict[str, ToolInfo]:
+async def load_tools(user_id: str, agent_template_id: Optional[str] = None) -> Dict[str, ToolInfo]:
     """
     Load all active tools for a user.
 
     Args:
         user_id: The user ID to load tools for
+        agent_template_id: Active agent template id - gates admin-only and
+            delegation tools; pipeline agents skip delegation tools.
 
     Returns:
         Dictionary mapping tool names to ToolInfo objects
     """
-    return await _tool_loader.load_tools(user_id)
+    return await _tool_loader.load_tools(user_id, agent_template_id=agent_template_id)
