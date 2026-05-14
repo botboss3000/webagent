@@ -193,7 +193,7 @@ let _toolMetaCacheTs = 0;
 const TOOL_META_CACHE_MS = 30_000;
 
 // ── Fetch all tool metadata from /admin/tools (built-ins + user skills) ──
-async function fetchAllToolMeta() {
+export async function fetchAllToolMeta() {
   const now = Date.now();
   if (_toolMetaCache && (now - _toolMetaCacheTs) < TOOL_META_CACHE_MS) {
     return _toolMetaCache;

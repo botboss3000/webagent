@@ -14,6 +14,7 @@
  */
 
 import { app } from './state.js';
+import { fetchAllToolMeta } from './loop-visual.js';
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let _agents        = [];   // full list from server
@@ -101,6 +102,7 @@ export async function initAgents() {
   _renderList();
   _bindCreateModal();
   _bindDetailTabs();
+  _restoreViewState();
 }
 
 function _bindDetailTabs() {
@@ -113,6 +115,7 @@ function _bindDetailTabs() {
       const oldBar = document.getElementById('agents-save-bar-dynamic');
       if (oldBar) oldBar.remove();
       _renderTabBody();
+      _saveViewState();
     });
   });
 }
@@ -248,11 +251,17 @@ function _renderList() {
 }
 
 function _selectAgent(agent) {
+  // Clicking the already-selected agent collapses the panel (toggle behaviour)
+  if (_selected && _selected.id === agent.id) {
+    _closeAccordion();
+    return;
+  }
   _selected = agent;
   _dirty = false;
   _renderList();
   _openAccordion();
   _renderDetail();
+  _saveViewState();
 }
 
 function _openAccordion() {
@@ -287,6 +296,7 @@ function _closeAccordion() {
     }
   }
   _selected = null;
+  _clearViewState();
   _renderList();
 }
 
@@ -778,6 +788,30 @@ function _lvNodeHint(nd) {
   }
 }
 
+// Static items per node (slash commands + settings shortcuts) — mirrors loop-visual.js
+const _LV_NODE_STATIC_ITEMS = {
+  user_input: [
+    { name: '/optimize',            type: 'command', desc: 'Run the optimizer on this session to improve agent skills' },
+    { name: '/optimize <feedback>', type: 'command', desc: 'Run optimizer with specific feedback about what to improve' },
+  ],
+  build_prompt: [
+    { name: 'Settings → Agent',     type: 'admin',   desc: "Edit this agent's core directive and persona" },
+  ],
+  llm_call: [
+    { name: 'Settings → Provider',  type: 'admin',   desc: 'Change the LLM model, base URL, or API key' },
+    { name: 'Settings → Agent',     type: 'admin',   desc: "Edit this agent's system prompt and persona" },
+  ],
+  check_continue: [
+    { name: 'Settings → Max Turns', type: 'admin',   desc: 'Configure the maximum number of agentic turns per request' },
+  ],
+  final_response: [
+    { name: '/optimize',            type: 'command', desc: 'Trigger optimizer on this session to improve future responses' },
+  ],
+  memory_save: [
+    { name: 'Settings → Source',    type: 'admin',   desc: 'View and manage memory and context documents' },
+  ],
+};
+
 function _lvShowPanel(nd, nodeEl, container) {
   _lvHidePanel();
   if (!_selected) return;
@@ -791,6 +825,7 @@ function _lvShowPanel(nd, nodeEl, container) {
   panel.className = 'lv-tool-panel';
   panel.style.cssText = `left:${left}px;top:${top}px;width:${PANEL_W}px;`;
 
+  // Header
   const header = document.createElement('div');
   header.className = 'lv-tool-panel-header';
   const title = document.createElement('span');
@@ -804,22 +839,31 @@ function _lvShowPanel(nd, nodeEl, container) {
   header.appendChild(close);
   panel.appendChild(header);
 
-  const list = document.createElement('div');
-  list.className = 'lv-tool-panel-list';
+  // ── Static items (slash commands + Settings shortcuts) ──
+  const staticItems = _LV_NODE_STATIC_ITEMS[nd.id] || [];
+  if (staticItems.length > 0) {
+    const lbl = document.createElement('div');
+    lbl.className = 'lv-tool-section-label';
+    lbl.textContent = 'Commands & Settings';
+    panel.appendChild(lbl);
+    const staticList = document.createElement('div');
+    staticList.className = 'lv-tool-panel-list';
+    staticItems.forEach(item => _lvAppendItem(staticList, item));
+    panel.appendChild(staticList);
+  }
 
-  if (nd.id === 'execute_tools') {
-    // Show this agent's exact tools
-    _toolsForAgent(_selected).forEach(name => {
-      _lvAppendItem(list, {
-        name,
-        type: DESTRUCTIVE.has(name) ? 'guarded' : 'tool',
-        desc: TOOL_DESCRIPTIONS[name] || '',
-      });
-    });
-  } else if (nd.id === 'llm_call') {
-    _lvAppendItem(list, { name: _selected.model || 'claude-3-5-sonnet', type: 'tool', desc: 'LLM model for this agent' });
-    _lvAppendItem(list, { name: `Max ${_selected.max_turn_count || 10} turns`, type: 'tool', desc: 'Tool-calling turn limit per session' });
-  } else if (nd.id === 'load_context' || nd.id === 'build_prompt') {
+  // ── Live tools section — real DB data filtered to this node's stage
+  //    AND to only what this agent is allowed to use ──
+  const agentToolNames = new Set(_toolsForAgent(_selected));
+
+  // Special-case nodes that don't have "tools" in the DB sense
+  if (nd.id === 'load_context' || nd.id === 'build_prompt') {
+    const lbl = document.createElement('div');
+    lbl.className = 'lv-tool-section-label';
+    lbl.textContent = 'Prompt Sections';
+    panel.appendChild(lbl);
+    const ctxList = document.createElement('div');
+    ctxList.className = 'lv-tool-panel-list';
     [
       { key: 'agent_prompt',  label: 'Identity & Personality' },
       { key: 'user_prompt',   label: 'User Preferences' },
@@ -829,21 +873,79 @@ function _lvShowPanel(nd, nodeEl, container) {
     ].forEach(f => {
       const val = _selected[f.key];
       const filled = val && String(val).trim();
-      _lvAppendItem(list, {
+      _lvAppendItem(ctxList, {
         name: f.label,
         type: filled ? 'tool' : 'command',
         desc: filled ? String(val).trim().substring(0, 90) + '…' : '(empty — configure in Config tab)',
       });
     });
+    panel.appendChild(ctxList);
   } else if (nd.id === 'check_continue') {
-    _lvAppendItem(list, { name: `Max turns: ${_selected.max_turn_count || 10}`, type: 'tool',
-      desc: 'Agent stops looping after this many tool-calling turns' });
+    const lbl = document.createElement('div');
+    lbl.className = 'lv-tool-section-label';
+    lbl.textContent = 'Configuration';
+    panel.appendChild(lbl);
+    const cfgList = document.createElement('div');
+    cfgList.className = 'lv-tool-panel-list';
+    _lvAppendItem(cfgList, {
+      name: `Max turns: ${_selected.max_turn_count || 10}`,
+      type: 'tool',
+      desc: 'Agent stops looping after this many tool-calling turns',
+    });
+    panel.appendChild(cfgList);
   } else {
-    const hint = _lvNodeHint(nd);
-    if (hint) _lvAppendItem(list, { name: nd.label, type: 'tool', desc: hint });
+    // Standard nodes: fetch tools from DB, filter by stage + agent access
+    const toolsLbl = document.createElement('div');
+    toolsLbl.className = 'lv-tool-section-label lv-tool-section-live';
+    toolsLbl.innerHTML = 'Tools <span class="lv-live-dot"></span>';
+    panel.appendChild(toolsLbl);
+
+    const toolsList = document.createElement('div');
+    toolsList.className = 'lv-tool-panel-list';
+    const loadingEl = document.createElement('div');
+    loadingEl.className = 'lv-tool-panel-empty lv-tool-loading';
+    loadingEl.textContent = 'Loading…';
+    toolsList.appendChild(loadingEl);
+    panel.appendChild(toolsList);
+
+    fetchAllToolMeta().then(allTools => {
+      // Filter: must map to this pipeline stage AND be accessible to this agent
+      const nodeTools = allTools.filter(t => {
+        const stages = Array.isArray(t.stages)
+          ? t.stages
+          : (() => { try { return JSON.parse(t.stages || '[]'); } catch { return []; } })();
+        return stages.includes(nd.id) && agentToolNames.has(t.name);
+      });
+
+      toolsList.innerHTML = '';
+
+      if (nodeTools.length === 0) {
+        const none = document.createElement('div');
+        none.className = 'lv-tool-panel-empty';
+        none.textContent = 'No tools mapped to this stage for this agent.';
+        toolsList.appendChild(none);
+        return;
+      }
+
+      // Sort: skills first, then built-ins
+      nodeTools.sort((a, b) => {
+        const aS = a.source === 'skill' ? 0 : 1;
+        const bS = b.source === 'skill' ? 0 : 1;
+        return aS - bS || a.name.localeCompare(b.name);
+      });
+
+      nodeTools.forEach(t => {
+        const isDestructive = t.destructive === 1 || t.destructive === true;
+        const isSkill = t.source === 'skill';
+        _lvAppendItem(toolsList, {
+          name: t.name,
+          type: isDestructive ? 'guarded' : isSkill ? 'skill' : 'tool',
+          desc: t.description || '',
+        });
+      });
+    });
   }
 
-  panel.appendChild(list);
   container.appendChild(panel);
   _lvActivePanelNodeId = nd.id;
   _lvActivePanelEl = panel;
@@ -1042,6 +1144,42 @@ function _bindCreateModal() {
 }
 
 // ── Tab switching (bound inside _bindDetailTabs, called from initAgents) ─────
+
+// ── Persisted view state ──────────────────────────────────────────────────────
+
+const _STORAGE_KEY = 'agents_view_state';
+
+function _saveViewState() {
+  try {
+    const state = {
+      agentId: _selected ? _selected.id : null,
+      tab:     _activeTab,
+    };
+    localStorage.setItem(_STORAGE_KEY, JSON.stringify(state));
+  } catch (_) {}
+}
+
+function _clearViewState() {
+  try { localStorage.removeItem(_STORAGE_KEY); } catch (_) {}
+}
+
+function _restoreViewState() {
+  try {
+    const raw = localStorage.getItem(_STORAGE_KEY);
+    if (!raw) return;
+    const { agentId, tab } = JSON.parse(raw);
+    if (tab) _activeTab = tab;
+    if (agentId) {
+      const agent = _agents.find(a => a.id === agentId);
+      if (agent) {
+        _selected = agent;
+        _renderList();
+        _openAccordion();
+        _renderDetail();
+      }
+    }
+  } catch (_) {}
+}
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
