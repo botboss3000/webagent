@@ -97,7 +97,10 @@ export async function loadSessionChat(sessionId) {
       if (msg.role === 'user') {
         app.addChatBubble('user', msg.content);
       } else if (msg.role === 'assistant') {
-        app.addChatBubble('agent', msg.content);
+        let text = msg.content || '';
+        const toolCallIdx = text.indexOf('\n\n[Tool calls: ');
+        if (toolCallIdx !== -1) text = text.slice(0, toolCallIdx);
+        app.addChatBubble('agent', text);
       }
     }
     app.chatMessages.scrollTop = app.chatMessages.scrollHeight;

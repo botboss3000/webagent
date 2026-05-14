@@ -304,6 +304,9 @@ CREATE TABLE IF NOT EXISTS tools (
     language TEXT NOT NULL DEFAULT 'python',
     status TEXT NOT NULL DEFAULT 'active',
     created_by TEXT NOT NULL,
+    stages TEXT NOT NULL DEFAULT '[]',
+    destructive INTEGER NOT NULL DEFAULT 0,
+    agent_types TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -643,12 +646,14 @@ class LocalBackend(StorageBackend):
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='agents_v1'"
             )
             if cursor.fetchone():
+                _mig_now = _now_iso()
                 conn.execute(
                     """INSERT OR IGNORE INTO agents
                        (id, user_id, max_turn_count, status, assigned_at, created_at, updated_at)
                        SELECT id, 'migrated_default', max_turn_count, 'active',
-                              datetime('now'), datetime('now'), datetime('now')
-                       FROM agents_v1 WHERE id = 'default_agent'"""
+                              ?, ?, ?
+                       FROM agents_v1 WHERE id = 'default_agent'""",
+                    (_mig_now, _mig_now, _mig_now),
                 )
                 conn.execute("DROP TABLE agents_v1")
                 conn.commit()
@@ -730,6 +735,14 @@ class LocalBackend(StorageBackend):
                 if "bootstrap_tools" not in tbl_cols:
                     conn.execute(f"ALTER TABLE {tbl} ADD COLUMN bootstrap_tools TEXT NOT NULL DEFAULT ''")
                     logger.info("Added bootstrap_tools column to %s", tbl)
+            conn.commit()
+
+            # ── Migration: add tool metadata columns ──
+            tool_cols = {row[1] for row in conn.execute("PRAGMA table_info(tools)").fetchall()}
+            for col, default in [("stages", "'[]'"), ("destructive", "0"), ("agent_types", "'[]'")]:
+                if col not in tool_cols:
+                    conn.execute(f"ALTER TABLE tools ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}")
+                    logger.info("Added %s column to tools", col)
             conn.commit()
 
             # ── Migration: copy _ctx → _prompt and drop old _ctx columns ──
@@ -2778,7 +2791,7 @@ class LocalBackend(StorageBackend):
                 "SELECT id FROM auth_elements WHERE user_id = ? AND service = ? AND label = ?",
                 (user_id, service, label),
             ).fetchone()
-            now = __import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            now = _now_iso()
             config_json = __import__('json').dumps(config)
             if existing:
                 conn.execute(

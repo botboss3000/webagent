@@ -111,6 +111,9 @@ class ToolRecord(BaseModel):
     language: str = "python"
     status: str = "active"  # active, deprecated
     created_by: str
+    stages: Optional[str] = "[]"       # JSON array of loop node IDs where this tool fires
+    destructive: int = 0                # 1 = requires confirmation before running
+    agent_types: Optional[str] = "[]"  # JSON array of agent type names; empty = all agents
     created_at: datetime
     updated_at: datetime
 

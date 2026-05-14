@@ -69,9 +69,9 @@ async def deploy_improvements(
                         doc_id = existing[0]
                         conn.execute(
                             """UPDATE context_documents
-                               SET content = ?, updated_at = datetime('now')
+                               SET content = ?, updated_at = ?
                                WHERE id = ?""",
-                            (new_content, doc_id),
+                            (new_content, datetime.now(timezone.utc).isoformat(), doc_id),
                         )
                         conn.commit()
                         deployed += 1

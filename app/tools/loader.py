@@ -11,6 +11,62 @@ from app.db import get_db
 logger = logging.getLogger(__name__)
 
 
+# ── Built-in tool metadata ────────────────────────────────────────────────────
+# Consumed by /admin/tools to provide a merged view of all tools (built-ins +
+# user skills) with loop-stage annotations for the visualizer.
+#
+# stages      — which loop node(s) this tool can fire in
+# destructive — writes, deletes, or has irreversible side-effects
+# agent_types — which agent type names may use it; [] means all
+BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
+    # ── Core discovery ──
+    "list_tools":                    {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    "search_tools":                  {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    "get_tool_definition":           {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    # ── Web & browser ──
+    "web_search":                    {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    "browser_action":                {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    "http_request":                  {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    # ── DB & context ──
+    "db_query":                      {"stages": ["execute_tools"],                                "destructive": True,  "agent_types": []},
+    "list_agent_context_documents":  {"stages": ["load_context", "execute_tools"],               "destructive": False, "agent_types": []},
+    "get_agent_context_document":    {"stages": ["load_context", "execute_tools"],               "destructive": False, "agent_types": []},
+    "update_agent_context_document": {"stages": ["execute_tools"],                               "destructive": True,  "agent_types": []},
+    "insert_agent_context_document": {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
+    # ── Memory ──
+    "memory":                        {"stages": ["memory_search", "memory_save", "execute_tools"], "destructive": False, "agent_types": []},
+    "session_search":                {"stages": ["load_context", "execute_tools"],               "destructive": False, "agent_types": []},
+    # ── Utilities ──
+    "get_time":                      {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
+    "get_date":                      {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
+    "get_weather":                   {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
+    "calculate":                     {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
+    "read_attachment":               {"stages": ["load_context", "execute_tools"],               "destructive": False, "agent_types": []},
+    # ── Tool creation ──
+    "create_tool":                   {"stages": ["execute_tools"],                               "destructive": True,  "agent_types": []},
+    "rate_skill":                    {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
+    # ── Webhooks ──
+    "register_webhook":              {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
+    "list_webhooks":                 {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
+    "delete_webhook":                {"stages": ["execute_tools"],                               "destructive": True,  "agent_types": []},
+    "get_webhook_log":               {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
+    # ── Optimizer ──
+    "run_optimizer":                 {"stages": ["user_input", "execute_tools"],                 "destructive": False, "agent_types": ["default"]},
+    "run_worker_trials":             {"stages": ["opt_validate"],                                "destructive": False, "agent_types": ["optimizer-planner"]},
+    "handoff_to_finalizer":          {"stages": ["opt_propose"],                                 "destructive": False, "agent_types": ["optimizer-planner"]},
+    "deploy_optimization":           {"stages": ["opt_apply"],                                   "destructive": True,  "agent_types": ["optimizer-finalizer"]},
+    # ── Admin/source (privileged) — write/exec tools pass through guardrails ──
+    "read_source":                   {"stages": ["execute_tools"],                               "destructive": False, "agent_types": ["admin"]},
+    "write_source":                  {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "agent_types": ["admin"]},
+    "edit_source":                   {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "agent_types": ["admin"]},
+    "delete_source":                 {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "agent_types": ["admin"]},
+    "run_command":                   {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "agent_types": ["admin"]},
+    "restart_server":                {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "agent_types": ["admin"]},
+    # ── Auth / comms ──
+    "register_user":                 {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
+}
+
+
 def _get_webhook_base_url() -> str:
     """Get the configured public webhook base URL from the plugin registry."""
     try:
@@ -75,14 +131,17 @@ class ToolLoader:
         """Inject built-in tools that are always available regardless of DB state."""
 
         # ── create_tool (always available) ──
-        from app.tools.registry import create_tool as _builtin_create_tool
+        from app.tools.registry import create_tool as _builtin_create_tool, VALID_NODE_IDS as _VALID_NODE_IDS
 
-        async def _create_tool_wrapper(name, description, parameters, code):
+        async def _create_tool_wrapper(name, description, parameters, code, stages, destructive=False, agent_types=None):
             return await _builtin_create_tool(
                 name=name,
                 description=description,
                 parameters=parameters,
                 code=code,
+                stages=stages,
+                destructive=destructive,
+                agent_types=agent_types,
                 user_id=user_id,
             )
 
@@ -96,8 +155,28 @@ class ToolLoader:
                     "description": {"type": "string", "description": "What the tool does (shown to model)"},
                     "parameters": {"type": "object", "description": "JSON Schema describing tool inputs"},
                     "code": {"type": "string", "description": "Full Python async function code. Must contain an async function with the same name as the tool."},
+                    "stages": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "REQUIRED. List of loop node IDs where this tool operates. "
+                            "Most tools: ['execute_tools']. Memory tools: ['memory_search', 'memory_save']. "
+                            f"Valid values: {', '.join(sorted(_VALID_NODE_IDS))}."
+                        ),
+                    },
+                    "destructive": {
+                        "type": "boolean",
+                        "description": "True if this tool writes, deletes, or has irreversible side-effects.",
+                        "default": False,
+                    },
+                    "agent_types": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Agent type names that may use this tool. Empty = all agent types.",
+                        "default": [],
+                    },
                 },
-                "required": ["name", "description", "parameters", "code"],
+                "required": ["name", "description", "parameters", "code", "stages"],
             },
         )
 
@@ -604,6 +683,14 @@ class ToolLoader:
             timeline: Optional[str] = None,
             limit: int = 10,
         ):
+            # Block memory access for simulated/worker-trial sessions.
+            # These use user IDs of the form "worker-test-<id>" and should
+            # never read from or write to the real memory store.
+            if user_id.startswith("worker-test-"):
+                return json.dumps({
+                    "status": "skipped",
+                    "message": "Memory is disabled in simulated sessions.",
+                })
             return await _core_memory(
                 action=action,
                 slug=slug,

@@ -3,105 +3,33 @@
 import { app } from './state.js';
 import { apiPath } from './config.js';
 
-// ── Tools relevant to each pipeline node ──
-// type: 'command' = user slash command, 'tool' = agent-callable tool,
-//       'guarded' = destructive (requires confirmation), 'admin' = settings panel action
-const NODE_TOOLS = {
+// ── Static items per node (slash commands and Settings links) ──
+// These cannot come from the /admin/tools endpoint — they live here.
+// type: 'command' = user slash command, 'admin' = settings panel shortcut
+const NODE_STATIC_ITEMS = {
   user_input: [
-    { name: '/optimize',           type: 'command', desc: 'Run the optimizer on this session to improve agent skills' },
-    { name: '/optimize <feedback>', type: 'command', desc: 'Run optimizer with specific feedback about what to improve' },
-  ],
-  load_context: [
-    { name: 'list_agent_context_documents',   type: 'tool',  desc: 'List all context docs currently injected into the prompt' },
-    { name: 'get_agent_context_document',     type: 'tool',  desc: 'Read a specific context document by slug' },
-    { name: 'update_agent_context_document',  type: 'tool',  desc: 'Edit an existing context doc (skills, persona, instructions)' },
-    { name: 'insert_agent_context_document',  type: 'tool',  desc: 'Add a new context document to the agent' },
-  ],
-  memory_search: [
-    { name: 'memory',         type: 'tool', desc: 'Search the agent\'s persistent memory store for relevant context' },
-    { name: 'session_search', type: 'tool', desc: 'Search through past session interactions by keyword' },
+    { name: '/optimize',             type: 'command', desc: 'Run the optimizer on this session to improve agent skills' },
+    { name: '/optimize <feedback>',  type: 'command', desc: 'Run optimizer with specific feedback about what to improve' },
   ],
   build_prompt: [
-    { name: 'list_agent_context_documents',  type: 'tool',  desc: 'See exactly what\'s assembled into the system prompt' },
-    { name: 'update_agent_context_document', type: 'tool',  desc: 'Modify the skills, persona, or instructions section' },
-    { name: 'insert_agent_context_document', type: 'tool',  desc: 'Add new instructions or rules to the prompt' },
-    { name: 'Settings → Agent',              type: 'admin', desc: 'Edit the agent\'s core non-editable directive' },
+    { name: 'Settings → Agent',      type: 'admin',   desc: 'Edit the agent\'s core directive and persona' },
   ],
   llm_call: [
-    { name: 'Settings → Provider', type: 'admin', desc: 'Change the LLM model, base URL, or API key' },
-    { name: 'Settings → Agent',    type: 'admin', desc: 'Edit the agent\'s system prompt and persona' },
-    { name: 'list_tools',          type: 'tool',  desc: 'Show all tools available to the model during this call' },
-  ],
-  validate_tools: [
-    { name: 'list_tools',          type: 'tool', desc: 'List all registered tools and their current status' },
-    { name: 'get_tool_definition', type: 'tool', desc: 'Inspect the full JSON schema for a specific tool' },
-    { name: 'search_tools',        type: 'tool', desc: 'Search tools by keyword to find the right one' },
-    { name: 'create_tool',         type: 'tool', desc: 'Create or update a custom skill/tool definition' },
-  ],
-  guardrails: [
-    { name: 'edit_source',    type: 'guarded', desc: 'Edit a source file — requires user confirmation before execution' },
-    { name: 'write_source',   type: 'guarded', desc: 'Write a new file — requires user confirmation' },
-    { name: 'delete_source',  type: 'guarded', desc: 'Delete a file — requires user confirmation' },
-    { name: 'run_command',    type: 'guarded', desc: 'Run a shell command — requires user confirmation' },
-    { name: 'restart_server', type: 'guarded', desc: 'Restart the server process — requires user confirmation' },
-  ],
-  execute_tools: [
-    { name: 'web_search',      type: 'tool',    desc: 'Search the web for information' },
-    { name: 'browser_action',  type: 'tool',    desc: 'Control a browser — navigate, click, extract content' },
-    { name: 'http_request',    type: 'tool',    desc: 'Make HTTP requests to external APIs or endpoints' },
-    { name: 'db_query',        type: 'tool',    desc: 'Run SQL queries against the agent database' },
-    { name: 'read_source',     type: 'tool',    desc: 'Read the contents of a source file from the project' },
-    { name: 'write_source',    type: 'guarded', desc: 'Write a file (requires user confirmation)' },
-    { name: 'edit_source',     type: 'guarded', desc: 'Edit a file in-place (requires user confirmation)' },
-    { name: 'run_command',     type: 'guarded', desc: 'Run a shell command (requires user confirmation)' },
-    { name: 'calculate',       type: 'tool',    desc: 'Evaluate a mathematical expression' },
-    { name: 'get_time',        type: 'tool',    desc: 'Get current time in any timezone' },
-    { name: 'get_date',        type: 'tool',    desc: 'Get current date in any format/timezone' },
-    { name: 'get_weather',     type: 'tool',    desc: 'Get current weather for a location' },
-    { name: 'read_attachment', type: 'tool',    desc: 'Process an uploaded file or attachment' },
-    { name: 'create_tool',     type: 'tool',    desc: 'Create a new custom skill/tool for the agent' },
-    { name: 'register_webhook',type: 'tool',    desc: 'Register a new webhook endpoint' },
-    { name: 'list_webhooks',   type: 'tool',    desc: 'List all registered webhook endpoints' },
-    { name: 'memory',          type: 'tool',    desc: 'Search or save to the agent\'s memory store' },
+    { name: 'Settings → Provider',   type: 'admin',   desc: 'Change the LLM model, base URL, or API key' },
+    { name: 'Settings → Agent',      type: 'admin',   desc: 'Edit the agent\'s system prompt and persona' },
   ],
   check_continue: [
-    { name: 'Settings → Max Turns', type: 'admin', desc: 'Configure the maximum number of agentic turns per request' },
-    { name: 'rate_skill',           type: 'tool',  desc: 'Rate the performance of a skill after it has executed' },
+    { name: 'Settings → Max Turns',  type: 'admin',   desc: 'Configure the maximum number of agentic turns per request' },
   ],
   final_response: [
-    { name: '/optimize',  type: 'command', desc: 'Trigger optimizer on this session to improve future responses' },
-    { name: 'rate_skill', type: 'tool',    desc: 'Rate how well a specific skill performed this turn' },
+    { name: '/optimize',             type: 'command', desc: 'Trigger optimizer on this session to improve future responses' },
   ],
   memory_save: [
-    { name: 'memory',            type: 'tool',  desc: 'Save a new memory entry to the agent\'s persistent memory store' },
-    { name: 'Settings → Source', type: 'admin', desc: 'View and manage memory and context documents' },
+    { name: 'Settings → Source',     type: 'admin',   desc: 'View and manage memory and context documents' },
   ],
-};
-
-const OPTIMIZER_NODE_TOOLS = {
   opt_collect: [
-    { name: '/optimize [feedback]',   type: 'command', desc: 'Trigger a new optimizer run against the current session' },
-    { name: 'Settings → Optimizer',   type: 'admin',   desc: 'Configure run mode, intensity, schedule, and scan scope' },
-    { name: 'session_search',         type: 'tool',    desc: 'Search past interactions to identify sessions to analyze' },
-  ],
-  opt_analyze: [
-    { name: 'run_optimizer',  type: 'tool', desc: 'Programmatically trigger an optimizer analysis run' },
-    { name: 'session_search', type: 'tool', desc: 'Search past interactions to find failure and success patterns' },
-    { name: 'db_query',       type: 'tool', desc: 'Query interaction data to gather quality metrics' },
-  ],
-  opt_propose: [
-    { name: 'create_tool',                type: 'tool', desc: 'Create or update a custom skill based on proposed changes' },
-    { name: 'update_agent_context_document', type: 'tool', desc: 'Update prompt context with proposed improvements' },
-    { name: 'get_tool_definition',        type: 'tool', desc: 'Read existing tool definitions before proposing edits' },
-  ],
-  opt_validate: [
-    { name: 'run_worker_trials',   type: 'tool', desc: 'Run isolated test agents to validate proposed changes' },
-    { name: 'handoff_to_finalizer',type: 'tool', desc: 'Pass analysis results to the Finalizer agent for approval' },
-  ],
-  opt_apply: [
-    { name: 'deploy_optimization',        type: 'tool', desc: 'Deploy approved changes to the live agent' },
-    { name: 'create_tool',                type: 'tool', desc: 'Write the new/updated tool into the agent\'s skill set' },
-    { name: 'update_agent_context_document', type: 'tool', desc: 'Persist updated prompt instructions after validation' },
+    { name: '/optimize [feedback]',  type: 'command', desc: 'Trigger a new optimizer run against the current session' },
+    { name: 'Settings → Optimizer',  type: 'admin',   desc: 'Configure run mode, intensity, schedule, and scan scope' },
   ],
 };
 
@@ -259,23 +187,38 @@ function getEdgePath(edge, nodeList) {
 let _activePanelNodeId = null;
 let _activePanelEl = null;
 
-// ── Nodes that should also show live user-created skills from the DB ──
-const NODES_WITH_LIVE_SKILLS = new Set(['execute_tools', 'validate_tools']);
+// ── Tool metadata cache (30s TTL — avoids re-fetching on every panel open) ──
+let _toolMetaCache = null;
+let _toolMetaCacheTs = 0;
+const TOOL_META_CACHE_MS = 30_000;
 
-// ── Fetch user skills from the DB ──
-async function fetchUserSkills() {
+// ── Fetch all tool metadata from /admin/tools (built-ins + user skills) ──
+async function fetchAllToolMeta() {
+  const now = Date.now();
+  if (_toolMetaCache && (now - _toolMetaCacheTs) < TOOL_META_CACHE_MS) {
+    return _toolMetaCache;
+  }
   try {
     const token = localStorage.getItem('auth_token');
     const headers = token ? { Authorization: `Bearer ${token}` } : {};
     const res = await fetch(apiPath('/admin/tools'), { headers });
     if (!res.ok) return [];
     const data = await res.json();
-    // Returns an array of tool records: { name, description, status, ... }
-    return (Array.isArray(data) ? data : [])
-      .filter(t => t.status === 'active' || !t.status);
+    _toolMetaCache = Array.isArray(data) ? data : [];
+    _toolMetaCacheTs = now;
+    return _toolMetaCache;
   } catch {
     return [];
   }
+}
+
+// ── Safely parse a JSON field that may already be an array or a JSON string ──
+function _parseJsonField(val, fallback) {
+  if (Array.isArray(val)) return val;
+  if (typeof val === 'string') {
+    try { return JSON.parse(val); } catch { return fallback; }
+  }
+  return fallback;
 }
 
 // ── State ──
@@ -717,8 +660,6 @@ function renderNodeEl(nodeDef, nodeState, page, parent) {
 function showToolPanel(nodeDef, nodeEl, container) {
   hideToolPanel();
 
-  const tools = NODE_TOOLS[nodeDef.id] || OPTIMIZER_NODE_TOOLS[nodeDef.id] || [];
-
   const panel = document.createElement('div');
   panel.className = 'lv-tool-panel';
 
@@ -747,59 +688,34 @@ function showToolPanel(nodeDef, nodeEl, container) {
   header.appendChild(close);
   panel.appendChild(header);
 
-  // ── Static (built-in) tools section ──
-  if (tools.length > 0) {
-    const sectionLabel = document.createElement('div');
-    sectionLabel.className = 'lv-tool-section-label';
-    sectionLabel.textContent = 'Built-in';
-    panel.appendChild(sectionLabel);
+  // ── Static items (slash commands + Settings shortcuts) ──
+  const staticItems = NODE_STATIC_ITEMS[nodeDef.id] || [];
+  if (staticItems.length > 0) {
+    const lbl = document.createElement('div');
+    lbl.className = 'lv-tool-section-label';
+    lbl.textContent = 'Commands & Settings';
+    panel.appendChild(lbl);
 
     const list = document.createElement('div');
     list.className = 'lv-tool-panel-list';
-    tools.forEach(tool => _appendToolItem(list, tool));
+    staticItems.forEach(item => _appendToolItem(list, item));
     panel.appendChild(list);
-  } else {
-    const empty = document.createElement('div');
-    empty.className = 'lv-tool-panel-empty';
-    empty.textContent = 'No built-in tools mapped to this stage.';
-    panel.appendChild(empty);
   }
 
-  // ── Dynamic skills section (live from DB) ──
-  if (NODES_WITH_LIVE_SKILLS.has(nodeDef.id)) {
-    const skillsLabel = document.createElement('div');
-    skillsLabel.className = 'lv-tool-section-label lv-tool-section-live';
-    skillsLabel.innerHTML = 'Your Skills <span class="lv-live-dot"></span>';
-    panel.appendChild(skillsLabel);
+  // ── Live tools section (derived from /admin/tools stage metadata) ──
+  const toolsLabel = document.createElement('div');
+  toolsLabel.className = 'lv-tool-section-label lv-tool-section-live';
+  toolsLabel.innerHTML = 'Tools <span class="lv-live-dot"></span>';
+  panel.appendChild(toolsLabel);
 
-    const skillsList = document.createElement('div');
-    skillsList.className = 'lv-tool-panel-list';
+  const toolsList = document.createElement('div');
+  toolsList.className = 'lv-tool-panel-list';
 
-    const loadingEl = document.createElement('div');
-    loadingEl.className = 'lv-tool-panel-empty lv-tool-loading';
-    loadingEl.textContent = 'Loading…';
-    skillsList.appendChild(loadingEl);
-    panel.appendChild(skillsList);
-
-    // Fetch and render asynchronously
-    fetchUserSkills().then(skills => {
-      skillsList.innerHTML = '';
-      if (skills.length === 0) {
-        const none = document.createElement('div');
-        none.className = 'lv-tool-panel-empty';
-        none.textContent = 'No custom skills yet — use create_tool to build one.';
-        skillsList.appendChild(none);
-      } else {
-        skills.forEach(skill => {
-          _appendToolItem(skillsList, {
-            name: skill.name,
-            type: 'skill',
-            desc: skill.description || 'Custom skill',
-          });
-        });
-      }
-    });
-  }
+  const loadingEl = document.createElement('div');
+  loadingEl.className = 'lv-tool-panel-empty lv-tool-loading';
+  loadingEl.textContent = 'Loading…';
+  toolsList.appendChild(loadingEl);
+  panel.appendChild(toolsList);
 
   container.appendChild(panel);
   _activePanelNodeId = nodeDef.id;
@@ -809,6 +725,42 @@ function showToolPanel(nodeDef, nodeEl, container) {
   setTimeout(() => {
     document.addEventListener('click', _outsideClickHandler, { once: true });
   }, 0);
+
+  // Fetch tool metadata and populate tools section
+  fetchAllToolMeta().then(allTools => {
+    const nodeTools = allTools.filter(t => {
+      const stages = _parseJsonField(t.stages, []);
+      return stages.includes(nodeDef.id);
+    });
+
+    toolsList.innerHTML = '';
+
+    if (nodeTools.length === 0) {
+      const none = document.createElement('div');
+      none.className = 'lv-tool-panel-empty';
+      none.textContent = 'No tools mapped to this stage.';
+      toolsList.appendChild(none);
+      return;
+    }
+
+    // Sort: skills first (user-created), then built-ins
+    nodeTools.sort((a, b) => {
+      const aSkill = a.source === 'skill' ? 0 : 1;
+      const bSkill = b.source === 'skill' ? 0 : 1;
+      return aSkill - bSkill || a.name.localeCompare(b.name);
+    });
+
+    nodeTools.forEach(t => {
+      const isDestructive = t.destructive === 1 || t.destructive === true;
+      const isSkill = t.source === 'skill';
+      const badge = isDestructive ? 'guarded' : isSkill ? 'skill' : 'tool';
+      _appendToolItem(toolsList, {
+        name: t.name,
+        type: badge,
+        desc: t.description || '',
+      });
+    });
+  });
 }
 
 // ── Append a single tool row to a list element ──

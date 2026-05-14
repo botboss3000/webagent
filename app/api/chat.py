@@ -665,59 +665,13 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'build_prompt', 'sections': ['SYSTEM'], 'brain_injected': bool(brain_context), 'tool_count_in_prompt': len(tools)})}\n\n"
 
         exclude_ids = {user_interaction_id} if user_interaction_id else set()
-        if request.session_id.startswith('finalizer-') or (request.session_id.startswith('optimizer-') and opt_role == 'finalizer'):
-            # Inject only the relevant data — no Planner conversation
-            judging_criteria = opt_metadata.get('judging_criteria', '')
-            baseline_transcript = opt_metadata.get('baseline_transcript', '')
-            worker_results = opt_metadata.get('worker_results', '')
-            test_db_paths = opt_metadata.get('test_db_paths', [])
-
-            trial_transcripts = []
-            for rel_path in test_db_paths:
-                try:
-                    _api_dir = os.path.dirname(os.path.abspath(__file__))
-                    _project_root = os.path.normpath(os.path.join(_api_dir, "..", ".."))
-                    abs_path = os.path.normpath(os.path.join(_project_root, rel_path))
-                    if not os.path.exists(abs_path):
-                        trial_transcripts.append(f"\n### Trial: {rel_path}\n(db file not found)")
-                        continue
-                    _conn = sqlite3.connect(abs_path)
-                    _conn.row_factory = sqlite3.Row
-                    rows = _conn.execute(
-                        "SELECT role, content FROM interactions ORDER BY created_at"
-                    ).fetchall()
-                    _conn.close()
-                    trans_lines = []
-                    for r in rows:
-                        role_label = "User" if r["role"] == "user" else "Assistant"
-                        trans_lines.append(f"**{role_label}**: {r['content'][:500]}")
-                    if trans_lines:
-                        trial_transcripts.append(
-                            f"\n### Trial: {os.path.basename(rel_path)}\n" + "\n".join(trans_lines)
-                        )
-                except Exception as e:
-                    trial_transcripts.append(f"\n### Trial: {rel_path}\n(error reading: {e})")
-
-            trial_transcripts_text = "\n".join(trial_transcripts) if trial_transcripts else ""
-
-            finalizer_context = f"""## Judging Criteria (agreed by Planner + user)
-{judging_criteria}
-
-## Baseline (original interaction)
-{baseline_transcript}
-
-## Worker Trial Results
-{worker_results}
-"""
-            if trial_transcripts_text:
-                finalizer_context += f"\n## Raw Trial Transcripts (from temp databases)\n{trial_transcripts_text}\n"
-
-            history = [{"role": "system", "content": finalizer_context}]
-        else:
-            history = await build_openai_history_from_session(
-                db, request.user_id, request.session_id,
-                exclude_interaction_ids=exclude_ids,
-            )
+        # All optimizer/finalizer context is pre-injected as real interaction rows
+        # in the session's temp DB by handoff_to_finalizer, so the standard history
+        # builder works for all session types.
+        history = await build_openai_history_from_session(
+            db, request.user_id, request.session_id,
+            exclude_interaction_ids=exclude_ids,
+        )
 
         q = asyncio.Queue()
 
