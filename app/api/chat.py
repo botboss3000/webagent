@@ -567,7 +567,9 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         # went through get_agent_for_user rather than get_or_resolve_session_agent).
         # For optimizer agents, get_or_resolve_session_agent already includes them.
         if not agent.get("context_documents"):
-            agent = await db.fetch_agent_by_id_with_context(agent["id"], CONTEXT_SECTION_TYPES)
+            _fetched = await db.fetch_agent_by_id_with_context(agent["id"], CONTEXT_SECTION_TYPES)
+            if _fetched is not None:
+                agent = _fetched
         
         yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'agent_assigned', 'agent_id': agent['id'], 'max_turn_count': agent.get('max_turn_count', 10)})}\n\n"
 
@@ -727,6 +729,13 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                 await q.put({
                     "type": "error", "level": "agent",
                     "message": f"The request timed out after {TIMEOUT_SEC} seconds. Please try again or simplify your request.",
+                })
+            except Exception as _task_err:
+                import traceback as _tb
+                logger.error("run_agent_task error: %s\n%s", _task_err, _tb.format_exc())
+                await q.put({
+                    "type": "error", "level": "agent",
+                    "message": str(_task_err),
                 })
             finally:
                 await q.put(None)  # Signal end of stream

@@ -3113,9 +3113,9 @@ class LocalBackend(StorageBackend):
                     system_prompt, max_turn_count, model, provider,
                     temperature, max_tokens, metadata,
                     agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
-                    bootstrap_tools, template_id, is_user_default, is_pipeline,
+                    bootstrap_tools, template_id, is_user_default,
                     created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)""",
                 (
                     agent_id, user_id, user_id, name, description,
                     tpl.get("system_prompt", ""),

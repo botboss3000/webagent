@@ -1,0 +1,643 @@
+/* ============================================================
+   webAgent Design System — CSS Tokens + Visual Overrides
+   Loaded after app1-3.css to apply the floaty UI kit design.
+   Based on: ui_kits/webagent/index.html + colors_and_type.css
+   ============================================================ */
+
+/* ── 1. CSS Tokens ─────────────────────────────────────────── */
+:root {
+  /* Backgrounds */
+  --bg-0:        #0d0d1a;
+  --bg-1:        #13132a;
+  --bg-2:        #14142a;
+  --bg-elev:     #1a1a2e;
+  --bg-elev-2:   #1e2040;
+  --bg-tint:     #2a2a4a;
+  --bg-tint-2:   #2f3b5c;
+
+  /* Borders */
+  --border:        #2a2a4a;
+  --border-soft:   #1e1e3a;
+  --border-strong: #3b4261;
+
+  /* Foreground */
+  --fg-1: #c0caf5;
+  --fg-2: #a9b1d6;
+  --fg-3: #565f89;
+  --fg-4: #3b4261;
+
+  /* Accent — cyan */
+  --accent:       #7dcfff;
+  --accent-hover: #89ddff;
+  --accent-soft:  rgba(125,207,255,0.08);
+  --accent-mid:   rgba(125,207,255,0.19);
+  --accent-line:  rgba(125,207,255,0.33);
+
+  /* Semantic */
+  --success:      #9ece6a;
+  --success-soft: rgba(158,206,106,0.19);
+  --warning:      #e0af68;
+  --warning-soft: rgba(224,175,104,0.19);
+  --danger:       #f7768e;
+  --danger-soft:  rgba(247,118,142,0.08);
+  --danger-mid:   rgba(247,118,142,0.25);
+  --signout:      #fb4934;
+  --purple:       #bb9af7;
+  --purple-alt:   #8a5acf;
+
+  /* Chat bubbles */
+  --user-bubble-bg:      rgba(125,207,255,0.08);
+  --user-bubble-border:  rgba(125,207,255,0.19);
+  --agent-bubble-bg:     #1a1a2e;
+  --agent-bubble-border: #2a2a4a;
+  --error-bubble-bg:     rgba(247,118,142,0.08);
+  --error-bubble-border: rgba(247,118,142,0.25);
+
+  /* Shadows */
+  --shadow-rest:
+    0 1px 0 rgba(255,255,255,0.03) inset,
+    0 1px 2px rgba(0,0,0,0.25),
+    0 8px 24px -12px rgba(0,0,0,0.45);
+  --shadow-float:
+    0 1px 0 rgba(255,255,255,0.04) inset,
+    0 4px 14px -4px rgba(0,0,0,0.5),
+    0 16px 40px -16px rgba(125,207,255,0.18);
+  --shadow-md:    0 8px 24px -8px rgba(0,0,0,0.55);
+  --shadow-lg:    0 14px 40px -12px rgba(0,0,0,0.55);
+  --shadow-xl:    0 18px 50px -10px rgba(0,0,0,0.6);
+  --shadow-modal: 0 30px 80px -20px rgba(0,0,0,0.6);
+  --shadow-glow:
+    0 0 0 1px rgba(125,207,255,0.25),
+    0 12px 32px -8px rgba(125,207,255,0.45);
+
+  /* Radii */
+  --r-xs:   4px;
+  --r-sm:   6px;
+  --r-md:   8px;
+  --r-lg:   10px;
+  --r-xl:   14px;
+  --r-2xl:  18px;
+  --r-3xl:  24px;
+  --r-pill: 999px;
+
+  /* Typography */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', Menlo, ui-monospace, monospace;
+}
+
+/* ── 2. Light theme overrides ──────────────────────────────── */
+body.light-mode {
+  --bg-0:        #fffaf5;
+  --bg-1:        #fff7f0;
+  --bg-2:        #fff2e6;
+  --bg-elev:     #fff2e6;
+  --bg-elev-2:   #fff5eb;
+  --bg-tint:     #ffeee0;
+  --bg-tint-2:   #ffe4cc;
+
+  --border:        #ffdec4;
+  --border-soft:   #ffeee0;
+  --border-strong: #ffd4a8;
+
+  --fg-1: #3d2c2e;
+  --fg-2: #5c4a4a;
+  --fg-3: #b09580;
+  --fg-4: #cca08a;
+
+  --accent:       #ff8c42;
+  --accent-hover: #ff7a2e;
+  --accent-soft:  #ffedd5;
+  --accent-mid:   #ffd4a8;
+  --accent-line:  #ffd4a8;
+
+  --success:     #5a8a4a;
+  --warning:     #d4873a;
+  --danger:      #d44848;
+  --signout:     #d44848;
+  --purple:      #7a4abf;
+
+  --user-bubble-bg:      #ffedd5;
+  --user-bubble-border:  #ffd4a8;
+  --agent-bubble-bg:     #ffffff;
+  --agent-bubble-border: #ffdec4;
+  --error-bubble-bg:     #fff0ee;
+  --error-bubble-border: #ffccbb;
+
+  --shadow-rest:  0 1px 2px rgba(180,140,90,0.08), 0 8px 24px -12px rgba(180,140,90,0.18);
+  --shadow-float: 0 4px 14px -4px rgba(180,140,90,0.18), 0 18px 40px -16px rgba(255,140,66,0.18);
+  --shadow-md:    0 8px 24px -8px rgba(180,140,90,0.18);
+  --shadow-lg:    0 14px 40px -12px rgba(180,140,90,0.22);
+  --shadow-xl:    0 18px 50px -10px rgba(180,140,90,0.22);
+  --shadow-modal: 0 30px 80px -20px rgba(180,140,90,0.30);
+  --shadow-glow:  0 0 0 1px rgba(255,140,66,0.25), 0 12px 32px -8px rgba(255,140,66,0.45);
+}
+
+
+/* ── 3. Body ────────────────────────────────────────────────── */
+body {
+  font-family: var(--font-sans);
+  background:
+    radial-gradient(70% 50% at 0% 0%,   rgba(125,207,255,0.06), transparent 60%),
+    radial-gradient(60% 50% at 100% 100%, rgba(187,154,247,0.05), transparent 60%),
+    var(--bg-0);
+  color: var(--fg-1);
+  padding: 14px;
+  gap: 14px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body.light-mode {
+  background:
+    radial-gradient(70% 50% at 0% 0%,   rgba(255,140,66,0.06), transparent 60%),
+    radial-gradient(60% 50% at 100% 100%, rgba(255,180,120,0.04), transparent 60%),
+    var(--bg-0);
+  color: var(--fg-1);
+}
+
+code, pre, .mono, .t-mono {
+  font-family: var(--font-mono);
+}
+
+
+/* ── 4. App container gap ───────────────────────────────────── */
+#app-container {
+  gap: 14px;
+  min-height: 0;
+}
+
+
+/* ── 5. Status bar → pill ───────────────────────────────────── */
+#status-bar {
+  border-bottom: none;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.05);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0)),
+    var(--bg-elev);
+  box-shadow: var(--shadow-rest);
+  padding: 8px 18px;
+  position: relative;
+  z-index: 10;
+}
+
+body.light-mode #status-bar {
+  border: 1px solid rgba(180,140,90,0.18);
+  background: linear-gradient(180deg, rgba(255,255,255,0.85), rgba(255,255,255,0.65)), var(--bg-elev);
+  box-shadow: var(--shadow-rest);
+}
+
+
+/* ── 6. Stage (terminal-side) → floating card ───────────────── */
+#terminal-side {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.02), transparent),
+    var(--bg-elev);
+  border: 1px solid rgba(255,255,255,0.04);
+  border-radius: 22px;
+  overflow: hidden;
+  box-shadow: var(--shadow-rest);
+}
+
+body.light-mode #terminal-side {
+  background: #fffaf5;
+  border-color: rgba(180,140,90,0.10);
+}
+
+/* Tab toolbars inside stage — match card, soft divider */
+#stream-toolbar,
+#loop-toolbar,
+#db-toolbar,
+#gh-toolbar,
+#loop-visual-toolbar,
+#autoagent-page-nav {
+  background: transparent;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+
+body.light-mode #stream-toolbar,
+body.light-mode #loop-toolbar,
+body.light-mode #db-toolbar,
+body.light-mode #gh-toolbar,
+body.light-mode #loop-visual-toolbar {
+  background: transparent;
+  border-bottom-color: rgba(180,140,90,0.12);
+}
+
+#stream-viewer,
+#loop-container,
+#db-viewer,
+#loop-visual-container,
+#autoagent-container {
+  background: transparent;
+}
+
+body.light-mode #stream-viewer,
+body.light-mode #loop-container,
+body.light-mode #db-viewer,
+body.light-mode #loop-list,
+body.light-mode #stream-list {
+  background: transparent;
+}
+
+
+/* ── 7. Chat rail → floating card ───────────────────────────── */
+#chat-side {
+  border-left: none;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.02), transparent),
+    var(--bg-1);
+  border: 1px solid rgba(255,255,255,0.04);
+  border-radius: 22px;
+  overflow: hidden;
+  box-shadow: var(--shadow-rest);
+}
+
+body.light-mode #chat-side {
+  background: var(--bg-1);
+  border-color: rgba(180,140,90,0.10);
+  border-left: none;
+}
+
+#chat-header {
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+
+body.light-mode #chat-header {
+  border-bottom-color: rgba(180,140,90,0.12);
+}
+
+#chat-input-area {
+  border-top: 1px solid rgba(255,255,255,0.05);
+}
+
+body.light-mode #chat-input-area {
+  border-top-color: rgba(180,140,90,0.12);
+}
+
+
+/* ── 8. Chat bubbles — asymmetric radii + shadows ────────────── */
+.chat-bubble {
+  border-radius: 16px;
+}
+
+.chat-bubble.user {
+  background: var(--user-bubble-bg);
+  border-color: var(--user-bubble-border);
+  border-bottom-right-radius: 6px;
+  box-shadow: 0 2px 8px -4px rgba(0,0,0,0.3);
+}
+
+.chat-bubble.agent {
+  background: var(--agent-bubble-bg);
+  border-color: var(--agent-bubble-border);
+  border-bottom-left-radius: 6px;
+}
+
+.chat-bubble.error {
+  background: var(--error-bubble-bg);
+  border-color: var(--error-bubble-border);
+}
+
+.chat-bubble.agent.streaming {
+  border-color: rgba(125,207,255,0.35);
+}
+
+body.light-mode .chat-bubble.user {
+  background: var(--user-bubble-bg);
+  border-color: var(--user-bubble-border);
+  color: var(--fg-1);
+}
+
+body.light-mode .chat-bubble.agent {
+  background: var(--agent-bubble-bg);
+  border-color: var(--agent-bubble-border);
+  color: var(--fg-2);
+}
+
+
+/* ── 9. Status dots — enhanced glow + scale pulse ────────────── */
+.status-dot.green {
+  box-shadow: 0 0 10px #7dcfff, 0 0 3px #7dcfff;
+}
+
+.status-dot.yellow {
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1;   transform: scale(1);    }
+  50%       { opacity: 0.4; transform: scale(0.82); }
+}
+
+
+/* ── 10. Settings / config dropdown — rounded popover ───────── */
+.settings-dropdown-content {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0)),
+    var(--bg-elev);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 16px;
+  box-shadow:
+    0 14px 40px -12px rgba(0,0,0,0.6),
+    0 1px 0 rgba(255,255,255,0.04) inset;
+  padding: 8px;
+  animation: pop-in 0.18s ease;
+}
+
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0);    }
+}
+
+.settings-menu-item {
+  border-radius: 10px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.settings-menu-item:hover {
+  background: rgba(125,207,255,0.10);
+  color: #fff;
+}
+
+#btn-signout {
+  border-radius: 10px;
+}
+
+body.light-mode .settings-dropdown-content {
+  background: #ffffff;
+  border-color: rgba(180,140,90,0.15);
+  box-shadow: var(--shadow-lg);
+}
+
+body.light-mode .settings-menu-item:hover {
+  background: var(--accent-soft);
+  color: var(--fg-1);
+}
+
+
+/* ── 11. User dropdown — rounded popover ────────────────────── */
+.user-dropdown-menu {
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.06);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0)),
+    var(--bg-elev);
+  box-shadow:
+    0 14px 40px -12px rgba(0,0,0,0.6),
+    0 1px 0 rgba(255,255,255,0.04) inset;
+  animation: pop-in 0.18s ease;
+}
+
+body.light-mode .user-dropdown-menu {
+  background: #ffffff;
+  border-color: rgba(180,140,90,0.15);
+  box-shadow: var(--shadow-lg);
+}
+
+.theme-toggle-group button {
+  transition: background 0.15s, color 0.15s;
+}
+
+.theme-option[data-theme] {
+  border-radius: 999px;
+  transition: 0.15s;
+}
+
+
+/* ── 12. Status select (tab dropdown) ─────────────────────────── */
+.status-select,
+#main-tab-select {
+  border-radius: 999px;
+  background: rgba(13,13,26,0.7);
+  border: 1px solid rgba(255,255,255,0.06);
+  color: var(--fg-1);
+  padding: 5px 10px;
+}
+
+body.light-mode .status-select,
+body.light-mode #main-tab-select {
+  background: var(--bg-1);
+  border-color: var(--border);
+  color: var(--fg-1);
+}
+
+
+/* ── 13. Scrollbars — branded, slim ─────────────────────────── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(125,207,255,0.28) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg,
+    rgba(125,207,255,0.38),
+    rgba(125,207,255,0.18));
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background 0.2s;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg,
+    rgba(125,207,255,0.62),
+    rgba(125,207,255,0.38));
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background: linear-gradient(180deg,
+    rgba(125,207,255,0.82),
+    rgba(125,207,255,0.52));
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+body.light-mode * {
+  scrollbar-color: rgba(255,140,66,0.35) transparent;
+}
+
+body.light-mode *::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg,
+    rgba(255,140,66,0.45),
+    rgba(255,140,66,0.22));
+  background-clip: padding-box;
+}
+
+body.light-mode *::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg,
+    rgba(255,140,66,0.70),
+    rgba(255,140,66,0.42));
+  background-clip: padding-box;
+}
+
+
+/* ── 14. Lucide icon baseline ───────────────────────────────── */
+/* Lucide renders inline SVG — this ensures correct sizing/alignment */
+.lucide-icon svg,
+[data-lucide] svg {
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Icon inside menu items */
+.menu-icon {
+  width: 15px;
+  height: 15px;
+  opacity: 0.75;
+  flex-shrink: 0;
+}
+
+/* ── Config button (pill with icon) ─────────────────────────── */
+.config-btn-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.05);
+  color: var(--fg-2);
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.config-btn-pill:hover {
+  color: #fff;
+  border-color: rgba(125,207,255,0.4);
+  background: rgba(125,207,255,0.08);
+}
+
+/* ── Icon-only pill button (restart) ────────────────────────── */
+.icon-btn-pill {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.05);
+  color: var(--fg-2);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.icon-btn-pill:hover {
+  color: var(--accent);
+  border-color: rgba(125,207,255,0.4);
+}
+#btn-restart { font-size: unset; line-height: unset; }
+
+/* ── Custom tab-select pill button ──────────────────────────── */
+.tab-select-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(13,13,26,0.7);
+  border: 1px solid rgba(255,255,255,0.06);
+  color: var(--fg-1);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-family: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s, color 0.15s;
+}
+.tab-select-pill:hover {
+  border-color: rgba(125,207,255,0.3);
+  color: #fff;
+}
+
+/* ── Tab-select popup ───────────────────────────────────────── */
+.tab-select-popup {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0)),
+    var(--bg-elev);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 16px;
+  box-shadow:
+    0 14px 40px -12px rgba(0,0,0,0.6),
+    0 1px 0 rgba(255,255,255,0.04) inset;
+  min-width: 200px;
+  padding: 8px;
+  z-index: 200;
+  animation: pop-in 0.18s ease;
+}
+.tab-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  color: var(--fg-1);
+  font-size: 13px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.tab-option:hover  { background: rgba(125,207,255,0.10); color: #fff; }
+.tab-option.active { background: rgba(125,207,255,0.12); color: var(--accent); }
+
+/* ── Settings menu items — gap for icon + text ──────────────── */
+.settings-menu-item { gap: 10px; }
+
+/* ── Light mode: icon controls ──────────────────────────────── */
+body.light-mode .config-btn-pill {
+  color: var(--fg-2);
+  border-color: rgba(180,140,90,0.15);
+  background: rgba(180,140,90,0.04);
+}
+body.light-mode .config-btn-pill:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--fg-1);
+}
+body.light-mode .icon-btn-pill {
+  background: rgba(180,140,90,0.05);
+  border-color: rgba(180,140,90,0.12);
+}
+body.light-mode .icon-btn-pill:hover { color: var(--accent); border-color: var(--accent); }
+body.light-mode .tab-select-pill { background: var(--bg-1); border-color: var(--border); color: var(--fg-1); }
+body.light-mode .tab-select-popup { background: #ffffff; border-color: rgba(180,140,90,0.15); box-shadow: var(--shadow-lg); }
+body.light-mode .tab-option:hover  { background: var(--accent-soft); color: var(--fg-1); }
+body.light-mode .tab-option.active { background: var(--accent-soft); color: var(--accent); }
+
+/* ── Agents tab — transparent bg, card-aware borders ────────── */
+#tab-agents { background: transparent; }
+#agents-list-panel   { border-right-color: rgba(255,255,255,0.05); }
+#agents-list-header  { border-bottom-color: rgba(255,255,255,0.05); }
+#agents-detail-panel { background: transparent; }
+body.light-mode #agents-list-panel  { border-right-color:  rgba(180,140,90,0.12); }
+body.light-mode #agents-list-header { border-bottom-color: rgba(180,140,90,0.12); }
+
+/* ── Responsive — stack at narrow viewport ───────────────────── */
+@media (max-width: 800px) {
+  #app-container { gap: 10px; }
+  #chat-side     { border-left: none; }
+  body           { padding: 10px; gap: 10px; }
+}

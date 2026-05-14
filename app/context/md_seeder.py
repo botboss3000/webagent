@@ -301,6 +301,9 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
 
         row = {
             "id": agent_id,
+            "name": data.get("name", agent_id),
+            "description": data.get("description", ""),
+            "icon": data.get("icon", ""),
             "system_prompt": data.get("system_prompt", ""),
             "max_turn_count": data.get("max_turn_count", 10),
             "model": data.get("model"),
