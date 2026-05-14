@@ -1,0 +1,4 @@
+  File "<string>", line 1
+    import sqlite3; conn = sqlite3.connect('app/db/test_9a3c502ffc9443e386209db6aac777c7.db'); cur = conn.cursor(); cur.execute('SELECT name FROM sqlite_master WHERE type=\\'table\\''); print(cur.fetchall()); conn.close()
+                                                                                                                                                                                    ^
+SyntaxError: unexpected character after line continuation character

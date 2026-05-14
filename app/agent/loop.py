@@ -439,6 +439,7 @@ async def stream_agent_events(
     interrupt_event: Optional[asyncio.Event] = None,
     max_turns: int = 10,
     channel: Optional[str] = None,
+    db: Optional[Any] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Run the unified agent loop and yield structured events.
@@ -475,7 +476,8 @@ async def stream_agent_events(
 
     try:
         from app.db import get_db
-        db = get_db()
+        if db is None:
+            db = db or get_db()
 
         while turn_count < max_turns:
             await _check_interrupt(session_id, interrupt_event)
@@ -612,7 +614,7 @@ async def stream_agent_events(
                 
                 from app.db import get_db
                 try:
-                    await get_db().insert_interaction(
+                    await db.insert_interaction(
                         user_id, session_id, role="assistant", content=save_content,
                         parent_id=parent_interaction_id,
                         channel=channel,
@@ -784,7 +786,7 @@ async def stream_agent_events(
                 inp = _build_input()
                 outp = json.dumps({"role": "assistant", "content": collected_content, "tool_calls": full_tool_calls})
                 db_start = time.time()
-                asst_id = await get_db().insert_interaction(
+                asst_id = await db.insert_interaction(
                     user_id, session_id, role="assistant", content=assistant_content,
                     parent_id=parent_interaction_id,
                     channel=channel,
@@ -837,7 +839,7 @@ async def stream_agent_events(
                         inp = _build_input()
                         outp = json.dumps({"role": "tool", "content": tool_msg["content"], "tool_call_id": tc.id, "name": tool_name, "success": False})
                         db_start = time.time()
-                        inter_id = await get_db().insert_interaction(
+                        inter_id = await db.insert_interaction(
                             user_id, session_id, role="tool", content=tool_msg["content"],
                             parent_id=asst_id,
                             tool_call_id=tc.id,
@@ -881,7 +883,7 @@ async def stream_agent_events(
                                 inp = _build_input()
                                 outp = json.dumps({"role": "tool", "content": tool_msg["content"], "tool_call_id": tc.id, "name": tool_name, "success": False})
                                 db_start = time.time()
-                                inter_id = await get_db().insert_interaction(
+                                inter_id = await db.insert_interaction(
                                     user_id, session_id, role="tool", content=tool_msg["content"],
                                     parent_id=asst_id,
                                     tool_call_id=tc.id,
@@ -969,7 +971,7 @@ async def stream_agent_events(
                         inp = _build_input()
                         outp = json.dumps({"role": "tool", "content": result["content"][:10000], "tool_call_id": tc.id, "name": tool_name, "success": success, "duration_ms": result["duration_ms"]})
                         db_start = time.time()
-                        inter_id = await get_db().insert_interaction(
+                        inter_id = await db.insert_interaction(
                             user_id, session_id, role="tool", content=tool_msg["content"],
                             parent_id=asst_id,
                             tool_call_id=tc.id,
@@ -987,7 +989,7 @@ async def stream_agent_events(
                                "tool_name": tool_name, "id": inter_id, "ms": db_dur}
 
                         try:
-                            db = get_db()
+                            db = db or get_db()
                             skill_id = await db.skill_get_id_by_name(user_id, tool_name)
                             if skill_id:
                                 await db.skill_track_execution(
@@ -1024,7 +1026,7 @@ async def stream_agent_events(
             inp = _build_input()
             outp = json.dumps({"role": "assistant", "content": collected_content})
             db_start = time.time()
-            inter_id = await get_db().insert_interaction(
+            inter_id = await db.insert_interaction(
                 user_id, session_id, role="assistant", content=collected_content,
                 parent_id=parent_interaction_id,
                 channel=channel,
@@ -1080,6 +1082,7 @@ async def run_agent_loop_buffered(
     event_callback: Optional[Any] = None,
     channel: Optional[str] = None,
     timeout_seconds: Optional[int] = None,
+    db: Optional[Any] = None,
 ) -> str:
     """
     Compatibility wrapper that runs the streaming loop internally,
@@ -1103,6 +1106,7 @@ async def run_agent_loop_buffered(
             parent_interaction_id=parent_interaction_id,
             max_turns=max_turns,
             channel=channel,
+            db=db,
         ):
             if event_callback:
                 try:
