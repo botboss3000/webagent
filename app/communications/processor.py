@@ -120,6 +120,7 @@ async def _run_registration_agent(
         system_prompt = await build_system_prompt(
             context_docs, brain_context=None, user_id=user_id,
             agent_system_prompt=registration_prompt,
+            bootstrap_tools=agent.get("bootstrap_tools", "") if isinstance(agent, dict) else "",
         )
 
         history = await build_openai_history_from_session(
@@ -194,6 +195,7 @@ async def _run_agent_loop(
         system_prompt = await build_system_prompt(
             context_docs, brain_context, user_id,
             agent_system_prompt=agent_system_prompt,
+            bootstrap_tools=agent.get("bootstrap_tools", "") if isinstance(agent, dict) else "",
         )
 
         history = await build_openai_history_from_session(

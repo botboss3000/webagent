@@ -28,18 +28,11 @@ def _init_test_db():
             system_prompt TEXT DEFAULT '',
             status TEXT DEFAULT 'active',
             metadata TEXT DEFAULT '{}',
-            created_at TEXT,
-            updated_at TEXT
-        )
-    """)
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS context_documents (
-            id TEXT PRIMARY KEY,
-            agent_id TEXT,
-            context_type TEXT,
-            title TEXT,
-            content TEXT,
-            tags TEXT DEFAULT '[]',
+            agent_prompt TEXT DEFAULT '',
+            user_prompt TEXT DEFAULT '',
+            skills_prompt TEXT DEFAULT '',
+            tasks_prompt TEXT DEFAULT '',
+            misc_prompt TEXT DEFAULT '',
             created_at TEXT,
             updated_at TEXT
         )

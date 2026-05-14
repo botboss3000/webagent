@@ -134,6 +134,7 @@ async def generic_webhook_handler(webhook_id: str, request: Request):
         system_prompt = await build_system_prompt(
             context_docs, brain_context=None, user_id=user_id,
             agent_system_prompt=agent_system_prompt,
+            bootstrap_tools=agent.get("bootstrap_tools", "") if isinstance(agent, dict) else "",
         )
 
         # 8. History (exclude irrelevant prior webhook turns — keep last 20)

@@ -135,21 +135,29 @@ def _inject_session_context(user_id: str, session_id: str, temp_db_path: str, op
                     tn = ic['tool_name'] or ''
                     ctx_data.append(f"[tool] ({tn}): {content[:200]}")
 
-        # Get webAgent context documents (always injected)
+        # Get webAgent context from context columns
         agent = local.execute(
-            "SELECT id FROM agents WHERE user_id=? LIMIT 1", (user_id,)
+            "SELECT agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt FROM agents WHERE user_id=? LIMIT 1",
+            (user_id,)
         ).fetchone()
         if agent:
-            docs = local.execute(
-                "SELECT context_type, title, substr(content,1,500) as content FROM context_documents WHERE agent_id=? ORDER BY context_type",
-                (agent['id'],)
-            ).fetchall()
-            if docs:
+            col_map = [
+                ("agent_prompt", "agent", "Agent Identity"),
+                ("user_prompt", "user", "User"),
+                ("skills_prompt", "skills", "Core Skills"),
+                ("tasks_prompt", "tasks", "Common Tasks"),
+                ("misc_prompt", "misc", "Misc"),
+            ]
+            ctx_sections = []
+            for col, ct, title in col_map:
+                content = agent[col] or ""
+                if content.strip():
+                    ctx_sections.append(f"### {title} ({ct})")
+                    ctx_sections.append(content[:500])
+            if ctx_sections:
                 ctx_data.append("")
-                ctx_data.append("## WebAgent Context Documents")
-                for d in docs:
-                    ctx_data.append(f"### {d['title']} ({d['context_type']})")
-                    ctx_data.append(d['content'])
+                ctx_data.append("## WebAgent Context")
+                ctx_data.extend(ctx_sections)
 
         local.close()
     except Exception as e:
@@ -258,7 +266,6 @@ def _insert_opt_msg(uid, sid, role, source, content, *, from_id=None, to_id=None
     import json
     
     if temp_db_path:
-        # Write to the optimizer's temp DB so the Planner sees it
         def _do_temp():
             c = sqlite3.connect(temp_db_path)
             c.execute(
@@ -271,7 +278,6 @@ def _insert_opt_msg(uid, sid, role, source, content, *, from_id=None, to_id=None
         _retry_db_write(_do_temp)
         return
     
-    # Fallback: write to local.db (for legacy code paths)
     from app.db import get_db
     db = get_db()
     raw = getattr(db, '_get_conn', None)
@@ -286,9 +292,6 @@ def _insert_opt_msg(uid, sid, role, source, content, *, from_id=None, to_id=None
             c.commit()
             c.close()
         _retry_db_write(_do)
-
-
-
 
 
 def _log_start(rid, cfg, sid):

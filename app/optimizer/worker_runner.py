@@ -28,54 +28,62 @@ def run_test(change):
     main_db = sq.connect(MAIN_DB)
     main_db.execute("PRAGMA journal_mode=WAL")
     
+    _TYPE_TO_COL = {
+        "agent": "agent_prompt", "user": "user_prompt", "skills": "skills_prompt",
+        "tasks": "tasks_prompt", "misc": "misc_prompt",
+        "agent_prompt": "agent_prompt", "user_prompt": "user_prompt", "skills_prompt": "skills_prompt",
+        "tasks_prompt": "tasks_prompt", "misc_prompt": "misc_prompt",
+    }
+
     try:
-        # Read the real user's system prompt
-        cur = main_db.execute("SELECT system_prompt FROM agents WHERE user_id=? LIMIT 1", (USER_ID,))
+        # Read the real user's agent (system_prompt + context columns)
+        cur = main_db.execute(
+            "SELECT system_prompt, agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt FROM agents WHERE user_id=? LIMIT 1",
+            (USER_ID,)
+        )
         row = cur.fetchone()
         base_prompt = row[0] if row else ""
-        
-        # Build trial prompt: base + proposed change
+        trial_ctx = {
+            "agent_prompt":  row[1] if row else "",
+            "user_prompt":   row[2] if row else "",
+            "skills_prompt": row[3] if row else "",
+            "tasks_prompt":  row[4] if row else "",
+            "misc_prompt":   row[5] if row else "",
+        }
+
+        # Apply proposed change to the appropriate column
+        trial_prompt = base_prompt
         if element_type == "system_prompt" and new_content:
             trial_prompt = base_prompt + "\n\n" + new_content if base_prompt else new_content
-        elif element_type == "context_document" and new_content:
-            trial_prompt = f"{base_prompt}\n\nIMPORTANT: {new_content}" if base_prompt else new_content
-        else:
-            trial_prompt = base_prompt or "You are a helpful assistant."
-        
-        # Create test agent in tests.db
+        elif element_type in ("context_column", "context_document") and new_content:
+            col = _TYPE_TO_COL.get(element)
+            if col:
+                trial_ctx[col] = new_content
+
+        # Create test agent in tests.db with context columns
         test_db.execute(
-            "INSERT OR IGNORE INTO agents (id,user_id,system_prompt,status,metadata,created_at,updated_at) VALUES (?,?,?,'active','{}',datetime('now'),datetime('now'))",
-            (agent_id, test_user_id, trial_prompt)
+            """INSERT OR IGNORE INTO agents
+               (id, user_id, system_prompt, status, metadata,
+                agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
+                created_at, updated_at)
+               VALUES (?, ?, ?, 'active', '{}', ?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+            (agent_id, test_user_id, trial_prompt,
+             trial_ctx["agent_prompt"], trial_ctx["user_prompt"],
+             trial_ctx["skills_prompt"], trial_ctx["tasks_prompt"], trial_ctx["misc_prompt"])
         )
-        
-        # Copy context documents from real user to test agent
-        real_agent = main_db.execute("SELECT id FROM agents WHERE user_id=? LIMIT 1", (USER_ID,)).fetchone()
-        if real_agent:
-            docs = main_db.execute("SELECT context_type, title, content, tags FROM context_documents WHERE agent_id=?", (real_agent[0],)).fetchall()
-            for ct, title, content, tags in docs:
-                existing = test_db.execute("SELECT id FROM context_documents WHERE agent_id=? AND title=?", (agent_id, title)).fetchone()
-                if not existing:
-                    test_db.execute(
-                        "INSERT INTO context_documents (id,agent_id,context_type,title,content,tags,created_at,updated_at) VALUES (?,?,?,?,?,?,datetime('now'),datetime('now'))",
-                        (str(uuid.uuid4()), agent_id, ct, title, content, tags or '[]')
-                    )
-        
-        # Sync test.db data back to main.db so the webAgent can find the test agent
-        # The webAgent reads from local.db, so we need the test agent there too
+
+        # Sync test agent into main.db so the webAgent can find it
         main_db.execute(
-            "INSERT OR IGNORE INTO agents (id,user_id,system_prompt,status,metadata,created_at,updated_at) VALUES (?,?,?,'active','{}',datetime('now'),datetime('now'))",
-            (agent_id, test_user_id, trial_prompt)
+            """INSERT OR IGNORE INTO agents
+               (id, user_id, system_prompt, status, metadata,
+                agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
+                created_at, updated_at)
+               VALUES (?, ?, ?, 'active', '{}', ?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+            (agent_id, test_user_id, trial_prompt,
+             trial_ctx["agent_prompt"], trial_ctx["user_prompt"],
+             trial_ctx["skills_prompt"], trial_ctx["tasks_prompt"], trial_ctx["misc_prompt"])
         )
-        if real_agent:
-            docs = main_db.execute("SELECT context_type, title, content, tags FROM context_documents WHERE agent_id=?", (real_agent[0],)).fetchall()
-            for ct, title, content, tags in docs:
-                existing = main_db.execute("SELECT id FROM context_documents WHERE agent_id=? AND title=?", (agent_id, title)).fetchone()
-                if not existing:
-                    main_db.execute(
-                        "INSERT INTO context_documents (id,agent_id,context_type,title,content,tags,created_at,updated_at) VALUES (?,?,?,?,?,?,datetime('now'),datetime('now'))",
-                        (str(uuid.uuid4()), agent_id, ct, title, content, tags or '[]')
-                    )
-        
+
         main_db.commit()
         test_db.commit()
         
@@ -128,7 +136,6 @@ def run_test(change):
         for db in [main_db, test_db]:
             try:
                 db.execute("DELETE FROM agents WHERE id=?", (agent_id,))
-                db.execute("DELETE FROM context_documents WHERE agent_id=?", (agent_id,))
                 db.execute("DELETE FROM interactions WHERE session_id=?", (f"trial-{agent_id[:12]}",))
                 db.execute("DELETE FROM sessions WHERE id=?", (f"trial-{agent_id[:12]}",))
                 db.commit()

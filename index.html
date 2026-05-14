@@ -327,9 +327,16 @@
               <span style="display:flex;align-items:center;gap:8px;">
                 <button id="db-page-prev" style="display:none;background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">◀</button>
                 <button id="db-page-next" style="display:none;background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">▶</button>
-                <select id="db-select" title="Switch database" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:2px 6px;border-radius:4px;font-size:11px;font-family:inherit;cursor:pointer;max-width:130px;">
-                  <option value="local.db">local.db</option>
-                </select>
+                <div id="db-select-wrap" style="position:relative;display:inline-block;">
+                  <select id="db-select" title="Switch database" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;">
+                    <option value="local.db">local.db</option>
+                  </select>
+                  <button type="button" id="db-select-trigger" title="Switch database" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#c0caf5;padding:2px 6px;border-radius:4px;font-size:11px;font-family:inherit;cursor:pointer;max-width:160px;display:inline-flex;align-items:center;gap:6px;">
+                    <span id="db-select-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:120px;">local.db</span>
+                    <span style="color:#565f89;font-size:9px;">▼</span>
+                  </button>
+                  <ul id="db-select-menu" role="listbox" style="display:none;position:fixed;top:0;left:0;margin:0;padding:4px;list-style:none;background:#15152a;border:1px solid #2a2a4a;border-radius:6px;box-shadow:0 6px 18px rgba(0,0,0,0.45);z-index:9999;min-width:240px;max-height:300px;overflow-y:auto;font-size:11px;"></ul>
+                </div>
                 <button id="db-settings-btn" title="Database View Settings" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#565f89;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:14px;font-family:inherit;">⚙</button>
                 <button id="db-download-btn" title="Download local.db" style="background:#1a1a2e;border:1px solid #2a2a4a;color:#565f89;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:14px;font-family:inherit;">⬇</button>
               </span>
@@ -979,8 +986,203 @@
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links/lib/addon-web-links.js"></script>
 <script>
   document.addEventListener('DOMContentLoaded', function() {
-    // ── Populate db-select dropdown ──
-    async function populateDbList() {
+    // ── Custom db-select dropdown ──
+
+    // Multi-DB checked-set (persisted). When > 1, viewer enters multi-mode.
+    function getCheckedDbs() {
+      try {
+        var raw = localStorage.getItem('dbCheckedDbs');
+        var arr = raw ? JSON.parse(raw) : [];
+        if (Array.isArray(arr) && arr.length) return arr;
+      } catch(e) {}
+      var sel = document.getElementById('db-select');
+      return sel && sel.value ? [sel.value] : [];
+    }
+    function setCheckedDbs(arr) {
+      localStorage.setItem('dbCheckedDbs', JSON.stringify(arr));
+      window.dispatchEvent(new CustomEvent('db-checked-changed', { detail: arr }));
+    }
+    window.getCheckedDbs = getCheckedDbs;
+    window.setCheckedDbs = setCheckedDbs;
+
+    function setDbSelectValue(name) {
+      var sel = document.getElementById('db-select');
+      var label = document.getElementById('db-select-label');
+      if (!sel) return;
+      var prev = sel.value;
+      sel.value = name;
+      if (label) label.textContent = name;
+      // Sole-select also resets checked set to just this name
+      setCheckedDbs([name]);
+      if (prev !== name) {
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      } else {
+        // Same value but checked set changed — trigger refresh
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }
+
+    function closeDbMenu() {
+      var menu = document.getElementById('db-select-menu');
+      if (menu) menu.style.display = 'none';
+    }
+
+    function getShowAllDbs() {
+      return localStorage.getItem('dbShowAllDbs') === 'true';
+    }
+    function setShowAllDbs(v) {
+      localStorage.setItem('dbShowAllDbs', v ? 'true' : 'false');
+    }
+
+    function renderDbMenu(databases) {
+      var menu = document.getElementById('db-select-menu');
+      var sel = document.getElementById('db-select');
+      if (!menu || !sel) return;
+      menu.innerHTML = '';
+
+      // ── Header row: "All databases" master toggle ──
+      var header = document.createElement('li');
+      header.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #2a2a4a;margin-bottom:4px;color:#7aa2f7;font-weight:bold;';
+      var allCb = document.createElement('input');
+      allCb.type = 'checkbox';
+      allCb.checked = getShowAllDbs();
+      allCb.title = 'Auto-select all databases (regular polling)';
+      allCb.style.cssText = 'margin:0;cursor:pointer;accent-color:#7aa2f7;';
+      allCb.addEventListener('click', function(ev) { ev.stopPropagation(); });
+      allCb.addEventListener('change', function() {
+        setShowAllDbs(allCb.checked);
+        if (allCb.checked) {
+          setCheckedDbs(databases.slice());
+          startDbAutoPoll();
+        } else {
+          stopDbAutoPoll();
+        }
+        var s = document.getElementById('db-select');
+        if (s) s.dispatchEvent(new Event('change', { bubbles: true }));
+        renderDbMenu(databases);
+      });
+      var headerLabel = document.createElement('span');
+      headerLabel.textContent = 'All databases';
+      headerLabel.style.cssText = 'flex:1;cursor:pointer;font-size:11px;';
+      headerLabel.addEventListener('click', function() {
+        allCb.checked = !allCb.checked;
+        allCb.dispatchEvent(new Event('change'));
+      });
+      header.appendChild(allCb);
+      header.appendChild(headerLabel);
+      menu.appendChild(header);
+
+      var checked = new Set(getCheckedDbs());
+      databases.forEach(function(name) {
+        var li = document.createElement('li');
+        li.setAttribute('role', 'option');
+        li.dataset.dbName = name;
+        li.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:4px;cursor:pointer;color:#c0caf5;';
+        if (name === sel.value) {
+          li.style.background = '#1f2348';
+        }
+        li.addEventListener('mouseenter', function() {
+          if (name !== sel.value) li.style.background = '#1a1a2e';
+        });
+        li.addEventListener('mouseleave', function() {
+          li.style.background = (name === sel.value) ? '#1f2348' : 'transparent';
+        });
+
+        // Checkbox — multi-select for merged view
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = checked.has(name);
+        cb.title = 'Include in merged view';
+        cb.style.cssText = 'margin:0;cursor:pointer;accent-color:#7aa2f7;';
+        cb.addEventListener('click', function(ev) {
+          ev.stopPropagation();
+        });
+        cb.addEventListener('change', function() {
+          var current = new Set(getCheckedDbs());
+          if (cb.checked) current.add(name); else current.delete(name);
+          var arr = Array.from(current);
+          setCheckedDbs(arr);
+          // If active sel is now unchecked and others remain, switch sel to first checked
+          if (!cb.checked && sel.value === name && arr.length > 0) {
+            sel.value = arr[0];
+          }
+          // Update only the highlight on the active row without rebuilding menu
+          Array.from(menu.querySelectorAll('li[role="option"]')).forEach(function(rowEl) {
+            var rowName = rowEl.dataset.dbName;
+            rowEl.style.background = (rowName === sel.value) ? '#1f2348' : 'transparent';
+          });
+          refreshDbSelectLabel();
+          // Soft notify — pagination.js debounces and does silent re-query
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+        li.appendChild(cb);
+
+        var label = document.createElement('span');
+        label.textContent = name;
+        label.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        label.addEventListener('click', function() {
+          setDbSelectValue(name);
+          closeDbMenu();
+        });
+        li.appendChild(label);
+
+        // X delete button — hidden for local.db
+        if (name !== 'local.db') {
+          var x = document.createElement('button');
+          x.type = 'button';
+          x.textContent = '×';
+          x.title = 'Delete ' + name;
+          x.style.cssText = 'background:transparent;border:none;color:#565f89;cursor:pointer;font-size:14px;line-height:1;padding:0 4px;border-radius:3px;';
+          x.addEventListener('mouseenter', function() {
+            x.style.color = '#f7768e';
+            x.style.background = '#2a1a1f';
+          });
+          x.addEventListener('mouseleave', function() {
+            x.style.color = '#565f89';
+            x.style.background = 'transparent';
+          });
+          x.addEventListener('click', async function(ev) {
+            ev.stopPropagation();
+            if (!confirm('Delete database file "' + name + '"? This cannot be undone.')) return;
+            var token = localStorage.getItem('auth_token');
+            try {
+              var res = await fetch(
+                '/api/v1/db/file?db=' + encodeURIComponent(name) +
+                '&token=' + encodeURIComponent(token || ''),
+                { method: 'DELETE' }
+              );
+              if (!res.ok) {
+                var err = await res.json().catch(function() { return { detail: res.statusText }; });
+                alert('Delete failed: ' + (err.detail || res.statusText));
+                return;
+              }
+              // If deleted the currently selected DB, fall back to local.db
+              if (sel.value === name) {
+                setDbSelectValue('local.db');
+              }
+              await populateDbList();
+            } catch(e) {
+              alert('Delete failed: ' + e.message);
+            }
+          });
+          li.appendChild(x);
+        }
+
+        menu.appendChild(li);
+      });
+    }
+
+    var __lastDbList = [];
+
+    function arraysEqualUnordered(a, b) {
+      if (a.length !== b.length) return false;
+      var sa = a.slice().sort();
+      var sb = b.slice().sort();
+      for (var i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
+      return true;
+    }
+
+    async function populateDbList(opts) {
       var sel = document.getElementById('db-select');
       if (!sel) return;
       var token = localStorage.getItem('auth_token');
@@ -988,6 +1190,7 @@
         var res = await fetch('/api/v1/db/list?token=' + encodeURIComponent(token || ''));
         if (!res.ok) return;
         var data = await res.json();
+        var prevValue = sel.value;
         sel.innerHTML = '';
         data.databases.forEach(function(name) {
           var opt = document.createElement('option');
@@ -995,14 +1198,117 @@
           opt.textContent = name;
           sel.appendChild(opt);
         });
-        // If local.db exists in list, select it by default
-        if (data.databases.includes('local.db')) {
-          sel.value = 'local.db';
+        // Restore previous selection if still present, else local.db, else first
+        var nextValue = data.databases.includes(prevValue) ? prevValue
+          : data.databases.includes('local.db') ? 'local.db'
+          : (data.databases[0] || '');
+        if (nextValue) {
+          sel.value = nextValue;
         }
+
+        // If "All databases" mode is on, sync checked set to full list.
+        if (getShowAllDbs()) {
+          var prevChecked = getCheckedDbs();
+          if (!arraysEqualUnordered(prevChecked, data.databases)) {
+            setCheckedDbs(data.databases.slice());
+            // Trigger viewer refresh only on actual change
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        }
+
+        refreshDbSelectLabel();
+        // Re-render only on list change or when menu open, to avoid clobbering hover state.
+        var listChanged = !arraysEqualUnordered(__lastDbList, data.databases);
+        var menu = document.getElementById('db-select-menu');
+        var menuOpen = menu && menu.style.display === 'block';
+        if (listChanged || menuOpen || (opts && opts.force)) {
+          renderDbMenu(data.databases);
+        }
+        __lastDbList = data.databases.slice();
       } catch(e) {
         console.warn('Failed to load db list:', e);
       }
     }
+
+    // ── Regular polling (active when "All databases" toggle is on) ──
+    var __dbPollTimer = null;
+    function startDbAutoPoll() {
+      if (__dbPollTimer) return;
+      __dbPollTimer = setInterval(function() {
+        populateDbList();
+      }, 3000);
+    }
+    function stopDbAutoPoll() {
+      if (__dbPollTimer) {
+        clearInterval(__dbPollTimer);
+        __dbPollTimer = null;
+      }
+    }
+
+    // Keep label + menu in sync if any other code sets sel.value directly
+    function refreshDbSelectLabel() {
+      var sel = document.getElementById('db-select');
+      var label = document.getElementById('db-select-label');
+      if (!sel || !label) return;
+      var checked = getCheckedDbs();
+      if (checked.length > 1) {
+        label.textContent = sel.value + ' +' + (checked.length - 1);
+      } else {
+        label.textContent = sel.value;
+      }
+    }
+    var selEl = document.getElementById('db-select');
+    if (selEl) {
+      selEl.addEventListener('change', function() {
+        refreshDbSelectLabel();
+        // Only rebuild menu DOM when menu is actually open (avoids flicker during background updates)
+        var menu = document.getElementById('db-select-menu');
+        if (menu && menu.style.display === 'block') {
+          var names = Array.from(selEl.options).map(function(o) { return o.value; });
+          renderDbMenu(names);
+        }
+      });
+    }
+    window.addEventListener('db-checked-changed', refreshDbSelectLabel);
+
+    // Trigger toggles menu (fixed-positioned at trigger rect so no ancestor clips it)
+    function positionDbMenu() {
+      var trig = document.getElementById('db-select-trigger');
+      var menu = document.getElementById('db-select-menu');
+      if (!trig || !menu) return;
+      var r = trig.getBoundingClientRect();
+      menu.style.top = (r.bottom + 2) + 'px';
+      menu.style.left = r.left + 'px';
+      menu.style.minWidth = Math.max(r.width, 240) + 'px';
+    }
+    var trigger = document.getElementById('db-select-trigger');
+    if (trigger) {
+      trigger.addEventListener('click', function(ev) {
+        ev.stopPropagation();
+        var menu = document.getElementById('db-select-menu');
+        if (!menu) return;
+        var open = !(menu.style.display === 'none' || !menu.style.display);
+        if (open) {
+          menu.style.display = 'none';
+        } else {
+          // Refetch list every time menu opens so newly-created/deleted DBs appear
+          populateDbList({ force: true }).then(function() {
+            positionDbMenu();
+            menu.style.display = 'block';
+          });
+        }
+      });
+    }
+    window.addEventListener('resize', positionDbMenu);
+    window.addEventListener('scroll', positionDbMenu, true);
+    // Click outside closes menu
+    document.addEventListener('click', function(ev) {
+      var wrap = document.getElementById('db-select-wrap');
+      if (wrap && !wrap.contains(ev.target)) closeDbMenu();
+    });
+    document.addEventListener('keydown', function(ev) {
+      if (ev.key === 'Escape') closeDbMenu();
+    });
 
     // ── Download button ──
     var downloadBtn = document.getElementById('db-download-btn');
@@ -1018,7 +1324,10 @@
     }
 
     // ── Populate on first db tab appearance ──
-    populateDbList();
+    populateDbList().then(function() {
+      // Resume auto-poll if "All databases" was previously enabled
+      if (getShowAllDbs()) startDbAutoPoll();
+    });
   });
 </script>
 <script type="module" src="./ui/js/main.js"></script>

@@ -236,9 +236,11 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
       - temperature (float, default 0.0)
       - max_tokens (int, default 4096)
       - metadata (dict or str, default {})
-
-    This is the REPLACEMENT for scan_agent_system_prompt_files(). JSON format
-    allows full agent template schema (all columns), not just system_prompt.
+      - agent_prompt (str, default "")  — agent identity context
+      - user_prompt (str, default "")   — user profile context
+      - skills_prompt (str, default "") — skills/tools context
+      - tasks_prompt (str, default "")  — task workflows context
+      - misc_prompt (str, default "")   — miscellaneous context
 
     Args:
         directory: Path to scan. Defaults to app/context/agents/.
@@ -306,9 +308,16 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
             "temperature": data.get("temperature", 0.0),
             "max_tokens": data.get("max_tokens", 4096),
             "metadata": meta_str,
+            "agent_prompt": data.get("agent_prompt", ""),
+            "user_prompt": data.get("user_prompt", ""),
+            "skills_prompt": data.get("skills_prompt", ""),
+            "tasks_prompt": data.get("tasks_prompt", ""),
+            "misc_prompt": data.get("misc_prompt", ""),
+            "bootstrap_tools": data.get("bootstrap_tools", ""),
         }
 
         results.append(row)
+
         logger.debug(
             "Loaded agent template: %s → id=%s (%d chars system_prompt, %d max_tokens)",
             fname, agent_id, len(row["system_prompt"]), row["max_tokens"],

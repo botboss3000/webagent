@@ -12,19 +12,48 @@ export function setTableDeps(deps) {
   startAutoRefresh = deps.startAutoRefresh;
 }
 
+function getActiveDbs(fallback) {
+  const f = typeof window.getCheckedDbs === 'function' ? window.getCheckedDbs() : null;
+  if (f && f.length) return f;
+  return fallback ? [fallback] : [];
+}
+
+async function fetchTablesForDb(dbName) {
+  const url = authUrl(apiPath(`/api/v1/db/tables?db=${encodeURIComponent(dbName)}`));
+  const res = await fetch(url);
+  if (res.status === 401) {
+    localStorage.removeItem('auth_token');
+    window.location.reload();
+    return { tables: [] };
+  }
+  return await res.json();
+}
+
 export async function fetchTables(dbName) {
   if (!getAuthToken()) return;
 
+  const dbs = getActiveDbs(dbName);
+  app.dbMultiMode = dbs.length > 1;
+
   try {
-    const url = authUrl(apiPath(`/api/v1/db/tables?db=${encodeURIComponent(dbName)}`));
-    const res = await fetch(url);
-    if (res.status === 401) {
-      localStorage.removeItem('auth_token');
-      window.location.reload();
-      return;
+    if (dbs.length <= 1) {
+      const data = await fetchTablesForDb(dbs[0] || dbName);
+      app.dbTables = data.tables || [];
+    } else {
+      // Union by table name; sum row_count; keep first-seen column schema.
+      const merged = new Map();
+      const results = await Promise.all(dbs.map(fetchTablesForDb));
+      results.forEach((data) => {
+        (data.tables || []).forEach((t) => {
+          if (merged.has(t.name)) {
+            merged.get(t.name).row_count += (t.row_count || 0);
+          } else {
+            merged.set(t.name, { ...t, row_count: t.row_count || 0 });
+          }
+        });
+      });
+      app.dbTables = Array.from(merged.values()).sort((a, b) => a.name.localeCompare(b.name));
     }
-    const data = await res.json();
-    app.dbTables = data.tables || [];
     renderTableList();
   } catch (e) {
     document.getElementById('db-table-list').innerHTML =
@@ -36,14 +65,18 @@ export async function updateTableCounts() {
   const token = getAuthToken();
   if (!token) return;
 
-  const dbName = document.getElementById('db-select').value;
+  const dbs = getActiveDbs(document.getElementById('db-select').value);
   try {
-    const url = authUrl(apiPath(`/api/v1/db/tables?db=${encodeURIComponent(dbName)}`));
-    const res = await fetch(url);
-    if (res.status === 401) return;
-    const data = await res.json();
-    if (!data.tables) return;
-    for (const fresh of data.tables) {
+    const results = await Promise.all(dbs.map(fetchTablesForDb));
+    const merged = new Map();
+    results.forEach((data) => {
+      (data && data.tables || []).forEach((t) => {
+        if (merged.has(t.name)) merged.get(t.name).row_count += (t.row_count || 0);
+        else merged.set(t.name, { ...t, row_count: t.row_count || 0 });
+      });
+    });
+    if (!merged.size) return;
+    for (const fresh of merged.values()) {
       const existing = app.dbTables.find((t) => t.name === fresh.name);
       if (existing) existing.row_count = fresh.row_count;
     }

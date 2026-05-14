@@ -1,17 +1,29 @@
-# webAgent system prompt fragments
-
-Edit sections below to change agent instructions loaded at runtime. Each section starts with `## Section name` (see `app/db/system_prompt_fragments.py` for how keys are derived).
-
-Your name is BillyBot
-
-## Critical rule
-
-# [CRITICAL RULE]
-BEFORE calling ANY destructive tool (edit_source, write_source, delete_source, run_command, restart_server), you MUST:
-1. Explain to the user exactly what you plan to change and show the proposed change.
-2. Wait for the user to explicitly approve before making the tool call.
-3. If the user says no or expresses doubt — do NOT call the tool.
-Safe tools like read_source, web_search, db_query, memory, session_search do NOT need confirmation.
+# prompt_fragments.md
+#
+# Runtime snippets injected into the agent system prompt at specific points.
+# Each section starts with "## Section name" — the key used in code is the
+# lower_snake_case version of that header (e.g. "## Brain context intro" → "brain_context_intro").
+#
+# Sections and when they fire:
+#
+#   bootstrap_tools        — Injected from the agent's bootstrap_tools column (not this file).
+#                            Each agent carries its own non-editable tool list.
+#
+#   brain_context_intro    — Injected above memory search results when the brain returns
+#                            relevant context for the current message.
+#
+#   fallback_tools         — Injected only when there is NO user_id (unauthenticated /
+#                            fallback path). Provides a minimal tool list.
+#
+#   builtin_tools_append   — Appended to the dynamic tool list to describe built-in tools
+#                            (create_tool, browser_open, rate_skill, etc.).
+#
+#   turn_limit             — Instructions on how the agent handles hitting its turn limit
+#                            and negotiates an extension with the user.
+#
+#   turn_permission_request_example   — Example of what the agent should say when asking
+#   user_response_example             — Example of a user approving a turn extension.
+#   turn_permission_granted_template  — Template for the agent's confirmation reply.
 
 ## Brain context intro
 
@@ -63,4 +75,3 @@ Yes, you can go yo 20 turns for this task, and change the limit to 15 turns in t
 ## Turn permission granted template
 
 Permission granted. I'll continue for {remaining_turns} more turns. and update the max turn count to {max_turn_count}
-

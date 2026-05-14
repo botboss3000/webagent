@@ -3,8 +3,29 @@
 // ── Collapsible JSON tree renderer ──
 // Shared between stream view and database viewer
 
-// Keys whose string values should be rendered as markdown
+// Keys whose string values are candidates for markdown rendering
+// (still gated by looksLikeMarkdown() so plain strings stay quoted).
 const CONTENT_KEYS = new Set(['content', 'description', 'text', 'message']);
+
+// Detect whether a string contains markdown formatting worth rendering.
+// Trips on: headings (`# `), bold (`**x**`), fenced code (```), bullet/ordered
+// list items at line start, or markdown links. Plain prose returns false.
+function looksLikeMarkdown(s) {
+  if (!s || typeof s !== 'string') return false;
+  // Heading at line start
+  if (/(^|\n)#{1,6} \S/.test(s)) return true;
+  // Bold (**x**) — non-greedy, requires non-asterisk inside
+  if (/\*\*[^\s*][^*]*\*\*/.test(s)) return true;
+  // Fenced code block
+  if (/```/.test(s)) return true;
+  // Bullet list item at line start
+  if (/(^|\n)- \S/.test(s)) return true;
+  // Ordered list item at line start
+  if (/(^|\n)\d+\.\s+\S/.test(s)) return true;
+  // Markdown link [text](url)
+  if (/\[[^\]]+\]\([^)]+\)/.test(s)) return true;
+  return false;
+}
 
 function escapeHtml(str) {
   if (!str) return '';
@@ -78,15 +99,19 @@ function renderContentMarkdown(text) {
 
 const MAX_JSON_DEPTH = 20;
 
-function renderJsonTree(data, indent, keyName) {
+function renderJsonTree(data, indent, keyName, opts) {
   if (indent === undefined) indent = 0;
+  if (!opts) opts = { renderMarkdown: true };
   if (indent > MAX_JSON_DEPTH) return '<span class="json-str">"... (truncated)"</span>';
   const padInner = '  '.repeat(indent + 1);
+  if (data === null) return '<span class="json-null">null</span>';
+  if (data === undefined) return '<span class="json-null">undefined</span>';
   if (typeof data === 'boolean') return `<span class="json-bool">${data}</span>`;
   if (typeof data === 'number') return `<span class="json-num">${data}</span>`;
   if (typeof data === 'string') {
-    // Render as markdown if the key matches
-    if (keyName && CONTENT_KEYS.has(keyName) && data.length > 0) {
+    // Render as markdown if the key matches, markdown is enabled, and the
+    // string actually contains markdown markers. Plain prose stays quoted.
+    if (opts.renderMarkdown && keyName && CONTENT_KEYS.has(keyName) && data.length > 0 && looksLikeMarkdown(data)) {
       return renderContentMarkdown(data);
     }
     return `<span class="json-str">"${escapeHtml(data)}"</span>`;
@@ -96,7 +121,7 @@ function renderJsonTree(data, indent, keyName) {
     if (data.length === 0) return '<span class="json-punc">[</span><span class="json-punc">]</span>';
     const items = data.map((v, i) => {
       // Arrays don't pass a keyName for their values
-      const val = renderJsonTree(v, indent + 1);
+      const val = renderJsonTree(v, indent + 1, undefined, opts);
       const comma = i < data.length - 1 ? '<span class="json-punc">,</span>' : '';
       return `<div class="json-line">${padInner}${val}${comma}</div>`;
     }).join('');
@@ -109,7 +134,7 @@ function renderJsonTree(data, indent, keyName) {
     const items = keys.map((k, i) => {
       const key = `<span class="json-key">"${escapeHtml(k)}"</span>`;
       // Pass the key name so string values under known content keys render as markdown
-      const val = renderJsonTree(data[k], indent + 1, k);
+      const val = renderJsonTree(data[k], indent + 1, k, opts);
       const comma = i < keys.length - 1 ? '<span class="json-punc">,</span>' : '';
       return `<div class="json-line">${padInner}${key}<span class="json-punc">:</span> ${val}${comma}</div>`;
     }).join('');
@@ -122,11 +147,15 @@ function renderJsonTree(data, indent, keyName) {
 /**
  * Parse raw string as JSON and return collapsible HTML tree.
  * Returns null if not valid JSON.
+ * opts.renderMarkdown (default true): when false, string values under
+ * content/description/text/message keys are shown as quoted JSON strings
+ * instead of being rendered as markdown.
  */
-export function formatJsonAsHtml(raw) {
+export function formatJsonAsHtml(raw, opts) {
+  if (!opts) opts = { renderMarkdown: true };
   try {
     const parsed = JSON.parse(raw);
-    return `<div class="json-root">${renderJsonTree(parsed, 0)}</div>`;
+    return `<div class="json-root">${renderJsonTree(parsed, 0, undefined, opts)}</div>`;
   } catch (e) {
     return null;
   }
