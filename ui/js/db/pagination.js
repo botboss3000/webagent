@@ -260,6 +260,7 @@ export function initDbPaginationAndToolbar() {
     }, 80);
   };
   document.getElementById('db-select').addEventListener('change', softRefreshActiveDbs);
+  window.addEventListener('db-active-changed', softRefreshActiveDbs);
 
   // Show Hidden toggle
   const showHiddenBtn = document.getElementById('db-show-hidden-btn');

@@ -97,11 +97,25 @@ def _check_tool_code_safety(code: str) -> Optional[str]:
 
 # ── Built-in tool: create_tool ────────────────────────────────────────────────
 
+# ── Valid loop node IDs for stage metadata validation ────────────────────────────────────────────
+VALID_NODE_IDS = {
+    # Main agent loop
+    "user_input", "load_context", "memory_search", "build_prompt",
+    "llm_call", "validate_tools", "guardrails", "execute_tools",
+    "check_continue", "final_response", "memory_save",
+    # Optimizer loop
+    "opt_collect", "opt_analyze", "opt_propose", "opt_validate", "opt_apply",
+}
+
+
 async def create_tool(
     name: str,
     description: str,
     parameters: dict,
     code: str,
+    stages: list,
+    destructive: bool = False,
+    agent_types: Optional[List[str]] = None,
     user_id: str = "",
 ) -> dict:
     """
@@ -117,6 +131,17 @@ async def create_tool(
         description: What the tool does (shown to model)
         parameters: JSON Schema describing tool inputs
         code: Full Python async function code
+        stages: Non-empty list of loop node IDs where this tool operates.
+            Valid values: user_input, load_context, memory_search, build_prompt,
+            llm_call, validate_tools, guardrails, execute_tools, check_continue,
+            final_response, memory_save, opt_collect, opt_analyze, opt_propose,
+            opt_validate, opt_apply.
+            Most tools should include 'execute_tools'. Memory tools also include
+            'memory_search' and/or 'memory_save'.
+        destructive: True if this tool writes, deletes, or has irreversible side effects.
+            Destructive tools display a warning badge in the loop visualizer.
+        agent_types: List of agent type names that can use this tool (e.g. ['default']).
+            Empty list or omitted means all agent types.
         user_id: Creator's user ID (injected by loader)
 
     Returns:
@@ -125,6 +150,27 @@ async def create_tool(
     if not user_id:
         return {"status": "error", "message": "user_id is required"}
 
+    # ── Validate stages (required, non-empty, valid node IDs) ──
+    if not stages:
+        return {
+            "status": "error",
+            "message": (
+                "stages is required and must be a non-empty list of loop node IDs. "
+                f"Valid node IDs: {', '.join(sorted(VALID_NODE_IDS))}. "
+                "Most tools should include 'execute_tools'. "
+                "Memory tools also include 'memory_search' and/or 'memory_save'."
+            ),
+        }
+    invalid = [s for s in stages if s not in VALID_NODE_IDS]
+    if invalid:
+        return {
+            "status": "error",
+            "message": (
+                f"Invalid stage IDs: {', '.join(invalid)}. "
+                f"Valid node IDs: {', '.join(sorted(VALID_NODE_IDS))}."
+            ),
+        }
+
     # Safety scan — reject code that touches the agent's codebase
     safety_error = _check_tool_code_safety(code)
     if safety_error:
@@ -132,6 +178,12 @@ async def create_tool(
         return {"status": "blocked", "tool_name": name, "message": safety_error}
 
     client = get_db().get_raw_client()
+
+    # Serialise metadata
+    params_json = json.dumps(parameters) if isinstance(parameters, dict) else parameters
+    stages_json = json.dumps(stages)
+    agent_types_json = json.dumps(agent_types or [])
+    destructive_int = 1 if destructive else 0
 
     # Check if tool already exists for this user
     existing = (
@@ -143,8 +195,6 @@ async def create_tool(
         .execute()
     )
 
-    params_json = json.dumps(parameters) if isinstance(parameters, dict) else parameters
-
     if existing.data:
         # Update existing tool
         tool_id = existing.data[0]["id"]
@@ -152,6 +202,9 @@ async def create_tool(
             "code": code,
             "description": description,
             "parameters": params_json,
+            "stages": stages_json,
+            "destructive": destructive_int,
+            "agent_types": agent_types_json,
             "updated_at": "now()",
         }).eq("id", tool_id).execute()
         logger.info(f"Updated tool {name} for user {user_id}")
@@ -171,6 +224,9 @@ async def create_tool(
             "language": "python",
             "status": "active",
             "created_by": user_id,
+            "stages": stages_json,
+            "destructive": destructive_int,
+            "agent_types": agent_types_json,
         }
         resp = client.table("tools").insert(row).execute()
 

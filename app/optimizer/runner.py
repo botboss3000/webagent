@@ -66,8 +66,8 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
     _opt_conn = sqlite3.connect(temp_db_path)
     _opt_conn.execute(
         "INSERT OR IGNORE INTO sessions (id, user_id, title, metadata, created_at, updated_at) "
-        "VALUES (?, ?, ?, '{}', datetime('now'), datetime('now'))",
-        (opt_sid, user_id, f"Optimizer \u2014 {session_id[:12]}")
+        "VALUES (?, ?, ?, '{}', ?, ?)",
+        (opt_sid, user_id, f"Optimizer \u2014 {session_id[:12]}", now, now)
     )
     _opt_conn.commit()
     _opt_conn.close()
@@ -166,11 +166,13 @@ def _inject_session_context(user_id: str, session_id: str, temp_db_path: str, op
     if ctx_data:
         content = "\n".join(ctx_data)
         try:
+            from datetime import datetime, timezone as _tz
+            _now = datetime.now(_tz.utc).isoformat()
             c = sqlite3.connect(temp_db_path)
             c.execute(
                 "INSERT INTO interactions (id,session_id,role,content,source,channel,from_id,created_at) "
-                "VALUES (?,?,'assistant',?,'context','optimizer',?,datetime('now'))",
-                (str(uuid.uuid4()), opt_sid, content, user_id),
+                "VALUES (?,?,'assistant',?,'context','optimizer',?,?)",
+                (str(uuid.uuid4()), opt_sid, content, user_id, _now),
             )
             c.commit()
             c.close()
@@ -249,11 +251,13 @@ def _ensure_session(uid, sid, orig):
     raw = getattr(db, '_get_conn', None)
     if raw:
         def _do():
+            from datetime import datetime, timezone as _tz
+            _now = datetime.now(_tz.utc).isoformat()
             c = raw()
             c.execute(
                 "INSERT OR IGNORE INTO sessions (id,user_id,title,created_at,updated_at) "
-                "VALUES (?,?,?,datetime('now'),datetime('now'))",
-                (sid, uid, f"Optimizer \u2014 {orig[:12]}"),
+                "VALUES (?,?,?,?,?)",
+                (sid, uid, f"Optimizer \u2014 {orig[:12]}", _now, _now),
             )
             c.commit()
             c.close()
@@ -267,27 +271,31 @@ def _insert_opt_msg(uid, sid, role, source, content, *, from_id=None, to_id=None
     
     if temp_db_path:
         def _do_temp():
+            from datetime import datetime, timezone as _tz
+            _now = datetime.now(_tz.utc).isoformat()
             c = sqlite3.connect(temp_db_path)
             c.execute(
                 "INSERT INTO interactions (id,session_id,role,content,source,channel,from_id,to_id,input,output,created_at) "
-                "VALUES (?,?,?,?,?,'optimizer',?,?,?,?,datetime('now'))",
-                (str(uuid.uuid4()), sid, role, content, source, from_id, to_id, input_data, output_data),
+                "VALUES (?,?,?,?,?,'optimizer',?,?,?,?,?)",
+                (str(uuid.uuid4()), sid, role, content, source, from_id, to_id, input_data, output_data, _now),
             )
             c.commit()
             c.close()
         _retry_db_write(_do_temp)
         return
-    
+
     from app.db import get_db
     db = get_db()
     raw = getattr(db, '_get_conn', None)
     if raw:
         def _do():
+            from datetime import datetime, timezone as _tz
+            _now = datetime.now(_tz.utc).isoformat()
             c = raw()
             c.execute(
                 "INSERT INTO interactions (id,session_id,role,content,source,channel,from_id,to_id,input,output,created_at) "
-                "VALUES (?,?,?,?,?,'optimizer',?,?,?,?,datetime('now'))",
-                (str(uuid.uuid4()), sid, role, content, source, from_id, to_id, input_data, output_data),
+                "VALUES (?,?,?,?,?,'optimizer',?,?,?,?,?)",
+                (str(uuid.uuid4()), sid, role, content, source, from_id, to_id, input_data, output_data, _now),
             )
             c.commit()
             c.close()

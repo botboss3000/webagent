@@ -1056,9 +1056,10 @@
           startDbAutoPoll();
         } else {
           stopDbAutoPoll();
+          setCheckedDbs([]);
         }
-        var s = document.getElementById('db-select');
-        if (s) s.dispatchEvent(new Event('change', { bubbles: true }));
+        refreshDbSelectLabel();
+        window.dispatchEvent(new CustomEvent('db-active-changed'));
         renderDbMenu(databases);
       });
       var headerLabel = document.createElement('span');
@@ -1070,6 +1071,57 @@
       });
       header.appendChild(allCb);
       header.appendChild(headerLabel);
+
+      // Delete-all button (skips local.db)
+      var delAll = document.createElement('button');
+      delAll.type = 'button';
+      delAll.textContent = '🗑';
+      delAll.title = 'Delete all databases (keeps local.db)';
+      delAll.style.cssText = 'background:transparent;border:none;color:#565f89;cursor:pointer;font-size:13px;line-height:1;padding:0 4px;border-radius:3px;';
+      delAll.addEventListener('mouseenter', function() {
+        delAll.style.color = '#f7768e';
+        delAll.style.background = '#2a1a1f';
+      });
+      delAll.addEventListener('mouseleave', function() {
+        delAll.style.color = '#565f89';
+        delAll.style.background = 'transparent';
+      });
+      delAll.addEventListener('click', async function(ev) {
+        ev.stopPropagation();
+        var victims = databases.filter(function(n) { return n !== 'local.db'; });
+        if (!victims.length) {
+          alert('No databases to delete (only local.db present).');
+          return;
+        }
+        if (!confirm('Delete ' + victims.length + ' database file(s)? local.db will be kept. This cannot be undone.')) return;
+        var token = localStorage.getItem('auth_token');
+        var failed = [];
+        await Promise.all(victims.map(async function(name) {
+          try {
+            var res = await fetch(
+              '/api/v1/db/file?db=' + encodeURIComponent(name) +
+              '&token=' + encodeURIComponent(token || ''),
+              { method: 'DELETE' }
+            );
+            if (!res.ok) {
+              var err = await res.json().catch(function() { return { detail: res.statusText }; });
+              failed.push(name + ': ' + (err.detail || res.statusText));
+            }
+          } catch(e) {
+            failed.push(name + ': ' + e.message);
+          }
+        }));
+        if (failed.length) alert('Some deletes failed:\n' + failed.join('\n'));
+        // Reset selection back to local.db, refresh list
+        var s = document.getElementById('db-select');
+        if (s) s.value = 'local.db';
+        setCheckedDbs(['local.db']);
+        refreshDbSelectLabel();
+        await populateDbList({ force: true });
+        window.dispatchEvent(new CustomEvent('db-active-changed'));
+      });
+      header.appendChild(delAll);
+
       menu.appendChild(header);
 
       var checked = new Set(getCheckedDbs());
@@ -1112,8 +1164,9 @@
             rowEl.style.background = (rowName === sel.value) ? '#1f2348' : 'transparent';
           });
           refreshDbSelectLabel();
-          // Soft notify — pagination.js debounces and does silent re-query
-          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          // Soft notify — pagination.js debounces and does silent re-query.
+          // Use custom event (not sel.change) to avoid re-rendering menu DOM.
+          window.dispatchEvent(new CustomEvent('db-active-changed'));
         });
         li.appendChild(cb);
 
