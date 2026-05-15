@@ -918,6 +918,16 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Added user_profiles.last_login_at column")
 
+            # ── Migration 012: clear hardcoded model from user agents ──
+            # Backend ignores agent.model; display now shows "default" when null.
+            # Clear any stored model so existing agents show "default" in the UI.
+            conn.execute(
+                """UPDATE agents SET model = NULL
+                   WHERE model IS NOT NULL"""
+            )
+            conn.commit()
+            logger.info("Cleared agent.model for user-owned agents (now show 'default')")
+
             # ── Seed: ensure admin_default always has is_admin=1 ──
             _mig_now2 = _now_iso()
             conn.execute(
