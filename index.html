@@ -114,6 +114,7 @@
     <button id="btn-restart" class="icon-btn-pill" title="Restart the Python agent server">
       <i data-lucide="refresh-cw" class="lucide-icon" style="width:14px;height:14px;"></i>
     </button>
+    <span id="restart-status" style="font-size:11px;color:var(--text-muted,#888);margin-left:6px;display:none;"></span>
   </div>
 
   <!-- User menu -->
@@ -1350,8 +1351,9 @@
       var sel = document.getElementById('db-select');
       if (!sel) return;
       var token = localStorage.getItem('auth_token');
+      if (!token) return;
       try {
-        var res = await fetch('/api/v1/db/list?token=' + encodeURIComponent(token || ''));
+        var res = await fetch('/api/v1/db/list?token=' + encodeURIComponent(token));
         if (!res.ok) return;
         var data = await res.json();
         var prevValue = sel.value;

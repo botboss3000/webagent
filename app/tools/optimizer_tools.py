@@ -62,7 +62,7 @@ async def _run_simulated_conversation(
     Run a multi-turn conversation between a sim_user agent and a worker agent.
 
     Returns (transcript, db_rows):
-    - transcript: list of entries for planner/finalizer viewing
+    - transcript: list of entries for planner/closer viewing
       (roles: sim_user | worker | tool_call | tool_result)
     - db_rows: list of dicts matching the real session interaction format,
       with full input/output/metadata fields identical to normal local.db sessions.
@@ -611,11 +611,11 @@ async def run_worker_trials(changes_json: str, user_id: str, session_id: str) ->
     return json.dumps(results, indent=2)
 
 
-async def handoff_to_finalizer(summary: str = "", user_id: str = "", session_id: str = "",
+async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: str = "",
                                 judging_criteria: str = "", baseline_transcript: str = "",
                                 worker_results: str = "") -> str:
-    """Hand off the optimization to the Finalizer agent for review.
-    Creates a new finalizer-<uuid8> session with all relevant data pre-injected
+    """Hand off the optimization to the Closer agent for review.
+    Creates a new closer-<uuid8> session with all relevant data pre-injected
     as interaction rows in the session's temp DB. The Finalizer sees the full
     context (criteria, baseline, trials) via its conversation history — not metadata.
     """
@@ -628,14 +628,14 @@ async def handoff_to_finalizer(summary: str = "", user_id: str = "", session_id:
         parts = user_id.split('_', 2)
         if len(parts) == 3:
             real_user_id = parts[2]
-    logger.warning(f"handoff_to_finalizer: real_user_id={real_user_id}")
+    logger.warning(f"handoff_to_closer: real_user_id={real_user_id}")
 
     # 2. Compute paths
     _here = os.path.dirname(os.path.abspath(__file__))
     _db_dir = os.path.normpath(os.path.join(_here, "..", "db"))
     _local_path = os.path.join(_db_dir, "local.db")
     os.makedirs(_db_dir, exist_ok=True)
-    temp_db_name = f"finalizer_{_uuid_mod.uuid4().hex[:16]}.db"
+    temp_db_name = f"closer_{_uuid_mod.uuid4().hex[:16]}.db"
     temp_db_path = os.path.join(_db_dir, temp_db_name)
 
     # 3. Init temp DB schema directly — no LocalBackend constructor (avoids seeding side effects)
@@ -647,22 +647,22 @@ async def handoff_to_finalizer(summary: str = "", user_id: str = "", session_id:
     finally:
         _tc.close()
 
-    # 4. Read opt_finalizer template from agent_templates in local.db
+    # 4. Read opt_closer template from agent_templates in local.db
     template_data = {}
     try:
         _lc = sqlite3.connect(_local_path)
         _lc.row_factory = sqlite3.Row
         try:
-            trow = _lc.execute("SELECT * FROM agent_templates WHERE id='opt_finalizer'").fetchone()
+            trow = _lc.execute("SELECT * FROM agent_templates WHERE id='opt_closer'").fetchone()
             if trow:
                 template_data = dict(trow)
         finally:
             _lc.close()
     except Exception as e:
-        logger.warning(f"handoff_to_finalizer: failed to read agent_templates: {e}")
+        logger.warning(f"handoff_to_closer: failed to read agent_templates: {e}")
 
     if not template_data:
-        return json.dumps({"status": "error", "message": "opt_finalizer template not found in agent_templates"})
+        return json.dumps({"status": "error", "message": "opt_closer template not found in agent_templates"})
 
     # 5. Find target_session_id from planner session metadata in local.db
     target_session_id = ""
@@ -677,37 +677,75 @@ async def handoff_to_finalizer(summary: str = "", user_id: str = "", session_id:
         finally:
             _lc2.close()
     except Exception as e:
-        logger.warning(f"handoff_to_finalizer: failed to find target_session: {e}")
+        logger.warning(f"handoff_to_closer: failed to find target_session: {e}")
 
-    # 6. Generate IDs and timestamps
-    finalizer_sid = f"finalizer-{_uuid_mod.uuid4().hex[:8]}"
-    agent_user_id = f"opt_finalizer_{real_user_id}"
-    agent_id = str(_uuid_mod.uuid4())
+    # 6. Generate session ID and timestamps
+    closer_sid = f"closer-{_uuid_mod.uuid4().hex[:8]}"
+    agent_user_id = f"opt_closer_{real_user_id}"
     now_sql = _dt2.now(_tz2.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-    # 7. Create agent and session in temp DB
+    # 6a. Reuse or create the closer agent in local.db so it persists across runs.
+    #     The agent row is then copied into the temp DB (same ID) so chat.py can find
+    #     it after switching the db pointer to the temp DB for this session.
+    _agent_cols = (
+        "id", "user_id", "owner_user_id", "template_id", "system_prompt",
+        "max_turn_count", "model", "provider", "temperature", "max_tokens",
+        "status", "metadata", "agent_prompt", "user_prompt",
+        "skills_prompt", "tasks_prompt", "misc_prompt", "created_at", "updated_at",
+    )
+    _agent_vals_new = (
+        str(_uuid_mod.uuid4()),          # id — placeholder, overwritten below
+        agent_user_id,
+        real_user_id,
+        "opt_closer",
+        template_data.get("system_prompt", ""),
+        template_data.get("max_turn_count", 10),
+        template_data.get("model"),
+        template_data.get("provider"),
+        template_data.get("temperature", 0.2),
+        template_data.get("max_tokens", 4096),
+        "active",
+        template_data.get("metadata", "{}"),
+        template_data.get("agent_prompt", ""),
+        template_data.get("user_prompt", ""),
+        template_data.get("skills_prompt", ""),
+        template_data.get("tasks_prompt", ""),
+        template_data.get("misc_prompt", ""),
+        now_sql, now_sql,
+    )
+
+    _lc_agent = sqlite3.connect(_local_path)
+    _lc_agent.row_factory = sqlite3.Row
+    try:
+        existing_agent = _lc_agent.execute(
+            "SELECT * FROM agents WHERE user_id = ? AND template_id = 'opt_closer' LIMIT 1",
+            (agent_user_id,),
+        ).fetchone()
+        if existing_agent:
+            agent_id = existing_agent["id"]
+            agent_row_dict = dict(existing_agent)
+            logger.warning(f"handoff_to_closer: reusing existing closer agent {agent_id[:8]}")
+        else:
+            agent_id = str(_uuid_mod.uuid4())
+            vals = (_agent_vals_new[1:] if False else
+                    (agent_id,) + _agent_vals_new[1:])  # replace placeholder id
+            _lc_agent.execute(
+                f"INSERT INTO agents ({', '.join(_agent_cols)}) VALUES ({', '.join(['?']*len(_agent_cols))})",
+                vals,
+            )
+            _lc_agent.commit()
+            agent_row_dict = dict(zip(_agent_cols, vals))
+            logger.warning(f"handoff_to_closer: created new closer agent {agent_id[:8]} in local.db")
+    finally:
+        _lc_agent.close()
+
+    # 7. Create session in temp DB and copy agent row into it so chat.py can find it
+    #    after switching the db pointer to the temp DB.
     _tc2 = sqlite3.connect(temp_db_path)
     try:
         _tc2.execute(
-            """INSERT INTO agents
-               (id, user_id, template_id, system_prompt, max_turn_count, model, provider,
-                temperature, max_tokens, status, metadata, agent_prompt, user_prompt,
-                skills_prompt, tasks_prompt, misc_prompt, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (agent_id, agent_user_id, "opt_finalizer",
-             template_data.get("system_prompt", ""),
-             template_data.get("max_turn_count", 10),
-             template_data.get("model"),
-             template_data.get("provider"),
-             template_data.get("temperature", 0.2),
-             template_data.get("max_tokens", 4096),
-             template_data.get("metadata", "{}"),
-             template_data.get("agent_prompt", ""),
-             template_data.get("user_prompt", ""),
-             template_data.get("skills_prompt", ""),
-             template_data.get("tasks_prompt", ""),
-             template_data.get("misc_prompt", ""),
-             now_sql, now_sql),
+            f"INSERT OR IGNORE INTO agents ({', '.join(_agent_cols)}) VALUES ({', '.join(['?']*len(_agent_cols))})",
+            tuple(agent_row_dict[c] for c in _agent_cols),
         )
         participants_json = json.dumps([
             {"id": real_user_id, "role": "user"},
@@ -716,10 +754,10 @@ async def handoff_to_finalizer(summary: str = "", user_id: str = "", session_id:
         _tc2.execute(
             "INSERT INTO sessions (id, user_id, title, agent_id, participants, metadata, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (finalizer_sid, real_user_id,
+            (closer_sid, real_user_id,
              f"Finalizer - {session_id[:12]}",
              agent_id, participants_json,
-             json.dumps({"opt_role": "finalizer", "source_optimizer_session": session_id}),
+             json.dumps({"opt_role": "closer", "source_optimizer_session": session_id}),
              now_sql, now_sql),
         )
         _tc2.commit()
@@ -733,7 +771,7 @@ async def handoff_to_finalizer(summary: str = "", user_id: str = "", session_id:
             ts = (_dti.now(_tzi.utc) + _tdd(seconds=_iid_counter[0])).strftime("%Y-%m-%d %H:%M:%S")
             _tc2.execute(
                 "INSERT INTO interactions (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
-                (str(_uuid_mod.uuid4()), finalizer_sid, role, content, ts),
+                (str(_uuid_mod.uuid4()), closer_sid, role, content, ts),
             )
 
         # 8a. Judging criteria + summary as the opening context
@@ -759,7 +797,7 @@ async def handoff_to_finalizer(summary: str = "", user_id: str = "", session_id:
                 finally:
                     _lc3.close()
             except Exception as e:
-                logger.warning(f"handoff_to_finalizer: baseline inject failed: {e}")
+                logger.warning(f"handoff_to_closer: baseline inject failed: {e}")
 
         if not baseline_injected and baseline_transcript:
             _inject("user", f"## Baseline Transcript\n{baseline_transcript[:3000]}")
@@ -787,7 +825,7 @@ async def handoff_to_finalizer(summary: str = "", user_id: str = "", session_id:
                         lines.append(f"[{role_label}]{terminal}: {entry.get('content', '')[:500]}")
                     _inject("user", "\n".join(lines))
         except Exception as e:
-            logger.warning(f"handoff_to_finalizer: trial transcript inject failed: {e}")
+            logger.warning(f"handoff_to_closer: trial transcript inject failed: {e}")
             if worker_results:
                 _inject("user", f"## Worker Results (raw)\n{worker_results[:3000]}")
 
@@ -797,7 +835,7 @@ async def handoff_to_finalizer(summary: str = "", user_id: str = "", session_id:
 
     # 9. Create session in local.db with temp_db_path in metadata so chat.py switches to temp DB
     local_meta = json.dumps({
-        "opt_role": "finalizer",
+        "opt_role": "closer",
         "source_optimizer_session": session_id,
         "temp_db_path": temp_db_path,
     })
@@ -806,7 +844,7 @@ async def handoff_to_finalizer(summary: str = "", user_id: str = "", session_id:
         _lc4.execute(
             "INSERT OR IGNORE INTO sessions (id, user_id, title, metadata, agent_id, participants, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (finalizer_sid, real_user_id,
+            (closer_sid, real_user_id,
              f"Finalizer - {session_id[:12]}",
              local_meta, agent_id,
              json.dumps([{"id": real_user_id, "role": "user"}, {"id": agent_id, "role": "agent"}]),
@@ -816,42 +854,42 @@ async def handoff_to_finalizer(summary: str = "", user_id: str = "", session_id:
     finally:
         _lc4.close()
 
-    logger.warning(f"Finalizer session created: {finalizer_sid} (user={real_user_id}, agent={agent_id[:8]})")
+    logger.warning(f"Closer session created: {closer_sid} (user={real_user_id}, agent={agent_id[:8]})")
 
-    # 10. Kickstart the Finalizer
+    # 10. Kickstart the Closer
     try:
-        asyncio.create_task(_kickstart_finalizer(real_user_id, finalizer_sid, summary))
+        asyncio.create_task(_kickstart_closer(real_user_id, closer_sid, summary))
     except Exception:
         pass
 
     return json.dumps({
         "status": "ok",
-        "finalizer_session_id": finalizer_sid,
+        "closer_session_id": closer_sid,
         "summary": summary,
     })
 
 
-async def _kickstart_finalizer(user_id: str, finalizer_sid: str, summary: str) -> None:
-    """Kickstart the Finalizer by posting a trigger message to the chat API.
+async def _kickstart_closer(user_id: str, closer_sid: str, summary: str) -> None:
+    """Kickstart the Closer by posting a trigger message to the chat API.
     The Finalizer's system prompt has Auto-Start Rule: it evaluates immediately on first message.
     All context (criteria, baseline, trials) is pre-injected as session history.
     """
     import httpx, os, logging as _log
     try:
         port = os.environ.get('PORT', '8080')
-        _log.warning(f"Kickstarting Finalizer {finalizer_sid}")
+        _log.warning(f"Kickstarting Closer {closer_sid}")
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
                 f"http://127.0.0.1:{port}/api/v1/chat",
                 json={
                     "message": "Start your evaluation.",
                     "user_id": user_id,
-                    "session_id": finalizer_sid,
+                    "session_id": closer_sid,
                 },
             )
-            _log.warning(f"Kickstart Finalizer responded: {resp.status_code}")
+            _log.warning(f"Kickstart Closer responded: {resp.status_code}")
     except Exception as e:
-        _log.warning(f"Kickstart Finalizer failed (non-fatal): {e}")
+        _log.warning(f"Kickstart Closer failed (non-fatal): {e}")
 
 
 async def deploy_optimization(changes_json: str, user_id: str, session_id: str) -> str:
@@ -884,32 +922,4 @@ async def deploy_optimization(changes_json: str, user_id: str, session_id: str) 
         for ch in changes:
             element = ch.get("element", "")
             new_content = ch.get("new_content", "")
-            element_type = ch.get("element_type", "system_prompt")
-
-            if element_type == "system_prompt":
-                cur = c.execute("SELECT system_prompt FROM agents WHERE user_id=? LIMIT 1", (real_user_id,))
-                row = cur.fetchone()
-                old = row[0] if row else ""
-                new_full = old + "\n\n" + new_content if old else new_content
-                c.execute("UPDATE agents SET system_prompt=?, updated_at=datetime('now') WHERE user_id=?", (new_full, real_user_id))
-                deployed.append(f"Updated system_prompt: {element}")
-            elif element_type in ("context_column", "context_document"):
-                col = _TYPE_TO_COL_DEPLOY.get(element)
-                if col:
-                    c.execute(f"UPDATE agents SET {col}=?, updated_at=datetime('now') WHERE user_id=?",
-                              (new_content, real_user_id))
-                    deployed.append(f"Updated {col}: {element}")
-                else:
-                    logging.warning(f"deploy_optimization: unknown element '{element}' -- skipping")
-
-        try:
-            c.execute(
-                "INSERT INTO skill_improvements (id,skill_id,old_version,new_version,opportunity_type,proposer_reasoning,deployed_at) "
-                "VALUES (?,?,?,?,?,?,datetime('now'))",
-                (str(uuid.uuid4()), 'optimizer', '1', '2', 'optimizer', 'Deployed by optimizer Finalizer')
-            )
-        except Exception:
-            pass  # skill_improvements table may not exist in all setups
-        raw.commit()
-
-    return json.dumps({"status": "deployed", "deployed": deployed})
+ 

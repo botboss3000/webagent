@@ -42,8 +42,9 @@ export async function populateSessionSelect(userId) {
     return;
   }
   try {
+    const token = localStorage.getItem('auth_token');
     const res = await fetch(
-      apiPath(`/api/v1/db/sessions?db=local.db&user_id=${encodeURIComponent(userId)}`),
+      apiPath(`/api/v1/db/sessions?db=local.db&user_id=${encodeURIComponent(userId)}${token ? '&token=' + encodeURIComponent(token) : ''}`),
     );
     const data = await res.json();
     const sel = document.getElementById('session-select');
@@ -81,11 +82,23 @@ export async function populateSessionSelect(userId) {
 
 export async function loadSessionChat(sessionId) {
   try {
+    const token = localStorage.getItem('auth_token');
     const res = await fetch(
-      apiPath(`/api/v1/db/session-messages?db=local.db&session_id=${encodeURIComponent(sessionId)}`),
+      apiPath(`/api/v1/db/session-messages?db=local.db&session_id=${encodeURIComponent(sessionId)}${token ? '&token=' + encodeURIComponent(token) : ''}`),
     );
     const data = await res.json();
     app.chatMessages.innerHTML = '';
+
+    if (data.restricted) {
+      // Not a participant — silently switch to a fresh session instead of showing restricted notice
+      app.currentSessionId = generateUUID();
+      localStorage.setItem('terminalSessionId', app.currentSessionId);
+      app.chatMessages.innerHTML = '';
+      app.addChatBubble('agent', 'New session. Start typing below.');
+      if (app.currentUserId) populateSessionSelect(app.currentUserId);
+      return;
+    }
+
     if (!data.messages || data.messages.length === 0) {
       app.addChatBubble(
         'agent',
@@ -244,10 +257,8 @@ export function initSessions() {
   sessionSelect.addEventListener('change', (e) => {
     resetDeleteConfirm();
     const sid = e.target.value;
-    console.log('[session] change sid=' + sid + ' currentSessionId=' + app.currentSessionId);
     if (!sid || sid === '__new_session__') {
       app.currentSessionId = generateUUID();
-      console.log('[session] new UUID=' + app.currentSessionId);
       localStorage.setItem('terminalSessionId', app.currentSessionId);
       // Add temp option so dropdown shows the new session ID
       const opt = document.createElement('option');

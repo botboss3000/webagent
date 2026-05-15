@@ -13,23 +13,23 @@ if not exist ".venv\Scripts\python.exe" (
 echo Starting webAgent agent...
 echo.
 
-:: ── Kill any stale server on this port ──
 :restart
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8080" ^| findstr LISTEN') do (
+:: Kill anything listening on port 8080
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8080 " ^| findstr LISTEN') do (
     if not "%%a"=="" (
         echo [webAgent] Killing stale process PID %%a on port 8080...
-        taskkill /F /PID %%a >nul 2>nul
+        taskkill /F /PID %%a 2>nul
     )
 )
-ping -n 2 127.0.0.1 >nul
+ping -n 3 127.0.0.1 >nul
 
-:: Run uvicorn inline
+:: Run the server
 echo [webAgent] Server running. Press Ctrl+C to stop permanently.
 echo [webAgent] Use the "Restart" button in the terminal page to restart.
 echo.
 .venv\Scripts\python.exe run.py
 
-:: If uvicorn exits (e.g. via /api/v1/restart), restart the loop
+:: Loop on exit
 echo.
 echo [webAgent] Server stopped. Restarting...
 ping -n 3 127.0.0.1 >nul

@@ -1,11 +1,13 @@
 """Auth router — login with remember-me + recall endpoint."""
 
 import logging
+from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.auth.jwt import create_access_token
 from app.auth.users import authenticate, set_remember_token, resolve_remember_token, get_user, register_user
+from app.db import get_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -76,6 +78,11 @@ async def login(req: LoginRequest):
         if remember:
             resp.remember_token = remember
 
+    # Track user login: create/update user_profiles row
+    now_iso = datetime.now(timezone.utc).isoformat()
+    db = get_db()
+    await db.upsert_user_profile(user.user_id, last_login_at=now_iso)
+
     return resp
 
 
@@ -91,12 +98,19 @@ async def recall(req: RecallRequest):
         raise HTTPException(status_code=401, detail="Invalid or expired remember token")
 
     token = create_access_token(user.username, user.user_id)
-    return RecallResponse(
+    resp = RecallResponse(
         access_token=token,
         username=user.username,
         user_id=user.user_id,
         display_name=user.display_name,
     )
+
+    # Track auto-login from remember token
+    now_iso = datetime.now(timezone.utc).isoformat()
+    db = get_db()
+    await db.upsert_user_profile(user.user_id, last_login_at=now_iso)
+
+    return resp
 
 
 @router.post("/register", response_model=RegisterResponse)
@@ -110,12 +124,19 @@ async def register(req: RegisterRequest):
         raise HTTPException(status_code=409, detail="Username already exists")
 
     token = create_access_token(user.username, user.user_id)
-    return RegisterResponse(
+    resp = RegisterResponse(
         access_token=token,
         username=user.username,
         user_id=user.user_id,
         display_name=user.display_name,
     )
+
+    # Track new user registration (first login)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    db = get_db()
+    await db.upsert_user_profile(user.user_id, last_login_at=now_iso)
+
+    return resp
 
 
 @router.post("/logout")

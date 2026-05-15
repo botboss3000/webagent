@@ -277,7 +277,7 @@ async def _race_llm_calls(
             if pid == winner_idx:
                 collected_content += _chunk_text
                 yield {"type": "stream", "level": "agent",
-                       "content": _chunk_text}
+                       "content": prefix_content(_chunk_text)}
 
         elif etype == "done":
             _prov_name = item[2]
@@ -441,10 +441,12 @@ async def stream_agent_events(
     channel: Optional[str] = None,
     db: Optional[Any] = None,
     agent_template_id: Optional[str] = None,
+    allowed_tools: Optional[List[str]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Run the unified agent loop and yield structured events.
     agent_template_id is used to gate admin-only tools (e.g. 'admin-agent').
+    allowed_tools is the list of Tier-2 tool names DISABLED for this agent.
     """
     from app.tools.loader import load_tools
     from app.admin.settings import load_provider_for_user
@@ -456,7 +458,7 @@ async def stream_agent_events(
     provider_name = os.environ.get("LLM_PROVIDER", "openrouter")
 
     load_start = time.time()
-    tools = await load_tools(user_id, agent_template_id=agent_template_id)
+    tools = await load_tools(user_id, agent_template_id=agent_template_id, allowed_tools=allowed_tools)
     load_duration = int((time.time() - load_start) * 1000)
 
     # ── Pipeline: tools loaded ──
@@ -481,12 +483,31 @@ async def stream_agent_events(
         if db is None:
             db = db or get_db()
 
+        # Fetch agent name for prefixing all outputs
+        agent_name = "Agent"
+        if agent_id:
+            agent = await db.get_agent_by_id(agent_id)
+            if agent and agent.get("name"):
+                agent_name = agent["name"]
+
+        def prefix_content(content: str) -> str:
+            """Prefix agent name to content."""
+            if not content:
+                return content
+            return f"{agent_name}: {content}"
+
+        # Use list to track state across function boundaries
+        first_stream_chunk_state = [True]  # [is_first_chunk]
+
         while turn_count < max_turns:
             await _check_interrupt(session_id, interrupt_event)
 
             turn_count += 1
             if agent_id:
                 await db.increment_agent_turn_count(agent_id)
+
+            # Reset stream chunk tracker for new turn
+            first_stream_chunk_state[0] = True
 
             # ── Pipeline: turn start ──
             yield {"type": "pipeline", "level": "pipeline",
@@ -662,6 +683,11 @@ async def stream_agent_events(
                     ):
                         if _pe["type"] == "stream":
                             collected_content += _pe["content"]
+                            # Prefix only the first stream chunk of the turn
+                            if first_stream_chunk_state[0]:
+                                _pe = dict(_pe)  # shallow copy to avoid mutating original
+                                _pe["content"] = prefix_content(_pe["content"])
+                                first_stream_chunk_state[0] = False
                             yield _pe
                         elif _pe["type"] == "pipeline":
                             if _pe["step"] == "parallel_winner":
@@ -1135,6 +1161,7 @@ async def run_agent_loop_buffered(
     timeout_seconds: Optional[int] = None,
     db: Optional[Any] = None,
     agent_template_id: Optional[str] = None,
+    allowed_tools: Optional[List[str]] = None,
 ) -> str:
     """
     Compatibility wrapper that runs the streaming loop internally,
@@ -1160,6 +1187,7 @@ async def run_agent_loop_buffered(
             channel=channel,
             db=db,
             agent_template_id=agent_template_id,
+            allowed_tools=allowed_tools,
         ):
             if event_callback:
                 try:
