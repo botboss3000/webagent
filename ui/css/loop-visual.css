@@ -58,13 +58,14 @@
 /* ── Graph scroll area ── */
 #loop-visual-graph-area {
   flex: 1;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   position: relative;
   background: #0d0d1a;
   padding: 16px 24px 40px;
   display: flex;
+  flex-direction: column;
   align-items: flex-start;
-  justify-content: flex-start;
   scrollbar-width: thin;
   scrollbar-color: #2a2a4a transparent;
 }
