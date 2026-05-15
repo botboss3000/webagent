@@ -420,6 +420,14 @@ function renderPageButtons() {
   });
 }
 
+// ── Scale a fixed-width diagram to fit its container ──
+// Uses CSS zoom (not transform) so the scaled size affects layout flow — no overflow.
+function _scaleLvDiagram(wrap, root, cw) {
+  const avail = wrap.clientWidth || wrap.parentElement?.clientWidth || 0;
+  const s = (avail > 0 && avail < cw) ? avail / cw : 1;
+  root.style.zoom = s < 1 ? String(s) : '';
+}
+
 // ── Render a single page (turn) ──
 function renderPage(idx) {
   hideToolPanel();
@@ -432,12 +440,16 @@ function renderPage(idx) {
     return;
   }
 
+  area._lvRo?.disconnect();
   area.innerHTML = '';
 
-  // Root container (all absolute-positioned children go here)
+  const scaleWrap = document.createElement('div');
+  scaleWrap.style.cssText = 'width:100%;flex-shrink:0;overflow:hidden;';
+  area.appendChild(scaleWrap);
+
   const root = document.createElement('div');
-  root.style.cssText = `position:relative;width:${CANVAS_W}px;min-height:${CANVAS_H}px;flex-shrink:0;margin:0 auto;`;
-  area.appendChild(root);
+  root.style.cssText = `position:relative;width:${CANVAS_W}px;min-height:${CANVAS_H}px;`;
+  scaleWrap.appendChild(root);
 
   // ── SVG layer (backgrounds, arrows, labels) ──
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -593,6 +605,11 @@ function renderPage(idx) {
   for (const nodeDef of OPTIMIZER_NODES) {
     renderNodeEl(nodeDef, '', null, root);
   }
+
+  // Scale to fit, re-scale on resize
+  _scaleLvDiagram(scaleWrap, root, CANVAS_W);
+  area._lvRo = new ResizeObserver(() => _scaleLvDiagram(scaleWrap, root, CANVAS_W));
+  area._lvRo.observe(area);
 }
 
 function renderNodeEl(nodeDef, nodeState, page, parent) {

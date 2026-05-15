@@ -674,13 +674,24 @@ function _lvHidePanel(force = false) {
  * nodeStates = Map<nodeId, 'active'|'done'|'error'>  — new Map() = static blueprint.
  * agent is passed for tool-list filtering and node hints.
  */
+function _scaleLvDiagram(wrap, root, cw) {
+  const avail = wrap.clientWidth || wrap.parentElement?.clientWidth || 0;
+  const s = (avail > 0 && avail < cw) ? avail / cw : 1;
+  root.style.zoom = s < 1 ? String(s) : '';
+}
+
 function _drawAgentLoopDiagram(loopEl, nodeStates, agent) {
+  loopEl._lvRo?.disconnect();
   loopEl.innerHTML = '';
   _lvHidePanel();
 
+  const scaleWrap = document.createElement('div');
+  scaleWrap.style.cssText = 'width:100%;overflow:hidden;';
+  loopEl.appendChild(scaleWrap);
+
   const root = document.createElement('div');
-  root.style.cssText = `position:relative;width:${_LV_W}px;min-height:${_LV_H}px;flex-shrink:0;`;
-  loopEl.appendChild(root);
+  root.style.cssText = `position:relative;width:${_LV_W}px;min-height:${_LV_H}px;`;
+  scaleWrap.appendChild(root);
 
   // ── SVG layer ──
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -803,6 +814,11 @@ function _drawAgentLoopDiagram(loopEl, nodeStates, agent) {
 
   // Outside-click warns if unsaved changes exist
   root.addEventListener('click', _lvOutsideClickHandler);
+
+  // Scale to fit, re-scale on resize
+  _scaleLvDiagram(scaleWrap, root, _LV_W);
+  loopEl._lvRo = new ResizeObserver(() => _scaleLvDiagram(scaleWrap, root, _LV_W));
+  loopEl._lvRo.observe(loopEl);
 }
 
 function _lvNodeHint(nd, agent) {
