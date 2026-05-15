@@ -1,3 +1,5 @@
+#DO NOT work in a workspace. you are to update the main repo directly in C:\Users\Alex R\Projects\webagent
+
 # Agent instructions for the webAgent workspace
 
 **webAgent** is the AI Agent Harness app in this repository (chat, tools, WebSockets, UI). When the user talks about the **agent process**, **flow**, **memory**, **skills**, or **tools** in this project, they mean **that application**, not the Pi Agent, Cursor, Hermes, Claude assistants.
