@@ -6,6 +6,7 @@
   flex-direction: column;
   background: #0d0d1a;
   min-height: 0;
+  position: relative; /* anchor for tool panel overlay */
 }
 
 /* ── Toolbar ── */
@@ -200,6 +201,11 @@
   font-size: inherit;
 }
 
+/* ── Hovered node rises above siblings so tooltip paints on top ── */
+.lv-node:hover {
+  z-index: 10;
+}
+
 /* ── Hover detail tooltip ── */
 .lv-node-detail {
   display: none;
@@ -230,6 +236,7 @@
   letter-spacing: 0.12em;
   text-transform: uppercase;
   pointer-events: none;
+  fill-opacity: 0.75;
 }
 
 /* ── SVG arrows ── */
@@ -370,13 +377,15 @@
   overflow-y: auto;
 }
 
-/* Overlay mode — panel covers the full diagram container */
+/* Overlay mode — panel covers the viewport via fixed positioning.
+   fixed avoids all ancestor overflow/stacking-context clipping issues. */
 .lv-tool-panel.lv-panel-overlay {
+  position: fixed;
   inset: 0;
   width: auto;
   max-height: none;
-  border-radius: 6px;
-  z-index: 50;
+  border-radius: 0;
+  z-index: 9999;
   overflow-y: auto;
 }
 
@@ -594,6 +603,10 @@
 /* ═══════════════════════════════════════════════
    LIGHT MODE
    ═══════════════════════════════════════════════ */
+
+body.light-mode .lv-stage-label {
+  fill-opacity: 0.90;
+}
 
 body.light-mode #loop-visual-container,
 body.light-mode #loop-visual-graph-area {

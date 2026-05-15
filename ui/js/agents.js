@@ -10,7 +10,7 @@
  */
 
 import { app } from './state.js';
-import { fetchAllToolMeta } from './loop-visual.js';
+import { fetchAllToolMeta } from './loop-logic.js';
 import { LOOP_W, LOOP_H, LOOP_NODES, renderLoopDiagram } from './loop-diagram.js';
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -189,6 +189,18 @@ async function _loadAgents() {
       const data = await res.json();
       _agents = data.agents || [];
     }
+    // Admins also see system templates so they can manage the discoverable flag
+    if (_userIsAdmin) {
+      const tRes = await fetch(`/api/v1/agents/templates?user_id=${encodeURIComponent(app.currentUserId)}&include_admin=true`);
+      if (tRes.ok) {
+        const tData = await tRes.json();
+        const seenIds = new Set(_agents.map(a => a.id));
+        const templates = (tData.templates || [])
+          .filter(t => !seenIds.has(t.id))
+          .map(t => ({ ...t, source: 'template' }));
+        _agents = [...templates, ..._agents];
+      }
+    }
   } catch (e) {
     console.warn('agents: could not load agent list', e);
   }
@@ -336,7 +348,7 @@ function _buildDetailPanel(agent) {
   // Tab bar
   const tabBar = document.createElement('div');
   tabBar.className = 'agent-detail-tabs';
-  for (const [key, label] of [['config','Config'],['tools','Tools'],['test','Agent Loop']]) {
+  for (const [key, label] of [['config','Config'],['tools','Tools'],['test','Agent Loop'],['connections','Connections']]) {
     const btn = document.createElement('button');
     btn.className = 'agents-detail-tab' + (activeTab === key ? ' active' : '');
     btn.dataset.tab = key;
@@ -380,9 +392,10 @@ function _renderPanelBody(agent, panelEl) {
   const oldSaveBar = content ? content.querySelector(':scope > .agents-save-bar') : null;
   if (oldSaveBar) oldSaveBar.remove();
 
-  if (tab === 'config')       _renderConfigTab(body, agent, panelEl);
-  else if (tab === 'tools')   _renderToolsTab(body, agent);
-  else if (tab === 'test')    _renderTestTab(body, agent);
+  if (tab === 'config')            _renderConfigTab(body, agent, panelEl);
+  else if (tab === 'tools')        _renderToolsTab(body, agent);
+  else if (tab === 'test')         _renderTestTab(body, agent);
+  else if (tab === 'connections')  _renderConnectionsTab(body, agent);
 }
 
 // ── Config tab ────────────────────────────────────────────────────────────────
@@ -421,6 +434,57 @@ function _renderConfigTab(body, agent, panelEl) {
   for (const f of FIELDS) {
     _addField(body, f.label, 'agents-textarea', f.key,
       agent[f.key] || '', !isEditable, 6, f.hint);
+  }
+
+  // Admin-only: Discoverable toggle for system templates
+  if (!isEditable && _userIsAdmin && agent.source === 'template') {
+    const discGroup = document.createElement('div');
+    discGroup.className = 'agents-field-group';
+    discGroup.innerHTML = `
+      <label class="agents-field-label">Discoverable</label>
+      <span class="agents-field-hint">Show this template in the "New Agent" creation dropdown.</span>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px;">
+        <input type="checkbox" data-field="discoverable" ${agent.discoverable ? 'checked' : ''}>
+        <span style="font-size:13px;color:var(--fg-2)">Show in New Agent menu</span>
+      </label>
+    `;
+    body.appendChild(discGroup);
+
+    const content = panelEl.querySelector('.agent-detail-content');
+    const bar = document.createElement('div');
+    bar.className = 'agents-save-bar';
+    const saveBtn = _btn('Save', 'agents-btn primary');
+    const msg = document.createElement('span');
+    msg.className = 'agents-save-msg';
+    saveBtn.addEventListener('click', async () => {
+      msg.textContent = '';
+      msg.className = 'agents-save-msg';
+      const cb = panelEl.querySelector('[data-field="discoverable"]');
+      try {
+        const res = await fetch(`/api/v1/agent-templates/config`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: app.currentUserId, template_id: agent.id, discoverable: cb ? cb.checked : false }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          agent.discoverable = data.template?.discoverable;
+          const idx = _agents.findIndex(a => a.id === agent.id);
+          if (idx !== -1) _agents[idx].discoverable = agent.discoverable;
+          msg.textContent = '✓ Saved';
+          msg.className = 'agents-save-msg';
+        } else {
+          msg.textContent = data.detail || 'Save failed';
+          msg.className = 'agents-save-msg error';
+        }
+      } catch (e) {
+        msg.textContent = `Error: ${e.message}`;
+        msg.className = 'agents-save-msg error';
+      }
+    });
+    bar.appendChild(saveBtn);
+    bar.appendChild(msg);
+    if (content) content.appendChild(bar);
   }
 
   // Save bar (sticky at bottom of content — outside the scrollable body)
@@ -495,6 +559,195 @@ function _renderToolsTab(body, agent) {
   body.appendChild(section);
 }
 
+// ── Connections tab ───────────────────────────────────────────────────────────
+
+const _CONN_ICONS = {
+  // Channels
+  telegram:  '✈',
+  twilio:    '📞',
+  email:     '✉',
+  whatsapp:  '💬',
+  discord:   '🎮',
+  slack:     '💼',
+  // Integrations
+  google:    '🔍',
+  yahoo:     '🟣',
+  microsoft: '🪟',
+  github:    '🐙',
+  bank:      '🏦',
+  search:    '🌐',
+};
+
+async function _renderConnectionsTab(body, agent) {
+  body.innerHTML = '<div class="conn-loading">Loading connections…</div>';
+
+  let connections = [];
+  try {
+    const res = await fetch(`/api/v1/agents/${agent.id}/connections?user_id=${encodeURIComponent(app.currentUserId)}`);
+    if (res.ok) {
+      const data = await res.json();
+      connections = data.connections || [];
+    }
+  } catch (e) {
+    body.innerHTML = `<div class="conn-loading" style="color:#f7768e">Failed to load connections: ${_esc(e.message)}</div>`;
+    return;
+  }
+
+  body.innerHTML = '';
+
+  const sections = [
+    { key: 'channel',     label: 'Channels',     hint: 'How this agent sends and receives messages.' },
+    { key: 'integration', label: 'Integrations', hint: 'Services and data sources this agent can access.' },
+  ];
+
+  for (const sec of sections) {
+    const items = connections.filter(c => c.section === sec.key);
+    if (!items.length) continue;
+
+    const secEl = document.createElement('div');
+    secEl.className = 'conn-section collapsed';
+
+    const header = document.createElement('div');
+    header.className = 'conn-section-header';
+    header.innerHTML = `
+      <span class="conn-section-chevron">▶</span>
+      <span class="conn-section-label">${_esc(sec.label)}</span>
+      <span class="conn-section-hint">${_esc(sec.hint)}</span>
+    `;
+
+    const grid = document.createElement('div');
+    grid.className = 'conn-grid';
+
+    for (const conn of items) {
+      grid.appendChild(_buildConnectionCard(agent, conn));
+    }
+
+    header.addEventListener('click', () => {
+      const isCollapsed = secEl.classList.toggle('collapsed');
+      header.querySelector('.conn-section-chevron').textContent = isCollapsed ? '▶' : '▼';
+    });
+
+    secEl.appendChild(header);
+    secEl.appendChild(grid);
+    body.appendChild(secEl);
+  }
+}
+
+function _buildConnectionCard(agent, conn) {
+  const isComingSoon = conn.status === 'coming_soon';
+  const card = document.createElement('div');
+  card.className = 'conn-card' + (isComingSoon ? ' coming-soon' : '') + (conn.enabled ? ' enabled' : '');
+
+  const icon = _CONN_ICONS[conn.connection_type] || '🔌';
+
+  // ── Always-visible header ──
+  const header = document.createElement('div');
+  header.className = 'conn-card-header';
+  header.innerHTML = `
+    <span class="conn-icon">${icon}</span>
+    <span class="conn-name">${_esc(conn.display_name)}</span>
+    ${isComingSoon
+      ? '<span class="conn-badge coming-soon">Coming soon</span>'
+      : `<label class="conn-toggle-wrap" title="${conn.enabled ? 'Disable' : 'Enable'}">
+           <input type="checkbox" class="conn-toggle" ${conn.enabled ? 'checked' : ''}>
+           <span class="conn-toggle-track"></span>
+         </label>`
+    }
+  `;
+  card.appendChild(header);
+
+  // ── Expandable body (provider-specific, hidden by default) ──
+  const connBody = _buildConnectionBody(conn);
+  if (connBody) {
+    card.appendChild(connBody);
+    // Click header (not toggle) to expand/collapse
+    header.classList.add('conn-card-header-clickable');
+    header.addEventListener('click', e => {
+      if (e.target.closest('.conn-toggle-wrap')) return;
+      card.classList.toggle('conn-card-expanded');
+    });
+  }
+
+  if (isComingSoon) return card;
+
+  // Toggle handler
+  const toggle = card.querySelector('.conn-toggle');
+  if (toggle) {
+    toggle.addEventListener('change', () => _saveConnection(agent, conn, card, toggle.checked));
+  }
+
+  // Save button handler
+  const saveBtn = card.querySelector('.conn-save-btn');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', () => {
+      const enabled = toggle ? toggle.checked : conn.enabled;
+      _saveConnection(agent, conn, card, enabled);
+    });
+  }
+
+  return card;
+}
+
+function _buildConnectionBody(conn) {
+  if (conn.status === 'coming_soon') return null;
+
+  const el = document.createElement('div');
+  el.className = 'conn-fields';
+
+  if (conn.connection_type === 'telegram') {
+    const tokenVal = conn.config?.bot_token || '';
+    el.innerHTML = `
+      <label class="conn-field-label">Bot Token</label>
+      <div class="conn-token-row">
+        <input type="password" class="conn-token-input agents-input" placeholder="Enter bot token…" value="${_esc(tokenVal)}" autocomplete="off">
+        <button class="agents-btn primary conn-save-btn">Save</button>
+      </div>
+      <span class="conn-field-hint">Create a bot via <a href="https://t.me/BotFather" target="_blank" style="color:#7aa2f7">@BotFather</a> to get a token.</span>
+      <span class="conn-save-msg"></span>
+    `;
+    return el;
+  }
+
+  // No expandable body for other available-but-unconfigured types yet
+  return null;
+}
+
+async function _saveConnection(agent, conn, cardEl, enabled) {
+  const msgEl = cardEl.querySelector('.conn-save-msg');
+  const tokenInput = cardEl.querySelector('.conn-token-input');
+  if (msgEl) { msgEl.textContent = ''; msgEl.className = 'conn-save-msg'; }
+
+  const config = {};
+  if (conn.connection_type === 'telegram' && tokenInput) {
+    config.bot_token = tokenInput.value.trim();
+  }
+
+  try {
+    const res = await fetch(
+      `/api/v1/agents/${agent.id}/connections/${conn.connection_type}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: app.currentUserId, enabled, config }),
+      }
+    );
+    const data = await res.json();
+    if (res.ok) {
+      conn.enabled = enabled;
+      conn.config = data.connection?.config || conn.config;
+      cardEl.classList.toggle('enabled', enabled);
+      if (tokenInput && data.connection?.config?.bot_token) {
+        tokenInput.value = data.connection.config.bot_token;
+      }
+      if (msgEl) { msgEl.textContent = '✓ Saved'; }
+    } else {
+      if (msgEl) { msgEl.textContent = data.detail || 'Save failed'; msgEl.className = 'conn-save-msg error'; }
+    }
+  } catch (e) {
+    if (msgEl) { msgEl.textContent = `Error: ${e.message}`; msgEl.className = 'conn-save-msg error'; }
+  }
+}
+
 // ── Agent Loop (Test) tab ─────────────────────────────────────────────────────
 
 function _renderTestTab(body, agent) {
@@ -518,10 +771,10 @@ function _renderTestTab(body, agent) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); _runTest(agent, area); }
   });
 
-  // Render static blueprint immediately
-  _drawAgentLoopDiagram(loopEl, new Map(), agent);
-
   body.appendChild(area);
+
+  // Render static blueprint after area is in DOM so clientWidth is measurable
+  _drawAgentLoopDiagram(loopEl, new Map(), agent);
 }
 
 async function _runTest(agent, areaEl) {
@@ -582,12 +835,6 @@ function _backBtn() {
 
 // ── Agent loop diagram — uses shared loop-diagram.js for topology + rendering ──
 
-function _scaleLvDiagram(wrap, root, cw) {
-  const avail = wrap.clientWidth || wrap.parentElement?.clientWidth || 0;
-  const s = (avail > 0 && avail < cw) ? avail / cw : 1;
-  root.style.zoom = s < 1 ? String(s) : '';
-}
-
 // One active node-info panel at a time (shared across all loop diagrams)
 let _lvActivePanelEl     = null;
 let _lvActivePanelNodeId = null;
@@ -606,14 +853,25 @@ function _lvHidePanel(force = false) {
 // nodeStates = Map<nodeId, 'active'|'done'|'error'>  — new Map() = static blueprint
 function _drawAgentLoopDiagram(loopEl, nodeStates, agent) {
   loopEl._lvRo?.disconnect();
+
+  const savedScroll = loopEl.scrollTop;
+
   loopEl.innerHTML = '';
   _lvHidePanel();
+
+  // Store for resize re-render
+  loopEl._lvNodeStates = nodeStates;
+  loopEl._lvAgent      = agent;
 
   const scaleWrap = document.createElement('div');
   scaleWrap.style.cssText = 'width:100%;overflow:hidden;';
   loopEl.appendChild(scaleWrap);
 
+  // Measure scaleWrap (not loopEl) — excludes loopEl padding and accounts for scrollbar
+  const availableWidth = Math.max(300, scaleWrap.clientWidth || scaleWrap.offsetWidth || LOOP_W);
+
   const { rootEl } = renderLoopDiagram(scaleWrap, nodeStates, {
+    availableWidth,
     markerPrefix: 'ag',
     getNodeDetail: nd => _lvNodeHint(nd, agent),
     onNodeClick: (nd, el, root) => {
@@ -630,42 +888,176 @@ function _drawAgentLoopDiagram(loopEl, nodeStates, agent) {
 
   rootEl.addEventListener('click', _lvOutsideClickHandler);
 
-  _scaleLvDiagram(scaleWrap, rootEl, LOOP_W);
-  loopEl._lvRo = new ResizeObserver(() => _scaleLvDiagram(scaleWrap, rootEl, LOOP_W));
-  loopEl._lvRo.observe(loopEl);
+  if (savedScroll > 0) {
+    requestAnimationFrame(() => { loopEl.scrollTop = savedScroll; });
+  }
+
+  // Re-render on resize to reflow layout (debounced).
+  // Observe parentElement, not loopEl itself — loopEl's content changes on re-render
+  // which would retrigger the observer every 120ms, resetting scroll and killing panels.
+  loopEl._lvRo = new ResizeObserver(() => {
+    clearTimeout(loopEl._lvResizeTimer);
+    loopEl._lvResizeTimer = setTimeout(() => {
+      _drawAgentLoopDiagram(loopEl, loopEl._lvNodeStates, loopEl._lvAgent);
+    }, 120);
+  });
+  if (loopEl.parentElement) loopEl._lvRo.observe(loopEl.parentElement);
+  else loopEl._lvRo.observe(loopEl);
 }
 
 function _lvNodeHint(nd, agent) {
   if (!agent) return '';
   const isCustom = agent.source === 'custom';
   switch (nd.id) {
-    case 'user_input':     return 'User message enters the pipeline';
+    case 'user_input':
+      return 'User message enters the pipeline here';
+
+    case 'slash_cmd':
+      return 'Intercept check — /optimize routes directly to the optimizer, bypassing the agent loop';
+
+    case 'ensure_session':
+      return 'Creates a new session in the DB if none exists for this request';
+
+    case 'agent_resolve':
+      return isCustom
+        ? `Agent: ${agent.name || agent.id} — click to configure`
+        : `Loads the agent record — template, system prompt, tools, max_turns`;
+
+    case 'participants':
+      return 'Verifies the user is permitted to interact with this agent';
+
+    case 'save_user_msg':
+      return 'Persists the user message as role="user" before the loop starts';
+
     case 'load_context': {
       const pf = ['agent_prompt','user_prompt','skills_prompt','tasks_prompt','misc_prompt'];
       const n = pf.filter(f => agent[f] && String(agent[f]).trim()).length;
-      return isCustom ? `${n}/5 sections configured — click to edit` : `${n} of 5 prompt sections configured`;
+      return isCustom
+        ? `${n}/5 prompt sections configured — click to edit`
+        : `${n} of 5 prompt sections configured`;
     }
+
+    case 'copy_defaults':
+      return 'Seeds default context from template on first run if no context rows exist';
+
+    case 'skip_gate':
+      return 'Trivial/short messages skip memory_search to save latency';
+
     case 'memory_search': {
       const dis = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
       const on = !dis.has('memory');
-      return isCustom ? `Memory search ${on ? 'enabled' : 'disabled'} — click to toggle` : 'Semantic search over past interactions';
+      return isCustom
+        ? `Memory search ${on ? 'enabled' : 'disabled'} — click to toggle`
+        : 'Semantic search over past sessions to inject relevant context';
     }
-    case 'build_prompt':   return isCustom ? 'Click to edit prompt sections' : 'Assembles system prompt from context sections';
-    case 'llm_call':       return isCustom ? `${agent.model || 'claude-3-5-sonnet-20241022'} — click to configure` : `Model: ${agent.model || 'claude-3-5-sonnet'}`;
-    case 'validate_tools': return 'Validates requested tool calls';
-    case 'guardrails':     return isCustom ? 'Click to configure tool guardrails' : 'Safety checks before tool execution';
+
+    case 'resolve_attach':
+      return 'Resolves uploaded file IDs into metadata for the system prompt';
+
+    case 'build_prompt':
+      return isCustom
+        ? 'Click to edit prompt sections'
+        : 'Assembles system prompt from all context sections and memory results';
+
+    case 'build_history':
+      return 'Loads session history → OpenAI format; strips internal tools (memory_search/save)';
+
+    case 'load_provider':
+      return isCustom
+        ? `${agent.model || 'claude-3-5-sonnet'} — click to configure provider`
+        : `LLM config: ${agent.model || 'claude-3-5-sonnet'}`;
+
+    case 'load_tools': {
+      const count = _toolsForAgent(agent).length;
+      return isCustom
+        ? `${count} tools — click to manage`
+        : `${count} tools loaded for this agent`;
+    }
+
+    case 'assemble_msgs':
+      return 'Builds messages array: [system, ...history, {role:"user"}]';
+
+    case 'interrupt_chk':
+      return 'Checks for cancellation signal — raises AgentInterrupted if set';
+
+    case 'turn_counter':
+      return isCustom
+        ? `Max turns: ${agent.max_turn_count || 10} — click to edit`
+        : `Turn counter — exits at max_turns (${agent.max_turn_count || 10})`;
+
+    case 'permission_chk':
+      return 'At turn ≥ 11, requests user permission to continue; extends max_turns by 10 if approved';
+
+    case 'build_tool_defs':
+      return 'Converts tool metadata into the OpenAI tool_calls schema for the LLM';
+
+    case 'parallel_mode':
+      return 'PARALLEL_MODE: races multiple LLM providers — first chunk wins';
+
+    case 'llm_call':
+      return isCustom
+        ? `${agent.model || 'claude-3-5-sonnet'} — click to configure`
+        : `Model: ${agent.model || 'claude-3-5-sonnet'}`;
+
+    case 'db_persist_asst':
+      return 'Saves assistant message to DB before validation — with [Tool calls: …] suffix';
+
+    case 'validate_tools':
+      return 'Validates each tool call — name exists, args parseable, required params present';
+
+    case 'destructive_chk':
+      return 'Checks DESTRUCTIVE_TOOLS set: edit_source, write_source, delete_source, run_command, restart_server';
+
+    case 'guardrails':
+      return isCustom
+        ? 'Click to configure tool guardrails'
+        : 'Destructive tools require explicit user confirmation before executing';
+
+    case 'post_val_chk':
+      return 'Interrupt check after validation loop — catches cancellations before any tool runs';
+
     case 'execute_tools': {
       const count = _toolsForAgent(agent).length;
-      return isCustom ? `${count} tools — click to manage` : `${count} tools — click for list`;
+      return isCustom
+        ? `${count} tools — click to manage`
+        : `${count} tools available`;
     }
-    case 'check_continue': return isCustom ? `Max turns: ${agent.max_turn_count || 10} — click to edit` : `Max turns: ${agent.max_turn_count || 10}`;
-    case 'final_response': return 'Final reply delivered to user';
+
+    case 'db_persist_tool':
+      return 'Saves tool result as role="tool" with execution metadata (duration, success, error)';
+
+    case 'delegation_chk':
+      return 'If result contains __delegate__, switches active agent mid-loop and rebinds session';
+
+    case 'skill_track':
+      return 'Records tool execution event and updates skill performance score in DB';
+
+    case 'check_continue':
+      return isCustom
+        ? `Max turns: ${agent.max_turn_count || 10} — click to edit`
+        : `Loops back if tool results exist; stops at max_turns (${agent.max_turn_count || 10})`;
+
+    case 'final_response':
+      return 'Final reply streamed to the user over WebSocket';
+
+    case 'db_persist_final':
+      return 'Saves final assistant response to interactions table';
+
     case 'memory_save': {
       const dis = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
       const on = !dis.has('memory_save');
-      return isCustom ? `Memory save ${on ? 'enabled' : 'disabled'} — click to toggle` : 'Key facts stored for future sessions';
+      return isCustom
+        ? `Memory save ${on ? 'enabled' : 'disabled'} — click to toggle`
+        : 'Key facts from session saved to long-term memory store';
     }
-    default: return '';
+
+    case 'fire_optimizer':
+      return isCustom
+        ? 'Optimizer fires on every exit path — click to configure'
+        : 'fire-and-forget: analyzes session and proposes skill improvements';
+
+    default:
+      return '';
   }
 }
 
@@ -807,6 +1199,9 @@ function _lvShowReadOnlyPanel(nd, nodeEl, container, agent) {
     });
   }
 
+  // Prevent clicks inside the panel from bubbling to the outside-click handler
+  panel.addEventListener('click', e => e.stopPropagation());
+
   panel.classList.add('lv-panel-overlay');
   const _outerLvA = container.closest('.agents-test-loop') || container;
   _outerLvA.appendChild(panel);
@@ -850,9 +1245,9 @@ function _lvShowEditPanel(nd, nodeEl, container, agent) {
   switch (nd.id) {
     case 'load_context':   _lvRenderLoadContextInfo(body, agent);    break;
     case 'build_prompt':   _lvRenderBuildPromptInfo(body);            break;
-    case 'add_transcript':     _lvRenderTranscriptInfo(body);                  break;
+    case 'build_history':      _lvRenderTranscriptInfo(body);                  break;
     case 'load_tools':         _lvRenderLoadToolsInfo(body);                   break;
-    case 'assemble_messages':  _lvRenderAssembleInfo(body);                    break;
+    case 'assemble_msgs':      _lvRenderAssembleInfo(body);                    break;
     case 'memory_search':  _lvRenderMemorySearchEditor(body, agent); break;
     case 'llm_call':       _lvRenderLlmEditor(body, agent);          break;
     case 'execute_tools':  _lvRenderToolsEditor(body, agent);        break;
@@ -867,7 +1262,7 @@ function _lvShowEditPanel(nd, nodeEl, container, agent) {
     }
   }
 
-  const _INFO_NODES = new Set(['load_context', 'build_prompt', 'add_transcript', 'load_tools', 'assemble_messages']);
+  const _INFO_NODES = new Set(['load_context', 'build_prompt', 'build_history', 'load_tools', 'assemble_msgs']);
   if (!_INFO_NODES.has(nd.id)) {
   const saveBar = document.createElement('div');
   saveBar.className = 'lv-edit-save-bar';
@@ -1560,7 +1955,31 @@ function _bindCreateModal() {
   if (newBtn)    { const c = newBtn.cloneNode(true);    newBtn.replaceWith(c);    newBtn    = c; }
   if (cancelBtn) { const c = cancelBtn.cloneNode(true); cancelBtn.replaceWith(c); cancelBtn = c; }
   if (createBtn) { const c = createBtn.cloneNode(true); createBtn.replaceWith(c); createBtn = c; }
-  if (newBtn)    newBtn.addEventListener('click',    () => modal && modal.classList.remove('hidden'));
+  if (newBtn) newBtn.addEventListener('click', async () => {
+    if (!modal) return;
+    modal.classList.remove('hidden');
+    // Populate template dropdown
+    const tplSelect = document.getElementById('agents-create-template');
+    if (tplSelect) {
+      tplSelect.innerHTML = '<option value="">— No template —</option>';
+      try {
+        const url = `/api/v1/agents/templates?user_id=${encodeURIComponent(app.currentUserId)}&discoverable_only=true${_userIsAdmin ? '&include_admin=true' : ''}`;
+        const res = await fetch(url);
+        if (res.ok) {
+          const data = await res.json();
+          (data.templates || []).forEach(t => {
+            const opt = document.createElement('option');
+            opt.value = t.id;
+            opt.textContent = t.name || t.id;
+            if (t.id === 'default') opt.selected = true;
+            tplSelect.appendChild(opt);
+          });
+        }
+      } catch (e) {
+        console.warn('agents: failed to load templates', e);
+      }
+    }
+  });
   if (cancelBtn) cancelBtn.addEventListener('click', () => modal && modal.classList.add('hidden'));
 
   if (createBtn) {
@@ -1571,6 +1990,8 @@ function _bindCreateModal() {
       if (!name) { nameEl && nameEl.focus(); return; }
 
       try {
+        const tplSelect = document.getElementById('agents-create-template');
+        const templateId = tplSelect ? tplSelect.value : 'default';
         const res = await fetch('/api/v1/agents', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1578,6 +1999,7 @@ function _bindCreateModal() {
             user_id: app.currentUserId,
             name,
             description: descEl ? descEl.value.trim() : '',
+            template_id: templateId || 'default',
           }),
         });
         const data = await res.json();
@@ -1585,6 +2007,7 @@ function _bindCreateModal() {
           modal && modal.classList.add('hidden');
           if (nameEl) nameEl.value = '';
           if (descEl) descEl.value = '';
+          if (tplSelect) tplSelect.value = '';
           await _loadAgents();
           // Auto-expand the new agent
           const newAgent = _agents.find(a => a.id === data.agent?.id);

@@ -2,76 +2,322 @@
 
 // ── Shared loop diagram data and renderer ──────────────────────────────────────
 // Single source of truth for node positions, edge topology, and SVG rendering.
-// Consumed by loop-visual.js (live runtime view) and agents.js (config/test view).
+// Consumed by loop-logic.js (live runtime view) and agents.js (config/test view).
+//
+// 9 stages  ·  36 nodes  ·  matches app/api/chat.py + app/agent/loop.py exactly
 
-export const LOOP_W = 1200;
-export const LOOP_H = 370;
+export const LOOP_W = 1560;
+export const LOOP_H = 400;
 
+// Width below which the diagram switches from horizontal to vertical layout.
+export const BREAKPOINT_VERTICAL = 900;
+
+// ── Stage column bands ────────────────────────────────────────────────────────
 export const LOOP_STAGES = [
-  { label: 'INPUT',     x1: 0,    x2: 118,  color: '#7dcfff' },
-  { label: 'CONTEXT',   x1: 126,  x2: 412,  color: '#c0caf5' },
-  { label: 'INFERENCE', x1: 420,  x2: 538,  color: '#bb9af7' },
-  { label: 'ROUTING',   x1: 554,  x2: 744,  color: '#e0af68' },
-  { label: 'EXECUTION', x1: 752,  x2: 906,  color: '#a9b1d6' },
-  { label: 'CONTINUE?', x1: 914,  x2: 1046, color: '#e0af68' },
-  { label: 'OUTPUT',    x1: 1054, x2: 1200, color: '#9ece6a' },
+  { label: 'INPUT',     x1: 0,    x2: 138,  color: '#7dcfff' },
+  { label: 'PRE-LOOP',  x1: 138,  x2: 306,  color: '#f7768e' },
+  { label: 'CONTEXT',   x1: 306,  x2: 486,  color: '#c0caf5' },
+  { label: 'LOOP INIT', x1: 486,  x2: 670,  color: '#2ac3de' },
+  { label: 'INFERENCE', x1: 670,  x2: 860,  color: '#bb9af7' },
+  { label: 'ROUTING',   x1: 860,  x2: 1054, color: '#e0af68' },
+  { label: 'EXECUTION', x1: 1054, x2: 1236, color: '#a9b1d6' },
+  { label: 'CONTINUE?', x1: 1236, x2: 1396, color: '#e0af68' },
+  { label: 'OUTPUT',    x1: 1396, x2: 1560, color: '#9ece6a' },
 ];
 
-// cx,cy = center; hw,hh = half-width, half-height
+// ── Nodes — cx,cy = centre; hw,hh = half-width, half-height ─────────────────
 export const LOOP_NODES = [
-  { id: 'user_input',        label: 'User Input',     type: 'input',    cx: 59,   cy: 150, hw: 52, hh: 18 },
-  { id: 'load_context',      label: 'Load Context',   type: 'process',  cx: 216,  cy: 112, hw: 60, hh: 14 },
-  { id: 'memory_search',     label: 'Memory Search',  type: 'process',  cx: 216,  cy: 155, hw: 60, hh: 14 },
-  { id: 'build_prompt',      label: 'Build Prompt',   type: 'process',  cx: 216,  cy: 198, hw: 60, hh: 14 },
-  { id: 'add_transcript',    label: 'Add Transcript', type: 'process',  cx: 216,  cy: 241, hw: 60, hh: 14 },
-  { id: 'load_tools',        label: 'Load Tools',     type: 'process',  cx: 216,  cy: 284, hw: 60, hh: 14 },
-  { id: 'assemble_messages', label: 'Assemble',       type: 'process',  cx: 216,  cy: 327, hw: 60, hh: 14 },
-  { id: 'llm_call',          label: 'LLM Call',       type: 'llm',      cx: 482,  cy: 150, hw: 55, hh: 20 },
-  { id: 'validate_tools',    label: 'Validate',       type: 'process',  cx: 649,  cy: 122, hw: 62, hh: 14 },
-  { id: 'guardrails',        label: 'Guardrails',     type: 'guard',    cx: 649,  cy: 165, hw: 62, hh: 14 },
-  { id: 'execute_tools',     label: 'Execute Tools',  type: 'process',  cx: 829,  cy: 150, hw: 62, hh: 18 },
-  { id: 'check_continue',    label: 'Continue?',      type: 'decision', cx: 980,  cy: 150, hw: 58, hh: 18 },
-  { id: 'final_response',    label: 'Final Response', type: 'output',   cx: 1127, cy: 115, hw: 63, hh: 14 },
-  { id: 'memory_save',       label: 'Memory Save',    type: 'process',  cx: 1127, cy: 162, hw: 63, hh: 14 },
+
+  // ── INPUT ────────────────────────────────────────────────────────────────────
+  { id: 'user_input',      label: 'User Input',      type: 'input',    cx: 65,   cy: 200, hw: 52, hh: 18 },
+
+  // ── PRE-LOOP  (chat.py — before stream_agent_events) ─────────────────────────
+  { id: 'slash_cmd',       label: 'Slash Cmd',        type: 'process',  cx: 217,  cy: 132, hw: 58, hh: 13 },
+  { id: 'ensure_session',  label: 'Ensure Session',   type: 'process',  cx: 217,  cy: 166, hw: 58, hh: 13 },
+  { id: 'agent_resolve',   label: 'Agent Resolve',    type: 'process',  cx: 217,  cy: 200, hw: 58, hh: 13 },
+  { id: 'participants',    label: 'Participants',      type: 'process',  cx: 217,  cy: 234, hw: 58, hh: 13 },
+  { id: 'save_user_msg',   label: 'Save User Msg',    type: 'process',  cx: 217,  cy: 268, hw: 58, hh: 13 },
+
+  // ── CONTEXT  (chat.py — context + prompt assembly) ────────────────────────────
+  { id: 'load_context',    label: 'Load Context',     type: 'process',  cx: 396,  cy: 80,  hw: 60, hh: 13 },
+  { id: 'copy_defaults',   label: 'Copy Defaults',    type: 'process',  cx: 396,  cy: 114, hw: 60, hh: 13 },
+  { id: 'skip_gate',       label: 'Skip Gate',        type: 'decision', cx: 396,  cy: 148, hw: 60, hh: 13 },
+  { id: 'memory_search',   label: 'Memory Search',    type: 'process',  cx: 396,  cy: 182, hw: 60, hh: 13 },
+  { id: 'resolve_attach',  label: 'Resolve Attach',   type: 'process',  cx: 396,  cy: 216, hw: 60, hh: 13 },
+  { id: 'build_prompt',    label: 'Build Prompt',     type: 'process',  cx: 396,  cy: 250, hw: 60, hh: 13 },
+  { id: 'build_history',   label: 'Build History',    type: 'process',  cx: 396,  cy: 284, hw: 60, hh: 13 },
+
+  // ── LOOP INIT  (once per request, before the while loop) ─────────────────────
+  { id: 'load_provider',   label: 'Load Provider',    type: 'process',  cx: 578,  cy: 168, hw: 60, hh: 13 },
+  { id: 'load_tools',      label: 'Load Tools',       type: 'process',  cx: 578,  cy: 202, hw: 60, hh: 13 },
+  { id: 'assemble_msgs',   label: 'Assemble Msgs',    type: 'process',  cx: 578,  cy: 236, hw: 60, hh: 13 },
+
+  // ── INFERENCE  (per-turn while loop) ─────────────────────────────────────────
+  { id: 'interrupt_chk',   label: 'Interrupt Chk',    type: 'decision', cx: 762,  cy: 100, hw: 58, hh: 13 },
+  { id: 'turn_counter',    label: 'Turn Counter',     type: 'process',  cx: 762,  cy: 134, hw: 58, hh: 13 },
+  { id: 'permission_chk',  label: 'Permission Chk',   type: 'process',  cx: 762,  cy: 168, hw: 58, hh: 13 },
+  { id: 'build_tool_defs', label: 'Tool Defs',        type: 'process',  cx: 762,  cy: 202, hw: 58, hh: 13 },
+  { id: 'parallel_mode',   label: 'Parallel Mode',    type: 'process',  cx: 762,  cy: 236, hw: 58, hh: 13 },
+  { id: 'llm_call',        label: 'LLM Call',         type: 'llm',      cx: 762,  cy: 272, hw: 55, hh: 20 },
+
+  // ── ROUTING  (validate + guard, per tool call) ────────────────────────────────
+  { id: 'db_persist_asst', label: 'Persist Asst',     type: 'process',  cx: 957,  cy: 132, hw: 60, hh: 13 },
+  { id: 'validate_tools',  label: 'Validate',          type: 'process',  cx: 957,  cy: 166, hw: 60, hh: 13 },
+  { id: 'destructive_chk', label: 'Destructive Chk',  type: 'guard',    cx: 957,  cy: 200, hw: 60, hh: 13 },
+  { id: 'guardrails',      label: 'Guardrails',        type: 'guard',    cx: 957,  cy: 234, hw: 60, hh: 13 },
+  { id: 'post_val_chk',    label: 'Post-Val Chk',     type: 'process',  cx: 957,  cy: 268, hw: 60, hh: 13 },
+
+  // ── EXECUTION  (per tool result) ─────────────────────────────────────────────
+  { id: 'execute_tools',   label: 'Execute Tools',    type: 'process',  cx: 1145, cy: 150, hw: 62, hh: 16 },
+  { id: 'db_persist_tool', label: 'Persist Tool',     type: 'process',  cx: 1145, cy: 200, hw: 62, hh: 13 },
+  { id: 'delegation_chk',  label: 'Delegation Chk',   type: 'process',  cx: 1145, cy: 234, hw: 62, hh: 13 },
+  { id: 'skill_track',     label: 'Skill Track',      type: 'process',  cx: 1145, cy: 268, hw: 62, hh: 13 },
+
+  // ── CONTINUE? ────────────────────────────────────────────────────────────────
+  { id: 'check_continue',  label: 'Continue?',        type: 'decision', cx: 1316, cy: 200, hw: 58, hh: 18 },
+
+  // ── OUTPUT ───────────────────────────────────────────────────────────────────
+  { id: 'final_response',  label: 'Final Response',   type: 'output',   cx: 1478, cy: 150, hw: 62, hh: 14 },
+  { id: 'db_persist_final',label: 'Persist Final',    type: 'process',  cx: 1478, cy: 192, hw: 62, hh: 13 },
+  { id: 'memory_save',     label: 'Memory Save',      type: 'process',  cx: 1478, cy: 226, hw: 62, hh: 13 },
+  { id: 'fire_optimizer',  label: 'Fire Optimizer',   type: 'process',  cx: 1478, cy: 260, hw: 62, hh: 13 },
 ];
 
-// Sequential pre-LLM pipeline: context → memory → system prompt → transcript → tools → assemble → LLM
+// ── Edges ─────────────────────────────────────────────────────────────────────
 export const LOOP_EDGES = [
-  { from: 'user_input',        to: 'load_context'                                              },
-  { from: 'load_context',      to: 'memory_search',    vertical: true                          },
-  { from: 'memory_search',     to: 'build_prompt',     vertical: true                          },
-  { from: 'build_prompt',      to: 'add_transcript',   vertical: true                          },
-  { from: 'add_transcript',    to: 'load_tools',       vertical: true                          },
-  { from: 'load_tools',        to: 'assemble_messages', vertical: true                         },
-  { from: 'assemble_messages', to: 'llm_call'                                                  },
-  { from: 'llm_call',          to: 'validate_tools',   label: 'tools?'                         },
-  { from: 'llm_call',          to: 'check_continue',   label: 'no tools', above: true          },
-  { from: 'validate_tools',    to: 'guardrails',       label: 'valid',    vertical: true       },
-  { from: 'guardrails',        to: 'execute_tools',    label: 'pass'                           },
-  { from: 'guardrails',        to: 'check_continue',   label: 'blocked',  below: true          },
-  { from: 'execute_tools',     to: 'llm_call',         label: '↺ loop',   loopback: 245        },
-  { from: 'check_continue',    to: 'final_response',   label: 'stop'                           },
-  { from: 'check_continue',    to: 'llm_call',         label: '↺ continue', loopback: 278      },
-  { from: 'final_response',    to: 'memory_save',      vertical: true                          },
+
+  // INPUT → PRE-LOOP
+  { from: 'user_input',      to: 'slash_cmd'                                                    },
+
+  // PRE-LOOP chain
+  { from: 'slash_cmd',       to: 'ensure_session',  vertical: true                              },
+  { from: 'ensure_session',  to: 'agent_resolve',   vertical: true                              },
+  { from: 'agent_resolve',   to: 'participants',    vertical: true                              },
+  { from: 'participants',    to: 'save_user_msg',   vertical: true                              },
+
+  // PRE-LOOP → CONTEXT
+  { from: 'save_user_msg',   to: 'load_context'                                                 },
+
+  // CONTEXT chain
+  { from: 'load_context',    to: 'copy_defaults',   vertical: true                              },
+  { from: 'copy_defaults',   to: 'skip_gate',       vertical: true                              },
+  { from: 'skip_gate',       to: 'memory_search',   vertical: true                              },
+  { from: 'memory_search',   to: 'resolve_attach',  vertical: true                              },
+  { from: 'resolve_attach',  to: 'build_prompt',    vertical: true                              },
+  { from: 'build_prompt',    to: 'build_history',   vertical: true                              },
+
+  // CONTEXT → LOOP INIT
+  { from: 'build_history',   to: 'load_provider'                                                },
+
+  // LOOP INIT chain
+  { from: 'load_provider',   to: 'load_tools',      vertical: true                              },
+  { from: 'load_tools',      to: 'assemble_msgs',   vertical: true                              },
+
+  // LOOP INIT → INFERENCE
+  { from: 'assemble_msgs',   to: 'interrupt_chk'                                                },
+
+  // INFERENCE chain
+  { from: 'interrupt_chk',   to: 'turn_counter',    vertical: true                              },
+  { from: 'turn_counter',    to: 'permission_chk',  vertical: true                              },
+  { from: 'permission_chk',  to: 'build_tool_defs', vertical: true                              },
+  { from: 'build_tool_defs', to: 'parallel_mode',   vertical: true                              },
+  { from: 'parallel_mode',   to: 'llm_call',        vertical: true                              },
+
+  // LLM → ROUTING (tools present)
+  { from: 'llm_call',        to: 'db_persist_asst', label: 'tools?'                             },
+
+  // LLM → CONTINUE? (no tool calls — skip routing + execution entirely)
+  { from: 'llm_call',        to: 'check_continue',  label: 'no tools', above: true, aboveY: 42  },
+
+  // ROUTING chain
+  { from: 'db_persist_asst', to: 'validate_tools',  vertical: true                              },
+  { from: 'validate_tools',  to: 'destructive_chk', vertical: true, label: 'valid'              },
+  { from: 'destructive_chk', to: 'guardrails',      vertical: true                              },
+  { from: 'guardrails',      to: 'post_val_chk',    vertical: true, label: 'pass'               },
+
+  // guardrails blocked → CONTINUE? (bypass execution)
+  { from: 'guardrails',      to: 'check_continue',  label: 'blocked', below: true, belowY: 340  },
+
+  // ROUTING → EXECUTION
+  { from: 'post_val_chk',    to: 'execute_tools'                                                },
+
+  // EXECUTION chain
+  { from: 'execute_tools',   to: 'db_persist_tool', vertical: true                              },
+  { from: 'db_persist_tool', to: 'delegation_chk',  vertical: true                              },
+  { from: 'delegation_chk',  to: 'skill_track',     vertical: true                              },
+
+  // EXECUTION → CONTINUE?
+  { from: 'skill_track',     to: 'check_continue'                                               },
+
+  // CONTINUE? → OUTPUT
+  { from: 'check_continue',  to: 'final_response',  label: 'stop'                               },
+
+  // CONTINUE? → INFERENCE loopback (more turns)
+  { from: 'check_continue',  to: 'interrupt_chk',   label: '↺ continue', loopback: 358          },
+
+  // OUTPUT chain
+  { from: 'final_response',  to: 'db_persist_final', vertical: true                             },
+  { from: 'db_persist_final',to: 'memory_save',      vertical: true                             },
+  { from: 'memory_save',     to: 'fire_optimizer',   vertical: true                             },
 ];
 
-// ── Edge path computation (works for any nodes list) ──
-export function computeEdgePath(edge, nodes) {
+// ── Horizontal layout — group bounding boxes in the 1560px baseline ──────────
+// Each group moves as a unit when the canvas is compressed to fit narrower widths.
+const _H_GROUPS = [
+  { nodeIds: ['user_input'],
+    left: 13,   right: 117  },
+  { nodeIds: ['slash_cmd','ensure_session','agent_resolve','participants','save_user_msg'],
+    left: 159,  right: 275  },
+  { nodeIds: ['load_context','copy_defaults','skip_gate','memory_search','resolve_attach','build_prompt','build_history'],
+    left: 336,  right: 456  },
+  { nodeIds: ['load_provider','load_tools','assemble_msgs'],
+    left: 518,  right: 638  },
+  { nodeIds: ['interrupt_chk','turn_counter','permission_chk','build_tool_defs','parallel_mode','llm_call'],
+    left: 704,  right: 820  },
+  { nodeIds: ['db_persist_asst','validate_tools','destructive_chk','guardrails','post_val_chk'],
+    left: 897,  right: 1017 },
+  { nodeIds: ['execute_tools','db_persist_tool','delegation_chk','skill_track'],
+    left: 1083, right: 1207 },
+  { nodeIds: ['check_continue'],
+    left: 1258, right: 1374 },
+  { nodeIds: ['final_response','db_persist_final','memory_save','fire_optimizer'],
+    left: 1416, right: 1540 },
+];
+
+const _H_GAPS       = _H_GROUPS.slice(1).map((g, i) => g.left - _H_GROUPS[i].right);
+const _H_TOTAL_GAPS = _H_GAPS.reduce((a, b) => a + b, 0);
+const _H_CONTENT_W  = LOOP_W - _H_TOTAL_GAPS;
+const _H_MIN_GAP    = 4;
+
+// ── buildHorizontalLayout ─────────────────────────────────────────────────────
+// Compresses inter-group gaps (never node sizes) to fit availableWidth.
+export function buildHorizontalLayout(availableWidth) {
+  const W = availableWidth > 0 ? availableWidth : LOOP_W;
+
+  if (W >= LOOP_W) {
+    return { nodes: LOOP_NODES, stages: LOOP_STAGES, canvasW: LOOP_W + 16, canvasH: LOOP_H, mode: 'horizontal' };
+  }
+
+  // gs = 1.0 at full width, 0.0 at minimum — gaps clamp at _H_MIN_GAP
+  const gs = Math.max(0, Math.min(1, (W - _H_CONTENT_W) / _H_TOTAL_GAPS));
+
+  const newLeft = [];
+  let cursor = _H_GROUPS[0].left;
+  for (let i = 0; i < _H_GROUPS.length; i++) {
+    newLeft.push(cursor);
+    if (i < _H_GAPS.length) {
+      cursor += (_H_GROUPS[i].right - _H_GROUPS[i].left) + Math.max(_H_MIN_GAP, Math.round(_H_GAPS[i] * gs));
+    }
+  }
+
+  const shift = new Map();
+  _H_GROUPS.forEach((g, i) => g.nodeIds.forEach(id => shift.set(id, newLeft[i] - g.left)));
+
+  const nodes  = LOOP_NODES.map(n  => ({ ...n,  cx: Math.round(n.cx  + (shift.get(n.id)  || 0)) }));
+  const stages = LOOP_STAGES.map((s, i) => {
+    const dx = newLeft[i] - _H_GROUPS[i].left;
+    return { ...s, x1: s.x1 + dx, x2: s.x2 + dx };
+  });
+
+  const lastG   = _H_GROUPS[_H_GROUPS.length - 1];
+  const canvasW = newLeft[newLeft.length - 1] + (lastG.right - lastG.left) + 8;
+  return { nodes, stages, canvasW, canvasH: LOOP_H, mode: 'horizontal' };
+}
+
+// ── buildVerticalLayout ───────────────────────────────────────────────────────
+// All 36 nodes stacked in a single column, stages as horizontal bands.
+export function buildVerticalLayout(availableWidth) {
+  const w  = Math.max(availableWidth > 0 ? availableWidth : 360, 260);
+  const cx = w / 2;
+
+  const nodes = [
+    // INPUT
+    { id: 'user_input',      label: 'User Input',      type: 'input',    cx,        cy: 45,   hw: 52, hh: 18 },
+    // PRE-LOOP
+    { id: 'slash_cmd',       label: 'Slash Cmd',        type: 'process',  cx,        cy: 118,  hw: 58, hh: 13 },
+    { id: 'ensure_session',  label: 'Ensure Session',   type: 'process',  cx,        cy: 152,  hw: 58, hh: 13 },
+    { id: 'agent_resolve',   label: 'Agent Resolve',    type: 'process',  cx,        cy: 186,  hw: 58, hh: 13 },
+    { id: 'participants',    label: 'Participants',      type: 'process',  cx,        cy: 220,  hw: 58, hh: 13 },
+    { id: 'save_user_msg',   label: 'Save User Msg',    type: 'process',  cx,        cy: 254,  hw: 58, hh: 13 },
+    // CONTEXT
+    { id: 'load_context',    label: 'Load Context',     type: 'process',  cx,        cy: 322,  hw: 60, hh: 13 },
+    { id: 'copy_defaults',   label: 'Copy Defaults',    type: 'process',  cx,        cy: 356,  hw: 60, hh: 13 },
+    { id: 'skip_gate',       label: 'Skip Gate',        type: 'decision', cx,        cy: 390,  hw: 60, hh: 13 },
+    { id: 'memory_search',   label: 'Memory Search',    type: 'process',  cx,        cy: 424,  hw: 60, hh: 13 },
+    { id: 'resolve_attach',  label: 'Resolve Attach',   type: 'process',  cx,        cy: 458,  hw: 60, hh: 13 },
+    { id: 'build_prompt',    label: 'Build Prompt',     type: 'process',  cx,        cy: 492,  hw: 60, hh: 13 },
+    { id: 'build_history',   label: 'Build History',    type: 'process',  cx,        cy: 526,  hw: 60, hh: 13 },
+    // LOOP INIT
+    { id: 'load_provider',   label: 'Load Provider',    type: 'process',  cx,        cy: 594,  hw: 60, hh: 13 },
+    { id: 'load_tools',      label: 'Load Tools',       type: 'process',  cx,        cy: 628,  hw: 60, hh: 13 },
+    { id: 'assemble_msgs',   label: 'Assemble Msgs',    type: 'process',  cx,        cy: 662,  hw: 60, hh: 13 },
+    // INFERENCE
+    { id: 'interrupt_chk',   label: 'Interrupt Chk',    type: 'decision', cx,        cy: 730,  hw: 58, hh: 13 },
+    { id: 'turn_counter',    label: 'Turn Counter',     type: 'process',  cx,        cy: 764,  hw: 58, hh: 13 },
+    { id: 'permission_chk',  label: 'Permission Chk',   type: 'process',  cx,        cy: 798,  hw: 58, hh: 13 },
+    { id: 'build_tool_defs', label: 'Tool Defs',        type: 'process',  cx,        cy: 832,  hw: 58, hh: 13 },
+    { id: 'parallel_mode',   label: 'Parallel Mode',    type: 'process',  cx,        cy: 866,  hw: 58, hh: 13 },
+    { id: 'llm_call',        label: 'LLM Call',         type: 'llm',      cx,        cy: 904,  hw: 55, hh: 20 },
+    // ROUTING
+    { id: 'db_persist_asst', label: 'Persist Asst',     type: 'process',  cx,        cy: 972,  hw: 60, hh: 13 },
+    { id: 'validate_tools',  label: 'Validate',          type: 'process',  cx,        cy: 1006, hw: 60, hh: 13 },
+    { id: 'destructive_chk', label: 'Destructive Chk',  type: 'guard',    cx,        cy: 1040, hw: 60, hh: 13 },
+    { id: 'guardrails',      label: 'Guardrails',        type: 'guard',    cx,        cy: 1074, hw: 60, hh: 13 },
+    { id: 'post_val_chk',    label: 'Post-Val Chk',     type: 'process',  cx,        cy: 1108, hw: 60, hh: 13 },
+    // EXECUTION
+    { id: 'execute_tools',   label: 'Execute Tools',    type: 'process',  cx,        cy: 1176, hw: 62, hh: 16 },
+    { id: 'db_persist_tool', label: 'Persist Tool',     type: 'process',  cx,        cy: 1226, hw: 62, hh: 13 },
+    { id: 'delegation_chk',  label: 'Delegation Chk',   type: 'process',  cx,        cy: 1260, hw: 62, hh: 13 },
+    { id: 'skill_track',     label: 'Skill Track',      type: 'process',  cx,        cy: 1294, hw: 62, hh: 13 },
+    // CONTINUE?
+    { id: 'check_continue',  label: 'Continue?',        type: 'decision', cx,        cy: 1362, hw: 58, hh: 18 },
+    // OUTPUT
+    { id: 'final_response',  label: 'Final Response',   type: 'output',   cx,        cy: 1430, hw: 62, hh: 14 },
+    { id: 'db_persist_final',label: 'Persist Final',    type: 'process',  cx,        cy: 1472, hw: 62, hh: 13 },
+    { id: 'memory_save',     label: 'Memory Save',      type: 'process',  cx,        cy: 1506, hw: 62, hh: 13 },
+    { id: 'fire_optimizer',  label: 'Fire Optimizer',   type: 'process',  cx,        cy: 1540, hw: 62, hh: 13 },
+  ];
+
+  const stages = [
+    { label: 'INPUT',     y1: 20,   y2: 78,   color: '#7dcfff' },
+    { label: 'PRE-LOOP',  y1: 92,   y2: 280,  color: '#f7768e' },
+    { label: 'CONTEXT',   y1: 294,  y2: 552,  color: '#c0caf5' },
+    { label: 'LOOP INIT', y1: 566,  y2: 688,  color: '#2ac3de' },
+    { label: 'INFERENCE', y1: 702,  y2: 938,  color: '#bb9af7' },
+    { label: 'ROUTING',   y1: 952,  y2: 1134, color: '#e0af68' },
+    { label: 'EXECUTION', y1: 1148, y2: 1320, color: '#a9b1d6' },
+    { label: 'CONTINUE?', y1: 1334, y2: 1394, color: '#e0af68' },
+    { label: 'OUTPUT',    y1: 1408, y2: 1568, color: '#9ece6a' },
+  ];
+
+  return { nodes, stages, canvasW: w, canvasH: 1580, mode: 'vertical' };
+}
+
+// ── Edge path computation ─────────────────────────────────────────────────────
+export function computeEdgePath(edge, nodes, layout = {}) {
+  const { mode = 'horizontal', canvasW = LOOP_W } = layout;
   const src = nodes.find(n => n.id === edge.from);
   const dst = nodes.find(n => n.id === edge.to);
   if (!src || !dst) return null;
 
+  if (mode === 'vertical') {
+    return _computeEdgePathVertical(edge, src, dst, canvasW);
+  }
+
+  // ── Horizontal mode ───────────────────────────────────────────────────────
   if (edge.vertical) {
     const x = src.cx, y1 = src.cy + src.hh, y2 = dst.cy - dst.hh;
     return { d: `M ${x} ${y1} L ${x} ${y2}`, labelX: x + 14, labelY: (y1 + y2) / 2 + 4 };
   }
   if (edge.above) {
-    const arcY = 40, x1 = src.cx + src.hw, y1 = src.cy, x2 = dst.cx - dst.hw, y2 = dst.cy;
+    const arcY = edge.aboveY ?? 40;
+    const x1 = src.cx + src.hw, y1 = src.cy, x2 = dst.cx - dst.hw, y2 = dst.cy;
     return { d: `M ${x1} ${y1} C ${x1} ${arcY}, ${x2} ${arcY}, ${x2} ${y2}`,
              labelX: (x1 + x2) / 2, labelY: arcY - 6 };
   }
   if (edge.below) {
-    const arcY = 218, x1 = src.cx + src.hw, y1 = src.cy, x2 = dst.cx - dst.hw, y2 = dst.cy;
+    const arcY = edge.belowY ?? 320;
+    const x1 = src.cx + src.hw, y1 = src.cy, x2 = dst.cx - dst.hw, y2 = dst.cy;
     return { d: `M ${x1} ${y1} C ${x1} ${arcY}, ${x2} ${arcY}, ${x2} ${y2}`,
              labelX: (x1 + x2) / 2, labelY: arcY + 12 };
   }
@@ -80,36 +326,98 @@ export function computeEdgePath(edge, nodes) {
     return { d: `M ${x1} ${y1} C ${x1} ${arcY}, ${x2} ${arcY}, ${x2} ${y2}`,
              labelX: (x1 + x2) / 2, labelY: arcY + 11 };
   }
+  // Standard S-curve between stages
   const x1 = src.cx + src.hw, y1 = src.cy, x2 = dst.cx - dst.hw, y2 = dst.cy, mx = (x1 + x2) / 2;
   return { d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`,
            labelX: mx, labelY: (y1 < y2 ? y1 : y2) - 5 };
 }
 
+function _computeEdgePathVertical(edge, src, dst, canvasW) {
+  const sameX   = Math.abs(src.cx - dst.cx) < canvasW * 0.06;
+  const sameY   = Math.abs(src.cy - dst.cy) < 8;
+  const forward = dst.cy > src.cy;
+
+  // Purely horizontal (validate→destructive_chk etc. don't appear sameY in vert mode — this is a safety net)
+  if (sameY) {
+    const ltr = dst.cx > src.cx;
+    const x1  = ltr ? src.cx + src.hw : src.cx - src.hw;
+    const x2  = ltr ? dst.cx - dst.hw : dst.cx + dst.hw;
+    return { d: `M ${x1} ${src.cy} L ${x2} ${dst.cy}`, labelX: (x1 + x2) / 2, labelY: src.cy - 8 };
+  }
+
+  // "below" arc in vertical mode: right-side bypass (guardrails → check_continue)
+  if (edge.below) {
+    const arcX = canvasW * 0.97;
+    const x = src.cx, y1 = src.cy + src.hh, y2 = dst.cy - dst.hh;
+    return { d: `M ${x} ${y1} C ${arcX} ${y1}, ${arcX} ${y2}, ${x} ${y2}`,
+             labelX: arcX + 3, labelY: (y1 + y2) / 2 };
+  }
+
+  // "above" / llm_call→check_continue bypass (skip ROUTING + EXECUTION)
+  if (edge.from === 'llm_call' && edge.to === 'check_continue') {
+    const arcX = canvasW * 0.93;
+    const x = src.cx, y1 = src.cy + src.hh, y2 = dst.cy - dst.hh;
+    return { d: `M ${x} ${y1} C ${arcX} ${y1}, ${arcX} ${y2}, ${x} ${y2}`,
+             labelX: arcX + 4, labelY: (y1 + y2) / 2 };
+  }
+
+  // Backward loopback arc (check_continue → interrupt_chk, ↺ continue)
+  if (!forward && sameX) {
+    const arcX = edge.from === 'check_continue' ? canvasW * 0.97 : canvasW * 0.91;
+    const x = src.cx, y1 = src.cy + src.hh, y2 = dst.cy - dst.hh;
+    return { d: `M ${x} ${y1} C ${arcX} ${y1}, ${arcX} ${y2}, ${x} ${y2}`,
+             labelX: arcX + 3, labelY: (y1 + y2) / 2 };
+  }
+
+  // Straight down (same x, forward)
+  if (forward && sameX) {
+    const x = src.cx, y1 = src.cy + src.hh, y2 = dst.cy - dst.hh;
+    return { d: `M ${x} ${y1} L ${x} ${y2}`, labelX: x + 14, labelY: (y1 + y2) / 2 + 4 };
+  }
+
+  // Diagonal S-curve (different x, e.g. inter-stage connections)
+  const x1 = src.cx, y1 = src.cy + src.hh, x2 = dst.cx, y2 = dst.cy - dst.hh, my = (y1 + y2) / 2;
+  return { d: `M ${x1} ${y1} C ${x1} ${my}, ${x2} ${my}, ${x2} ${y2}`,
+           labelX: (x1 + x2) / 2, labelY: my };
+}
+
 // ── Shared renderer ────────────────────────────────────────────────────────────
-// Renders stage columns, edges, and node HTML onto containerEl.
-// Returns { rootEl, svgEl } so callers can append extra content (e.g. optimizer).
+// Renders stage columns/bands, edges, and node HTML onto containerEl.
+// Returns { rootEl, svgEl, layout } so callers can extend the SVG.
 //
 // opts:
-//   markerPrefix  — unique SVG marker ID prefix to avoid DOM clashes between instances
-//   canvasH       — SVG height; defaults to LOOP_H (pass 430 for loop-visual's optimizer section)
-//   getNodeDetail — (nodeDef) => string  hover detail text
-//   onNodeClick   — (nodeDef, nodeEl, rootEl) => void
-//   decorateNode  — (nodeDef, nodeEl) => void  called after node creation for extra classes
+//   availableWidth  — px width to lay out for
+//   markerPrefix    — unique SVG marker ID prefix (avoids DOM clashes)
+//   canvasH         — override SVG height
+//   getNodeDetail   — (nodeDef) => string
+//   onNodeClick     — (nodeDef, nodeEl, rootEl) => void
+//   decorateNode    — (nodeDef, nodeEl) => void
 export function renderLoopDiagram(containerEl, nodeStates, {
-  markerPrefix  = 'ld',
-  canvasH       = LOOP_H,
-  getNodeDetail = () => '',
-  onNodeClick   = null,
-  decorateNode  = null,
+  availableWidth = 0,
+  markerPrefix   = 'ld',
+  canvasH        = 0,
+  getNodeDetail  = () => '',
+  onNodeClick    = null,
+  decorateNode   = null,
 } = {}) {
+  const cw = availableWidth > 0
+    ? availableWidth
+    : (containerEl.clientWidth || containerEl.offsetWidth || LOOP_W);
+
+  const layout = cw < BREAKPOINT_VERTICAL
+    ? buildVerticalLayout(cw)
+    : buildHorizontalLayout(cw);
+
+  const svgH = canvasH > 0 ? canvasH : layout.canvasH;
+
   const root = document.createElement('div');
-  root.style.cssText = `position:relative;width:${LOOP_W}px;min-height:${canvasH}px;flex-shrink:0;margin:0 auto;`;
+  root.style.cssText = `position:relative;width:${layout.canvasW}px;min-height:${svgH}px;flex-shrink:0;margin:0 auto;`;
   containerEl.appendChild(root);
 
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('width', LOOP_W);
-  svg.setAttribute('height', canvasH);
-  svg.setAttribute('viewBox', `0 0 ${LOOP_W} ${canvasH}`);
+  svg.setAttribute('width',   layout.canvasW);
+  svg.setAttribute('height',  svgH);
+  svg.setAttribute('viewBox', `0 0 ${layout.canvasW} ${svgH}`);
   svg.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:0;overflow:visible;';
   root.appendChild(svg);
 
@@ -124,35 +432,12 @@ export function renderLoopDiagram(containerEl, nodeStates, {
   `;
   svg.appendChild(defs);
 
-  // Stage column backgrounds and labels
-  LOOP_STAGES.forEach((stage, i) => {
-    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    rect.setAttribute('x', stage.x1 + 1);
-    rect.setAttribute('y', 28);
-    rect.setAttribute('width', stage.x2 - stage.x1 - 2);
-    rect.setAttribute('height', 252);
-    rect.setAttribute('fill', i % 2 === 0 ? '#ffffff03' : '#00000008');
-    rect.setAttribute('rx', '3');
-    svg.appendChild(rect);
-
-    if (i > 0) {
-      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-      line.setAttribute('x1', stage.x1); line.setAttribute('y1', 28);
-      line.setAttribute('x2', stage.x1); line.setAttribute('y2', 280);
-      line.setAttribute('stroke', '#1e2035'); line.setAttribute('stroke-width', '1');
-      svg.appendChild(line);
-    }
-
-    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    text.setAttribute('x', (stage.x1 + stage.x2) / 2);
-    text.setAttribute('y', 20);
-    text.setAttribute('text-anchor', 'middle');
-    text.setAttribute('class', 'lv-stage-label');
-    text.setAttribute('fill', stage.color);
-    text.setAttribute('fill-opacity', '0.45');
-    text.textContent = stage.label;
-    svg.appendChild(text);
-  });
+  // Stage backgrounds and labels
+  if (layout.mode === 'vertical') {
+    _renderStagesVertical(svg, layout.stages, layout.canvasW);
+  } else {
+    _renderStagesHorizontal(svg, layout.stages, svgH);
+  }
 
   // Edge state map (derived from nodeStates)
   const edgeStates = new Map();
@@ -168,20 +453,27 @@ export function renderLoopDiagram(containerEl, nodeStates, {
   }
 
   // Draw edges
+  const edgeLayout = { mode: layout.mode, canvasW: layout.canvasW };
   for (const edge of LOOP_EDGES) {
-    const key = `${edge.from}→${edge.to}`;
+    const key       = `${edge.from}→${edge.to}`;
     const edgeState = edgeStates.get(key) || '';
-    const pi = computeEdgePath(edge, LOOP_NODES);
+    const pi        = computeEdgePath(edge, layout.nodes, edgeLayout);
     if (!pi) continue;
 
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('d', pi.d);
+    path.setAttribute('d',    pi.d);
     path.setAttribute('fill', 'none');
+
+    const isAlt = layout.mode === 'horizontal'
+      ? (edge.above || edge.loopback || edge.below)
+      : (edge.loopback || edge.below || (edge.from === 'llm_call' && edge.to === 'check_continue'));
+
     let cls = 'lv-arrow';
-    if (edge.above || edge.loopback || edge.below) cls += ' lv-arrow-alt';
-    if (edgeState === 'done')        cls += ' lv-arrow-done';
+    if (isAlt)                   cls += ' lv-arrow-alt';
+    if (edgeState === 'done')    cls += ' lv-arrow-done';
     else if (edgeState === 'active') cls += ' lv-arrow-active';
     path.setAttribute('class', cls);
+
     const mSuffix = edgeState === 'done' ? '-done' : edgeState === 'active' ? '-active' : '';
     path.setAttribute('marker-end', `url(#${p}-ah${mSuffix})`);
     svg.appendChild(path);
@@ -198,7 +490,7 @@ export function renderLoopDiagram(containerEl, nodeStates, {
   }
 
   // Render node HTML elements
-  for (const nd of LOOP_NODES) {
+  for (const nd of layout.nodes) {
     const state = nodeStates.get(nd.id) || '';
     const el = document.createElement('div');
     el.className = `lv-node lv-type-${nd.type}`;
@@ -231,5 +523,58 @@ export function renderLoopDiagram(containerEl, nodeStates, {
     root.appendChild(el);
   }
 
-  return { rootEl: root, svgEl: svg };
+  return { rootEl: root, svgEl: svg, layout };
+}
+
+function _renderStagesHorizontal(svg, stages, svgH) {
+  stages.forEach((stage, i) => {
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x',      stage.x1 + 1);
+    rect.setAttribute('y',      28);
+    rect.setAttribute('width',  stage.x2 - stage.x1 - 2);
+    rect.setAttribute('height', svgH - 28);
+    rect.setAttribute('fill',   i % 2 === 0 ? '#ffffff03' : '#00000008');
+    rect.setAttribute('rx',     '3');
+    svg.appendChild(rect);
+
+    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    text.setAttribute('x',           (stage.x1 + stage.x2) / 2);
+    text.setAttribute('y',           20);
+    text.setAttribute('text-anchor', 'middle');
+    text.setAttribute('class',       'lv-stage-label');
+    text.setAttribute('fill',        stage.color);
+    text.textContent = stage.label;
+    svg.appendChild(text);
+  });
+}
+
+function _renderStagesVertical(svg, stages, canvasW) {
+  stages.forEach((stage, i) => {
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x',      1);
+    rect.setAttribute('y',      stage.y1);
+    rect.setAttribute('width',  canvasW - 2);
+    rect.setAttribute('height', stage.y2 - stage.y1);
+    rect.setAttribute('fill',   i % 2 === 0 ? '#ffffff03' : '#00000008');
+    rect.setAttribute('rx',     '3');
+    svg.appendChild(rect);
+
+    if (i > 0) {
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      line.setAttribute('x1', 0);       line.setAttribute('y1', stage.y1);
+      line.setAttribute('x2', canvasW); line.setAttribute('y2', stage.y1);
+      line.setAttribute('stroke', '#1e2035');
+      line.setAttribute('stroke-width', '1');
+      svg.appendChild(line);
+    }
+
+    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    text.setAttribute('x',           6);
+    text.setAttribute('y',           stage.y1 + (stage.y2 - stage.y1) / 2 + 4);
+    text.setAttribute('text-anchor', 'start');
+    text.setAttribute('class',       'lv-stage-label');
+    text.setAttribute('fill',        stage.color);
+    text.textContent = stage.label;
+    svg.appendChild(text);
+  });
 }
