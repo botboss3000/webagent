@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Read(//c/Users/Alex R/Projects/webagent/.git/**)",
+      "Bash(git -C \"C:/Users/Alex R/Projects/webagent\" merge claude/naughty-volhard-2d8ca0 --no-edit)",
+      "Bash(git -C \"C:/Users/Alex R/Projects/webagent\" diff ui/js/agents.js)",
+      "Bash(git -C \"C:/Users/Alex R/Projects/webagent\" diff ui/js/chat.js)",
+      "Bash(git -C \"C:/Users/Alex R/Projects/webagent\" add ui/js/agents.js ui/js/chat.js)",
+      "Bash(git -C 'C:/Users/Alex R/Projects/webagent' commit -m ' *)"
+    ]
+  }
+}
