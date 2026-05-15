@@ -71,6 +71,7 @@ function openCellPopup(cell, ri, col, originalValue) {
     editor.scrollTop = 0;
   } else {
     viewer.scrollTop = 0;
+    viewer.focus();
   }
 }
 
@@ -101,6 +102,7 @@ function toggleEdit() {
     editor.style.display = 'none';
     toggleBtn.textContent = '✎ Edit';
     titleEl.textContent = 'Viewing: ' + col;
+    viewer.focus();
   }
 }
 
@@ -143,6 +145,10 @@ export function initCellModal() {
       e.preventDefault();
       closeCellPopup(true);
     }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+      e.preventDefault();
+      e.target.select();
+    }
   });
   document.getElementById('cell-modal-editor').addEventListener('blur', () => {
     setTimeout(() => {
@@ -150,6 +156,16 @@ export function initCellModal() {
         closeCellPopup(false);
       }
     }, 150);
+  });
+  document.getElementById('cell-modal-viewer').addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+      e.preventDefault();
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(e.target);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
   });
 }
 
