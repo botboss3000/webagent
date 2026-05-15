@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"/c/Users/Alex R/Projects/webagent\" status)",
+      "Bash(git -C \"/c/Users/Alex R/Projects/webagent\" branch --show-current)",
+      "Bash(git -C '/c/Users/Alex R/Projects/webagent' commit -m ' *)"
+    ]
+  }
+}
