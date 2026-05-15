@@ -2,6 +2,7 @@
 
 import { app } from './state.js';
 import { apiPath } from './config.js';
+import { LOOP_W, LOOP_NODES, computeEdgePath, renderLoopDiagram } from './loop-diagram.js';
 
 // ── Static items per node (slash commands and Settings links) ──
 // These cannot come from the /admin/tools endpoint — they live here.
@@ -33,35 +34,8 @@ const NODE_STATIC_ITEMS = {
   ],
 };
 
-// ── Canvas dimensions ──
-const CANVAS_W = 1120;
+// ── Canvas height including optimizer section (LOOP_W imported from loop-diagram.js) ──
 const CANVAS_H = 430;
-
-// ── Stage column definitions (left → right) ──
-const STAGES = [
-  { label: 'INPUT',     x1: 0,    x2: 118,  color: '#7dcfff' },
-  { label: 'CONTEXT',   x1: 126,  x2: 306,  color: '#c0caf5' },
-  { label: 'INFERENCE', x1: 314,  x2: 466,  color: '#bb9af7' },
-  { label: 'ROUTING',   x1: 474,  x2: 664,  color: '#e0af68' },
-  { label: 'EXECUTION', x1: 672,  x2: 826,  color: '#a9b1d6' },
-  { label: 'CONTINUE?', x1: 834,  x2: 966,  color: '#e0af68' },
-  { label: 'OUTPUT',    x1: 974,  x2: 1120, color: '#9ece6a' },
-];
-
-// ── Main loop nodes: cx,cy = center; hw,hh = half-width, half-height ──
-const LOOP_NODES = [
-  { id: 'user_input',     label: 'User Input',     type: 'input',    cx: 59,   cy: 150, hw: 52, hh: 18 },
-  { id: 'load_context',   label: 'Load Context',   type: 'process',  cx: 185,  cy: 112, hw: 60, hh: 14 },
-  { id: 'memory_search',  label: 'Memory Search',  type: 'process',  cx: 185,  cy: 155, hw: 60, hh: 14 },
-  { id: 'build_prompt',   label: 'Build Prompt',   type: 'process',  cx: 275,  cy: 133, hw: 60, hh: 14 },
-  { id: 'llm_call',       label: 'LLM Call',       type: 'llm',      cx: 390,  cy: 150, hw: 55, hh: 20 },
-  { id: 'validate_tools', label: 'Validate',       type: 'process',  cx: 569,  cy: 122, hw: 62, hh: 14 },
-  { id: 'guardrails',     label: 'Guardrails',     type: 'guard',    cx: 569,  cy: 165, hw: 62, hh: 14 },
-  { id: 'execute_tools',  label: 'Execute Tools',  type: 'process',  cx: 749,  cy: 150, hw: 62, hh: 18 },
-  { id: 'check_continue', label: 'Continue?',      type: 'decision', cx: 900,  cy: 150, hw: 58, hh: 18 },
-  { id: 'final_response', label: 'Final Response', type: 'output',   cx: 1047, cy: 115, hw: 63, hh: 14 },
-  { id: 'memory_save',    label: 'Memory Save',    type: 'process',  cx: 1047, cy: 162, hw: 63, hh: 14 },
-];
 
 // ── Optimizer nodes (static reference — shown below main loop) ──
 const OPTIMIZER_NODES = [
@@ -77,36 +51,6 @@ const OPTIMIZER_NODES = [
     desc: 'Update skills & prompts' },
 ];
 
-// ── Main loop edges ──
-// route flags: above (arc over routing stage), below (arc under execution),
-//              loopback (deep arc below, value = arcY), vertical (straight down)
-const LOOP_EDGES = [
-  // User input fans out to parallel context prep nodes
-  { from: 'user_input',     to: 'load_context'   },
-  { from: 'user_input',     to: 'memory_search'  },
-  // Parallel context nodes feed into build prompt
-  { from: 'load_context',   to: 'build_prompt'   },
-  { from: 'memory_search',  to: 'build_prompt'   },
-  // Build prompt feeds LLM
-  { from: 'build_prompt',   to: 'llm_call'       },
-  // LLM → tool routing (if tools were requested)
-  { from: 'llm_call',       to: 'validate_tools', label: 'tools?' },
-  // LLM → continue check (skip routing when no tools called)
-  { from: 'llm_call',       to: 'check_continue', label: 'no tools', above: true },
-  // Tool routing pipeline
-  { from: 'validate_tools', to: 'guardrails',     label: 'valid', vertical: true },
-  { from: 'guardrails',     to: 'execute_tools',  label: 'pass'  },
-  // Blocked: guardrail failed, skip execution
-  { from: 'guardrails',     to: 'check_continue', label: 'blocked', below: true },
-  // Execute → back to LLM (agentic loop)
-  { from: 'execute_tools',  to: 'llm_call',       label: '↺ loop',     loopback: 245 },
-  // Continue decision
-  { from: 'check_continue', to: 'final_response', label: 'stop'  },
-  { from: 'check_continue', to: 'llm_call',       label: '↺ continue', loopback: 278 },
-  // Final output
-  { from: 'final_response', to: 'memory_save',    vertical: true },
-];
-
 // ── Optimizer edges ──
 const OPTIMIZER_EDGES = [
   { from: 'opt_collect',  to: 'opt_analyze'  },
@@ -115,73 +59,6 @@ const OPTIMIZER_EDGES = [
   { from: 'opt_validate', to: 'opt_apply',    label: 'validated' },
   { from: 'opt_apply',    to: 'opt_collect',  loopback: 400 },
 ];
-
-// ── Compute SVG path for an edge ──
-function getEdgePath(edge, nodeList) {
-  const src = nodeList.find(n => n.id === edge.from);
-  const dst = nodeList.find(n => n.id === edge.to);
-  if (!src || !dst) return null;
-
-  // Straight vertical drop (validate→guardrails, final_response→memory_save)
-  if (edge.vertical) {
-    const x = src.cx;
-    const y1 = src.cy + src.hh;
-    const y2 = dst.cy - dst.hh;
-    const labelX = x + 14;
-    const labelY = (y1 + y2) / 2 + 4;
-    return { d: `M ${x} ${y1} L ${x} ${y2}`, labelX, labelY };
-  }
-
-  // Arc above all tool-routing nodes (llm → check_continue, no-tools path)
-  if (edge.above) {
-    const arcY = 40;
-    const x1 = src.cx + src.hw;
-    const y1 = src.cy;
-    const x2 = dst.cx - dst.hw;
-    const y2 = dst.cy;
-    const d = `M ${x1} ${y1} C ${x1} ${arcY}, ${x2} ${arcY}, ${x2} ${y2}`;
-    const labelX = (x1 + x2) / 2;
-    const labelY = arcY - 6;
-    return { d, labelX, labelY };
-  }
-
-  // Arc below (guardrails → check_continue, blocked path)
-  if (edge.below) {
-    const arcY = 218;
-    const x1 = src.cx + src.hw;
-    const y1 = src.cy;
-    const x2 = dst.cx - dst.hw;
-    const y2 = dst.cy;
-    const d = `M ${x1} ${y1} C ${x1} ${arcY}, ${x2} ${arcY}, ${x2} ${y2}`;
-    const labelX = (x1 + x2) / 2;
-    const labelY = arcY + 12;
-    return { d, labelX, labelY };
-  }
-
-  // Loopback arc (execute→llm, continue→llm, opt cycle)
-  if (edge.loopback) {
-    const arcY = edge.loopback;
-    const x1 = src.cx;
-    const y1 = src.cy + src.hh;
-    const x2 = dst.cx;
-    const y2 = dst.cy + dst.hh;
-    const d = `M ${x1} ${y1} C ${x1} ${arcY}, ${x2} ${arcY}, ${x2} ${y2}`;
-    const labelX = (x1 + x2) / 2;
-    const labelY = arcY + 11;
-    return { d, labelX, labelY };
-  }
-
-  // Default: smooth S-curve left-to-right
-  const x1 = src.cx + src.hw;
-  const y1 = src.cy;
-  const x2 = dst.cx - dst.hw;
-  const y2 = dst.cy;
-  const mx = (x1 + x2) / 2;
-  const d = `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`;
-  const labelX = mx;
-  const labelY = (y1 < y2 ? y1 : y2) - 5;
-  return { d, labelX, labelY };
-}
 
 // ── Tool panel state ──
 let _activePanelNodeId = null;
@@ -421,7 +298,6 @@ function renderPageButtons() {
 }
 
 // ── Scale a fixed-width diagram to fit its container ──
-// Uses CSS zoom (not transform) so the scaled size affects layout flow — no overflow.
 function _scaleLvDiagram(wrap, root, cw) {
   const avail = wrap.clientWidth || wrap.parentElement?.clientWidth || 0;
   const s = (avail > 0 && avail < cw) ? avail / cw : 1;
@@ -447,74 +323,42 @@ function renderPage(idx) {
   scaleWrap.style.cssText = 'width:100%;flex-shrink:0;overflow:hidden;';
   area.appendChild(scaleWrap);
 
-  const root = document.createElement('div');
-  root.style.cssText = `position:relative;width:${CANVAS_W}px;min-height:${CANVAS_H}px;`;
-  scaleWrap.appendChild(root);
+  function getNodeDetail(nd) {
+    const nodeEvents = page.events.filter(e => e.nodeId === nd.id);
+    if (nodeEvents.length === 0) return 'Waiting…';
+    const last = nodeEvents[nodeEvents.length - 1];
+    const parts = [];
+    if (last.event.duration_ms)          parts.push(`${last.event.duration_ms}ms`);
+    if (last.event.input_tokens)         parts.push(`↓${last.event.input_tokens}`);
+    if (last.event.output_tokens)        parts.push(`↑${last.event.output_tokens}`);
+    if (last.event.model)                parts.push(last.event.model);
+    if (last.event.tool)                 parts.push(last.event.tool);
+    if (last.event.results_count != null) parts.push(`${last.event.results_count} results`);
+    return parts.length > 0
+      ? parts.join(' · ')
+      : `${nodeEvents.length} event${nodeEvents.length !== 1 ? 's' : ''}`;
+  }
 
-  // ── SVG layer (backgrounds, arrows, labels) ──
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('width', CANVAS_W);
-  svg.setAttribute('height', CANVAS_H);
-  svg.setAttribute('viewBox', `0 0 ${CANVAS_W} ${CANVAS_H}`);
-  svg.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:0;overflow:visible;';
-  root.appendChild(svg);
-
-  // Arrowhead markers
-  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-  defs.innerHTML = `
-    <marker id="lv-ah"       markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#3a3a5a"/></marker>
-    <marker id="lv-ah-active" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#7dcfff"/></marker>
-    <marker id="lv-ah-done"  markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#9ece6a"/></marker>
-    <marker id="lv-ah-opt"   markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#9ece6a50"/></marker>
-  `;
-  svg.appendChild(defs);
-
-  // ── Stage column backgrounds ──
-  STAGES.forEach((stage, i) => {
-    // Subtle column band
-    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    rect.setAttribute('x', stage.x1 + 1);
-    rect.setAttribute('y', 28);
-    rect.setAttribute('width', stage.x2 - stage.x1 - 2);
-    rect.setAttribute('height', 252);
-    rect.setAttribute('fill', i % 2 === 0 ? '#ffffff03' : '#00000008');
-    rect.setAttribute('rx', '3');
-    svg.appendChild(rect);
-
-    // Left divider (skip first)
-    if (i > 0) {
-      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-      line.setAttribute('x1', stage.x1);
-      line.setAttribute('y1', 28);
-      line.setAttribute('x2', stage.x1);
-      line.setAttribute('y2', 280);
-      line.setAttribute('stroke', '#1e2035');
-      line.setAttribute('stroke-width', '1');
-      svg.appendChild(line);
-    }
-
-    // Stage label
-    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    text.setAttribute('x', (stage.x1 + stage.x2) / 2);
-    text.setAttribute('y', 20);
-    text.setAttribute('text-anchor', 'middle');
-    text.setAttribute('class', 'lv-stage-label');
-    text.setAttribute('fill', stage.color);
-    text.setAttribute('fill-opacity', '0.45');
-    text.textContent = stage.label;
-    svg.appendChild(text);
+  const { rootEl, svgEl } = renderLoopDiagram(scaleWrap, page.nodeStates, {
+    markerPrefix: 'lv',
+    canvasH: CANVAS_H,
+    getNodeDetail,
+    onNodeClick: (nd, el, root) => {
+      if (_activePanelNodeId === nd.id) hideToolPanel();
+      else showToolPanel(nd, el, root);
+    },
   });
 
   // ── Optimizer section divider & label ──
   const divLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
   divLine.setAttribute('x1', 10);
   divLine.setAttribute('y1', 300);
-  divLine.setAttribute('x2', CANVAS_W - 10);
+  divLine.setAttribute('x2', LOOP_W - 10);
   divLine.setAttribute('y2', 300);
   divLine.setAttribute('stroke', '#2a2a4a');
   divLine.setAttribute('stroke-width', '1');
   divLine.setAttribute('stroke-dasharray', '4,4');
-  svg.appendChild(divLine);
+  svgEl.appendChild(divLine);
 
   const optLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
   optLabel.setAttribute('x', 14);
@@ -523,56 +367,11 @@ function renderPage(idx) {
   optLabel.setAttribute('fill', '#9ece6a');
   optLabel.setAttribute('fill-opacity', '0.45');
   optLabel.textContent = '⚙ OPTIMIZER LOOP  —  runs on a separate schedule to improve agent skills';
-  svg.appendChild(optLabel);
-
-  // ── Build edge state map from page node states ──
-  const edgeStates = new Map();
-  for (const edge of LOOP_EDGES) {
-    const fromState = page.nodeStates.get(edge.from);
-    const toState   = page.nodeStates.get(edge.to);
-    const key = `${edge.from}→${edge.to}`;
-    if (fromState === 'done' && (toState === 'done' || toState === 'active')) {
-      edgeStates.set(key, 'done');
-    } else if (fromState === 'active' || fromState === 'done') {
-      edgeStates.set(key, 'active');
-    }
-  }
-
-  // ── Draw main loop edges ──
-  for (const edge of LOOP_EDGES) {
-    const key = `${edge.from}→${edge.to}`;
-    const edgeState = edgeStates.get(key) || '';
-    const pi = getEdgePath(edge, LOOP_NODES);
-    if (!pi) continue;
-
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('d', pi.d);
-    path.setAttribute('fill', 'none');
-
-    let cls = 'lv-arrow';
-    if (edge.above || edge.loopback || edge.below) cls += ' lv-arrow-alt';
-    if (edgeState === 'done')   cls += ' lv-arrow-done';
-    else if (edgeState === 'active') cls += ' lv-arrow-active';
-    path.setAttribute('class', cls);
-
-    const markerSuffix = edgeState === 'done' ? '-done' : edgeState === 'active' ? '-active' : '';
-    path.setAttribute('marker-end', `url(#lv-ah${markerSuffix})`);
-    svg.appendChild(path);
-
-    if (edge.label) {
-      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      text.setAttribute('x', pi.labelX);
-      text.setAttribute('y', pi.labelY);
-      text.setAttribute('text-anchor', 'middle');
-      text.setAttribute('class', edgeState ? 'lv-arrow-label lv-arrow-label-active' : 'lv-arrow-label');
-      text.textContent = edge.label;
-      svg.appendChild(text);
-    }
-  }
+  svgEl.appendChild(optLabel);
 
   // ── Draw optimizer edges (always static/dim) ──
   for (const edge of OPTIMIZER_EDGES) {
-    const pi = getEdgePath(edge, OPTIMIZER_NODES);
+    const pi = computeEdgePath(edge, OPTIMIZER_NODES);
     if (!pi) continue;
 
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -582,7 +381,7 @@ function renderPage(idx) {
     if (edge.loopback) cls += ' lv-arrow-alt';
     path.setAttribute('class', cls);
     path.setAttribute('marker-end', 'url(#lv-ah-opt)');
-    svg.appendChild(path);
+    svgEl.appendChild(path);
 
     if (edge.label) {
       const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
@@ -591,84 +390,38 @@ function renderPage(idx) {
       text.setAttribute('text-anchor', 'middle');
       text.setAttribute('class', 'lv-arrow-label lv-arrow-label-opt');
       text.textContent = edge.label;
-      svg.appendChild(text);
+      svgEl.appendChild(text);
     }
-  }
-
-  // ── Render main loop node elements ──
-  for (const nodeDef of LOOP_NODES) {
-    const nodeState = page.nodeStates.get(nodeDef.id) || '';
-    renderNodeEl(nodeDef, nodeState, page, root);
   }
 
   // ── Render optimizer node elements ──
   for (const nodeDef of OPTIMIZER_NODES) {
-    renderNodeEl(nodeDef, '', null, root);
+    renderNodeEl(nodeDef, rootEl);
   }
 
-  // Scale to fit, re-scale on resize
-  _scaleLvDiagram(scaleWrap, root, CANVAS_W);
-  area._lvRo = new ResizeObserver(() => _scaleLvDiagram(scaleWrap, root, CANVAS_W));
+  _scaleLvDiagram(scaleWrap, rootEl, LOOP_W);
+  area._lvRo = new ResizeObserver(() => _scaleLvDiagram(scaleWrap, rootEl, LOOP_W));
   area._lvRo.observe(area);
 }
 
-function renderNodeEl(nodeDef, nodeState, page, parent) {
+// Renders a static optimizer node (no click, no live state)
+function renderNodeEl(nodeDef, parent) {
   const node = document.createElement('div');
   node.className = `lv-node lv-type-${nodeDef.type}`;
-  if (nodeState === 'active') node.classList.add('lv-active');
-  else if (nodeState === 'done') node.classList.add('lv-done');
-  else if (nodeState === 'error') node.classList.add('lv-error');
-
   node.style.left   = (nodeDef.cx - nodeDef.hw) + 'px';
   node.style.top    = (nodeDef.cy - nodeDef.hh) + 'px';
   node.style.width  = (nodeDef.hw * 2) + 'px';
   node.style.height = (nodeDef.hh * 2) + 'px';
 
-  // Label
   const label = document.createElement('span');
   label.className = 'lv-node-label';
   label.textContent = nodeDef.label;
   node.appendChild(label);
 
-  // Hover detail tooltip
   const detailEl = document.createElement('div');
   detailEl.className = 'lv-node-detail';
-
-  if (page && nodeDef.type !== 'opt') {
-    const nodeEvents = page.events.filter(e => e.nodeId === nodeDef.id);
-    if (nodeEvents.length > 0) {
-      const last = nodeEvents[nodeEvents.length - 1];
-      const parts = [];
-      if (last.event.duration_ms)    parts.push(`${last.event.duration_ms}ms`);
-      if (last.event.input_tokens)   parts.push(`↓${last.event.input_tokens}`);
-      if (last.event.output_tokens)  parts.push(`↑${last.event.output_tokens}`);
-      if (last.event.model)          parts.push(last.event.model);
-      if (last.event.tool)           parts.push(last.event.tool);
-      if (last.event.results_count != null) parts.push(`${last.event.results_count} results`);
-      detailEl.textContent = parts.length > 0
-        ? parts.join(' · ')
-        : `${nodeEvents.length} event${nodeEvents.length !== 1 ? 's' : ''}`;
-    } else {
-      detailEl.textContent = 'Waiting…';
-    }
-  } else if (nodeDef.desc) {
-    detailEl.textContent = nodeDef.desc;
-  }
-
+  if (nodeDef.desc) detailEl.textContent = nodeDef.desc;
   node.appendChild(detailEl);
-
-  // ── Click: toggle tool panel ──
-  node.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (_activePanelNodeId === nodeDef.id) {
-      hideToolPanel();
-    } else {
-      showToolPanel(nodeDef, node, parent);
-    }
-  });
-
-  // Mark clickable
-  node.style.cursor = 'pointer';
 
   parent.appendChild(node);
 }
@@ -687,7 +440,7 @@ function showToolPanel(nodeDef, nodeEl, container) {
   const PANEL_W = 310;
   let left = nodeDef.cx - PANEL_W / 2;
   let top  = nodeDef.cy + nodeDef.hh + 10;
-  left = Math.max(4, Math.min(left, CANVAS_W - PANEL_W - 4));
+  left = Math.max(4, Math.min(left, LOOP_W - PANEL_W - 4));
   panel.style.left  = left + 'px';
   panel.style.top   = top  + 'px';
   panel.style.width = PANEL_W + 'px';

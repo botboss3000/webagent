@@ -11,6 +11,7 @@
 
 import { app } from './state.js';
 import { fetchAllToolMeta } from './loop-visual.js';
+import { LOOP_W, LOOP_H, LOOP_NODES, renderLoopDiagram } from './loop-diagram.js';
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let _agents         = [];   // full list from server
@@ -579,79 +580,12 @@ function _backBtn() {
   return b;
 }
 
-// ── Agent loop diagram — matches the dedicated Loop View tab ──────────────────
+// ── Agent loop diagram — uses shared loop-diagram.js for topology + rendering ──
 
-const _LV_W = 1120;
-const _LV_H = 295;
-
-const _LV_STAGES = [
-  { label: 'INPUT',     x1: 0,    x2: 118,  color: '#7dcfff' },
-  { label: 'CONTEXT',   x1: 126,  x2: 306,  color: '#c0caf5' },
-  { label: 'INFERENCE', x1: 314,  x2: 466,  color: '#bb9af7' },
-  { label: 'ROUTING',   x1: 474,  x2: 664,  color: '#e0af68' },
-  { label: 'EXECUTION', x1: 672,  x2: 826,  color: '#a9b1d6' },
-  { label: 'CONTINUE?', x1: 834,  x2: 966,  color: '#e0af68' },
-  { label: 'OUTPUT',    x1: 974,  x2: 1120, color: '#9ece6a' },
-];
-
-const _LV_NODES = [
-  { id: 'user_input',     label: 'User Input',     type: 'input',    cx: 59,   cy: 150, hw: 52, hh: 18 },
-  { id: 'load_context',   label: 'Load Context',   type: 'process',  cx: 216,  cy: 112, hw: 62, hh: 14 },
-  { id: 'memory_search',  label: 'Memory Search',  type: 'process',  cx: 216,  cy: 150, hw: 62, hh: 14 },
-  { id: 'build_prompt',   label: 'Build Prompt',   type: 'process',  cx: 216,  cy: 188, hw: 62, hh: 14 },
-  { id: 'llm_call',       label: 'LLM Call',       type: 'llm',      cx: 390,  cy: 150, hw: 55, hh: 20 },
-  { id: 'validate_tools', label: 'Validate',       type: 'process',  cx: 569,  cy: 122, hw: 62, hh: 14 },
-  { id: 'guardrails',     label: 'Guardrails',     type: 'guard',    cx: 569,  cy: 165, hw: 62, hh: 14 },
-  { id: 'execute_tools',  label: 'Execute Tools',  type: 'process',  cx: 749,  cy: 150, hw: 62, hh: 18 },
-  { id: 'check_continue', label: 'Continue?',      type: 'decision', cx: 900,  cy: 150, hw: 58, hh: 18 },
-  { id: 'final_response', label: 'Final Response', type: 'output',   cx: 1047, cy: 115, hw: 63, hh: 14 },
-  { id: 'memory_save',    label: 'Memory Save',    type: 'process',  cx: 1047, cy: 162, hw: 63, hh: 14 },
-];
-
-const _LV_EDGES = [
-  { from: 'user_input',     to: 'load_context'   },
-  { from: 'user_input',     to: 'memory_search'  },
-  { from: 'user_input',     to: 'build_prompt'   },
-  { from: 'load_context',   to: 'llm_call'       },
-  { from: 'memory_search',  to: 'llm_call'       },
-  { from: 'build_prompt',   to: 'llm_call'       },
-  { from: 'llm_call',       to: 'validate_tools', label: 'tools?' },
-  { from: 'llm_call',       to: 'check_continue', label: 'no tools', above: true },
-  { from: 'validate_tools', to: 'guardrails',     label: 'valid', vertical: true },
-  { from: 'guardrails',     to: 'execute_tools',  label: 'pass'  },
-  { from: 'guardrails',     to: 'check_continue', label: 'blocked', below: true },
-  { from: 'execute_tools',  to: 'llm_call',       label: '↺ loop',     loopback: 245 },
-  { from: 'check_continue', to: 'final_response', label: 'stop'  },
-  { from: 'check_continue', to: 'llm_call',       label: '↺ continue', loopback: 278 },
-  { from: 'final_response', to: 'memory_save',    vertical: true },
-];
-
-function _lvEdgePath(edge) {
-  const src = _LV_NODES.find(n => n.id === edge.from);
-  const dst = _LV_NODES.find(n => n.id === edge.to);
-  if (!src || !dst) return null;
-  if (edge.vertical) {
-    const x = src.cx, y1 = src.cy + src.hh, y2 = dst.cy - dst.hh;
-    return { d: `M ${x} ${y1} L ${x} ${y2}`, labelX: x + 14, labelY: (y1 + y2) / 2 + 4 };
-  }
-  if (edge.above) {
-    const arcY = 40, x1 = src.cx + src.hw, y1 = src.cy, x2 = dst.cx - dst.hw, y2 = dst.cy;
-    return { d: `M ${x1} ${y1} C ${x1} ${arcY}, ${x2} ${arcY}, ${x2} ${y2}`,
-             labelX: (x1 + x2) / 2, labelY: arcY - 6 };
-  }
-  if (edge.below) {
-    const arcY = 218, x1 = src.cx + src.hw, y1 = src.cy, x2 = dst.cx - dst.hw, y2 = dst.cy;
-    return { d: `M ${x1} ${y1} C ${x1} ${arcY}, ${x2} ${arcY}, ${x2} ${y2}`,
-             labelX: (x1 + x2) / 2, labelY: arcY + 12 };
-  }
-  if (edge.loopback) {
-    const arcY = edge.loopback, x1 = src.cx, y1 = src.cy + src.hh, x2 = dst.cx, y2 = dst.cy + dst.hh;
-    return { d: `M ${x1} ${y1} C ${x1} ${arcY}, ${x2} ${arcY}, ${x2} ${y2}`,
-             labelX: (x1 + x2) / 2, labelY: arcY + 11 };
-  }
-  const x1 = src.cx + src.hw, y1 = src.cy, x2 = dst.cx - dst.hw, y2 = dst.cy, mx = (x1 + x2) / 2;
-  return { d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`,
-           labelX: mx, labelY: (y1 < y2 ? y1 : y2) - 5 };
+function _scaleLvDiagram(wrap, root, cw) {
+  const avail = wrap.clientWidth || wrap.parentElement?.clientWidth || 0;
+  const s = (avail > 0 && avail < cw) ? avail / cw : 1;
+  root.style.zoom = s < 1 ? String(s) : '';
 }
 
 // One active node-info panel at a time (shared across all loop diagrams)
@@ -669,17 +603,7 @@ function _lvHidePanel(force = false) {
   document.removeEventListener('click', _lvOutsideClickHandler);
 }
 
-/**
- * Draw the same horizontal swimlane diagram shown in the dedicated Loop View.
- * nodeStates = Map<nodeId, 'active'|'done'|'error'>  — new Map() = static blueprint.
- * agent is passed for tool-list filtering and node hints.
- */
-function _scaleLvDiagram(wrap, root, cw) {
-  const avail = wrap.clientWidth || wrap.parentElement?.clientWidth || 0;
-  const s = (avail > 0 && avail < cw) ? avail / cw : 1;
-  root.style.zoom = s < 1 ? String(s) : '';
-}
-
+// nodeStates = Map<nodeId, 'active'|'done'|'error'>  — new Map() = static blueprint
 function _drawAgentLoopDiagram(loopEl, nodeStates, agent) {
   loopEl._lvRo?.disconnect();
   loopEl.innerHTML = '';
@@ -689,135 +613,25 @@ function _drawAgentLoopDiagram(loopEl, nodeStates, agent) {
   scaleWrap.style.cssText = 'width:100%;overflow:hidden;';
   loopEl.appendChild(scaleWrap);
 
-  const root = document.createElement('div');
-  root.style.cssText = `position:relative;width:${_LV_W}px;min-height:${_LV_H}px;`;
-  scaleWrap.appendChild(root);
-
-  // ── SVG layer ──
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('width',   _LV_W);
-  svg.setAttribute('height',  _LV_H);
-  svg.setAttribute('viewBox', `0 0 ${_LV_W} ${_LV_H}`);
-  svg.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:0;overflow:visible;';
-  root.appendChild(svg);
-
-  // Arrowhead markers (unique IDs so they don't clash with the loop-view tab)
-  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-  defs.innerHTML = `
-    <marker id="ag-ah"        markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#3a3a5a"/></marker>
-    <marker id="ag-ah-active" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#7dcfff"/></marker>
-    <marker id="ag-ah-done"   markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#9ece6a"/></marker>
-  `;
-  svg.appendChild(defs);
-
-  // Stage column backgrounds, dividers, labels
-  _LV_STAGES.forEach((stage, i) => {
-    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    rect.setAttribute('x', stage.x1 + 1);
-    rect.setAttribute('y', 28);
-    rect.setAttribute('width',  stage.x2 - stage.x1 - 2);
-    rect.setAttribute('height', 252);
-    rect.setAttribute('fill', i % 2 === 0 ? '#ffffff03' : '#00000008');
-    rect.setAttribute('rx', '3');
-    svg.appendChild(rect);
-
-    if (i > 0) {
-      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-      line.setAttribute('x1', stage.x1); line.setAttribute('y1', 28);
-      line.setAttribute('x2', stage.x1); line.setAttribute('y2', 280);
-      line.setAttribute('stroke', '#1e2035'); line.setAttribute('stroke-width', '1');
-      svg.appendChild(line);
-    }
-
-    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    text.setAttribute('x', (stage.x1 + stage.x2) / 2);
-    text.setAttribute('y', 20);
-    text.setAttribute('text-anchor', 'middle');
-    text.setAttribute('class', 'lv-stage-label');
-    text.setAttribute('fill', stage.color);
-    text.setAttribute('fill-opacity', '0.45');
-    text.textContent = stage.label;
-    svg.appendChild(text);
-  });
-
-  // Edges
-  for (const edge of _LV_EDGES) {
-    const fromState = nodeStates.get(edge.from);
-    const toState   = nodeStates.get(edge.to);
-    let edgeState = '';
-    if (fromState === 'done' && (toState === 'done' || toState === 'active')) edgeState = 'done';
-    else if (fromState === 'active' || fromState === 'done') edgeState = 'active';
-
-    const pi = _lvEdgePath(edge);
-    if (!pi) continue;
-
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('d', pi.d);
-    path.setAttribute('fill', 'none');
-    let cls = 'lv-arrow';
-    if (edge.above || edge.loopback || edge.below) cls += ' lv-arrow-alt';
-    if (edgeState === 'done')        cls += ' lv-arrow-done';
-    else if (edgeState === 'active') cls += ' lv-arrow-active';
-    path.setAttribute('class', cls);
-    const mSuffix = edgeState === 'done' ? '-done' : edgeState === 'active' ? '-active' : '';
-    path.setAttribute('marker-end', `url(#ag-ah${mSuffix})`);
-    svg.appendChild(path);
-
-    if (edge.label) {
-      const lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      lbl.setAttribute('x', pi.labelX); lbl.setAttribute('y', pi.labelY);
-      lbl.setAttribute('text-anchor', 'middle');
-      lbl.setAttribute('class', edgeState ? 'lv-arrow-label lv-arrow-label-active' : 'lv-arrow-label');
-      lbl.textContent = edge.label;
-      svg.appendChild(lbl);
-    }
-  }
-
-  // HTML nodes (absolutely positioned on top of SVG)
-  for (const nd of _LV_NODES) {
-    const state = nodeStates.get(nd.id) || '';
-    const el = document.createElement('div');
-    el.className = `lv-node lv-type-${nd.type}`;
-    if (state === 'active')     el.classList.add('lv-active');
-    else if (state === 'done')  el.classList.add('lv-done');
-    else if (state === 'error') el.classList.add('lv-error');
-
-    el.style.left   = (nd.cx - nd.hw) + 'px';
-    el.style.top    = (nd.cy - nd.hh) + 'px';
-    el.style.width  = (nd.hw * 2) + 'px';
-    el.style.height = (nd.hh * 2) + 'px';
-    el.style.cursor = 'pointer';
-
-    const labelEl = document.createElement('span');
-    labelEl.className = 'lv-node-label';
-    labelEl.textContent = nd.label;
-    el.appendChild(labelEl);
-
-    const detail = document.createElement('div');
-    detail.className = 'lv-node-detail';
-    detail.textContent = _lvNodeHint(nd, agent);
-    el.appendChild(detail);
-
-    if (agent && agent.source === 'custom' &&
-        nd.id !== 'user_input' && nd.id !== 'final_response' && nd.id !== 'validate_tools') {
-      el.classList.add('lv-node-editable');
-    }
-
-    el.addEventListener('click', e => {
-      e.stopPropagation();
+  const { rootEl } = renderLoopDiagram(scaleWrap, nodeStates, {
+    markerPrefix: 'ag',
+    getNodeDetail: nd => _lvNodeHint(nd, agent),
+    onNodeClick: (nd, el, root) => {
       if (_lvActivePanelNodeId === nd.id) { _lvHidePanel(true); return; }
       _lvShowPanel(nd, el, root, agent);
-    });
+    },
+    decorateNode: (nd, el) => {
+      if (agent?.source === 'custom' &&
+          nd.id !== 'user_input' && nd.id !== 'final_response' && nd.id !== 'validate_tools') {
+        el.classList.add('lv-node-editable');
+      }
+    },
+  });
 
-    root.appendChild(el);
-  }
+  rootEl.addEventListener('click', _lvOutsideClickHandler);
 
-  // Outside-click warns if unsaved changes exist
-  root.addEventListener('click', _lvOutsideClickHandler);
-
-  // Scale to fit, re-scale on resize
-  _scaleLvDiagram(scaleWrap, root, _LV_W);
-  loopEl._lvRo = new ResizeObserver(() => _scaleLvDiagram(scaleWrap, root, _LV_W));
+  _scaleLvDiagram(scaleWrap, rootEl, LOOP_W);
+  loopEl._lvRo = new ResizeObserver(() => _scaleLvDiagram(scaleWrap, rootEl, LOOP_W));
   loopEl._lvRo.observe(loopEl);
 }
 
@@ -837,7 +651,7 @@ function _lvNodeHint(nd, agent) {
       return isCustom ? `Memory search ${on ? 'enabled' : 'disabled'} — click to toggle` : 'Semantic search over past interactions';
     }
     case 'build_prompt':   return isCustom ? 'Click to edit prompt sections' : 'Assembles system prompt from context sections';
-    case 'llm_call':       return isCustom ? `${agent.model || 'default'} — click to configure` : `Model: ${agent.model || 'default'}`;
+    case 'llm_call':       return isCustom ? `${agent.model || 'claude-3-5-sonnet-20241022'} — click to configure` : `Model: ${agent.model || 'claude-3-5-sonnet'}`;
     case 'validate_tools': return 'Validates requested tool calls';
     case 'guardrails':     return isCustom ? 'Click to configure tool guardrails' : 'Safety checks before tool execution';
     case 'execute_tools': {
@@ -891,8 +705,8 @@ function _lvShowReadOnlyPanel(nd, nodeEl, container, agent) {
   _lvHidePanel();
   const PANEL_W = 310;
   let left = nd.cx - PANEL_W / 2;
-  const top = nd.cy > _LV_H / 2 ? Math.max(28, nd.cy - nd.hh - 280) : nd.cy + nd.hh + 10;
-  left = Math.max(4, Math.min(left, _LV_W - PANEL_W - 4));
+  const top = nd.cy > LOOP_H / 2 ? Math.max(28, nd.cy - nd.hh - 280) : nd.cy + nd.hh + 10;
+  left = Math.max(4, Math.min(left, LOOP_W - PANEL_W - 4));
 
   const panel = document.createElement('div');
   panel.className = 'lv-tool-panel';
@@ -1005,8 +819,8 @@ function _lvShowEditPanel(nd, nodeEl, container, agent) {
 
   const PANEL_W = 340;
   let left = nd.cx - PANEL_W / 2;
-  const top = nd.cy > _LV_H / 2 ? Math.max(28, nd.cy - nd.hh - 420) : nd.cy + nd.hh + 10;
-  left = Math.max(4, Math.min(left, _LV_W - PANEL_W - 4));
+  const top = nd.cy > LOOP_H / 2 ? Math.max(28, nd.cy - nd.hh - 420) : nd.cy + nd.hh + 10;
+  left = Math.max(4, Math.min(left, LOOP_W - PANEL_W - 4));
 
   const panel = document.createElement('div');
   panel.className = 'lv-edit-panel';
@@ -1191,7 +1005,6 @@ function _lvRenderLlmEditor(body, agent) {
   desc.textContent = 'Configure the language model used for this agent.';
   body.appendChild(desc);
   const MODELS = [
-    'default',
     'claude-opus-4-6',
     'claude-sonnet-4-6',
     'claude-haiku-4-5-20251001',
@@ -1199,8 +1012,8 @@ function _lvRenderLlmEditor(body, agent) {
     'claude-3-5-haiku-20241022',
     'claude-3-opus-20240229',
   ];
-  _lvSelectRow(body, 'Model', agent.model || 'default', MODELS, val => {
-    _lvSetPending('model', val === 'default' ? null : val);
+  _lvSelectRow(body, 'Model', agent.model || 'claude-3-5-sonnet-20241022', MODELS, val => {
+    _lvSetPending('model', val);
   });
   _lvSliderRow(body, 'Temperature', agent.temperature ?? 1.0, 0, 1, 0.05, val => {
     _lvSetPending('temperature', Math.round(val * 100) / 100);
