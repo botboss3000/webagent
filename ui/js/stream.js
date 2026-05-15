@@ -303,17 +303,17 @@ function renderContent(text) {
   if (tcMatch) {
     const prefix = tcMatch[1];
     const jsonStr = tcMatch[2];
-    const suffix = tcMatch[3];
+
+    // Log tool calls to console for debugging
     try {
-      const jsonHtml = formatJsonAsHtml(jsonStr);
-      if (jsonHtml) {
-        const escapedPrefix = prefix ? escapeHtml(prefix) : '';
-        const escapedSuffix = suffix ? escapeHtml(suffix) : '';
-        return escapedPrefix +
-          `<span style="color:#565f89;font-weight:600;">[Tool calls:</span> ${jsonHtml}<span style="color:#565f89;">]</span>` +
-          escapedSuffix;
-      }
-    } catch (e) { /* fall through */ }
+      const toolCalls = JSON.parse(jsonStr);
+      console.log('[Tool Calls]', toolCalls);
+    } catch (e) {
+      console.log('[Tool Calls - unparseable]', jsonStr);
+    }
+
+    // Return only the text before tool calls (hide from display)
+    return escapeHtml(prefix);
   }
 
   return escapeHtml(text);
