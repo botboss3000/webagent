@@ -530,7 +530,8 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     is_admin            INTEGER NOT NULL DEFAULT 0,
     default_agent_id    TEXT,
     created_at          TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    last_login_at       TEXT
 );
 
 """
@@ -760,6 +761,14 @@ class LocalBackend(StorageBackend):
                     logger.info("Added %s column to tools", col)
             conn.commit()
 
+            # ── Migration: add allowed_tools and custom_tool_ids to agents ──
+            ag_cols2 = {row[1] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
+            for col, default in [("allowed_tools", "'[]'"), ("custom_tool_ids", "'[]'")]:
+                if col not in ag_cols2:
+                    conn.execute(f"ALTER TABLE agents ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}")
+                    logger.info("Added agents.%s column", col)
+            conn.commit()
+
             # ── Migration: copy _ctx → _prompt and drop old _ctx columns ──
             _ctx_map = [
                 ("agent_ctx",  "agent_prompt"),
@@ -871,7 +880,9 @@ class LocalBackend(StorageBackend):
 
             # ── Migration: backfill agents.owner_user_id for existing default agents ──
             # Default agents have user_id = actual_user_id (no underscore prefix from template)
-            # Optimizer agents have user_id like "opt_planner_USER_ID" — leave owner_user_id NULL
+            # Optimizer/closer agents have user_id like "opt_planner_USER_ID" — owner_user_id
+            # is set at creation time for new agents; existing ones are left NULL by this migration
+            # (they were created before owner_user_id was populated for opt_ agents).
             conn.execute(
                 """UPDATE agents SET owner_user_id = user_id
                    WHERE owner_user_id IS NULL
@@ -898,6 +909,25 @@ class LocalBackend(StorageBackend):
             )
             conn.commit()
             logger.info("Backfilled agents.name = 'autoAgent' for user-owned agents")
+
+            # ── Migration 011: add last_login_at to user_profiles ──
+            cursor = conn.execute("PRAGMA table_info(user_profiles)")
+            up_cols = {row[1] for row in cursor.fetchall()}
+            if "last_login_at" not in up_cols:
+                conn.execute("ALTER TABLE user_profiles ADD COLUMN last_login_at TEXT")
+                conn.commit()
+                logger.info("Added user_profiles.last_login_at column")
+
+            # ── Seed: ensure admin_default always has is_admin=1 ──
+            _mig_now2 = _now_iso()
+            conn.execute(
+                """INSERT INTO user_profiles (user_id, is_admin, created_at, updated_at)
+                   VALUES ('admin_default', 1, ?, ?)
+                   ON CONFLICT(user_id) DO UPDATE SET is_admin = 1""",
+                (_mig_now2, _mig_now2),
+            )
+            conn.commit()
+            logger.info("Ensured admin_default is_admin=1")
 
             # ── Seed: p5js visualizer skill template ──
             self._seed_visualizer_template(conn)
@@ -1096,7 +1126,7 @@ class LocalBackend(StorageBackend):
     ) -> str:
         await self.assert_session_owned(user_id, session_id)
         # Optimizer/Finalizer sessions get source='optimizer' for all interactions
-        if source is None and (session_id.startswith('optimizer-') or session_id.startswith('finalizer-')):
+        if source is None and (session_id.startswith('optimizer-') or session_id.startswith('closer-')):
             source = 'optimizer'
         async with self._write_lock:
             conn = self._get_conn()
@@ -2345,6 +2375,17 @@ class LocalBackend(StorageBackend):
             )
             conn.commit()
 
+            # Set as user's default agent in user_profiles
+            conn.execute(
+                """INSERT INTO user_profiles (user_id, is_admin, default_agent_id, created_at, updated_at)
+                   VALUES (?, 0, ?, ?, ?)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                     default_agent_id = excluded.default_agent_id,
+                     updated_at = excluded.updated_at""",
+                (user_id, agent_id, now, now),
+            )
+            conn.commit()
+
             row = conn.execute(
                 "SELECT * FROM agents WHERE id = ?", (agent_id,)
             ).fetchone()
@@ -2635,12 +2676,16 @@ class LocalBackend(StorageBackend):
             conn = self._get_conn()
             try:
                 now = _now_iso()
+                # For optimizer sub-agents (planner/closer), set owner_user_id to the
+                # real user so they are associated correctly for listing and ownership ops.
+                # Worker agents are temporary (live in temp DBs) and are excluded.
+                _owner = user_id if template_id and template_id.startswith("opt_") else None
                 conn.execute(
                     """INSERT INTO agents
-                       (id, user_id, template_id, name, system_prompt, max_turn_count, model, provider,
+                       (id, user_id, owner_user_id, template_id, name, system_prompt, max_turn_count, model, provider,
                         temperature, max_tokens, status, metadata, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
-                    (agent_id, agent_user_id, template_id,
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
+                    (agent_id, agent_user_id, _owner, template_id,
                      agent.get("name", ""),
                      agent.get("system_prompt", ""),
                      agent.get("max_turn_count", 10),
@@ -3193,8 +3238,9 @@ class LocalBackend(StorageBackend):
                     temperature, max_tokens, metadata,
                     agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
                     bootstrap_tools, template_id, is_user_default,
+                    allowed_tools, custom_tool_ids,
                     created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'[]','[]',?,?)""",
                 (
                     agent_id, user_id, user_id, name, description,
                     tpl.get("system_prompt", ""),
@@ -3285,8 +3331,17 @@ class LocalBackend(StorageBackend):
             "name", "description", "max_turn_count",
             "agent_prompt", "user_prompt", "skills_prompt",
             "tasks_prompt", "misc_prompt",
+            "model", "temperature", "max_tokens",
+            "allowed_tools", "custom_tool_ids",
         }
-        safe = {k: v for k, v in updates.items() if k in ALLOWED}
+        safe = {}
+        for k, v in updates.items():
+            if k not in ALLOWED:
+                continue
+            # Serialize list fields to JSON strings for storage
+            if k in ("allowed_tools", "custom_tool_ids") and isinstance(v, list):
+                v = json.dumps(v)
+            safe[k] = v
         if not safe:
             # Nothing to update; return current state
             conn = self._get_conn()
@@ -3494,11 +3549,9 @@ class _LocalQueryBuilder:
                 return _LocalQueryResult([data])
 
             # ---- SELECT (default) ----
-            # ---- SELECT (default) ----
             sql = f"SELECT {self._select_cols} FROM {self._table_name}"
             where_clause, where_params = self._build_where()
             sql += where_clause
-            params = where_params
 
             if self._order_by:
                 order_parts = []
@@ -3515,31 +3568,25 @@ class _LocalQueryBuilder:
             conn.close()
 
     def update(self, data: dict) -> "_LocalQueryBuilder":
-        """Start an UPDATE query. Chain with .eq() filters, then .execute()."""
         self._update_data = data
         return self
 
     def delete(self) -> "_LocalQueryBuilder":
-        """Start a DELETE query. Chain with .eq() filters, then .execute()."""
         self._is_delete = True
         return self
 
     def insert(self, data: dict | list) -> "_LocalQueryBuilder":
-        """Start an INSERT query. Chain with .execute()."""
         self._insert_data = data if isinstance(data, list) else [data]
         return self
 
     def upsert(self, data: dict, on_conflict: str = "") -> "_LocalQueryBuilder":
-        """Start an UPSERT query. Chain with .execute()."""
         self._upsert_data = data
         self._on_conflict = on_conflict
         return self
 
 
 class _LocalQueryResult:
-    """Mimics supabase's query result with .data attribute."""
-
-    def __init__(self, data: List[dict]):
+    def __init__(self, data):
         self.data = data
     def __bool__(self):
         return bool(self.data)

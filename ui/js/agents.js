@@ -57,23 +57,74 @@ const TOOL_DESCRIPTIONS = {
   register_user:                'Register a new user from a communication channel',
 };
 
-// Tools available per agent type
-const ADMIN_TOOLS = ['read_source','write_source','edit_source','delete_source','run_command','restart_server'];
+// ── Tool tier definitions ─────────────────────────────────────────────
+// Tier 0: Admin-only. Never shown or toggleable for normal agents.
+const TIER_0_ADMIN = new Set([
+  'read_source','write_source','edit_source','delete_source','run_command','restart_server',
+  'run_worker_trials','handoff_to_finalizer','deploy_optimization',
+]);
+
+// Tier 1: Always-on. Present for all agents, not shown as toggleable.
+const TIER_1_ALWAYS_ON = new Set([
+  'list_tools','search_tools','get_tool_definition',
+  'get_time','get_date','calculate','read_attachment',
+  'delegate_to_agent','list_delegatable_agents','register_user',
+]);
+
+// Tier 2: Configurable standard tools — shown in the toggle UI.
+const TIER_2_CATEGORIES = [
+  {
+    label: 'Web & Network',
+    tools: [
+      { name: 'web_search',    desc: 'Search the web for current information',      destructive: false },
+      { name: 'http_request',  desc: 'Make arbitrary HTTP/API requests',             destructive: false },
+      { name: 'browser_action',desc: 'Control a live browser (click, screenshot…)', destructive: false },
+    ],
+  },
+  {
+    label: 'Database & Context',
+    tools: [
+      { name: 'db_query',                     desc: 'Read or write context documents',        destructive: true  },
+      { name: 'list_agent_context_documents',  desc: 'List context documents for this agent',  destructive: false },
+      { name: 'get_agent_context_document',    desc: 'Read a specific context document',       destructive: false },
+      { name: 'update_agent_context_document', desc: 'Update a context document',              destructive: true  },
+      { name: 'insert_agent_context_document', desc: 'Insert a new context document',          destructive: false },
+      { name: 'session_search',                desc: 'Search past session conversations',       destructive: false },
+    ],
+  },
+  {
+    label: 'Memory',
+    tools: [
+      { name: 'memory', desc: 'Store and retrieve facts across sessions', destructive: false },
+    ],
+  },
+  {
+    label: 'Utilities',
+    tools: [
+      { name: 'get_weather',   desc: 'Get current weather for a location',     destructive: false },
+      { name: 'create_tool',   desc: 'Create a new tool and save it to the DB', destructive: true  },
+      { name: 'rate_skill',    desc: 'Record user feedback on a skill',          destructive: false },
+      { name: 'run_optimizer', desc: 'Trigger the optimizer pipeline',           destructive: false },
+    ],
+  },
+  {
+    label: 'Webhooks',
+    tools: [
+      { name: 'register_webhook', desc: 'Register an inbound webhook endpoint', destructive: false },
+      { name: 'list_webhooks',    desc: 'List registered webhooks',              destructive: false },
+      { name: 'delete_webhook',   desc: 'Delete a webhook registration',         destructive: true  },
+      { name: 'get_webhook_log',  desc: 'View recent webhook events',            destructive: false },
+    ],
+  },
+];
+
+const TIER_2_ALL = TIER_2_CATEGORIES.flatMap(c => c.tools.map(t => t.name));
+
 const PIPELINE_TOOLS = {
   opt_planner:   ['run_worker_trials','handoff_to_finalizer'],
   opt_finalizer: ['deploy_optimization'],
 };
-const BASE_TOOLS = [
-  'list_tools','search_tools','get_tool_definition',
-  'web_search','browser_action','http_request',
-  'db_query','list_agent_context_documents','get_agent_context_document',
-  'update_agent_context_document','insert_agent_context_document',
-  'memory','session_search',
-  'get_time','get_date','get_weather','calculate','read_attachment',
-  'create_tool','rate_skill',
-  'register_webhook','list_webhooks','delete_webhook','get_webhook_log',
-  'run_optimizer',
-];
+
 const DESTRUCTIVE = new Set([
   'db_query','update_agent_context_document','create_tool',
   'delete_webhook','write_source','edit_source','delete_source','run_command','restart_server',
@@ -81,10 +132,18 @@ const DESTRUCTIVE = new Set([
 
 function _toolsForAgent(agent) {
   const id = agent.id || '';
-  if (id === 'admin-agent') return [...BASE_TOOLS, ...ADMIN_TOOLS];
-  if (id === 'opt_planner')   return [...BASE_TOOLS, ...(PIPELINE_TOOLS.opt_planner || [])];
-  if (id === 'opt_finalizer') return [...BASE_TOOLS, ...(PIPELINE_TOOLS.opt_finalizer || [])];
-  return [...BASE_TOOLS];
+  if (id === 'admin-agent') {
+    return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL,
+            'read_source','write_source','edit_source','delete_source','run_command','restart_server'];
+  }
+  if (id === 'opt_planner')   return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL, ...(PIPELINE_TOOLS.opt_planner || [])];
+  if (id === 'opt_finalizer') return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL, ...(PIPELINE_TOOLS.opt_finalizer || [])];
+
+  const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
+  return [
+    ...TIER_1_ALWAYS_ON,
+    ...TIER_2_ALL.filter(name => !disabled.has(name)),
+  ];
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -173,7 +232,7 @@ function _renderList() {
 
   for (const agent of _agents) {
     const isExpanded = _expandedAgents.has(agent.id);
-    const isDefault  = agent.is_user_default || agent.id === _defaultAgentId;
+    const isDefault  = agent.id === _defaultAgentId;
 
     const badgeType  = agent.access_level === 'admin_only' ? 'admin'
                      : agent.source === 'custom'            ? 'custom'
@@ -599,10 +658,15 @@ function _lvEdgePath(edge) {
 let _lvActivePanelEl     = null;
 let _lvActivePanelNodeId = null;
 
-function _lvHidePanel() {
+function _lvHidePanel(force = false) {
+  if (!force && Object.keys(_lvPendingChanges).length > 0) {
+    if (!confirm('You have unsaved changes — discard them?')) return;
+  }
   if (_lvActivePanelEl) { _lvActivePanelEl.remove(); _lvActivePanelEl = null; }
   _lvActivePanelNodeId = null;
-  document.removeEventListener('click', _lvHidePanel);
+  _lvPendingChanges    = {};
+  _lvSaveBtnEl         = null;
+  document.removeEventListener('click', _lvOutsideClickHandler);
 }
 
 /**
@@ -723,78 +787,101 @@ function _drawAgentLoopDiagram(loopEl, nodeStates, agent) {
     detail.textContent = _lvNodeHint(nd, agent);
     el.appendChild(detail);
 
+    if (agent && agent.source === 'custom' &&
+        nd.id !== 'user_input' && nd.id !== 'final_response' && nd.id !== 'validate_tools') {
+      el.classList.add('lv-node-editable');
+    }
+
     el.addEventListener('click', e => {
       e.stopPropagation();
-      if (_lvActivePanelNodeId === nd.id) { _lvHidePanel(); return; }
+      if (_lvActivePanelNodeId === nd.id) { _lvHidePanel(true); return; }
       _lvShowPanel(nd, el, root, agent);
     });
 
     root.appendChild(el);
   }
 
-  // Dismiss panel on click outside nodes
-  root.addEventListener('click', () => _lvHidePanel());
+  // Outside-click warns if unsaved changes exist
+  root.addEventListener('click', _lvOutsideClickHandler);
 }
 
 function _lvNodeHint(nd, agent) {
   if (!agent) return '';
+  const isCustom = agent.source === 'custom';
   switch (nd.id) {
     case 'user_input':     return 'User message enters the pipeline';
     case 'load_context': {
       const pf = ['agent_prompt','user_prompt','skills_prompt','tasks_prompt','misc_prompt'];
       const n = pf.filter(f => agent[f] && String(agent[f]).trim()).length;
-      return `${n} of 5 prompt sections configured`;
+      return isCustom ? `${n}/5 sections configured — click to edit` : `${n} of 5 prompt sections configured`;
     }
-    case 'memory_search':  return 'Semantic search over past interactions';
-    case 'build_prompt':   return 'Assembles system prompt from context sections';
-    case 'llm_call':       return `Model: ${agent.model || 'claude-3-5-sonnet'}`;
+    case 'memory_search': {
+      const dis = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
+      const on = !dis.has('memory');
+      return isCustom ? `Memory search ${on ? 'enabled' : 'disabled'} — click to toggle` : 'Semantic search over past interactions';
+    }
+    case 'build_prompt':   return isCustom ? 'Click to edit prompt sections' : 'Assembles system prompt from context sections';
+    case 'llm_call':       return isCustom ? `${agent.model || 'claude-3-5-sonnet-20241022'} — click to configure` : `Model: ${agent.model || 'claude-3-5-sonnet'}`;
     case 'validate_tools': return 'Validates requested tool calls';
-    case 'guardrails':     return 'Safety checks before tool execution';
-    case 'execute_tools':  return `${_toolsForAgent(agent).length} tools — click for list`;
-    case 'check_continue': return `Max turns: ${agent.max_turn_count || 10}`;
+    case 'guardrails':     return isCustom ? 'Click to configure tool guardrails' : 'Safety checks before tool execution';
+    case 'execute_tools': {
+      const count = _toolsForAgent(agent).length;
+      return isCustom ? `${count} tools — click to manage` : `${count} tools — click for list`;
+    }
+    case 'check_continue': return isCustom ? `Max turns: ${agent.max_turn_count || 10} — click to edit` : `Max turns: ${agent.max_turn_count || 10}`;
     case 'final_response': return 'Final reply delivered to user';
-    case 'memory_save':    return 'Key facts stored for future sessions';
+    case 'memory_save': {
+      const dis = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
+      const on = !dis.has('memory_save');
+      return isCustom ? `Memory save ${on ? 'enabled' : 'disabled'} — click to toggle` : 'Key facts stored for future sessions';
+    }
     default: return '';
   }
 }
 
-// Static items per node (slash commands + settings shortcuts) — mirrors loop-visual.js
-const _LV_NODE_STATIC_ITEMS = {
-  user_input: [
-    { name: '/optimize',            type: 'command', desc: 'Run the optimizer on this session to improve agent skills' },
-    { name: '/optimize <feedback>', type: 'command', desc: 'Run optimizer with specific feedback about what to improve' },
-  ],
-  build_prompt: [
-    { name: 'Settings → Agent',     type: 'admin',   desc: "Edit this agent's core directive and persona" },
-  ],
-  llm_call: [
-    { name: 'Settings → Provider',  type: 'admin',   desc: 'Change the LLM model, base URL, or API key' },
-    { name: 'Settings → Agent',     type: 'admin',   desc: "Edit this agent's system prompt and persona" },
-  ],
-  check_continue: [
-    { name: 'Settings → Max Turns', type: 'admin',   desc: 'Configure the maximum number of agentic turns per request' },
-  ],
-  final_response: [
-    { name: '/optimize',            type: 'command', desc: 'Trigger optimizer on this session to improve future responses' },
-  ],
-  memory_save: [
-    { name: 'Settings → Source',    type: 'admin',   desc: 'View and manage memory and context documents' },
-  ],
-};
+// ── Interactive loop diagram panel system ─────────────────────────────────────────
+
+let _lvPendingChanges = {};
+let _lvSaveBtnEl     = null;
+
+function _lvSetPending(key, value) {
+  _lvPendingChanges[key] = value;
+  _lvMarkDirty();
+}
+
+function _lvMarkDirty() {
+  if (!_lvSaveBtnEl) return;
+  const n = Object.keys(_lvPendingChanges).length;
+  _lvSaveBtnEl.classList.toggle('dirty', n > 0);
+  _lvSaveBtnEl.textContent = n > 0 ? `Save (${n} field${n > 1 ? 's' : ''})` : 'Save changes';
+}
+
+function _lvOutsideClickHandler() {
+  if (Object.keys(_lvPendingChanges).length > 0) {
+    if (!confirm('You have unsaved changes — discard them?')) return;
+  }
+  _lvHidePanel(true);
+}
 
 function _lvShowPanel(nd, nodeEl, container, agent) {
-  _lvHidePanel();
+  if (agent && agent.source === 'custom') {
+    _lvShowEditPanel(nd, nodeEl, container, agent);
+  } else {
+    _lvShowReadOnlyPanel(nd, nodeEl, container, agent);
+  }
+}
 
+function _lvShowReadOnlyPanel(nd, nodeEl, container, agent) {
+  _lvHidePanel();
   const PANEL_W = 310;
   let left = nd.cx - PANEL_W / 2;
-  const top = nd.cy + nd.hh + 10;
+  const top = nd.cy > _LV_H / 2 ? Math.max(28, nd.cy - nd.hh - 280) : nd.cy + nd.hh + 10;
   left = Math.max(4, Math.min(left, _LV_W - PANEL_W - 4));
 
   const panel = document.createElement('div');
   panel.className = 'lv-tool-panel';
   panel.style.cssText = `left:${left}px;top:${top}px;width:${PANEL_W}px;`;
 
-  // Header
   const header = document.createElement('div');
   header.className = 'lv-tool-panel-header';
   const title = document.createElement('span');
@@ -808,20 +895,6 @@ function _lvShowPanel(nd, nodeEl, container, agent) {
   header.appendChild(close);
   panel.appendChild(header);
 
-  // Static items (slash commands + settings shortcuts)
-  const staticItems = _LV_NODE_STATIC_ITEMS[nd.id] || [];
-  if (staticItems.length > 0) {
-    const lbl = document.createElement('div');
-    lbl.className = 'lv-tool-section-label';
-    lbl.textContent = 'Commands & Settings';
-    panel.appendChild(lbl);
-    const staticList = document.createElement('div');
-    staticList.className = 'lv-tool-panel-list';
-    staticItems.forEach(item => _lvAppendItem(staticList, item));
-    panel.appendChild(staticList);
-  }
-
-  // Live tools section — real DB data filtered to this node's stage AND this agent's tools
   const agentToolNames = new Set(_toolsForAgent(agent));
 
   if (nd.id === 'load_context' || nd.id === 'build_prompt') {
@@ -838,12 +911,12 @@ function _lvShowPanel(nd, nodeEl, container, agent) {
       { key: 'tasks_prompt',  label: 'Task Workflows' },
       { key: 'misc_prompt',   label: 'Miscellaneous' },
     ].forEach(f => {
-      const val   = agent[f.key];
+      const val = agent[f.key];
       const filled = val && String(val).trim();
       _lvAppendItem(ctxList, {
         name: f.label,
         type: filled ? 'tool' : 'command',
-        desc: filled ? String(val).trim().substring(0, 90) + '…' : '(empty — configure in Config tab)',
+        desc: filled ? String(val).trim().substring(0, 90) + '…' : '(empty)',
       });
     });
     panel.appendChild(ctxList);
@@ -865,7 +938,6 @@ function _lvShowPanel(nd, nodeEl, container, agent) {
     toolsLbl.className = 'lv-tool-section-label lv-tool-section-live';
     toolsLbl.innerHTML = 'Tools <span class="lv-live-dot"></span>';
     panel.appendChild(toolsLbl);
-
     const toolsList = document.createElement('div');
     toolsList.className = 'lv-tool-panel-list';
     const loadingEl = document.createElement('div');
@@ -873,7 +945,6 @@ function _lvShowPanel(nd, nodeEl, container, agent) {
     loadingEl.textContent = 'Loading…';
     toolsList.appendChild(loadingEl);
     panel.appendChild(toolsList);
-
     fetchAllToolMeta().then(allTools => {
       const nodeTools = allTools.filter(t => {
         const stages = Array.isArray(t.stages)
@@ -881,9 +952,7 @@ function _lvShowPanel(nd, nodeEl, container, agent) {
           : (() => { try { return JSON.parse(t.stages || '[]'); } catch { return []; } })();
         return stages.includes(nd.id) && agentToolNames.has(t.name);
       });
-
       toolsList.innerHTML = '';
-
       if (nodeTools.length === 0) {
         const none = document.createElement('div');
         none.className = 'lv-tool-panel-empty';
@@ -891,13 +960,11 @@ function _lvShowPanel(nd, nodeEl, container, agent) {
         toolsList.appendChild(none);
         return;
       }
-
       nodeTools.sort((a, b) => {
         const aS = a.source === 'skill' ? 0 : 1;
         const bS = b.source === 'skill' ? 0 : 1;
         return aS - bS || a.name.localeCompare(b.name);
       });
-
       nodeTools.forEach(t => {
         const isDestructive = t.destructive === 1 || t.destructive === true;
         const isSkill       = t.source === 'skill';
@@ -913,15 +980,409 @@ function _lvShowPanel(nd, nodeEl, container, agent) {
   container.appendChild(panel);
   _lvActivePanelNodeId = nd.id;
   _lvActivePanelEl     = panel;
+  setTimeout(() => document.addEventListener('click', _lvOutsideClickHandler), 0);
+}
 
-  setTimeout(() => document.addEventListener('click', _lvHidePanel, { once: true }), 0);
+function _lvShowEditPanel(nd, nodeEl, container, agent) {
+  _lvHidePanel(true); // force-close without confirm (same agent, different node)
+  // _lvPendingChanges intentionally NOT reset — changes accumulate across nodes
+
+  const PANEL_W = 340;
+  let left = nd.cx - PANEL_W / 2;
+  const top = nd.cy > _LV_H / 2 ? Math.max(28, nd.cy - nd.hh - 420) : nd.cy + nd.hh + 10;
+  left = Math.max(4, Math.min(left, _LV_W - PANEL_W - 4));
+
+  const panel = document.createElement('div');
+  panel.className = 'lv-edit-panel';
+  panel.style.cssText = `left:${left}px;top:${top}px;width:${PANEL_W}px;`;
+  panel.addEventListener('click', e => e.stopPropagation());
+
+  const header = document.createElement('div');
+  header.className = 'lv-tool-panel-header';
+  const hLeft = document.createElement('div');
+  hLeft.style.cssText = 'display:flex;align-items:center;gap:7px;';
+  const title = document.createElement('span');
+  title.className = 'lv-tool-panel-title';
+  title.textContent = nd.label;
+  const badge = document.createElement('span');
+  badge.className = 'lv-edit-badge';
+  badge.textContent = 'editable';
+  hLeft.appendChild(title);
+  hLeft.appendChild(badge);
+  const close = document.createElement('button');
+  close.className = 'lv-tool-panel-close';
+  close.textContent = '✕';
+  close.addEventListener('click', e => { e.stopPropagation(); _lvHidePanel(); });
+  header.appendChild(hLeft);
+  header.appendChild(close);
+  panel.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'lv-edit-body';
+  panel.appendChild(body);
+
+  switch (nd.id) {
+    case 'load_context':
+    case 'build_prompt':   _lvRenderPromptEditor(body, agent);       break;
+    case 'memory_search':  _lvRenderMemorySearchEditor(body, agent); break;
+    case 'llm_call':       _lvRenderLlmEditor(body, agent);          break;
+    case 'execute_tools':  _lvRenderToolsEditor(body, agent);        break;
+    case 'guardrails':     _lvRenderGuardrailsEditor(body, agent);   break;
+    case 'check_continue': _lvRenderContinueEditor(body, agent);     break;
+    case 'memory_save':    _lvRenderMemorySaveEditor(body, agent);   break;
+    default: {
+      const info = document.createElement('div');
+      info.className = 'lv-edit-desc';
+      info.textContent = _lvNodeHint(nd, agent) || 'No editable settings for this node.';
+      body.appendChild(info);
+    }
+  }
+
+  const saveBar = document.createElement('div');
+  saveBar.className = 'lv-edit-save-bar';
+  const saveMsg = document.createElement('span');
+  saveMsg.className = 'lv-edit-save-msg';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'lv-edit-cancel-btn';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.addEventListener('click', e => { e.stopPropagation(); _lvHidePanel(true); });
+
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'lv-edit-save-btn';
+  saveBtn.textContent = 'Save changes';
+  _lvSaveBtnEl = saveBtn;
+  _lvMarkDirty();
+
+  saveBtn.addEventListener('click', async e => {
+    e.stopPropagation();
+    if (!Object.keys(_lvPendingChanges).length) {
+      saveMsg.textContent = 'No changes';
+      saveMsg.className = 'lv-edit-save-msg';
+      return;
+    }
+    saveBtn.disabled = true;
+    cancelBtn.disabled = true;
+    saveMsg.textContent = 'Saving…';
+    saveMsg.className = 'lv-edit-save-msg';
+    try {
+      const res = await fetch(`/api/v1/agents/${agent.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: app.currentUserId, ..._lvPendingChanges }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        const idx = _agents.findIndex(a => a.id === agent.id);
+        if (idx !== -1) Object.assign(_agents[idx], data.agent);
+        Object.assign(agent, data.agent);
+        saveMsg.textContent = '✓ Saved';
+        saveMsg.className = 'lv-edit-save-msg ok';
+        _lvPendingChanges = {};
+        _lvSaveBtnEl = null;
+        const loopEl = panel.closest('.agents-test-loop');
+        if (loopEl) _drawAgentLoopDiagram(loopEl, new Map(), agent);
+      } else {
+        saveMsg.textContent = data.detail || 'Save failed';
+        saveMsg.className = 'lv-edit-save-msg error';
+      }
+    } catch (err) {
+      saveMsg.textContent = `Error: ${err.message}`;
+      saveMsg.className = 'lv-edit-save-msg error';
+    } finally {
+      saveBtn.disabled = false;
+      cancelBtn.disabled = false;
+    }
+  });
+
+  saveBar.appendChild(saveMsg);
+  saveBar.appendChild(cancelBtn);
+  saveBar.appendChild(saveBtn);
+  panel.appendChild(saveBar);
+
+  container.appendChild(panel);
+  _lvActivePanelNodeId = nd.id;
+  _lvActivePanelEl     = panel;
+}
+
+// ── Node-specific renderers ─────────────────────────────────────────────
+
+function _lvRenderPromptEditor(body, agent) {
+  const desc = document.createElement('div');
+  desc.className = 'lv-edit-desc';
+  desc.textContent = 'Shape what context the agent loads before each LLM call.';
+  body.appendChild(desc);
+
+  const SECTIONS = [
+    { key: 'agent_prompt',  label: 'Identity & Personality', hint: 'Who the agent is and how it behaves' },
+    { key: 'user_prompt',   label: 'User Preferences',       hint: 'Personalisation for this user'       },
+    { key: 'skills_prompt', label: 'Skills & Tools',         hint: 'What tools the agent uses and when'  },
+    { key: 'tasks_prompt',  label: 'Task Workflows',         hint: 'Recurring workflows or checklists'   },
+    { key: 'misc_prompt',   label: 'Miscellaneous',          hint: 'Anything else to inject'             },
+  ];
+
+  SECTIONS.forEach(s => {
+    const row = document.createElement('div');
+    row.className = 'lv-edit-prompt-row';
+    const labelrow = document.createElement('div');
+    labelrow.className = 'lv-edit-prompt-labelrow';
+    const val = agent[s.key] || '';
+    const dot = document.createElement('span');
+    dot.className = 'lv-edit-prompt-dot' + (val.trim() ? ' filled' : '');
+    const lbl = document.createElement('span');
+    lbl.className = 'lv-edit-prompt-label';
+    lbl.textContent = s.label;
+    const hint = document.createElement('span');
+    hint.className = 'lv-edit-prompt-hint';
+    hint.textContent = s.hint;
+    labelrow.appendChild(dot);
+    labelrow.appendChild(lbl);
+    labelrow.appendChild(hint);
+    const ta = document.createElement('textarea');
+    ta.className = 'lv-edit-textarea';
+    ta.rows = 3;
+    ta.value = val;
+    ta.placeholder = '(empty)';
+    ta.addEventListener('input', () => {
+      dot.className = 'lv-edit-prompt-dot' + (ta.value.trim() ? ' filled' : '');
+      _lvSetPending(s.key, ta.value);
+    });
+    row.appendChild(labelrow);
+    row.appendChild(ta);
+    body.appendChild(row);
+  });
+}
+
+function _lvRenderMemorySearchEditor(body, agent) {
+  const desc = document.createElement('div');
+  desc.className = 'lv-edit-desc';
+  desc.textContent = 'Control whether the agent searches past sessions for relevant context before each response.';
+  body.appendChild(desc);
+  const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
+  const memEnabled = !disabled.has('memory');
+  _lvToggleRow(body, 'Semantic memory search', memEnabled, enabled => {
+    const cur = new Set(Array.isArray(_lvPendingChanges.allowed_tools)
+      ? _lvPendingChanges.allowed_tools
+      : Array.isArray(agent.allowed_tools) ? [...agent.allowed_tools] : []);
+    if (enabled) { cur.delete('memory'); } else { cur.add('memory'); }
+    _lvSetPending('allowed_tools', [...cur]);
+  });
+}
+
+function _lvRenderLlmEditor(body, agent) {
+  const desc = document.createElement('div');
+  desc.className = 'lv-edit-desc';
+  desc.textContent = 'Configure the language model used for this agent.';
+  body.appendChild(desc);
+  const MODELS = [
+    'claude-opus-4-6',
+    'claude-sonnet-4-6',
+    'claude-haiku-4-5-20251001',
+    'claude-3-5-sonnet-20241022',
+    'claude-3-5-haiku-20241022',
+    'claude-3-opus-20240229',
+  ];
+  _lvSelectRow(body, 'Model', agent.model || 'claude-3-5-sonnet-20241022', MODELS, val => {
+    _lvSetPending('model', val);
+  });
+  _lvSliderRow(body, 'Temperature', agent.temperature ?? 1.0, 0, 1, 0.05, val => {
+    _lvSetPending('temperature', Math.round(val * 100) / 100);
+  });
+  _lvSliderRow(body, 'Max tokens', agent.max_tokens ?? 8096, 512, 16384, 512, val => {
+    _lvSetPending('max_tokens', parseInt(val, 10));
+  });
+}
+
+function _lvRenderToolsEditor(body, agent) {
+  const desc = document.createElement('div');
+  desc.className = 'lv-edit-desc';
+  desc.textContent = 'Enable or disable Tier-2 tools for this agent. Always-on tools cannot be disabled.';
+  body.appendChild(desc);
+  const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
+  TIER_2_CATEGORIES.forEach(cat => {
+    const catLabel = document.createElement('div');
+    catLabel.className = 'lv-edit-cat-label';
+    catLabel.textContent = cat.label;
+    body.appendChild(catLabel);
+    cat.tools.forEach(tool => {
+      const enabled = !disabled.has(tool.name);
+      _lvToolToggleRow(body, tool, enabled, isOn => {
+        const cur = new Set(Array.isArray(_lvPendingChanges.allowed_tools)
+          ? _lvPendingChanges.allowed_tools
+          : Array.isArray(agent.allowed_tools) ? [...agent.allowed_tools] : []);
+        if (isOn) { cur.delete(tool.name); } else { cur.add(tool.name); }
+        _lvSetPending('allowed_tools', [...cur]);
+      });
+    });
+  });
+}
+
+function _lvRenderGuardrailsEditor(body, agent) {
+  const desc = document.createElement('div');
+  desc.className = 'lv-edit-desc';
+  desc.textContent = 'Block entire tool categories. Disabling a category prevents all tools in it from running.';
+  body.appendChild(desc);
+  const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
+  TIER_2_CATEGORIES.forEach(cat => {
+    const allNames = cat.tools.map(t => t.name);
+    const allBlocked = allNames.every(n => disabled.has(n));
+    _lvToggleRow(body, `Allow: ${cat.label}`, !allBlocked, allowed => {
+      const cur = new Set(Array.isArray(_lvPendingChanges.allowed_tools)
+        ? _lvPendingChanges.allowed_tools
+        : Array.isArray(agent.allowed_tools) ? [...agent.allowed_tools] : []);
+      if (allowed) { allNames.forEach(n => cur.delete(n)); }
+      else         { allNames.forEach(n => cur.add(n));    }
+      _lvSetPending('allowed_tools', [...cur]);
+    });
+  });
+}
+
+function _lvRenderContinueEditor(body, agent) {
+  const desc = document.createElement('div');
+  desc.className = 'lv-edit-desc';
+  desc.textContent = 'Set how many agentic turns the loop can run before forcing a final response.';
+  body.appendChild(desc);
+  _lvSliderRow(body, 'Max turns', agent.max_turn_count ?? 10, 1, 30, 1, val => {
+    _lvSetPending('max_turn_count', parseInt(val, 10));
+  });
+}
+
+function _lvRenderMemorySaveEditor(body, agent) {
+  const desc = document.createElement('div');
+  desc.className = 'lv-edit-desc';
+  desc.textContent = 'Control whether key facts from each session are saved to long-term memory.';
+  body.appendChild(desc);
+  const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
+  const saveEnabled = !disabled.has('memory_save');
+  _lvToggleRow(body, 'Save facts to long-term memory', saveEnabled, enabled => {
+    const cur = new Set(Array.isArray(_lvPendingChanges.allowed_tools)
+      ? _lvPendingChanges.allowed_tools
+      : Array.isArray(agent.allowed_tools) ? [...agent.allowed_tools] : []);
+    if (enabled) { cur.delete('memory_save'); } else { cur.add('memory_save'); }
+    _lvSetPending('allowed_tools', [...cur]);
+  });
+}
+
+// ── UI helper widgets ─────────────────────────────────────────────────────
+
+function _lvToggleRow(container, label, initialValue, onChange) {
+  const row = document.createElement('div');
+  row.className = 'lv-edit-toggle-row';
+  const lbl = document.createElement('span');
+  lbl.className = 'lv-edit-toggle-label';
+  lbl.textContent = label;
+  const tog = document.createElement('button');
+  tog.className = 'lv-edit-toggle';
+  tog.dataset.on = initialValue ? '1' : '0';
+  tog.textContent = initialValue ? 'ON' : 'OFF';
+  tog.addEventListener('click', e => {
+    e.stopPropagation();
+    const nowOn = tog.dataset.on !== '1';
+    tog.dataset.on = nowOn ? '1' : '0';
+    tog.textContent = nowOn ? 'ON' : 'OFF';
+    onChange(nowOn);
+  });
+  row.appendChild(lbl);
+  row.appendChild(tog);
+  container.appendChild(row);
+}
+
+function _lvToolToggleRow(container, tool, enabled, onChange) {
+  const row = document.createElement('div');
+  row.className = 'lv-edit-tool-row';
+  const nameEl = document.createElement('span');
+  nameEl.className = 'lv-edit-tool-name';
+  nameEl.textContent = tool.name;
+  const left = document.createElement('div');
+  left.className = 'lv-edit-tool-left';
+  left.appendChild(nameEl);
+  if (tool.destructive) {
+    const bdg = document.createElement('span');
+    bdg.className = 'lv-edit-tool-badge';
+    bdg.textContent = '🛡';
+    left.appendChild(bdg);
+  }
+  const descEl = document.createElement('div');
+  descEl.className = 'lv-edit-tool-desc';
+  descEl.textContent = tool.desc;
+  const tog = document.createElement('button');
+  tog.className = 'lv-edit-toggle small';
+  tog.dataset.on = enabled ? '1' : '0';
+  tog.textContent = enabled ? 'ON' : 'OFF';
+  tog.addEventListener('click', e => {
+    e.stopPropagation();
+    const nowOn = tog.dataset.on !== '1';
+    tog.dataset.on = nowOn ? '1' : '0';
+    tog.textContent = nowOn ? 'ON' : 'OFF';
+    onChange(nowOn);
+  });
+  const nameRow = document.createElement('div');
+  nameRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
+  const leftBlock = document.createElement('div');
+  leftBlock.appendChild(left);
+  leftBlock.appendChild(descEl);
+  nameRow.appendChild(leftBlock);
+  nameRow.appendChild(tog);
+  row.appendChild(nameRow);
+  container.appendChild(row);
+}
+
+function _lvSliderRow(container, label, initialValue, min, max, step, onChange) {
+  const row = document.createElement('div');
+  row.className = 'lv-edit-slider-row';
+  const labelRow = document.createElement('div');
+  labelRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;';
+  const lbl = document.createElement('span');
+  lbl.className = 'lv-edit-toggle-label';
+  lbl.textContent = label;
+  const valEl = document.createElement('span');
+  valEl.className = 'lv-edit-slider-val';
+  valEl.textContent = initialValue;
+  labelRow.appendChild(lbl);
+  labelRow.appendChild(valEl);
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.className = 'lv-edit-slider';
+  slider.min  = min;
+  slider.max  = max;
+  slider.step = step;
+  slider.value = initialValue;
+  slider.addEventListener('input', () => {
+    const v = parseFloat(slider.value);
+    valEl.textContent = step < 1 ? v.toFixed(2) : slider.value;
+    onChange(v);
+  });
+  row.appendChild(labelRow);
+  row.appendChild(slider);
+  container.appendChild(row);
+}
+
+function _lvSelectRow(container, label, initialValue, options, onChange) {
+  const row = document.createElement('div');
+  row.className = 'lv-edit-select-row';
+  const lbl = document.createElement('div');
+  lbl.className = 'lv-edit-toggle-label';
+  lbl.textContent = label;
+  lbl.style.marginBottom = '4px';
+  const sel = document.createElement('select');
+  sel.className = 'lv-edit-select';
+  options.forEach(opt => {
+    const o = document.createElement('option');
+    o.value = opt;
+    o.textContent = opt;
+    if (opt === initialValue) o.selected = true;
+    sel.appendChild(o);
+  });
+  sel.addEventListener('change', () => onChange(sel.value));
+  row.appendChild(lbl);
+  row.appendChild(sel);
+  container.appendChild(row);
 }
 
 function _lvAppendItem(listEl, tool) {
   const BADGE_LABELS = { command: 'empty', tool: 'tool', guarded: '🛡 guarded' };
   const item = document.createElement('div');
   item.className = `lv-tool-item lv-tool-${tool.type}`;
-
   const nameRow = document.createElement('div');
   nameRow.className = 'lv-tool-name-row';
   const badge = document.createElement('span');
@@ -932,11 +1393,9 @@ function _lvAppendItem(listEl, tool) {
   name.textContent = tool.name;
   nameRow.appendChild(badge);
   nameRow.appendChild(name);
-
   const desc = document.createElement('div');
   desc.className = 'lv-tool-desc';
   desc.textContent = tool.desc;
-
   item.appendChild(nameRow);
   item.appendChild(desc);
   listEl.appendChild(item);

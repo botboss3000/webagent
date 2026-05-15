@@ -48,6 +48,11 @@ class UpdateAgentRequest(BaseModel):
     skills_prompt: Optional[str] = None
     tasks_prompt: Optional[str] = None
     misc_prompt: Optional[str] = None
+    model: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    allowed_tools: Optional[List[str]] = None
+    custom_tool_ids: Optional[List[str]] = None
 
 
 class SetDefaultRequest(BaseModel):
@@ -65,8 +70,20 @@ class TestAgentRequest(BaseModel):
 
 def _safe_agent(agent: dict) -> dict:
     """Strip locked/internal fields before returning to client."""
-    HIDDEN = {"system_prompt", "bootstrap_tools", "provider", "max_tokens", "metadata"}
-    return {k: v for k, v in agent.items() if k not in HIDDEN}
+    HIDDEN = {"system_prompt", "bootstrap_tools", "provider", "metadata"}
+    result = {k: v for k, v in agent.items() if k not in HIDDEN}
+    # Deserialize JSON list fields so the client receives actual arrays
+    import json as _json
+    for field in ("allowed_tools", "custom_tool_ids"):
+        raw = result.get(field)
+        if isinstance(raw, str):
+            try:
+                result[field] = _json.loads(raw)
+            except Exception:
+                result[field] = []
+        elif raw is None:
+            result[field] = []
+    return result
 
 
 async def _require_admin(db, user_id: str) -> None:

@@ -505,3 +505,347 @@ body.light-mode .agents-tool-desc     { color: #7a5a4a; }
 body.light-mode #agents-create-box    { background: #fff7f0; border-color: #ffdec4; }
 body.light-mode #agents-create-box h3 { color: #3d2c2e; }
 body.light-mode .agents-create-row label { color: #cc6a28; }
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Interactive loop-diagram edit panel
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Edit panel container ── */
+.lv-edit-panel {
+  position: absolute;
+  background: #0d0d1f;
+  border: 1px solid #2a2a5a;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  max-height: 480px;
+  overflow: hidden;
+}
+
+.lv-edit-badge {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: #1a3a2a;
+  color: #9ece6a;
+  border: 1px solid #2a5a3a;
+  border-radius: 3px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+}
+
+.lv-edit-body {
+  padding: 10px 12px;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.lv-edit-body::-webkit-scrollbar { width: 4px; }
+.lv-edit-body::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 2px; }
+
+.lv-edit-desc {
+  font-size: 11px;
+  color: #565f89;
+  line-height: 1.5;
+  margin-bottom: 2px;
+}
+
+/* ── Save bar ── */
+.lv-edit-save-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid #1e1e3a;
+  flex-shrink: 0;
+  background: #0a0a18;
+}
+
+.lv-edit-save-btn {
+  background: #1a2a4a;
+  border: 1px solid #7aa2f7;
+  color: #7aa2f7;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  margin-left: auto;
+  transition: background 0.15s;
+}
+.lv-edit-save-btn:hover:not(:disabled) { background: #2a3a6a; }
+.lv-edit-save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.lv-edit-save-msg {
+  font-size: 11px;
+  color: #565f89;
+}
+.lv-edit-save-msg.ok    { color: #9ece6a; }
+.lv-edit-save-msg.error { color: #f7768e; }
+
+/* ── Toggle rows ── */
+.lv-edit-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: 5px;
+  background: #12122a;
+  border: 1px solid #1e1e3a;
+}
+.lv-edit-toggle-row:hover { background: #14142e; }
+
+.lv-edit-toggle-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #c0caf5;
+}
+
+.lv-edit-toggle {
+  min-width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  background: #2a2a4a;
+  border: 1px solid #3a3a6a;
+  color: #565f89;
+  font-size: 9px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  font-family: inherit;
+  padding: 0 6px;
+}
+.lv-edit-toggle[data-on="1"] {
+  background: #1a3a2a;
+  border-color: #9ece6a;
+  color: #9ece6a;
+}
+.lv-edit-toggle.small {
+  min-width: 30px;
+  height: 18px;
+  font-size: 8px;
+}
+
+/* ── Tool toggle rows ── */
+.lv-edit-tool-row {
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: #12122a;
+  border: 1px solid #1e1e3a;
+}
+.lv-edit-tool-row:hover { background: #14142e; }
+
+.lv-edit-tool-left {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 2px;
+}
+.lv-edit-tool-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: #7aa2f7;
+  font-family: 'Fira Code', monospace;
+}
+.lv-edit-tool-badge {
+  font-size: 10px;
+}
+.lv-edit-tool-desc {
+  font-size: 10px;
+  color: #565f89;
+  line-height: 1.4;
+  margin-top: 1px;
+}
+
+/* ── Category label ── */
+.lv-edit-cat-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #3d59a1;
+  padding: 4px 2px 2px;
+  border-bottom: 1px solid #1e1e3a;
+  margin-top: 4px;
+}
+
+/* ── Slider rows ── */
+.lv-edit-slider-row {
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: #12122a;
+  border: 1px solid #1e1e3a;
+}
+.lv-edit-slider-val {
+  font-size: 11px;
+  font-weight: 600;
+  color: #7aa2f7;
+  min-width: 36px;
+  text-align: right;
+}
+.lv-edit-slider {
+  width: 100%;
+  accent-color: #7aa2f7;
+  cursor: pointer;
+}
+
+/* ── Select rows ── */
+.lv-edit-select-row {
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: #12122a;
+  border: 1px solid #1e1e3a;
+}
+.lv-edit-select {
+  width: 100%;
+  background: #0d0d1f;
+  border: 1px solid #2a2a5a;
+  color: #c0caf5;
+  font-size: 11px;
+  font-family: 'Fira Code', monospace;
+  border-radius: 4px;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+.lv-edit-select:focus { outline: none; border-color: #7aa2f7; }
+
+/* ── Prompt editor ── */
+.lv-edit-prompt-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.lv-edit-prompt-labelrow {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.lv-edit-prompt-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #2a2a4a;
+  border: 1px solid #3a3a6a;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+.lv-edit-prompt-dot.filled {
+  background: #9ece6a;
+  border-color: #9ece6a;
+}
+.lv-edit-prompt-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #c0caf5;
+}
+.lv-edit-prompt-hint {
+  font-size: 10px;
+  color: #3d59a1;
+  margin-left: auto;
+}
+.lv-edit-textarea {
+  width: 100%;
+  background: #0a0a18;
+  border: 1px solid #2a2a5a;
+  color: #c0caf5;
+  font-size: 11px;
+  font-family: inherit;
+  border-radius: 4px;
+  padding: 5px 7px;
+  resize: vertical;
+  line-height: 1.5;
+  box-sizing: border-box;
+}
+.lv-edit-textarea:focus {
+  outline: none;
+  border-color: #7aa2f7;
+}
+.lv-edit-textarea::placeholder { color: #2a2a4a; }
+
+/* ── Light mode overrides ── */
+body.light-mode .lv-edit-panel        { background: #fffdf8; border-color: #ffdec4; box-shadow: 0 8px 24px rgba(0,0,0,0.12); }
+body.light-mode .lv-edit-badge        { background: #f0fff4; color: #22863a; border-color: #c3e6cb; }
+body.light-mode .lv-edit-body         { /* inherits */ }
+body.light-mode .lv-edit-desc         { color: #7a6a5a; }
+body.light-mode .lv-edit-save-bar     { background: #fff7f0; border-top-color: #ffdec4; }
+body.light-mode .lv-edit-save-btn     { background: #fff2e6; border-color: #ff8c42; color: #cc5500; }
+body.light-mode .lv-edit-save-btn:hover:not(:disabled) { background: #ffdec4; }
+body.light-mode .lv-edit-save-msg     { color: #9a8a7a; }
+body.light-mode .lv-edit-save-msg.ok  { color: #22863a; }
+body.light-mode .lv-edit-save-msg.error { color: #cb2431; }
+body.light-mode .lv-edit-toggle-row   { background: #fff7f0; border-color: #ffdec4; }
+body.light-mode .lv-edit-toggle-row:hover { background: #fff2e6; }
+body.light-mode .lv-edit-toggle-label { color: #3d2c2e; }
+body.light-mode .lv-edit-toggle       { background: #ffdec4; border-color: #ffbe9a; color: #9a7a6a; }
+body.light-mode .lv-edit-toggle[data-on="1"] { background: #d4edda; border-color: #28a745; color: #22863a; }
+body.light-mode .lv-edit-tool-row     { background: #fff7f0; border-color: #ffdec4; }
+body.light-mode .lv-edit-tool-row:hover { background: #fff2e6; }
+body.light-mode .lv-edit-tool-name    { color: #cc6a28; }
+body.light-mode .lv-edit-tool-desc    { color: #7a5a4a; }
+body.light-mode .lv-edit-cat-label    { color: #cc8844; border-bottom-color: #ffdec4; }
+body.light-mode .lv-edit-slider-row   { background: #fff7f0; border-color: #ffdec4; }
+body.light-mode .lv-edit-slider-val   { color: #cc6a28; }
+body.light-mode .lv-edit-slider       { accent-color: #ff8c42; }
+body.light-mode .lv-edit-select-row   { background: #fff7f0; border-color: #ffdec4; }
+body.light-mode .lv-edit-select       { background: #fffaf5; border-color: #ffdec4; color: #3d2c2e; }
+body.light-mode .lv-edit-prompt-row   { /* inherits */ }
+body.light-mode .lv-edit-prompt-dot   { background: #ffdec4; border-color: #ffbe9a; }
+body.light-mode .lv-edit-prompt-dot.filled { background: #28a745; border-color: #28a745; }
+body.light-mode .lv-edit-prompt-label { color: #3d2c2e; }
+body.light-mode .lv-edit-prompt-hint  { color: #cc8844; }
+body.light-mode .lv-edit-textarea     { background: #fffaf5; border-color: #ffdec4; color: #3d2c2e; }
+body.light-mode .lv-edit-textarea:focus { border-color: #ff8c42; }
+
+/* ── Editable node cue (custom agents) ── */
+.lv-node-editable {
+  box-shadow: inset 0 0 0 1.5px rgba(122, 162, 247, 0.35);
+}
+.lv-node-editable::after {
+  content: '✎';
+  position: absolute;
+  top: 2px;
+  right: 5px;
+  font-size: 8px;
+  color: rgba(122, 162, 247, 0.45);
+  pointer-events: none;
+}
+
+/* ── Cancel button ── */
+.lv-edit-cancel-btn {
+  background: transparent;
+  border: 1px solid #3a3a6a;
+  color: #565f89;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 0.15s, color 0.15s;
+}
+.lv-edit-cancel-btn:hover:not(:disabled) { border-color: #7aa2f7; color: #c0caf5; }
+.lv-edit-cancel-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Dirty-state save button ── */
+.lv-edit-save-btn.dirty {
+  background: #1e3a6a;
+  border-color: #7aa2f7;
+  color: #7aa2f7;
+  box-shadow: 0 0 0 2px rgba(122, 162, 247, 0.2);
+}
+
+/* Light mode overrides for new elements */
+body.light-mode .lv-node-editable { box-shadow: inset 0 0 0 1.5px rgba(204, 106, 40, 0.4); }
+body.light-mode .lv-node-editable::after { color: rgba(204, 106, 40, 0.5); }
+body.light-mode .lv-edit-cancel-btn { border-color: #ffdec4; color: #9a7a6a; }
+body.light-mode .lv-edit-cancel-btn:hover:not(:disabled) { border-color: #ff8c42; color: #3d2c2e; }
+body.light-mode .lv-edit-save-btn.dirty { background: #fff2e6; border-color: #ff8c42; color: #cc5500; box-shadow: 0 0 0 2px rgba(255, 140, 66, 0.2); }

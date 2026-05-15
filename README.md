@@ -16,8 +16,9 @@ A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional *
 - **Dual storage** — **`cloud`** (Supabase) vs **`local`** (SQLite file **`app/db/local.db`**). Mode is stored in **`app/db_mode.json`** and switched via **`/admin/db/*`**.
 - **Administrator tools** — Optional filesystem read/write/edit/delete, shell command execution, and server restart exposed as agent tools (**`read_source`**, **`write_source`**, **`edit_source`**, **`delete_source`**, **`run_command`**, **`restart_server`**). Powered by **`app/admin/source.py`** + **`app/admin/source_tools.py`**. **These are privileged debug tools — NOT available in normal user operation.** Deleting the `app/admin/` directory removes them entirely. See the [Administrator Tools](#administrator-tools) section.
 - **Multi-agent system** — Multiple agent templates can be defined in `context/agents/`. Each user can have their own default agent. The agent loop supports **mid-turn delegation**: the `delegate_to_agent` tool lets the active agent hand off to another agent within the same session (rebinds session, reloads tools, injects a system-prompt switch message). Pipeline events (`agent_delegation`) are emitted to the Loop/Flow panel for visibility. Non-pipeline agents always receive the `delegate_to_agent` and `list_delegatable_agents` tools.
-- **Agent Management UI** — **Agents tab** in the main UI (🤖) for browsing, creating, editing, and deleting agent templates. Each agent card expands inline into its own detail panel (Config / Tools / Agent Loop tabs); multiple rows can be open simultaneously. Supports all template fields (name, description, icon, system prompt, model, temperature, max tokens, trigger description, access level, pipeline flag). Light mode aware.
+- **Agent Management UI** — **Agents tab** in the main UI (🤖) for browsing, creating, editing, and deleting agent templates. Each agent card expands inline into its own detail panel (Config / Tools / Agent Loop tabs); multiple rows can be open simultaneously. Supports all template fields (name, description, icon, system prompt, model, temperature, max tokens, trigger description, access level, pipeline flag). Light mode aware. **Interactive Agent Loop diagram** — clicking any node on a custom agent's loop diagram opens an in-place edit panel: prompt sections (Load Context / Build Prompt nodes), memory search toggle, LLM model/temperature/max-tokens, per-tool Tier-2 toggles (Execute Tools node), category-level guardrails, max-turn-count slider, and memory-save toggle. Changes are saved via `PUT /api/v1/agents/{id}` and enforced at runtime via `allowed_tools` and `custom_tool_ids` columns on the `agents` table.
 - **Admin users** — User admin flag stored in `user_profiles.is_admin`. The first admin is bootstrapped via `BOOTSTRAP_ADMIN_ID` env var. Admin users have access to the `admin-agent` template (a privileged agent with filesystem/shell tools). `GET /admin/users` and `POST /admin/users/{user_id}/set-admin` manage the admin list (admin-only endpoints).
+- **Login tracking** — User login activity is tracked in `user_profiles` table. On first login (via `/api/v1/auth/login`, `/api/v1/auth/register`, or `/api/v1/auth/recall`), a `user_profiles` row is created with `created_at` (first login timestamp) and `display_name` from `users.json`. On each subsequent login, `last_login_at` is updated to the current timestamp. Historical login data is not persisted; only the most recent login time is recorded. **To reset all local users:** delete **`app/auth/users.json`** and restart the server — it will recreate with default admin:admin.
 - **Web UI** — Main page at **`/index.html`** (chat, DB viewer, terminal, stream/loop, agents). **`/terminal`** redirects to **`/index.html`**.
 - **Minimal tester** — **`GET /test`** serves **`ui/test_interface.html`** (same origin as the API).
 
@@ -84,7 +85,7 @@ Events are routed on the frontend:
 | **`agent/embed.py`** | Embedding utility using same provider config as chat. Returns configurable-dimension vectors (`EMBED_DIM`, default 1536). |
 | **`db/__init__.py`** | **`get_db()`** → **`SupabaseBackend`** or **`LocalBackend`** from persisted mode. |
 | **`db/supabase.py`** | Cloud: **`sessions`**, **`interactions`**, **`context`**, **`context_templates`**, **`attachments`**, memories / tools / skills per shared schema. |
-| **`db/local.py`** | Local SQLite — schema init, FTS5 + vector hybrid search, embed-on-write, knowledge graph, timelines, **`webhook_registrations`** and **`webhook_event_log`** tables. |
+| **`db/local.py`** | Local SQLite — schema init, FTS5 + vector hybrid search, embed-on-write, knowledge graph, timelines, **`user_profiles`** (tracks `created_at` and `last_login_at`), **`webhook_registrations`** and **`webhook_event_log`** tables. |
 | **`db/attachments/`** | **`file_store.py`** — file byte storage abstraction. Dispatches to local filesystem (`uploads/`) or Supabase Storage based on `db_mode.json`. Exports `store_file()`, `read_file()`, `delete_file()`. See `app/db/SUPABASE_STORAGE.md` for cloud setup. |
 | **`db/interface.py`** | **`StorageBackend`** protocol with session, interaction, context, memory, skills, agent, attachment, interrupt, **webhook (register/get/list/delete/log)** abstract methods. |
 | **`tools/`** | **`loader`** (dynamic tool loading + built-in injection: http_request, register_webhook, list_webhooks, delete_webhook, get_webhook_log, render_visual, plus **`delegate_to_agent` / `list_delegatable_agents`** for non-pipeline agents), **`core_tools`** (bootstrap tools: list_tools, search_tools, get_tool_definition, web_search, http_request, db_query, memory, session_search, get_time, get_date, get_weather, calculate), **`registry`** (create_tool, safety scanner, rating utilities), **`tracker`** (legacy execution tracker), **`browser`** (persistent Chromium), **`read_attachment`** (read uploaded files via `app/db/attachments/`), **`delegation.py`** (builds `delegate_to_agent` + `list_delegatable_agents` handlers; returns delegation sentinel JSON detected by the loop). |
@@ -113,7 +114,7 @@ webAgent/
 │   ├── start_webAgent.sh            # Unix: cd to repo root, background uvicorn (default :8080, PORT= overrides)
 │   ├── backfill_embeddings.py       # One-off: embed existing memory pages
 │   └── seed_tools.py                # Optional tool DB seeding
-├── migrations/             # Ad-hoc SQL snapshots (includes 007_channel_identities, 008_linking_codes, 009_multi_agent_system); see migrations/README.md
+├── migrations/             # Ad-hoc SQL snapshots (includes 007_channel_identities, 008_linking_codes, 009_multi_agent_system, 010_agent_name_backfill, 011_add_login_tracking); see migrations/README.md
 ├── supabase/migrations/    # e.g. 005_memory_system.sql (Supabase CLI / team workflow)
 ├── screenshots/            # Mounted at /screenshots
 ├── android/                # Optional Android wrapper (Java + embedded Python)
@@ -181,6 +182,8 @@ pip install -r requirements.txt
   > **New (v0.3+):** `007_create_channel_identities.sql` and `008_create_linking_codes.sql` add tables for the communication plugin system (Telegram, WhatsApp, SMS). The **local** backend auto-creates these; on **Supabase**, apply via the SQL editor.
 
   > **New (v0.4+):** `009_multi_agent_system.sql` adds the `user_profiles` table (admin flag, default agent), extends `agent_templates` with `name`, `description`, `icon`, `trigger_description`, `can_be_default`, `is_system`, `is_pipeline`, `access_level` columns, extends `agents` with `template_id`, `owner_user_id`, `is_user_default`, `is_pipeline` columns, and seeds the default/optimizer/admin-agent templates. The **local** SQLite backend auto-applies these columns; on **Supabase**, run via SQL editor.
+
+  > **New (v0.5+):** The **local** SQLite backend auto-applies two new columns to the `agents` table: `allowed_tools` (JSON array of disabled Tier-2 tool names — empty = all enabled) and `custom_tool_ids` (JSON array of opted-in DB tool IDs). These drive the interactive Agent Loop diagram editor in the UI. The `agents.py` API exposes `model`, `temperature`, and `max_tokens` as user-editable fields via `PUT /api/v1/agents/{id}`. Tool filtering is enforced at runtime in `app/tools/loader.py` so the LLM never sees disabled tools in its schema.
 
 4. Run the server:
 
@@ -282,67 +285,4 @@ gcloud run deploy webagent \
   --allow-unauthenticated
 ```
 
-**Deploy (continuous deployment):** Connect your git repo in Cloud Run UI → push triggers auto-build + deploy.
-
-## Administrator Tools
-
-The **`app/admin/`** directory provides **privileged debug and management capabilities** that are **not part of normal user-facing operation**. These give the agent broad filesystem access and shell execution on the server.
-
-### Source management stack (optional)
-
-| File | What it provides |
-|------|------------------|
-| **`app/admin/source.py`** | FastAPI router at `/admin/source/` — **REST endpoints** for reading, writing, deleting files and running shell commands. Syntax-validates Python/JSON before writes. Backs up overwritten files to `.source-backups/`. |
-| **`app/admin/source_tools.py`** | **Agent tool wrappers** — injects `read_source`, `write_source`, `edit_source`, `delete_source`, `run_command`, and `restart_server` into the agent's tool list. Mutating tools (`write`, `edit`, `delete`, `run`, `restart`) **require user confirmation** before the agent may call them. |
-| **`app/admin/guardrails.py`** | **Optional security deny-list** — blocks access to `.env`, `.bash_history`, `.ssh/*`, and dangerous commands like `rm -rf /`. Delete this file to remove all restrictions. |
-
-**How the agent sees them:**
-
-| Tool | What it does | User confirmation? |
-|------|-------------|-------------------|
-| `read_source` | Read any file on the system | ❌ No (read-only) |
-| `write_source` | Create/overwrite files (backed up) | ✅ Yes |
-| `edit_source` | Replace exact text in a file | ✅ Yes |
-| `delete_source` | Delete files or directories | ✅ Yes |
-| `run_command` | Execute arbitrary shell commands | ✅ Yes |
-| `restart_server` | Kill and restart the webAgent server process | ✅ Yes |
-
-### Other admin endpoints
-
-| Router | Endpoints | Purpose |
-|--------|-----------|---------|
-| `review.py` | `GET /admin/tools`, `GET /admin/tools/{name}`, `DELETE /admin/tools/{id}` | List/get/deprecate tools in the DB |
-| `settings.py` | `GET/POST /admin/settings/provider`, `GET/POST /admin/settings/multi-providers`, `GET/POST /admin/settings/metadata`, `GET /admin/settings/models` | Switch AI provider, API key, model; toggle metadata logging; configure parallel multi-provider list |
-| `db_mode.py` | `GET /admin/db/mode`, `POST /admin/db/mode` | Toggle between Cloud (Supabase) and Local (SQLite) |
-| `communications.py` | `GET /admin/communications/plugins`, enable/disable, set webhook URL | Manage Telegram, WhatsApp plugins |
-| `users.py` | `GET /admin/users`, `POST /admin/users/{user_id}/set-admin` | List all users with admin status; promote or demote a user to/from admin. Both endpoints require the calling user to be an admin. |
-
-### Admin user bootstrapping
-
-To make the first admin, set `BOOTSTRAP_ADMIN_ID=<your-user-id>` in `.env`. On server start, the backend checks whether any admin exists in `user_profiles`; if not, it creates or updates that user's profile with `is_admin = true`. Once at least one admin exists, `BOOTSTRAP_ADMIN_ID` has no further effect and can be removed.
-
-The **`admin-agent`** template (seeded by `009_multi_agent_system.sql`) is a special agent persona restricted to admin users. When `agent_template_id = "admin-agent"` is requested in a chat call, the backend validates the calling user is an admin; non-admin users receive a 403. The admin-agent inherits all standard tools plus the source management and shell tools from `app/admin/`.
-
-### Disabling administrator tools
-
-**To remove all privileged filesystem and shell access, simply delete the `app/admin/` directory (or just `source.py` + `source_tools.py`).**
-
-The import in `app/tools/loader.py` is guarded by `try/except ImportError` — if the files don't exist, the agent never gets the tools. The same guarded import pattern in `app/main.py` prevents the REST endpoints from being mounted.
-
-```bash
-# Fastest lockdown — remove the source management files:
-rm -rf app/admin/source.py app/admin/source_tools.py
-
-# Full lockdown — remove the entire admin module:
-rm -rf app/admin/
-```
-
-No code changes are needed. The server continues running; the next agent turn will simply lack all admin tools.
-
-## Assistants and scratch files
-
-**`agent.md`** defines how coding assistants should treat this repo (terminology, **`temp/`** for scratch artifacts, etc.) and **requires updating this README** when edits change layout, config, APIs, or features so the tree and sections stay accurate. Roadmap notes live in **`temp/FUTURE_PLANS.md`** (not treated as product spec unless you say otherwise).
-
-## License
-
-MIT
+**D

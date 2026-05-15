@@ -53,8 +53,8 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     # ── Optimizer ──
     "run_optimizer":                 {"stages": ["user_input", "execute_tools"],                 "destructive": False, "agent_types": ["default"]},
     "run_worker_trials":             {"stages": ["opt_validate"],                                "destructive": False, "agent_types": ["optimizer-planner"]},
-    "handoff_to_finalizer":          {"stages": ["opt_propose"],                                 "destructive": False, "agent_types": ["optimizer-planner"]},
-    "deploy_optimization":           {"stages": ["opt_apply"],                                   "destructive": True,  "agent_types": ["optimizer-finalizer"]},
+    "handoff_to_closer":          {"stages": ["opt_propose"],                                 "destructive": False, "agent_types": ["optimizer-planner"]},
+    "deploy_optimization":           {"stages": ["opt_apply"],                                   "destructive": True,  "agent_types": ["optimizer-closer"]},
     # ── Delegation ──
     "delegate_to_agent":             {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     "list_delegatable_agents":       {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
@@ -87,6 +87,7 @@ class ToolInfo:
     name: str
     handler: Callable
     parameters: dict
+    tool_id: str = ''
 
 
 class ToolLoader:
@@ -123,7 +124,7 @@ class ToolLoader:
             # Ensure params is a proper JSON Schema object
             if not isinstance(params, dict) or params.get("type") != "object":
                 params = {"type": "object", "properties": {}, "required": []}
-            tools[name] = ToolInfo(name=name, handler=handler, parameters=params)
+            tools[name] = ToolInfo(name=name, handler=handler, parameters=params, tool_id=row.get('id',''))
             logger.debug(f"Loaded tool {name} for user {user_id}")
 
         # ── Inject built-in tools (override any DB versions) ──
@@ -488,7 +489,7 @@ class ToolLoader:
 
         # ── Delegation tools — injected for non-pipeline agents ──
         # Allows agents to hand off to each other mid-conversation.
-        _is_pipeline = agent_template_id in ("opt_planner", "opt_finalizer")
+        _is_pipeline = agent_template_id in ("opt_planner", "opt_closer")
         if not _is_pipeline:
             try:
                 from app.tools.delegation import build_delegation_tools
@@ -542,7 +543,7 @@ class ToolLoader:
         # ── Tool discovery ──
         BUILTIN_TOOLS = {
             "run_worker_trials": "Run isolated worker test agents to test proposed optimization changes. Each worker creates a test agent, sends the original user message, and returns the full transcript + metrics.",
-            "handoff_to_finalizer": "Hand off optimization results to the Finalizer agent. Pass summary, judging_criteria, baseline_transcript, and worker_results.",
+            "handoff_to_closer": "Hand off optimization results to the Closer agent. Pass summary, judging_criteria, baseline_transcript, and worker_results.",
             "deploy_optimization": "Deploy approved optimization changes to the user's agent. Pass changes_json with element, element_type, and new_content.",
         }
 
@@ -973,7 +974,7 @@ class ToolLoader:
         )
 
         # ── Optimizer tools (Planner / Finalizer subagents) ──
-        from app.tools.optimizer_tools import run_worker_trials, handoff_to_finalizer, deploy_optimization
+        from app.tools.optimizer_tools import run_worker_trials, handoff_to_closer, deploy_optimization
 
         async def _run_worker_trials_wrapper(changes_json: str = ""):
             import logging as _log
@@ -1007,7 +1008,7 @@ class ToolLoader:
             },
         )
 
-        async def _handoff_to_finalizer_wrapper(summary: str = "", judging_criteria: str = "",
+        async def _handoff_to_closer_wrapper(summary: str = "", judging_criteria: str = "",
                                                   baseline_transcript: str = "", worker_results: str = ""):
             import sqlite3, uuid as _uid
             db = sqlite3.connect("app/db/local.db")
@@ -1016,15 +1017,15 @@ class ToolLoader:
             ).fetchone()
             sid = row[0] if row else f"optimizer-{str(_uid.uuid4())[:8]}"
             db.close()
-            return await handoff_to_finalizer(
+            return await handoff_to_closer(
                 summary=summary, user_id=user_id, session_id=sid,
                 judging_criteria=judging_criteria,
                 baseline_transcript=baseline_transcript,
                 worker_results=worker_results,
             )
-        tools["handoff_to_finalizer"] = ToolInfo(
-            name="handoff_to_finalizer",
-            handler=_handoff_to_finalizer_wrapper,
+        tools["handoff_to_closer"] = ToolInfo(
+            name="handoff_to_closer",
+            handler=_handoff_to_closer_wrapper,
             parameters={
                 "type": "object",
                 "properties": {
@@ -1136,16 +1137,51 @@ class ToolLoader:
 _tool_loader = ToolLoader()
 
 
-async def load_tools(user_id: str, agent_template_id: Optional[str] = None) -> Dict[str, ToolInfo]:
+async def load_tools(
+    user_id: str,
+    agent_template_id: Optional[str] = None,
+    allowed_tools: Optional[List[str]] = None,
+    custom_tool_ids: Optional[List[str]] = None,
+) -> Dict[str, ToolInfo]:
     """
     Load all active tools for a user.
 
     Args:
-        user_id: The user ID to load tools for
+        user_id: The user ID to load tools for.
         agent_template_id: Active agent template id - gates admin-only and
             delegation tools; pipeline agents skip delegation tools.
+        allowed_tools: List of Tier-2 tool names that are DISABLED for this
+            agent. Empty list means all Tier-2 tools are enabled.
+            Tier-0 (admin) and Tier-1 (always-on) tools are never filtered.
+        custom_tool_ids: Reserved - DB tool IDs opted in (not yet enforced).
 
     Returns:
-        Dictionary mapping tool names to ToolInfo objects
+        Dictionary mapping tool names to ToolInfo objects.
     """
-    return await _tool_loader.load_tools(user_id, agent_template_id=agent_template_id)
+    tools = await _tool_loader.load_tools(user_id, agent_template_id=agent_template_id)
+
+    # Phase 5: enforce allowed_tools filter.
+    # Tier-1 tools are always-on and must never be filtered.
+    TIER_1_ALWAYS_ON = {
+        "list_tools", "search_tools", "get_tool_definition",
+        "get_time", "get_date", "calculate", "read_attachment",
+        "delegate_to_agent", "list_delegatable_agents", "register_user",
+    }
+    if allowed_tools:
+        disabled = set(allowed_tools)
+        for name in list(tools.keys()):
+            if name in disabled and name not in TIER_1_ALWAYS_ON:
+                del tools[name]
+
+    # Phase 5b: enforce custom_tool_ids (Tier-3 opt-in DB tools).
+    # When a non-empty list is provided, DB tools not in that list are removed.
+    # Empty list / None = keep all DB tools (backward-compatible default).
+    if custom_tool_ids:
+        allowed_id_set = set(custom_tool_ids)
+        for name in list(tools.keys()):
+            ti = tools[name]
+            # Only filter tools that came from the DB (have a tool_id)
+            if ti.tool_id and ti.tool_id not in allowed_id_set:
+                del tools[name]
+
+    return tools

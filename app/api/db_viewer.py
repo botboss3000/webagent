@@ -11,9 +11,10 @@ from typing import Optional
 
 from pydantic import BaseModel
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from app.auth.db_auth import require_db_auth
+from app.auth.jwt import decode_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/db", tags=["db_viewer"])
@@ -204,35 +205,46 @@ async def delete_session(
 
 @router.get("/sessions")
 async def list_sessions(
+    request: Request,
     user_id: str = Query(..., description="User ID"),
     db: str = Query("local.db", description="Database filename"),
 ):
-    """List sessions for a user."""
+    """List sessions for a user (owner or participant)."""
+    # Resolve requester identities from token
+    _token = ""
+    _auth_header = request.headers.get("Authorization", "")
+    if _auth_header.startswith("Bearer "):
+        _token = _auth_header[7:]
+    if not _token:
+        _token = request.query_params.get("token", "")
+    _payload = decode_token(_token) if _token else None
+    requesting_user_id = _payload.get("user_id") if _payload else None
+    requesting_username = _payload.get("sub") if _payload else None
+    # Fall back to user_id query param when no token (unauthenticated local UUID users)
+    requester_identities = {v for v in (requesting_user_id, requesting_username, user_id) if v}
+
     db_path = _get_db_path(db)
     try:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
-        # Try sessions table first, fall back to distinct session_ids from interactions/messages
         sessions = []
         try:
-            cur.execute('SELECT id, title, created_at FROM sessions WHERE user_id = ? ORDER BY created_at DESC', (user_id,))
+            cur.execute('SELECT id, title, created_at, user_id, participants FROM sessions ORDER BY created_at DESC')
             for row in cur.fetchall():
-                sessions.append({"id": row[0], "title": row[1] or row[0][:12], "created_at": row[2]})
+                owner_id = row[3]
+                participants_raw = row[4] or "[]"
+                try:
+                    participants = json.loads(participants_raw)
+                except (json.JSONDecodeError, TypeError):
+                    participants = []
+                participant_ids = {p.get("id") for p in participants if isinstance(p, dict)}
+                all_ids = ({owner_id} | participant_ids) - {None}
+                if requester_identities & all_ids:
+                    sessions.append({"id": row[0], "title": row[1] or row[0][:12], "created_at": row[2]})
         except sqlite3.OperationalError:
             pass
-
-        if not sessions:
-            # Fallback: get distinct session_ids from interactions
-            for tbl in ["interactions", "messages"]:
-                try:
-                    cur.execute(f'SELECT DISTINCT session_id FROM "{tbl}" WHERE user_id = ? AND session_id IS NOT NULL ORDER BY created_at DESC', (user_id,))
-                    for row in cur.fetchall():
-                        if row[0] not in {s["id"] for s in sessions}:
-                            sessions.append({"id": row[0], "title": row[0][:12], "created_at": None})
-                except sqlite3.OperationalError:
-                    pass
 
         conn.close()
         return {"sessions": sessions, "db": db}
@@ -242,6 +254,7 @@ async def list_sessions(
 
 @router.get("/session-messages")
 async def get_session_messages(
+    request: Request,
     session_id: str = Query(..., description="Session ID"),
     db: str = Query("local.db", description="Database filename"),
 ):
@@ -255,6 +268,41 @@ async def get_session_messages(
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
+
+        # Participant check: requesting user must own or be a participant in the session.
+        # Decode JWT directly — BaseHTTPMiddleware state doesn't reliably propagate to handlers.
+        _token = ""
+        _auth_header = request.headers.get("Authorization", "")
+        if _auth_header.startswith("Bearer "):
+            _token = _auth_header[7:]
+        if not _token:
+            _token = request.query_params.get("token", "")
+        _payload = decode_token(_token) if _token else None
+        requesting_user_id = _payload.get("user_id") if _payload else None
+        requesting_username = _payload.get("sub") if _payload else None
+        requester_identities = {v for v in (requesting_user_id, requesting_username) if v}
+        try:
+            cur.execute(
+                "SELECT user_id, participants FROM sessions WHERE id = ?",
+                (session_id,)
+            )
+            session_row = cur.fetchone()
+            if session_row:
+                owner_id = session_row[0]
+                participants_raw = session_row[1] or "[]"
+                try:
+                    participants = json.loads(participants_raw)
+                except (json.JSONDecodeError, TypeError):
+                    participants = []
+                participant_ids = {p.get("id") for p in participants if isinstance(p, dict)}
+                is_authorized = bool(requester_identities) and bool(
+                    requester_identities & ({owner_id} | participant_ids)
+                )
+                if not is_authorized:
+                    conn.close()
+                    return {"messages": [], "session_id": session_id, "db": db, "restricted": True}
+        except sqlite3.OperationalError:
+            pass  # No sessions table — fall through to message fetch
 
         messages = []
         # Try interactions table first (has richer data)

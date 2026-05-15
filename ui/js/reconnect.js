@@ -1,9 +1,20 @@
 'use strict';
 
-import { app } from './state.js';
 import { connectTerminal } from './terminal.js';
 import { connectAgent } from './agentWs.js';
 import { apiPath } from './config.js';
+
+function setRestartStatus(msg) {
+  const el = document.getElementById('restart-status');
+  if (!el) return;
+  if (msg) {
+    el.textContent = msg;
+    el.style.display = '';
+  } else {
+    el.textContent = '';
+    el.style.display = 'none';
+  }
+}
 
 export function initReconnect() {
   const reconnectBtn = document.getElementById('btn-reconnect');
@@ -11,14 +22,13 @@ export function initReconnect() {
     reconnectBtn.addEventListener('click', () => {
       connectTerminal();
       connectAgent();
-      app.addChatBubble('agent', 'Reconnecting...');
     });
   }
 
   document.getElementById('btn-restart').addEventListener('click', async () => {
     const btn = document.getElementById('btn-restart');
     btn.classList.add('restarting');
-    app.addChatBubble('agent', 'Restarting server...');
+    setRestartStatus('Restarting server...');
     try {
       await fetch(apiPath('/api/v1/restart'), { method: 'POST' });
     } catch {
@@ -30,9 +40,10 @@ export function initReconnect() {
         if (r.ok) {
           clearInterval(poll);
           btn.classList.remove('restarting');
-          app.addChatBubble('agent', 'Server restarted. Reconnecting...');
+          setRestartStatus('Reconnecting...');
           connectTerminal();
           connectAgent();
+          setTimeout(() => setRestartStatus(null), 3000);
         }
       } catch {
         /* server still down */

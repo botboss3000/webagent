@@ -138,9 +138,9 @@ async def chat(request: ChatRequest):
     try:
         db = get_db()
 
-        # ── Temp DB resolution for optimizer/finalizer sessions ──
+        # ── Temp DB resolution for optimizer/closer sessions ──
         _temp_db_path = None
-        if request.session_id.startswith('optimizer-') or request.session_id.startswith('finalizer-'):
+        if request.session_id.startswith('optimizer-') or request.session_id.startswith('closer-'):
             _meta_conn = db._get_conn()
             try:
                 _meta_row = _meta_conn.execute(
@@ -172,19 +172,19 @@ async def chat(request: ChatRequest):
         opt_role = None
         opt_template_id = None
         opt_metadata = {}
-        if request.session_id.startswith('optimizer-') or request.session_id.startswith('finalizer-'):
+        if request.session_id.startswith('optimizer-') or request.session_id.startswith('closer-'):
             conn = db._get_conn()
             try:
                 meta_row = conn.execute(
                     "SELECT metadata FROM sessions WHERE id=?", (request.session_id,)
                 ).fetchone()
                 opt_metadata = json.loads(meta_row[0]) if meta_row and meta_row[0] else {}
-                if request.session_id.startswith('finalizer-'):
-                    opt_role = 'finalizer'
-                    opt_template_id = 'opt_finalizer'
+                if request.session_id.startswith('closer-'):
+                    opt_role = 'closer'
+                    opt_template_id = 'opt_closer'
                 else:
                     opt_role = opt_metadata.get('opt_role', 'planner')
-                    opt_template_id = 'opt_planner' if opt_role == 'planner' else 'opt_finalizer'
+                    opt_template_id = 'opt_planner' if opt_role == 'planner' else 'opt_closer'
             finally:
                 conn.close()
 
@@ -223,7 +223,7 @@ async def chat(request: ChatRequest):
 
         # Save user message and get its ID for parent linking
         # Optimizer/Finalizer sessions get source='optimizer' to distinguish from normal chats
-        is_opt = request.session_id.startswith('optimizer-') or request.session_id.startswith('finalizer-')
+        is_opt = request.session_id.startswith('optimizer-') or request.session_id.startswith('closer-')
         user_interaction_id = await db.insert_interaction(
             request.user_id, request.session_id, role="user", content=request.message,
             channel="web_portal",
@@ -398,10 +398,10 @@ async def chat(request: ChatRequest):
 
         # DB-backed conversation history (same session survives browser refresh)
         exclude_ids = {user_interaction_id} if user_interaction_id else set()
-        # Build conversation history from DB. For finalizer sessions, all context
+        # Build conversation history from DB. For closer sessions, all context
         # (judging criteria, baseline, trial transcripts) is pre-injected as real
-        # interaction rows in the temp DB by handoff_to_finalizer, so the standard
-        # history builder works for both planner and finalizer sessions.
+        # interaction rows in the temp DB by handoff_to_closer, so the standard
+        # history builder works for both planner and closer sessions.
         history = await build_openai_history_from_session(
             db, request.user_id, request.session_id,
             exclude_interaction_ids=exclude_ids,
@@ -412,6 +412,14 @@ async def chat(request: ChatRequest):
             await _emit_to_visualizers(request.session_id, event, user_id=request.user_id)
 
         # Run the agent loop (with 5-minute timeout)
+        # Resolve allowed_tools from agent config (may be list or JSON string)
+        _raw_allowed = agent.get("allowed_tools", [])
+        if isinstance(_raw_allowed, str):
+            import json as _json
+            try:
+                _raw_allowed = _json.loads(_raw_allowed)
+            except Exception:
+                _raw_allowed = []
         assistant_reply = await run_agent_loop_buffered(
             user_id=request.user_id,
             session_id=request.session_id,
@@ -425,19 +433,22 @@ async def chat(request: ChatRequest):
             channel="web_portal",
             timeout_seconds=300,
             db=db,
+            agent_template_id=agent.get("template_id"),
+            allowed_tools=_raw_allowed or None,
         )
 
         # ── PHASE 3: Background memory save (visible tool interaction) ──
-        asyncio.create_task(_save_chat_to_memory(
-            db, request.user_id, request.session_id,
-            request.message, assistant_reply, agent["id"], parent_id,
-        ))
-
-        # ── Pipeline: memory save (async, fire-and-forget notification) ──
-        await _emit_to_visualizers(request.session_id, {
-            "type": "pipeline", "level": "pipeline",
-            "step": "memory_save_start", "slug": f"chat/{request.session_id[:8]}",
-        })
+        # Skip if agent has disabled memory_save via the allowed_tools sentinel
+        if 'memory_save' not in set(_raw_allowed or []):
+            asyncio.create_task(_save_chat_to_memory(
+                db, request.user_id, request.session_id,
+                request.message, assistant_reply, agent["id"], parent_id,
+            ))
+            # ── Pipeline: memory save notification ──
+            await _emit_to_visualizers(request.session_id, {
+                "type": "pipeline", "level": "pipeline",
+                "step": "memory_save_start", "slug": f"chat/{request.session_id[:8]}",
+            })
 
         return ChatResponse(
             reply=assistant_reply,
@@ -457,9 +468,9 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
     """
     db = get_db()
 
-    # ── Temp DB resolution for optimizer/finalizer sessions ──
+    # ── Temp DB resolution for optimizer/closer sessions ──
     _temp_db_path = None
-    if request.session_id.startswith('optimizer-') or request.session_id.startswith('finalizer-'):
+    if request.session_id.startswith('optimizer-') or request.session_id.startswith('closer-'):
         _meta_conn = db._get_conn()
         try:
             _meta_row = _meta_conn.execute(
@@ -492,19 +503,19 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
     # ── Optimizer / Finalizer session: route to dedicated agent ──
     opt_template_id = None
     opt_metadata = {}
-    if request.session_id.startswith('optimizer-') or request.session_id.startswith('finalizer-'):
+    if request.session_id.startswith('optimizer-') or request.session_id.startswith('closer-'):
         conn = db._get_conn()
         try:
             meta_row = conn.execute(
                 "SELECT metadata FROM sessions WHERE id=?", (request.session_id,)
             ).fetchone()
             opt_metadata = json.loads(meta_row[0]) if meta_row and meta_row[0] else {}
-            if request.session_id.startswith('finalizer-'):
-                opt_role = 'finalizer'
-                opt_template_id = 'opt_finalizer'
+            if request.session_id.startswith('closer-'):
+                opt_role = 'closer'
+                opt_template_id = 'opt_closer'
             else:
                 opt_role = opt_metadata.get('opt_role', 'planner')
-                opt_template_id = 'opt_planner' if opt_role == 'planner' else 'opt_finalizer'
+                opt_template_id = 'opt_planner' if opt_role == 'planner' else 'opt_closer'
         finally:
             conn.close()
 
@@ -677,8 +688,8 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'build_prompt', 'sections': ['SYSTEM'], 'brain_injected': bool(brain_context), 'tool_count_in_prompt': len(tools)})}\n\n"
 
         exclude_ids = {user_interaction_id} if user_interaction_id else set()
-        # All optimizer/finalizer context is pre-injected as real interaction rows
-        # in the session's temp DB by handoff_to_finalizer, so the standard history
+        # All optimizer/closer context is pre-injected as real interaction rows
+        # in the session's temp DB by handoff_to_closer, so the standard history
         # builder works for all session types.
         history = await build_openai_history_from_session(
             db, request.user_id, request.session_id,
@@ -690,6 +701,14 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         async def run_agent_task():
             assistant_reply = ""
             TIMEOUT_SEC = 300  # 5 min total timeout for the agent loop
+            # Resolve allowed_tools from agent config (may be list or JSON string)
+            _raw_at = agent.get("allowed_tools", [])
+            if isinstance(_raw_at, str):
+                import json as _json2
+                try:
+                    _raw_at = _json2.loads(_raw_at)
+                except Exception:
+                    _raw_at = []
             try:
                 async def _run():
                     nonlocal assistant_reply
@@ -705,6 +724,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                         channel="web_portal",
                         db=db,
                         agent_template_id=agent.get("template_id"),
+                        allowed_tools=_raw_at or None,
                     ):
                         await q.put(event)
 
@@ -718,12 +738,13 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                 # Wrap the agent loop with a timeout
                 await asyncio.wait_for(_run(), timeout=TIMEOUT_SEC)
 
-                asyncio.create_task(_save_chat_to_memory(
-                    db, request.user_id, request.session_id,
-                    request.message, assistant_reply, agent["id"], parent_id,
-                ))
-
-                await q.put({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_save_start', 'slug': f'chat/{request.session_id[:8]}'})
+                # Skip memory save if agent disabled it via allowed_tools sentinel
+                if 'memory_save' not in set(_raw_at or []):
+                    asyncio.create_task(_save_chat_to_memory(
+                        db, request.user_id, request.session_id,
+                        request.message, assistant_reply, agent["id"], parent_id,
+                    ))
+                    await q.put({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_save_start', 'slug': f'chat/{request.session_id[:8]}'})
             except asyncio.TimeoutError:
                 logger.warning("SSE agent task timed out for session %s", request.session_id)
                 await q.put({
