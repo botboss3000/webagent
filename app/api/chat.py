@@ -685,7 +685,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         from app.tools.loader import load_tools
         tools = await load_tools(request.user_id, agent_template_id=agent.get("template_id") if agent else None)
         
-        yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'build_prompt', 'sections': ['SYSTEM'], 'brain_injected': bool(brain_context), 'tool_count_in_prompt': len(tools)})}\n\n"
+        yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'build_prompt', 'sections': ['SYSTEM'], 'brain_injected': bool(brain_context), 'tool_count_in_prompt': len(tools), 'system_prompt': system_prompt[:8000]})}\n\n"
 
         exclude_ids = {user_interaction_id} if user_interaction_id else set()
         # All optimizer/closer context is pre-injected as real interaction rows

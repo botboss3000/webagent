@@ -51,9 +51,9 @@ const STAGES = [
 // ── Main loop nodes: cx,cy = center; hw,hh = half-width, half-height ──
 const LOOP_NODES = [
   { id: 'user_input',     label: 'User Input',     type: 'input',    cx: 59,   cy: 150, hw: 52, hh: 18 },
-  { id: 'load_context',   label: 'Load Context',   type: 'process',  cx: 216,  cy: 112, hw: 62, hh: 14 },
-  { id: 'memory_search',  label: 'Memory Search',  type: 'process',  cx: 216,  cy: 150, hw: 62, hh: 14 },
-  { id: 'build_prompt',   label: 'Build Prompt',   type: 'process',  cx: 216,  cy: 188, hw: 62, hh: 14 },
+  { id: 'load_context',   label: 'Load Context',   type: 'process',  cx: 185,  cy: 112, hw: 60, hh: 14 },
+  { id: 'memory_search',  label: 'Memory Search',  type: 'process',  cx: 185,  cy: 155, hw: 60, hh: 14 },
+  { id: 'build_prompt',   label: 'Build Prompt',   type: 'process',  cx: 275,  cy: 133, hw: 60, hh: 14 },
   { id: 'llm_call',       label: 'LLM Call',       type: 'llm',      cx: 390,  cy: 150, hw: 55, hh: 20 },
   { id: 'validate_tools', label: 'Validate',       type: 'process',  cx: 569,  cy: 122, hw: 62, hh: 14 },
   { id: 'guardrails',     label: 'Guardrails',     type: 'guard',    cx: 569,  cy: 165, hw: 62, hh: 14 },
@@ -81,13 +81,13 @@ const OPTIMIZER_NODES = [
 // route flags: above (arc over routing stage), below (arc under execution),
 //              loopback (deep arc below, value = arcY), vertical (straight down)
 const LOOP_EDGES = [
-  // User input fans out to all three context prep nodes
+  // User input fans out to parallel context prep nodes
   { from: 'user_input',     to: 'load_context'   },
   { from: 'user_input',     to: 'memory_search'  },
-  { from: 'user_input',     to: 'build_prompt'   },
-  // Context prep fans in to LLM
-  { from: 'load_context',   to: 'llm_call'       },
-  { from: 'memory_search',  to: 'llm_call'       },
+  // Parallel context nodes feed into build prompt
+  { from: 'load_context',   to: 'build_prompt'   },
+  { from: 'memory_search',  to: 'build_prompt'   },
+  // Build prompt feeds LLM
   { from: 'build_prompt',   to: 'llm_call'       },
   // LLM → tool routing (if tools were requested)
   { from: 'llm_call',       to: 'validate_tools', label: 'tools?' },
@@ -660,6 +660,9 @@ function renderNodeEl(nodeDef, nodeState, page, parent) {
 function showToolPanel(nodeDef, nodeEl, container) {
   hideToolPanel();
 
+  // Find the current page's events for this node
+  const page = pages[currentPageIdx];
+
   const panel = document.createElement('div');
   panel.className = 'lv-tool-panel';
 
@@ -687,6 +690,34 @@ function showToolPanel(nodeDef, nodeEl, container) {
   close.addEventListener('click', (e) => { e.stopPropagation(); hideToolPanel(); });
   header.appendChild(close);
   panel.appendChild(header);
+
+  // ── Build Prompt: raw LLM payload viewer ──
+  if (nodeDef.id === 'build_prompt' && page) {
+    const bpEvent = [...page.events].reverse().find(e => e.event.step === 'build_prompt');
+    if (bpEvent) {
+      const ev = bpEvent.event;
+      const payloadLabel = document.createElement('div');
+      payloadLabel.className = 'lv-tool-section-label';
+      payloadLabel.textContent = 'LLM Payload';
+      panel.appendChild(payloadLabel);
+
+      const meta = document.createElement('div');
+      meta.className = 'lv-bp-meta';
+      const parts = [];
+      if (ev.tool_count_in_prompt != null) parts.push(`${ev.tool_count_in_prompt} tools`);
+      if (ev.brain_injected) parts.push('memory injected');
+      if (ev.sections?.length) parts.push(`sections: ${ev.sections.join(', ')}`);
+      meta.textContent = parts.join(' · ');
+      panel.appendChild(meta);
+
+      if (ev.system_prompt) {
+        const pre = document.createElement('pre');
+        pre.className = 'lv-bp-prompt';
+        pre.textContent = ev.system_prompt;
+        panel.appendChild(pre);
+      }
+    }
+  }
 
   // ── Static items (slash commands + Settings shortcuts) ──
   const staticItems = NODE_STATIC_ITEMS[nodeDef.id] || [];
