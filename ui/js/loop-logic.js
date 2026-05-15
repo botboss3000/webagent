@@ -609,7 +609,7 @@ function renderNodeEl(nodeDef, parent) {
 }
 
 // ── Node description & detail rows shown in the panel ──
-const NODE_PANEL_INFO = {
+export const NODE_PANEL_INFO = {
   slash_cmd: {
     desc: 'Checks the message against _OPTIMIZE_PATTERN. If matched, routes directly to the optimizer session — the main agent loop never runs.',
     details: [

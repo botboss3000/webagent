@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(python -c \"import app.api.chat\")",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "mcp__Claude_Preview__preview_start"
     ]
   }
 }

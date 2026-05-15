@@ -392,6 +392,19 @@ body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; co
 .agents-test-input:focus { outline: none; border-color: #7aa2f7; }
 .agents-test-status { font-size: 11px; color: #565f89; min-height: 14px; flex-shrink: 0; }
 
+/* Detail panels inserted as flex siblings above the loop */
+.agents-test-area > .lv-tool-panel,
+.agents-test-area > .lv-edit-panel {
+  flex-shrink: 0;
+  position: relative;
+  width: 100%;
+  max-height: 320px;
+  box-sizing: border-box;
+  left: auto;
+  top: auto;
+  overflow-y: auto;
+}
+
 /* Loop diagram panel — scales to fit width, no horizontal scroll */
 .agents-test-loop {
   flex: 1;
