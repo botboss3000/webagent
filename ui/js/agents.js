@@ -10,7 +10,7 @@
  */
 
 import { app } from './state.js';
-import { fetchAllToolMeta } from './loop-logic.js';
+import { fetchAllToolMeta, NODE_PANEL_INFO } from './loop-logic.js';
 import { LOOP_W, LOOP_H, LOOP_NODES, renderLoopDiagram } from './loop-diagram.js';
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -895,9 +895,16 @@ function _drawAgentLoopDiagram(loopEl, nodeStates, agent) {
   // Re-render on resize to reflow layout (debounced).
   // Observe parentElement, not loopEl itself — loopEl's content changes on re-render
   // which would retrigger the observer every 120ms, resetting scroll and killing panels.
-  loopEl._lvRo = new ResizeObserver(() => {
+  loopEl._lvRo = new ResizeObserver((entries) => {
+    const w = entries[0]?.contentRect?.width ?? 0;
+    if (w && Math.abs(w - (loopEl._lvLastRoWidth || 0)) < 2) return;
+    loopEl._lvLastRoWidth = w;
     clearTimeout(loopEl._lvResizeTimer);
     loopEl._lvResizeTimer = setTimeout(() => {
+      // Skip re-render while a panel is open — panel insertion can change the
+      // container height (and thus trigger scrollbar-related width changes),
+      // which would incorrectly fire this observer and close the panel.
+      if (_lvActivePanelEl) return;
       _drawAgentLoopDiagram(loopEl, loopEl._lvNodeStates, loopEl._lvAgent);
     }, 120);
   });
@@ -1095,14 +1102,9 @@ function _lvShowPanel(nd, nodeEl, container, agent) {
 
 function _lvShowReadOnlyPanel(nd, nodeEl, container, agent) {
   _lvHidePanel();
-  const PANEL_W = 310;
-  let left = nd.cx - PANEL_W / 2;
-  const top = nd.cy > LOOP_H / 2 ? Math.max(28, nd.cy - nd.hh - 280) : nd.cy + nd.hh + 10;
-  left = Math.max(4, Math.min(left, LOOP_W - PANEL_W - 4));
 
   const panel = document.createElement('div');
   panel.className = 'lv-tool-panel';
-  panel.style.cssText = `left:${left}px;top:${top}px;width:${PANEL_W}px;`;
 
   const header = document.createElement('div');
   header.className = 'lv-tool-panel-header';
@@ -1117,97 +1119,250 @@ function _lvShowReadOnlyPanel(nd, nodeEl, container, agent) {
   header.appendChild(close);
   panel.appendChild(header);
 
-  const agentToolNames = new Set(_toolsForAgent(agent));
+  // Always render the NODE_PANEL_INFO description + details first
+  _lvRenderNodeInfo(panel, nd);
 
-  if (nd.id === 'load_context' || nd.id === 'build_prompt') {
-    const lbl = document.createElement('div');
-    lbl.className = 'lv-tool-section-label';
-    lbl.textContent = 'Prompt Sections';
-    panel.appendChild(lbl);
-    const ctxList = document.createElement('div');
-    ctxList.className = 'lv-tool-panel-list';
-    [
-      { key: 'agent_prompt',  label: 'Identity & Personality' },
-      { key: 'user_prompt',   label: 'User Preferences' },
-      { key: 'skills_prompt', label: 'Skills & Tools' },
-      { key: 'tasks_prompt',  label: 'Task Workflows' },
-      { key: 'misc_prompt',   label: 'Miscellaneous' },
-    ].forEach(f => {
-      const val = agent[f.key];
-      const filled = val && String(val).trim();
-      _lvAppendItem(ctxList, {
-        name: f.label,
-        type: filled ? 'tool' : 'command',
-        desc: filled ? String(val).trim().substring(0, 90) + '…' : '(empty)',
-      });
-    });
-    panel.appendChild(ctxList);
-  } else if (nd.id === 'check_continue') {
-    const lbl = document.createElement('div');
-    lbl.className = 'lv-tool-section-label';
-    lbl.textContent = 'Configuration';
-    panel.appendChild(lbl);
-    const cfgList = document.createElement('div');
-    cfgList.className = 'lv-tool-panel-list';
-    _lvAppendItem(cfgList, {
-      name: `Max turns: ${agent.max_turn_count || 10}`,
-      type: 'tool',
-      desc: 'Agent stops looping after this many tool-calling turns',
-    });
-    panel.appendChild(cfgList);
-  } else {
-    const toolsLbl = document.createElement('div');
-    toolsLbl.className = 'lv-tool-section-label lv-tool-section-live';
-    toolsLbl.innerHTML = 'Tools <span class="lv-live-dot"></span>';
-    panel.appendChild(toolsLbl);
-    const toolsList = document.createElement('div');
-    toolsList.className = 'lv-tool-panel-list';
-    const loadingEl = document.createElement('div');
-    loadingEl.className = 'lv-tool-panel-empty lv-tool-loading';
-    loadingEl.textContent = 'Loading…';
-    toolsList.appendChild(loadingEl);
-    panel.appendChild(toolsList);
-    fetchAllToolMeta().then(allTools => {
-      const nodeTools = allTools.filter(t => {
-        const stages = Array.isArray(t.stages)
-          ? t.stages
-          : (() => { try { return JSON.parse(t.stages || '[]'); } catch { return []; } })();
-        return stages.includes(nd.id) && agentToolNames.has(t.name);
-      });
-      toolsList.innerHTML = '';
-      if (nodeTools.length === 0) {
-        const none = document.createElement('div');
-        none.className = 'lv-tool-panel-empty';
-        none.textContent = 'No tools mapped to this stage for this agent.';
-        toolsList.appendChild(none);
-        return;
-      }
-      nodeTools.sort((a, b) => {
-        const aS = a.source === 'skill' ? 0 : 1;
-        const bS = b.source === 'skill' ? 0 : 1;
-        return aS - bS || a.name.localeCompare(b.name);
-      });
-      nodeTools.forEach(t => {
-        const isDestructive = t.destructive === 1 || t.destructive === true;
-        const isSkill       = t.source === 'skill';
-        _lvAppendItem(toolsList, {
-          name: t.name,
-          type: isDestructive ? 'guarded' : isSkill ? 'skill' : 'tool',
-          desc: t.description || '',
+  // Then render agent-specific extras per node
+  switch (nd.id) {
+
+    case 'agent_resolve': {
+      const lbl = document.createElement('div');
+      lbl.className = 'lv-tool-section-label';
+      lbl.textContent = 'This agent';
+      panel.appendChild(lbl);
+      const list = document.createElement('div');
+      list.className = 'lv-tool-panel-list';
+      _lvAppendItem(list, { name: 'Name',     type: 'tool', desc: agent.name || agent.id || '—' });
+      _lvAppendItem(list, { name: 'Model',    type: 'tool', desc: agent.model || 'claude-3-5-sonnet-20241022' });
+      _lvAppendItem(list, { name: 'Max turns',type: 'tool', desc: String(agent.max_turn_count || 10) });
+      panel.appendChild(list);
+      break;
+    }
+
+    case 'load_context':
+    case 'build_prompt': {
+      const lbl = document.createElement('div');
+      lbl.className = 'lv-tool-section-label';
+      lbl.textContent = 'Prompt sections';
+      panel.appendChild(lbl);
+      const list = document.createElement('div');
+      list.className = 'lv-tool-panel-list';
+      [
+        { key: 'system_prompt',  label: 'Directive',    hint: 'Core agent directive' },
+        { key: 'agent_prompt',   label: 'Identity',     hint: 'Agent personality'   },
+        { key: 'user_prompt',    label: 'User prefs',   hint: 'User preferences'    },
+        { key: 'skills_prompt',  label: 'Skills',       hint: 'Skills & tools'      },
+        { key: 'tasks_prompt',   label: 'Tasks',        hint: 'Task workflows'      },
+        { key: 'misc_prompt',    label: 'Misc',         hint: 'Miscellaneous'       },
+      ].forEach(f => {
+        const filled = agent[f.key] && String(agent[f.key]).trim();
+        _lvAppendItem(list, {
+          name: f.label,
+          type: filled ? 'tool' : 'command',
+          desc: filled ? String(agent[f.key]).trim().substring(0, 80) + '…' : '(empty)',
         });
       });
-    });
+      panel.appendChild(list);
+      break;
+    }
+
+    case 'memory_search': {
+      const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
+      const on = !disabled.has('memory');
+      const lbl = document.createElement('div');
+      lbl.className = 'lv-tool-section-label';
+      lbl.textContent = 'Status';
+      panel.appendChild(lbl);
+      const list = document.createElement('div');
+      list.className = 'lv-tool-panel-list';
+      _lvAppendItem(list, {
+        name: 'Memory search',
+        type: on ? 'tool' : 'command',
+        desc: on ? 'Enabled — past sessions are searched before each response' : 'Disabled — brain context is skipped',
+      });
+      panel.appendChild(list);
+      break;
+    }
+
+    case 'build_history': {
+      const lbl = document.createElement('div');
+      lbl.className = 'lv-tool-section-label';
+      lbl.textContent = 'Steps';
+      panel.appendChild(lbl);
+      const list = document.createElement('div');
+      list.className = 'lv-tool-panel-list';
+      [
+        'Fetch all interactions for the current session',
+        'Convert rows to OpenAI message format (role + content)',
+        'Reconstruct tool_calls from assistant messages',
+        'Filter out internal tools (memory_search, memory_save)',
+      ].forEach(s => {
+        const item = document.createElement('div');
+        item.className = 'lv-tool-item';
+        const el = document.createElement('div');
+        el.className = 'lv-tool-desc';
+        el.textContent = s;
+        item.appendChild(el);
+        list.appendChild(item);
+      });
+      panel.appendChild(list);
+      break;
+    }
+
+    case 'load_provider':
+    case 'llm_call': {
+      const lbl = document.createElement('div');
+      lbl.className = 'lv-tool-section-label';
+      lbl.textContent = 'Provider config';
+      panel.appendChild(lbl);
+      const list = document.createElement('div');
+      list.className = 'lv-tool-panel-list';
+      _lvAppendItem(list, { name: 'Model',       type: 'tool', desc: agent.model || 'claude-3-5-sonnet-20241022' });
+      _lvAppendItem(list, { name: 'Temperature', type: 'tool', desc: String(agent.temperature ?? 1.0) });
+      _lvAppendItem(list, { name: 'Max tokens',  type: 'tool', desc: String(agent.max_tokens ?? 8096) });
+      panel.appendChild(list);
+      break;
+    }
+
+    case 'load_tools':
+    case 'execute_tools': {
+      const count = _toolsForAgent(agent).length;
+      const lbl = document.createElement('div');
+      lbl.className = 'lv-tool-section-label lv-tool-section-live';
+      lbl.innerHTML = `Tools (${count}) <span class="lv-live-dot"></span>`;
+      panel.appendChild(lbl);
+      const list = document.createElement('div');
+      list.className = 'lv-tool-panel-list';
+      const loadingEl = document.createElement('div');
+      loadingEl.className = 'lv-tool-panel-empty lv-tool-loading';
+      loadingEl.textContent = 'Loading…';
+      list.appendChild(loadingEl);
+      panel.appendChild(list);
+      const agentToolNames = new Set(_toolsForAgent(agent));
+      fetchAllToolMeta().then(allTools => {
+        const nodeTools = allTools.filter(t => agentToolNames.has(t.name));
+        list.innerHTML = '';
+        if (!nodeTools.length) {
+          const none = document.createElement('div');
+          none.className = 'lv-tool-panel-empty';
+          none.textContent = 'No tools for this agent.';
+          list.appendChild(none);
+          return;
+        }
+        nodeTools.sort((a, b) => {
+          const aS = a.source === 'skill' ? 0 : 1;
+          const bS = b.source === 'skill' ? 0 : 1;
+          return aS - bS || a.name.localeCompare(b.name);
+        });
+        nodeTools.forEach(t => {
+          _lvAppendItem(list, {
+            name: t.name,
+            type: t.destructive ? 'guarded' : t.source === 'skill' ? 'skill' : 'tool',
+            desc: t.description || '',
+          });
+        });
+      });
+      break;
+    }
+
+    case 'assemble_msgs': {
+      const lbl = document.createElement('div');
+      lbl.className = 'lv-tool-section-label';
+      lbl.textContent = 'messages[ ] payload';
+      panel.appendChild(lbl);
+      const list = document.createElement('div');
+      list.className = 'lv-tool-panel-list';
+      [
+        { index: '[0]',    role: 'system',    detail: 'system_prompt — directive + context + memory' },
+        { index: '[1..N]', role: 'assistant', detail: 'transcript — prior turns this session'       },
+        { index: '[N+1]',  role: 'user',      detail: "current message — this turn's input"         },
+      ].forEach(m => {
+        _lvAppendItem(list, { name: `${m.index} ${m.role}`, type: 'tool', desc: m.detail });
+      });
+      panel.appendChild(list);
+      break;
+    }
+
+    case 'turn_counter':
+    case 'check_continue': {
+      const lbl = document.createElement('div');
+      lbl.className = 'lv-tool-section-label';
+      lbl.textContent = 'Configuration';
+      panel.appendChild(lbl);
+      const list = document.createElement('div');
+      list.className = 'lv-tool-panel-list';
+      _lvAppendItem(list, {
+        name: `Max turns: ${agent.max_turn_count || 10}`,
+        type: 'tool',
+        desc: 'Agent stops looping after this many tool-calling turns',
+      });
+      panel.appendChild(list);
+      break;
+    }
+
+    case 'destructive_chk': {
+      const lbl = document.createElement('div');
+      lbl.className = 'lv-tool-section-label';
+      lbl.textContent = 'Guarded tools';
+      panel.appendChild(lbl);
+      const list = document.createElement('div');
+      list.className = 'lv-tool-panel-list';
+      ['edit_source', 'write_source', 'delete_source', 'run_command', 'restart_server'].forEach(name => {
+        _lvAppendItem(list, { name, type: 'guarded', desc: 'Requires user confirmation before executing' });
+      });
+      panel.appendChild(list);
+      break;
+    }
+
+    case 'guardrails': {
+      const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
+      const lbl = document.createElement('div');
+      lbl.className = 'lv-tool-section-label';
+      lbl.textContent = 'Tool categories';
+      panel.appendChild(lbl);
+      const list = document.createElement('div');
+      list.className = 'lv-tool-panel-list';
+      TIER_2_CATEGORIES.forEach(cat => {
+        const allBlocked = cat.tools.every(t => disabled.has(t.name));
+        _lvAppendItem(list, {
+          name: cat.label,
+          type: allBlocked ? 'command' : 'tool',
+          desc: allBlocked ? 'Blocked' : 'Allowed',
+        });
+      });
+      panel.appendChild(list);
+      break;
+    }
+
+    case 'memory_save': {
+      const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
+      const on = !disabled.has('memory_save');
+      const lbl = document.createElement('div');
+      lbl.className = 'lv-tool-section-label';
+      lbl.textContent = 'Status';
+      panel.appendChild(lbl);
+      const list = document.createElement('div');
+      list.className = 'lv-tool-panel-list';
+      _lvAppendItem(list, {
+        name: 'Long-term memory save',
+        type: on ? 'tool' : 'command',
+        desc: on ? 'Enabled — key facts are saved after each session' : 'Disabled — facts are not persisted',
+      });
+      panel.appendChild(list);
+      break;
+    }
+
+    default:
+      // NODE_PANEL_INFO already rendered above — nothing extra needed
+      break;
   }
 
-  // Prevent clicks inside the panel from bubbling to the outside-click handler
   panel.addEventListener('click', e => e.stopPropagation());
 
-  panel.classList.add('lv-panel-overlay');
-  const _outerLvA = container.closest('.agents-test-loop') || container;
-  _outerLvA.appendChild(panel);
+  const _outerLvA = container.closest('.agents-test-area') || container;
+  _outerLvA.insertBefore(panel, _outerLvA.querySelector('.agents-test-loop'));
   _lvActivePanelNodeId = nd.id;
   _lvActivePanelEl     = panel;
-  setTimeout(() => document.addEventListener('click', _lvOutsideClickHandler), 0);
 }
 
 function _lvShowEditPanel(nd, nodeEl, container, agent) {
@@ -1215,7 +1370,7 @@ function _lvShowEditPanel(nd, nodeEl, container, agent) {
   // _lvPendingChanges intentionally NOT reset — changes accumulate across nodes
 
   const panel = document.createElement('div');
-  panel.className = 'lv-edit-panel lv-panel-overlay';
+  panel.className = 'lv-edit-panel';
   panel.addEventListener('click', e => e.stopPropagation());
 
   const header = document.createElement('div');
@@ -1255,10 +1410,13 @@ function _lvShowEditPanel(nd, nodeEl, container, agent) {
     case 'check_continue': _lvRenderContinueEditor(body, agent);     break;
     case 'memory_save':    _lvRenderMemorySaveEditor(body, agent);   break;
     default: {
-      const info = document.createElement('div');
-      info.className = 'lv-edit-desc';
-      info.textContent = _lvNodeHint(nd, agent) || 'No editable settings for this node.';
-      body.appendChild(info);
+      _lvRenderNodeInfo(body, nd);
+      if (!NODE_PANEL_INFO[nd.id]) {
+        const info = document.createElement('div');
+        info.className = 'lv-edit-desc';
+        info.textContent = _lvNodeHint(nd, agent) || 'No editable settings for this node.';
+        body.appendChild(info);
+      }
     }
   }
 
@@ -1306,7 +1464,7 @@ function _lvShowEditPanel(nd, nodeEl, container, agent) {
         saveMsg.className = 'lv-edit-save-msg ok';
         _lvPendingChanges = {};
         _lvSaveBtnEl = null;
-        const loopEl = panel.closest('.agents-test-loop');
+        const loopEl = panel.closest('.agents-test-area')?.querySelector('.agents-test-loop');
         if (loopEl) _drawAgentLoopDiagram(loopEl, new Map(), agent);
       } else {
         saveMsg.textContent = data.detail || 'Save failed';
@@ -1327,8 +1485,8 @@ function _lvShowEditPanel(nd, nodeEl, container, agent) {
   panel.appendChild(saveBar);
   } // end !_INFO_NODES
 
-  const _outerLvB = container.closest('.agents-test-loop') || container;
-  _outerLvB.appendChild(panel);
+  const _outerLvB = container.closest('.agents-test-area') || container;
+  _outerLvB.insertBefore(panel, _outerLvB.querySelector('.agents-test-loop'));
   _lvActivePanelNodeId = nd.id;
   _lvActivePanelEl     = panel;
 }
@@ -1379,6 +1537,40 @@ function _lvRenderPromptEditor(body, agent) {
     row.appendChild(ta);
     body.appendChild(row);
   });
+}
+
+function _lvRenderNodeInfo(panel, nd) {
+  const info = NODE_PANEL_INFO[nd.id];
+  if (!info) return;
+
+  const descEl = document.createElement('div');
+  descEl.className = 'lv-edit-desc';
+  descEl.textContent = info.desc;
+  panel.appendChild(descEl);
+
+  if (info.details && info.details.length) {
+    const lbl = document.createElement('div');
+    lbl.className = 'lv-tool-section-label';
+    lbl.textContent = 'Details';
+    panel.appendChild(lbl);
+
+    const list = document.createElement('div');
+    list.className = 'lv-tool-panel-list';
+    info.details.forEach(d => {
+      const item = document.createElement('div');
+      item.className = 'lv-tool-item';
+      const nameEl = document.createElement('div');
+      nameEl.className = 'lv-tool-name';
+      nameEl.textContent = d.key;
+      const valEl = document.createElement('div');
+      valEl.className = 'lv-tool-desc';
+      valEl.textContent = d.val;
+      item.appendChild(nameEl);
+      item.appendChild(valEl);
+      list.appendChild(item);
+    });
+    panel.appendChild(list);
+  }
 }
 
 function _lvRenderLoadContextInfo(body, agent) {
