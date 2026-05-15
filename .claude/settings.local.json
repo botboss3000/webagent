@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c \"import app.api.chat\")"
+      "Bash(python -c \"import app.api.chat\")",
+      "Bash(git commit -m ' *)"
     ]
   }
 }
