@@ -363,9 +363,10 @@
   font-size: 11px;
   overflow: hidden;
   animation: lv-panel-in 0.12s ease;
-  max-height: 320px;
+  max-height: 480px;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
 }
 
 @keyframes lv-panel-in {
@@ -553,6 +554,31 @@
 .lv-tool-item.lv-tool-guarded:hover { border-left-color: #f7768e80; }
 .lv-tool-item.lv-tool-admin:hover   { border-left-color: #bb9af780; }
 .lv-tool-item.lv-tool-skill:hover   { border-left-color: #9ece6a80; }
+
+/* ── Build Prompt payload viewer ── */
+.lv-bp-meta {
+  padding: 4px 12px 6px;
+  font-size: 9px;
+  color: #7dcfff;
+  opacity: 0.7;
+  letter-spacing: 0.04em;
+}
+
+.lv-bp-prompt {
+  margin: 0 8px 8px;
+  padding: 8px 10px;
+  background: #0d0d1f;
+  border: 1px solid #2a2a4a;
+  border-radius: 5px;
+  font-size: 9px;
+  line-height: 1.55;
+  color: #a9b1d6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-y: auto;
+  max-height: 200px;
+  flex-shrink: 0;
+}
 
 /* ═══════════════════════════════════════════════
    LIGHT MODE
