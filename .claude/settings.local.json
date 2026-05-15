@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"C:\\\\Users\\\\Alex R\\\\Projects\\\\webagent\" && grep -n \"Tool calls\" ui/js/chat.js)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(git -C \"C:/Users/Alex R/Projects/webagent/.claude/worktrees/dreamy-brahmagupta-0b3200\" status)",
+      "Bash(git -C \"C:/Users/Alex R/Projects/webagent/.claude/worktrees/dreamy-brahmagupta-0b3200\" log --oneline -5)"
+    ]
+  }
+}
