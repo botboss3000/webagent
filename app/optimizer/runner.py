@@ -5,7 +5,7 @@ Optimizer Runner — creates sessions, hands off to chat.py routing.
 from __future__ import annotations
 
 import asyncio, json, logging, os, sqlite3, uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict
 
 from app.optimizer.config import load_config
@@ -29,7 +29,7 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
     No direct LLM calls. No iteration loop. No auto-deploy.
     The Planner / Finalizer agents handle those via tools in chat flow.
     """
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     from app.optimizer.templates import seed_optimizer_templates
     seed_optimizer_templates()
 
@@ -55,7 +55,7 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
 
     # ── Create optimizer temp DB ──
     _here = os.path.dirname(os.path.abspath(__file__))
-    _db_dir = os.path.normpath(os.path.join(_here, "..", "db"))
+    _db_dir = os.path.normpath(os.path.join(_here, "..", "db", "local"))
     os.makedirs(_db_dir, exist_ok=True)
     temp_db_name = f"optimizer_{uuid.uuid4().hex[:16]}.db"
     temp_db_path = os.path.join(_db_dir, temp_db_name)
@@ -112,7 +112,7 @@ def _inject_session_context(user_id: str, session_id: str, temp_db_path: str, op
     ctx_data = []
     try:
         local = sqlite3.connect(
-            os.path.join(os.path.dirname(temp_db_path), "local.db")
+            os.path.join(os.path.dirname(temp_db_path), "..", "local.db")
         )
         local.row_factory = sqlite3.Row
 
@@ -166,8 +166,7 @@ def _inject_session_context(user_id: str, session_id: str, temp_db_path: str, op
     if ctx_data:
         content = "\n".join(ctx_data)
         try:
-            from datetime import datetime, timezone as _tz
-            _now = datetime.now(_tz.utc).isoformat()
+            _now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             c = sqlite3.connect(temp_db_path)
             c.execute(
                 "INSERT INTO interactions (id,session_id,role,content,source,channel,from_id,created_at) "
@@ -251,8 +250,7 @@ def _ensure_session(uid, sid, orig):
     raw = getattr(db, '_get_conn', None)
     if raw:
         def _do():
-            from datetime import datetime, timezone as _tz
-            _now = datetime.now(_tz.utc).isoformat()
+            _now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             c = raw()
             c.execute(
                 "INSERT OR IGNORE INTO sessions (id,user_id,title,created_at,updated_at) "
@@ -271,8 +269,7 @@ def _insert_opt_msg(uid, sid, role, source, content, *, from_id=None, to_id=None
     
     if temp_db_path:
         def _do_temp():
-            from datetime import datetime, timezone as _tz
-            _now = datetime.now(_tz.utc).isoformat()
+            _now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             c = sqlite3.connect(temp_db_path)
             c.execute(
                 "INSERT INTO interactions (id,session_id,role,content,source,channel,from_id,to_id,input,output,created_at) "
@@ -289,8 +286,7 @@ def _insert_opt_msg(uid, sid, role, source, content, *, from_id=None, to_id=None
     raw = getattr(db, '_get_conn', None)
     if raw:
         def _do():
-            from datetime import datetime, timezone as _tz
-            _now = datetime.now(_tz.utc).isoformat()
+            _now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             c = raw()
             c.execute(
                 "INSERT INTO interactions (id,session_id,role,content,source,channel,from_id,to_id,input,output,created_at) "
@@ -317,7 +313,7 @@ def _log_run(rid, status, config, sid, skills_analyzed=0, proposals_generated=0,
         raw = getattr(db, '_get_conn', None)
         if not raw:
             return
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         completed = now if status in ("success", "failed") else None
         errs = json.dumps(errors) if errors else None
         cfg_json = json.dumps(config)
