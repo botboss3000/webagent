@@ -277,7 +277,7 @@ async def _race_llm_calls(
             if pid == winner_idx:
                 collected_content += _chunk_text
                 yield {"type": "stream", "level": "agent",
-                       "content": prefix_content(_chunk_text)}
+                       "content": _chunk_text}
 
         elif etype == "done":
             _prov_name = item[2]
@@ -753,7 +753,12 @@ async def stream_agent_events(
 
                     if delta.content:
                         collected_content += delta.content
-                        yield {"type": "stream", "level": "agent", "content": delta.content}
+                        # Prefix only the first stream chunk of the turn
+                        stream_content = delta.content
+                        if first_stream_chunk_state[0]:
+                            stream_content = prefix_content(stream_content)
+                            first_stream_chunk_state[0] = False
+                        yield {"type": "stream", "level": "agent", "content": stream_content}
 
                     if delta.tool_calls:
                         for tc in delta.tool_calls:
@@ -1044,6 +1049,7 @@ async def stream_agent_events(
                                 # Switch loop state to new agent
                                 agent_id         = _ag_id
                                 agent_template_id = _tpl_id
+                                agent_name = _ag_name  # Update prefix for new agent
 
                                 # Reload tools for the new template
                                 from app.tools.loader import load_tools as _load_tools
@@ -1118,7 +1124,7 @@ async def stream_agent_events(
                    "op": "insert_interaction", "role": "assistant",
                    "tool_name": None, "id": inter_id, "ms": db_dur}
 
-            yield {"type": "response", "level": "agent", "content": collected_content}
+            yield {"type": "response", "level": "agent", "content": prefix_content(collected_content)}
             # Fire-and-forget optimizer after successful completion
             _fire_optimizer(user_id, session_id, channel)
             return
@@ -1130,7 +1136,7 @@ async def stream_agent_events(
                "message": f"Reached maximum {max_turns} turns"}
         yield {
             "type": "response", "level": "agent",
-            "content": "I've reached the maximum number of turns. What would you like to do next?",
+            "content": prefix_content("I've reached the maximum number of turns. What would you like to do next?"),
         }
         # Fire-and-forget optimizer after max turns
         _fire_optimizer(user_id, session_id, channel)

@@ -15,10 +15,13 @@ function escapeHtml(str) {
 function addChatBubble(role, text, extraClass, imageUrl) {
   const bubble = document.createElement('div');
   bubble.className = 'chat-bubble ' + role + (extraClass ? ' ' + extraClass : '');
-  const label = document.createElement('span');
-  label.className = 'label';
-  label.textContent = role === 'user' ? 'You' : 'Assistant';
-  bubble.appendChild(label);
+  // Show 'You' label for user, omit for agent (already prefixed with agent name in content)
+  if (role === 'user') {
+    const label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = 'You';
+    bubble.appendChild(label);
+  }
   bubble.appendChild(document.createTextNode(text));
   if (imageUrl) {
     const img = document.createElement('img');
