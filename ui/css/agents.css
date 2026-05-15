@@ -396,6 +396,7 @@ body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; co
 .agents-test-loop {
   flex: 1;
   min-height: 80px;
+  position: relative;
   border: 1px solid #2a2a4a;
   border-radius: 6px;
   overflow-x: hidden;
@@ -524,6 +525,15 @@ body.light-mode .agents-create-row label { color: #cc6a28; }
   flex-direction: column;
   max-height: 480px;
   overflow: hidden;
+}
+
+.lv-edit-panel.lv-panel-overlay {
+  inset: 0;
+  width: auto;
+  max-height: none;
+  border-radius: 6px;
+  z-index: 120;
+  overflow-y: auto;
 }
 
 .lv-edit-badge {
