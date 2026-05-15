@@ -4,50 +4,55 @@
 // Single source of truth for node positions, edge topology, and SVG rendering.
 // Consumed by loop-visual.js (live runtime view) and agents.js (config/test view).
 
-export const LOOP_W = 1120;
-export const LOOP_H = 295;
+export const LOOP_W = 1200;
+export const LOOP_H = 370;
 
 export const LOOP_STAGES = [
   { label: 'INPUT',     x1: 0,    x2: 118,  color: '#7dcfff' },
-  { label: 'CONTEXT',   x1: 126,  x2: 306,  color: '#c0caf5' },
-  { label: 'INFERENCE', x1: 314,  x2: 466,  color: '#bb9af7' },
-  { label: 'ROUTING',   x1: 474,  x2: 664,  color: '#e0af68' },
-  { label: 'EXECUTION', x1: 672,  x2: 826,  color: '#a9b1d6' },
-  { label: 'CONTINUE?', x1: 834,  x2: 966,  color: '#e0af68' },
-  { label: 'OUTPUT',    x1: 974,  x2: 1120, color: '#9ece6a' },
+  { label: 'CONTEXT',   x1: 126,  x2: 412,  color: '#c0caf5' },
+  { label: 'INFERENCE', x1: 420,  x2: 538,  color: '#bb9af7' },
+  { label: 'ROUTING',   x1: 554,  x2: 744,  color: '#e0af68' },
+  { label: 'EXECUTION', x1: 752,  x2: 906,  color: '#a9b1d6' },
+  { label: 'CONTINUE?', x1: 914,  x2: 1046, color: '#e0af68' },
+  { label: 'OUTPUT',    x1: 1054, x2: 1200, color: '#9ece6a' },
 ];
 
 // cx,cy = center; hw,hh = half-width, half-height
 export const LOOP_NODES = [
-  { id: 'user_input',     label: 'User Input',     type: 'input',    cx: 59,   cy: 150, hw: 52, hh: 18 },
-  { id: 'load_context',   label: 'Load Context',   type: 'process',  cx: 185,  cy: 112, hw: 60, hh: 14 },
-  { id: 'memory_search',  label: 'Memory Search',  type: 'process',  cx: 185,  cy: 155, hw: 60, hh: 14 },
-  { id: 'build_prompt',   label: 'Build Prompt',   type: 'process',  cx: 275,  cy: 133, hw: 60, hh: 14 },
-  { id: 'llm_call',       label: 'LLM Call',       type: 'llm',      cx: 390,  cy: 150, hw: 55, hh: 20 },
-  { id: 'validate_tools', label: 'Validate',       type: 'process',  cx: 569,  cy: 122, hw: 62, hh: 14 },
-  { id: 'guardrails',     label: 'Guardrails',     type: 'guard',    cx: 569,  cy: 165, hw: 62, hh: 14 },
-  { id: 'execute_tools',  label: 'Execute Tools',  type: 'process',  cx: 749,  cy: 150, hw: 62, hh: 18 },
-  { id: 'check_continue', label: 'Continue?',      type: 'decision', cx: 900,  cy: 150, hw: 58, hh: 18 },
-  { id: 'final_response', label: 'Final Response', type: 'output',   cx: 1047, cy: 115, hw: 63, hh: 14 },
-  { id: 'memory_save',    label: 'Memory Save',    type: 'process',  cx: 1047, cy: 162, hw: 63, hh: 14 },
+  { id: 'user_input',        label: 'User Input',     type: 'input',    cx: 59,   cy: 150, hw: 52, hh: 18 },
+  { id: 'load_context',      label: 'Load Context',   type: 'process',  cx: 216,  cy: 112, hw: 60, hh: 14 },
+  { id: 'memory_search',     label: 'Memory Search',  type: 'process',  cx: 216,  cy: 155, hw: 60, hh: 14 },
+  { id: 'build_prompt',      label: 'Build Prompt',   type: 'process',  cx: 216,  cy: 198, hw: 60, hh: 14 },
+  { id: 'add_transcript',    label: 'Add Transcript', type: 'process',  cx: 216,  cy: 241, hw: 60, hh: 14 },
+  { id: 'load_tools',        label: 'Load Tools',     type: 'process',  cx: 216,  cy: 284, hw: 60, hh: 14 },
+  { id: 'assemble_messages', label: 'Assemble',       type: 'process',  cx: 216,  cy: 327, hw: 60, hh: 14 },
+  { id: 'llm_call',          label: 'LLM Call',       type: 'llm',      cx: 482,  cy: 150, hw: 55, hh: 20 },
+  { id: 'validate_tools',    label: 'Validate',       type: 'process',  cx: 649,  cy: 122, hw: 62, hh: 14 },
+  { id: 'guardrails',        label: 'Guardrails',     type: 'guard',    cx: 649,  cy: 165, hw: 62, hh: 14 },
+  { id: 'execute_tools',     label: 'Execute Tools',  type: 'process',  cx: 829,  cy: 150, hw: 62, hh: 18 },
+  { id: 'check_continue',    label: 'Continue?',      type: 'decision', cx: 980,  cy: 150, hw: 58, hh: 18 },
+  { id: 'final_response',    label: 'Final Response', type: 'output',   cx: 1127, cy: 115, hw: 63, hh: 14 },
+  { id: 'memory_save',       label: 'Memory Save',    type: 'process',  cx: 1127, cy: 162, hw: 63, hh: 14 },
 ];
 
-// load_context + memory_search run in parallel, both feed build_prompt before LLM
+// Sequential pre-LLM pipeline: context → memory → system prompt → transcript → tools → assemble → LLM
 export const LOOP_EDGES = [
-  { from: 'user_input',     to: 'load_context'   },
-  { from: 'user_input',     to: 'memory_search'  },
-  { from: 'load_context',   to: 'build_prompt'   },
-  { from: 'memory_search',  to: 'build_prompt'   },
-  { from: 'build_prompt',   to: 'llm_call'       },
-  { from: 'llm_call',       to: 'validate_tools', label: 'tools?' },
-  { from: 'llm_call',       to: 'check_continue', label: 'no tools', above: true },
-  { from: 'validate_tools', to: 'guardrails',     label: 'valid', vertical: true },
-  { from: 'guardrails',     to: 'execute_tools',  label: 'pass'  },
-  { from: 'guardrails',     to: 'check_continue', label: 'blocked', below: true },
-  { from: 'execute_tools',  to: 'llm_call',       label: '↺ loop',     loopback: 245 },
-  { from: 'check_continue', to: 'final_response', label: 'stop'  },
-  { from: 'check_continue', to: 'llm_call',       label: '↺ continue', loopback: 278 },
-  { from: 'final_response', to: 'memory_save',    vertical: true },
+  { from: 'user_input',        to: 'load_context'                                              },
+  { from: 'load_context',      to: 'memory_search',    vertical: true                          },
+  { from: 'memory_search',     to: 'build_prompt',     vertical: true                          },
+  { from: 'build_prompt',      to: 'add_transcript',   vertical: true                          },
+  { from: 'add_transcript',    to: 'load_tools',       vertical: true                          },
+  { from: 'load_tools',        to: 'assemble_messages', vertical: true                         },
+  { from: 'assemble_messages', to: 'llm_call'                                                  },
+  { from: 'llm_call',          to: 'validate_tools',   label: 'tools?'                         },
+  { from: 'llm_call',          to: 'check_continue',   label: 'no tools', above: true          },
+  { from: 'validate_tools',    to: 'guardrails',       label: 'valid',    vertical: true       },
+  { from: 'guardrails',        to: 'execute_tools',    label: 'pass'                           },
+  { from: 'guardrails',        to: 'check_continue',   label: 'blocked',  below: true          },
+  { from: 'execute_tools',     to: 'llm_call',         label: '↺ loop',   loopback: 245        },
+  { from: 'check_continue',    to: 'final_response',   label: 'stop'                           },
+  { from: 'check_continue',    to: 'llm_call',         label: '↺ continue', loopback: 278      },
+  { from: 'final_response',    to: 'memory_save',      vertical: true                          },
 ];
 
 // ── Edge path computation (works for any nodes list) ──

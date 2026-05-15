@@ -15,6 +15,15 @@ const NODE_STATIC_ITEMS = {
   build_prompt: [
     { name: 'Settings → Agent',      type: 'admin',   desc: 'Edit the agent\'s core directive and persona' },
   ],
+  add_transcript: [
+    { name: 'Settings → Source', type: 'admin', desc: 'View and manage session history and memory sources' },
+  ],
+  load_tools: [
+    { name: 'Settings → Agent',  type: 'admin', desc: 'Configure which tools are enabled for this agent' },
+  ],
+  assemble_messages: [
+    { name: 'Settings → Agent',  type: 'admin', desc: 'Edit system prompt and context that feeds into messages[0]' },
+  ],
   llm_call: [
     { name: 'Settings → Provider',   type: 'admin',   desc: 'Change the LLM model, base URL, or API key' },
     { name: 'Settings → Agent',      type: 'admin',   desc: 'Edit the agent\'s system prompt and persona' },
@@ -434,16 +443,7 @@ function showToolPanel(nodeDef, nodeEl, container) {
   const page = pages[currentPageIdx];
 
   const panel = document.createElement('div');
-  panel.className = 'lv-tool-panel';
-
-  // Position: below the node, centered on it, clamped to canvas
-  const PANEL_W = 310;
-  let left = nodeDef.cx - PANEL_W / 2;
-  let top  = nodeDef.cy + nodeDef.hh + 10;
-  left = Math.max(4, Math.min(left, LOOP_W - PANEL_W - 4));
-  panel.style.left  = left + 'px';
-  panel.style.top   = top  + 'px';
-  panel.style.width = PANEL_W + 'px';
+  panel.className = 'lv-tool-panel lv-panel-overlay';
 
   // Header
   const header = document.createElement('div');
@@ -489,6 +489,81 @@ function showToolPanel(nodeDef, nodeEl, container) {
     }
   }
 
+  // ── Load Context: DB query info ──
+  if (nodeDef.id === 'load_context') {
+    const lcLabel = document.createElement('div');
+    lcLabel.className = 'lv-tool-section-label';
+    lcLabel.textContent = 'Query: agents table';
+    panel.appendChild(lcLabel);
+    const LC_COLS = ['system_prompt', 'agent_prompt', 'user_prompt', 'skills_prompt', 'tasks_prompt', 'misc_prompt'];
+    const lcList = document.createElement('div');
+    lcList.className = 'lv-tool-panel-list';
+    LC_COLS.forEach(col => {
+      const item = document.createElement('div');
+      item.className = 'lv-tool-item';
+      const name = document.createElement('div');
+      name.className = 'lv-tool-name';
+      name.textContent = col;
+      item.appendChild(name);
+      lcList.appendChild(item);
+    });
+    panel.appendChild(lcList);
+  }
+
+  // ── Add Transcript: session history info ──
+  if (nodeDef.id === 'add_transcript') {
+    const atLabel = document.createElement('div');
+    atLabel.className = 'lv-tool-section-label';
+    atLabel.textContent = 'Session history';
+    panel.appendChild(atLabel);
+    const atDesc = document.createElement('div');
+    atDesc.className = 'lv-bp-meta';
+    atDesc.textContent = 'Loads prior interactions → OpenAI messages format. Filters memory_search / memory_save steps.';
+    panel.appendChild(atDesc);
+  }
+
+  // ── Load Tools: show tool count from pipeline event ──
+  if (nodeDef.id === 'load_tools' && page) {
+    const ltEvent = [...page.events].reverse().find(e => e.event && e.event.step === 'load_tools');
+    const ltLabel = document.createElement('div');
+    ltLabel.className = 'lv-tool-section-label';
+    ltLabel.textContent = 'Tool definitions loaded';
+    panel.appendChild(ltLabel);
+    if (ltEvent) {
+      const ev = ltEvent.event;
+      const meta = document.createElement('div');
+      meta.className = 'lv-bp-meta';
+      meta.textContent = `${ev.count ?? '?'} tools · ${ev.duration_ms ?? '?'}ms`;
+      panel.appendChild(meta);
+      if (Array.isArray(ev.names) && ev.names.length) {
+        const pre = document.createElement('pre');
+        pre.className = 'lv-bp-prompt';
+        pre.style.maxHeight = '120px';
+        pre.textContent = ev.names.join('\n');
+        panel.appendChild(pre);
+      }
+    } else {
+      const none = document.createElement('div');
+      none.className = 'lv-tool-panel-empty';
+      none.textContent = 'No load_tools event yet for this turn.';
+      panel.appendChild(none);
+    }
+  }
+
+  // ── Assemble: show messages structure ──
+  if (nodeDef.id === 'assemble_messages' && page) {
+    const asLabel = document.createElement('div');
+    asLabel.className = 'lv-tool-section-label';
+    asLabel.textContent = 'messages[ ] structure';
+    panel.appendChild(asLabel);
+    const bpEvent = [...page.events].reverse().find(e => e.event && e.event.step === 'build_prompt');
+    const sysSnippet = bpEvent ? (bpEvent.event.system_prompt || '').slice(0, 200) : '{ system_prompt }';
+    const asPre = document.createElement('pre');
+    asPre.className = 'lv-bp-prompt';
+    asPre.textContent = `[0] system:\n${sysSnippet}${sysSnippet.length >= 200 ? '…' : ''}\n\n[1..N] { transcript }\n\n[N+1] { current user message }`;
+    panel.appendChild(asPre);
+  }
+
   // ── Static items (slash commands + Settings shortcuts) ──
   const staticItems = NODE_STATIC_ITEMS[nodeDef.id] || [];
   if (staticItems.length > 0) {
@@ -518,7 +593,8 @@ function showToolPanel(nodeDef, nodeEl, container) {
   toolsList.appendChild(loadingEl);
   panel.appendChild(toolsList);
 
-  container.appendChild(panel);
+  const _outerEl = container.closest('#loop-visual-graph-area') || container;
+  _outerEl.appendChild(panel);
   _activePanelNodeId = nodeDef.id;
   _activePanelEl = panel;
 

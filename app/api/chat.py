@@ -581,7 +581,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             _fetched = await db.fetch_agent_by_id_with_context(agent["id"], CONTEXT_SECTION_TYPES)
             if _fetched is not None:
                 agent = _fetched
-        
+
         yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'agent_assigned', 'agent_id': agent['id'], 'max_turn_count': agent.get('max_turn_count', 10)})}\n\n"
 
         if not agent.get("context_documents"):
@@ -766,14 +766,26 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
 
         # Stream from the queue — also broadcast to session + user listeners
         while True:
-            event = await q.get()
+            try:
+                event = await asyncio.wait_for(q.get(), timeout=20)
+            except asyncio.TimeoutError:
+                yield ": ping\n\n"
+                continue
             if event is None:
                 break
             # Broadcast to WebSocket listeners (session + user)
             await _emit_to_visualizers(request.session_id, event, user_id=request.user_id)
             yield f"data: {json.dumps(event)}\n\n"
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    async def safe_event_generator():
+        try:
+            async for chunk in event_generator():
+                yield chunk
+        except Exception as e:
+            logger.error("event_generator unhandled error: %s", e, exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'level': 'agent', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(safe_event_generator(), media_type="text/event-stream")
 
 
 async def _save_chat_to_memory(

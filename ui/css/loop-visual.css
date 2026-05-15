@@ -370,6 +370,16 @@
   overflow-y: auto;
 }
 
+/* Overlay mode — panel covers the full diagram container */
+.lv-tool-panel.lv-panel-overlay {
+  inset: 0;
+  width: auto;
+  max-height: none;
+  border-radius: 6px;
+  z-index: 50;
+  overflow-y: auto;
+}
+
 @keyframes lv-panel-in {
   from { opacity: 0; transform: translateY(-6px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -634,4 +644,55 @@ body.light-mode .lv-node-detail {
   background: #ebebeb;
   border-color: #ccccdd;
   color: #888899;
+}
+
+/* ── Tool panel (info overlay) ── */
+body.light-mode .lv-tool-panel {
+  background: #ffffff;
+  border-color: #dde0f0;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.12), 0 1px 4px rgba(0,0,0,0.08);
+}
+body.light-mode .lv-tool-panel-header {
+  background: #f0f2fa;
+  border-bottom-color: #dde0f0;
+}
+body.light-mode .lv-tool-panel-title   { color: #3d4270; }
+body.light-mode .lv-tool-panel-close   { color: #9a9ab0; }
+body.light-mode .lv-tool-panel-close:hover { color: #3d4270; }
+
+body.light-mode .lv-tool-panel-list {
+  scrollbar-color: #ccccdd transparent;
+}
+body.light-mode .lv-tool-panel-empty  { color: #9090a8; }
+body.light-mode .lv-tool-loading      { color: #aaaacc; }
+
+body.light-mode .lv-tool-section-label {
+  color: #9090b0;
+  border-top-color: #e8eaf4;
+}
+body.light-mode .lv-tool-section-live  { color: #44aa4480; }
+
+body.light-mode .lv-tool-item          { background: #f5f6fa; }
+body.light-mode .lv-tool-item:hover    { background: #eeeef8; border-color: #dde0f0; }
+
+body.light-mode .lv-tool-name  { color: #3d4270; }
+body.light-mode .lv-tool-desc  { color: #7a7a9a; }
+
+body.light-mode .lv-badge-command { background: #e8f4ff; color: #2277aa; border-color: #99ccee; }
+body.light-mode .lv-badge-tool    { background: #eeeff5; color: #666688; border-color: #ccccdd; }
+body.light-mode .lv-badge-guarded { background: #fff0f2; color: #cc3344; border-color: #ffaab0; }
+body.light-mode .lv-badge-admin   { background: #f5f0ff; color: #7744cc; border-color: #ccaeff; }
+body.light-mode .lv-badge-skill   { background: #f0fff4; color: #22863a; border-color: #c3e6cb; }
+
+body.light-mode .lv-tool-item.lv-tool-command { border-left-color: #77bbdd60; }
+body.light-mode .lv-tool-item.lv-tool-guarded { border-left-color: #ee556660; }
+body.light-mode .lv-tool-item.lv-tool-admin   { border-left-color: #9977dd60; }
+body.light-mode .lv-tool-item.lv-tool-tool    { border-left-color: #ccccdd; }
+body.light-mode .lv-tool-item.lv-tool-skill   { border-left-color: #44aa4460; }
+
+body.light-mode .lv-bp-meta   { color: #4488bb; }
+body.light-mode .lv-bp-prompt {
+  background: #f5f6fa;
+  border-color: #dde0f0;
+  color: #4d5080;
 }
