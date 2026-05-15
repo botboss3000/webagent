@@ -2495,10 +2495,9 @@ class LocalBackend(StorageBackend):
             self._seed_agent_templates_from_json_files(conn)
 
             # Check for existing agent with matching user_id + template_id
-            agent_user_id = f"{template_id}_{user_id}"
             row = conn.execute(
                 "SELECT * FROM agents WHERE user_id = ? AND template_id = ? LIMIT 1",
-                (agent_user_id, template_id),
+                (user_id, template_id),
             ).fetchone()
             if row:
                 ad = dict(row)
@@ -2671,21 +2670,17 @@ class LocalBackend(StorageBackend):
 
         # If virtual (template/filesystem), materialize as real agents row
         if agent.get("status") in ("template", "filesystem"):
-            agent_user_id = f"{template_id}_{user_id}"
             agent_id = _uuid()
             conn = self._get_conn()
             try:
                 now = _now_iso()
-                # For optimizer sub-agents (planner/closer), set owner_user_id to the
-                # real user so they are associated correctly for listing and ownership ops.
-                # Worker agents are temporary (live in temp DBs) and are excluded.
-                _owner = user_id if template_id and template_id.startswith("opt_") else None
+                _owner = user_id
                 conn.execute(
                     """INSERT INTO agents
                        (id, user_id, owner_user_id, template_id, name, system_prompt, max_turn_count, model, provider,
                         temperature, max_tokens, status, metadata, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
-                    (agent_id, agent_user_id, _owner, template_id,
+                    (agent_id, user_id, _owner, template_id,
                      agent.get("name", ""),
                      agent.get("system_prompt", ""),
                      agent.get("max_turn_count", 10),
@@ -3171,6 +3166,7 @@ class LocalBackend(StorageBackend):
             result.append(entry)
 
         # 2. User's agents — both assigned (user_id) and custom-created (owner_user_id)
+        seen_ids: set = set()
         conn = self._get_conn()
         try:
             rows = conn.execute(
@@ -3179,7 +3175,6 @@ class LocalBackend(StorageBackend):
                    ORDER BY created_at ASC""",
                 (user_id, user_id),
             ).fetchall()
-            seen_ids = set()
             for row in rows:
                 entry = dict(row)
                 if entry["id"] in seen_ids:
@@ -3189,6 +3184,43 @@ class LocalBackend(StorageBackend):
                 result.append(entry)
         finally:
             conn.close()
+
+        # 2b. Aggregate agents from sibling .db files (parallel agent databases)
+        db_dir = os.path.dirname(os.path.abspath(self._db_path))
+        primary_name = os.path.basename(self._db_path)
+        try:
+            sibling_paths = [
+                os.path.join(db_dir, f)
+                for f in os.listdir(db_dir)
+                if f.endswith(".db") and f != primary_name
+            ]
+        except OSError:
+            sibling_paths = []
+
+        for sibling_path in sorted(sibling_paths):
+            try:
+                sconn = sqlite3.connect(sibling_path)
+                sconn.row_factory = sqlite3.Row
+                sconn.execute("PRAGMA journal_mode=WAL")
+                sconn.execute("PRAGMA busy_timeout=5000")
+                try:
+                    srows = sconn.execute(
+                        """SELECT * FROM agents
+                           WHERE user_id = ? OR owner_user_id = ?
+                           ORDER BY created_at ASC""",
+                        (user_id, user_id),
+                    ).fetchall()
+                    for row in srows:
+                        entry = dict(row)
+                        if entry["id"] in seen_ids:
+                            continue
+                        seen_ids.add(entry["id"])
+                        entry["source"] = "custom"
+                        result.append(entry)
+                finally:
+                    sconn.close()
+            except Exception as e:
+                logger.debug("Skipping sibling DB %s: %s", sibling_path, e)
 
         # Mark the user's current default
         profile = await self.get_user_profile(user_id)
