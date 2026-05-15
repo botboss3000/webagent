@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-Process -Id 4100, 7364)",
+      "PowerShell(Get-Process | Where-Object { $_.Id -eq 4100 -or $_.Id -eq 7364 })",
+      "Bash(sqlite3 \"C:/Users/Alex R/Projects/webagent/app/db/local.db\" \"SELECT id, name, model FROM agents WHERE model IS NOT NULL;\")"
+    ]
+  }
+}

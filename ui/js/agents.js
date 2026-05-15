@@ -821,7 +821,7 @@ function _lvNodeHint(nd, agent) {
       return isCustom ? `Memory search ${on ? 'enabled' : 'disabled'} — click to toggle` : 'Semantic search over past interactions';
     }
     case 'build_prompt':   return isCustom ? 'Click to edit prompt sections' : 'Assembles system prompt from context sections';
-    case 'llm_call':       return isCustom ? `${agent.model || 'claude-3-5-sonnet-20241022'} — click to configure` : `Model: ${agent.model || 'claude-3-5-sonnet'}`;
+    case 'llm_call':       return isCustom ? `${agent.model || 'default'} — click to configure` : `Model: ${agent.model || 'default'}`;
     case 'validate_tools': return 'Validates requested tool calls';
     case 'guardrails':     return isCustom ? 'Click to configure tool guardrails' : 'Safety checks before tool execution';
     case 'execute_tools': {
@@ -1175,6 +1175,7 @@ function _lvRenderLlmEditor(body, agent) {
   desc.textContent = 'Configure the language model used for this agent.';
   body.appendChild(desc);
   const MODELS = [
+    'default',
     'claude-opus-4-6',
     'claude-sonnet-4-6',
     'claude-haiku-4-5-20251001',
@@ -1182,8 +1183,8 @@ function _lvRenderLlmEditor(body, agent) {
     'claude-3-5-haiku-20241022',
     'claude-3-opus-20240229',
   ];
-  _lvSelectRow(body, 'Model', agent.model || 'claude-3-5-sonnet-20241022', MODELS, val => {
-    _lvSetPending('model', val);
+  _lvSelectRow(body, 'Model', agent.model || 'default', MODELS, val => {
+    _lvSetPending('model', val === 'default' ? null : val);
   });
   _lvSliderRow(body, 'Temperature', agent.temperature ?? 1.0, 0, 1, 0.05, val => {
     _lvSetPending('temperature', Math.round(val * 100) / 100);
