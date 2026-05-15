@@ -435,10 +435,7 @@
           </div>
           <div id="db-table-view">
             <div id="db-table-header" style="display:flex;justify-content:space-between;align-items:center;">
-              <span id="db-page-info" style="color:var(--fg-3);font-size:11px;"></span>
               <span style="display:flex;align-items:center;gap:8px;">
-                <button id="db-page-prev" style="display:none;background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-1);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">◀</button>
-                <button id="db-page-next" style="display:none;background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-1);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">▶</button>
                 <div id="db-select-wrap" style="position:relative;display:inline-block;">
                   <select id="db-select" title="Switch database" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;">
                     <option value="local.db">local.db</option>
@@ -449,6 +446,11 @@
                   </button>
                   <ul id="db-select-menu" role="listbox" style="display:none;position:fixed;top:0;left:0;margin:0;padding:4px;list-style:none;background:var(--bg-1);border:1px solid var(--border);border-radius:6px;box-shadow:var(--shadow-md);z-index:9999;min-width:240px;max-height:300px;overflow-y:auto;font-size:11px;"></ul>
                 </div>
+              </span>
+              <span id="db-page-info" style="color:var(--fg-3);font-size:11px;"></span>
+              <span style="display:flex;align-items:center;gap:8px;">
+                <button id="db-page-prev" style="display:none;background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-1);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">◀</button>
+                <button id="db-page-next" style="display:none;background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-1);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">▶</button>
                 <button id="db-settings-btn" title="Database View Settings" style="background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-3);padding:0 6px;border-radius:4px;cursor:pointer;font-size:14px;font-family:inherit;height:24px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;line-height:1;">⚙</button>
                 <button id="db-download-btn" title="Download local.db" style="background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-3);padding:0 6px;border-radius:4px;cursor:pointer;font-size:14px;font-family:inherit;height:24px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;line-height:1;">⬇</button>
               </span>
