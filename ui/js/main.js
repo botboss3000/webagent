@@ -19,6 +19,7 @@ import { initOptimizer } from './optimizer.js';
 import { initGithub } from './github.js';
 import { initAutoAgent } from './autoagent.js';
 import { initAgents } from './agents.js';
+import { initChatResize } from './chatResize.js';
 import { isAuthenticated, showLeftOverlay, hideLeftOverlay } from './left-login.js';
 
 bindDom();
@@ -54,6 +55,7 @@ initSettings();
 initConnections();
 initOptimizer();
 initSessions();
+initChatResize();
 
 // ── Visibility change: reconnect when user returns to this tab ──
 document.addEventListener('visibilitychange', () => {
