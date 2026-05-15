@@ -36,6 +36,7 @@ class CreateAgentRequest(BaseModel):
     user_id: str
     name: str
     description: Optional[str] = ""
+    template_id: Optional[str] = "default"
 
 
 class UpdateAgentRequest(BaseModel):
@@ -53,6 +54,18 @@ class UpdateAgentRequest(BaseModel):
     max_tokens: Optional[int] = None
     allowed_tools: Optional[List[str]] = None
     custom_tool_ids: Optional[List[str]] = None
+
+
+class UpdateTemplateRequest(BaseModel):
+    user_id: str
+    template_id: str
+    discoverable: Optional[bool] = None
+
+
+class UpsertConnectionRequest(BaseModel):
+    user_id: str
+    enabled: bool
+    config: Optional[Dict[str, Any]] = None
 
 
 class SetDefaultRequest(BaseModel):
@@ -113,16 +126,20 @@ async def get_user_profile(user_id: str = Query(...)):
 async def list_agent_templates(
     user_id: str = Query(...),
     include_admin: bool = Query(False),
+    discoverable_only: bool = Query(False),
 ):
     """
     List agent templates (system agents, is_pipeline=0).
-    Used by the Agent Management panel tool-breakdown display.
-    If include_admin=true, requires the user to be an admin.
+    If include_admin=true, requires the user to be an admin (bypasses discoverable filter).
+    If discoverable_only=true, only returns templates with discoverable=1.
     """
     db = get_db()
     if include_admin:
         await _require_admin(db, user_id)
-    templates = await db.list_agent_templates(include_admin=include_admin)
+    templates = await db.list_agent_templates(
+        include_admin=include_admin,
+        discoverable_only=discoverable_only,
+    )
     return {"templates": [_safe_agent(t) for t in templates]}
 
 
@@ -156,6 +173,7 @@ async def create_agent(req: CreateAgentRequest):
         user_id=req.user_id,
         name=req.name.strip(),
         description=req.description or "",
+        template_id=req.template_id or "default",
     )
     return {"agent": _safe_agent(agent)}
 
@@ -296,3 +314,149 @@ async def test_agent(req: TestAgentRequest):
         pass  # frontend falls back to plain reply display
 
     return {"reply": result, "session_id": test_session_id, "interactions": interactions}
+
+
+# ── Connection catalog — defines all known connection types ───────────────────
+
+_CONNECTION_CATALOG = [
+    # ── Channels ──
+    {"connection_type": "telegram",  "section": "channel",     "display_name": "Telegram",        "status": "available"},
+    {"connection_type": "twilio",    "section": "channel",     "display_name": "Twilio (SMS/Call)","status": "coming_soon"},
+    {"connection_type": "email",     "section": "channel",     "display_name": "Email",            "status": "coming_soon"},
+    {"connection_type": "whatsapp",  "section": "channel",     "display_name": "WhatsApp",         "status": "coming_soon"},
+    {"connection_type": "discord",   "section": "channel",     "display_name": "Discord",          "status": "coming_soon"},
+    {"connection_type": "slack",     "section": "channel",     "display_name": "Slack",            "status": "coming_soon"},
+    # ── Integrations ──
+    {"connection_type": "google",    "section": "integration", "display_name": "Google",           "status": "coming_soon"},
+    {"connection_type": "yahoo",     "section": "integration", "display_name": "Yahoo",            "status": "coming_soon"},
+    {"connection_type": "microsoft", "section": "integration", "display_name": "Microsoft 365",    "status": "coming_soon"},
+    {"connection_type": "github",    "section": "integration", "display_name": "GitHub",           "status": "coming_soon"},
+    {"connection_type": "bank",      "section": "integration", "display_name": "Bank Accounts",    "status": "coming_soon"},
+    {"connection_type": "search",    "section": "integration", "display_name": "Search Engine",    "status": "coming_soon"},
+]
+
+
+@router.get("/agents/{agent_id}/connections")
+async def get_agent_connections(agent_id: str, user_id: str = Query(...)):
+    """
+    Return all connections for an agent, merged with the full catalog.
+    Available connection types include stubs for coming-soon entries.
+    Bot tokens in config are masked to last 4 chars.
+    """
+    db = get_db()
+    rows = await db.get_agent_connections(agent_id)
+    saved = {r["connection_type"]: r for r in rows}
+
+    result = []
+    for entry in _CONNECTION_CATALOG:
+        ct = entry["connection_type"]
+        row = saved.get(ct)
+        config = {}
+        if row:
+            import json as _json
+            try:
+                config = _json.loads(row.get("config") or "{}")
+            except Exception:
+                config = {}
+            # Mask sensitive token fields
+            if "bot_token" in config and config["bot_token"]:
+                tok = config["bot_token"]
+                config["bot_token"] = "•" * max(0, len(tok) - 4) + tok[-4:]
+        result.append({
+            **entry,
+            "enabled": bool(row["enabled"]) if row else False,
+            "config": config,
+        })
+    return {"connections": result}
+
+
+@router.put("/agents/{agent_id}/connections/{connection_type}")
+async def upsert_agent_connection(
+    agent_id: str,
+    connection_type: str,
+    req: UpsertConnectionRequest,
+):
+    """
+    Create or update a connection on an agent.
+    Accepts enabled flag and arbitrary config dict.
+    If bot_token in config starts with bullets (masked), preserve existing token.
+    """
+    import json as _json
+    db = get_db()
+
+    # Resolve catalog entry for section
+    catalog_entry = next(
+        (c for c in _CONNECTION_CATALOG if c["connection_type"] == connection_type), None
+    )
+    if catalog_entry is None:
+        raise HTTPException(status_code=400, detail=f"Unknown connection type: {connection_type}")
+    if catalog_entry["status"] == "coming_soon":
+        raise HTTPException(status_code=400, detail=f"{catalog_entry['display_name']} is not yet available.")
+
+    new_config = dict(req.config or {})
+
+    # If bot_token is masked (starts with bullet), keep existing token
+    incoming_token = new_config.get("bot_token", "")
+    if incoming_token and "•" in incoming_token:
+        existing_rows = await db.get_agent_connections(agent_id)
+        existing = next((r for r in existing_rows if r["connection_type"] == connection_type), None)
+        if existing:
+            try:
+                old_cfg = _json.loads(existing.get("config") or "{}")
+                new_config["bot_token"] = old_cfg.get("bot_token", "")
+            except Exception:
+                pass
+
+    row = await db.upsert_agent_connection(
+        agent_id=agent_id,
+        connection_type=connection_type,
+        section=catalog_entry["section"],
+        enabled=req.enabled,
+        config=new_config,
+    )
+
+    # Signal manager to reload Telegram connections if needed
+    if connection_type == "telegram":
+        try:
+            from app.communications.manager import get_plugin_manager
+            pm = get_plugin_manager()
+            if hasattr(pm, "reload_agent_connections"):
+                import asyncio
+                asyncio.create_task(pm.reload_agent_connections())
+        except Exception:
+            pass
+
+    # Return masked config
+    resp_config = dict(new_config)
+    if "bot_token" in resp_config and resp_config["bot_token"]:
+        tok = resp_config["bot_token"]
+        resp_config["bot_token"] = "•" * max(0, len(tok) - 4) + tok[-4:]
+
+    return {
+        "connection": {
+            **catalog_entry,
+            "enabled": req.enabled,
+            "config": resp_config,
+        }
+    }
+
+
+@router.post("/agent-templates/config")
+async def set_template_discoverable(req: UpdateTemplateRequest):
+    """
+    Update admin-controlled fields on an agent template (admin only).
+    Currently supports: discoverable.
+    """
+    db = get_db()
+    await _require_admin(db, req.user_id)
+    updates = {}
+    if req.discoverable is not None:
+        updates["discoverable"] = 1 if req.discoverable else 0
+    if not updates:
+        raise HTTPException(status_code=400, detail="No updatable fields provided.")
+    updated = await db.update_agent_template_fields(template_id=req.template_id, updates=updates)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Template not found.")
+    return {"template": _safe_agent(updated)}
+
+

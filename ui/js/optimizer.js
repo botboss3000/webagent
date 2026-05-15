@@ -16,7 +16,7 @@ import { apiPath } from './config.js';
 import { app } from './state.js';
 import { loadSessionChat, populateSessionSelect } from './sessions.js';
 import { loopSessionChanged } from './loop.js';
-import { loopVisualSessionChanged } from './loop-visual.js';
+import { loopVisualSessionChanged } from './loop-logic.js';
 import { streamSessionChanged } from './stream.js';
 
 // ── DOM refs ──

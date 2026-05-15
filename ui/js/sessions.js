@@ -2,7 +2,7 @@
 
 import { app } from './state.js';
 import { loopSessionChanged } from './loop.js';
-import { loopVisualSessionChanged } from './loop-visual.js';
+import { loopVisualSessionChanged } from './loop-logic.js';
 import { autoAgentSessionChanged } from './autoagent.js';
 import { streamSessionChanged } from './stream.js';
 import { apiPath } from './config.js';

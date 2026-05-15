@@ -127,7 +127,7 @@ class PluginManager:
 
     async def start_polling_for_offline_plugins(self) -> None:
         """Start polling for all enabled plugins without a reachable webhook URL.
-        Called on server startup."""
+        Called on server startup. Also loads per-agent Telegram connections."""
         base_url = self._registry.get("webhook_base_url", "")
         is_offline = not base_url or "localhost" in base_url or "127.0.0.1" in base_url
         if not is_offline:
@@ -137,6 +137,57 @@ class PluginManager:
             if hasattr(plugin, 'start_polling'):
                 await plugin.start_polling()
                 logger.info("Auto-started polling for %s", plugin.name)
+        # Also start polling for any per-agent Telegram tokens not in registry
+        await self._start_agent_connection_polling()
+
+    async def _start_agent_connection_polling(self) -> None:
+        """Load per-agent Telegram connections from DB and start polling for unique tokens."""
+        try:
+            from app.db import get_db
+            db = get_db()
+            rows = await db.get_all_connections_by_type("telegram")
+        except Exception as e:
+            logger.warning("Could not load agent Telegram connections: %s", e)
+            return
+
+        # Collect unique tokens not already covered by the global registry token
+        global_token = (
+            self._registry.get("plugins", {}).get("telegram", {}).get("bot_token", "")
+        )
+        seen_tokens = {global_token} if global_token else set()
+
+        for row in rows:
+            try:
+                cfg = json.loads(row.get("config") or "{}")
+                token = cfg.get("bot_token", "").strip()
+                if not token or token in seen_tokens:
+                    continue
+                seen_tokens.add(token)
+                await self._start_extra_telegram_poller(token, row["agent_id"])
+            except Exception as e:
+                logger.error("Error starting agent Telegram poller for agent %s: %s",
+                             row.get("agent_id"), e)
+
+    async def _start_extra_telegram_poller(self, token: str, agent_id: str) -> None:
+        """Spin up an additional TelegramPlugin poller for a per-agent bot token."""
+        try:
+            from app.communications.plugins.telegram import TelegramPlugin
+            extra_registry = dict(self._registry)
+            extra_registry["plugins"] = dict(self._registry.get("plugins", {}))
+            extra_registry["plugins"]["telegram"] = {"enabled": True, "bot_token": token}
+            plugin = TelegramPlugin(registry=extra_registry)
+            key = f"telegram:{token[-6:]}"
+            self._plugins[key] = plugin
+            if hasattr(plugin, "start_polling"):
+                await plugin.start_polling()
+                logger.info("Started extra Telegram poller for agent %s (token …%s)",
+                            agent_id, token[-4:])
+        except Exception as e:
+            logger.error("Failed to start extra Telegram poller: %s", e)
+
+    async def reload_agent_connections(self) -> None:
+        """Reload per-agent Telegram connections (called after UI saves a new token)."""
+        await self._start_agent_connection_polling()
 
 
 # ── Global singleton ──

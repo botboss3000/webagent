@@ -158,6 +158,25 @@ CREATE TABLE IF NOT EXISTS agents (
 
 CREATE INDEX IF NOT EXISTS idx_agents_user ON agents(user_id);
 
+-- ============================================================
+-- Agent Connections: per-agent channel/integration config
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS agent_connections (
+    id              TEXT PRIMARY KEY,
+    agent_id        TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    connection_type TEXT NOT NULL,
+    section         TEXT NOT NULL DEFAULT 'channel',
+    enabled         INTEGER NOT NULL DEFAULT 0,
+    config          TEXT NOT NULL DEFAULT '{}',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(agent_id, connection_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_conn_agent ON agent_connections(agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_conn_type ON agent_connections(connection_type);
+
 CREATE TABLE IF NOT EXISTS context_documents (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents(id),
@@ -810,11 +829,17 @@ class LocalBackend(StorageBackend):
                 ("is_pipeline",   "INTEGER NOT NULL DEFAULT 0"),
                 ("access_level",  "TEXT NOT NULL DEFAULT 'all'"),
                 ("trigger_description", "TEXT NOT NULL DEFAULT ''"),
+                ("discoverable",  "INTEGER NOT NULL DEFAULT 0"),
             ]
+            discoverable_was_missing = "discoverable" not in at_cols
             for col, col_def in _at_new_cols:
                 if col not in at_cols:
                     conn.execute(f"ALTER TABLE agent_templates ADD COLUMN {col} {col_def}")
                     logger.info("Added agent_templates.%s column", col)
+            if discoverable_was_missing:
+                # Seed the default template as discoverable on first migration
+                conn.execute("UPDATE agent_templates SET discoverable = 1 WHERE id = 'default'")
+                logger.info("Seeded discoverable=1 for default agent_template")
             conn.commit()
 
             # ── Migration: add multi-agent fields to agents ──
@@ -1257,8 +1282,9 @@ class LocalBackend(StorageBackend):
                     temperature, max_tokens, metadata,
                     agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
                     bootstrap_tools, can_be_default, is_system, is_pipeline, access_level,
+                    discoverable,
                     created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name,
                     description = excluded.description,
@@ -1290,6 +1316,7 @@ class LocalBackend(StorageBackend):
                  tpl.get("misc_prompt", ""), tpl.get("bootstrap_tools", ""),
                  tpl.get("can_be_default", 1), tpl.get("is_system", 0),
                  tpl.get("is_pipeline", 0), tpl.get("access_level", "all"),
+                 1 if tpl.get("discoverable") else 0,
                  now, now),
             )
         conn.commit()
@@ -3139,10 +3166,11 @@ class LocalBackend(StorageBackend):
     # Multi-agent: template listing and custom agent CRUD
     # ──────────────────────────────────────────────────────────────────────────
 
-    async def list_agent_templates(self, include_admin: bool = False) -> List[dict]:
+    async def list_agent_templates(self, include_admin: bool = False, discoverable_only: bool = False) -> List[dict]:
         """
         Return agent_templates that are user-visible (is_pipeline=0).
         If include_admin=False, excludes access_level='admin_only' templates.
+        If discoverable_only=True, only returns templates with discoverable=1 (ignored when include_admin=True).
         """
         conn = self._get_conn()
         try:
@@ -3150,11 +3178,45 @@ class LocalBackend(StorageBackend):
                 rows = conn.execute(
                     "SELECT * FROM agent_templates WHERE is_pipeline = 0 ORDER BY is_system DESC, name ASC"
                 ).fetchall()
+            elif discoverable_only:
+                rows = conn.execute(
+                    "SELECT * FROM agent_templates WHERE is_pipeline = 0 AND access_level != 'admin_only' AND discoverable = 1 ORDER BY is_system DESC, name ASC"
+                ).fetchall()
             else:
                 rows = conn.execute(
                     "SELECT * FROM agent_templates WHERE is_pipeline = 0 AND access_level != 'admin_only' ORDER BY is_system DESC, name ASC"
                 ).fetchall()
             return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def update_agent_template_fields(self, template_id: str, updates: dict) -> Optional[dict]:
+        """
+        Update allowed fields on an agent_templates row.
+        Returns the updated row, or None if not found.
+        Allowed fields: discoverable.
+        """
+        ALLOWED = {"discoverable"}
+        safe = {k: v for k, v in updates.items() if k in ALLOWED}
+        if not safe:
+            return None
+        conn = self._get_conn()
+        try:
+            existing = conn.execute(
+                "SELECT * FROM agent_templates WHERE id = ?", (template_id,)
+            ).fetchone()
+            if not existing:
+                return None
+            set_clause = ", ".join(f"{k} = ?" for k in safe)
+            conn.execute(
+                f"UPDATE agent_templates SET {set_clause}, updated_at = ? WHERE id = ?",
+                (*safe.values(), _now_iso(), template_id),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT * FROM agent_templates WHERE id = ?", (template_id,)
+            ).fetchone()
+            return dict(row) if row else None
         finally:
             conn.close()
 
@@ -3243,30 +3305,36 @@ class LocalBackend(StorageBackend):
     # ── Custom agent CRUD ─────────────────────────────────────────────────────
 
     async def create_custom_agent(
-        self, user_id: str, name: str, description: str = ""
+        self, user_id: str, name: str, description: str = "", template_id: str = "default"
     ) -> dict:
         """
-        Create a new custom agent for a user, cloned from the default template.
+        Create a new custom agent for a user, cloned from the specified template.
         Returns the new agents row as a dict (with source='custom').
         """
         import uuid as _uuid_mod
-        # Load default template fields. Seed from JSON first so the row is
-        # fresh; fall back to reading default.json directly if no row exists.
         conn = self._get_conn()
         try:
             self._seed_agent_templates_from_json_files(conn)
             tpl_row = conn.execute(
-                "SELECT * FROM agent_templates WHERE id = 'default'"
+                "SELECT * FROM agent_templates WHERE id = ?", (template_id,)
             ).fetchone()
             tpl = dict(tpl_row) if tpl_row else {}
+            # Fall back to default if the requested template doesn't exist
+            if not tpl and template_id != "default":
+                tpl_row = conn.execute(
+                    "SELECT * FROM agent_templates WHERE id = 'default'"
+                ).fetchone()
+                tpl = dict(tpl_row) if tpl_row else {}
+                template_id = "default"
         finally:
             conn.close()
 
         if not tpl:
             from app.context.md_seeder import scan_agent_json_files
             for entry in scan_agent_json_files():
-                if entry.get("id") == "default":
+                if entry.get("id") == template_id or entry.get("id") == "default":
                     tpl = entry
+                    template_id = entry.get("id", "default")
                     break
 
         agent_id = str(_uuid_mod.uuid4())
@@ -3298,7 +3366,7 @@ class LocalBackend(StorageBackend):
                     tpl.get("tasks_prompt", ""),
                     tpl.get("misc_prompt", ""),
                     tpl.get("bootstrap_tools", ""),
-                    "default",
+                    template_id,
                     now, now,
                 ),
             )
@@ -3418,6 +3486,67 @@ class LocalBackend(StorageBackend):
         if result:
             result["source"] = "custom"
         return result
+
+    # ---- Agent Connections ----
+
+    async def get_agent_connections(self, agent_id: str) -> List[dict]:
+        """Return all agent_connections rows for an agent."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM agent_connections WHERE agent_id = ? ORDER BY section, connection_type",
+                (agent_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def upsert_agent_connection(
+        self,
+        agent_id: str,
+        connection_type: str,
+        section: str,
+        enabled: bool,
+        config: dict,
+    ) -> dict:
+        """Insert or update a connection row. Returns the final row."""
+        now = _now_iso()
+        config_str = json.dumps(config)
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """INSERT INTO agent_connections
+                           (id, agent_id, connection_type, section, enabled, config, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(agent_id, connection_type) DO UPDATE SET
+                           section = excluded.section,
+                           enabled = excluded.enabled,
+                           config  = excluded.config,
+                           updated_at = excluded.updated_at""",
+                    (_uuid(), agent_id, connection_type, section,
+                     1 if enabled else 0, config_str, now, now),
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT * FROM agent_connections WHERE agent_id = ? AND connection_type = ?",
+                    (agent_id, connection_type),
+                ).fetchone()
+                return dict(row) if row else {}
+            finally:
+                conn.close()
+
+    async def get_all_connections_by_type(self, connection_type: str) -> List[dict]:
+        """Return all enabled connections of a given type across all agents."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM agent_connections WHERE connection_type = ? AND enabled = 1",
+                (connection_type,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
 
 
 class _LocalTableProxy:

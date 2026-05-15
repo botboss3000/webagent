@@ -3,7 +3,7 @@
 import { app } from './state.js';
 import { startStream, stopStream } from './stream.js';
 import { startLoop, stopLoop, setLoopLevel, toggleAutoScroll } from './loop.js';
-import { startLoopVisual, stopLoopVisual } from './loop-visual.js';
+import { startLoopVisual, stopLoopVisual } from './loop-logic.js';
 import { initGithub, startGithub, stopGithub } from './github.js';
 import { startAutoAgent, stopAutoAgent } from './autoagent.js';
 import { startAgents, stopAgents } from './agents.js';

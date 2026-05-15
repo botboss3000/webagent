@@ -10,7 +10,7 @@ import { connectAgent } from './agentWs.js';
 import { initTabs } from './tabs.js';
 import { initStream } from './stream.js';
 import { initLoop } from './loop.js';
-import { initLoopVisual } from './loop-visual.js';
+import { initLoopVisual } from './loop-logic.js';
 import { initDbViewer } from './db/index.js';
 import { registerSessionApi, initSessions } from './sessions.js';
 import { initSettings } from './settings.js';
