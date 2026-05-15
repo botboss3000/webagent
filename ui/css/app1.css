@@ -37,10 +37,27 @@
 
 
 
+  /* ── Chat resize handle ── */
+  #chat-resize-handle {
+    width: 5px;
+    flex-shrink: 0;
+    cursor: col-resize;
+    background: transparent;
+    z-index: 10;
+    transition: background 0.15s;
+  }
+  #chat-resize-handle:hover,
+  #chat-resize-handle.resizing {
+    background: #7dcfff44;
+  }
+  @media (max-width: 800px) {
+    #chat-resize-handle { display: none; }
+  }
+
   /* ── Right: Chat panel ── */
   #chat-side {
     width: 380px;
-    min-width: 300px;
+    min-width: 280px;
     display: flex;
     flex-direction: column;
     border-left: 1px solid #2a2a4a;
