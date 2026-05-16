@@ -22,6 +22,7 @@ from app.agent.prompts import (
 from app.agent.loop import run_agent_loop_buffered, stream_agent_events
 from app.agent.session_history import build_openai_history_from_session
 from app.optimizer.runner import run_optimizer_async
+from app.agent import trigger_index
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
@@ -63,8 +64,60 @@ async def _ensure_session(db, user_id: str, session_id: str) -> None:
 class InterruptRequest(BaseModel):
     session_id: str
 
-# ── /optimize command regex ──
-_OPTIMIZE_PATTERN = re.compile(r"^/optimize\s*(.*)$", re.IGNORECASE | re.DOTALL)
+def _match_slash_command(message: str):
+    """Match message against all slash_command triggers from the trigger index.
+
+    Returns (trigger_key, arg, template_id) if matched, else None.
+    trigger_key is e.g. '/optimize', arg is the text after the command.
+    """
+    stripped = (message or "").strip()
+    if not stripped.startswith("/"):
+        return None
+    slash_cmds = trigger_index.get_slash_commands()
+    for trigger_key, template_id in slash_cmds.items():
+        pattern = re.compile(
+            r"^" + re.escape(trigger_key) + r"\s*(.*)$",
+            re.IGNORECASE | re.DOTALL,
+        )
+        m = pattern.match(stripped)
+        if m:
+            return trigger_key, m.group(1).strip(), template_id
+    return None
+
+
+async def _handle_generic_slash_command(
+    template_id: str,
+    trigger_key: str,
+    arg: str,
+    user_id: str,
+    session_id: str,
+    channel: str,
+    db,
+) -> str:
+    """Generic handler for slash commands that don't have a custom runner.
+
+    Creates a new session bound to the matched agent template and returns
+    a user-facing confirmation message.
+    """
+    new_sid = f"slash-{uuid.uuid4().hex[:12]}"
+    try:
+        raw = db.get_raw_client()
+        raw.table("sessions").insert({
+            "id": new_sid,
+            "user_id": user_id,
+            "title": f"{trigger_key} session",
+            "metadata": json.dumps({"trigger_key": trigger_key, "arg": arg}),
+        }).execute()
+    except Exception as e:
+        logger.warning("Could not create session for %s: %s", trigger_key, e)
+        return f"Could not start `{trigger_key}` — session creation failed."
+
+    return (
+        f"**{trigger_key}** session started.\n"
+        f"Session ID: `{new_sid}`\n"
+        + (f"Input: {arg}\n" if arg else "")
+        + f"\nOpen the session to continue."
+    )
 
 
 async def _handle_optimize_command(
@@ -77,7 +130,8 @@ async def _handle_optimize_command(
     """Handle /optimize or /optimize <feedback> command.
     Runs the optimizer against the user's current session in the background.
     Returns a user-facing message."""
-    m = _OPTIMIZE_PATTERN.match(message)
+    _opt_re = re.compile(r"^/optimize\s*(.*)$", re.IGNORECASE | re.DOTALL)
+    m = _opt_re.match(message)
     if not m:
         return ""
     feedback = m.group(1).strip()
@@ -156,12 +210,20 @@ async def chat(request: ChatRequest):
                 db = _OptBackend(db_path=_temp_db_path)
                 logger.info("Using temp DB for %s session: %s", request.session_id[:12], _temp_db_path)
 
-        # ── Handle /optimize slash command ──
-        if _OPTIMIZE_PATTERN.match(request.message or ""):
-            result = await _handle_optimize_command(
-                request.user_id, request.session_id,
-                request.message, "web_portal", db,
-            )
+        # ── Handle slash commands ──
+        _slash_match = _match_slash_command(request.message or "")
+        if _slash_match:
+            _slash_key, _slash_arg, _slash_tid = _slash_match
+            if _slash_key == "/optimize":
+                result = await _handle_optimize_command(
+                    request.user_id, request.session_id,
+                    request.message, "web_portal", db,
+                )
+            else:
+                result = await _handle_generic_slash_command(
+                    _slash_tid, _slash_key, _slash_arg,
+                    request.user_id, request.session_id, "web_portal", db,
+                )
             return ChatResponse(reply=result, response=result, session_id=request.session_id)
 
         # Ensure the session exists before inserting interactions
@@ -181,10 +243,14 @@ async def chat(request: ChatRequest):
                 opt_metadata = json.loads(meta_row[0]) if meta_row and meta_row[0] else {}
                 if request.session_id.startswith('closer-'):
                     opt_role = 'closer'
-                    opt_template_id = 'opt_closer'
+                    opt_template_id = trigger_index.get('tool_call', 'handoff_to_closer') or 'opt_closer'
                 else:
                     opt_role = opt_metadata.get('opt_role', 'planner')
-                    opt_template_id = 'opt_planner' if opt_role == 'planner' else 'opt_closer'
+                    opt_template_id = (
+                        trigger_index.get('tool_call', 'run_optimizer') or 'opt_planner'
+                        if opt_role == 'planner'
+                        else trigger_index.get('tool_call', 'handoff_to_closer') or 'opt_closer'
+                    )
             finally:
                 conn.close()
 
@@ -486,16 +552,24 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             db = _OptBackend(db_path=_temp_db_path)
             logger.info("Using temp DB for %s session: %s", request.session_id[:12], _temp_db_path)
 
-    # ── Handle /optimize slash command (streaming) ──
-    if _OPTIMIZE_PATTERN.match(request.message or ""):
-        result = await _handle_optimize_command(
-            request.user_id, request.session_id,
-            request.message, "web_portal", db,
-        )
-        async def _optimize_events():
+    # ── Handle slash commands (streaming) ──
+    _slash_match = _match_slash_command(request.message or "")
+    if _slash_match:
+        _slash_key, _slash_arg, _slash_tid = _slash_match
+        if _slash_key == "/optimize":
+            result = await _handle_optimize_command(
+                request.user_id, request.session_id,
+                request.message, "web_portal", db,
+            )
+        else:
+            result = await _handle_generic_slash_command(
+                _slash_tid, _slash_key, _slash_arg,
+                request.user_id, request.session_id, "web_portal", db,
+            )
+        async def _slash_events():
             yield f"data: {json.dumps({'type': 'stream', 'level': 'agent', 'content': result})}\n\n"
             yield f"data: {json.dumps({'type': 'response', 'level': 'agent', 'content': result})}\n\n"
-        return StreamingResponse(_optimize_events(), media_type="text/event-stream")
+        return StreamingResponse(_slash_events(), media_type="text/event-stream")
 
     # Ensure the session exists before inserting interactions
     await _ensure_session(db, request.user_id, request.session_id)
@@ -512,10 +586,14 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             opt_metadata = json.loads(meta_row[0]) if meta_row and meta_row[0] else {}
             if request.session_id.startswith('closer-'):
                 opt_role = 'closer'
-                opt_template_id = 'opt_closer'
+                opt_template_id = trigger_index.get('tool_call', 'handoff_to_closer') or 'opt_closer'
             else:
                 opt_role = opt_metadata.get('opt_role', 'planner')
-                opt_template_id = 'opt_planner' if opt_role == 'planner' else 'opt_closer'
+                opt_template_id = (
+                    trigger_index.get('tool_call', 'run_optimizer') or 'opt_planner'
+                    if opt_role == 'planner'
+                    else trigger_index.get('tool_call', 'handoff_to_closer') or 'opt_closer'
+                )
         finally:
             conn.close()
 

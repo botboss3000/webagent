@@ -263,6 +263,13 @@ async def terminal_legacy_redirect():
 @app.on_event("startup")
 async def startup():
     """Register communication webhooks or start polling on server start."""
+    # Build trigger routing index from agent_templates
+    try:
+        from app.agent import trigger_index
+        trigger_index.build()
+    except Exception as _ti_err:
+        logger.warning("Failed to build trigger index on startup: %s", _ti_err)
+
     try:
         from app.communications.manager import get_plugin_manager
         pm = get_plugin_manager()

@@ -27,5 +27,8 @@
   "skills_prompt": "",
   "tasks_prompt": "",
   "misc_prompt": "",
-  "bootstrap_tools": ""
+  "bootstrap_tools": "",
+  "trigger_type": "slash_command",
+  "trigger_key": "/optimize",
+  "loop_logic": ["opt_collect","opt_analyze","opt_propose","opt_validate","opt_apply"]
 }

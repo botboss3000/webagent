@@ -10,8 +10,19 @@
  */
 
 import { app } from './state.js';
-import { fetchAllToolMeta, NODE_PANEL_INFO } from './loop-logic.js';
+import { fetchAllToolMeta } from './loop-logic.js';
+import { NODE_PANEL_INFO } from './loop-node-data.js';
 import { LOOP_W, LOOP_H, LOOP_NODES, renderLoopDiagram } from './loop-diagram.js';
+
+function _triggerKeyPlaceholder(triggerType) {
+  const map = {
+    tool_call:  'Tool name (e.g. run_optimizer)',
+    schedule:   'Cron expression (e.g. 0 9 * * *)',
+    webhook:    'Webhook path slug',
+    background: 'Internal identifier',
+  };
+  return map[triggerType] || '';
+}
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let _agents         = [];   // full list from server
@@ -422,6 +433,55 @@ function _renderConfigTab(body, agent, panelEl) {
       ${!isEditable ? 'readonly' : ''} style="width:100px">
   `;
   body.appendChild(tcGroup);
+
+  // trigger type
+  if (isEditable) {
+    const triggerRow = document.createElement('div');
+    triggerRow.className = 'agents-field-group';
+    const triggerLabel = document.createElement('label');
+    triggerLabel.className = 'agents-field-label';
+    triggerLabel.textContent = 'Trigger';
+    const triggerSel = document.createElement('select');
+    triggerSel.className = 'agents-input';
+    triggerSel.dataset.field = 'trigger_type';
+    for (const [val, text] of [
+      ['user_input',  'User Input'],
+      ['tool_call',   'Tool Call'],
+      ['schedule',    'Schedule'],
+      ['webhook',     'Webhook'],
+      ['background',  'Background'],
+    ]) {
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = text;
+      if ((agent.trigger_type || 'user_input') === val) opt.selected = true;
+      triggerSel.appendChild(opt);
+    }
+    triggerRow.appendChild(triggerLabel);
+    triggerRow.appendChild(triggerSel);
+    body.appendChild(triggerRow);
+
+    const keyRow = document.createElement('div');
+    keyRow.className = 'agents-field-group';
+    keyRow.style.display = (agent.trigger_type && agent.trigger_type !== 'user_input') ? '' : 'none';
+    const keyLabel = document.createElement('label');
+    keyLabel.className = 'agents-field-label';
+    keyLabel.textContent = 'Trigger Key';
+    const keyInput = document.createElement('input');
+    keyInput.type = 'text';
+    keyInput.className = 'agents-input';
+    keyInput.dataset.field = 'trigger_key';
+    keyInput.value = agent.trigger_key || '';
+    keyInput.placeholder = _triggerKeyPlaceholder(agent.trigger_type || 'user_input');
+    keyRow.appendChild(keyLabel);
+    keyRow.appendChild(keyInput);
+    body.appendChild(keyRow);
+
+    triggerSel.addEventListener('change', () => {
+      keyRow.style.display = triggerSel.value !== 'user_input' ? '' : 'none';
+      keyInput.placeholder = _triggerKeyPlaceholder(triggerSel.value);
+    });
+  }
 
   // Five prompt sections
   const FIELDS = [
@@ -873,6 +933,9 @@ function _drawAgentLoopDiagram(loopEl, nodeStates, agent) {
   const { rootEl } = renderLoopDiagram(scaleWrap, nodeStates, {
     availableWidth,
     markerPrefix: 'ag',
+    nodeFilter: (agent && Array.isArray(agent.loop_logic) && agent.loop_logic.length > 0 && !agent.loop_logic[0].startsWith('opt_'))
+      ? agent.loop_logic
+      : null,
     getNodeDetail: nd => _lvNodeHint(nd, agent),
     onNodeClick: (nd, el, root) => {
       if (_lvActivePanelNodeId === nd.id) { _lvHidePanel(true); return; }
@@ -2072,6 +2135,8 @@ async function _saveChanges(agent, barEl, panelEl) {
   const nameVal = fv('name');        if (nameVal !== undefined) updates.name          = nameVal.trim();
   const descVal = fv('desc');        if (descVal !== undefined) updates.description   = descVal;
   const tcVal   = fv('max_turn_count'); if (tcVal !== undefined) updates.max_turn_count = parseInt(tcVal, 10) || 10;
+  const ttVal   = fv('trigger_type');   if (ttVal !== undefined) updates.trigger_type   = ttVal;
+  const tkVal   = fv('trigger_key');    if (tkVal !== undefined) updates.trigger_key    = tkVal || null;
   for (const k of ['agent_prompt','user_prompt','skills_prompt','tasks_prompt','misc_prompt']) {
     const v = fv(k); if (v !== undefined) updates[k] = v;
   }

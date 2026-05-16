@@ -389,6 +389,7 @@ function _computeEdgePathVertical(edge, src, dst, canvasW) {
 //   availableWidth  — px width to lay out for
 //   markerPrefix    — unique SVG marker ID prefix (avoids DOM clashes)
 //   canvasH         — override SVG height
+//   nodeFilter      — array of node IDs to show; null/empty = show all
 //   getNodeDetail   — (nodeDef) => string
 //   onNodeClick     — (nodeDef, nodeEl, rootEl) => void
 //   decorateNode    — (nodeDef, nodeEl) => void
@@ -396,6 +397,7 @@ export function renderLoopDiagram(containerEl, nodeStates, {
   availableWidth = 0,
   markerPrefix   = 'ld',
   canvasH        = 0,
+  nodeFilter     = null,
   getNodeDetail  = () => '',
   onNodeClick    = null,
   decorateNode   = null,
@@ -407,6 +409,15 @@ export function renderLoopDiagram(containerEl, nodeStates, {
   const layout = cw < BREAKPOINT_VERTICAL
     ? buildVerticalLayout(cw)
     : buildHorizontalLayout(cw);
+
+  // Apply nodeFilter — restrict to specific node IDs when agent has loop_logic set
+  const filterSet = (nodeFilter && nodeFilter.length > 0) ? new Set(nodeFilter) : null;
+  const visibleNodes = filterSet
+    ? layout.nodes.filter(n => filterSet.has(n.id))
+    : layout.nodes;
+  const visibleEdges = filterSet
+    ? LOOP_EDGES.filter(e => filterSet.has(e.from) && filterSet.has(e.to))
+    : LOOP_EDGES;
 
   const svgH = canvasH > 0 ? canvasH : layout.canvasH;
 
@@ -441,7 +452,7 @@ export function renderLoopDiagram(containerEl, nodeStates, {
 
   // Edge state map (derived from nodeStates)
   const edgeStates = new Map();
-  for (const edge of LOOP_EDGES) {
+  for (const edge of visibleEdges) {
     const fromState = nodeStates.get(edge.from);
     const toState   = nodeStates.get(edge.to);
     const key = `${edge.from}→${edge.to}`;
@@ -454,7 +465,7 @@ export function renderLoopDiagram(containerEl, nodeStates, {
 
   // Draw edges
   const edgeLayout = { mode: layout.mode, canvasW: layout.canvasW };
-  for (const edge of LOOP_EDGES) {
+  for (const edge of visibleEdges) {
     const key       = `${edge.from}→${edge.to}`;
     const edgeState = edgeStates.get(key) || '';
     const pi        = computeEdgePath(edge, layout.nodes, edgeLayout);
@@ -490,7 +501,7 @@ export function renderLoopDiagram(containerEl, nodeStates, {
   }
 
   // Render node HTML elements
-  for (const nd of layout.nodes) {
+  for (const nd of visibleNodes) {
     const state = nodeStates.get(nd.id) || '';
     const el = document.createElement('div');
     el.className = `lv-node lv-type-${nd.type}`;

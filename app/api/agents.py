@@ -54,6 +54,9 @@ class UpdateAgentRequest(BaseModel):
     max_tokens: Optional[int] = None
     allowed_tools: Optional[List[str]] = None
     custom_tool_ids: Optional[List[str]] = None
+    trigger_type: Optional[str] = None
+    trigger_key: Optional[str] = None
+    loop_logic: Optional[List] = None
 
 
 class UpdateTemplateRequest(BaseModel):
@@ -87,7 +90,7 @@ def _safe_agent(agent: dict) -> dict:
     result = {k: v for k, v in agent.items() if k not in HIDDEN}
     # Deserialize JSON list fields so the client receives actual arrays
     import json as _json
-    for field in ("allowed_tools", "custom_tool_ids"):
+    for field in ("allowed_tools", "custom_tool_ids", "loop_logic"):
         raw = result.get(field)
         if isinstance(raw, str):
             try:

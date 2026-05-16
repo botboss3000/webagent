@@ -321,6 +321,9 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
             "is_system": 1 if data.get("is_system", False) else 0,
             "is_pipeline": 1 if data.get("is_pipeline", False) else 0,
             "access_level": data.get("access_level", "all"),
+            "trigger_type": data.get("trigger_type", "user_input"),
+            "trigger_key": data.get("trigger_key", None),
+            "loop_logic": json.dumps(data.get("loop_logic", [])),
         }
 
         results.append(row)
