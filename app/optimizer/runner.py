@@ -34,7 +34,7 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
     seed_optimizer_templates()
 
     # Skip Worker test sessions to prevent recursive optimizer cascades
-    if session_id.startswith('worker-'):
+    if session_id.startswith('worker-') or session_id.startswith('optimizer-') or session_id.startswith('closer-'):
         return None
 
     # Skip dedup check when force=True (/optimize command)
@@ -55,7 +55,7 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
 
     # ── Create optimizer temp DB ──
     _here = os.path.dirname(os.path.abspath(__file__))
-    _db_dir = os.path.normpath(os.path.join(_here, "..", "db", "local"))
+    _db_dir = os.path.normpath(os.path.join(_here, "..", "db"))
     os.makedirs(_db_dir, exist_ok=True)
     temp_db_name = f"optimizer_{uuid.uuid4().hex[:16]}.db"
     temp_db_path = os.path.join(_db_dir, temp_db_name)
