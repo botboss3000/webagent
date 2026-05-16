@@ -12,7 +12,7 @@
 import { app } from './state.js';
 import { fetchAllToolMeta } from './loop-logic.js';
 import { NODE_PANEL_INFO } from './loop-node-data.js';
-import { LOOP_W, LOOP_H, LOOP_NODES, renderLoopDiagram } from './loop-diagram.js';
+import { LOOP_W, LOOP_H, LOOP_NODES, TOGGLEABLE_NODES, renderLoopDiagram } from './loop-diagram.js';
 
 function _triggerKeyPlaceholder(triggerType) {
   const map = {
@@ -942,12 +942,23 @@ function _drawAgentLoopDiagram(loopEl, nodeStates, agent) {
 
   const { excludeNodes, extraEdges, nodeLabelMap } = _triggerExclusions(agent);
 
+  // Build nodeFilter (legacy flat-string arrays only) and nodeConfig (new object format).
+  // Legacy: loop_logic is an array of node-ID strings → pass as nodeFilter to show only
+  //   those nodes (preserves existing behaviour for agents that stored a flat list).
+  // New: loop_logic is an array of {node, enabled} objects → pass as nodeConfig so
+  //   disabled nodes get the lv-disabled class while all nodes remain visible.
+  const _ll     = Array.isArray(agent?.loop_logic) ? agent.loop_logic : [];
+  const _llFlat = _ll.length > 0 && typeof _ll[0] === 'string';
+  const _nodeFilter = (agent && _llFlat && !_ll[0].startsWith('opt_')) ? _ll : null;
+  const _nodeConfig = (!_llFlat && _ll.length > 0)
+    ? new Map(_ll.map(item => [item.node, { enabled: item.enabled !== false }]))
+    : null;
+
   const { rootEl } = renderLoopDiagram(scaleWrap, nodeStates, {
     availableWidth,
     markerPrefix: 'ag',
-    nodeFilter: (agent && Array.isArray(agent.loop_logic) && agent.loop_logic.length > 0 && !agent.loop_logic[0].startsWith('opt_'))
-      ? agent.loop_logic
-      : null,
+    nodeFilter:   _nodeFilter,
+    nodeConfig:   _nodeConfig,
     excludeNodes,
     extraEdges,
     nodeLabelMap,
@@ -960,6 +971,10 @@ function _drawAgentLoopDiagram(loopEl, nodeStates, agent) {
       if (agent?.source === 'custom' &&
           nd.id !== 'user_input' && nd.id !== 'final_response' && nd.id !== 'validate_tools') {
         el.classList.add('lv-node-editable');
+      }
+      // Toggleable nodes get a subtle visual hint so the user knows they can be gated
+      if (TOGGLEABLE_NODES.has(nd.id)) {
+        el.classList.add('lv-node-toggleable');
       }
     },
   });
@@ -1150,6 +1165,37 @@ function _lvNodeHint(nd, agent) {
 
 let _lvPendingChanges = {};
 let _lvSaveBtnEl     = null;
+
+// ── Loop-logic helpers ─────────────────────────────────────────────────────
+// Returns the current loop_logic as an object-array, merging in any pending
+// changes.  Handles both the legacy flat-string format (treated as all-enabled)
+// and the new {node, enabled} object format.
+function _resolveLoopLogicObjects(agent) {
+  const pending = Array.isArray(_lvPendingChanges.loop_logic) ? _lvPendingChanges.loop_logic : null;
+  const source  = pending || (Array.isArray(agent.loop_logic) ? agent.loop_logic : []);
+  if (source.length === 0 || typeof source[0] === 'string') {
+    // Legacy flat format or empty → seed from full node list, all enabled
+    return LOOP_NODES.map(n => ({ node: n.id, enabled: true }));
+  }
+  return source.map(item => ({ ...item }));
+}
+
+function _isNodeLoopEnabled(agent, nodeId) {
+  const objs  = _resolveLoopLogicObjects(agent);
+  const found = objs.find(o => o.node === nodeId);
+  return found ? found.enabled !== false : true;  // unknown nodes default to enabled
+}
+
+function _setNodeLoopEnabled(agent, nodeId, enabled) {
+  const objs = _resolveLoopLogicObjects(agent);
+  const idx  = objs.findIndex(o => o.node === nodeId);
+  if (idx !== -1) {
+    objs[idx] = { ...objs[idx], enabled };
+  } else {
+    objs.push({ node: nodeId, enabled });
+  }
+  _lvSetPending('loop_logic', objs);
+}
 
 function _lvSetPending(key, value) {
   _lvPendingChanges[key] = value;
@@ -1487,6 +1533,30 @@ function _lvShowEditPanel(nd, nodeEl, container, agent) {
     case 'guardrails':     _lvRenderGuardrailsEditor(body, agent);   break;
     case 'check_continue': _lvRenderContinueEditor(body, agent);     break;
     case 'memory_save':    _lvRenderMemorySaveEditor(body, agent);   break;
+    // ── Loop-gated nodes (loop_logic enable/disable) ──
+    case 'interrupt_chk':
+      _lvRenderGatedNodeEditor(body, agent, 'interrupt_chk', 'Interrupt check',
+        'Checks for a cancellation signal before each turn. Disable for batch or ' +
+        'automated agents that should run to completion without interruption.');
+      break;
+    case 'permission_chk':
+      _lvRenderGatedNodeEditor(body, agent, 'permission_chk', 'Turn-limit gate',
+        'At turn 11 the agent pauses and asks the user for permission to continue, ' +
+        'then extends max_turns by 10 if approved. Disable for long-running or ' +
+        'headless agents that should never pause mid-task.');
+      break;
+    case 'delegation_chk':
+      _lvRenderGatedNodeEditor(body, agent, 'delegation_chk', 'Agent delegation',
+        'After each tool result, checks for a __delegate__ signal that hands off ' +
+        'execution to another agent mid-loop. Disable to prevent delegation for ' +
+        'this agent and keep it isolated.');
+      break;
+    case 'skill_track':
+      _lvRenderGatedNodeEditor(body, agent, 'skill_track', 'Skill tracking',
+        'Records tool execution events and updates skill performance scores in the ' +
+        'database. Disable for lightweight or high-throughput agents where these ' +
+        'extra DB writes are unnecessary.');
+      break;
     default: {
       _lvRenderNodeInfo(body, nd);
       if (!NODE_PANEL_INFO[nd.id]) {
@@ -1922,8 +1992,26 @@ function _lvRenderToolsEditor(body, agent) {
 function _lvRenderGuardrailsEditor(body, agent) {
   const desc = document.createElement('div');
   desc.className = 'lv-edit-desc';
-  desc.textContent = 'Block entire tool categories. Disabling a category prevents all tools in it from running.';
+  desc.textContent = 'Configure the destructive-tool guardrail. The runtime gate controls whether confirmation is required at all; category blocks prevent individual tool classes from running.';
   body.appendChild(desc);
+
+  // ── Runtime gate: whether the confirmation check runs at all ──────────────
+  const gateLbl = document.createElement('div');
+  gateLbl.className = 'lv-tool-section-label';
+  gateLbl.textContent = 'Runtime gate';
+  body.appendChild(gateLbl);
+
+  const guardEnabled = _isNodeLoopEnabled(agent, 'guardrails');
+  _lvToggleRow(body, 'Require confirmation for destructive tools', guardEnabled,
+    on => _setNodeLoopEnabled(agent, 'guardrails', on));
+
+  // ── Per-category tool blocks ───────────────────────────────────────────────
+  const toolsLbl = document.createElement('div');
+  toolsLbl.className = 'lv-tool-section-label';
+  toolsLbl.style.marginTop = '12px';
+  toolsLbl.textContent = 'Tool category blocks';
+  body.appendChild(toolsLbl);
+
   const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
   TIER_2_CATEGORIES.forEach(cat => {
     const allNames = cat.tools.map(t => t.name);
@@ -1963,6 +2051,23 @@ function _lvRenderMemorySaveEditor(body, agent) {
     if (enabled) { cur.delete('memory_save'); } else { cur.add('memory_save'); }
     _lvSetPending('allowed_tools', [...cur]);
   });
+}
+
+// ── Generic editor for loop-gated nodes (interrupt_chk, permission_chk, etc.) ─
+// Renders a description and a single ON/OFF toggle that persists to loop_logic.
+function _lvRenderGatedNodeEditor(body, agent, nodeId, label, description) {
+  const desc = document.createElement('div');
+  desc.className = 'lv-edit-desc';
+  desc.textContent = description;
+  body.appendChild(desc);
+
+  const statusLbl = document.createElement('div');
+  statusLbl.className = 'lv-tool-section-label';
+  statusLbl.textContent = 'Runtime gate';
+  body.appendChild(statusLbl);
+
+  const enabled = _isNodeLoopEnabled(agent, nodeId);
+  _lvToggleRow(body, label, enabled, on => _setNodeLoopEnabled(agent, nodeId, on));
 }
 
 // ── UI helper widgets ─────────────────────────────────────────────────────
