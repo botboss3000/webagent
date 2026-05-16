@@ -21,18 +21,42 @@ _index: dict = {}
 
 
 def build() -> None:
-    """Build the trigger index from agent_templates. Safe to call multiple times."""
+    """Build the trigger index from agent_templates and agents. Safe to call multiple times.
+
+    agent_templates provides system-level defaults; agents overrides those
+    (agents.template_id is used as the canonical identifier).
+    """
     global _index
     new_index: dict = {}
     try:
         conn = sqlite3.connect(_DB_PATH)
+        # Base layer: system templates
+        # Also track the template-level key per template_id so the override
+        # layer can evict the old key when the user changes it.
         rows = conn.execute(
             "SELECT id, trigger_type, trigger_key FROM agent_templates"
             " WHERE trigger_type IS NOT NULL AND trigger_key IS NOT NULL"
         ).fetchall()
-        conn.close()
+        template_keys: dict = {}  # template_id → (trigger_type, trigger_key)
         for template_id, trigger_type, trigger_key in rows:
             new_index[(trigger_type, trigger_key)] = template_id
+            template_keys[template_id] = (trigger_type, trigger_key)
+
+        # Override layer: per-agent rows (user config via UI).
+        # If the agent row has a different key than the template, evict the
+        # template's stale entry so the old command stops working.
+        agent_rows = conn.execute(
+            "SELECT template_id, trigger_type, trigger_key FROM agents"
+            " WHERE trigger_type IS NOT NULL AND trigger_key IS NOT NULL"
+            " AND template_id IS NOT NULL"
+        ).fetchall()
+        conn.close()
+        for template_id, trigger_type, trigger_key in agent_rows:
+            old = template_keys.get(template_id)
+            if old and old != (trigger_type, trigger_key):
+                new_index.pop(old, None)
+            new_index[(trigger_type, trigger_key)] = template_id
+
         _index = new_index
         logger.info("Trigger index built: %d entr%s", len(_index), "y" if len(_index) == 1 else "ies")
         for (tt, tk), tid in _index.items():

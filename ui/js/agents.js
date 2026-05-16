@@ -16,10 +16,11 @@ import { LOOP_W, LOOP_H, LOOP_NODES, renderLoopDiagram } from './loop-diagram.js
 
 function _triggerKeyPlaceholder(triggerType) {
   const map = {
-    tool_call:  'Tool name (e.g. run_optimizer)',
-    schedule:   'Cron expression (e.g. 0 9 * * *)',
-    webhook:    'Webhook path slug',
-    background: 'Internal identifier',
+    slash_command: 'Slash command (e.g. /optimize)',
+    tool_call:     'Tool name (e.g. run_optimizer)',
+    schedule:      'Cron expression (e.g. 0 9 * * *)',
+    webhook:       'Webhook path slug',
+    background:    'Internal identifier',
   };
   return map[triggerType] || '';
 }
@@ -200,18 +201,7 @@ async function _loadAgents() {
       const data = await res.json();
       _agents = data.agents || [];
     }
-    // Admins also see system templates so they can manage the discoverable flag
-    if (_userIsAdmin) {
-      const tRes = await fetch(`/api/v1/agents/templates?user_id=${encodeURIComponent(app.currentUserId)}&include_admin=true`);
-      if (tRes.ok) {
-        const tData = await tRes.json();
-        const seenIds = new Set(_agents.map(a => a.id));
-        const templates = (tData.templates || [])
-          .filter(t => !seenIds.has(t.id))
-          .map(t => ({ ...t, source: 'template' }));
-        _agents = [...templates, ..._agents];
-      }
-    }
+
   } catch (e) {
     console.warn('agents: could not load agent list', e);
   }
@@ -445,11 +435,12 @@ function _renderConfigTab(body, agent, panelEl) {
     triggerSel.className = 'agents-input';
     triggerSel.dataset.field = 'trigger_type';
     for (const [val, text] of [
-      ['user_input',  'User Input'],
-      ['tool_call',   'Tool Call'],
-      ['schedule',    'Schedule'],
-      ['webhook',     'Webhook'],
-      ['background',  'Background'],
+      ['user_input',    'User Input'],
+      ['slash_command', 'Slash Command'],
+      ['tool_call',     'Tool Call'],
+      ['schedule',      'Schedule'],
+      ['webhook',       'Webhook'],
+      ['background',    'Background'],
     ]) {
       const opt = document.createElement('option');
       opt.value = val;
