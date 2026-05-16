@@ -398,6 +398,9 @@ export function renderLoopDiagram(containerEl, nodeStates, {
   markerPrefix   = 'ld',
   canvasH        = 0,
   nodeFilter     = null,
+  excludeNodes   = null,
+  extraEdges     = null,
+  nodeLabelMap   = null,
   getNodeDetail  = () => '',
   onNodeClick    = null,
   decorateNode   = null,
@@ -411,13 +414,25 @@ export function renderLoopDiagram(containerEl, nodeStates, {
     : buildHorizontalLayout(cw);
 
   // Apply nodeFilter — restrict to specific node IDs when agent has loop_logic set
-  const filterSet = (nodeFilter && nodeFilter.length > 0) ? new Set(nodeFilter) : null;
-  const visibleNodes = filterSet
+  const filterSet  = (nodeFilter   && nodeFilter.length   > 0) ? new Set(nodeFilter)   : null;
+  const excludeSet = (excludeNodes && excludeNodes.length > 0) ? new Set(excludeNodes) : null;
+
+  let visibleNodes = filterSet
     ? layout.nodes.filter(n => filterSet.has(n.id))
     : layout.nodes;
-  const visibleEdges = filterSet
+  let visibleEdges = filterSet
     ? LOOP_EDGES.filter(e => filterSet.has(e.from) && filterSet.has(e.to))
     : LOOP_EDGES;
+
+  if (excludeSet) {
+    visibleNodes = visibleNodes.filter(n => !excludeSet.has(n.id));
+    visibleEdges = visibleEdges.filter(e => !excludeSet.has(e.from) && !excludeSet.has(e.to));
+  }
+
+  if (extraEdges && extraEdges.length > 0) {
+    const visibleIds = new Set(visibleNodes.map(n => n.id));
+    visibleEdges = [...visibleEdges, ...extraEdges.filter(e => visibleIds.has(e.from) && visibleIds.has(e.to))];
+  }
 
   const svgH = canvasH > 0 ? canvasH : layout.canvasH;
 
@@ -516,7 +531,7 @@ export function renderLoopDiagram(containerEl, nodeStates, {
 
     const labelEl = document.createElement('span');
     labelEl.className = 'lv-node-label';
-    labelEl.textContent = nd.label;
+    labelEl.textContent = (nodeLabelMap && nodeLabelMap[nd.id]) ? nodeLabelMap[nd.id] : nd.label;
     el.appendChild(labelEl);
 
     const detailEl = document.createElement('div');
