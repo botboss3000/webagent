@@ -843,6 +843,28 @@ body.light-mode .lv-edit-textarea:focus { border-color: #ff8c42; }
   pointer-events: none;
 }
 
+/* ── Toggleable node cue (loop-gated nodes) ── */
+.lv-node-toggleable::before {
+  content: '⟳';
+  position: absolute;
+  bottom: 2px;
+  right: 4px;
+  font-size: 7px;
+  color: rgba(173, 190, 80, 0.45);
+  pointer-events: none;
+}
+
+/* ── Disabled loop node (loop_logic enabled=false) ── */
+.lv-disabled {
+  opacity: 0.38;
+  filter: grayscale(0.6);
+}
+.lv-disabled .lv-node-label {
+  text-decoration: line-through;
+  text-decoration-color: rgba(247, 118, 142, 0.6);
+}
+body.light-mode .lv-disabled { opacity: 0.35; filter: grayscale(0.55); }
+
 /* ── Cancel button ── */
 .lv-edit-cancel-btn {
   background: transparent;

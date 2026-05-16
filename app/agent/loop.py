@@ -24,6 +24,7 @@ import time
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from app.agent.error_classifier import classify_tool_error, ToolError
+from app.agent.loop_executor import LoopConfig
 from app.db import get_db
 from app.db.system_prompt_fragments import get_prompt_fragments
 from app.optimizer.runner import run_optimizer_async
@@ -442,6 +443,7 @@ async def stream_agent_events(
     db: Optional[Any] = None,
     agent_template_id: Optional[str] = None,
     allowed_tools: Optional[List[str]] = None,
+    loop_config: Optional[LoopConfig] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Run the unified agent loop and yield structured events.
@@ -485,10 +487,18 @@ async def stream_agent_events(
 
         # Fetch agent name for prefixing all outputs
         agent_name = "Agent"
+        _agent_rec: Optional[Dict[str, Any]] = None
         if agent_id:
-            agent = await db.get_agent_by_id(agent_id)
-            if agent and agent.get("name"):
-                agent_name = agent["name"]
+            _agent_rec = await db.get_agent_by_id(agent_id)
+            if _agent_rec and _agent_rec.get("name"):
+                agent_name = _agent_rec["name"]
+
+        # Build loop config — drives per-node enable/disable at runtime.
+        # If caller supplied one (e.g. tests), use it directly; otherwise
+        # parse the agent's stored loop_logic (backward-compat: flat array
+        # = all nodes enabled, preserving current behavior exactly).
+        if loop_config is None:
+            loop_config = LoopConfig.from_agent(_agent_rec)
 
         def prefix_content(content: str) -> str:
             """Prefix agent name to content."""
@@ -500,7 +510,8 @@ async def stream_agent_events(
         first_stream_chunk_state = [True]  # [is_first_chunk]
 
         while turn_count < max_turns:
-            await _check_interrupt(session_id, interrupt_event)
+            if loop_config.is_enabled("interrupt_chk"):
+                await _check_interrupt(session_id, interrupt_event)
 
             turn_count += 1
             if agent_id:
@@ -514,14 +525,14 @@ async def stream_agent_events(
                    "step": "turn_start", "turn": turn_count, "max_turns": max_turns}
 
             # Ask for permission to continue after 10 turns
-            if turn_count == 11 and not permission_granted:
+            if loop_config.is_enabled("permission_chk") and turn_count == 11 and not permission_granted:
                 fr = get_prompt_fragments()
                 permission_message = (fr.get("turn_permission_request") or "").strip()
                 if permission_message:
                     messages.append({"role": "system", "content": permission_message})
 
             # Check if user has granted permission to continue (in their last message)
-            if turn_count >= 11 and not permission_granted:
+            if loop_config.is_enabled("permission_chk") and turn_count >= 11 and not permission_granted:
                 last_user_msg = next((msg for msg in reversed(messages) if msg.get("role") == "user"), None)
                 if last_user_msg:
                     user_content = last_user_msg.get("content", "").lower()
@@ -584,7 +595,8 @@ async def stream_agent_events(
             def _build_input() -> str:
                 return json.dumps(messages)
 
-            await _check_interrupt(session_id, interrupt_event)
+            if loop_config.is_enabled("interrupt_chk"):
+                await _check_interrupt(session_id, interrupt_event)
 
             # ── Pipeline: LLM call start ──
             yield {"type": "pipeline", "level": "pipeline",
@@ -888,7 +900,7 @@ async def stream_agent_events(
                                "op": "insert_interaction", "role": "tool",
                                "tool_name": tool_name, "id": inter_id, "ms": db_dur}
                     else:
-                        if tool_name in DESTRUCTIVE_TOOLS:
+                        if loop_config.is_enabled("guardrails") and tool_name in DESTRUCTIVE_TOOLS:
                             yield {"type": "pipeline", "level": "pipeline",
                                    "step": "guardrail_check", "tool": tool_name,
                                    "status": "requires_confirmation",
@@ -940,7 +952,8 @@ async def stream_agent_events(
                         else:
                             valid_calls.append((idx, tc, tool_name, tool_args))
 
-                await _check_interrupt(session_id, interrupt_event)
+                if loop_config.is_enabled("interrupt_chk"):
+                    await _check_interrupt(session_id, interrupt_event)
 
                 if valid_calls:
                     yield {"type": "pipeline", "level": "pipeline",
@@ -972,7 +985,8 @@ async def stream_agent_events(
                     results = await asyncio.gather(*tasks)
 
                     for (idx, tc, tool_name, tool_args), result in zip(valid_calls, results):
-                        await _check_interrupt(session_id, interrupt_event)
+                        if loop_config.is_enabled("interrupt_chk"):
+                            await _check_interrupt(session_id, interrupt_event)
                         success = result["success"]
                         te = result.get("error")
 
@@ -1024,7 +1038,8 @@ async def stream_agent_events(
                         # ── Delegation check ──────────────────────────────
                         try:
                             import json as _json
-                            _res_obj = _json.loads(result["content"])
+                            # Skip delegation detection when node is disabled (result is None → inner if is False)
+                            _res_obj = _json.loads(result["content"]) if loop_config.is_enabled("delegation_chk") else None
                             if isinstance(_res_obj, dict) and _res_obj.get("__delegate__"):
                                 _tpl_id  = _res_obj["target_template_id"]
                                 _ag_id   = _res_obj["target_agent_id"]
@@ -1073,7 +1088,8 @@ async def stream_agent_events(
 
                         try:
                             db = db or get_db()
-                            skill_id = await db.skill_get_id_by_name(user_id, tool_name)
+                            # Skip skill tracking when node is disabled (None → if skill_id is False)
+                            skill_id = await db.skill_get_id_by_name(user_id, tool_name) if loop_config.is_enabled("skill_track") else None
                             if skill_id:
                                 await db.skill_track_execution(
                                     skill_id=skill_id,

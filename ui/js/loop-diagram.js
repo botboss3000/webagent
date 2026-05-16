@@ -9,6 +9,17 @@
 export const LOOP_W = 1560;
 export const LOOP_H = 400;
 
+// ── Toggleable nodes — these have runtime gating in loop.py ──────────────────
+// UI can render toggle switches only for these node IDs.
+// All other nodes run unconditionally and cannot be user-disabled.
+export const TOGGLEABLE_NODES = new Set([
+  'interrupt_chk',   // Skip interrupt checks — useful for batch / automated agents
+  'permission_chk',  // Skip turn-limit gate — useful for long-running / headless agents
+  'guardrails',      // Skip destructive-tool confirmation — useful for admin agents
+  'delegation_chk',  // Skip agent-delegation detection
+  'skill_track',     // Skip skill-execution DB writes — useful for lightweight agents
+]);
+
 // Width below which the diagram switches from horizontal to vertical layout.
 export const BREAKPOINT_VERTICAL = 900;
 
@@ -393,6 +404,12 @@ function _computeEdgePathVertical(edge, src, dst, canvasW) {
 //   getNodeDetail   — (nodeDef) => string
 //   onNodeClick     — (nodeDef, nodeEl, rootEl) => void
 //   decorateNode    — (nodeDef, nodeEl) => void
+// ── renderLoopDiagram ─────────────────────────────────────────────────────────
+// opts.nodeConfig — Map<nodeId, {enabled: boolean}> or null.
+//   When a node's enabled value is false the element gets the CSS class
+//   'lv-disabled', which callers can style (e.g. muted color, strikethrough).
+//   Only nodes in TOGGLEABLE_NODES should ever appear with enabled=false;
+//   all other nodes are structurally required and the class won't be applied.
 export function renderLoopDiagram(containerEl, nodeStates, {
   availableWidth = 0,
   markerPrefix   = 'ld',
@@ -401,6 +418,7 @@ export function renderLoopDiagram(containerEl, nodeStates, {
   excludeNodes   = null,
   extraEdges     = null,
   nodeLabelMap   = null,
+  nodeConfig     = null,   // Map<nodeId, {enabled: boolean}> — drives lv-disabled
   getNodeDetail  = () => '',
   onNodeClick    = null,
   decorateNode   = null,
@@ -523,6 +541,12 @@ export function renderLoopDiagram(containerEl, nodeStates, {
     if (state === 'active')     el.classList.add('lv-active');
     else if (state === 'done')  el.classList.add('lv-done');
     else if (state === 'error') el.classList.add('lv-error');
+
+    // Disabled state — only applied to TOGGLEABLE_NODES when nodeConfig says so
+    const _ncEntry = nodeConfig && nodeConfig.get(nd.id);
+    if (_ncEntry && _ncEntry.enabled === false && TOGGLEABLE_NODES.has(nd.id)) {
+      el.classList.add('lv-disabled');
+    }
 
     el.style.left   = (nd.cx - nd.hw) + 'px';
     el.style.top    = (nd.cy - nd.hh) + 'px';
