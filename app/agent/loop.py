@@ -59,9 +59,66 @@ _client = None
 _current_base_url = None
 _current_api_key = None
 
-# ── Destructive tools that require confirmation ──
-DESTRUCTIVE_TOOLS = {"edit_source", "write_source", "delete_source",
-                     "run_command", "restart_server"}
+# ── Destructive tools that require confirmation (hardcoded baseline) ──
+# These are always treated as destructive regardless of agent safety_policy.
+# Per-agent additions live in agents.safety_policy.destructive_tools.
+# Per-tool overrides live in tools.requires_confirmation.
+DESTRUCTIVE_TOOLS = frozenset({"edit_source", "write_source", "delete_source",
+                                "run_command", "restart_server"})
+
+
+def _parse_safety_policy(agent_rec: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Parse an agent record's safety_policy JSON column into a dict."""
+    if not agent_rec:
+        return {}
+    raw = agent_rec.get("safety_policy") or "{}"
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {}
+
+
+def _build_effective_destructive_set(
+    agent_rec: Optional[Dict[str, Any]],
+    tools: Dict[str, Any],
+) -> frozenset:
+    """
+    Build the effective set of tool names that require user confirmation before running.
+
+    Merges three sources (union, never subtract):
+      1. DESTRUCTIVE_TOOLS  — hardcoded baseline (admin tools always require confirmation).
+      2. safety_policy.destructive_tools — per-agent additions saved by the user.
+      3. requires_confirmation flag on each ToolInfo — per-tool DB flag.
+    """
+    result = set(DESTRUCTIVE_TOOLS)
+
+    sp = _parse_safety_policy(agent_rec)
+    extra = sp.get("destructive_tools") or []
+    if isinstance(extra, list):
+        result.update(extra)
+
+    for name, info in tools.items():
+        if getattr(info, "requires_confirmation", False):
+            result.add(name)
+
+    return frozenset(result)
+
+
+def _is_auto_confirm(agent_rec: Optional[Dict[str, Any]]) -> bool:
+    """Return True when safety_policy.auto_confirm is set — skips the confirmation gate."""
+    sp = _parse_safety_policy(agent_rec)
+    return bool(sp.get("auto_confirm", False))
+
+
+def _max_concurrent_tools(agent_rec: Optional[Dict[str, Any]]) -> Optional[int]:
+    """Return the maximum number of tools to run in parallel (None = unlimited)."""
+    sp = _parse_safety_policy(agent_rec)
+    val = sp.get("max_concurrent_tools")
+    if val and isinstance(val, int) and val > 0:
+        return val
+    return None
 
 
 def _get_client():
@@ -501,6 +558,13 @@ async def stream_agent_events(
         if loop_config is None:
             loop_config = LoopConfig.from_agent(_agent_rec)
 
+        # Build the effective destructive-tool set from the agent's safety_policy
+        # (merged with the hardcoded baseline and per-tool requires_confirmation flags).
+        # This is computed once per session after tools are loaded.
+        effective_destructive = _build_effective_destructive_set(_agent_rec, tools)
+        auto_confirm = _is_auto_confirm(_agent_rec)
+        concurrent_limit = _max_concurrent_tools(_agent_rec)
+
         def prefix_content(content: str) -> str:
             """Prefix agent name to content."""
             if not content:
@@ -884,7 +948,7 @@ async def stream_agent_events(
                         }
                         tool_msg = {"role": "tool", "content": error_json[:10000], "tool_call_id": tc.id}
                         messages.append(tool_msg)
-                        
+
                         inp = _build_input()
                         outp = json.dumps({"role": "tool", "content": tool_msg["content"], "tool_call_id": tc.id, "name": tool_name, "success": False})
                         db_start = time.time()
@@ -904,7 +968,11 @@ async def stream_agent_events(
                                "op": "insert_interaction", "role": "tool",
                                "tool_name": tool_name, "id": inter_id, "ms": db_dur}
                     else:
-                        if loop_config.is_enabled("guardrails") and tool_name in DESTRUCTIVE_TOOLS:
+                        # ── Guardrail: confirmation required for destructive tools ──
+                        # effective_destructive merges the hardcoded baseline with the
+                        # agent's safety_policy.destructive_tools and per-tool flags.
+                        # auto_confirm skips the gate (useful for automation agents).
+                        if loop_config.is_enabled("guardrails") and tool_name in effective_destructive and not auto_confirm:
                             yield {"type": "pipeline", "level": "pipeline",
                                    "step": "guardrail_check", "tool": tool_name,
                                    "status": "requires_confirmation",
@@ -985,7 +1053,15 @@ async def stream_agent_events(
                         yield {"type": "pipeline", "level": "pipeline",
                                "step": "execute_start", "tool": tool_name}
 
-                    tasks = [execute_one(name, args, tc.id) for _, tc, name, args in valid_calls]
+                    if concurrent_limit and len(valid_calls) > 1:
+                        # Throttle parallel execution to safety_policy.max_concurrent_tools
+                        sem = asyncio.Semaphore(concurrent_limit)
+                        async def _throttled(name, args, tc_id):
+                            async with sem:
+                                return await execute_one(name, args, tc_id)
+                        tasks = [_throttled(name, args, tc.id) for _, tc, name, args in valid_calls]
+                    else:
+                        tasks = [execute_one(name, args, tc.id) for _, tc, name, args in valid_calls]
                     results = await asyncio.gather(*tasks)
 
                     for (idx, tc, tool_name, tool_args), result in zip(valid_calls, results):
@@ -1145,8 +1221,8 @@ async def stream_agent_events(
                    "tool_name": None, "id": inter_id, "ms": db_dur}
 
             yield {"type": "response", "level": "agent", "content": prefix_content(collected_content)}
-            # Fire-and-forget optimizer after successful completion
-            _fire_optimizer(user_id, session_id, channel)
+            if loop_config.is_enabled("fire_optimizer"):
+                _fire_optimizer(user_id, session_id, channel)
             return
 
         # ── Max turns reached ──
@@ -1158,18 +1234,19 @@ async def stream_agent_events(
             "type": "response", "level": "agent",
             "content": prefix_content("I've reached the maximum number of turns. What would you like to do next?"),
         }
-        # Fire-and-forget optimizer after max turns
-        _fire_optimizer(user_id, session_id, channel)
+        if loop_config.is_enabled("fire_optimizer"):
+            _fire_optimizer(user_id, session_id, channel)
     except asyncio.CancelledError as e:
         logger.info(f"Agent loop for session {session_id} cancelled: {e}")
         yield {"type": "interrupted", "level": "agent", "message": str(e)}
-        _fire_optimizer(user_id, session_id, channel)
+        if loop_config.is_enabled("fire_optimizer"):
+            _fire_optimizer(user_id, session_id, channel)
         return
     except Exception as e:
         logger.error(f"Agent loop error: {e}", exc_info=True)
         yield {"type": "error", "level": "agent", "message": f"Unexpected error in agent loop: {e}"}
-        # Fire-and-forget optimizer even on error — may learn from failure
-        _fire_optimizer(user_id, session_id, channel)
+        if loop_config.is_enabled("fire_optimizer"):
+            _fire_optimizer(user_id, session_id, channel)
         return
 
 
@@ -1179,15 +1256,15 @@ async def run_agent_loop_buffered(
     user_message: str,
     system_prompt: str,
     agent_id: str,
-    history: Optional[List[Dict[str, Any]]] = None,
-    parent_interaction_id: Optional[str] = None,
+    history=None,
+    parent_interaction_id=None,
     max_turns: int = 10,
-    event_callback: Optional[Any] = None,
-    channel: Optional[str] = None,
-    timeout_seconds: Optional[int] = None,
-    db: Optional[Any] = None,
-    agent_template_id: Optional[str] = None,
-    allowed_tools: Optional[List[str]] = None,
+    event_callback=None,
+    channel=None,
+    timeout_seconds=None,
+    db=None,
+    agent_template_id=None,
+    allowed_tools=None,
 ) -> str:
     """
     Compatibility wrapper that runs the streaming loop internally,
@@ -1220,7 +1297,7 @@ async def run_agent_loop_buffered(
                     await event_callback(event)
                 except Exception:
                     pass
-                    
+
             if event["type"] == "response":
                 final_response = event["content"]
             elif event["type"] == "error":
@@ -1229,15 +1306,17 @@ async def run_agent_loop_buffered(
             elif event["type"] == "interrupted":
                 if not final_response:
                     final_response = f"I was interrupted: {event['message']}"
-                    
+
         if not final_response:
             final_response = "I completed the analysis but produced no output."
 
     if timeout_seconds is not None:
+        import asyncio as _asyncio
         try:
-            await asyncio.wait_for(_run(), timeout=timeout_seconds)
-        except asyncio.TimeoutError:
-            logger.warning(
+            await _asyncio.wait_for(_run(), timeout=timeout_seconds)
+        except _asyncio.TimeoutError:
+            import logging as _log
+            _log.getLogger(__name__).warning(
                 "Agent loop timed out after %ds for session %s",
                 timeout_seconds, session_id,
             )
@@ -1249,5 +1328,5 @@ async def run_agent_loop_buffered(
                 )
     else:
         await _run()
-        
+
     return final_response

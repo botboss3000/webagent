@@ -972,6 +972,17 @@ class LocalBackend(StorageBackend):
             conn.commit()
             logger.info("Cleared agent.model for user-owned agents (now show 'default')")
 
+            # ── Migration 013: add safety_policy to agents + requires_confirmation to tools ──
+            ag_cols_013 = {row[1] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
+            if "safety_policy" not in ag_cols_013:
+                conn.execute("ALTER TABLE agents ADD COLUMN safety_policy TEXT NOT NULL DEFAULT '{}'")
+                logger.info("Added agents.safety_policy column")
+            tool_cols_013 = {row[1] for row in conn.execute("PRAGMA table_info(tools)").fetchall()}
+            if "requires_confirmation" not in tool_cols_013:
+                conn.execute("ALTER TABLE tools ADD COLUMN requires_confirmation INTEGER NOT NULL DEFAULT 0")
+                logger.info("Added tools.requires_confirmation column")
+            conn.commit()
+
             # ── Seed: ensure admin_default always has is_admin=1 ──
             _mig_now2 = _now_iso()
             conn.execute(
@@ -3389,8 +3400,9 @@ class LocalBackend(StorageBackend):
                     bootstrap_tools, template_id, is_user_default,
                     allowed_tools, custom_tool_ids,
                     trigger_type, trigger_key, loop_logic,
+                    safety_policy,
                     created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'[]','[]',?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'[]','[]',?,?,?,'{}',?,?)""",
                 (
                     agent_id, user_id, user_id, name, description,
                     tpl.get("system_prompt", ""),
@@ -3487,13 +3499,16 @@ class LocalBackend(StorageBackend):
             "model", "temperature", "max_tokens",
             "allowed_tools", "custom_tool_ids",
             "trigger_type", "trigger_key", "loop_logic",
+            "safety_policy",
         }
         safe = {}
         for k, v in updates.items():
             if k not in ALLOWED:
                 continue
-            # Serialize list fields to JSON strings for storage
+            # Serialize list/dict fields to JSON strings for storage
             if k in ("allowed_tools", "custom_tool_ids", "loop_logic") and isinstance(v, list):
+                v = json.dumps(v)
+            if k == "safety_policy" and isinstance(v, dict):
                 v = json.dumps(v)
             safe[k] = v
         if not safe:

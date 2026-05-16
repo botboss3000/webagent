@@ -59,12 +59,12 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "delegate_to_agent":             {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     "list_delegatable_agents":       {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     # ── Admin/source (privileged) — write/exec tools pass through guardrails ──
-    "read_source":                   {"stages": ["execute_tools"],                               "destructive": False, "agent_types": ["admin"]},
-    "write_source":                  {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "agent_types": ["admin"]},
-    "edit_source":                   {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "agent_types": ["admin"]},
-    "delete_source":                 {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "agent_types": ["admin"]},
-    "run_command":                   {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "agent_types": ["admin"]},
-    "restart_server":                {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "agent_types": ["admin"]},
+    "read_source":                   {"stages": ["execute_tools"],                               "destructive": False, "requires_confirmation": False, "agent_types": ["admin"]},
+    "write_source":                  {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": True,  "agent_types": ["admin"]},
+    "edit_source":                   {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": True,  "agent_types": ["admin"]},
+    "delete_source":                 {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": True,  "agent_types": ["admin"]},
+    "run_command":                   {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": True,  "agent_types": ["admin"]},
+    "restart_server":                {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": True,  "agent_types": ["admin"]},
     # ── Auth / comms ──
     "register_user":                 {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
 }
@@ -88,6 +88,7 @@ class ToolInfo:
     handler: Callable
     parameters: dict
     tool_id: str = ''
+    requires_confirmation: bool = False  # True → treated as destructive (guardrail check)
 
 
 class ToolLoader:
@@ -124,7 +125,13 @@ class ToolLoader:
             # Ensure params is a proper JSON Schema object
             if not isinstance(params, dict) or params.get("type") != "object":
                 params = {"type": "object", "properties": {}, "required": []}
-            tools[name] = ToolInfo(name=name, handler=handler, parameters=params, tool_id=row.get('id',''))
+            tools[name] = ToolInfo(
+                name=name,
+                handler=handler,
+                parameters=params,
+                tool_id=row.get('id', ''),
+                requires_confirmation=bool(row.get('requires_confirmation', 0)),
+            )
             logger.debug(f"Loaded tool {name} for user {user_id}")
 
         # ── Inject built-in tools (override any DB versions) ──
@@ -1159,6 +1166,14 @@ async def load_tools(
         Dictionary mapping tool names to ToolInfo objects.
     """
     tools = await _tool_loader.load_tools(user_id, agent_template_id=agent_template_id)
+
+    # Propagate requires_confirmation from BUILTIN_TOOL_METADATA to built-in ToolInfo entries.
+    # DB tools already have this set from their row; built-ins need it applied from metadata.
+    for name, info in tools.items():
+        if not info.requires_confirmation and name in BUILTIN_TOOL_METADATA:
+            meta = BUILTIN_TOOL_METADATA[name]
+            if meta.get("requires_confirmation", False):
+                info.requires_confirmation = True
 
     # Phase 5: enforce allowed_tools filter.
     # Tier-1 tools are always-on and must never be filtered.
