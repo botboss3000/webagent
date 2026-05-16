@@ -906,7 +906,7 @@ function _triggerExclusions(agent) {
   if (tt === 'user_input') {
     return {
       excludeNodes: ['slash_cmd'],
-      extraEdges:   [{ from: 'user_input', to: 'ensure_session' }],
+      extraEdges:   [{ from: 'user_input', to: 'session_setup' }],
       nodeLabelMap: {},
     };
   }
@@ -1015,16 +1015,10 @@ function _lvNodeHint(nd, agent) {
     case 'slash_cmd':
       return 'Intercept check — /optimize routes directly to the optimizer, bypassing the agent loop';
 
-    case 'ensure_session':
-      return 'Creates a new session in the DB if none exists for this request';
-
-    case 'agent_resolve':
+    case 'session_setup':
       return isCustom
-        ? `Agent: ${agent.name || agent.id} — click to configure`
-        : `Loads the agent record — template, system prompt, tools, max_turns`;
-
-    case 'participants':
-      return 'Verifies the user is permitted to interact with this agent';
+        ? `Agent: ${agent.name || agent.id} — session init, agent resolve, participants`
+        : 'Ensures session exists, resolves agent, registers participants';
 
     case 'save_user_msg':
       return 'Persists the user message as role="user" before the loop starts';
@@ -1037,18 +1031,12 @@ function _lvNodeHint(nd, agent) {
         : `${n} of 5 prompt sections configured`;
     }
 
-    case 'copy_defaults':
-      return 'Seeds default context from template on first run if no context rows exist';
-
-    case 'skip_gate':
-      return 'Trivial/short messages skip memory_search to save latency';
-
     case 'memory_search': {
       const dis = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
       const on = !dis.has('memory');
       return isCustom
         ? `Memory search ${on ? 'enabled' : 'disabled'} — click to toggle`
-        : 'Semantic search over past sessions to inject relevant context';
+        : 'Semantic search over past sessions; trivial messages skip this step automatically';
     }
 
     case 'resolve_attach':
@@ -1082,11 +1070,8 @@ function _lvNodeHint(nd, agent) {
 
     case 'turn_counter':
       return isCustom
-        ? `Max turns: ${agent.max_turn_count || 10} — click to edit`
+        ? `Max turns: ${agent.max_turn_count || 10} — click to edit turn limit & permission gate`
         : `Turn counter — exits at max_turns (${agent.max_turn_count || 10})`;
-
-    case 'permission_chk':
-      return 'At turn ≥ 11, requests user permission to continue; extends max_turns by 10 if approved';
 
     case 'build_tool_defs':
       return 'Converts tool metadata into the OpenAI tool_calls schema for the LLM';
@@ -1249,7 +1234,7 @@ function _lvShowReadOnlyPanel(nd, nodeEl, container, agent) {
   // Then render agent-specific extras per node
   switch (nd.id) {
 
-    case 'agent_resolve': {
+    case 'session_setup': {
       const lbl = document.createElement('div');
       lbl.className = 'lv-tool-section-label';
       lbl.textContent = 'This agent';
@@ -1408,6 +1393,7 @@ function _lvShowReadOnlyPanel(nd, nodeEl, container, agent) {
     }
 
     case 'turn_counter':
+    case 'permission_chk':
     case 'check_continue': {
       const lbl = document.createElement('div');
       lbl.className = 'lv-tool-section-label';
@@ -1527,35 +1513,42 @@ function _lvShowEditPanel(nd, nodeEl, container, agent) {
     case 'build_history':      _lvRenderTranscriptInfo(body);                  break;
     case 'load_tools':         _lvRenderLoadToolsInfo(body);                   break;
     case 'assemble_msgs':      _lvRenderAssembleInfo(body);                    break;
+    case 'session_setup':  _lvRenderSessionSetupInfo(body, agent);   break;
     case 'memory_search':  _lvRenderMemorySearchEditor(body, agent); break;
     case 'llm_call':       _lvRenderLlmEditor(body, agent);          break;
     case 'execute_tools':  _lvRenderToolsEditor(body, agent);        break;
     case 'guardrails':     _lvRenderGuardrailsEditor(body, agent);   break;
+    case 'turn_counter':
+    case 'permission_chk':
     case 'check_continue': _lvRenderContinueEditor(body, agent);     break;
     case 'memory_save':    _lvRenderMemorySaveEditor(body, agent);   break;
     // ── Loop-gated nodes (loop_logic enable/disable) ──
     case 'interrupt_chk':
       _lvRenderGatedNodeEditor(body, agent, 'interrupt_chk', 'Interrupt check',
-        'Checks for a cancellation signal before each turn. Disable for batch or ' +
-        'automated agents that should run to completion without interruption.');
-      break;
-    case 'permission_chk':
-      _lvRenderGatedNodeEditor(body, agent, 'permission_chk', 'Turn-limit gate',
-        'At turn 11 the agent pauses and asks the user for permission to continue, ' +
-        'then extends max_turns by 10 if approved. Disable for long-running or ' +
-        'headless agents that should never pause mid-task.');
+        'Polls for a cancellation signal at the start of each turn and after every tool result. When the user clicks Stop, this node detects the flag and halts the loop immediately, returning whatever the agent has produced so far. Disable for batch or headless agents that must run to completion without interruption.',
+        {
+          dbEffect: 'Reads only — checks the in-memory interrupt registry and interrupts table. No writes. Overhead is negligible (one flag read per turn).',
+          effectiveWhen: 'Next message sent',
+          effectiveClass: 'immediate'
+        });
       break;
     case 'delegation_chk':
       _lvRenderGatedNodeEditor(body, agent, 'delegation_chk', 'Agent delegation',
-        'After each tool result, checks for a __delegate__ signal that hands off ' +
-        'execution to another agent mid-loop. Disable to prevent delegation for ' +
-        'this agent and keep it isolated.');
+        'After each tool result, checks whether the response contains a __delegate__ sentinel. If detected, the loop reinitialises with the target agent\'s config — swapping system prompt, tools, model, and loop settings — mid-session without starting a new session. Disable to keep this agent isolated and prevent it from handing off to other agents.',
+        {
+          dbEffect: 'On delegation: updates sessions.agent_id and logs an agent_delegation pipeline event in interactions. No writes on turns where delegation is not triggered.',
+          effectiveWhen: 'Next message sent',
+          effectiveClass: 'immediate'
+        });
       break;
     case 'skill_track':
       _lvRenderGatedNodeEditor(body, agent, 'skill_track', 'Skill tracking',
-        'Records tool execution events and updates skill performance scores in the ' +
-        'database. Disable for lightweight or high-throughput agents where these ' +
-        'extra DB writes are unnecessary.');
+        'After each successful tool call, records the usage event in the skills table. Increments the use count and updates the last-used timestamp for that tool under the current user. This data drives tool performance scoring and the Skills tab analytics. Disable to reduce DB write load on high-throughput or lightweight agents.',
+        {
+          dbEffect: 'Writes to skills table: increments use_count, sets last_used_at. One row write per tool call per turn. Disable eliminates these writes entirely.',
+          effectiveWhen: 'Next message sent',
+          effectiveClass: 'immediate'
+        });
       break;
     default: {
       _lvRenderNodeInfo(body, nd);
@@ -1724,12 +1717,12 @@ function _lvRenderNodeInfo(panel, nd) {
 function _lvRenderLoadContextInfo(body, agent) {
   const desc = document.createElement('div');
   desc.className = 'lv-edit-desc';
-  desc.textContent = 'Queries the agents table to load context documents into the system prompt.';
+  desc.textContent = 'Loads context documents into the system prompt from the agents table. Also seeds default context from templates on first use — if the user has no context rows yet, defaults are copied in before loading proceeds.';
   body.appendChild(desc);
 
   const lbl = document.createElement('div');
   lbl.className = 'lv-tool-section-label';
-  lbl.textContent = 'Query: agents table';
+  lbl.textContent = 'Prompt columns (agents table)';
   body.appendChild(lbl);
 
   const COLS = [
@@ -1928,7 +1921,7 @@ function _lvRenderAssembleInfo(body) {
 function _lvRenderMemorySearchEditor(body, agent) {
   const desc = document.createElement('div');
   desc.className = 'lv-edit-desc';
-  desc.textContent = 'Control whether the agent searches past sessions for relevant context before each response.';
+  desc.textContent = 'Searches past sessions for semantically relevant context and injects it into the prompt as [BRAIN CONTEXT]. Short or trivial messages (greetings, single words, affirmations) skip this step automatically via a regex gate to save latency.';
   body.appendChild(desc);
   const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
   const memEnabled = !disabled.has('memory');
@@ -2005,6 +1998,22 @@ function _lvRenderGuardrailsEditor(body, agent) {
   _lvToggleRow(body, 'Require confirmation for destructive tools', guardEnabled,
     on => _setNodeLoopEnabled(agent, 'guardrails', on));
 
+  const guardDetails = document.createElement('div');
+  guardDetails.className = 'lv-gate-details';
+  guardDetails.style.marginTop = '6px';
+  const _gdbRow = document.createElement('div');
+  _gdbRow.className = 'lv-gate-detail-row';
+  const _gdbl = document.createElement('span'); _gdbl.className = 'lv-gate-detail-label'; _gdbl.textContent = 'DB effect';
+  const _gdbv = document.createElement('span'); _gdbv.className = 'lv-gate-detail-val';
+  _gdbv.textContent = 'No direct writes from the guard itself. Tool results are stored in interactions as normal once confirmed — or suppressed if the user denies.';
+  _gdbRow.appendChild(_gdbl); _gdbRow.appendChild(_gdbv); guardDetails.appendChild(_gdbRow);
+  const _gewRow = document.createElement('div');
+  _gewRow.className = 'lv-gate-detail-row';
+  const _gewl = document.createElement('span'); _gewl.className = 'lv-gate-detail-label'; _gewl.textContent = 'Takes effect';
+  const _gewb = document.createElement('span'); _gewb.className = 'lv-gate-effect-badge lv-gate-effect-immediate'; _gewb.textContent = 'Next message sent';
+  _gewRow.appendChild(_gewl); _gewRow.appendChild(_gewb); guardDetails.appendChild(_gewRow);
+  body.appendChild(guardDetails);
+
   // ── Per-category tool blocks ───────────────────────────────────────────────
   const toolsLbl = document.createElement('div');
   toolsLbl.className = 'lv-tool-section-label';
@@ -2027,6 +2036,49 @@ function _lvRenderGuardrailsEditor(body, agent) {
   });
 }
 
+function _lvRenderSessionSetupInfo(body, agent) {
+  const steps = [
+    {
+      label: 'Ensure Session',
+      text:  'Creates a session row in the DB if one does not already exist for this session_id. On subsequent messages in the same session this is a no-op.',
+      db:    'Conditional write to sessions table — only on first message.',
+    },
+    {
+      label: 'Agent Resolve',
+      text:  'Determines which agent handles this request. Checks for optimizer routing, then the user\'s configured default agent, then falls back to the system default.',
+      db:    'Read from agents and agent_templates tables.',
+    },
+    {
+      label: 'Participants',
+      text:  'Registers the user and the resolved agent as active participants in the session. Both writes are conditional — skipped if already registered.',
+      db:    'Conditional writes to session_participants: one row for role "user", one for role "agent".',
+    },
+  ];
+
+  steps.forEach(step => {
+    const lbl = document.createElement('div');
+    lbl.className = 'lv-tool-section-label';
+    lbl.style.marginTop = '10px';
+    lbl.textContent = step.label;
+    body.appendChild(lbl);
+
+    const desc = document.createElement('div');
+    desc.className = 'lv-edit-desc';
+    desc.textContent = step.text;
+    body.appendChild(desc);
+
+    const box = document.createElement('div');
+    box.className = 'lv-gate-details';
+    const row = document.createElement('div');
+    row.className = 'lv-gate-detail-row';
+    const lh = document.createElement('span'); lh.className = 'lv-gate-detail-label'; lh.textContent = 'DB effect';
+    const rv = document.createElement('span'); rv.className = 'lv-gate-detail-val'; rv.textContent = step.db;
+    row.appendChild(lh); row.appendChild(rv);
+    box.appendChild(row);
+    body.appendChild(box);
+  });
+}
+
 function _lvRenderContinueEditor(body, agent) {
   const desc = document.createElement('div');
   desc.className = 'lv-edit-desc';
@@ -2035,6 +2087,35 @@ function _lvRenderContinueEditor(body, agent) {
   _lvSliderRow(body, 'Max turns', agent.max_turn_count ?? 10, 1, 30, 1, val => {
     _lvSetPending('max_turn_count', parseInt(val, 10));
   });
+
+  // ── Permission gate (permission_chk) ─────────────────────────────────────
+  const permLbl = document.createElement('div');
+  permLbl.className = 'lv-tool-section-label';
+  permLbl.style.marginTop = '12px';
+  permLbl.textContent = 'Permission gate';
+  body.appendChild(permLbl);
+
+  const permDesc = document.createElement('div');
+  permDesc.className = 'lv-edit-desc';
+  permDesc.textContent = 'When the agent reaches the max turn ceiling, it pauses and asks the user "Do you want me to continue?" If approved, the ceiling extends by one full block (the same max turns value) and the loop resumes. This repeats each time the new ceiling is reached. Disable for headless agents that should run to completion without interruption.';
+  body.appendChild(permDesc);
+
+  const permDetails = document.createElement('div');
+  permDetails.className = 'lv-gate-details';
+  const _pdbRow = document.createElement('div'); _pdbRow.className = 'lv-gate-detail-row';
+  const _pdbl = document.createElement('span'); _pdbl.className = 'lv-gate-detail-label'; _pdbl.textContent = 'DB effect';
+  const _pdbv = document.createElement('span'); _pdbv.className = 'lv-gate-detail-val';
+  _pdbv.textContent = 'The gate\'s ON/OFF state is saved to agents.loop_logic when you click Save — this persists across restarts and reloads. At runtime, the permission-request text is injected as a temporary system message into the LLM\'s context only; it is not written to the interactions table.';
+  _pdbRow.appendChild(_pdbl); _pdbRow.appendChild(_pdbv); permDetails.appendChild(_pdbRow);
+  const _pewRow = document.createElement('div'); _pewRow.className = 'lv-gate-detail-row';
+  const _pewl = document.createElement('span'); _pewl.className = 'lv-gate-detail-label'; _pewl.textContent = 'Takes effect';
+  const _pewb = document.createElement('span'); _pewb.className = 'lv-gate-effect-badge lv-gate-effect-immediate'; _pewb.textContent = 'Next message sent';
+  _pewRow.appendChild(_pewl); _pewRow.appendChild(_pewb); permDetails.appendChild(_pewRow);
+  body.appendChild(permDetails);
+
+  const permEnabled = _isNodeLoopEnabled(agent, 'permission_chk');
+  _lvToggleRow(body, 'Ask permission before stopping', permEnabled,
+    on => _setNodeLoopEnabled(agent, 'permission_chk', on));
 }
 
 function _lvRenderMemorySaveEditor(body, agent) {
@@ -2054,12 +2135,47 @@ function _lvRenderMemorySaveEditor(body, agent) {
 }
 
 // ── Generic editor for loop-gated nodes (interrupt_chk, permission_chk, etc.) ─
-// Renders a description and a single ON/OFF toggle that persists to loop_logic.
-function _lvRenderGatedNodeEditor(body, agent, nodeId, label, description) {
+// details: { dbEffect: string, effectiveWhen: string, effectiveClass: string }
+function _lvRenderGatedNodeEditor(body, agent, nodeId, label, description, details) {
   const desc = document.createElement('div');
   desc.className = 'lv-edit-desc';
   desc.textContent = description;
   body.appendChild(desc);
+
+  if (details) {
+    const box = document.createElement('div');
+    box.className = 'lv-gate-details';
+
+    if (details.dbEffect) {
+      const row = document.createElement('div');
+      row.className = 'lv-gate-detail-row';
+      const lbl = document.createElement('span');
+      lbl.className = 'lv-gate-detail-label';
+      lbl.textContent = 'DB effect';
+      const val = document.createElement('span');
+      val.className = 'lv-gate-detail-val';
+      val.textContent = details.dbEffect;
+      row.appendChild(lbl);
+      row.appendChild(val);
+      box.appendChild(row);
+    }
+
+    if (details.effectiveWhen) {
+      const row = document.createElement('div');
+      row.className = 'lv-gate-detail-row';
+      const lbl = document.createElement('span');
+      lbl.className = 'lv-gate-detail-label';
+      lbl.textContent = 'Takes effect';
+      const badge = document.createElement('span');
+      badge.className = 'lv-gate-effect-badge lv-gate-effect-' + (details.effectiveClass || 'immediate');
+      badge.textContent = details.effectiveWhen;
+      row.appendChild(lbl);
+      row.appendChild(badge);
+      box.appendChild(row);
+    }
+
+    body.appendChild(box);
+  }
 
   const statusLbl = document.createElement('div');
   statusLbl.className = 'lv-tool-section-label';

@@ -865,6 +865,62 @@ body.light-mode .lv-edit-textarea:focus { border-color: #ff8c42; }
 }
 body.light-mode .lv-disabled { opacity: 0.35; filter: grayscale(0.55); }
 
+/* ── Gate node detail block (DB effect + takes-effect) ── */
+.lv-gate-details {
+  background: rgba(122, 162, 247, 0.05);
+  border: 1px solid rgba(122, 162, 247, 0.11);
+  border-radius: 5px;
+  padding: 8px 10px;
+  margin: 8px 0 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lv-gate-detail-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.lv-gate-detail-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #565f89;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  min-width: 72px;
+  padding-top: 2px;
+  flex-shrink: 0;
+}
+.lv-gate-detail-val {
+  font-size: 11px;
+  color: #9aa5ce;
+  line-height: 1.45;
+  flex: 1;
+}
+.lv-gate-effect-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  letter-spacing: 0.02em;
+}
+.lv-gate-effect-immediate {
+  background: rgba(158, 206, 106, 0.12);
+  color: #9ece6a;
+  border: 1px solid rgba(158, 206, 106, 0.22);
+}
+body.light-mode .lv-gate-details {
+  background: rgba(100, 130, 200, 0.04);
+  border-color: rgba(100, 130, 200, 0.14);
+}
+body.light-mode .lv-gate-detail-label { color: #8090b0; }
+body.light-mode .lv-gate-detail-val   { color: #5a6585; }
+body.light-mode .lv-gate-effect-immediate {
+  background: rgba(80, 140, 40, 0.1);
+  color: #4a8a20;
+  border-color: rgba(80, 140, 40, 0.2);
+}
+
 /* ── Cancel button ── */
 .lv-edit-cancel-btn {
   background: transparent;
