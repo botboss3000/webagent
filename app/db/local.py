@@ -2416,8 +2416,9 @@ class LocalBackend(StorageBackend):
                     system_prompt, max_turn_count, model, provider,
                     temperature, max_tokens, status, metadata,
                     agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
-                    bootstrap_tools, is_user_default, assigned_at, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
+                    bootstrap_tools, trigger_type, trigger_key, loop_logic,
+                    is_user_default, assigned_at, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
                 (agent_id, user_id, user_id, tpl_data.get("name", "autoAgent"),
                  tpl_data["system_prompt"],
                  tpl_data["max_turn_count"],
@@ -2432,6 +2433,9 @@ class LocalBackend(StorageBackend):
                  tpl_data.get("tasks_prompt", ""),
                  tpl_data.get("misc_prompt", ""),
                  tpl_data.get("bootstrap_tools", ""),
+                 tpl_data.get("trigger_type", "user_input"),
+                 tpl_data.get("trigger_key"),
+                 tpl_data.get("loop_logic", "[]"),
                  now, now, now),
             )
             conn.commit()
@@ -2584,6 +2588,9 @@ class LocalBackend(StorageBackend):
                 "temperature": tpl_data.get("temperature", 0.0),
                 "max_tokens": tpl_data.get("max_tokens", 4096),
                 "metadata": tpl_data.get("metadata", "{}"),
+                "trigger_type": tpl_data.get("trigger_type", "user_input"),
+                "trigger_key": tpl_data.get("trigger_key"),
+                "loop_logic": tpl_data.get("loop_logic", "[]"),
             }
         except ValueError:
             raise
@@ -2739,8 +2746,8 @@ class LocalBackend(StorageBackend):
                 conn.execute(
                     """INSERT INTO agents
                        (id, user_id, owner_user_id, template_id, name, system_prompt, max_turn_count, model, provider,
-                        temperature, max_tokens, status, metadata, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
+                        temperature, max_tokens, status, metadata, trigger_type, trigger_key, loop_logic, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)""",
                     (agent_id, user_id, _owner, template_id,
                      agent.get("name", ""),
                      agent.get("system_prompt", ""),
@@ -2750,6 +2757,9 @@ class LocalBackend(StorageBackend):
                      agent.get("temperature", 0.0),
                      agent.get("max_tokens", 4096),
                      json.dumps(agent.get("metadata", {})),
+                     agent.get("trigger_type", "user_input"),
+                     agent.get("trigger_key"),
+                     agent.get("loop_logic", "[]"),
                      now, now),
                 )
                 conn.commit()
@@ -3373,8 +3383,9 @@ class LocalBackend(StorageBackend):
                     agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
                     bootstrap_tools, template_id, is_user_default,
                     allowed_tools, custom_tool_ids,
+                    trigger_type, trigger_key, loop_logic,
                     created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'[]','[]',?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'[]','[]',?,?,?,?,?)""",
                 (
                     agent_id, user_id, user_id, name, description,
                     tpl.get("system_prompt", ""),
@@ -3391,6 +3402,9 @@ class LocalBackend(StorageBackend):
                     tpl.get("misc_prompt", ""),
                     tpl.get("bootstrap_tools", ""),
                     template_id,
+                    tpl.get("trigger_type", "user_input"),
+                    tpl.get("trigger_key"),
+                    tpl.get("loop_logic", "[]"),
                     now, now,
                 ),
             )

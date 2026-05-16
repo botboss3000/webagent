@@ -210,6 +210,9 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest):
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="Agent not found or not owned by this user.")
+    if any(k in updates for k in ("trigger_type", "trigger_key")):
+        from app.agent import trigger_index
+        trigger_index.build()
     return {"agent": _safe_agent(updated)}
 
 

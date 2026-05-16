@@ -123,25 +123,20 @@ async def _handle_generic_slash_command(
 async def _handle_optimize_command(
     user_id: str,
     session_id: str,
-    message: str,
+    feedback: str,
     channel: str,
     db,
 ) -> str:
-    """Handle /optimize or /optimize <feedback> command.
-    Runs the optimizer against the user's current session in the background.
+    """Run the optimizer against the user's current session.
+    feedback is the text after the slash command (may be empty).
     Returns a user-facing message."""
-    _opt_re = re.compile(r"^/optimize\s*(.*)$", re.IGNORECASE | re.DOTALL)
-    m = _opt_re.match(message)
-    if not m:
-        return ""
-    feedback = m.group(1).strip()
 
     # Find the user's most recent real session (not optimizer-*)
     import sqlite3
     try:
         conn = sqlite3.connect("app/db/local.db")
         row = conn.execute(
-            "SELECT id FROM sessions WHERE user_id=? AND id NOT LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1",
+            "SELECT id FROM sessions WHERE user_id=? AND id NOT LIKE 'optimizer-%' AND id NOT LIKE 'worker-%' AND id NOT LIKE 'closer-%' ORDER BY created_at DESC LIMIT 1",
             (user_id,)
         ).fetchone()
         target_session = row[0] if row else ""
@@ -214,10 +209,10 @@ async def chat(request: ChatRequest):
         _slash_match = _match_slash_command(request.message or "")
         if _slash_match:
             _slash_key, _slash_arg, _slash_tid = _slash_match
-            if _slash_key == "/optimize":
+            if _slash_tid == "opt_planner":
                 result = await _handle_optimize_command(
                     request.user_id, request.session_id,
-                    request.message, "web_portal", db,
+                    _slash_arg, "web_portal", db,
                 )
             else:
                 result = await _handle_generic_slash_command(
@@ -254,14 +249,19 @@ async def chat(request: ChatRequest):
             finally:
                 conn.close()
 
-            # Single call: resolve or re-use the session-bound agent.
-            # If already bound, does direct FK lookup by sessions.agent_id.
-            # If not bound, resolves via priority chain, materializes, binds.
-            agent = await db.get_or_resolve_session_agent(
+            # Resolve agent in main local.db so it is accessible for UI edits,
+            # then bind the session in temp DB if one is active.
+            _agent_db = get_db() if _temp_db_path else db
+            agent = await _agent_db.get_or_resolve_session_agent(
                 session_id=request.session_id,
                 user_id=request.user_id,
                 template_id=opt_template_id,
             )
+            if _temp_db_path and agent and agent.get("id"):
+                try:
+                    await db.bind_session_to_agent(request.session_id, agent["id"])
+                except Exception:
+                    pass
             if not agent:
                 raise RuntimeError(
                     f"Failed to resolve optimizer agent (role={opt_role}) for user {request.user_id}. "
@@ -556,7 +556,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
     _slash_match = _match_slash_command(request.message or "")
     if _slash_match:
         _slash_key, _slash_arg, _slash_tid = _slash_match
-        if _slash_key == "/optimize":
+        if _slash_tid == "opt_planner":
             result = await _handle_optimize_command(
                 request.user_id, request.session_id,
                 request.message, "web_portal", db,
@@ -597,13 +597,19 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         finally:
             conn.close()
 
-        # Single call: resolve or re-use the session-bound agent.
-        # Uses sessions.agent_id (direct FK lookup) if already bound.
-        agent = await db.get_or_resolve_session_agent(
+        # Resolve agent in main local.db so it is accessible for UI edits,
+        # then bind the session in temp DB if one is active.
+        _agent_db = get_db() if _temp_db_path else db
+        agent = await _agent_db.get_or_resolve_session_agent(
             session_id=request.session_id,
             user_id=request.user_id,
             template_id=opt_template_id,
         )
+        if _temp_db_path and agent and agent.get("id"):
+            try:
+                await db.bind_session_to_agent(request.session_id, agent["id"])
+            except Exception:
+                pass
         if not agent:
             raise RuntimeError(
                 f"Failed to resolve optimizer agent (role={opt_role}) for user {request.user_id}. "
