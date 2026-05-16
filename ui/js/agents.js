@@ -901,6 +901,25 @@ function _lvHidePanel(force = false) {
   document.removeEventListener('click', _lvOutsideClickHandler);
 }
 
+function _triggerExclusions(agent) {
+  const tt = agent?.trigger_type || 'user_input';
+  if (tt === 'user_input') {
+    return {
+      excludeNodes: ['slash_cmd'],
+      extraEdges:   [{ from: 'user_input', to: 'ensure_session' }],
+      nodeLabelMap: {},
+    };
+  }
+  if (tt === 'slash_command') {
+    return {
+      excludeNodes: [],
+      extraEdges:   [],
+      nodeLabelMap: { slash_cmd: 'Slash Trigger' },
+    };
+  }
+  return { excludeNodes: [], extraEdges: [], nodeLabelMap: {} };
+}
+
 // nodeStates = Map<nodeId, 'active'|'done'|'error'>  — new Map() = static blueprint
 function _drawAgentLoopDiagram(loopEl, nodeStates, agent) {
   loopEl._lvRo?.disconnect();
@@ -921,12 +940,17 @@ function _drawAgentLoopDiagram(loopEl, nodeStates, agent) {
   // Measure scaleWrap (not loopEl) — excludes loopEl padding and accounts for scrollbar
   const availableWidth = Math.max(300, scaleWrap.clientWidth || scaleWrap.offsetWidth || LOOP_W);
 
+  const { excludeNodes, extraEdges, nodeLabelMap } = _triggerExclusions(agent);
+
   const { rootEl } = renderLoopDiagram(scaleWrap, nodeStates, {
     availableWidth,
     markerPrefix: 'ag',
     nodeFilter: (agent && Array.isArray(agent.loop_logic) && agent.loop_logic.length > 0 && !agent.loop_logic[0].startsWith('opt_'))
       ? agent.loop_logic
       : null,
+    excludeNodes,
+    extraEdges,
+    nodeLabelMap,
     getNodeDetail: nd => _lvNodeHint(nd, agent),
     onNodeClick: (nd, el, root) => {
       if (_lvActivePanelNodeId === nd.id) { _lvHidePanel(true); return; }
