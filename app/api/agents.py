@@ -57,6 +57,7 @@ class UpdateAgentRequest(BaseModel):
     trigger_type: Optional[str] = None
     trigger_key: Optional[str] = None
     loop_logic: Optional[List] = None
+    safety_policy: Optional[Dict[str, Any]] = None
 
 
 class UpdateTemplateRequest(BaseModel):
@@ -99,6 +100,15 @@ def _safe_agent(agent: dict) -> dict:
                 result[field] = []
         elif raw is None:
             result[field] = []
+    # Deserialize safety_policy JSON → dict
+    sp_raw = result.get("safety_policy")
+    if isinstance(sp_raw, str):
+        try:
+            result["safety_policy"] = _json.loads(sp_raw)
+        except Exception:
+            result["safety_policy"] = {}
+    elif sp_raw is None:
+        result["safety_policy"] = {}
     return result
 
 

@@ -487,6 +487,136 @@ function _renderConfigTab(body, agent, panelEl) {
       agent[f.key] || '', !isEditable, 6, f.hint);
   }
 
+  // ── Safety & Guardrails section (custom agents only) ──────────────────────
+  if (isEditable) {
+    const sp = (agent.safety_policy && typeof agent.safety_policy === 'object')
+      ? agent.safety_policy : {};
+    const destructiveList = new Set(Array.isArray(sp.destructive_tools) ? sp.destructive_tools : []);
+    const blockedImports  = new Set(Array.isArray(sp.blocked_imports)   ? sp.blocked_imports  : []);
+
+    const safetyGroup = document.createElement('div');
+    safetyGroup.className = 'agents-field-group';
+
+    // Hidden input that always carries the current safety_policy JSON
+    const spHidden = document.createElement('input');
+    spHidden.type = 'hidden';
+    spHidden.dataset.field = 'safety_policy';
+    spHidden.value = JSON.stringify(sp);
+    safetyGroup.appendChild(spHidden);
+
+    function _syncSpHidden() {
+      const maxConcVal = parseInt(maxConcInput.value, 10);
+      const newSp = {
+        destructive_tools: [...destructiveList],
+        auto_confirm:      autoConfirmCb.checked,
+        blocked_imports:   [...blockedImports],
+      };
+      if (maxConcVal > 0) newSp.max_concurrent_tools = maxConcVal;
+      spHidden.value = JSON.stringify(newSp);
+    }
+
+    const secLabel = document.createElement('label');
+    secLabel.className = 'agents-field-label';
+    secLabel.textContent = 'Safety & Guardrails';
+    safetyGroup.appendChild(secLabel);
+
+    const hint = document.createElement('span');
+    hint.className = 'agents-field-hint';
+    hint.textContent = 'Control which tools require user confirmation before running, and set execution limits.';
+    safetyGroup.appendChild(hint);
+
+    // ── auto_confirm toggle ──────────────────────────────────────────────────
+    const autoConfirmRow = document.createElement('label');
+    autoConfirmRow.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px;';
+    const autoConfirmCb = document.createElement('input');
+    autoConfirmCb.type = 'checkbox';
+    autoConfirmCb.checked = Boolean(sp.auto_confirm);
+    autoConfirmCb.addEventListener('change', _syncSpHidden);
+    autoConfirmRow.appendChild(autoConfirmCb);
+    const autoConfirmLbl = document.createElement('span');
+    autoConfirmLbl.style.cssText = 'font-size:13px;color:var(--fg-1);';
+    autoConfirmLbl.textContent = 'Auto-confirm destructive tools (skip user confirmation gate)';
+    autoConfirmRow.appendChild(autoConfirmLbl);
+    safetyGroup.appendChild(autoConfirmRow);
+
+    // ── max_concurrent_tools ─────────────────────────────────────────────────
+    const maxConcRow = document.createElement('div');
+    maxConcRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:10px;';
+    const maxConcLbl = document.createElement('span');
+    maxConcLbl.style.cssText = 'font-size:13px;color:var(--fg-1);white-space:nowrap;';
+    maxConcLbl.textContent = 'Max concurrent tools:';
+    const maxConcInput = document.createElement('input');
+    maxConcInput.type = 'number';
+    maxConcInput.min = '0';
+    maxConcInput.max = '20';
+    maxConcInput.className = 'agents-input';
+    maxConcInput.style.cssText = 'width:70px;';
+    maxConcInput.value = sp.max_concurrent_tools || '';
+    maxConcInput.placeholder = 'unlimited';
+    maxConcInput.addEventListener('input', _syncSpHidden);
+    maxConcRow.appendChild(maxConcLbl);
+    maxConcRow.appendChild(maxConcInput);
+    const maxConcHint = document.createElement('span');
+    maxConcHint.style.cssText = 'font-size:11px;color:var(--fg-3);';
+    maxConcHint.textContent = '0 = unlimited';
+    maxConcRow.appendChild(maxConcHint);
+    safetyGroup.appendChild(maxConcRow);
+
+    // ── destructive_tools tag editor ─────────────────────────────────────────
+    const dtLabel = document.createElement('div');
+    dtLabel.style.cssText = 'font-size:12px;font-weight:600;color:var(--fg-2);margin-top:12px;margin-bottom:4px;';
+    dtLabel.textContent = 'Additional tools requiring confirmation';
+    safetyGroup.appendChild(dtLabel);
+
+    const dtHint = document.createElement('div');
+    dtHint.style.cssText = 'font-size:11px;color:var(--fg-3);margin-bottom:6px;';
+    dtHint.textContent = 'Admin source tools (edit_source, run_command, etc.) are always included by default.';
+    safetyGroup.appendChild(dtHint);
+
+    const dtTags = document.createElement('div');
+    dtTags.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;min-height:24px;';
+    safetyGroup.appendChild(dtTags);
+
+    function _renderDtTags() {
+      dtTags.innerHTML = '';
+      for (const name of [...destructiveList].sort()) {
+        const tag = document.createElement('span');
+        tag.style.cssText = 'display:inline-flex;align-items:center;gap:3px;background:var(--bg-3);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:11px;color:var(--fg-1);';
+        tag.textContent = name;
+        const rm = document.createElement('button');
+        rm.textContent = '×';
+        rm.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--fg-3);font-size:13px;line-height:1;padding:0;margin-left:2px;';
+        rm.addEventListener('click', () => { destructiveList.delete(name); _renderDtTags(); _syncSpHidden(); });
+        tag.appendChild(rm);
+        dtTags.appendChild(tag);
+      }
+    }
+    _renderDtTags();
+
+    const dtAddRow = document.createElement('div');
+    dtAddRow.style.cssText = 'display:flex;gap:6px;';
+    const dtInput = document.createElement('input');
+    dtInput.type = 'text';
+    dtInput.className = 'agents-input';
+    dtInput.style.cssText = 'flex:1;font-size:12px;';
+    dtInput.placeholder = 'tool_name  (Enter to add)';
+    const dtAddBtn = document.createElement('button');
+    dtAddBtn.className = 'agents-btn';
+    dtAddBtn.textContent = 'Add';
+    dtAddBtn.style.cssText = 'font-size:12px;padding:4px 10px;';
+    function _dtAdd() {
+      const v = dtInput.value.trim();
+      if (v) { destructiveList.add(v); dtInput.value = ''; _renderDtTags(); _syncSpHidden(); }
+    }
+    dtInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); _dtAdd(); } });
+    dtAddBtn.addEventListener('click', _dtAdd);
+    dtAddRow.appendChild(dtInput);
+    dtAddRow.appendChild(dtAddBtn);
+    safetyGroup.appendChild(dtAddRow);
+
+    body.appendChild(safetyGroup);
+  }
+
   // Admin-only: Discoverable toggle for system templates
   if (!isEditable && _userIsAdmin && agent.source === 'template') {
     const discGroup = document.createElement('div');
@@ -1550,6 +1680,24 @@ function _lvShowEditPanel(nd, nodeEl, container, agent) {
           effectiveClass: 'immediate'
         });
       break;
+    case 'fire_optimizer':
+      _lvRenderGatedNodeEditor(body, agent, 'fire_optimizer', 'Fire optimizer',
+        'After the agent produces a final response (or hits max turns / interruption), triggers the optimizer pipeline in the background. The optimizer analyses the session for improvement opportunities. Disable for agents that should never trigger optimization (ephemeral, test, or pipeline-internal agents).',
+        {
+          dbEffect: 'Creates an optimizer session and inserts interactions into a temp DB. No writes to the main session.',
+          effectiveWhen: 'Next message sent',
+          effectiveClass: 'immediate'
+        });
+      break;
+    case 'copy_defaults':
+      _lvRenderGatedNodeEditor(body, agent, 'copy_defaults', 'Copy default context',
+        'On first use, copies the default agent\'s context documents into this agent\'s context. Disable if you want this agent to start with a completely blank context (no inherited personality, skills, or task workflows from the default template).',
+        {
+          dbEffect: 'Inserts context_documents rows (one-time copy). Once copied, toggling this off has no effect — the docs already exist. To reset, delete the agent\'s context docs manually.',
+          effectiveWhen: 'Next message sent',
+          effectiveClass: 'immediate'
+        });
+      break;
     default: {
       _lvRenderNodeInfo(body, nd);
       if (!NODE_PANEL_INFO[nd.id]) {
@@ -1923,9 +2071,18 @@ function _lvRenderMemorySearchEditor(body, agent) {
   desc.className = 'lv-edit-desc';
   desc.textContent = 'Searches past sessions for semantically relevant context and injects it into the prompt as [BRAIN CONTEXT]. Short or trivial messages (greetings, single words, affirmations) skip this step automatically via a regex gate to save latency.';
   body.appendChild(desc);
+
+  const statusLbl = document.createElement('div');
+  statusLbl.className = 'lv-tool-section-label';
+  statusLbl.textContent = 'Runtime gate';
+  body.appendChild(statusLbl);
+
+  const loopEnabled = _isNodeLoopEnabled(agent, 'memory_search');
+  _lvToggleRow(body, 'Memory search node (loop_logic)', loopEnabled, on => _setNodeLoopEnabled(agent, 'memory_search', on));
+
   const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
   const memEnabled = !disabled.has('memory');
-  _lvToggleRow(body, 'Semantic memory search', memEnabled, enabled => {
+  _lvToggleRow(body, 'Memory tool access (allowed_tools)', memEnabled, enabled => {
     const cur = new Set(Array.isArray(_lvPendingChanges.allowed_tools)
       ? _lvPendingChanges.allowed_tools
       : Array.isArray(agent.allowed_tools) ? [...agent.allowed_tools] : []);
@@ -2121,11 +2278,20 @@ function _lvRenderContinueEditor(body, agent) {
 function _lvRenderMemorySaveEditor(body, agent) {
   const desc = document.createElement('div');
   desc.className = 'lv-edit-desc';
-  desc.textContent = 'Control whether key facts from each session are saved to long-term memory.';
+  desc.textContent = 'Control whether key facts from each session are saved to long-term memory. Disable for ephemeral agents that should not persist any state.';
   body.appendChild(desc);
+
+  const statusLbl = document.createElement('div');
+  statusLbl.className = 'lv-tool-section-label';
+  statusLbl.textContent = 'Runtime gate';
+  body.appendChild(statusLbl);
+
+  const loopEnabled = _isNodeLoopEnabled(agent, 'memory_save');
+  _lvToggleRow(body, 'Memory save node (loop_logic)', loopEnabled, on => _setNodeLoopEnabled(agent, 'memory_save', on));
+
   const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
   const saveEnabled = !disabled.has('memory_save');
-  _lvToggleRow(body, 'Save facts to long-term memory', saveEnabled, enabled => {
+  _lvToggleRow(body, 'Memory save tool access (allowed_tools)', saveEnabled, enabled => {
     const cur = new Set(Array.isArray(_lvPendingChanges.allowed_tools)
       ? _lvPendingChanges.allowed_tools
       : Array.isArray(agent.allowed_tools) ? [...agent.allowed_tools] : []);
@@ -2375,6 +2541,11 @@ async function _saveChanges(agent, barEl, panelEl) {
   const tkVal   = fv('trigger_key');    if (tkVal !== undefined) updates.trigger_key    = tkVal || null;
   for (const k of ['agent_prompt','user_prompt','skills_prompt','tasks_prompt','misc_prompt']) {
     const v = fv(k); if (v !== undefined) updates[k] = v;
+  }
+  // Include safety_policy from the hidden input (built by the Safety section controls)
+  const spVal = fv('safety_policy');
+  if (spVal !== undefined) {
+    try { updates.safety_policy = JSON.parse(spVal); } catch (_) { /* ignore malformed */ }
   }
 
   try {

@@ -20,6 +20,7 @@ from app.agent.prompts import (
 )
 
 from app.agent.loop import run_agent_loop_buffered, stream_agent_events
+from app.agent.loop_executor import LoopConfig
 from app.agent.session_history import build_openai_history_from_session
 from app.optimizer.runner import run_optimizer_async
 from app.agent import trigger_index
@@ -306,11 +307,14 @@ async def chat(request: ChatRequest):
             "content": request.message, "id": user_interaction_id,
         })
 
+        # ── Build loop config for pre-loop gating ──
+        loop_config = LoopConfig.from_agent(agent)
+
         # ── Agent context docs (already included by get_or_resolve_session_agent / get_agent_for_user) ──
         context_docs = agent.get("context_documents", [])
 
         # Non-optimizer agents: copy defaults if no context docs exist
-        if not context_docs and not is_opt:
+        if not context_docs and not is_opt and loop_config.is_enabled("copy_defaults"):
             copied = await db.copy_defaults_to_agent(agent["id"], template_id='default')
             if copied > 0:
                 agent = await db.fetch_agent_by_id_with_context(agent["id"], CONTEXT_SECTION_TYPES)
@@ -328,20 +332,21 @@ async def chat(request: ChatRequest):
         })
 
         # ── PHASE 1: Brain-first lookup (visible as tool interaction) ──
-        if _should_skip_memory(request.message):
+        if not loop_config.is_enabled("memory_search") or _should_skip_memory(request.message):
+            _skip_reason = "node_disabled" if not loop_config.is_enabled("memory_search") else "greeting_or_cmd"
             await _emit_to_visualizers(request.session_id, {
                 "type": "pipeline", "level": "pipeline",
-                "step": "memory_search_skip", "reason": "greeting_or_cmd",
+                "step": "memory_search_skip", "reason": _skip_reason,
             })
             brain_results = []
             brain_context = None
             parent_id = await db.insert_interaction(
                 request.user_id, request.session_id, role="tool",
-                content=json.dumps({"skipped": True, "reason": "greeting_or_cmd"}),
+                content=json.dumps({"skipped": True, "reason": _skip_reason}),
                 parent_id=user_interaction_id,
                 tool_name="memory_search",
                 channel="web_portal",
-                metadata=json.dumps({"brain": True, "skipped": True}),
+                metadata=json.dumps({"brain": True, "skipped": True, "reason": _skip_reason}),
                 input_data=json.dumps({"query": request.message, "skipped": True}),
                 sender_id=agent["id"],
                 receiver_id=agent["id"],
@@ -504,8 +509,8 @@ async def chat(request: ChatRequest):
         )
 
         # ── PHASE 3: Background memory save (visible tool interaction) ──
-        # Skip if agent has disabled memory_save via the allowed_tools sentinel
-        if 'memory_save' not in set(_raw_allowed or []):
+        # Skip if agent has disabled memory_save via allowed_tools or loop_logic
+        if 'memory_save' not in set(_raw_allowed or []) and loop_config.is_enabled("memory_save"):
             asyncio.create_task(_save_chat_to_memory(
                 db, request.user_id, request.session_id,
                 request.message, assistant_reply, agent["id"], parent_id,
@@ -666,9 +671,12 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             if _fetched is not None:
                 agent = _fetched
 
+        # Build loop config for pre-loop gating
+        loop_config = LoopConfig.from_agent(agent)
+
         yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'agent_assigned', 'agent_id': agent['id'], 'max_turn_count': agent.get('max_turn_count', 10)})}\n\n"
 
-        if not agent.get("context_documents"):
+        if not agent.get("context_documents") and loop_config.is_enabled("copy_defaults"):
             copied = await db.copy_defaults_to_agent(agent["id"], template_id='default')
             if copied > 0:
                 agent = await db.fetch_agent_by_id_with_context(agent["id"], CONTEXT_SECTION_TYPES)
@@ -682,17 +690,18 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'load_context', 'count': len(context_docs), 'types': doc_types})}\n\n"
 
         # ── PHASE 1: Brain-first lookup ──
-        if _should_skip_memory(request.message):
-            yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_search_skip', 'reason': 'greeting_or_cmd'})}\n\n"
+        if not loop_config.is_enabled("memory_search") or _should_skip_memory(request.message):
+            _skip_reason = "node_disabled" if not loop_config.is_enabled("memory_search") else "greeting_or_cmd"
+            yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_search_skip', 'reason': _skip_reason})}\n\n"
             brain_results = []
             brain_context = None
             parent_id = await db.insert_interaction(
                 request.user_id, request.session_id, role="tool",
-                content=json.dumps({"skipped": True, "reason": "greeting_or_cmd"}),
+                content=json.dumps({"skipped": True, "reason": _skip_reason}),
                 parent_id=user_interaction_id,
                 tool_name="memory_search",
                 channel="web_portal",
-                metadata=json.dumps({"brain": True, "skipped": True}),
+                metadata=json.dumps({"brain": True, "skipped": True, "reason": _skip_reason}),
                 input_data=json.dumps({"query": request.message, "skipped": True}),
                 sender_id=agent["id"],
                 receiver_id=agent["id"],
@@ -822,8 +831,8 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                 # Wrap the agent loop with a timeout
                 await asyncio.wait_for(_run(), timeout=TIMEOUT_SEC)
 
-                # Skip memory save if agent disabled it via allowed_tools sentinel
-                if 'memory_save' not in set(_raw_at or []):
+                # Skip memory save if agent disabled it via allowed_tools or loop_logic
+                if 'memory_save' not in set(_raw_at or []) and loop_config.is_enabled("memory_save"):
                     asyncio.create_task(_save_chat_to_memory(
                         db, request.user_id, request.session_id,
                         request.message, assistant_reply, agent["id"], parent_id,

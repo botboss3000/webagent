@@ -17,6 +17,10 @@ export const TOGGLEABLE_NODES = new Set([
   'guardrails',      // Skip destructive-tool confirmation — useful for admin agents
   'delegation_chk',  // Skip agent-delegation detection
   'skill_track',     // Skip skill-execution DB writes — useful for lightweight agents
+  'memory_search',   // Skip brain context lookup — useful for tool-only agents
+  'memory_save',     // Skip post-chat memory upsert — useful for ephemeral agents
+  'fire_optimizer',  // Skip optimizer trigger after completion
+  'copy_defaults',   // Skip copying default context docs on first use
   // permission_chk is configured via the Turn Counter node editor, not as a standalone node
 ]);
 

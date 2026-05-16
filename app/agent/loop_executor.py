@@ -63,7 +63,7 @@ LOCKED_NODES: frozenset = frozenset({
     "final_response",
 })
 
-# Nodes that have runtime gating implemented in loop.py.
+# Nodes that have runtime gating implemented in loop.py and/or chat.py.
 # UI uses this set to decide which nodes get toggle switches.
 GATED_NODES: frozenset = frozenset({
     "interrupt_chk",   # Skip interrupt checks (batch / automated agents)
@@ -71,7 +71,85 @@ GATED_NODES: frozenset = frozenset({
     "guardrails",      # Skip destructive-tool confirmation (admin agents)
     "delegation_chk",  # Skip agent-delegation detection
     "skill_track",     # Skip skill-execution DB writes (lightweight agents)
+    "memory_search",   # Skip brain context lookup (lightweight / tool-only agents)
+    "memory_save",     # Skip post-chat memory upsert (ephemeral agents)
+    "fire_optimizer",  # Skip optimizer trigger after completion
+    "copy_defaults",   # Skip copying default context docs on first use
 })
+
+
+# ── run_if evaluator ───────────────────────────────────────────────────────────
+
+def _evaluate_run_if(expr: str, context: Dict[str, Any]) -> bool:
+    """
+    Evaluate a simple run_if expression against a context dict.
+
+    Supported expressions:
+      "key"              → truthy check on context[key]
+      "!key"             → falsy check on context[key]
+      "key == value"     → equality (value is stripped, compared as string)
+      "key != value"     → inequality
+      "key > N"          → numeric greater-than
+      "key < N"          → numeric less-than
+      "key >= N"         → numeric greater-or-equal
+      "key <= N"         → numeric less-or-equal
+      "key in [a,b,c]"  → membership check
+
+    All comparisons are safe — no eval(). Returns True on parse failure
+    (fail-open: node runs if expression is malformed).
+    """
+    expr = expr.strip()
+    if not expr:
+        return True
+
+    try:
+        # Negation: "!key"
+        if expr.startswith("!"):
+            key = expr[1:].strip()
+            return not bool(context.get(key))
+
+        # Comparison operators (ordered longest-first to match >= before >)
+        for op in ("!=", ">=", "<=", "==", ">", "<"):
+            if op in expr:
+                parts = expr.split(op, 1)
+                if len(parts) == 2:
+                    key = parts[0].strip()
+                    val_str = parts[1].strip()
+                    ctx_val = context.get(key)
+
+                    if op == "==":
+                        return str(ctx_val) == val_str
+                    elif op == "!=":
+                        return str(ctx_val) != val_str
+                    else:
+                        try:
+                            ctx_num = float(ctx_val) if ctx_val is not None else 0
+                            cmp_num = float(val_str)
+                        except (ValueError, TypeError):
+                            return True  # fail-open
+                        if op == ">":
+                            return ctx_num > cmp_num
+                        elif op == "<":
+                            return ctx_num < cmp_num
+                        elif op == ">=":
+                            return ctx_num >= cmp_num
+                        elif op == "<=":
+                            return ctx_num <= cmp_num
+                break
+
+        # "key in [a,b,c]"
+        if " in " in expr:
+            parts = expr.split(" in ", 1)
+            key = parts[0].strip()
+            list_str = parts[1].strip().strip("[]")
+            members = [m.strip().strip("'\"") for m in list_str.split(",")]
+            return str(context.get(key, "")) in members
+
+        # Simple truthy check: "key"
+        return bool(context.get(expr))
+
+    except Exception:
+        return True  # fail-open on any error
 
 
 # ── NodeConfig ─────────────────────────────────────────────────────────────────
@@ -158,17 +236,25 @@ class LoopConfig:
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
-    def is_enabled(self, node: str) -> bool:
+    def is_enabled(self, node: str, context: Optional[Dict[str, Any]] = None) -> bool:
         """
         Return True if this node should execute.
 
         Locked nodes always return True.  Unknown nodes (e.g. future nodes not
         yet in DEFAULT_NODE_ORDER) default to True so forward-compat is safe.
+
+        If context is provided, evaluates the node's run_if condition against it.
         """
         if node in LOCKED_NODES:
             return True
         cfg = self._nodes.get(node)
-        return cfg.enabled if cfg is not None else True
+        if cfg is None:
+            return True
+        if not cfg.enabled:
+            return False
+        if cfg.run_if and context is not None:
+            return _evaluate_run_if(cfg.run_if, context)
+        return True
 
     def get_node(self, node: str) -> Optional[NodeConfig]:
         """Return the NodeConfig for a specific node, or None if not found."""
