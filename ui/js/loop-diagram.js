@@ -14,10 +14,10 @@ export const LOOP_H = 400;
 // All other nodes run unconditionally and cannot be user-disabled.
 export const TOGGLEABLE_NODES = new Set([
   'interrupt_chk',   // Skip interrupt checks — useful for batch / automated agents
-  'permission_chk',  // Skip turn-limit gate — useful for long-running / headless agents
   'guardrails',      // Skip destructive-tool confirmation — useful for admin agents
   'delegation_chk',  // Skip agent-delegation detection
   'skill_track',     // Skip skill-execution DB writes — useful for lightweight agents
+  // permission_chk is configured via the Turn Counter node editor, not as a standalone node
 ]);
 
 // Width below which the diagram switches from horizontal to vertical layout.
@@ -43,20 +43,16 @@ export const LOOP_NODES = [
   { id: 'user_input',      label: 'User Input',      type: 'input',    cx: 65,   cy: 200, hw: 52, hh: 18 },
 
   // ── PRE-LOOP  (chat.py — before stream_agent_events) ─────────────────────────
-  { id: 'slash_cmd',       label: 'Slash Cmd',        type: 'process',  cx: 217,  cy: 132, hw: 58, hh: 13 },
-  { id: 'ensure_session',  label: 'Ensure Session',   type: 'process',  cx: 217,  cy: 166, hw: 58, hh: 13 },
-  { id: 'agent_resolve',   label: 'Agent Resolve',    type: 'process',  cx: 217,  cy: 200, hw: 58, hh: 13 },
-  { id: 'participants',    label: 'Participants',      type: 'process',  cx: 217,  cy: 234, hw: 58, hh: 13 },
-  { id: 'save_user_msg',   label: 'Save User Msg',    type: 'process',  cx: 217,  cy: 268, hw: 58, hh: 13 },
+  { id: 'slash_cmd',       label: 'Slash Cmd',        type: 'process',  cx: 217,  cy: 166, hw: 58, hh: 13 },
+  { id: 'session_setup',   label: 'Session Setup',    type: 'process',  cx: 217,  cy: 200, hw: 58, hh: 13 },
+  { id: 'save_user_msg',   label: 'Save User Msg',    type: 'process',  cx: 217,  cy: 234, hw: 58, hh: 13 },
 
   // ── CONTEXT  (chat.py — context + prompt assembly) ────────────────────────────
   { id: 'load_context',    label: 'Load Context',     type: 'process',  cx: 396,  cy: 80,  hw: 60, hh: 13 },
-  { id: 'copy_defaults',   label: 'Copy Defaults',    type: 'process',  cx: 396,  cy: 114, hw: 60, hh: 13 },
-  { id: 'skip_gate',       label: 'Skip Gate',        type: 'decision', cx: 396,  cy: 148, hw: 60, hh: 13 },
-  { id: 'memory_search',   label: 'Memory Search',    type: 'process',  cx: 396,  cy: 182, hw: 60, hh: 13 },
-  { id: 'resolve_attach',  label: 'Resolve Attach',   type: 'process',  cx: 396,  cy: 216, hw: 60, hh: 13 },
-  { id: 'build_prompt',    label: 'Build Prompt',     type: 'process',  cx: 396,  cy: 250, hw: 60, hh: 13 },
-  { id: 'build_history',   label: 'Build History',    type: 'process',  cx: 396,  cy: 284, hw: 60, hh: 13 },
+  { id: 'memory_search',   label: 'Memory Search',    type: 'process',  cx: 396,  cy: 114, hw: 60, hh: 13 },
+  { id: 'resolve_attach',  label: 'Resolve Attach',   type: 'process',  cx: 396,  cy: 148, hw: 60, hh: 13 },
+  { id: 'build_prompt',    label: 'Build Prompt',     type: 'process',  cx: 396,  cy: 182, hw: 60, hh: 13 },
+  { id: 'build_history',   label: 'Build History',    type: 'process',  cx: 396,  cy: 216, hw: 60, hh: 13 },
 
   // ── LOOP INIT  (once per request, before the while loop) ─────────────────────
   { id: 'load_provider',   label: 'Load Provider',    type: 'process',  cx: 578,  cy: 168, hw: 60, hh: 13 },
@@ -66,10 +62,9 @@ export const LOOP_NODES = [
   // ── INFERENCE  (per-turn while loop) ─────────────────────────────────────────
   { id: 'interrupt_chk',   label: 'Interrupt Chk',    type: 'decision', cx: 762,  cy: 100, hw: 58, hh: 13 },
   { id: 'turn_counter',    label: 'Turn Counter',     type: 'process',  cx: 762,  cy: 134, hw: 58, hh: 13 },
-  { id: 'permission_chk',  label: 'Permission Chk',   type: 'process',  cx: 762,  cy: 168, hw: 58, hh: 13 },
-  { id: 'build_tool_defs', label: 'Tool Defs',        type: 'process',  cx: 762,  cy: 202, hw: 58, hh: 13 },
-  { id: 'parallel_mode',   label: 'Parallel Mode',    type: 'process',  cx: 762,  cy: 236, hw: 58, hh: 13 },
-  { id: 'llm_call',        label: 'LLM Call',         type: 'llm',      cx: 762,  cy: 272, hw: 55, hh: 20 },
+  { id: 'build_tool_defs', label: 'Tool Defs',        type: 'process',  cx: 762,  cy: 168, hw: 58, hh: 13 },
+  { id: 'parallel_mode',   label: 'Parallel Mode',    type: 'process',  cx: 762,  cy: 202, hw: 58, hh: 13 },
+  { id: 'llm_call',        label: 'LLM Call',         type: 'llm',      cx: 762,  cy: 240, hw: 55, hh: 20 },
 
   // ── ROUTING  (validate + guard, per tool call) ────────────────────────────────
   { id: 'db_persist_asst', label: 'Persist Asst',     type: 'process',  cx: 957,  cy: 132, hw: 60, hh: 13 },
@@ -101,18 +96,14 @@ export const LOOP_EDGES = [
   { from: 'user_input',      to: 'slash_cmd'                                                    },
 
   // PRE-LOOP chain
-  { from: 'slash_cmd',       to: 'ensure_session',  vertical: true                              },
-  { from: 'ensure_session',  to: 'agent_resolve',   vertical: true                              },
-  { from: 'agent_resolve',   to: 'participants',    vertical: true                              },
-  { from: 'participants',    to: 'save_user_msg',   vertical: true                              },
+  { from: 'slash_cmd',       to: 'session_setup',   vertical: true                              },
+  { from: 'session_setup',   to: 'save_user_msg',   vertical: true                              },
 
   // PRE-LOOP → CONTEXT
   { from: 'save_user_msg',   to: 'load_context'                                                 },
 
   // CONTEXT chain
-  { from: 'load_context',    to: 'copy_defaults',   vertical: true                              },
-  { from: 'copy_defaults',   to: 'skip_gate',       vertical: true                              },
-  { from: 'skip_gate',       to: 'memory_search',   vertical: true                              },
+  { from: 'load_context',    to: 'memory_search',   vertical: true                              },
   { from: 'memory_search',   to: 'resolve_attach',  vertical: true                              },
   { from: 'resolve_attach',  to: 'build_prompt',    vertical: true                              },
   { from: 'build_prompt',    to: 'build_history',   vertical: true                              },
@@ -129,8 +120,7 @@ export const LOOP_EDGES = [
 
   // INFERENCE chain
   { from: 'interrupt_chk',   to: 'turn_counter',    vertical: true                              },
-  { from: 'turn_counter',    to: 'permission_chk',  vertical: true                              },
-  { from: 'permission_chk',  to: 'build_tool_defs', vertical: true                              },
+  { from: 'turn_counter',    to: 'build_tool_defs', vertical: true                              },
   { from: 'build_tool_defs', to: 'parallel_mode',   vertical: true                              },
   { from: 'parallel_mode',   to: 'llm_call',        vertical: true                              },
 
@@ -177,13 +167,13 @@ export const LOOP_EDGES = [
 const _H_GROUPS = [
   { nodeIds: ['user_input'],
     left: 13,   right: 117  },
-  { nodeIds: ['slash_cmd','ensure_session','agent_resolve','participants','save_user_msg'],
+  { nodeIds: ['slash_cmd','session_setup','save_user_msg'],
     left: 159,  right: 275  },
-  { nodeIds: ['load_context','copy_defaults','skip_gate','memory_search','resolve_attach','build_prompt','build_history'],
+  { nodeIds: ['load_context','memory_search','resolve_attach','build_prompt','build_history'],
     left: 336,  right: 456  },
   { nodeIds: ['load_provider','load_tools','assemble_msgs'],
     left: 518,  right: 638  },
-  { nodeIds: ['interrupt_chk','turn_counter','permission_chk','build_tool_defs','parallel_mode','llm_call'],
+  { nodeIds: ['interrupt_chk','turn_counter','build_tool_defs','parallel_mode','llm_call'],
     left: 704,  right: 820  },
   { nodeIds: ['db_persist_asst','validate_tools','destructive_chk','guardrails','post_val_chk'],
     left: 897,  right: 1017 },
@@ -245,19 +235,15 @@ export function buildVerticalLayout(availableWidth) {
     // INPUT
     { id: 'user_input',      label: 'User Input',      type: 'input',    cx,        cy: 45,   hw: 52, hh: 18 },
     // PRE-LOOP
-    { id: 'slash_cmd',       label: 'Slash Cmd',        type: 'process',  cx,        cy: 118,  hw: 58, hh: 13 },
-    { id: 'ensure_session',  label: 'Ensure Session',   type: 'process',  cx,        cy: 152,  hw: 58, hh: 13 },
-    { id: 'agent_resolve',   label: 'Agent Resolve',    type: 'process',  cx,        cy: 186,  hw: 58, hh: 13 },
-    { id: 'participants',    label: 'Participants',      type: 'process',  cx,        cy: 220,  hw: 58, hh: 13 },
-    { id: 'save_user_msg',   label: 'Save User Msg',    type: 'process',  cx,        cy: 254,  hw: 58, hh: 13 },
+    { id: 'slash_cmd',       label: 'Slash Cmd',        type: 'process',  cx,        cy: 152,  hw: 58, hh: 13 },
+    { id: 'session_setup',   label: 'Session Setup',    type: 'process',  cx,        cy: 186,  hw: 58, hh: 13 },
+    { id: 'save_user_msg',   label: 'Save User Msg',    type: 'process',  cx,        cy: 220,  hw: 58, hh: 13 },
     // CONTEXT
     { id: 'load_context',    label: 'Load Context',     type: 'process',  cx,        cy: 322,  hw: 60, hh: 13 },
-    { id: 'copy_defaults',   label: 'Copy Defaults',    type: 'process',  cx,        cy: 356,  hw: 60, hh: 13 },
-    { id: 'skip_gate',       label: 'Skip Gate',        type: 'decision', cx,        cy: 390,  hw: 60, hh: 13 },
-    { id: 'memory_search',   label: 'Memory Search',    type: 'process',  cx,        cy: 424,  hw: 60, hh: 13 },
-    { id: 'resolve_attach',  label: 'Resolve Attach',   type: 'process',  cx,        cy: 458,  hw: 60, hh: 13 },
-    { id: 'build_prompt',    label: 'Build Prompt',     type: 'process',  cx,        cy: 492,  hw: 60, hh: 13 },
-    { id: 'build_history',   label: 'Build History',    type: 'process',  cx,        cy: 526,  hw: 60, hh: 13 },
+    { id: 'memory_search',   label: 'Memory Search',    type: 'process',  cx,        cy: 356,  hw: 60, hh: 13 },
+    { id: 'resolve_attach',  label: 'Resolve Attach',   type: 'process',  cx,        cy: 390,  hw: 60, hh: 13 },
+    { id: 'build_prompt',    label: 'Build Prompt',     type: 'process',  cx,        cy: 424,  hw: 60, hh: 13 },
+    { id: 'build_history',   label: 'Build History',    type: 'process',  cx,        cy: 458,  hw: 60, hh: 13 },
     // LOOP INIT
     { id: 'load_provider',   label: 'Load Provider',    type: 'process',  cx,        cy: 594,  hw: 60, hh: 13 },
     { id: 'load_tools',      label: 'Load Tools',       type: 'process',  cx,        cy: 628,  hw: 60, hh: 13 },
@@ -265,10 +251,9 @@ export function buildVerticalLayout(availableWidth) {
     // INFERENCE
     { id: 'interrupt_chk',   label: 'Interrupt Chk',    type: 'decision', cx,        cy: 730,  hw: 58, hh: 13 },
     { id: 'turn_counter',    label: 'Turn Counter',     type: 'process',  cx,        cy: 764,  hw: 58, hh: 13 },
-    { id: 'permission_chk',  label: 'Permission Chk',   type: 'process',  cx,        cy: 798,  hw: 58, hh: 13 },
-    { id: 'build_tool_defs', label: 'Tool Defs',        type: 'process',  cx,        cy: 832,  hw: 58, hh: 13 },
-    { id: 'parallel_mode',   label: 'Parallel Mode',    type: 'process',  cx,        cy: 866,  hw: 58, hh: 13 },
-    { id: 'llm_call',        label: 'LLM Call',         type: 'llm',      cx,        cy: 904,  hw: 55, hh: 20 },
+    { id: 'build_tool_defs', label: 'Tool Defs',        type: 'process',  cx,        cy: 798,  hw: 58, hh: 13 },
+    { id: 'parallel_mode',   label: 'Parallel Mode',    type: 'process',  cx,        cy: 832,  hw: 58, hh: 13 },
+    { id: 'llm_call',        label: 'LLM Call',         type: 'llm',      cx,        cy: 870,  hw: 55, hh: 20 },
     // ROUTING
     { id: 'db_persist_asst', label: 'Persist Asst',     type: 'process',  cx,        cy: 972,  hw: 60, hh: 13 },
     { id: 'validate_tools',  label: 'Validate',          type: 'process',  cx,        cy: 1006, hw: 60, hh: 13 },

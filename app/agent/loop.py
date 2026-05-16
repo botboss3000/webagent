@@ -478,7 +478,8 @@ async def stream_agent_events(
     messages.append({"role": "user", "content": user_message})
 
     turn_count = 0
-    permission_granted = False
+    original_max_turns = max_turns  # the configured block size; used to rearm at each ceiling
+    last_extension_at = 0           # ceiling turn at which we last extended (0 = not yet)
 
     try:
         from app.db import get_db
@@ -524,23 +525,26 @@ async def stream_agent_events(
             yield {"type": "pipeline", "level": "pipeline",
                    "step": "turn_start", "turn": turn_count, "max_turns": max_turns}
 
-            # Ask for permission to continue after 10 turns
-            if loop_config.is_enabled("permission_chk") and turn_count == 11 and not permission_granted:
+            # Ask for permission to continue when the agent reaches the configured turn ceiling.
+            # Rearms automatically after each granted extension (last_extension_at tracks the
+            # ceiling at which we last extended, so asking fires again at each new ceiling).
+            if loop_config.is_enabled("permission_chk") and turn_count == max_turns and last_extension_at != max_turns:
                 fr = get_prompt_fragments()
                 permission_message = (fr.get("turn_permission_request") or "").strip()
                 if permission_message:
                     messages.append({"role": "system", "content": permission_message})
 
-            # Check if user has granted permission to continue (in their last message)
-            if loop_config.is_enabled("permission_chk") and turn_count >= 11 and not permission_granted:
+            # Check if user has granted permission (looks at their most recent message).
+            # Only active at the current ceiling, before we have already extended at that ceiling.
+            if loop_config.is_enabled("permission_chk") and turn_count >= max_turns and last_extension_at < max_turns:
                 last_user_msg = next((msg for msg in reversed(messages) if msg.get("role") == "user"), None)
                 if last_user_msg:
                     user_content = last_user_msg.get("content", "").lower()
                     permission_keywords = ["keep going", "continue", "yes", "sure", "ok", "okay", "proceed", "go ahead", "permission granted"]
                     if any(keyword in user_content for keyword in permission_keywords):
-                        permission_granted = True
-                        max_turns = turn_count + 10
-                        remaining_turns = max_turns - turn_count
+                        last_extension_at = max_turns       # mark this ceiling as extended
+                        max_turns += original_max_turns     # grant one full block more
+                        remaining_turns = original_max_turns
                         tpl = (get_prompt_fragments().get("turn_permission_granted_template") or "").strip()
                         if tpl:
                             try:
