@@ -1,159 +1,14 @@
-'use strict';
+﻿'use strict';
 
 import { app } from './state.js';
 import { apiPath } from './config.js';
 import { LOOP_W, LOOP_NODES, BREAKPOINT_VERTICAL, computeEdgePath, renderLoopDiagram } from './loop-diagram.js';
-
-// ── Static items per node (slash commands and Settings links) ──
-// These cannot come from the /admin/tools endpoint — they live here.
-// type: 'command' = user slash command, 'admin' = settings panel shortcut
-const NODE_STATIC_ITEMS = {
-  // INPUT
-  user_input: [
-    { name: '/optimize',             type: 'command', desc: 'Run the optimizer on this session to improve agent skills' },
-    { name: '/optimize <feedback>',  type: 'command', desc: 'Run optimizer with specific feedback about what to improve' },
-  ],
-
-  // PRE-LOOP
-  slash_cmd: [
-    { name: '/optimize [feedback]',  type: 'command', desc: 'Intercepts /optimize before the agent loop — runs optimizer directly' },
-  ],
-  ensure_session: [
-    { name: 'Settings → Sessions',   type: 'admin',   desc: 'Creates a new session record if one does not already exist for this request' },
-  ],
-  agent_resolve: [
-    { name: 'Settings → Agent',      type: 'admin',   desc: 'Configure agent template, system prompt, and max turns' },
-  ],
-  save_user_msg: [
-    { name: 'Settings → Source',     type: 'admin',   desc: 'User message is persisted to the interactions table before the loop starts' },
-  ],
-
-  // CONTEXT
-  load_context: [
-    { name: 'Settings → Agent',      type: 'admin',   desc: 'Edit context documents (agent, user, skills, tools, tasks sections)' },
-  ],
-  copy_defaults: [
-    { name: 'Settings → Agent',      type: 'admin',   desc: 'Default context is seeded from the default template on first run' },
-  ],
-  skip_gate: [
-    { name: 'Settings → Agent',      type: 'admin',   desc: 'Short/trivial messages skip memory_search entirely (regex skip gate)' },
-  ],
-  memory_search: [
-    { name: 'Settings → Source',     type: 'admin',   desc: 'View and manage memory pages used for brain context injection' },
-  ],
-  build_prompt: [
-    { name: 'Settings → Agent',      type: 'admin',   desc: 'Edit the agent\'s core directive, persona, and context sections' },
-  ],
-  build_history: [
-    { name: 'Settings → Source',     type: 'admin',   desc: 'View session history — internal tools (memory_search/save) are stripped' },
-  ],
-
-  // LOOP INIT
-  load_provider: [
-    { name: 'Settings → Provider',   type: 'admin',   desc: 'Configure LLM base URL, API key, model, and parallel providers' },
-  ],
-  load_tools: [
-    { name: 'Settings → Agent',      type: 'admin',   desc: 'Configure which tools are enabled or disabled for this agent' },
-  ],
-  assemble_msgs: [
-    { name: 'Settings → Agent',      type: 'admin',   desc: 'Assembled as: [system_prompt, ...history, {role:"user"}]' },
-  ],
-
-  // INFERENCE
-  interrupt_chk: [
-    { name: 'Settings → Agent',      type: 'admin',   desc: '_check_interrupt() — checked at the start of every while-loop turn' },
-  ],
-  turn_counter: [
-    { name: 'Settings → Max Turns',  type: 'admin',   desc: 'Increments turn counter; exits loop if max_turns exceeded' },
-  ],
-  permission_chk: [
-    { name: 'Settings → Max Turns',  type: 'admin',   desc: 'At turn 11+ the agent requests permission to continue — configurable via fragments' },
-  ],
-  build_tool_defs: [
-    { name: 'Settings → Agent',      type: 'admin',   desc: 'Converts loaded tool metadata into the LLM tool_calls schema format' },
-  ],
-  parallel_mode: [
-    { name: 'Settings → Provider',   type: 'admin',   desc: 'Enable PARALLEL_MODE env to race multiple LLM providers simultaneously' },
-  ],
-  llm_call: [
-    { name: 'Settings → Provider',   type: 'admin',   desc: 'Change the LLM model, base URL, or API key' },
-    { name: 'Settings → Agent',      type: 'admin',   desc: 'Edit the agent\'s system prompt and persona' },
-  ],
-
-  // ROUTING
-  db_persist_asst: [
-    { name: 'Settings → Source',     type: 'admin',   desc: 'Assistant message (with tool_calls suffix) is saved to DB before validation runs' },
-  ],
-  validate_tools: [
-    { name: 'Settings → Agent',      type: 'admin',   desc: '_validate_tool_call() — checks tool name exists and args are valid' },
-  ],
-  destructive_chk: [
-    { name: 'Settings → Agent',      type: 'admin',   desc: 'DESTRUCTIVE_TOOLS set: edit_source, write_source, delete_source, run_command, restart_server' },
-  ],
-  guardrails: [
-    { name: 'Settings → Agent',      type: 'admin',   desc: 'Destructive tools require _check_user_confirmed() before execution' },
-  ],
-  post_val_chk: [
-    { name: 'Settings → Agent',      type: 'admin',   desc: '_check_interrupt() — checked again after the validation loop completes' },
-  ],
-
-  // EXECUTION
-  execute_tools: [
-    { name: 'Settings → Agent',      type: 'admin',   desc: 'Tool is dispatched to its handler; result streamed back to the loop' },
-  ],
-  db_persist_tool: [
-    { name: 'Settings → Source',     type: 'admin',   desc: 'Tool result (role=tool) is persisted to the interactions table' },
-  ],
-  delegation_chk: [
-    { name: 'Settings → Agent',      type: 'admin',   desc: 'If result contains __delegate__ key, agent switches mid-loop and rebinds session' },
-  ],
-  skill_track: [
-    { name: 'Settings → Source',     type: 'admin',   desc: 'skill_track_execution + skill_get_rating run after every tool result' },
-  ],
-
-  // CONTINUE?
-  check_continue: [
-    { name: 'Settings → Max Turns',  type: 'admin',   desc: 'Configure the maximum number of agentic turns per request' },
-  ],
-
-  // OUTPUT
-  final_response: [
-    { name: '/optimize',             type: 'command', desc: 'Trigger optimizer on this session to improve future responses' },
-  ],
-  db_persist_final: [
-    { name: 'Settings → Source',     type: 'admin',   desc: 'Final assistant response is saved to the interactions table' },
-  ],
-  memory_save: [
-    { name: 'Settings → Source',     type: 'admin',   desc: 'View and manage memory and context documents' },
-  ],
-  fire_optimizer: [
-    { name: 'Settings → Optimizer',  type: 'admin',   desc: 'Optimizer fires on every exit path — configure run mode and intensity' },
-  ],
-
-  // OPTIMIZER
-  opt_collect: [
-    { name: '/optimize [feedback]',  type: 'command', desc: 'Trigger a new optimizer run against the current session' },
-    { name: 'Settings → Optimizer',  type: 'admin',   desc: 'Configure run mode, intensity, schedule, and scan scope' },
-  ],
-};
+import { NODE_STATIC_ITEMS, OPTIMIZER_NODES, NODE_PANEL_INFO } from './loop-node-data.js';
+export { NODE_PANEL_INFO } from './loop-node-data.js';
 
 // LOOP_W imported from loop-diagram.js (used for optimizer label)
 
-// ── Optimizer nodes (static reference — shown below main loop) ──
-const OPTIMIZER_NODES = [
-  { id: 'opt_collect',  label: 'Collect',  type: 'opt', cx: 100, cy: 458, hw: 50, hh: 16,
-    desc: 'Scan recent interactions' },
-  { id: 'opt_analyze',  label: 'Analyze',  type: 'opt', cx: 285, cy: 458, hw: 50, hh: 16,
-    desc: 'Find failure patterns' },
-  { id: 'opt_propose',  label: 'Propose',  type: 'opt', cx: 470, cy: 458, hw: 54, hh: 16,
-    desc: 'Generate skill changes' },
-  { id: 'opt_validate', label: 'Validate', type: 'opt', cx: 658, cy: 458, hw: 54, hh: 16,
-    desc: 'Test proposed changes' },
-  { id: 'opt_apply',    label: 'Apply',    type: 'opt', cx: 845, cy: 458, hw: 50, hh: 16,
-    desc: 'Update skills & prompts' },
-];
-
-// ── Optimizer edges ──
+// â”€â”€ Optimizer edges â”€â”€
 const OPTIMIZER_EDGES = [
   { from: 'opt_collect',  to: 'opt_analyze'  },
   { from: 'opt_analyze',  to: 'opt_propose'  },
@@ -162,16 +17,16 @@ const OPTIMIZER_EDGES = [
   { from: 'opt_apply',    to: 'opt_collect',  loopback: 500 },
 ];
 
-// ── Tool panel state ──
+// â”€â”€ Tool panel state â”€â”€
 let _activePanelNodeId = null;
 let _activePanelEl = null;
 
-// ── Tool metadata cache (30s TTL — avoids re-fetching on every panel open) ──
+// â”€â”€ Tool metadata cache (30s TTL â€” avoids re-fetching on every panel open) â”€â”€
 let _toolMetaCache = null;
 let _toolMetaCacheTs = 0;
 const TOOL_META_CACHE_MS = 30_000;
 
-// ── Fetch all tool metadata from /admin/tools (built-ins + user skills) ──
+// â”€â”€ Fetch all tool metadata from /admin/tools (built-ins + user skills) â”€â”€
 export async function fetchAllToolMeta() {
   const now = Date.now();
   if (_toolMetaCache && (now - _toolMetaCacheTs) < TOOL_META_CACHE_MS) {
@@ -191,7 +46,7 @@ export async function fetchAllToolMeta() {
   }
 }
 
-// ── Safely parse a JSON field that may already be an array or a JSON string ──
+// â”€â”€ Safely parse a JSON field that may already be an array or a JSON string â”€â”€
 function _parseJsonField(val, fallback) {
   if (Array.isArray(val)) return val;
   if (typeof val === 'string') {
@@ -200,7 +55,7 @@ function _parseJsonField(val, fallback) {
   return fallback;
 }
 
-// ── State ──
+// â”€â”€ State â”€â”€
 let loopVisualActive = false;
 let eventBuffer = [];
 const MAX_BUFFER = 2000;
@@ -215,12 +70,12 @@ let currentTurnEvents = [];
 
 let _renderTimer = null;
 
-// ── Init ──
+// â”€â”€ Init â”€â”€
 export function initLoopVisual() {
   app._loopVisualHandler = handleEvent;
 }
 
-// ── Start ──
+// â”€â”€ Start â”€â”€
 export function startLoopVisual() {
   loopVisualActive = true;
 
@@ -235,18 +90,18 @@ export function startLoopVisual() {
   currentTurnEvents = [];
   sessionLoaded = false;
 
-  area.innerHTML = '<div class="loop-visual-hint">Loading loop history…</div>';
+  area.innerHTML = '<div class="loop-visual-hint">Loading loop historyâ€¦</div>';
   pagesContainer.innerHTML = '';
 
   fetchLoopHistory();
 }
 
-// ── Stop ──
+// â”€â”€ Stop â”€â”€
 export function stopLoopVisual() {
   loopVisualActive = false;
 }
 
-// ── Handle events from agentWs ──
+// â”€â”€ Handle events from agentWs â”€â”€
 function handleEvent(event) {
   if (eventBuffer.length >= MAX_BUFFER) eventBuffer.shift();
   eventBuffer.push(event);
@@ -445,9 +300,9 @@ function renderPageButtons() {
 }
 
 
-// ── Render a single page (turn) ──
+// â”€â”€ Render a single page (turn) â”€â”€
 function renderPage(idx) {
-  // NOTE: do NOT call hideToolPanel here — streaming events call renderPage on every
+  // NOTE: do NOT call hideToolPanel here â€” streaming events call renderPage on every
   // frame, which would destroy the panel immediately after the user opens it.
   // Panel is now attached to #loop-visual-container (outside area), so area rebuilds
   // don't affect it. selectPage/startNewPage call hideToolPanel explicitly on page switch.
@@ -456,7 +311,7 @@ function renderPage(idx) {
 
   const page = pages[idx];
   if (!page) {
-    area.innerHTML = '<div class="loop-visual-hint">No loop data yet — waiting for agent events…</div>';
+    area.innerHTML = '<div class="loop-visual-hint">No loop data yet â€” waiting for agent eventsâ€¦</div>';
     return;
   }
 
@@ -468,22 +323,22 @@ function renderPage(idx) {
   scaleWrap.style.cssText = 'width:100%;flex-shrink:0;overflow:hidden;';
   area.appendChild(scaleWrap);
 
-  // Measure scaleWrap (not area) — excludes area padding and accounts for scrollbar
+  // Measure scaleWrap (not area) â€” excludes area padding and accounts for scrollbar
   const availableWidth = Math.max(300, scaleWrap.clientWidth || scaleWrap.offsetWidth || LOOP_W);
 
   function getNodeDetail(nd) {
     const nodeEvents = page.events.filter(e => e.nodeId === nd.id);
-    if (nodeEvents.length === 0) return 'Waiting…';
+    if (nodeEvents.length === 0) return 'Waitingâ€¦';
     const last = nodeEvents[nodeEvents.length - 1];
     const parts = [];
     if (last.event.duration_ms)          parts.push(`${last.event.duration_ms}ms`);
-    if (last.event.input_tokens)         parts.push(`↓${last.event.input_tokens}`);
-    if (last.event.output_tokens)        parts.push(`↑${last.event.output_tokens}`);
+    if (last.event.input_tokens)         parts.push(`â†“${last.event.input_tokens}`);
+    if (last.event.output_tokens)        parts.push(`â†‘${last.event.output_tokens}`);
     if (last.event.model)                parts.push(last.event.model);
     if (last.event.tool)                 parts.push(last.event.tool);
     if (last.event.results_count != null) parts.push(`${last.event.results_count} results`);
     return parts.length > 0
-      ? parts.join(' · ')
+      ? parts.join(' Â· ')
       : `${nodeEvents.length} event${nodeEvents.length !== 1 ? 's' : ''}`;
   }
 
@@ -513,7 +368,7 @@ function renderPage(idx) {
   const labY  = layout.canvasH + 34;
   const optCY = layout.canvasH + 78;
 
-  // ── Optimizer section divider & label ──
+  // â”€â”€ Optimizer section divider & label â”€â”€
   const divLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
   divLine.setAttribute('x1', 10);
   divLine.setAttribute('y1', divY);
@@ -530,7 +385,7 @@ function renderPage(idx) {
   optLabel.setAttribute('class', 'lv-stage-label');
   optLabel.setAttribute('fill', '#9ece6a');
   optLabel.setAttribute('fill-opacity', '0.45');
-  optLabel.textContent = '⚙ OPTIMIZER LOOP  —  runs on a separate schedule to improve agent skills';
+  optLabel.textContent = 'âš™ OPTIMIZER LOOP  â€”  runs on a separate schedule to improve agent skills';
   svgEl.appendChild(optLabel);
 
   // Position optimizer nodes at computed cy
@@ -541,7 +396,7 @@ function renderPage(idx) {
   const OPT_HH = OPTIMIZER_NODES[0].hh;
   const dynOptEdges = OPTIMIZER_EDGES.map(e => e.loopback ? { ...e, loopback: optCY + OPT_HH + 30 } : e);
 
-  // ── Draw optimizer edges (always static/dim) ──
+  // â”€â”€ Draw optimizer edges (always static/dim) â”€â”€
   for (const edge of dynOptEdges) {
     const pi = computeEdgePath(edge, finalOptNodes);
     if (!pi) continue;
@@ -566,17 +421,17 @@ function renderPage(idx) {
     }
   }
 
-  // ── Render optimizer node elements ──
+  // â”€â”€ Render optimizer node elements â”€â”€
   for (const nodeDef of finalOptNodes) {
     renderNodeEl(nodeDef, rootEl);
   }
 
   // Restore scroll position after browser has laid out the new content.
-  // Must use rAF — setting scrollTop synchronously after innerHTML clear may be
+  // Must use rAF â€” setting scrollTop synchronously after innerHTML clear may be
   // ignored because the browser hasn't computed the new scroll height yet.
   if (savedScroll > 0) requestAnimationFrame(() => { area.scrollTop = savedScroll; });
 
-  // Re-render on resize — observe parentElement, not area itself, to avoid feedback
+  // Re-render on resize â€” observe parentElement, not area itself, to avoid feedback
   // loop where re-rendering area content triggers another resize observation.
   area._lvRo = new ResizeObserver(() => {
     clearTimeout(area._lvResizeTimer);
@@ -608,280 +463,8 @@ function renderNodeEl(nodeDef, parent) {
   parent.appendChild(node);
 }
 
-// ── Node description & detail rows shown in the panel ──
-export const NODE_PANEL_INFO = {
-  slash_cmd: {
-    desc: 'Checks the message against _OPTIMIZE_PATTERN. If matched, routes directly to the optimizer session — the main agent loop never runs.',
-    details: [
-      { key: 'Pattern',  val: '_OPTIMIZE_PATTERN regex — catches /optimize and variants' },
-      { key: 'On match', val: 'Session rewritten to optimizer; main loop bypassed entirely' },
-      { key: 'On miss',  val: 'Falls through to ensure_session' },
-    ],
-  },
-  ensure_session: {
-    desc: '_ensure_session() — creates a new session row in the DB if none exists, or validates the provided session_id.',
-    details: [
-      { key: 'Table',   val: 'sessions' },
-      { key: 'Creates', val: 'session_id, user_id, agent_id, created_at' },
-    ],
-  },
-  agent_resolve: {
-    desc: 'Loads the agent record from the agents table. Determines which agent template, system prompt, tools, and max_turns apply.',
-    details: [
-      { key: 'Table',   val: 'agents' },
-      { key: 'Outputs', val: 'agent_id, system_prompt, bootstrap_tools, max_turn_count, model, temperature' },
-    ],
-  },
-  participants: {
-    desc: 'Enforces participant access rules — verifies the user is permitted to interact with this agent before any work begins.',
-    details: [
-      { key: 'Checks',  val: 'user_id present in agent participants list' },
-      { key: 'On fail', val: 'Request rejected before any DB writes or loop execution' },
-    ],
-  },
-  save_user_msg: {
-    desc: 'Inserts the user\'s message as role="user" into the interactions table — the source-of-truth record for this turn.',
-    details: [
-      { key: 'Table',   val: 'interactions' },
-      { key: 'Role',    val: 'user' },
-      { key: 'Timing',  val: 'Before the agent loop — always written even if the agent errors out' },
-    ],
-  },
-  load_context: {
-    desc: 'Queries the agents table for context documents to inject into the system prompt. Each column maps to a named section.',
-    details: [
-      { key: 'Columns',  val: 'agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt, system_prompt' },
-      { key: 'Sections', val: 'AGENT IDENTITY · USER · SKILLS · TOOLS · TASKS · MEMORY · PROJECT' },
-    ],
-  },
-  copy_defaults: {
-    desc: 'On the agent\'s first run, copies context documents from the default template so the agent has a working starting configuration.',
-    details: [
-      { key: 'Trigger', val: 'No existing context rows found for this agent' },
-      { key: 'Source',  val: 'Default agent template (agents table defaults)' },
-    ],
-  },
-  skip_gate: {
-    desc: '_should_skip_memory() — trivial or short messages (greetings, single commands) skip memory_search entirely to save latency.',
-    details: [
-      { key: 'Pattern',  val: 'Regex match on message length and content' },
-      { key: 'On skip',  val: 'memory_search bypassed; brain_context = None' },
-      { key: 'On pass',  val: 'Continues to memory_search normally' },
-    ],
-  },
-  memory_search: {
-    desc: 'Semantic search over the agent\'s memory pages to find relevant facts from past sessions. Results injected into the system prompt as [BRAIN CONTEXT].',
-    details: [
-      { key: 'Tool',     val: 'memory_search (internal — stripped from history shown to LLM)' },
-      { key: 'Injects',  val: '# [BRAIN CONTEXT] section in system prompt' },
-      { key: 'On empty', val: 'No brain context injected; pipeline continues normally' },
-    ],
-  },
-  resolve_attach: {
-    desc: 'Resolves attachment IDs into file metadata. Prepares a [USER ATTACHMENTS] section so the agent knows what files were uploaded.',
-    details: [
-      { key: 'Reads',   val: 'attachments table by attachment_id list' },
-      { key: 'Injects', val: '# [USER ATTACHMENTS] — name, mime_type, size, attachment_id' },
-      { key: 'Tool',    val: 'read_attachment — agent uses this to fetch file content' },
-    ],
-  },
-  build_prompt: {
-    desc: 'build_system_prompt() — assembles all context sections, brain context, and bootstrap tools into a single system prompt string.',
-    details: [
-      { key: 'Order',  val: '[AGENT DIRECTIVE] → [AGENT IDENTITY] → [USER] → [SKILLS] → [TOOLS] → [TASKS] → [BRAIN CONTEXT]' },
-      { key: 'Source', val: 'context docs + memory results + agent.system_prompt + bootstrap_tools' },
-    ],
-  },
-  build_history: {
-    desc: 'build_openai_history_from_session() — fetches all prior interactions and converts to OpenAI message format. Strips internal tools from history.',
-    details: [
-      { key: 'Strips',   val: 'memory_search, memory_save (internal — never forwarded to LLM)' },
-      { key: 'Rebuilds', val: 'assistant tool_calls from persisted [Tool calls: …] suffix' },
-      { key: 'Output',   val: '[{role:user/assistant/tool, content:…}, …]' },
-    ],
-  },
-  load_provider: {
-    desc: 'Reads LLM provider config from the agent record and environment. Sets base_url, api_key, model, temperature, max_tokens.',
-    details: [
-      { key: 'Sources',  val: 'agent.model, agent.temperature, agent.max_tokens, env OPENROUTER_API_KEY / BASE_URL' },
-      { key: 'Parallel', val: 'PARALLEL_MODE env enables multi-provider race (first chunk wins)' },
-    ],
-  },
-  load_tools: {
-    desc: 'Fetches tool definitions — built-in tools plus user skills — filtered by the agent\'s allowed_tools disabled list.',
-    details: [
-      { key: 'Sources', val: 'BUILTIN_TOOL_METADATA + skills table' },
-      { key: 'Filter',  val: 'agent.allowed_tools = list of disabled tool names' },
-      { key: 'Output',  val: 'List of tool dicts: name, description, parameters schema' },
-    ],
-  },
-  assemble_msgs: {
-    desc: 'Builds the final messages array for the LLM: system prompt at [0], conversation history at [1..N], current user message at [N+1].',
-    details: [
-      { key: '[0]',    val: '{role: "system", content: system_prompt}' },
-      { key: '[1..N]', val: 'Prior session turns from build_history' },
-      { key: '[N+1]',  val: '{role: "user", content: current message + any attachment context}' },
-    ],
-  },
-  interrupt_chk: {
-    desc: '_check_interrupt() — checks for a cancellation or shutdown signal. Raises AgentInterrupted if set, which triggers fire_optimizer and ends the stream.',
-    details: [
-      { key: 'Checked', val: '5× per turn: loop start, before LLM, in validation loop (per tool), after validation, in execution loop (per result)' },
-      { key: 'On flag', val: 'Raises AgentInterrupted → fire_optimizer fires → stream ends cleanly' },
-    ],
-  },
-  turn_counter: {
-    desc: 'Increments the turn counter and checks against max_turns. If the limit is reached, forces exit to final_response.',
-    details: [
-      { key: 'Default',  val: 'max_turns = agent.max_turn_count (typically 10)' },
-      { key: 'On limit', val: 'Exits while loop → final_response' },
-      { key: 'Extended', val: '+10 turns granted if user approves the permission_chk request' },
-    ],
-  },
-  permission_chk: {
-    desc: 'At turn ≥ 11, injects a permission-request fragment asking the user if the agent may continue. Scans the last user message for approval.',
-    details: [
-      { key: 'Trigger',  val: 'turn_num >= 11' },
-      { key: 'Approval', val: 'Scans user message for "yes", "continue", "proceed", etc.' },
-      { key: 'On grant', val: 'max_turns extended by 10' },
-    ],
-  },
-  build_tool_defs: {
-    desc: 'Converts the loaded tool list into the OpenAI tool_calls schema format consumed by the LLM.',
-    details: [
-      { key: 'Format', val: '[{type:"function", function:{name, description, parameters:{type:"object",properties:{…}}}}]' },
-      { key: 'Source', val: 'Tools loaded at load_tools stage' },
-    ],
-  },
-  parallel_mode: {
-    desc: 'If PARALLEL_MODE env is set, _race_llm_calls() races multiple LLM providers. First to return a non-empty chunk wins; losers are saved to DB.',
-    details: [
-      { key: 'Env',    val: 'PARALLEL_MODE=1 (comma-separated provider list)' },
-      { key: 'Winner', val: 'First provider to yield a non-empty streaming chunk' },
-      { key: 'Losers', val: 'Remaining responses saved to DB for optimizer analysis' },
-      { key: 'Off',    val: 'Single LLM call via load_provider config' },
-    ],
-  },
-  llm_call: {
-    desc: 'The actual streaming LLM call. Yields text chunks and/or tool_call deltas. Response determines whether routing or final output follows.',
-    details: [
-      { key: 'Provider',  val: 'OpenRouter (or custom base_url from load_provider)' },
-      { key: 'Streaming', val: 'Server-sent event chunks yielded in real time to client' },
-      { key: 'Tools',     val: 'LLM may return tool_calls → db_persist_asst → validation → execution' },
-      { key: 'No tools',  val: 'LLM returns plain text → check_continue → final_response' },
-    ],
-  },
-  db_persist_asst: {
-    desc: 'Saves the assistant\'s raw response as role="assistant" BEFORE validation runs. Appends a [Tool calls: …] JSON suffix listing requested tool calls.',
-    details: [
-      { key: 'Table',  val: 'interactions (role=assistant)' },
-      { key: 'Suffix', val: 'Appends \\n\\n[Tool calls: [{name, args}, …]] to content' },
-      { key: 'Timing', val: 'Immediately after LLM response — before any tool is validated or executed' },
-    ],
-  },
-  validate_tools: {
-    desc: '_validate_tool_call() — for each requested tool call, checks the tool name exists and arguments are parseable. Invalid calls get an error result without executing.',
-    details: [
-      { key: 'Checks',   val: 'Tool name in registry · args JSON-parseable · required params present' },
-      { key: 'On fail',  val: 'Returns validation error result; tool skipped' },
-      { key: 'Per call', val: 'Validated in a for-loop; interrupt_chk runs each iteration' },
-    ],
-  },
-  destructive_chk: {
-    desc: 'Checks if the requested tool is in the DESTRUCTIVE_TOOLS set. These tools require explicit user confirmation before they can execute.',
-    details: [
-      { key: 'Set',      val: 'edit_source · write_source · delete_source · run_command · restart_server' },
-      { key: 'On match', val: 'Forwards to guardrails for confirmation check' },
-      { key: 'On clear', val: 'Proceeds to post_val_chk then execution' },
-    ],
-  },
-  guardrails: {
-    desc: '_check_user_confirmed() — verifies the user explicitly approved the destructive action in their most recent message. Blocks execution if no confirmation.',
-    details: [
-      { key: 'Checks',   val: 'Last user message for confirmation keywords' },
-      { key: 'On pass',  val: 'Tool proceeds to execution' },
-      { key: 'On block', val: 'Tool skipped; emits blocked event; jumps to check_continue' },
-    ],
-  },
-  post_val_chk: {
-    desc: '_check_interrupt() again after the full validation loop completes. Catches cancellations that arrived while tools were being validated.',
-    details: [
-      { key: 'Timing', val: 'After the per-tool validation for-loop, before execute_tools' },
-      { key: 'On flag', val: 'Raises AgentInterrupted — no tools execute' },
-    ],
-  },
-  execute_tools: {
-    desc: 'Dispatches each validated tool to its registered handler function. Streams the result back into the turn\'s tool_results list.',
-    details: [
-      { key: 'Dispatch', val: 'tool_name → handler lookup in tool registry' },
-      { key: 'Results',  val: 'Collected into tool_results list for this turn' },
-      { key: 'Errors',   val: 'Execution errors are caught and returned as error results — never raised' },
-    ],
-  },
-  db_persist_tool: {
-    desc: 'Saves each tool result as role="tool" in the interactions table. Includes execution metadata.',
-    details: [
-      { key: 'Table',    val: 'interactions (role=tool)' },
-      { key: 'Metadata', val: 'tool_name · tool_call_id · duration_ms · success · input_params · error_message' },
-    ],
-  },
-  delegation_chk: {
-    desc: 'Checks if the tool result contains a __delegate__ key. If found, switches the active agent mid-loop and rebinds the session.',
-    details: [
-      { key: 'Trigger',  val: 'result contains __delegate__: {agent_id, session_id}' },
-      { key: 'On match', val: 'Session rebound · tools reloaded · new system prompt injected · loop continues' },
-      { key: 'On clear', val: 'Proceeds normally to skill_track' },
-    ],
-  },
-  skill_track: {
-    desc: 'After each tool result: looks up the skill by tool name, records the execution event, and updates the performance rating score.',
-    details: [
-      { key: 'Calls',        val: 'skill_get_id_by_name → skill_track_execution → skill_get_rating' },
-      { key: 'Updates',      val: 'skill score in DB (used by optimizer to prioritize improvements)' },
-      { key: 'Non-blocking', val: 'Errors swallowed — skill tracking never fails the turn' },
-    ],
-  },
-  check_continue: {
-    desc: 'Decides whether to loop back for another turn or proceed to final output. Tool results present = loop; no tool calls = stop.',
-    details: [
-      { key: 'Loop',  val: 'tool_results non-empty → back to interrupt_chk for turn N+1' },
-      { key: 'Stop',  val: 'No tool calls in LLM response → proceed to final_response' },
-      { key: 'Limit', val: 'max_turns reached → final_response regardless of tool results' },
-    ],
-  },
-  final_response: {
-    desc: 'Streams the final assistant message to the client over WebSocket. This is the text the user sees.',
-    details: [
-      { key: 'Delivery', val: 'Streamed as SSE chunks via WebSocket' },
-      { key: 'Content',  val: 'LLM response text — tool call results already reflected in conversation history' },
-    ],
-  },
-  db_persist_final: {
-    desc: 'Saves the final assistant response to the interactions table. Distinct from db_persist_asst — that saved mid-loop tool-calling turns; this saves the concluding message.',
-    details: [
-      { key: 'Table', val: 'interactions (role=assistant)' },
-      { key: 'When',  val: 'On clean exit — interrupt and max_turns paths are handled earlier in the loop' },
-    ],
-  },
-  memory_save: {
-    desc: 'The memory_save internal tool runs after the final response — extracts key facts from the session and upserts them into the agent\'s long-term memory store.',
-    details: [
-      { key: 'Tool',     val: 'memory_save (internal — stripped from history shown to LLM)' },
-      { key: 'Storage',  val: 'brain / memory pages table' },
-      { key: 'Optional', val: 'Skipped if the memory tool is disabled for this agent' },
-    ],
-  },
-  fire_optimizer: {
-    desc: '_fire_optimizer() — fires as a background task on every exit path. Analyzes the session and proposes skill and prompt improvements.',
-    details: [
-      { key: 'Mode',     val: 'Fire-and-forget (asyncio.create_task) — never blocks the response stream' },
-      { key: 'Triggers', val: 'All exit paths: clean finish · max_turns · interrupt · unhandled error' },
-      { key: 'Output',   val: 'Optimizer session → planner → finalizer → skill updates in DB' },
-    ],
-  },
-};
 
-// ── Show tool panel for a node ──
+// â”€â”€ Show tool panel for a node â”€â”€
 function showToolPanel(nodeDef, nodeEl, container) {
   hideToolPanel();
 
@@ -902,12 +485,12 @@ function showToolPanel(nodeDef, nodeEl, container) {
 
   const close = document.createElement('button');
   close.className = 'lv-tool-panel-close';
-  close.textContent = '✕';
+  close.textContent = 'âœ•';
   close.addEventListener('click', (e) => { e.stopPropagation(); hideToolPanel(); });
   header.appendChild(close);
   panel.appendChild(header);
 
-  // ── Node description (from NODE_PANEL_INFO) ──
+  // â”€â”€ Node description (from NODE_PANEL_INFO) â”€â”€
   const info = NODE_PANEL_INFO[nodeDef.id];
   if (info) {
     const descLbl = document.createElement('div');
@@ -940,7 +523,7 @@ function showToolPanel(nodeDef, nodeEl, container) {
     }
   }
 
-  // ── Build Prompt: raw LLM payload viewer ──
+  // â”€â”€ Build Prompt: raw LLM payload viewer â”€â”€
   if (nodeDef.id === 'build_prompt' && page) {
     const bpEvent = [...page.events].reverse().find(e => e.event.step === 'build_prompt');
     if (bpEvent) {
@@ -956,7 +539,7 @@ function showToolPanel(nodeDef, nodeEl, container) {
       if (ev.tool_count_in_prompt != null) parts.push(`${ev.tool_count_in_prompt} tools`);
       if (ev.brain_injected) parts.push('memory injected');
       if (ev.sections?.length) parts.push(`sections: ${ev.sections.join(', ')}`);
-      meta.textContent = parts.join(' · ');
+      meta.textContent = parts.join(' Â· ');
       panel.appendChild(meta);
 
       if (ev.system_prompt) {
@@ -968,7 +551,7 @@ function showToolPanel(nodeDef, nodeEl, container) {
     }
   }
 
-  // ── Load Context: DB query info ──
+  // â”€â”€ Load Context: DB query info â”€â”€
   if (nodeDef.id === 'load_context') {
     const lcLabel = document.createElement('div');
     lcLabel.className = 'lv-tool-section-label';
@@ -989,7 +572,7 @@ function showToolPanel(nodeDef, nodeEl, container) {
     panel.appendChild(lcList);
   }
 
-  // ── Build History: session history info ──
+  // â”€â”€ Build History: session history info â”€â”€
   if (nodeDef.id === 'build_history') {
     const atLabel = document.createElement('div');
     atLabel.className = 'lv-tool-section-label';
@@ -997,11 +580,11 @@ function showToolPanel(nodeDef, nodeEl, container) {
     panel.appendChild(atLabel);
     const atDesc = document.createElement('div');
     atDesc.className = 'lv-bp-meta';
-    atDesc.textContent = 'Loads prior interactions → OpenAI messages format. Strips internal tools (memory_search / memory_save). Rebuilds assistant tool_calls from persisted [Tool calls: …] suffix.';
+    atDesc.textContent = 'Loads prior interactions â†’ OpenAI messages format. Strips internal tools (memory_search / memory_save). Rebuilds assistant tool_calls from persisted [Tool calls: â€¦] suffix.';
     panel.appendChild(atDesc);
   }
 
-  // ── Assemble Msgs: show messages structure ──
+  // â”€â”€ Assemble Msgs: show messages structure â”€â”€
   if (nodeDef.id === 'assemble_msgs' && page) {
     const asLabel = document.createElement('div');
     asLabel.className = 'lv-tool-section-label';
@@ -1011,11 +594,11 @@ function showToolPanel(nodeDef, nodeEl, container) {
     const sysSnippet = bpEvent ? (bpEvent.event.system_prompt || '').slice(0, 200) : '{ system_prompt }';
     const asPre = document.createElement('pre');
     asPre.className = 'lv-bp-prompt';
-    asPre.textContent = `[0] system:\n${sysSnippet}${sysSnippet.length >= 200 ? '…' : ''}\n\n[1..N] { transcript }\n\n[N+1] { current user message }`;
+    asPre.textContent = `[0] system:\n${sysSnippet}${sysSnippet.length >= 200 ? 'â€¦' : ''}\n\n[1..N] { transcript }\n\n[N+1] { current user message }`;
     panel.appendChild(asPre);
   }
 
-  // ── Load Tools: show tool count and names from pipeline event ──
+  // â”€â”€ Load Tools: show tool count and names from pipeline event â”€â”€
   if (nodeDef.id === 'load_tools' && page) {
     const ltEvent = [...page.events].reverse().find(e => e.event && e.event.step === 'load_tools');
     const ltLabel = document.createElement('div');
@@ -1026,7 +609,7 @@ function showToolPanel(nodeDef, nodeEl, container) {
       const ev = ltEvent.event;
       const meta = document.createElement('div');
       meta.className = 'lv-bp-meta';
-      meta.textContent = `${ev.count ?? '?'} tools · ${ev.duration_ms ?? '?'}ms`;
+      meta.textContent = `${ev.count ?? '?'} tools Â· ${ev.duration_ms ?? '?'}ms`;
       panel.appendChild(meta);
       if (Array.isArray(ev.names) && ev.names.length) {
         const pre = document.createElement('pre');
@@ -1043,7 +626,7 @@ function showToolPanel(nodeDef, nodeEl, container) {
     }
   }
 
-  // ── Static items (slash commands + Settings shortcuts) ──
+  // â”€â”€ Static items (slash commands + Settings shortcuts) â”€â”€
   const staticItems = NODE_STATIC_ITEMS[nodeDef.id] || [];
   if (staticItems.length > 0) {
     const lbl = document.createElement('div');
@@ -1057,7 +640,7 @@ function showToolPanel(nodeDef, nodeEl, container) {
     panel.appendChild(list);
   }
 
-  // ── Live tools section (derived from /admin/tools stage metadata) ──
+  // â”€â”€ Live tools section (derived from /admin/tools stage metadata) â”€â”€
   const toolsLabel = document.createElement('div');
   toolsLabel.className = 'lv-tool-section-label lv-tool-section-live';
   toolsLabel.innerHTML = 'Tools <span class="lv-live-dot"></span>';
@@ -1068,7 +651,7 @@ function showToolPanel(nodeDef, nodeEl, container) {
 
   const loadingEl = document.createElement('div');
   loadingEl.className = 'lv-tool-panel-empty lv-tool-loading';
-  loadingEl.textContent = 'Loading…';
+  loadingEl.textContent = 'Loadingâ€¦';
   toolsList.appendChild(loadingEl);
   panel.appendChild(toolsList);
 
@@ -1124,14 +707,14 @@ function showToolPanel(nodeDef, nodeEl, container) {
   });
 }
 
-// ── Append a single tool row to a list element ──
+// â”€â”€ Append a single tool row to a list element â”€â”€
 function _appendToolItem(listEl, tool) {
   const BADGE_LABELS = {
     command: 'cmd',
     tool:    'tool',
-    guarded: '🛡 guarded',
+    guarded: 'ðŸ›¡ guarded',
     admin:   'admin',
-    skill:   '✦ skill',
+    skill:   'âœ¦ skill',
   };
 
   const item = document.createElement('div');
@@ -1173,7 +756,7 @@ function hideToolPanel() {
   document.removeEventListener('click', _outsideClickHandler);
 }
 
-// ── Page summary bar (shown at bottom of graph area) ──
+// â”€â”€ Page summary bar (shown at bottom of graph area) â”€â”€
 function updatePageSummary(idx) {
   const page = pages[idx];
   if (!page) return;
@@ -1199,7 +782,7 @@ function updatePageSummary(idx) {
   area.appendChild(summary);
 }
 
-// ── Fetch session history from DB ──
+// â”€â”€ Fetch session history from DB â”€â”€
 async function fetchLoopHistory() {
   const area = document.getElementById('loop-visual-graph-area');
   const userId    = app.currentUserId;
@@ -1225,7 +808,7 @@ async function fetchLoopHistory() {
     replayBuffer();
 
     if (pages.length === 0 && area) {
-      area.innerHTML = '<div class="loop-visual-hint">Agent loop visualizer — waiting for agent events…</div>';
+      area.innerHTML = '<div class="loop-visual-hint">Agent loop visualizer â€” waiting for agent eventsâ€¦</div>';
     }
   } catch (e) {
     console.error('[loop-visual] fetch failed:', e);
@@ -1243,11 +826,11 @@ function replayBuffer() {
 
   if (pages.length === 0) {
     const el = document.getElementById('loop-visual-graph-area');
-    if (el) el.innerHTML = '<div class="loop-visual-hint">Agent loop visualizer — waiting for agent events…</div>';
+    if (el) el.innerHTML = '<div class="loop-visual-hint">Agent loop visualizer â€” waiting for agent eventsâ€¦</div>';
   }
 }
 
-// ── Convert DB interaction row → loop events ──
+// â”€â”€ Convert DB interaction row â†’ loop events â”€â”€
 function interactionToEvents(row) {
   const events = [];
   const role = row.role || 'unknown';
@@ -1295,12 +878,12 @@ function interactionToEvents(row) {
   return events;
 }
 
-// ── Session changed (called from sessions.js) ──
+// â”€â”€ Session changed (called from sessions.js) â”€â”€
 export function loopVisualSessionChanged() {
   if (!loopVisualActive) return;
 
   const area = document.getElementById('loop-visual-graph-area');
-  if (area) area.innerHTML = '<div class="loop-visual-hint">Session changed — reloading…</div>';
+  if (area) area.innerHTML = '<div class="loop-visual-hint">Session changed â€” reloadingâ€¦</div>';
 
   pages = [];
   currentPageIdx = 0;

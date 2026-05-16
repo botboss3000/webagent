@@ -122,6 +122,9 @@ CREATE TABLE IF NOT EXISTS agent_templates (
     tasks_prompt TEXT NOT NULL DEFAULT '',
     misc_prompt TEXT NOT NULL DEFAULT '',
     bootstrap_tools TEXT NOT NULL DEFAULT '',
+    trigger_type TEXT NOT NULL DEFAULT 'user_input',
+    trigger_key TEXT,
+    loop_logic TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -150,6 +153,9 @@ CREATE TABLE IF NOT EXISTS agents (
     tasks_prompt TEXT NOT NULL DEFAULT '',
     misc_prompt TEXT NOT NULL DEFAULT '',
     bootstrap_tools TEXT NOT NULL DEFAULT '',
+    trigger_type TEXT NOT NULL DEFAULT 'user_input',
+    trigger_key TEXT,
+    loop_logic TEXT NOT NULL DEFAULT '[]',
     assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -842,6 +848,19 @@ class LocalBackend(StorageBackend):
                 logger.info("Seeded discoverable=1 for default agent_template")
             conn.commit()
 
+            # ── Migration: add trigger_type/trigger_key/loop_logic columns ──
+            for tbl in ("agents", "agent_templates"):
+                tbl_cols = {row[1] for row in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
+                for col, col_def in [
+                    ("trigger_type", "TEXT NOT NULL DEFAULT 'user_input'"),
+                    ("trigger_key",  "TEXT"),
+                    ("loop_logic",   "TEXT NOT NULL DEFAULT '[]'"),
+                ]:
+                    if col not in tbl_cols:
+                        conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {col_def}")
+                        logger.info("Added %s.%s column", tbl, col)
+            conn.commit()
+
             # ── Migration: add multi-agent fields to agents ──
             ag_cols = {row[1] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
             _ag_new_cols = [
@@ -1282,9 +1301,9 @@ class LocalBackend(StorageBackend):
                     temperature, max_tokens, metadata,
                     agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
                     bootstrap_tools, can_be_default, is_system, is_pipeline, access_level,
-                    discoverable,
+                    discoverable, trigger_type, trigger_key, loop_logic,
                     created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name,
                     description = excluded.description,
@@ -1306,6 +1325,9 @@ class LocalBackend(StorageBackend):
                     is_system = excluded.is_system,
                     is_pipeline = excluded.is_pipeline,
                     access_level = excluded.access_level,
+                    trigger_type = excluded.trigger_type,
+                    trigger_key = excluded.trigger_key,
+                    loop_logic = excluded.loop_logic,
                     updated_at = excluded.updated_at""",
                 (tpl["id"], tpl.get("name", tpl["id"]), tpl.get("description", ""),
                  tpl.get("icon", ""), tpl["system_prompt"], tpl["max_turn_count"],
@@ -1317,6 +1339,8 @@ class LocalBackend(StorageBackend):
                  tpl.get("can_be_default", 1), tpl.get("is_system", 0),
                  tpl.get("is_pipeline", 0), tpl.get("access_level", "all"),
                  1 if tpl.get("discoverable") else 0,
+                 tpl.get("trigger_type", "user_input"), tpl.get("trigger_key"),
+                 tpl.get("loop_logic", "[]"),
                  now, now),
             )
         conn.commit()
@@ -3443,13 +3467,14 @@ class LocalBackend(StorageBackend):
             "tasks_prompt", "misc_prompt",
             "model", "temperature", "max_tokens",
             "allowed_tools", "custom_tool_ids",
+            "trigger_type", "trigger_key", "loop_logic",
         }
         safe = {}
         for k, v in updates.items():
             if k not in ALLOWED:
                 continue
             # Serialize list fields to JSON strings for storage
-            if k in ("allowed_tools", "custom_tool_ids") and isinstance(v, list):
+            if k in ("allowed_tools", "custom_tool_ids", "loop_logic") and isinstance(v, list):
                 v = json.dumps(v)
             safe[k] = v
         if not safe:
