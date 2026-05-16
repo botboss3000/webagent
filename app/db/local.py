@@ -2317,10 +2317,15 @@ class LocalBackend(StorageBackend):
             conn.close()
     
     async def get_agent_for_user(self, user_id: str) -> Optional[dict]:
+        default_id = await self.get_user_default_agent_id(user_id)
+        if default_id:
+            agent = await self.get_agent_by_id(default_id)
+            if agent:
+                return agent
         conn = self._get_conn()
         try:
             row = conn.execute(
-                "SELECT * FROM agents WHERE user_id = ?", (user_id,)
+                "SELECT * FROM agents WHERE user_id = ? LIMIT 1", (user_id,)
             ).fetchone()
             return dict(row) if row else None
         finally:
