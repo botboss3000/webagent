@@ -370,6 +370,56 @@ body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; co
 .agents-tool-badge.destructive { background: #2a1a1a; color: #f7768e; border: 1px solid #4a2a2a; }
 .agents-tool-badge.safe        { background: #1a2a1a; color: #9ece6a; border: 1px solid #2a4a2a; }
 
+/* ── Tool categories (collapsible accordions) ── */
+.agents-tool-category { margin-bottom: 8px; }
+.agents-tool-category-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  border-radius: 5px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  user-select: none;
+  transition: background 0.15s;
+}
+.agents-tool-category-header:hover { background: #1f1f3a; }
+.agents-tool-category-chevron {
+  font-size: 10px;
+  color: #565f89;
+  transition: transform 0.2s;
+  display: inline-block;
+  width: 12px;
+  text-align: center;
+}
+.agents-tool-category-header.collapsed .agents-tool-category-chevron { transform: rotate(-90deg); }
+.agents-tool-category-label { font-size: 13px; font-weight: 600; color: var(--fg-1); flex: 1; }
+.agents-tool-category-count {
+  font-size: 11px;
+  color: #565f89;
+  background: var(--bg-3);
+  padding: 1px 7px;
+  border-radius: 8px;
+}
+.agents-tool-category-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 4px;
+  padding-left: 4px;
+}
+.agents-tool-category-body.collapsed { display: none; }
+.agents-tool-always-on {
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--bg-3);
+  color: #565f89;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 /* ── Test tab ── */
 .agents-test-area {
   display: flex;

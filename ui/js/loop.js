@@ -2,6 +2,13 @@
 
 import { app } from './state.js';
 import { apiPath } from './config.js';
+import { icon } from './icons.js';
+
+// Set a loop-node-icon span to a Lucide icon
+function setNodeIcon(node, name) {
+  const el = node.querySelector('.loop-node-icon');
+  if (el) el.innerHTML = icon(name, { size: '12px' });
+}
 
 // ── State ──
 let autoScroll = true;
@@ -26,39 +33,39 @@ const LEVEL_VISIBILITY = {
   debug:    new Set(['user', 'agent', 'pipeline', 'db']),
 };
 
-// ── Icons per event step ──
+// ── Icons per event step (Lucide icon names) ──
 const STEP_ICONS = {
-  load_context:     '📂',
-  memory_search_start: '🔍',
-  memory_search_end:   '🔍',
-  build_prompt:     '📝',
-  load_tools:       '📦',
-  tool_defs_built:  '📦',
-  llm_call_start:   '🤖',
-  llm_call_end:     '🤖',
-  turn_start:       '🔄',
-  validate_start:   '✓',
-  validate_result:  '✓',
-  execute_batch_start: '⚡',
-  execute_start:    '▶',
-  execute_end:      '✓',
-  check_continue:   '🏁',
-  guardrail_check:  '🛡',
-  guardrail_override: '🛡',
-  guardrail_blocked: '🚫',
-  max_turns_reached: '⚠️',
-  memory_save_start: '💾',
-  memory_save_end:   '💾',
-  user_message:      '👤',
-  agent_delegation:  '🔀',
+  load_context:        'folder-open',
+  memory_search_start: 'search',
+  memory_search_end:   'search',
+  build_prompt:        'file-text',
+  load_tools:          'package',
+  tool_defs_built:     'package',
+  llm_call_start:      'bot',
+  llm_call_end:        'bot',
+  turn_start:          'refresh-cw',
+  validate_start:      'check',
+  validate_result:     'check',
+  execute_batch_start: 'zap',
+  execute_start:       'play',
+  execute_end:         'check',
+  check_continue:      'flag',
+  guardrail_check:     'shield',
+  guardrail_override:  'shield',
+  guardrail_blocked:   'ban',
+  max_turns_reached:   'alert-triangle',
+  memory_save_start:   'save',
+  memory_save_end:     'save',
+  user_message:        'user',
+  agent_delegation:    'shuffle',
 };
 
 // ── Level colors ──
 const LEVEL_COLORS = {
-  user:     { border: '#7dcfff', bg: '#7dcfff10', icon: '👤', label: 'User' },
-  agent:    { border: '#9ece6a', bg: '#9ece6a10', icon: '🤖', label: 'Agent' },
-  pipeline: { border: '#e0af68', bg: '#e0af6810', icon: '⚙', label: 'Pipeline' },
-  db:       { border: '#bb9af7', bg: '#bb9af710', icon: '💾', label: 'DB' },
+  user:     { border: '#7dcfff', bg: '#7dcfff10', icon: 'user',     label: 'User' },
+  agent:    { border: '#9ece6a', bg: '#9ece6a10', icon: 'bot',      label: 'Agent' },
+  pipeline: { border: '#e0af68', bg: '#e0af6810', icon: 'settings', label: 'Pipeline' },
+  db:       { border: '#bb9af7', bg: '#bb9af710', icon: 'database', label: 'DB' },
 };
 
 // ── Init ── (always registers handler so events are collected in background)
@@ -301,11 +308,11 @@ function createTurnContainer(turnNum) {
 
   const header = document.createElement('div');
   header.className = 'loop-turn-header';
-  header.innerHTML = `<span class="loop-turn-icon">🔄</span> Turn ${turnNum} <span class="loop-turn-toggle">▼</span>`;
+  header.innerHTML = `<span class="loop-turn-icon">${icon('refresh-cw', { size: '12px' })}</span> Turn ${turnNum} <span class="loop-turn-toggle">${icon('chevron-down', { size: '11px' })}</span>`;
   header.addEventListener('click', () => {
     const body = container.querySelector('.loop-turn-body');
     const collapsed = body.classList.toggle('loop-collapsed');
-    header.querySelector('.loop-turn-toggle').textContent = collapsed ? '▶' : '▼';
+    header.querySelector('.loop-turn-toggle').innerHTML = icon(collapsed ? 'chevron-right' : 'chevron-down', { size: '11px' });
   });
 
   const body = document.createElement('div');
@@ -327,7 +334,7 @@ function handleStream(event) {
   if (!streamingBubble) {
     streamingBubble = createNode('agent', 'streaming', event.content || '', parent);
     streamingBubble.classList.add('loop-streaming');
-    streamingBubble.querySelector('.loop-node-icon').textContent = '🤖';
+    setNodeIcon(streamingBubble, 'bot');
     const spinner = document.createElement('span');
     spinner.className = 'loop-spinner';
     spinner.textContent = '⟳';
@@ -346,7 +353,7 @@ function handleResponse(event) {
     streamingBubble.classList.remove('loop-streaming');
     const spinner = streamingBubble.querySelector('.loop-spinner');
     if (spinner) spinner.remove();
-    streamingBubble.querySelector('.loop-node-icon').textContent = '🤖';
+    setNodeIcon(streamingBubble, 'bot');
     streamingBubble = null;
   } else if (parent) {
     let label = event.content || '';
@@ -356,7 +363,7 @@ function handleResponse(event) {
     if (event._duration_ms) extras.push(`${event._duration_ms}ms`);
     if (extras.length) label += '  (' + extras.join(', ') + ')';
     const node = createNode('agent', 'response', label, parent);
-    node.querySelector('.loop-node-icon').textContent = '🤖';
+    setNodeIcon(node, 'bot');
     node._details = {
       input_tokens: event._input_tokens,
       output_tokens: event._output_tokens,
@@ -377,7 +384,7 @@ function handleToolCall(event) {
   const node = createNode('agent', 'tool_call', toolName, parent);
   node.classList.add('loop-executing');
   node.dataset.tool = toolName;
-  node.querySelector('.loop-node-icon').textContent = '📖';
+  setNodeIcon(node, 'book-open');
 
   const argsStr = typeof args === 'object' ? JSON.stringify(args).substring(0, 80) : String(args).substring(0, 80);
   const summary = node.querySelector('.loop-node-summary');
@@ -409,15 +416,15 @@ function handleToolResult(event) {
     const status = event.error ? ' ✗' : ' ✓';
 
     if (event.error_type === 'guardrail_blocked') {
-      node.querySelector('.loop-node-icon').textContent = '🚫';
+      setNodeIcon(node, 'ban');
       node.style.borderLeftColor = '#f7768e';
       summary.textContent = `${toolName} BLOCKED${dur}`;
     } else if (event.error) {
-      node.querySelector('.loop-node-icon').textContent = '✗';
+      setNodeIcon(node, 'x');
       node.style.borderLeftColor = '#f7768e';
       summary.textContent = `${toolName}${status}${dur}`;
     } else {
-      node.querySelector('.loop-node-icon').textContent = '✓';
+      setNodeIcon(node, 'check');
       summary.textContent = `${toolName}${status}${dur}`;
     }
 
@@ -431,7 +438,7 @@ function handleToolResult(event) {
     if (parent) {
       const node = createNode('agent', 'tool_result', toolName, parent);
       const status = event.error ? ' ✗' : ' ✓';
-      node.querySelector('.loop-node-icon').textContent = event.error ? '✗' : '✓';
+      setNodeIcon(node, event.error ? 'x' : 'check');
       node.querySelector('.loop-node-summary').textContent = `${toolName}${status} ${event.duration_ms || 0}ms`;
       node._details = { tool: toolName, result: event.result, duration_ms: event.duration_ms, error: event.error };
     }
@@ -450,9 +457,9 @@ function handlePipeline(event) {
   const parent = getRenderParent();
   if (!parent) return;
 
-  const icon = STEP_ICONS[step] || '⚙';
+  const icon = STEP_ICONS[step] || 'settings';
   const node = createNode('pipeline', step, '', parent);
-  node.querySelector('.loop-node-icon').textContent = icon;
+  setNodeIcon(node, icon);
 
   let summary = '';
   switch (step) {
@@ -501,19 +508,19 @@ function handlePipeline(event) {
       summary = `Turn ${event.turn}/${event.max_turns} — ${event.will_continue ? 'continuing' : 'stopping'}`;
       break;
     case 'guardrail_check':
-      summary = `🛡 ${event.tool || '?'} — requires confirmation`;
+      summary = `${event.tool || '?'} — requires confirmation`;
       node.style.borderLeftColor = '#e0af68';
       break;
     case 'guardrail_override':
-      summary = `🛡 ${event.tool || '?'} — confirmed by ${event.by || 'user'}`;
+      summary = `${event.tool || '?'} — confirmed by ${event.by || 'user'}`;
       node.style.borderLeftColor = '#9ece6a';
       break;
     case 'guardrail_blocked':
-      summary = `🚫 ${event.tool || '?'} — BLOCKED`;
+      summary = `${event.tool || '?'} — BLOCKED`;
       node.style.borderLeftColor = '#f7768e';
       break;
     case 'max_turns_reached':
-      summary = `⚠️ Max turns (${event.max_turns}) reached`;
+      summary = `Max turns (${event.max_turns}) reached`;
       node.style.borderLeftColor = '#e0af68';
       break;
     case 'user_message':
@@ -554,7 +561,7 @@ function handleDb(event) {
   if (!parent) return;
   
   const node = createNode('db', event.op || 'db_op', '', parent);
-  node.querySelector('.loop-node-icon').textContent = '💾';
+  setNodeIcon(node, 'save');
 
   let summary = '';
   switch (event.op) {
@@ -586,7 +593,7 @@ function handleError(event) {
   
   const node = createNode('agent', 'error', event.message || 'Unknown error', parent);
   node.style.borderLeftColor = '#f7768e';
-  node.querySelector('.loop-node-icon').textContent = '⚠️';
+  setNodeIcon(node, 'alert-triangle');
   node.querySelector('.loop-node-summary').textContent = event.message || 'Error';
   node._details = event;
 }
@@ -603,7 +610,7 @@ function createNode(level, type, text, parent) {
   node.style.backgroundColor = colors.bg;
 
   node.innerHTML = `
-    <span class="loop-node-icon">${colors.icon}</span>
+    <span class="loop-node-icon">${icon(colors.icon, { size: '12px' })}</span>
     <span class="loop-node-summary">${escapeHtml(text)}</span>
   `;
 

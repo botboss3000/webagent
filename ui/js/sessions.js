@@ -6,6 +6,7 @@ import { loopVisualSessionChanged } from './loop-logic.js';
 import { autoAgentSessionChanged } from './autoagent.js';
 import { streamSessionChanged } from './stream.js';
 import { apiPath } from './config.js';
+import { icon } from './icons.js';
 
 export function generateUUID() {
   return crypto.randomUUID();
@@ -247,7 +248,7 @@ export function initSessions() {
   function resetDeleteConfirm() {
     if (deletePending !== null) {
       deletePending = null;
-      deleteBtn.textContent = '🗑️';
+      deleteBtn.innerHTML = icon('trash-2', { size: '14px' });
       deleteBtn.style.color = '#565f89';
       const opt = sessionSelect.querySelector('option[value="__confirm_delete__"]');
       if (opt) opt.remove();
@@ -296,7 +297,7 @@ export function initSessions() {
     if (deletePending !== sid) {
       // First click: enter confirm mode
       deletePending = sid;
-      deleteBtn.textContent = '⛔';
+      deleteBtn.innerHTML = icon('ban', { size: '14px' });
       deleteBtn.style.color = '#f7768e';
       // Temporarily add "delete msgs?" option selected in dropdown
       const confirmOpt = document.createElement('option');
@@ -309,7 +310,7 @@ export function initSessions() {
         if (deletePending === sid) {
           // Reset if user doesn't click within 5s
           deletePending = null;
-          deleteBtn.textContent = '🗑️';
+          deleteBtn.innerHTML = icon('trash-2', { size: '14px' });
           deleteBtn.style.color = '#565f89';
           const opt = sessionSelect.querySelector('option[value="__confirm_delete__"]');
           if (opt) opt.remove();
@@ -324,7 +325,7 @@ export function initSessions() {
 
     // Second click: actually delete
     deletePending = null;
-    deleteBtn.textContent = '🗑️';
+    deleteBtn.innerHTML = icon('trash-2', { size: '14px' });
     deleteBtn.style.color = '#565f89';
     const confirmOpt = sessionSelect.querySelector('option[value="__confirm_delete__"]');
     if (confirmOpt) confirmOpt.remove();

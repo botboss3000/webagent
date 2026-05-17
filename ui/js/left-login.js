@@ -5,6 +5,8 @@
  * Chat on the right side stays accessible without login.
  */
 
+import { icon } from './icons.js';
+
 let overlayEl = null;
 let restrictedOverlayEl = null;
 
@@ -60,7 +62,7 @@ export function showRestrictedModal() {
       width: 340px; box-shadow: 0 8px 32px rgba(0,0,0,0.6);
       text-align: center;
     ">
-      <div style="font-size:40px; margin-bottom:12px;">🚫</div>
+      <div style="margin-bottom:12px; color:#fb4934;">${icon('ban', { size: '40px' })}</div>
       <h2 style="margin:0 0 8px 0; font-size:20px; font-weight:700; color:#fb4934;">RESTRICTED ACCESS</h2>
       <p style="margin:0 0 20px 0; font-size:13px; color:#a9b1d6;">
         Only admin users can access this feature.
@@ -116,7 +118,7 @@ export function showLeftOverlay() {
       width: 340px; box-shadow: 0 8px 32px rgba(0,0,0,0.6);
     ">
     <div id="left-login-form">
-      <h2 style="margin:0 0 4px 0; font-size:20px; font-weight:600; color:#7dcfff;">🔐 webAgent</h2>
+      <h2 style="margin:0 0 4px 0; font-size:20px; font-weight:600; color:#7dcfff;">${icon('lock', { size: '18px' })} webAgent</h2>
       <p style="margin:0 0 20px 0; font-size:13px; color:#a9b1d6;">
         Sign in to access your database
       </p>
@@ -155,7 +157,7 @@ export function showLeftOverlay() {
 
     <!-- Registration form (hidden by default) -->
     <div id="left-register-form" style="display:none;">
-      <h2 style="margin:0 0 4px 0; font-size:20px; font-weight:600; color:#7dcfff;">🔐 Create Account</h2>
+      <h2 style="margin:0 0 4px 0; font-size:20px; font-weight:600; color:#7dcfff;">${icon('lock', { size: '18px' })} Create Account</h2>
       <p style="margin:0 0 20px 0; font-size:13px; color:#a9b1d6;">
         Register a new account
       </p>

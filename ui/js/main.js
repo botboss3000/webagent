@@ -21,6 +21,7 @@ import { initAutoAgent } from './autoagent.js';
 import { initAgents } from './agents.js';
 import { initChatResize } from './chatResize.js';
 import { isAuthenticated, showLeftOverlay, hideLeftOverlay } from './left-login.js';
+import './icons.js'; // auto-renders Lucide icons on DOM mutations
 
 bindDom();
 

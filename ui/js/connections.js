@@ -6,6 +6,7 @@
  */
 
 import { apiPath } from './config.js';
+import { icon } from './icons.js';
 import { isAdmin, showRestrictedModal } from './left-login.js';
 
 // ── DOM refs ──
@@ -79,7 +80,7 @@ async function loadConnections() {
           </div>
           <div style="display:flex;align-items:center;gap:4px;background:#16161e;border-radius:4px;padding:4px 6px;margin-bottom:4px;">
             <code style="flex:1;font-size:11px;color:#7dcfff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(url)}</code>
-            <button class="conn-copy-btn" data-url="${escHtml(url)}" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:12px;padding:2px 4px;" title="Copy URL">📋</button>
+            <button class="conn-copy-btn" data-url="${escHtml(url)}" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:12px;padding:2px 4px;" title="Copy URL">${icon('clipboard', { size: '12px' })}</button>
           </div>
           <div style="font-size:10px;color:#565f89;">
             ID: <code style="color:#a9b1d6;font-size:10px;">${escHtml(h.id)}</code>
@@ -94,8 +95,8 @@ async function loadConnections() {
     CONN.webhookList.querySelectorAll('.conn-copy-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         navigator.clipboard.writeText(btn.dataset.url).then(() => {
-          btn.textContent = '✅';
-          setTimeout(() => { btn.textContent = '📋'; }, 1500);
+          btn.innerHTML = icon('check', { size: '12px' });
+          setTimeout(() => { btn.innerHTML = icon('clipboard', { size: '12px' }); }, 1500);
         });
       });
     });
@@ -188,15 +189,15 @@ async function loadTelegram(baseUrl) {
         <div style="background:#0d0d1a;border:1px solid #2a2a4a;border-radius:6px;padding:12px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
             <span style="color:#b8bb26;font-weight:600;font-size:13px;">● ${enabled ? 'Connected' : 'Disabled'}</span>
-            <span style="font-size:11px;color:#565f89;">${mode === 'polling' ? '🔄 Polling' : '📡 Webhook'} · Token configured</span>
+            <span style="font-size:11px;color:#565f89;">${mode === 'polling' ? icon('refresh-cw', { size: '11px' }) + ' Polling' : icon('radio', { size: '11px' }) + ' Webhook'} · Token configured</span>
           </div>
           <div style="display:flex;align-items:center;gap:4px;background:#16161e;border-radius:4px;padding:4px 6px;margin-bottom:6px;">
             <code style="flex:1;font-size:11px;color:#7dcfff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(webhookUrl)}</code>
-            <button class="conn-copy-btn" data-url="${escHtml(webhookUrl)}" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:12px;padding:2px 4px;" title="Copy URL">📋</button>
+            <button class="conn-copy-btn" data-url="${escHtml(webhookUrl)}" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:12px;padding:2px 4px;" title="Copy URL">${icon('clipboard', { size: '12px' })}</button>
           </div>
           <div style="display:flex;gap:8px;margin-top:6px;">
             <button id="conn-tg-enable-btn" class="tg-toggle-btn" data-enable="${enabled ? 'false' : 'true'}" style="padding:5px 14px;${enabled ? 'background:transparent;border:1px solid #565f89;color:#565f89' : 'background:#7dcfff;border:none;color:#0d0d1a'};border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;">
-              ${enabled ? '⏸ Disable' : '▶ Enable'}
+              ${enabled ? icon('pause', { size: '13px' }) + ' Disable' : icon('play', { size: '13px' }) + ' Enable'}
             </button>
           </div>
           <details style="margin-top:8px;font-size:11px;">
@@ -260,12 +261,12 @@ async function loadTelegram(baseUrl) {
         const result = await resp.json();
         if (result.status === 'ok') {
           let mode = result.mode || 'webhook';
-          let modeIcon = mode === 'polling' ? '🔄' : '📡';
-          let msg = `✓ Token saved! Plugin enabled (${modeIcon} ${mode}).`;
+          let modeLabel = mode === 'polling' ? 'Polling' : 'Webhook';
+          let msg = `✓ Token saved! Plugin enabled (${modeLabel} ${mode}).`;
           if (mode === 'webhook' && result.webhook_registered) {
             msg += ' Webhook registered.';
           } else if (mode === 'webhook' && !result.webhook_registered) {
-            msg += ' ⚠ Webhook registration failed.';
+            msg += ' Webhook registration failed.';
           }
           tokenStatus.textContent = msg;
           tokenStatus.style.color = '#b8bb26';
@@ -294,8 +295,8 @@ async function loadTelegram(baseUrl) {
     CONN.telegramStatus.querySelectorAll('.conn-copy-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         navigator.clipboard.writeText(btn.dataset.url).then(() => {
-          btn.textContent = '✅';
-          setTimeout(() => { btn.textContent = '📋'; }, 1500);
+          btn.innerHTML = icon('check', { size: '12px' });
+          setTimeout(() => { btn.innerHTML = icon('clipboard', { size: '12px' }); }, 1500);
         });
       });
     });

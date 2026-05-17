@@ -3,6 +3,7 @@
 import { app } from './state.js';
 import { formatJsonAsHtml, initJsonToggle } from './json-tree.js';
 import { apiPath } from './config.js';
+import { icon } from './icons.js';
 
 let streamInterval = null;
 let lastTimestamp = '';
@@ -99,7 +100,7 @@ function renderFilterPanel() {
       const checked = FILTERS.tools.size === 0 || FILTERS.tools.has(tool) ? 'checked' : '';
       html += `<label class="str-flt-label" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;color:#a9b1d6;font-size:12px;">
         <input type="checkbox" class="str-flt-tool" data-tool="${tool}" ${checked} style="accent-color:#e0af68;">
-        <span>🔧 ${tool}</span>
+        <span>${icon('wrench', { size: '11px' })} ${tool}</span>
       </label>`;
     }
   }
@@ -164,10 +165,10 @@ function updateFilterCounts() {
   const btn = document.getElementById('stream-filter-btn');
   if (btn) {
     if (visible < total) {
-      btn.textContent = `⚙ Filters (${visible}/${total})`;
+      btn.innerHTML = `${icon('sliders-horizontal', { size: '11px' })} Filters (${visible}/${total})`;
       btn.style.color = '#e0af68';
     } else {
-      btn.textContent = '⚙ Filters';
+      btn.innerHTML = `${icon('sliders-horizontal', { size: '11px' })} Filters`;
       btn.style.color = '#565f89';
     }
   }
@@ -200,13 +201,13 @@ function renderInteractions(rows) {
     }
 
     const headerParts = [
-      `<button class="str-coll-btn" title="Collapse this">▶</button>`,
-      `<button class="str-coll-all-btn" title="Collapse all ${role}${toolName ? '/' + toolName : ''}">❯❯❯❯</button>`,
+      `<button class="str-coll-btn" title="Collapse this">${icon('chevron-right', { size: '11px' })}</button>`,
+      `<button class="str-coll-all-btn" title="Collapse all ${role}${toolName ? '/' + toolName : ''}">${icon('chevrons-right', { size: '11px' })}</button>`,
     ];
 
     const inputData = row.input || null;
     const inputBtn = inputData
-      ? `<button class="str-input-btn" title="View input data">📥</button>`
+      ? `<button class="str-input-btn" title="View input data">${icon('inbox', { size: '11px' })}</button>`
       : '';
 
     // Tool entries: minimal — no bubble, just content with a small header
@@ -215,7 +216,7 @@ function renderInteractions(rows) {
         <div class="str-header">
           ${headerParts.join('\n          ')}
           ${inputBtn}
-          <span class="str-tool" style="color:#e0af68;font-size:10px;">🔧 ${toolName || 'tool'}</span>
+          <span class="str-tool" style="color:#e0af68;font-size:10px;display:inline-flex;align-items:center;gap:3px;">${icon('wrench', { size: '10px' })} ${toolName || 'tool'}</span>
           <span class="str-time">${fmtTimestamp(row.created_at)}</span>
           <span class="str-session" title="${row.session_id || ''}">${(row.session_id || '').substring(0, 8)}</span>
         </div>
@@ -228,7 +229,7 @@ function renderInteractions(rows) {
           ${inputBtn}
           ${roleLabel(role)}
           <span class="str-time">${fmtTimestamp(row.created_at)}</span>
-          ${toolName ? `<span class="str-tool">🔧 ${toolName}</span>` : ''}
+          ${toolName ? `<span class="str-tool" style="display:inline-flex;align-items:center;gap:3px;">${icon('wrench', { size: '10px' })} ${toolName}</span>` : ''}
           <span class="str-session" title="${row.session_id || ''}">${(row.session_id || '').substring(0, 8)}</span>
         </div>
         <div class="str-body">${renderContent(content)}</div>
@@ -252,7 +253,7 @@ function renderInteractions(rows) {
       collBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         entry.classList.toggle('str-collapsed');
-        collBtn.textContent = entry.classList.contains('str-collapsed') ? '▶' : '▼';
+        collBtn.innerHTML = icon(entry.classList.contains('str-collapsed') ? 'chevron-right' : 'chevron-down', { size: '11px' });
       });
     }
     if (collAllBtn) {
@@ -269,7 +270,7 @@ function renderInteractions(rows) {
           if (el.dataset.role === r && el.dataset.tool === t) {
             el.classList.toggle('str-collapsed', nowCollapsed);
             const btn = el.querySelector('.str-coll-btn');
-            if (btn) btn.textContent = nowCollapsed ? '▶' : '▼';
+            if (btn) btn.innerHTML = icon(nowCollapsed ? 'chevron-right' : 'chevron-down', { size: '11px' });
           }
         });
       });
@@ -402,7 +403,7 @@ export function stopStream() {
     clearInterval(streamInterval);
     streamInterval = null;
   }
-  document.getElementById('stream-status').textContent = '⏸ paused';
+  document.getElementById('stream-status').innerHTML = `${icon('pause', { size: '11px' })} paused`;
 }
 
 // ── Called when session changes externally (from sessions.js) ──

@@ -10,6 +10,7 @@
 
 import { app } from './state.js';
 import { apiPath } from './config.js';
+import { icon } from './icons.js';
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -108,7 +109,7 @@ async function uploadAndPreview(file) {
   const previewBar = document.getElementById('chat-preview-bar');
   const chip = document.createElement('span');
   chip.className = 'chat-attachment-pill uploading';
-  chip.textContent = `⬆ ${file.name}`;
+  chip.innerHTML = `${icon('upload', { size: '12px' })} ${file.name}`;
   previewBar.appendChild(chip);
   previewBar.style.display = 'flex';
 
@@ -142,15 +143,15 @@ async function uploadAndPreview(file) {
       img.className = 'chat-attachment-thumb';
       chip.appendChild(img);
     } else if (data.mime_type.startsWith('audio/')) {
-      chip.textContent = `🎤 ${data.original_name}`;
+      chip.innerHTML = `${icon('mic', { size: '12px' })} ${data.original_name}`;
     } else {
-      chip.textContent = `📎 ${data.original_name}`;
+      chip.innerHTML = `${icon('paperclip', { size: '12px' })} ${data.original_name}`;
     }
 
     // Remove button
     const removeBtn = document.createElement('button');
     removeBtn.className = 'chat-attachment-remove';
-    removeBtn.textContent = '✕';
+    removeBtn.innerHTML = icon('x', { size: '11px' });
     removeBtn.title = 'Remove attachment';
     removeBtn.addEventListener('click', () => {
       chip.remove();
@@ -164,7 +165,7 @@ async function uploadAndPreview(file) {
     pendingAttachments.push(data);
   } catch (err) {
     chip.className = 'chat-attachment-pill error';
-    chip.textContent = `✕ ${file.name}: ${err.message}`;
+    chip.textContent = `${file.name}: ${err.message}`;
     setTimeout(() => { chip.remove(); if (pendingAttachments.length === 0) previewBar.style.display = 'none'; }, 3000);
   }
 }
@@ -190,7 +191,7 @@ async function startVoiceRecording(btn) {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
       mediaRecorder.stop();
     }
-    btn.textContent = '🎤';
+    btn.innerHTML = icon('mic', { size: '16px' });
     btn.classList.remove('recording');
     isRecording = false;
     return;
@@ -208,7 +209,7 @@ async function startVoiceRecording(btn) {
     mediaRecorder.onstop = async () => {
       stream.getTracks().forEach(t => t.stop());
       const blob = new Blob(audioChunks, { type: 'audio/webm' });
-      btn.textContent = '🎤';
+      btn.innerHTML = icon('mic', { size: '16px' });
       btn.classList.remove('recording');
       isRecording = false;
 
@@ -218,7 +219,7 @@ async function startVoiceRecording(btn) {
     };
 
     mediaRecorder.start();
-    btn.textContent = '🔴 Stop';
+    btn.innerHTML = `${icon('circle-stop', { size: '14px' })} Stop`;
     btn.classList.add('recording');
     isRecording = true;
   } catch (err) {
@@ -268,7 +269,7 @@ export function renderAttachmentElement(att) {
     wrapper.className = 'chat-audio-wrapper';
     const label = document.createElement('div');
     label.className = 'chat-attachment-label';
-    label.textContent = `🎤 ${att.original_name || 'Voice recording'}`;
+    label.innerHTML = `${icon('mic', { size: '12px' })} ${att.original_name || 'Voice recording'}`;
     wrapper.appendChild(label);
     const audio = document.createElement('audio');
     audio.src = url;
@@ -292,7 +293,7 @@ export function renderAttachmentElement(att) {
   // Default: download link
   const link = document.createElement('a');
   link.href = url;
-  link.textContent = `📎 ${att.original_name || 'Download attachment'}`;
+  link.innerHTML = `${icon('paperclip', { size: '12px' })} ${att.original_name || 'Download attachment'}`;
   link.className = 'chat-attachment-link';
   link.target = '_blank';
   link.rel = 'noopener';
