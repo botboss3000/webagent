@@ -13,6 +13,7 @@ import { app } from './state.js';
 import { fetchAllToolMeta } from './loop-logic.js';
 import { NODE_PANEL_INFO } from './loop-node-data.js';
 import { LOOP_W, LOOP_H, LOOP_NODES, TOGGLEABLE_NODES, renderLoopDiagram } from './loop-diagram.js';
+import { icon } from './icons.js';
 
 function _triggerKeyPlaceholder(triggerType) {
   const map = {
@@ -85,53 +86,54 @@ const TIER_1_ALWAYS_ON = new Set([
 ]);
 
 // Tier 2: Configurable standard tools — shown in the toggle UI.
-const TIER_2_CATEGORIES = [
+const TIER_2_TOOLS = [
+  'web_search','http_request','browser_action',
+  'db_query','list_agent_context_documents','get_agent_context_document',
+  'update_agent_context_document','insert_agent_context_document','session_search',
+  'memory',
+  'get_weather','create_tool','rate_skill','run_optimizer',
+  'register_webhook','list_webhooks','delete_webhook','get_webhook_log',
+];
+
+const TIER_2_ALL = TIER_2_TOOLS;
+
+// Category definitions covering all tiers. condition: null=always, 'admin'=admin/optimizer only
+const TOOL_CATEGORIES = [
   {
-    label: 'Web & Network',
+    label: 'Information & Search',
+    condition: null,
     tools: [
-      { name: 'web_search',    desc: 'Search the web for current information',      destructive: false },
-      { name: 'http_request',  desc: 'Make arbitrary HTTP/API requests',             destructive: false },
-      { name: 'browser_action',desc: 'Control a live browser (click, screenshot…)', destructive: false },
+      'web_search','http_request','browser_action','session_search','memory',
+      'list_tools','search_tools','get_tool_definition','read_attachment',
     ],
   },
   {
-    label: 'Database & Context',
+    label: 'Data & Context',
+    condition: null,
     tools: [
-      { name: 'db_query',                     desc: 'Read or write context documents',        destructive: true  },
-      { name: 'list_agent_context_documents',  desc: 'List context documents for this agent',  destructive: false },
-      { name: 'get_agent_context_document',    desc: 'Read a specific context document',       destructive: false },
-      { name: 'update_agent_context_document', desc: 'Update a context document',              destructive: true  },
-      { name: 'insert_agent_context_document', desc: 'Insert a new context document',          destructive: false },
-      { name: 'session_search',                desc: 'Search past session conversations',       destructive: false },
+      'db_query','list_agent_context_documents','get_agent_context_document',
+      'update_agent_context_document','insert_agent_context_document','create_tool',
+      'get_time','get_date','calculate','delegate_to_agent','list_delegatable_agents','register_user',
     ],
   },
   {
-    label: 'Memory',
+    label: 'Integrations & Automation',
+    condition: null,
     tools: [
-      { name: 'memory', desc: 'Store and retrieve facts across sessions', destructive: false },
+      'register_webhook','list_webhooks','delete_webhook','get_webhook_log',
+      'get_weather','rate_skill','run_optimizer',
     ],
   },
   {
-    label: 'Utilities',
+    label: 'Admin & System',
+    condition: 'admin',
     tools: [
-      { name: 'get_weather',   desc: 'Get current weather for a location',     destructive: false },
-      { name: 'create_tool',   desc: 'Create a new tool and save it to the DB', destructive: true  },
-      { name: 'rate_skill',    desc: 'Record user feedback on a skill',          destructive: false },
-      { name: 'run_optimizer', desc: 'Trigger the optimizer pipeline',           destructive: false },
-    ],
-  },
-  {
-    label: 'Webhooks',
-    tools: [
-      { name: 'register_webhook', desc: 'Register an inbound webhook endpoint', destructive: false },
-      { name: 'list_webhooks',    desc: 'List registered webhooks',              destructive: false },
-      { name: 'delete_webhook',   desc: 'Delete a webhook registration',         destructive: true  },
-      { name: 'get_webhook_log',  desc: 'View recent webhook events',            destructive: false },
+      'read_source','write_source','edit_source','delete_source',
+      'run_command','restart_server',
+      'run_worker_trials','handoff_to_finalizer','deploy_optimization',
     ],
   },
 ];
-
-const TIER_2_ALL = TIER_2_CATEGORIES.flatMap(c => c.tools.map(t => t.name));
 
 const PIPELINE_TOOLS = {
   opt_planner:   ['run_worker_trials','handoff_to_finalizer'],
@@ -269,7 +271,7 @@ function _renderList() {
     card.innerHTML = `
       <div class="agent-card-top">
         <div class="agent-card-icon-wrap ${_iconColor(agent)}">
-          ${agent.icon || '🤖'}
+          ${agent.icon || icon('bot', { size: '20px' })}
         </div>
         <div class="agent-card-meta">
           <div class="agent-card-name-row">
@@ -289,8 +291,8 @@ function _renderList() {
       <div class="agent-card-stats">
         <span class="agent-stat"><span class="agent-stat-icon">↻</span>${turns} turns</span>
         <span class="agent-stat"><span class="agent-stat-icon">⋮</span>${temp}</span>
-        <span class="agent-stat"><span class="agent-stat-icon">🔧</span>${toolCount} tools</span>
-        ${timeAgo ? `<span class="agent-stat agent-stat-time"><span class="agent-stat-icon">🕐</span>${timeAgo}</span>` : ''}
+        <span class="agent-stat"><span class="agent-stat-icon">${icon('wrench', { size: '11px' })}</span>${toolCount} tools</span>
+        ${timeAgo ? `<span class="agent-stat agent-stat-time"><span class="agent-stat-icon">${icon('clock', { size: '11px' })}</span>${timeAgo}</span>` : ''}
       </div>
     `;
 
@@ -394,7 +396,7 @@ function _renderPanelBody(agent, panelEl) {
   if (oldSaveBar) oldSaveBar.remove();
 
   if (tab === 'config')            _renderConfigTab(body, agent, panelEl);
-  else if (tab === 'tools')        _renderToolsTab(body, agent);
+  else if (tab === 'tools')        _renderToolsTab(body, agent, panelEl);
   else if (tab === 'test')         _renderTestTab(body, agent);
   else if (tab === 'connections')  _renderConnectionsTab(body, agent);
 }
@@ -487,135 +489,6 @@ function _renderConfigTab(body, agent, panelEl) {
       agent[f.key] || '', !isEditable, 6, f.hint);
   }
 
-  // ── Safety & Guardrails section (custom agents only) ──────────────────────
-  if (isEditable) {
-    const sp = (agent.safety_policy && typeof agent.safety_policy === 'object')
-      ? agent.safety_policy : {};
-    const destructiveList = new Set(Array.isArray(sp.destructive_tools) ? sp.destructive_tools : []);
-    const blockedImports  = new Set(Array.isArray(sp.blocked_imports)   ? sp.blocked_imports  : []);
-
-    const safetyGroup = document.createElement('div');
-    safetyGroup.className = 'agents-field-group';
-
-    // Hidden input that always carries the current safety_policy JSON
-    const spHidden = document.createElement('input');
-    spHidden.type = 'hidden';
-    spHidden.dataset.field = 'safety_policy';
-    spHidden.value = JSON.stringify(sp);
-    safetyGroup.appendChild(spHidden);
-
-    function _syncSpHidden() {
-      const maxConcVal = parseInt(maxConcInput.value, 10);
-      const newSp = {
-        destructive_tools: [...destructiveList],
-        auto_confirm:      autoConfirmCb.checked,
-        blocked_imports:   [...blockedImports],
-      };
-      if (maxConcVal > 0) newSp.max_concurrent_tools = maxConcVal;
-      spHidden.value = JSON.stringify(newSp);
-    }
-
-    const secLabel = document.createElement('label');
-    secLabel.className = 'agents-field-label';
-    secLabel.textContent = 'Safety & Guardrails';
-    safetyGroup.appendChild(secLabel);
-
-    const hint = document.createElement('span');
-    hint.className = 'agents-field-hint';
-    hint.textContent = 'Control which tools require user confirmation before running, and set execution limits.';
-    safetyGroup.appendChild(hint);
-
-    // ── auto_confirm toggle ──────────────────────────────────────────────────
-    const autoConfirmRow = document.createElement('label');
-    autoConfirmRow.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px;';
-    const autoConfirmCb = document.createElement('input');
-    autoConfirmCb.type = 'checkbox';
-    autoConfirmCb.checked = Boolean(sp.auto_confirm);
-    autoConfirmCb.addEventListener('change', _syncSpHidden);
-    autoConfirmRow.appendChild(autoConfirmCb);
-    const autoConfirmLbl = document.createElement('span');
-    autoConfirmLbl.style.cssText = 'font-size:13px;color:var(--fg-1);';
-    autoConfirmLbl.textContent = 'Auto-confirm destructive tools (skip user confirmation gate)';
-    autoConfirmRow.appendChild(autoConfirmLbl);
-    safetyGroup.appendChild(autoConfirmRow);
-
-    // ── max_concurrent_tools ─────────────────────────────────────────────────
-    const maxConcRow = document.createElement('div');
-    maxConcRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:10px;';
-    const maxConcLbl = document.createElement('span');
-    maxConcLbl.style.cssText = 'font-size:13px;color:var(--fg-1);white-space:nowrap;';
-    maxConcLbl.textContent = 'Max concurrent tools:';
-    const maxConcInput = document.createElement('input');
-    maxConcInput.type = 'number';
-    maxConcInput.min = '0';
-    maxConcInput.max = '20';
-    maxConcInput.className = 'agents-input';
-    maxConcInput.style.cssText = 'width:70px;';
-    maxConcInput.value = sp.max_concurrent_tools || '';
-    maxConcInput.placeholder = 'unlimited';
-    maxConcInput.addEventListener('input', _syncSpHidden);
-    maxConcRow.appendChild(maxConcLbl);
-    maxConcRow.appendChild(maxConcInput);
-    const maxConcHint = document.createElement('span');
-    maxConcHint.style.cssText = 'font-size:11px;color:var(--fg-3);';
-    maxConcHint.textContent = '0 = unlimited';
-    maxConcRow.appendChild(maxConcHint);
-    safetyGroup.appendChild(maxConcRow);
-
-    // ── destructive_tools tag editor ─────────────────────────────────────────
-    const dtLabel = document.createElement('div');
-    dtLabel.style.cssText = 'font-size:12px;font-weight:600;color:var(--fg-2);margin-top:12px;margin-bottom:4px;';
-    dtLabel.textContent = 'Additional tools requiring confirmation';
-    safetyGroup.appendChild(dtLabel);
-
-    const dtHint = document.createElement('div');
-    dtHint.style.cssText = 'font-size:11px;color:var(--fg-3);margin-bottom:6px;';
-    dtHint.textContent = 'Admin source tools (edit_source, run_command, etc.) are always included by default.';
-    safetyGroup.appendChild(dtHint);
-
-    const dtTags = document.createElement('div');
-    dtTags.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;min-height:24px;';
-    safetyGroup.appendChild(dtTags);
-
-    function _renderDtTags() {
-      dtTags.innerHTML = '';
-      for (const name of [...destructiveList].sort()) {
-        const tag = document.createElement('span');
-        tag.style.cssText = 'display:inline-flex;align-items:center;gap:3px;background:var(--bg-3);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:11px;color:var(--fg-1);';
-        tag.textContent = name;
-        const rm = document.createElement('button');
-        rm.textContent = '×';
-        rm.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--fg-3);font-size:13px;line-height:1;padding:0;margin-left:2px;';
-        rm.addEventListener('click', () => { destructiveList.delete(name); _renderDtTags(); _syncSpHidden(); });
-        tag.appendChild(rm);
-        dtTags.appendChild(tag);
-      }
-    }
-    _renderDtTags();
-
-    const dtAddRow = document.createElement('div');
-    dtAddRow.style.cssText = 'display:flex;gap:6px;';
-    const dtInput = document.createElement('input');
-    dtInput.type = 'text';
-    dtInput.className = 'agents-input';
-    dtInput.style.cssText = 'flex:1;font-size:12px;';
-    dtInput.placeholder = 'tool_name  (Enter to add)';
-    const dtAddBtn = document.createElement('button');
-    dtAddBtn.className = 'agents-btn';
-    dtAddBtn.textContent = 'Add';
-    dtAddBtn.style.cssText = 'font-size:12px;padding:4px 10px;';
-    function _dtAdd() {
-      const v = dtInput.value.trim();
-      if (v) { destructiveList.add(v); dtInput.value = ''; _renderDtTags(); _syncSpHidden(); }
-    }
-    dtInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); _dtAdd(); } });
-    dtAddBtn.addEventListener('click', _dtAdd);
-    dtAddRow.appendChild(dtInput);
-    dtAddRow.appendChild(dtAddBtn);
-    safetyGroup.appendChild(dtAddRow);
-
-    body.appendChild(safetyGroup);
-  }
 
   // Admin-only: Discoverable toggle for system templates
   if (!isEditable && _userIsAdmin && agent.source === 'template') {
@@ -713,50 +586,446 @@ function _addField(container, label, tag, fieldKey, value, readonly, rows = 4, h
 
 // ── Tools tab ─────────────────────────────────────────────────────────────────
 
-function _renderToolsTab(body, agent) {
-  const tools = _toolsForAgent(agent);
-  const section = document.createElement('div');
-  section.className = 'agents-tools-list';
+// Resolve loop_logic as an object array without touching _lvPendingChanges
+function _localLoopLogicObjs(agent) {
+  const ll = Array.isArray(agent.loop_logic) ? agent.loop_logic : [];
+  if (ll.length === 0 || typeof ll[0] === 'string') {
+    return LOOP_NODES.map(n => ({ node: n.id, enabled: true }));
+  }
+  return ll.map(item => ({ ...item }));
+}
 
-  const intro = document.createElement('div');
-  intro.style.cssText = 'font-size:12px;color:#565f89;margin-bottom:14px;line-height:1.5;';
-  intro.textContent = `This agent has access to ${tools.length} tools. Tools marked destructive can modify data or execute code.`;
-  section.appendChild(intro);
+async function _renderToolsTab(body, agent, panelEl) {
+  const isEditable = agent.source === 'custom';
 
-  for (const name of tools) {
-    const item = document.createElement('div');
-    item.className = 'agents-tool-item';
-    const isDestructive = DESTRUCTIVE.has(name);
-    item.innerHTML = `
-      <span class="agents-tool-name">${name}</span>
-      <span class="agents-tool-desc">${_esc(TOOL_DESCRIPTIONS[name] || '')}</span>
-      <span class="agents-tool-badge ${isDestructive ? 'destructive' : 'safe'}">
-        ${isDestructive ? 'write' : 'read-only'}
-      </span>
-    `;
-    section.appendChild(item);
+  // ── Non-editable: read-only tool list ────────────────────────────────────
+  if (!isEditable) {
+    const tools = _toolsForAgent(agent);
+    const toolSet = new Set(tools);
+    const section = document.createElement('div');
+    section.className = 'agents-tools-list';
+    const intro = document.createElement('div');
+    intro.style.cssText = 'font-size:12px;color:#565f89;margin-bottom:14px;line-height:1.5;';
+    intro.textContent = `This agent has access to ${tools.length} tools. Tools marked destructive can modify data or execute code.`;
+    section.appendChild(intro);
+
+    const agentId = agent.id || '';
+    const isAdmin = agentId === 'admin-agent' || agentId.startsWith('opt_');
+
+    for (const cat of TOOL_CATEGORIES) {
+      if (cat.condition === 'admin' && !isAdmin) continue;
+      const catTools = cat.tools.filter(n => toolSet.has(n));
+      if (catTools.length === 0) continue;
+
+      const wrapper = document.createElement('div');
+      wrapper.className = 'agents-tool-category';
+
+      const header = document.createElement('div');
+      header.className = 'agents-tool-category-header';
+      header.innerHTML = `<span class="agents-tool-category-chevron">▼</span>
+        <span class="agents-tool-category-label">${_esc(cat.label)}</span>
+        <span class="agents-tool-category-count">${catTools.length}</span>`;
+
+      const catBody = document.createElement('div');
+      catBody.className = 'agents-tool-category-body';
+
+      header.addEventListener('click', () => {
+        header.classList.toggle('collapsed');
+        catBody.classList.toggle('collapsed');
+      });
+
+      for (const name of catTools) {
+        const item = document.createElement('div');
+        item.className = 'agents-tool-item';
+        const isDestructive = DESTRUCTIVE.has(name);
+        item.innerHTML = `
+          <span class="agents-tool-name">${name}</span>
+          <span class="agents-tool-desc">${_esc(TOOL_DESCRIPTIONS[name] || '')}</span>
+          <span class="agents-tool-badge ${isDestructive ? 'destructive' : 'safe'}">
+            ${isDestructive ? 'write' : 'read-only'}
+          </span>
+        `;
+        catBody.appendChild(item);
+      }
+
+      wrapper.appendChild(header);
+      wrapper.appendChild(catBody);
+      section.appendChild(wrapper);
+    }
+
+    // Uncategorized tools (custom skills or tools not in any category)
+    const categorized = new Set(TOOL_CATEGORIES.flatMap(c => c.tools));
+    const uncategorized = tools.filter(n => !categorized.has(n));
+    if (uncategorized.length > 0) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'agents-tool-category';
+      const header = document.createElement('div');
+      header.className = 'agents-tool-category-header';
+      header.innerHTML = `<span class="agents-tool-category-chevron">▼</span>
+        <span class="agents-tool-category-label">Custom Skills</span>
+        <span class="agents-tool-category-count">${uncategorized.length}</span>`;
+      const catBody = document.createElement('div');
+      catBody.className = 'agents-tool-category-body';
+      header.addEventListener('click', () => {
+        header.classList.toggle('collapsed');
+        catBody.classList.toggle('collapsed');
+      });
+      for (const name of uncategorized) {
+        const item = document.createElement('div');
+        item.className = 'agents-tool-item';
+        const isDestructive = DESTRUCTIVE.has(name);
+        item.innerHTML = `
+          <span class="agents-tool-name">${name}</span>
+          <span class="agents-tool-desc">${_esc(TOOL_DESCRIPTIONS[name] || '')}</span>
+          <span class="agents-tool-badge ${isDestructive ? 'destructive' : 'safe'}">
+            ${isDestructive ? 'write' : 'read-only'}
+          </span>
+        `;
+        catBody.appendChild(item);
+      }
+      wrapper.appendChild(header);
+      wrapper.appendChild(catBody);
+      section.appendChild(wrapper);
+    }
+
+    body.appendChild(section);
+    return;
   }
 
-  body.appendChild(section);
+  // ── Editable: full guardrails + per-tool controls ─────────────────────────
+
+  // Mutable state captured by closures for the Save handler
+  const sp0 = (agent.safety_policy && typeof agent.safety_policy === 'object') ? agent.safety_policy : {};
+  const blockedSet = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
+  const dtSet      = new Set(Array.isArray(sp0.destructive_tools) ? sp0.destructive_tools : []);
+  let autoConfirmAll = Boolean(sp0.auto_confirm);
+  let maxConcVal     = sp0.max_concurrent_tools || '';
+
+  // Loop-logic state for the guardrail master toggle
+  let localLL   = _localLoopLogicObjs(agent);
+  let llDirty   = false;
+  const llGuard = localLL.find(o => o.node === 'guardrails');
+  let guardrailOn = llGuard ? llGuard.enabled !== false : true;
+
+  function setGuardrailEnabled(on) {
+    guardrailOn = on;
+    llDirty     = true;
+    const idx   = localLL.findIndex(o => o.node === 'guardrails');
+    if (idx !== -1) localLL[idx] = { ...localLL[idx], enabled: on };
+    else            localLL.push({ node: 'guardrails', enabled: on });
+  }
+
+  // ── Section 1: Guardrail master toggle ──────────────────────────────────
+  const guardrailGroup = document.createElement('div');
+  guardrailGroup.className = 'agents-field-group';
+
+  const guardrailLabelEl = document.createElement('label');
+  guardrailLabelEl.className = 'agents-field-label';
+  guardrailLabelEl.textContent = 'Guardrails';
+  guardrailGroup.appendChild(guardrailLabelEl);
+
+  const guardrailHintEl = document.createElement('span');
+  guardrailHintEl.className = 'agents-field-hint';
+  guardrailHintEl.textContent = 'Master switch for the confirmation gate. When off, all tools run without prompting regardless of per-tool settings.';
+  guardrailGroup.appendChild(guardrailHintEl);
+
+  const guardrailRow = document.createElement('label');
+  guardrailRow.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px;';
+  const guardrailCb = document.createElement('input');
+  guardrailCb.type    = 'checkbox';
+  guardrailCb.checked = guardrailOn;
+  guardrailCb.addEventListener('change', () => setGuardrailEnabled(guardrailCb.checked));
+  const guardrailTxt = document.createElement('span');
+  guardrailTxt.style.cssText = 'font-size:13px;color:var(--fg-1);';
+  guardrailTxt.textContent = 'Require confirmation before running destructive tools';
+  guardrailRow.appendChild(guardrailCb);
+  guardrailRow.appendChild(guardrailTxt);
+  guardrailGroup.appendChild(guardrailRow);
+  body.appendChild(guardrailGroup);
+
+  // ── Section 2: Execution settings (auto-confirm all, max concurrent) ────
+  const execGroup = document.createElement('div');
+  execGroup.className = 'agents-field-group';
+
+  const execLabel = document.createElement('label');
+  execLabel.className = 'agents-field-label';
+  execLabel.textContent = 'Execution Settings';
+  execGroup.appendChild(execLabel);
+
+  // Auto-confirm all
+  const autoRow = document.createElement('label');
+  autoRow.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px;';
+  const autoCb = document.createElement('input');
+  autoCb.type    = 'checkbox';
+  autoCb.checked = autoConfirmAll;
+  autoCb.addEventListener('change', () => { autoConfirmAll = autoCb.checked; });
+  const autoTxt = document.createElement('span');
+  autoTxt.style.cssText = 'font-size:13px;color:var(--fg-1);';
+  autoTxt.textContent = 'Auto-confirm all tools (bypass guardrail for this agent — useful for automation)';
+  autoRow.appendChild(autoCb);
+  autoRow.appendChild(autoTxt);
+  execGroup.appendChild(autoRow);
+
+  // Max concurrent
+  const maxRow = document.createElement('div');
+  maxRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:10px;';
+  const maxLbl = document.createElement('span');
+  maxLbl.style.cssText = 'font-size:13px;color:var(--fg-1);white-space:nowrap;';
+  maxLbl.textContent = 'Max concurrent tools:';
+  const maxInput = document.createElement('input');
+  maxInput.type        = 'number';
+  maxInput.min         = '0';
+  maxInput.max         = '20';
+  maxInput.className   = 'agents-input';
+  maxInput.style.width = '70px';
+  maxInput.value       = sp0.max_concurrent_tools || '';
+  maxInput.placeholder = 'unlimited';
+  maxInput.addEventListener('input', () => { maxConcVal = maxInput.value; });
+  const maxHint = document.createElement('span');
+  maxHint.style.cssText = 'font-size:11px;color:var(--fg-3);';
+  maxHint.textContent = '0 = unlimited';
+  maxRow.appendChild(maxLbl);
+  maxRow.appendChild(maxInput);
+  maxRow.appendChild(maxHint);
+  execGroup.appendChild(maxRow);
+  body.appendChild(execGroup);
+
+  // ── Section 3: Per-tool mode ─────────────────────────────────────────────
+  const toolsGroup = document.createElement('div');
+  toolsGroup.className = 'agents-field-group';
+
+  const toolsLabelEl = document.createElement('label');
+  toolsLabelEl.className = 'agents-field-label';
+  toolsLabelEl.textContent = 'Per-Tool Mode';
+  toolsGroup.appendChild(toolsLabelEl);
+
+  const toolsHintEl = document.createElement('span');
+  toolsHintEl.className = 'agents-field-hint';
+  toolsHintEl.textContent = 'Auto-confirm: runs freely. Ask: pauses and asks before running. Deny: blocked entirely.';
+  toolsGroup.appendChild(toolsHintEl);
+
+  const loadingEl = document.createElement('div');
+  loadingEl.style.cssText = 'font-size:12px;color:var(--fg-3);margin-top:10px;';
+  loadingEl.textContent = 'Loading…';
+  toolsGroup.appendChild(loadingEl);
+  body.appendChild(toolsGroup);
+
+  // ── Save bar (sticky, outside scrollable body) ───────────────────────────
+  const content = panelEl ? panelEl.querySelector('.agent-detail-content') : null;
+  const bar     = document.createElement('div');
+  bar.className = 'agents-save-bar';
+  const saveBtn = _btn('Save Changes', 'agents-btn primary');
+  const saveMsg = document.createElement('span');
+  saveMsg.className = 'agents-save-msg';
+
+  saveBtn.addEventListener('click', async () => {
+    saveMsg.textContent = 'Saving…';
+    saveMsg.className   = 'agents-save-msg';
+
+    const newSp = {
+      ...sp0,
+      destructive_tools: [...dtSet],
+      auto_confirm:      autoConfirmAll,
+    };
+    const mv = parseInt(maxConcVal, 10);
+    if (mv > 0) newSp.max_concurrent_tools = mv;
+    else        delete newSp.max_concurrent_tools;
+
+    const updates = {
+      allowed_tools: [...blockedSet],
+      safety_policy: newSp,
+    };
+    if (llDirty) updates.loop_logic = localLL;
+
+    try {
+      const res = await fetch(`/api/v1/agents/${agent.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: app.currentUserId, ...updates }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        const idx = _agents.findIndex(a => a.id === agent.id);
+        if (idx !== -1) Object.assign(_agents[idx], data.agent);
+        Object.assign(agent, data.agent);
+        saveMsg.textContent = '✓ Saved';
+        saveMsg.className   = 'agents-save-msg';
+      } else {
+        saveMsg.textContent = data.detail || 'Save failed';
+        saveMsg.className   = 'agents-save-msg error';
+      }
+    } catch (e) {
+      saveMsg.textContent = `Error: ${e.message}`;
+      saveMsg.className   = 'agents-save-msg error';
+    }
+  });
+
+  bar.appendChild(saveBtn);
+  bar.appendChild(saveMsg);
+  if (content) content.appendChild(bar);
+
+  // ── Async: fetch tool metadata and render per-tool rows ──────────────────
+  try {
+    const allMeta    = await fetchAllToolMeta();
+    const metaByName = new Map(allMeta.map(t => [t.name, t]));
+    const tools      = _toolsForAgent(agent);
+    const toolSet    = new Set(tools);
+
+    loadingEl.remove();
+
+    const agentId = agent.id || '';
+    const isAdmin = agentId === 'admin-agent' || agentId.startsWith('opt_');
+
+    // Helper: build a tool row with segmented control or "always on" pill
+    function buildToolRow(name, meta) {
+      const isTier1 = TIER_1_ALWAYS_ON.has(name);
+
+      const row = document.createElement('div');
+      row.style.cssText = 'display:grid;grid-template-columns:1fr 2fr auto;align-items:center;gap:8px;' +
+                          'padding:5px 8px;border-radius:5px;background:var(--bg-2);';
+
+      const nameEl = document.createElement('span');
+      nameEl.style.cssText = 'font-size:12px;font-weight:500;color:var(--fg-1);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      nameEl.textContent = name;
+      row.appendChild(nameEl);
+
+      const descEl = document.createElement('span');
+      descEl.style.cssText = 'font-size:11px;color:var(--fg-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      descEl.textContent = TOOL_DESCRIPTIONS[name] || (meta && meta.description) || '';
+      row.appendChild(descEl);
+
+      if (isTier1) {
+        const pill = document.createElement('span');
+        pill.className = 'agents-tool-always-on';
+        pill.textContent = 'always on';
+        row.appendChild(pill);
+      } else {
+        let initialMode;
+        if      (blockedSet.has(name))          initialMode = 'deny';
+        else if (dtSet.has(name) || DESTRUCTIVE.has(name) || Boolean(meta && meta.requires_confirmation))
+                                                initialMode = 'ask';
+        else                                    initialMode = 'auto';
+
+        const seg = document.createElement('div');
+        seg.style.cssText = 'display:flex;border:1px solid var(--border);border-radius:4px;overflow:hidden;flex-shrink:0;font-size:11px;';
+
+        const MODES = [
+          { id: 'auto', label: 'Auto', activeStyle: 'background:#9ece6a;color:#1a1b26;' },
+          { id: 'ask',  label: 'Ask',  activeStyle: 'background:#e0af68;color:#1a1b26;' },
+          { id: 'deny', label: 'Deny', activeStyle: 'background:#f7768e;color:#fff;'    },
+        ];
+        const segBtns = {};
+
+        function applyMode(mode) {
+          blockedSet.delete(name);
+          dtSet.delete(name);
+          if (mode === 'deny') blockedSet.add(name);
+          else if (mode === 'ask') dtSet.add(name);
+          for (const m of MODES) {
+            const b = segBtns[m.id];
+            if (m.id === mode) {
+              b.style.cssText = 'border:none;cursor:pointer;padding:3px 8px;font-weight:600;border-right:1px solid var(--border);' + m.activeStyle;
+            } else {
+              b.style.cssText = 'border:none;cursor:pointer;padding:3px 8px;font-weight:400;color:var(--fg-2);background:var(--bg-3);border-right:1px solid var(--border);';
+            }
+          }
+          segBtns['deny'].style.borderRight = 'none';
+        }
+
+        for (const m of MODES) {
+          const b = document.createElement('button');
+          b.textContent = m.label;
+          b.addEventListener('click', () => applyMode(m.id));
+          segBtns[m.id] = b;
+          seg.appendChild(b);
+        }
+        applyMode(initialMode);
+        row.appendChild(seg);
+      }
+
+      return row;
+    }
+
+    // Render categories as collapsible accordions
+    const categorized = new Set(TOOL_CATEGORIES.flatMap(c => c.tools));
+
+    for (const cat of TOOL_CATEGORIES) {
+      if (cat.condition === 'admin' && !isAdmin) continue;
+      const catTools = cat.tools.filter(n => toolSet.has(n));
+      if (catTools.length === 0) continue;
+
+      const wrapper = document.createElement('div');
+      wrapper.className = 'agents-tool-category';
+
+      const header = document.createElement('div');
+      header.className = 'agents-tool-category-header';
+      header.innerHTML = `<span class="agents-tool-category-chevron">▼</span>
+        <span class="agents-tool-category-label">${_esc(cat.label)}</span>
+        <span class="agents-tool-category-count">${catTools.length}</span>`;
+
+      const catBody = document.createElement('div');
+      catBody.className = 'agents-tool-category-body';
+
+      header.addEventListener('click', () => {
+        header.classList.toggle('collapsed');
+        catBody.classList.toggle('collapsed');
+      });
+
+      for (const name of catTools) {
+        catBody.appendChild(buildToolRow(name, metaByName.get(name) || {}));
+      }
+
+      wrapper.appendChild(header);
+      wrapper.appendChild(catBody);
+      toolsGroup.appendChild(wrapper);
+    }
+
+    // Custom Skills category: tools from metadata not in any built-in category
+    const uncategorized = tools.filter(n => !categorized.has(n) && !TIER_0_ADMIN.has(n));
+    if (uncategorized.length > 0) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'agents-tool-category';
+      const header = document.createElement('div');
+      header.className = 'agents-tool-category-header';
+      header.innerHTML = `<span class="agents-tool-category-chevron">▼</span>
+        <span class="agents-tool-category-label">Custom Skills</span>
+        <span class="agents-tool-category-count">${uncategorized.length}</span>`;
+      const catBody = document.createElement('div');
+      catBody.className = 'agents-tool-category-body';
+      header.addEventListener('click', () => {
+        header.classList.toggle('collapsed');
+        catBody.classList.toggle('collapsed');
+      });
+      for (const name of uncategorized) {
+        catBody.appendChild(buildToolRow(name, metaByName.get(name) || {}));
+      }
+      wrapper.appendChild(header);
+      wrapper.appendChild(catBody);
+      toolsGroup.appendChild(wrapper);
+    }
+
+  } catch (e) {
+    loadingEl.textContent = 'Failed to load tool list.';
+  }
 }
 
 // ── Connections tab ───────────────────────────────────────────────────────────
 
 const _CONN_ICONS = {
   // Channels
-  telegram:  '✈',
-  twilio:    '📞',
-  email:     '✉',
-  whatsapp:  '💬',
-  discord:   '🎮',
-  slack:     '💼',
+  telegram:  'send',
+  twilio:    'phone',
+  email:     'mail',
+  whatsapp:  'message-circle',
+  discord:   'gamepad-2',
+  slack:     'briefcase',
   // Integrations
-  google:    '🔍',
-  yahoo:     '🟣',
-  microsoft: '🪟',
-  github:    '🐙',
-  bank:      '🏦',
-  search:    '🌐',
+  google:    'search',
+  yahoo:     'circle',
+  microsoft: 'square',
+  github:    'github',
+  bank:      'landmark',
+  search:    'globe',
 };
 
 async function _renderConnectionsTab(body, agent) {
@@ -791,7 +1060,7 @@ async function _renderConnectionsTab(body, agent) {
     const header = document.createElement('div');
     header.className = 'conn-section-header';
     header.innerHTML = `
-      <span class="conn-section-chevron">▶</span>
+      <span class="conn-section-chevron">${icon('chevron-right', { size: '12px' })}</span>
       <span class="conn-section-label">${_esc(sec.label)}</span>
       <span class="conn-section-hint">${_esc(sec.hint)}</span>
     `;
@@ -805,7 +1074,7 @@ async function _renderConnectionsTab(body, agent) {
 
     header.addEventListener('click', () => {
       const isCollapsed = secEl.classList.toggle('collapsed');
-      header.querySelector('.conn-section-chevron').textContent = isCollapsed ? '▶' : '▼';
+      header.querySelector('.conn-section-chevron').innerHTML = icon(isCollapsed ? 'chevron-right' : 'chevron-down', { size: '12px' });
     });
 
     secEl.appendChild(header);
@@ -819,13 +1088,13 @@ function _buildConnectionCard(agent, conn) {
   const card = document.createElement('div');
   card.className = 'conn-card' + (isComingSoon ? ' coming-soon' : '') + (conn.enabled ? ' enabled' : '');
 
-  const icon = _CONN_ICONS[conn.connection_type] || '🔌';
+  const connIcon = icon(_CONN_ICONS[conn.connection_type] || 'plug', { size: '16px' });
 
   // ── Always-visible header ──
   const header = document.createElement('div');
   header.className = 'conn-card-header';
   header.innerHTML = `
-    <span class="conn-icon">${icon}</span>
+    <span class="conn-icon">${connIcon}</span>
     <span class="conn-name">${_esc(conn.display_name)}</span>
     ${isComingSoon
       ? '<span class="conn-badge coming-soon">Coming soon</span>'
@@ -967,7 +1236,7 @@ async function _runTest(agent, areaEl) {
   const msg = input.value.trim();
   if (!msg) return;
 
-  status.textContent = '⏳ Running…';
+  status.innerHTML = `${icon('loader-2', { size: '13px' })} Running…`;
   _drawAgentLoopDiagram(loopEl, new Map([
     ['user_input', 'active'], ['load_context', 'active'],
     ['memory_search', 'active'], ['build_prompt', 'active'], ['llm_call', 'active'],
@@ -1352,7 +1621,7 @@ function _lvShowReadOnlyPanel(nd, nodeEl, container, agent) {
   title.textContent = nd.label;
   const close = document.createElement('button');
   close.className = 'lv-tool-panel-close';
-  close.textContent = '✕';
+  close.innerHTML = icon('x', { size: '14px' });
   close.addEventListener('click', e => { e.stopPropagation(); _lvHidePanel(); });
   header.appendChild(title);
   header.appendChild(close);
@@ -1627,7 +1896,7 @@ function _lvShowEditPanel(nd, nodeEl, container, agent) {
   hLeft.appendChild(badge);
   const close = document.createElement('button');
   close.className = 'lv-tool-panel-close';
-  close.textContent = '✕';
+  close.innerHTML = icon('x', { size: '14px' });
   close.addEventListener('click', e => { e.stopPropagation(); _lvHidePanel(); });
   header.appendChild(hLeft);
   header.appendChild(close);
@@ -2201,7 +2470,6 @@ function _lvRenderSessionSetupInfo(body, agent) {
       db:    'Conditional write to sessions table — only on first message.',
     },
     {
-      label: 'Agent Resolve',
       text:  'Determines which agent handles this request. Checks for optimizer routing, then the user\'s configured default agent, then falls back to the system default.',
       db:    'Read from agents and agent_templates tables.',
     },
@@ -2278,20 +2546,11 @@ function _lvRenderContinueEditor(body, agent) {
 function _lvRenderMemorySaveEditor(body, agent) {
   const desc = document.createElement('div');
   desc.className = 'lv-edit-desc';
-  desc.textContent = 'Control whether key facts from each session are saved to long-term memory. Disable for ephemeral agents that should not persist any state.';
+  desc.textContent = 'Control whether key facts from each session are saved to long-term memory.';
   body.appendChild(desc);
-
-  const statusLbl = document.createElement('div');
-  statusLbl.className = 'lv-tool-section-label';
-  statusLbl.textContent = 'Runtime gate';
-  body.appendChild(statusLbl);
-
-  const loopEnabled = _isNodeLoopEnabled(agent, 'memory_save');
-  _lvToggleRow(body, 'Memory save node (loop_logic)', loopEnabled, on => _setNodeLoopEnabled(agent, 'memory_save', on));
-
   const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
   const saveEnabled = !disabled.has('memory_save');
-  _lvToggleRow(body, 'Memory save tool access (allowed_tools)', saveEnabled, enabled => {
+  _lvToggleRow(body, 'Save facts to long-term memory', saveEnabled, enabled => {
     const cur = new Set(Array.isArray(_lvPendingChanges.allowed_tools)
       ? _lvPendingChanges.allowed_tools
       : Array.isArray(agent.allowed_tools) ? [...agent.allowed_tools] : []);
@@ -2541,11 +2800,6 @@ async function _saveChanges(agent, barEl, panelEl) {
   const tkVal   = fv('trigger_key');    if (tkVal !== undefined) updates.trigger_key    = tkVal || null;
   for (const k of ['agent_prompt','user_prompt','skills_prompt','tasks_prompt','misc_prompt']) {
     const v = fv(k); if (v !== undefined) updates[k] = v;
-  }
-  // Include safety_policy from the hidden input (built by the Safety section controls)
-  const spVal = fv('safety_policy');
-  if (spVal !== undefined) {
-    try { updates.safety_policy = JSON.parse(spVal); } catch (_) { /* ignore malformed */ }
   }
 
   try {

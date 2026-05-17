@@ -8,6 +8,7 @@
 import { app } from './state.js';
 import { CONTROL_MODE_KEY, apiPath } from './config.js';
 import { isAdmin, showRestrictedModal } from './left-login.js';
+import { icon } from './icons.js';
 
 // ── DOM refs ──
 let DB = {};
@@ -91,8 +92,9 @@ function applyMode(mode) {
 
 function updateModeLabel(mode) {
   if (DB.modeLabel) {
-    const label = mode === 'local' ? '💻 Local (SQLite)' : '☁️ Cloud (Supabase)';
-    DB.modeLabel.textContent = label;
+    const modeIcon = mode === 'local' ? icon('monitor', { size: '13px' }) : icon('cloud', { size: '13px' });
+    const modeText = mode === 'local' ? 'Local (SQLite)' : 'Cloud (Supabase)';
+    DB.modeLabel.innerHTML = `${modeIcon} ${modeText}`;
   }
 }
 
@@ -181,7 +183,7 @@ export function initDbModeUi() {
       if (DB.statusEl) DB.statusEl.textContent = 'Switching to Cloud...';
       const ok = await setDbMode('cloud');
       localStorage.setItem(CONTROL_MODE_KEY, 'cloud');
-      if (DB.statusEl) DB.statusEl.textContent = ok ? '✅ Switched to Cloud (Supabase)' : '❌ Failed to switch';
+      if (DB.statusEl) DB.statusEl.innerHTML = ok ? `${icon('check-circle', { size: '13px' })} Switched to Cloud (Supabase)` : `${icon('x-circle', { size: '13px' })} Failed to switch`;
       DB.segCloud.disabled = false;
       DB.segLocal.disabled = false;
     });
@@ -195,7 +197,7 @@ export function initDbModeUi() {
       if (DB.statusEl) DB.statusEl.textContent = 'Switching to Local...';
       const ok = await setDbMode('local');
       localStorage.setItem(CONTROL_MODE_KEY, 'local');
-      if (DB.statusEl) DB.statusEl.textContent = ok ? '✅ Switched to Local (SQLite)' : '❌ Failed to switch';
+      if (DB.statusEl) DB.statusEl.innerHTML = ok ? `${icon('check-circle', { size: '13px' })} Switched to Local (SQLite)` : `${icon('x-circle', { size: '13px' })} Failed to switch`;
       DB.segCloud.disabled = false;
       DB.segLocal.disabled = false;
     });

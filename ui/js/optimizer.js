@@ -14,6 +14,7 @@
 
 import { apiPath } from './config.js';
 import { app } from './state.js';
+import { icon } from './icons.js';
 import { loadSessionChat, populateSessionSelect } from './sessions.js';
 import { loopSessionChanged } from './loop.js';
 import { loopVisualSessionChanged } from './loop-logic.js';
@@ -513,7 +514,7 @@ async function saveConfig() {
 // ── Run Now ──
 
 async function runNow() {
-  BTN_RUN_NOW.textContent = '⏳ Running...';
+  BTN_RUN_NOW.innerHTML = `${icon('loader-2', { size: '13px' })} Running...`;
   BTN_RUN_NOW.disabled = true;
   animateWorkflow();
 
@@ -528,7 +529,7 @@ async function runNow() {
     // Backend not ready — show animation, log intent
     setTimeout(() => {
       showStatus('Backend not ready — simulated run', '#e0af68');
-      BTN_RUN_NOW.textContent = '▶ Run Now';
+      BTN_RUN_NOW.innerHTML = `${icon('play', { size: '13px' })} Run Now`;
       BTN_RUN_NOW.disabled = false;
     }, 3000);
     return;

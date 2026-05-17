@@ -2,6 +2,7 @@
 
 import { apiPath } from './config.js';
 import { isAdmin, showRestrictedModal } from './left-login.js';
+import { icon } from './icons.js';
 
 /**
  * Settings module — provider, base URL, API key, and model configuration.
@@ -384,7 +385,7 @@ async function saveSettings() {
         // Also save parallel providers config
         await saveMultiProviders();
 
-        showStatus(`✅ ${data.message}`, 'success');
+        showStatus(`${icon('check-circle', { size: '13px' })} ${data.message}`, 'success');
         keyHasBeenModified = false;
         
         // Refresh UI
@@ -398,7 +399,7 @@ async function saveSettings() {
         SETTINGS_MODEL_STATUS.textContent = '';
         
     } catch (e) {
-        showStatus(`❌ Error: ${e.message}`, 'error');
+        showStatus(`${icon('x-circle', { size: '13px' })} Error: ${e.message}`, 'error');
     }
 }
 
@@ -416,9 +417,9 @@ async function clearSettings() {
             });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
-            showStatus(`🗑️ ${data.message}`, 'success');
+            showStatus(`${icon('trash-2', { size: '13px' })} ${data.message}`, 'success');
         } catch (e) {
-            showStatus(`❌ Error: ${e.message}`, 'error');
+            showStatus(`${icon('x-circle', { size: '13px' })} Error: ${e.message}`, 'error');
         }
     } else {
         // Save updated map (without current provider)
@@ -437,9 +438,9 @@ async function clearSettings() {
             });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
-            showStatus(`🗑️ Cleared ${currentProvider} settings`, 'success');
+            showStatus(`${icon('trash-2', { size: '13px' })} Cleared ${currentProvider} settings`, 'success');
         } catch (e) {
-            showStatus(`❌ Error: ${e.message}`, 'error');
+            showStatus(`${icon('x-circle', { size: '13px' })} Error: ${e.message}`, 'error');
         }
     }
 
@@ -450,7 +451,7 @@ async function clearSettings() {
 }
 
 function showStatus(msg, type) {
-    SETTINGS_STATUS.textContent = msg;
+    SETTINGS_STATUS.innerHTML = msg;
     SETTINGS_STATUS.style.color = type === 'error' ? '#f7768e' : '#9ece6a';
     SETTINGS_STATUS.style.display = 'block';
     setTimeout(() => {
@@ -573,14 +574,14 @@ function renderParallelRows() {
         // Rating
         const ratingSpan = document.createElement('span');
         const rColor = (p.rating || 0) < 0 ? '#f7768e' : (p.rating || 0) > 0 ? '#9ece6a' : '#565f89';
-        ratingSpan.textContent = `★ ${p.rating || 0}`;
+        ratingSpan.innerHTML = `${icon('star', { size: '11px' })} ${p.rating || 0}`;
         ratingSpan.title = 'Current performance score (auto-updates)';
         ratingSpan.style.cssText = `font-size:11px;color:${rColor};font-weight:600;min-width:30px;text-align:right;margin-right:6px;`;
         row.appendChild(ratingSpan);
 
         // Remove button
         const removeBtn = document.createElement('button');
-        removeBtn.textContent = '✕';
+        removeBtn.innerHTML = icon('x', { size: '12px' });
         removeBtn.title = 'Remove saved config';
         removeBtn.style.cssText = 'background:none;border:none;color:#565f89;cursor:pointer;font-size:12px;padding:2px 6px;border-radius:4px;flex-shrink:0;';
         removeBtn.addEventListener('mouseenter', () => { removeBtn.style.background = 'rgba(251,73,52,0.15)'; removeBtn.style.color = '#fb4934'; });
