@@ -3807,7 +3807,7 @@ class _LocalQueryBuilder:
             if self._limit_val is not None:
                 sql += f" LIMIT {self._limit_val}"
 
-            rows = conn.execute(sql, params).fetchall()
+            rows = conn.execute(sql, where_params).fetchall()
             return _LocalQueryResult([dict(r) for r in rows])
         finally:
             conn.close()
