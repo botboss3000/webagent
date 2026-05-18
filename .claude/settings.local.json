@@ -3,7 +3,10 @@
     "allow": [
       "Bash(python -c \"import app.api.chat\")",
       "Bash(git commit -m ' *)",
-      "mcp__Claude_Preview__preview_start"
+      "mcp__Claude_Preview__preview_start",
+      "Bash(python -c \"from app.api.oauth import router; print\\('OK', router.prefix\\)\")",
+      "Bash(taskkill /F /IM python.exe)",
+      "Bash(powershell -Command \"Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force; 'done'\")"
     ]
   }
 }

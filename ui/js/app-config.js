@@ -54,15 +54,17 @@ let _parallelUidCounter = 0;
 // ─────────────────────────────────────────────────────────────────────────
 // ── Sidebar nav + scroll highlighting ────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────
-let _activeSection = 'llm';
+const _SECTION_KEY = 'appConfig_activeSection';
+const _VALID_SECTIONS = ['llm', 'connections', 'integrations', 'database', 'optimizer', 'git'];
+let _activeSection = localStorage.getItem(_SECTION_KEY) || 'llm';
 
 function _showSection(section) {
-  const sections = ['llm', 'connections', 'integrations', 'database', 'optimizer', 'git'];
-  sections.forEach(id => {
+  _VALID_SECTIONS.forEach(id => {
     const el = _qs('ac-section-' + id);
     if (el) el.classList.toggle('active', id === section);
   });
   _activeSection = section;
+  localStorage.setItem(_SECTION_KEY, section);
   _setNavActive(section);
 }
 

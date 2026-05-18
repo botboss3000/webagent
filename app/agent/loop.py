@@ -516,9 +516,20 @@ async def stream_agent_events(
     model_name = os.environ.get("LLM_MODEL") or os.environ.get("OPENROUTER_MODEL") or "deepseek/deepseek-v4-flash"
     provider_name = os.environ.get("LLM_PROVIDER", "openrouter")
 
+    from app.db import get_db
+    if db is None:
+        db = get_db()
+
+    agent_name = "Agent"
+    _agent_rec: Optional[Dict[str, Any]] = None
+    if agent_id:
+        _agent_rec = await db.get_agent_by_id(agent_id)
+        if _agent_rec and _agent_rec.get("name"):
+            agent_name = _agent_rec["name"]
+
     load_start = time.time()
     tools = await load_tools(user_id, agent_template_id=agent_template_id,
-                              is_admin_agent=bool(_agent_rec.get("is_admin_agent")),
+                              is_admin_agent=bool(_agent_rec.get("is_admin_agent")) if _agent_rec else False,
                               allowed_tools=allowed_tools)
     load_duration = int((time.time() - load_start) * 1000)
 
@@ -541,18 +552,6 @@ async def stream_agent_events(
     last_extension_at = 0           # ceiling turn at which we last extended (0 = not yet)
 
     try:
-        from app.db import get_db
-        if db is None:
-            db = db or get_db()
-
-        # Fetch agent name for prefixing all outputs
-        agent_name = "Agent"
-        _agent_rec: Optional[Dict[str, Any]] = None
-        if agent_id:
-            _agent_rec = await db.get_agent_by_id(agent_id)
-            if _agent_rec and _agent_rec.get("name"):
-                agent_name = _agent_rec["name"]
-
         # Build loop config — drives per-node enable/disable at runtime.
         # If caller supplied one (e.g. tests), use it directly; otherwise
         # parse the agent's stored loop_logic (backward-compat: flat array
