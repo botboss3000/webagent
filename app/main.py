@@ -71,6 +71,10 @@ from app.auth import router as auth_router
 # ── GitHub ──
 from app.api.github import router as github_router
 
+# ── Integrations & OAuth ──
+from app.admin.integrations import router as integrations_router
+from app.api.oauth import router as oauth_router
+
 # ── Optimizer ──
 from app.admin.optimizer import router as optimizer_router
 from app.api.pages import router as pages_router
@@ -138,6 +142,10 @@ app.include_router(webhooks_generic_router)
 
 # Register communication plugin webhook router (for Telegram, WhatsApp, SMS etc.)
 app.include_router(webhooks_router)
+
+# Register integrations & OAuth routers
+app.include_router(integrations_router)
+app.include_router(oauth_router)
 
 # Register GitHub router
 app.include_router(github_router)

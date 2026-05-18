@@ -1135,6 +1135,16 @@ function _buildConnectionCard(agent, conn) {
     });
   }
 
+  // Google OAuth handlers
+  const googleConnectBtn = card.querySelector('.conn-google-connect-btn');
+  if (googleConnectBtn) {
+    googleConnectBtn.addEventListener('click', () => _googleConnectFromAgent(agent, conn, card));
+  }
+  const googleDisconnectBtn = card.querySelector('.conn-google-disconnect-btn');
+  if (googleDisconnectBtn) {
+    googleDisconnectBtn.addEventListener('click', () => _googleDisconnectFromAgent(agent, conn, card));
+  }
+
   return card;
 }
 
@@ -1158,8 +1168,96 @@ function _buildConnectionBody(conn) {
     return el;
   }
 
+  if (conn.connection_type === 'google') {
+    if (conn.google_connected) {
+      el.innerHTML = `
+        <div class="conn-google-account">
+          ${conn.google_picture ? `<img src="${_esc(conn.google_picture)}" alt="" style="width:28px;height:28px;border-radius:50%;">` : ''}
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:500;font-size:12px;">${_esc(conn.google_name || '')}</div>
+            <div style="font-size:11px;color:var(--fg-muted,#565f89);overflow:hidden;text-overflow:ellipsis;">${_esc(conn.google_email || '')}</div>
+          </div>
+        </div>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+          <button class="agents-btn conn-google-disconnect-btn" style="color:#f7768e;border-color:#f7768e;">Disconnect</button>
+          ${conn.google_connected_at ? `<span style="font-size:10px;color:var(--fg-muted,#565f89);">Connected ${new Date(conn.google_connected_at).toLocaleDateString()}</span>` : ''}
+        </div>
+        <span class="conn-save-msg"></span>
+      `;
+    } else {
+      el.innerHTML = `
+        <button class="agents-btn primary conn-google-connect-btn" style="width:100%;">Connect Google Account</button>
+        <span class="conn-field-hint" style="margin-top:6px;">Link your Google account for calendar, contacts, and identity access.</span>
+        <span class="conn-save-msg"></span>
+      `;
+    }
+    return el;
+  }
+
   // No expandable body for other available-but-unconfigured types yet
   return null;
+}
+
+// ── Google OAuth helpers for Agent Connections tab ───────────────────────────
+
+let _googleOauthPopup = null;
+let _googleOauthRefreshCallback = null;
+
+// Listen for OAuth popup completion
+window.addEventListener('message', e => {
+  if (e.data?.type === 'google-oauth-success') {
+    if (_googleOauthPopup) { _googleOauthPopup.close(); _googleOauthPopup = null; }
+    if (_googleOauthRefreshCallback) { _googleOauthRefreshCallback(); _googleOauthRefreshCallback = null; }
+  }
+});
+
+async function _googleConnectFromAgent(agent, conn, cardEl) {
+  const msgEl = cardEl.querySelector('.conn-save-msg');
+  if (msgEl) { msgEl.textContent = ''; msgEl.className = 'conn-save-msg'; }
+
+  try {
+    const res = await fetch(
+      `/api/v1/agents/${agent.id}/connections/google/authorize?user_id=${encodeURIComponent(app.currentUserId)}`
+    );
+    const data = await res.json();
+    if (data.error) {
+      if (msgEl) { msgEl.textContent = data.error; msgEl.className = 'conn-save-msg error'; }
+      return;
+    }
+
+    // Set up refresh callback to re-render the connections tab
+    _googleOauthRefreshCallback = () => {
+      const body = cardEl.closest('.agent-detail-panel')?.querySelector('.agent-detail-body');
+      if (body) _renderConnectionsTab(body, agent);
+    };
+
+    _googleOauthPopup = window.open(data.authorize_url, 'google-oauth', 'width=520,height=640,left=200,top=100');
+    if (!_googleOauthPopup) {
+      // Popup blocked — fallback to redirect
+      window.location.href = data.authorize_url;
+    }
+  } catch (e) {
+    if (msgEl) { msgEl.textContent = `Error: ${e.message}`; msgEl.className = 'conn-save-msg error'; }
+  }
+}
+
+async function _googleDisconnectFromAgent(agent, conn, cardEl) {
+  const msgEl = cardEl.querySelector('.conn-save-msg');
+  if (msgEl) { msgEl.textContent = ''; msgEl.className = 'conn-save-msg'; }
+
+  try {
+    const res = await fetch(
+      `/api/v1/agents/${agent.id}/connections/google/disconnect?user_id=${encodeURIComponent(app.currentUserId)}`,
+      { method: 'DELETE' }
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    // Re-render the connections tab
+    const body = cardEl.closest('.agent-detail-panel')?.querySelector('.agent-detail-body');
+    if (body) _renderConnectionsTab(body, agent);
+  } catch (e) {
+    if (msgEl) { msgEl.textContent = `Error: ${e.message}`; msgEl.className = 'conn-save-msg error'; }
+  }
 }
 
 async function _saveConnection(agent, conn, cardEl, enabled) {

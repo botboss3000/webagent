@@ -1248,3 +1248,15 @@ body.light-mode .conn-badge.coming-soon { background: #f0f0ff; color: #9898c0; b
 body.light-mode .conn-save-msg      { color: #3a8a3a; }
 body.light-mode .conn-save-msg.error { color: #cc3333; }
 
+/* Google account info in connection card */
+.conn-google-account {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--bg-base, #0d0d1a);
+  border: 1px solid var(--border, #2a2a4a);
+  border-radius: 6px;
+}
+body.light-mode .conn-google-account { background: #faf7f4; border-color: #d4c4b4; }
+

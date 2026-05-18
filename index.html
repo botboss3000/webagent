@@ -436,6 +436,9 @@
           <a class="ac-nav-item" data-section="connections" href="#ac-section-connections">
             <i data-lucide="plug" class="lucide-icon ac-nav-icon"></i>App Connections
           </a>
+          <a class="ac-nav-item" data-section="integrations" href="#ac-section-integrations">
+            <i data-lucide="puzzle" class="lucide-icon ac-nav-icon"></i>Integrations
+          </a>
           <a class="ac-nav-item" data-section="database" href="#ac-section-database">
             <i data-lucide="database" class="lucide-icon ac-nav-icon"></i>Database
           </a>
@@ -534,6 +537,85 @@
 
             <div class="ac-info-banner">
               <strong style="color:var(--accent);">HTTP Requests</strong> — The agent has a built-in <code>http_request</code> tool for outbound GET/POST/PUT/DELETE/PATCH calls. No config needed.
+            </div>
+          </section>
+
+          <!-- ── Integrations ── -->
+          <section id="ac-section-integrations" class="ac-section">
+            <div class="ac-section-header">
+              <i data-lucide="puzzle" class="lucide-icon ac-section-icon"></i>
+              <div>
+                <h2 class="ac-section-title">Integrations</h2>
+                <p class="ac-section-desc">Configure third-party service credentials. Users connect their accounts via each agent's Connections tab.</p>
+              </div>
+            </div>
+
+            <!-- Google OAuth Config -->
+            <div class="ac-card" id="ac-int-google-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z"/>
+                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                  <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18A10.96 10.96 0 0 0 1 12c0 1.77.42 3.45 1.18 4.93l3.66-2.84z"/>
+                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Google OAuth</div>
+                  <div class="ac-hint" style="margin:0;">App-level credentials for Google account linking</div>
+                </div>
+                <span id="ac-int-google-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
+              </div>
+
+              <!-- Configured state -->
+              <div id="ac-int-google-configured" style="display:none;font-size:12px;">
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <div><span style="color:var(--fg-muted);">Client ID:</span> <code id="ac-int-google-cid" style="font-size:11px;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-google-uri" style="font-size:11px;word-break:break-all;"></code></div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect their Google accounts from each agent's <strong>Connections</strong> tab.</div>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-google-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
+                </div>
+              </div>
+
+              <!-- Not configured state: input form -->
+              <div id="ac-int-google-form" style="display:none;">
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Client ID</label>
+                  <input type="text" id="ac-int-google-input-cid" class="ac-input" placeholder="xxxx.apps.googleusercontent.com" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Client Secret</label>
+                  <input type="password" id="ac-int-google-input-secret" class="ac-input" placeholder="GOCSPX-..." autocomplete="off">
+                </div>
+                <div class="ac-field">
+                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add this to Google Cloud Console)</label>
+                  <code id="ac-int-google-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-base,#0d0d1a);border-radius:4px;word-break:break-all;"></code>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-google-save" class="ac-btn ac-btn-primary">Save</button>
+                </div>
+              </div>
+
+              <span id="ac-int-google-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+
+              <details class="ac-details" style="margin-top:12px;">
+                <summary>Setup instructions</summary>
+                <div class="ac-details-body">
+                  <ol style="margin:6px 0 0 16px;padding:0;">
+                    <li>Go to <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:var(--accent);">Google Cloud Console → Credentials</a></li>
+                    <li>Create an OAuth 2.0 Client ID (Web application)</li>
+                    <li>Add the <strong>Redirect URI</strong> shown above as an Authorized redirect URI</li>
+                    <li>Copy the Client ID and Client Secret into the fields above</li>
+                    <li>Click Save</li>
+                  </ol>
+                  <p style="margin-top:8px;color:var(--fg-muted);">Once configured, users can connect their Google accounts from each agent's Connections tab.</p>
+                </div>
+              </details>
+            </div>
+
+            <div class="ac-info-banner">
+              <strong style="color:var(--accent);">More Integrations</strong> — Microsoft 365, Yahoo, and other services are coming soon.
             </div>
           </section>
 

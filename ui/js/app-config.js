@@ -6,9 +6,10 @@
  * Sections:
  *   1. Default LLM       — provider, base URL, API key, model
  *   2. App Connections   — webhook base URL, registered webhooks, Telegram status
- *   3. Database          — cloud / local toggle, display settings
- *   4. Optimizer Stats   — session stats table, run mode, schedule
- *   5. Git Providers     — GitHub token, repo status quick-view
+ *   3. Integrations      — Google OAuth and third-party service connections
+ *   4. Database          — cloud / local toggle, display settings
+ *   5. Optimizer Stats   — session stats table, run mode, schedule
+ *   6. Git Providers     — GitHub token, repo status quick-view
  */
 
 import { apiPath } from './config.js';
@@ -56,7 +57,7 @@ let _parallelUidCounter = 0;
 let _activeSection = 'llm';
 
 function _showSection(section) {
-  const sections = ['llm', 'connections', 'database', 'optimizer', 'git'];
+  const sections = ['llm', 'connections', 'integrations', 'database', 'optimizer', 'git'];
   sections.forEach(id => {
     const el = _qs('ac-section-' + id);
     if (el) el.classList.toggle('active', id === section);
@@ -507,6 +508,88 @@ async function _saveWebhookBaseUrl() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// ── SECTION 2b: Integrations ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
+
+function _initIntegrations() {
+  _qs('ac-int-google-save')?.addEventListener('click', _saveGoogleConfig);
+  _qs('ac-int-google-unconfigure')?.addEventListener('click', _unconfigureGoogle);
+}
+
+async function _loadIntegrations() {
+  const badge      = _qs('ac-int-google-badge');
+  const configured = _qs('ac-int-google-configured');
+  const form       = _qs('ac-int-google-form');
+
+  try {
+    const res = await _fetch(apiPath('/admin/integrations'));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    if (data.google_configured) {
+      if (badge) { badge.textContent = 'Configured'; badge.className = 'ac-int-badge ac-int-badge-on'; }
+      if (configured) configured.style.display = 'block';
+      if (form) form.style.display = 'none';
+      const cidEl = _qs('ac-int-google-cid');
+      if (cidEl) cidEl.textContent = data.google_client_id || '';
+      const uriEl = _qs('ac-int-google-uri');
+      if (uriEl) uriEl.textContent = data.redirect_uri || '';
+    } else {
+      if (badge) { badge.textContent = 'Not configured'; badge.className = 'ac-int-badge ac-int-badge-off'; }
+      if (configured) configured.style.display = 'none';
+      if (form) form.style.display = 'block';
+      const formUri = _qs('ac-int-google-form-uri');
+      if (formUri) formUri.textContent = data.redirect_uri || '';
+    }
+  } catch (e) {
+    const statusEl = _qs('ac-int-google-status');
+    if (statusEl) {
+      statusEl.textContent = `Failed to load: ${e.message}`;
+      statusEl.style.color = '#f7768e';
+      statusEl.style.display = 'block';
+    }
+  }
+}
+
+async function _saveGoogleConfig() {
+  if (!isAdmin()) { showRestrictedModal(); return; }
+  const cidInput = _qs('ac-int-google-input-cid');
+  const secInput = _qs('ac-int-google-input-secret');
+  const statusEl = _qs('ac-int-google-status');
+  if (!cidInput?.value?.trim() || !secInput?.value?.trim()) {
+    if (statusEl) { statusEl.textContent = 'Both Client ID and Client Secret are required.'; statusEl.style.color = '#e0af68'; statusEl.style.display = 'block'; }
+    return;
+  }
+  try {
+    const res = await _fetch(apiPath('/admin/integrations/google'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: cidInput.value.trim(), client_secret: secInput.value.trim() }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    cidInput.value = '';
+    secInput.value = '';
+    if (statusEl) { statusEl.textContent = 'Google OAuth configured.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; setTimeout(() => { statusEl.style.display = 'none'; }, 3000); }
+    _loadIntegrations();
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = `Error: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
+  }
+}
+
+async function _unconfigureGoogle() {
+  if (!isAdmin()) { showRestrictedModal(); return; }
+  const statusEl = _qs('ac-int-google-status');
+  try {
+    const res = await _fetch(apiPath('/admin/integrations/google'), { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (statusEl) { statusEl.textContent = 'Google OAuth unconfigured.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; setTimeout(() => { statusEl.style.display = 'none'; }, 3000); }
+    _loadIntegrations();
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = `Error: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // ── SECTION 3: Database ──────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────
 function _initDatabase() {
@@ -834,6 +917,7 @@ export function initAppConfig() {
   _initNav();
   _initLLM();
   _initConnections();
+  _initIntegrations();
   _initDatabase();
   _initOptimizer();
   _initGit();
@@ -849,6 +933,7 @@ export async function startAppConfig() {
   // Load all sections in parallel (non-blocking)
   _loadLLM();
   _loadConnections();
+  _loadIntegrations();
   _loadDatabase();
   _loadOptimizer();
   _loadGit();
