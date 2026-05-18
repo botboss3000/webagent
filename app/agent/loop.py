@@ -517,7 +517,9 @@ async def stream_agent_events(
     provider_name = os.environ.get("LLM_PROVIDER", "openrouter")
 
     load_start = time.time()
-    tools = await load_tools(user_id, agent_template_id=agent_template_id, allowed_tools=allowed_tools)
+    tools = await load_tools(user_id, agent_template_id=agent_template_id,
+                              is_admin_agent=bool(_agent_rec.get("is_admin_agent")),
+                              allowed_tools=allowed_tools)
     load_duration = int((time.time() - load_start) * 1000)
 
     # ── Pipeline: tools loaded ──
@@ -1148,7 +1150,10 @@ async def stream_agent_events(
 
                                 # Reload tools for the new template
                                 from app.tools.loader import load_tools as _load_tools
-                                tools = await _load_tools(user_id, agent_template_id=_tpl_id)
+                                # Fetch delegated agent record for is_admin_agent flag
+                                _deleg_rec = await db.resolve_agent(user_id, _tpl_id) if hasattr(db, "resolve_agent") else {}
+                                tools = await _load_tools(user_id, agent_template_id=_tpl_id,
+                                                          is_admin_agent=bool(_deleg_rec.get("is_admin_agent")))
 
                                 # Inject new agent's system prompt as a system message
                                 try:
@@ -1327,6 +1332,4 @@ async def run_agent_loop_buffered(
                     f"Please try a more specific request or use the stream endpoint for long-running tasks."
                 )
     else:
-        await _run()
-
-    return final_response
+        awai

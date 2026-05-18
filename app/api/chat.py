@@ -456,7 +456,8 @@ async def chat(request: ChatRequest):
 
         # ── Pipeline: prompt built ──
         from app.tools.loader import load_tools
-        tools = await load_tools(request.user_id, agent_template_id=agent.get("template_id") if agent else None)
+        tools = await load_tools(request.user_id, agent_template_id=agent.get("template_id") if agent else None,
+                                 is_admin_agent=bool(agent.get("is_admin_agent")) if agent else False)
         tool_count_for_prompt = len(tools)
         section_names = ["SYSTEM"]  # Simplified section count — actual sections are dynamic
 
@@ -776,7 +777,8 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             system_prompt = system_prompt + "\n\n" + attachment_context
 
         from app.tools.loader import load_tools
-        tools = await load_tools(request.user_id, agent_template_id=agent.get("template_id") if agent else None)
+        tools = await load_tools(request.user_id, agent_template_id=agent.get("template_id") if agent else None,
+                                 is_admin_agent=bool(agent.get("is_admin_agent")) if agent else False)
         
         yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'build_prompt', 'sections': ['SYSTEM'], 'brain_injected': bool(brain_context), 'tool_count_in_prompt': len(tools), 'system_prompt': system_prompt[:8000]})}\n\n"
 
@@ -978,7 +980,6 @@ def register_user_listener(user_id: str, websocket: Any):
     if user_id not in _user_listeners:
         _user_listeners[user_id] = []
     _user_listeners[user_id].append(websocket)
-
 
 def unregister_user_listener(user_id: str, websocket: Any):
     """Remove a WebSocket from the per-user listeners."""

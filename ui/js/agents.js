@@ -147,7 +147,7 @@ const DESTRUCTIVE = new Set([
 
 function _toolsForAgent(agent) {
   const id = agent.id || '';
-  if (id === 'admin-agent') {
+  if (agent.is_admin_agent) {
     return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL,
             'read_source','write_source','edit_source','delete_source','run_command','restart_server'];
   }
@@ -610,7 +610,7 @@ async function _renderToolsTab(body, agent, panelEl) {
     section.appendChild(intro);
 
     const agentId = agent.id || '';
-    const isAdmin = agentId === 'admin-agent' || agentId.startsWith('opt_');
+    const isAdmin = agent.is_admin_agent || agentId.startsWith('opt_');
 
     for (const cat of TOOL_CATEGORIES) {
       if (cat.condition === 'admin' && !isAdmin) continue;
@@ -874,7 +874,7 @@ async function _renderToolsTab(body, agent, panelEl) {
     loadingEl.remove();
 
     const agentId = agent.id || '';
-    const isAdmin = agentId === 'admin-agent' || agentId.startsWith('opt_');
+    const isAdmin = agent.is_admin_agent || agentId.startsWith('opt_');
 
     // Helper: build a tool row with segmented control or "always on" pill
     function buildToolRow(name, meta) {
