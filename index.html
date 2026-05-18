@@ -779,6 +779,451 @@
                 </div>
               </details>
             </div>
+
+            <!-- ── Social Media ── -->
+            <div class="ac-section-header" style="margin-top:24px;">
+              <i data-lucide="share-2" class="lucide-icon ac-section-icon"></i>
+              <div>
+                <h3 class="ac-section-title" style="font-size:14px;">Social Media</h3>
+                <p class="ac-section-desc">App-level credentials for social platform OAuth. Users connect their personal accounts from the agent's Connections tab.</p>
+              </div>
+            </div>
+
+            <!-- Meta (Facebook + Instagram) OAuth Config -->
+            <div class="ac-card" id="ac-int-meta-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#1877F2" d="M24 12.073C24 5.406 18.627 0 12 0S0 5.406 0 12.073C0 18.1 4.388 23.094 10.125 24v-8.437H7.078v-3.49h3.047V9.41c0-3.025 1.79-4.697 4.533-4.697 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.93-1.956 1.886v2.286h3.328l-.532 3.49h-2.796V24C19.612 23.094 24 18.1 24 12.073z"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Meta OAuth (Facebook + Instagram)</div>
+                  <div class="ac-hint" style="margin:0;">One Meta App covers both Facebook and Instagram — app-level credentials</div>
+                </div>
+                <span id="ac-int-meta-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
+              </div>
+
+              <div id="ac-int-meta-configured" style="display:none;font-size:12px;">
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <div><span style="color:var(--fg-muted);">App ID:</span> <code id="ac-int-meta-cid" style="font-size:11px;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-meta-uri" style="font-size:11px;word-break:break-all;"></code></div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-meta-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
+                </div>
+              </div>
+
+              <div id="ac-int-meta-form" style="display:none;">
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">App ID</label>
+                  <input type="text" id="ac-int-meta-input-cid" class="ac-input" placeholder="1234567890" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">App Secret</label>
+                  <input type="password" id="ac-int-meta-input-secret" class="ac-input" placeholder="App secret" autocomplete="off">
+                </div>
+                <div class="ac-field">
+                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Meta App → Valid OAuth Redirect URIs)</label>
+                  <code id="ac-int-meta-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-base,#0d0d1a);border-radius:4px;word-break:break-all;"></code>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-meta-save" class="ac-btn ac-btn-primary">Save</button>
+                </div>
+              </div>
+              <span id="ac-int-meta-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+              <details class="ac-details" style="margin-top:12px;">
+                <summary>Setup instructions</summary>
+                <div class="ac-details-body">
+                  <ol style="margin:6px 0 0 16px;padding:0;">
+                    <li>Go to <a href="https://developers.facebook.com/apps/" target="_blank" style="color:var(--accent);">Meta for Developers → Create App</a></li>
+                    <li>Choose <strong>Business</strong> type and add <strong>Facebook Login</strong> product</li>
+                    <li>In <em>Facebook Login → Settings</em>, add the Redirect URI above to <strong>Valid OAuth Redirect URIs</strong></li>
+                    <li>Copy the App ID and App Secret from <em>Settings → Basic</em> into the fields above and click Save</li>
+                  </ol>
+                </div>
+              </details>
+            </div>
+
+            <!-- Twitter/X OAuth Config -->
+            <div class="ac-card" id="ac-int-twitter-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#000000" d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.744l7.737-8.835L1.254 2.25H8.08l4.259 5.631 5.905-5.631zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">X (Twitter) OAuth</div>
+                  <div class="ac-hint" style="margin:0;">Twitter API v2 with PKCE — app-level credentials</div>
+                </div>
+                <span id="ac-int-twitter-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
+              </div>
+
+              <div id="ac-int-twitter-configured" style="display:none;font-size:12px;">
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <div><span style="color:var(--fg-muted);">Client ID:</span> <code id="ac-int-twitter-cid" style="font-size:11px;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-twitter-uri" style="font-size:11px;word-break:break-all;"></code></div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-twitter-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
+                </div>
+              </div>
+
+              <div id="ac-int-twitter-form" style="display:none;">
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Client ID</label>
+                  <input type="text" id="ac-int-twitter-input-cid" class="ac-input" placeholder="Xxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Client Secret</label>
+                  <input type="password" id="ac-int-twitter-input-secret" class="ac-input" placeholder="Client secret" autocomplete="off">
+                </div>
+                <div class="ac-field">
+                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Twitter App → Callback URLs)</label>
+                  <code id="ac-int-twitter-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-base,#0d0d1a);border-radius:4px;word-break:break-all;"></code>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-twitter-save" class="ac-btn ac-btn-primary">Save</button>
+                </div>
+              </div>
+              <span id="ac-int-twitter-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+              <details class="ac-details" style="margin-top:12px;">
+                <summary>Setup instructions</summary>
+                <div class="ac-details-body">
+                  <ol style="margin:6px 0 0 16px;padding:0;">
+                    <li>Go to <a href="https://developer.twitter.com/en/portal/projects-and-apps" target="_blank" style="color:var(--accent);">Twitter Developer Portal → Create Project + App</a></li>
+                    <li>In <em>App Settings → User Authentication</em>, enable OAuth 2.0 with <strong>Read and Write</strong> permissions</li>
+                    <li>Add the Redirect URI above to <strong>Callback URLs</strong></li>
+                    <li>Copy the Client ID and Client Secret into the fields above and click Save</li>
+                  </ol>
+                </div>
+              </details>
+            </div>
+
+            <!-- LinkedIn OAuth Config -->
+            <div class="ac-card" id="ac-int-linkedin-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#0A66C2" d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">LinkedIn OAuth</div>
+                  <div class="ac-hint" style="margin:0;">Profile and company page access — app-level credentials</div>
+                </div>
+                <span id="ac-int-linkedin-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
+              </div>
+
+              <div id="ac-int-linkedin-configured" style="display:none;font-size:12px;">
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <div><span style="color:var(--fg-muted);">Client ID:</span> <code id="ac-int-linkedin-cid" style="font-size:11px;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-linkedin-uri" style="font-size:11px;word-break:break-all;"></code></div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-linkedin-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
+                </div>
+              </div>
+
+              <div id="ac-int-linkedin-form" style="display:none;">
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Client ID</label>
+                  <input type="text" id="ac-int-linkedin-input-cid" class="ac-input" placeholder="86xxxxxxxxxxxx" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Client Secret</label>
+                  <input type="password" id="ac-int-linkedin-input-secret" class="ac-input" placeholder="Client secret" autocomplete="off">
+                </div>
+                <div class="ac-field">
+                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to LinkedIn App → OAuth 2.0 Authorized Redirect URLs)</label>
+                  <code id="ac-int-linkedin-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-base,#0d0d1a);border-radius:4px;word-break:break-all;"></code>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-linkedin-save" class="ac-btn ac-btn-primary">Save</button>
+                </div>
+              </div>
+              <span id="ac-int-linkedin-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+              <details class="ac-details" style="margin-top:12px;">
+                <summary>Setup instructions</summary>
+                <div class="ac-details-body">
+                  <ol style="margin:6px 0 0 16px;padding:0;">
+                    <li>Go to <a href="https://www.linkedin.com/developers/apps/new" target="_blank" style="color:var(--accent);">LinkedIn Developer Portal → Create App</a></li>
+                    <li>Under <em>Auth</em>, add the Redirect URI above to <strong>Authorized Redirect URLs for your App</strong></li>
+                    <li>Request <strong>Sign In with LinkedIn</strong> and <strong>Share on LinkedIn</strong> products</li>
+                    <li>Copy the Client ID and Client Secret into the fields above and click Save</li>
+                  </ol>
+                </div>
+              </details>
+            </div>
+
+            <!-- TikTok OAuth Config -->
+            <div class="ac-card" id="ac-int-tiktok-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#000000" d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-2.88 2.5 2.89 2.89 0 01-2.89-2.89 2.89 2.89 0 012.89-2.89c.28 0 .54.04.79.1V9.01a6.33 6.33 0 00-.79-.05 6.34 6.34 0 00-6.34 6.34 6.34 6.34 0 006.34 6.34 6.34 6.34 0 006.33-6.34V8.81a8.18 8.18 0 004.78 1.52V6.88a4.85 4.85 0 01-1.01-.19z"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">TikTok OAuth</div>
+                  <div class="ac-hint" style="margin:0;">TikTok for Developers with PKCE — app-level credentials</div>
+                </div>
+                <span id="ac-int-tiktok-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
+              </div>
+
+              <div id="ac-int-tiktok-configured" style="display:none;font-size:12px;">
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <div><span style="color:var(--fg-muted);">Client Key:</span> <code id="ac-int-tiktok-cid" style="font-size:11px;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-tiktok-uri" style="font-size:11px;word-break:break-all;"></code></div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-tiktok-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
+                </div>
+              </div>
+
+              <div id="ac-int-tiktok-form" style="display:none;">
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Client Key</label>
+                  <input type="text" id="ac-int-tiktok-input-cid" class="ac-input" placeholder="awxxxxxxxxxxxxxxxxxx" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Client Secret</label>
+                  <input type="password" id="ac-int-tiktok-input-secret" class="ac-input" placeholder="Client secret" autocomplete="off">
+                </div>
+                <div class="ac-field">
+                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to TikTok App → Redirect URI)</label>
+                  <code id="ac-int-tiktok-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-base,#0d0d1a);border-radius:4px;word-break:break-all;"></code>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-tiktok-save" class="ac-btn ac-btn-primary">Save</button>
+                </div>
+              </div>
+              <span id="ac-int-tiktok-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+              <details class="ac-details" style="margin-top:12px;">
+                <summary>Setup instructions</summary>
+                <div class="ac-details-body">
+                  <ol style="margin:6px 0 0 16px;padding:0;">
+                    <li>Go to <a href="https://developers.tiktok.com/" target="_blank" style="color:var(--accent);">TikTok for Developers → Create App</a></li>
+                    <li>Add <strong>Login Kit</strong> product and enter the Redirect URI above</li>
+                    <li>Copy the Client Key and Client Secret into the fields above and click Save</li>
+                  </ol>
+                </div>
+              </details>
+            </div>
+
+            <!-- Pinterest OAuth Config -->
+            <div class="ac-card" id="ac-int-pinterest-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#E60023" d="M12 0C5.373 0 0 5.373 0 12c0 5.084 3.163 9.426 7.627 11.174-.105-.949-.2-2.405.042-3.441.218-.937 1.407-5.965 1.407-5.965s-.359-.719-.359-1.782c0-1.668.967-2.914 2.171-2.914 1.023 0 1.518.769 1.518 1.69 0 1.029-.655 2.568-.994 3.995-.283 1.194.599 2.169 1.777 2.169 2.133 0 3.772-2.249 3.772-5.495 0-2.873-2.064-4.882-5.012-4.882-3.414 0-5.418 2.561-5.418 5.207 0 1.031.397 2.138.893 2.738a.36.36 0 01.083.345l-.333 1.36c-.053.22-.174.267-.402.161-1.499-.698-2.436-2.889-2.436-4.649 0-3.785 2.75-7.262 7.929-7.262 4.163 0 7.398 2.967 7.398 6.931 0 4.136-2.607 7.464-6.227 7.464-1.216 0-2.359-.632-2.75-1.378l-.748 2.853c-.271 1.043-1.002 2.35-1.492 3.146C9.57 23.812 10.763 24 12 24c6.627 0 12-5.373 12-12S18.627 0 12 0z"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Pinterest OAuth</div>
+                  <div class="ac-hint" style="margin:0;">Board and pin access — app-level credentials</div>
+                </div>
+                <span id="ac-int-pinterest-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
+              </div>
+
+              <div id="ac-int-pinterest-configured" style="display:none;font-size:12px;">
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <div><span style="color:var(--fg-muted);">App ID:</span> <code id="ac-int-pinterest-cid" style="font-size:11px;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-pinterest-uri" style="font-size:11px;word-break:break-all;"></code></div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-pinterest-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
+                </div>
+              </div>
+
+              <div id="ac-int-pinterest-form" style="display:none;">
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">App ID</label>
+                  <input type="text" id="ac-int-pinterest-input-cid" class="ac-input" placeholder="1234567" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">App Secret</label>
+                  <input type="password" id="ac-int-pinterest-input-secret" class="ac-input" placeholder="App secret" autocomplete="off">
+                </div>
+                <div class="ac-field">
+                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Pinterest App → Redirect URIs)</label>
+                  <code id="ac-int-pinterest-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-base,#0d0d1a);border-radius:4px;word-break:break-all;"></code>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-pinterest-save" class="ac-btn ac-btn-primary">Save</button>
+                </div>
+              </div>
+              <span id="ac-int-pinterest-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+              <details class="ac-details" style="margin-top:12px;">
+                <summary>Setup instructions</summary>
+                <div class="ac-details-body">
+                  <ol style="margin:6px 0 0 16px;padding:0;">
+                    <li>Go to <a href="https://developers.pinterest.com/apps/" target="_blank" style="color:var(--accent);">Pinterest Developer Portal → Create App</a></li>
+                    <li>Add the Redirect URI above under <strong>Redirect URIs</strong></li>
+                    <li>Copy the App ID and App Secret into the fields above and click Save</li>
+                  </ol>
+                </div>
+              </details>
+            </div>
+
+            <!-- Reddit OAuth Config -->
+            <div class="ac-card" id="ac-int-reddit-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#FF4500" d="M12 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0zm5.01 4.744c.688 0 1.25.561 1.25 1.249a1.25 1.25 0 0 1-2.498.056l-2.597-.547-.8 3.747c1.824.07 3.48.632 4.674 1.488.308-.309.73-.491 1.207-.491.968 0 1.754.786 1.754 1.754 0 .716-.435 1.333-1.01 1.614a3.111 3.111 0 0 1 .042.52c0 2.694-3.13 4.87-7.004 4.87-3.874 0-7.004-2.176-7.004-4.87 0-.183.015-.366.043-.534A1.748 1.748 0 0 1 4.028 12c0-.968.786-1.754 1.754-1.754.463 0 .898.196 1.207.49 1.207-.883 2.878-1.43 4.744-1.487l.885-4.182a.342.342 0 0 1 .14-.197.35.35 0 0 1 .238-.042l2.906.617a1.214 1.214 0 0 1 1.108-.701zM9.25 12C8.561 12 8 12.562 8 13.25c0 .687.561 1.248 1.25 1.248.687 0 1.248-.561 1.248-1.249 0-.688-.561-1.249-1.249-1.249zm5.5 0c-.687 0-1.248.561-1.248 1.25 0 .687.561 1.248 1.249 1.248.688 0 1.249-.561 1.249-1.249 0-.687-.562-1.249-1.25-1.249zm-5.466 3.99a.327.327 0 0 0-.231.094.33.33 0 0 0 0 .463c.842.842 2.484.913 2.961.913.477 0 2.105-.056 2.961-.913a.361.361 0 0 0 .029-.463.33.33 0 0 0-.464 0c-.547.533-1.684.73-2.512.73-.828 0-1.979-.196-2.512-.73a.326.326 0 0 0-.232-.095z"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Reddit OAuth</div>
+                  <div class="ac-hint" style="margin:0;">Subreddit and post access — app-level credentials</div>
+                </div>
+                <span id="ac-int-reddit-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
+              </div>
+
+              <div id="ac-int-reddit-configured" style="display:none;font-size:12px;">
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <div><span style="color:var(--fg-muted);">Client ID:</span> <code id="ac-int-reddit-cid" style="font-size:11px;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-reddit-uri" style="font-size:11px;word-break:break-all;"></code></div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-reddit-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
+                </div>
+              </div>
+
+              <div id="ac-int-reddit-form" style="display:none;">
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Client ID</label>
+                  <input type="text" id="ac-int-reddit-input-cid" class="ac-input" placeholder="ABCDEFabcdef12" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Client Secret</label>
+                  <input type="password" id="ac-int-reddit-input-secret" class="ac-input" placeholder="Client secret" autocomplete="off">
+                </div>
+                <div class="ac-field">
+                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Reddit App → Redirect URI)</label>
+                  <code id="ac-int-reddit-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-base,#0d0d1a);border-radius:4px;word-break:break-all;"></code>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-reddit-save" class="ac-btn ac-btn-primary">Save</button>
+                </div>
+              </div>
+              <span id="ac-int-reddit-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+              <details class="ac-details" style="margin-top:12px;">
+                <summary>Setup instructions</summary>
+                <div class="ac-details-body">
+                  <ol style="margin:6px 0 0 16px;padding:0;">
+                    <li>Go to <a href="https://www.reddit.com/prefs/apps" target="_blank" style="color:var(--accent);">Reddit → Preferences → Apps → Create App</a></li>
+                    <li>Choose type <strong>web app</strong> and enter the Redirect URI above</li>
+                    <li>Copy the Client ID (below the app name) and Secret into the fields above and click Save</li>
+                  </ol>
+                </div>
+              </details>
+            </div>
+
+            <!-- Snapchat OAuth Config -->
+            <div class="ac-card" id="ac-int-snapchat-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#FFFC00" stroke="#000" stroke-width="0.5" d="M12.017 0C8.396.019 6.449 1.895 6.449 4.904c0 .44.037.866.112 1.281-.234-.019-.472-.035-.709-.035-1.023 0-2.027.266-2.027 1.098 0 .662.665 1.021 1.451 1.267.109.034.218.067.325.1-.055.133-.112.284-.112.444 0 .544.469.956 1.061.956.111 0 .222-.016.33-.046-.019.119-.028.24-.028.362 0 1.949 2.034 3.527 4.543 3.527 2.508 0 4.543-1.578 4.543-3.527 0-.122-.01-.243-.028-.362.108.03.219.046.33.046.592 0 1.061-.412 1.061-.956 0-.16-.057-.311-.112-.444.107-.033.216-.066.325-.1.786-.246 1.451-.605 1.451-1.267 0-.832-1.004-1.098-2.027-1.098-.237 0-.475.016-.709.035.075-.415.112-.841.112-1.281C17.551 1.895 15.638.019 12.017 0z"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Snapchat OAuth</div>
+                  <div class="ac-hint" style="margin:0;">Story and audience access — app-level credentials</div>
+                </div>
+                <span id="ac-int-snapchat-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
+              </div>
+
+              <div id="ac-int-snapchat-configured" style="display:none;font-size:12px;">
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <div><span style="color:var(--fg-muted);">Client ID:</span> <code id="ac-int-snapchat-cid" style="font-size:11px;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-snapchat-uri" style="font-size:11px;word-break:break-all;"></code></div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-snapchat-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
+                </div>
+              </div>
+
+              <div id="ac-int-snapchat-form" style="display:none;">
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Client ID</label>
+                  <input type="text" id="ac-int-snapchat-input-cid" class="ac-input" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Client Secret</label>
+                  <input type="password" id="ac-int-snapchat-input-secret" class="ac-input" placeholder="Client secret" autocomplete="off">
+                </div>
+                <div class="ac-field">
+                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Snapchat App → Redirect URIs)</label>
+                  <code id="ac-int-snapchat-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-base,#0d0d1a);border-radius:4px;word-break:break-all;"></code>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-snapchat-save" class="ac-btn ac-btn-primary">Save</button>
+                </div>
+              </div>
+              <span id="ac-int-snapchat-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+              <details class="ac-details" style="margin-top:12px;">
+                <summary>Setup instructions</summary>
+                <div class="ac-details-body">
+                  <ol style="margin:6px 0 0 16px;padding:0;">
+                    <li>Go to <a href="https://kit.snapchat.com/manage" target="_blank" style="color:var(--accent);">Snap Kit Developer Portal → Create App</a></li>
+                    <li>Add <strong>Login Kit</strong> and enter the Redirect URI above under <em>Redirect URLs</em></li>
+                    <li>Copy the Client ID and Client Secret into the fields above and click Save</li>
+                  </ol>
+                </div>
+              </details>
+            </div>
+
+            <!-- Twitch OAuth Config -->
+            <div class="ac-card" id="ac-int-twitch-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#9146FF" d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714z"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Twitch OAuth</div>
+                  <div class="ac-hint" style="margin:0;">Channel and stream data access — app-level credentials</div>
+                </div>
+                <span id="ac-int-twitch-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
+              </div>
+
+              <div id="ac-int-twitch-configured" style="display:none;font-size:12px;">
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <div><span style="color:var(--fg-muted);">Client ID:</span> <code id="ac-int-twitch-cid" style="font-size:11px;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-twitch-uri" style="font-size:11px;word-break:break-all;"></code></div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-twitch-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
+                </div>
+              </div>
+
+              <div id="ac-int-twitch-form" style="display:none;">
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Client ID</label>
+                  <input type="text" id="ac-int-twitch-input-cid" class="ac-input" placeholder="abcdefg1234567hijklmn" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Client Secret</label>
+                  <input type="password" id="ac-int-twitch-input-secret" class="ac-input" placeholder="Client secret" autocomplete="off">
+                </div>
+                <div class="ac-field">
+                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Twitch App → OAuth Redirect URLs)</label>
+                  <code id="ac-int-twitch-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-base,#0d0d1a);border-radius:4px;word-break:break-all;"></code>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-twitch-save" class="ac-btn ac-btn-primary">Save</button>
+                </div>
+              </div>
+              <span id="ac-int-twitch-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+              <details class="ac-details" style="margin-top:12px;">
+                <summary>Setup instructions</summary>
+                <div class="ac-details-body">
+                  <ol style="margin:6px 0 0 16px;padding:0;">
+                    <li>Go to <a href="https://dev.twitch.tv/console/apps/create" target="_blank" style="color:var(--accent);">Twitch Developer Console → Register Your Application</a></li>
+                    <li>Set Category to <strong>Website Integration</strong> and add the Redirect URI above</li>
+                    <li>Copy the Client ID and generate a Client Secret, then enter both above and click Save</li>
+                  </ol>
+                </div>
+              </details>
+            </div>
+
           </section>
 
           <!-- ── Database Management ── -->
