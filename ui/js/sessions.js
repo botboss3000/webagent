@@ -155,24 +155,29 @@ export function initSessions() {
   }
 
   // Load saved theme on init
-  const savedTheme = localStorage.getItem(STORAGE_KEY) || 'dark';
+  let savedTheme = 'dark';
+  try { savedTheme = localStorage.getItem(STORAGE_KEY) || 'dark'; } catch (_) {}
   applyTheme(savedTheme);
   highlightThemeOption(savedTheme);
 
   // Listen to system preference changes when in 'system' mode
   const mq = window.matchMedia('(prefers-color-scheme: light)');
   mq.addEventListener('change', () => {
-    const current = localStorage.getItem(STORAGE_KEY) || 'dark';
+    let current = 'dark';
+    try { current = localStorage.getItem(STORAGE_KEY) || 'dark'; } catch (_) {}
     if (current === 'system') applyTheme('system');
   });
 
-  // Wire theme buttons
+  // Wire theme buttons — pointerdown is more reliable than click for small targets
   document.querySelectorAll('.theme-option').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
       const theme = btn.dataset.theme;
-      localStorage.setItem(STORAGE_KEY, theme);
+      if (!theme) return;
       applyTheme(theme);
       highlightThemeOption(theme);
+      try { localStorage.setItem(STORAGE_KEY, theme); } catch (_) {}
     });
   });
 

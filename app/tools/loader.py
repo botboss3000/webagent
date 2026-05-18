@@ -97,7 +97,7 @@ class ToolLoader:
     def __init__(self):
         self._client = get_db().get_raw_client()
 
-    async def load_tools(self, user_id: str, agent_template_id: Optional[str] = None) -> Dict[str, 'ToolInfo']:
+    async def load_tools(self, user_id: str, agent_template_id: Optional[str] = None, is_admin_agent: bool = False) -> Dict[str, 'ToolInfo']:
         """
         Load all active tools for a user from the tools table.
         Each tool's `code` field contains the full async function to execute.
@@ -135,11 +135,11 @@ class ToolLoader:
             logger.debug(f"Loaded tool {name} for user {user_id}")
 
         # ── Inject built-in tools (override any DB versions) ──
-        self._inject_builtin_tools(tools, user_id, agent_template_id=agent_template_id)
+        self._inject_builtin_tools(tools, user_id, agent_template_id=agent_template_id, is_admin_agent=is_admin_agent)
 
         return tools
 
-    def _inject_builtin_tools(self, tools: Dict[str, ToolInfo], user_id: str, agent_template_id: Optional[str] = None) -> None:
+    def _inject_builtin_tools(self, tools: Dict[str, ToolInfo], user_id: str, agent_template_id: Optional[str] = None, is_admin_agent: bool = False) -> None:
         """Inject built-in tools that are always available regardless of DB state."""
 
         # ── create_tool (always available) ──
@@ -480,7 +480,7 @@ class ToolLoader:
         # ── Source management tools — only injected for admin-agent sessions ──
         # These are privileged tools (read/write/edit/delete files, run commands).
         # They are scoped exclusively to sessions running the 'admin-agent' template.
-        if agent_template_id == "admin-agent":
+        if is_admin_agent or agent_template_id == "admin-agent":  # is_admin_agent is preferred; string fallback for legacy
             try:
                 from app.admin.source_tools import inject_source_tools
                 inject_source_tools(tools, user_id)
@@ -1147,6 +1147,7 @@ _tool_loader = ToolLoader()
 async def load_tools(
     user_id: str,
     agent_template_id: Optional[str] = None,
+    is_admin_agent: bool = False,
     allowed_tools: Optional[List[str]] = None,
     custom_tool_ids: Optional[List[str]] = None,
 ) -> Dict[str, ToolInfo]:
@@ -1165,7 +1166,7 @@ async def load_tools(
     Returns:
         Dictionary mapping tool names to ToolInfo objects.
     """
-    tools = await _tool_loader.load_tools(user_id, agent_template_id=agent_template_id)
+    tools = await _tool_loader.load_tools(user_id, agent_template_id=agent_template_id, is_admin_agent=is_admin_agent)
 
     # Propagate requires_confirmation from BUILTIN_TOOL_METADATA to built-in ToolInfo entries.
     # DB tools already have this set from their row; built-ins need it applied from metadata.

@@ -983,6 +983,17 @@ class LocalBackend(StorageBackend):
                 logger.info("Added tools.requires_confirmation column")
             conn.commit()
 
+            # ── Migration 014: add is_admin_agent to agent_templates + agents ──
+            tpl_cols_014 = {row[1] for row in conn.execute("PRAGMA table_info(agent_templates)").fetchall()}
+            if "is_admin_agent" not in tpl_cols_014:
+                conn.execute("ALTER TABLE agent_templates ADD COLUMN is_admin_agent INTEGER NOT NULL DEFAULT 0")
+                logger.info("Added agent_templates.is_admin_agent column")
+            ag_cols_014 = {row[1] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
+            if "is_admin_agent" not in ag_cols_014:
+                conn.execute("ALTER TABLE agents ADD COLUMN is_admin_agent INTEGER NOT NULL DEFAULT 0")
+                logger.info("Added agents.is_admin_agent column")
+            conn.commit()
+
             # ── Seed: ensure admin_default always has is_admin=1 ──
             _mig_now2 = _now_iso()
             conn.execute(
@@ -1312,9 +1323,9 @@ class LocalBackend(StorageBackend):
                     temperature, max_tokens, metadata,
                     agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
                     bootstrap_tools, can_be_default, is_system, is_pipeline, access_level,
-                    discoverable, trigger_type, trigger_key, loop_logic,
+                    is_admin_agent, discoverable, trigger_type, trigger_key, loop_logic,
                     created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name,
                     description = excluded.description,
@@ -1336,6 +1347,7 @@ class LocalBackend(StorageBackend):
                     is_system = excluded.is_system,
                     is_pipeline = excluded.is_pipeline,
                     access_level = excluded.access_level,
+                    is_admin_agent = excluded.is_admin_agent,
                     trigger_type = excluded.trigger_type,
                     trigger_key = excluded.trigger_key,
                     loop_logic = excluded.loop_logic,
@@ -1349,6 +1361,7 @@ class LocalBackend(StorageBackend):
                  tpl.get("misc_prompt", ""), tpl.get("bootstrap_tools", ""),
                  tpl.get("can_be_default", 1), tpl.get("is_system", 0),
                  tpl.get("is_pipeline", 0), tpl.get("access_level", "all"),
+                 1 if tpl.get("is_admin_agent") else 0,
                  1 if tpl.get("discoverable") else 0,
                  tpl.get("trigger_type", "user_input"), tpl.get("trigger_key"),
                  tpl.get("loop_logic", "[]"),
@@ -2762,8 +2775,9 @@ class LocalBackend(StorageBackend):
                 conn.execute(
                     """INSERT INTO agents
                        (id, user_id, owner_user_id, template_id, name, system_prompt, max_turn_count, model, provider,
-                        temperature, max_tokens, status, metadata, trigger_type, trigger_key, loop_logic, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)""",
+                        temperature, max_tokens, status, metadata, trigger_type, trigger_key, loop_logic,
+                        is_admin_agent, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)""",
                     (agent_id, user_id, _owner, template_id,
                      agent.get("name", ""),
                      agent.get("system_prompt", ""),
@@ -2776,6 +2790,7 @@ class LocalBackend(StorageBackend):
                      agent.get("trigger_type", "user_input"),
                      agent.get("trigger_key"),
                      agent.get("loop_logic", "[]"),
+                     1 if agent.get("is_admin_agent") else 0,
                      now, now),
                 )
                 conn.commit()

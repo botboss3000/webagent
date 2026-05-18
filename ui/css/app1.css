@@ -695,6 +695,9 @@
     transition: all 0.15s;
     line-height: 1;
   }
+  .theme-option > * {
+    pointer-events: none;
+  }
   .theme-option:hover {
     color: #c0caf5;
     background: #2a2a4a;
