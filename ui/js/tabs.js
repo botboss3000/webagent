@@ -7,6 +7,7 @@ import { startLoopVisual, stopLoopVisual } from './loop-logic.js';
 import { initGithub, startGithub, stopGithub } from './github.js';
 import { startAutoAgent, stopAutoAgent } from './autoagent.js';
 import { startAgents, stopAgents } from './agents.js';
+import { startAppConfig, stopAppConfig } from './app-config.js';
 
 export function initTabs() {
   const tabSelect = document.getElementById('main-tab-select');
@@ -42,6 +43,7 @@ export function initTabs() {
       stopLoopVisual();
       stopAutoAgent();
       stopAgents();
+      stopAppConfig();
       setTimeout(() => {
         if (app && app.fitAddon) {
           app.fitAddon.fit();
@@ -52,18 +54,21 @@ export function initTabs() {
       stopLoopVisual();
       stopAutoAgent();
       stopAgents();
+      stopAppConfig();
       startStream();
     } else if (tabValue === 'flow') {
       stopStream();
       stopLoopVisual();
       stopAutoAgent();
       stopAgents();
+      stopAppConfig();
       startLoop();
     } else if (tabValue === 'loop-visual') {
       stopStream();
       stopLoop();
       stopAutoAgent();
       stopAgents();
+      stopAppConfig();
       startLoopVisual();
     } else if (tabValue === 'database') {
       stopStream();
@@ -72,11 +77,13 @@ export function initTabs() {
       stopGithub();
       stopAutoAgent();
       stopAgents();
+      stopAppConfig();
     } else if (tabValue === 'github') {
       stopStream();
       stopLoop();
       stopLoopVisual();
       stopAgents();
+      stopAppConfig();
       startGithub();
     } else if (tabValue === 'autoagent') {
       stopStream();
@@ -84,6 +91,7 @@ export function initTabs() {
       stopLoopVisual();
       stopGithub();
       stopAgents();
+      stopAppConfig();
       startAutoAgent();
     } else if (tabValue === 'agents') {
       stopStream();
@@ -91,7 +99,16 @@ export function initTabs() {
       stopLoopVisual();
       stopGithub();
       stopAutoAgent();
+      stopAppConfig();
       startAgents();
+    } else if (tabValue === 'app-config') {
+      stopStream();
+      stopLoop();
+      stopLoopVisual();
+      stopGithub();
+      stopAutoAgent();
+      stopAgents();
+      startAppConfig();
     }
   }
 

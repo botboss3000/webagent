@@ -374,7 +374,7 @@
             <span class="aa-placeholder-text">Loading your pages...</span>
             <span class="aa-placeholder-hint">Each page has its own dedicated agent</span>
           </div>
-          <iframe id="autoagent-iframe" class="aa-iframe" sandbox="allow-scripts allow-same-origin" style="display:none;" title="Page output"></iframe>
+          <iframe id="autoagent-iframe" class="aa-iframe" sandbox="allow-scripts" style="display:none;" title="Page output"></iframe>
           <div id="autoagent-loading" class="aa-loading" style="display:none;">
             <span class="aa-spinner"></span>
             <span>Page agent is working...</span>
@@ -422,6 +422,294 @@
         </div>
       </div>
     </div>
+
+    <!-- App Config tab -->
+    <div id="tab-app-config" class="tab-content">
+      <div id="app-config-container">
+
+        <!-- Sidebar nav -->
+        <nav id="app-config-sidebar">
+          <div class="ac-nav-title">App Config</div>
+          <a class="ac-nav-item active" data-section="llm" href="#ac-section-llm">
+            <i data-lucide="bot" class="lucide-icon ac-nav-icon"></i>Default LLM
+          </a>
+          <a class="ac-nav-item" data-section="connections" href="#ac-section-connections">
+            <i data-lucide="plug" class="lucide-icon ac-nav-icon"></i>App Connections
+          </a>
+          <a class="ac-nav-item" data-section="database" href="#ac-section-database">
+            <i data-lucide="database" class="lucide-icon ac-nav-icon"></i>Database
+          </a>
+          <a class="ac-nav-item" data-section="optimizer" href="#ac-section-optimizer">
+            <i data-lucide="zap" class="lucide-icon ac-nav-icon"></i>Optimizer Stats
+          </a>
+          <a class="ac-nav-item" data-section="git" href="#ac-section-git">
+            <i data-lucide="git-branch" class="lucide-icon ac-nav-icon"></i>Git Providers
+          </a>
+        </nav>
+
+        <!-- Scrollable content -->
+        <div id="app-config-content">
+
+          <!-- ── Default LLM ── -->
+          <section id="ac-section-llm" class="ac-section">
+            <div class="ac-section-header">
+              <i data-lucide="bot" class="lucide-icon ac-section-icon"></i>
+              <div>
+                <h2 class="ac-section-title">Default LLM</h2>
+                <p class="ac-section-desc">Configure the language model provider, API key, and default model.</p>
+              </div>
+            </div>
+            <div class="ac-card">
+              <div class="ac-field">
+                <label class="ac-label">Provider</label>
+                <select id="ac-settings-provider" class="ac-input"></select>
+              </div>
+              <div class="ac-field">
+                <label class="ac-label">Base URL</label>
+                <input type="text" id="ac-settings-base-url" class="ac-input" placeholder="https://openrouter.ai/api/v1" autocomplete="off">
+                <div class="ac-hint">Auto-filled when you pick a provider. Edit for custom endpoints.</div>
+              </div>
+              <div class="ac-field">
+                <label class="ac-label">API Key</label>
+                <input type="text" id="ac-settings-api-key" class="ac-input" placeholder="sk-..." autocomplete="off">
+                <div class="ac-hint">Stored on this device only. Never sent elsewhere.</div>
+              </div>
+              <div class="ac-field" id="ac-settings-model-group">
+                <label class="ac-label">Model</label>
+                <div style="position:relative;">
+                  <input type="text" id="ac-settings-model-search" class="ac-input" placeholder="Search models…" autocomplete="off">
+                  <div id="ac-settings-model-dropdown" class="ac-model-dropdown" style="display:none;"></div>
+                </div>
+                <div id="ac-settings-model-status" class="ac-hint"></div>
+              </div>
+              <div class="ac-actions">
+                <button id="ac-settings-save" class="ac-btn ac-btn-primary">Save</button>
+                <button id="ac-settings-clear" class="ac-btn ac-btn-ghost">Clear</button>
+                <span id="ac-settings-status" class="ac-status" style="display:none;"></span>
+              </div>
+            </div>
+
+            <!-- Saved / parallel providers -->
+            <div class="ac-card" id="ac-settings-saved-wrap" style="display:none;">
+              <div class="ac-card-label">Saved Configurations</div>
+              <div class="ac-card-sublabel">Check multiple rows to send requests in parallel — fastest response wins.</div>
+              <div id="ac-settings-saved-list" style="display:flex;flex-direction:column;gap:6px;margin-top:8px;"></div>
+              <div id="ac-settings-parallel-count" class="ac-hint" style="margin-top:6px;text-align:right;"></div>
+            </div>
+          </section>
+
+          <!-- ── App Connections ── -->
+          <section id="ac-section-connections" class="ac-section">
+            <div class="ac-section-header">
+              <i data-lucide="plug" class="lucide-icon ac-section-icon"></i>
+              <div>
+                <h2 class="ac-section-title">App Connections</h2>
+                <p class="ac-section-desc">Webhooks, Telegram bot, and outbound HTTP settings.</p>
+              </div>
+            </div>
+
+            <div class="ac-card">
+              <div class="ac-card-label">Webhook Base URL</div>
+              <div class="ac-field">
+                <div style="display:flex;gap:8px;">
+                  <input type="text" id="ac-conn-base-url" class="ac-input" placeholder="https://your-domain.com" style="flex:1;" autocomplete="off">
+                  <button id="ac-conn-base-url-save" class="ac-btn ac-btn-primary" style="flex-shrink:0;">Save</button>
+                </div>
+                <div class="ac-hint">Set to your public domain so webhook callback URLs resolve correctly.</div>
+                <span id="ac-conn-base-url-status" class="ac-status" style="display:none;"></span>
+              </div>
+            </div>
+
+            <div class="ac-card">
+              <div class="ac-card-label">Registered Webhooks</div>
+              <div id="ac-conn-webhook-list" style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
+                <div class="ac-hint">Loading…</div>
+              </div>
+            </div>
+
+            <div class="ac-card">
+              <div class="ac-card-label">Telegram Bot</div>
+              <div id="ac-conn-telegram-status" class="ac-hint" style="padding:8px 0;">Loading…</div>
+            </div>
+
+            <div class="ac-info-banner">
+              <strong style="color:var(--accent);">HTTP Requests</strong> — The agent has a built-in <code>http_request</code> tool for outbound GET/POST/PUT/DELETE/PATCH calls. No config needed.
+            </div>
+          </section>
+
+          <!-- ── Database Management ── -->
+          <section id="ac-section-database" class="ac-section">
+            <div class="ac-section-header">
+              <i data-lucide="database" class="lucide-icon ac-section-icon"></i>
+              <div>
+                <h2 class="ac-section-title">Database Management</h2>
+                <p class="ac-section-desc">Switch between cloud (Supabase) and local (SQLite) storage.</p>
+              </div>
+            </div>
+
+            <div class="ac-card">
+              <div class="ac-card-label">Storage Backend</div>
+              <div style="display:flex;gap:10px;margin-top:10px;">
+                <button type="button" id="ac-db-seg-cloud" class="ac-seg-btn" style="flex:1;">
+                  <i data-lucide="cloud" class="lucide-icon" style="width:18px;height:18px;margin-bottom:4px;"></i><br>
+                  Cloud<br><span class="ac-seg-sub">Supabase</span>
+                </button>
+                <button type="button" id="ac-db-seg-local" class="ac-seg-btn" style="flex:1;">
+                  <i data-lucide="monitor" class="lucide-icon" style="width:18px;height:18px;margin-bottom:4px;"></i><br>
+                  Local<br><span class="ac-seg-sub">SQLite</span>
+                </button>
+              </div>
+              <div id="ac-db-status" class="ac-hint" style="margin-top:8px;"></div>
+              <div class="ac-info-banner" style="margin-top:12px;">
+                <strong style="color:var(--accent);">Current Mode:</strong> <span id="ac-db-current-mode">Loading…</span><br>
+                <span>Cloud stores data in Supabase (multi-device). Local stores data in <code>app/db/local.db</code> (single-device).</span>
+              </div>
+            </div>
+
+            <div class="ac-card">
+              <div class="ac-card-label">Display Settings</div>
+              <div style="display:flex;align-items:center;gap:10px;margin-top:10px;">
+                <input type="checkbox" id="ac-db-show-hidden" style="cursor:pointer;width:16px;height:16px;accent-color:var(--accent);">
+                <label for="ac-db-show-hidden" style="cursor:pointer;font-size:13px;">Show Hidden Columns</label>
+              </div>
+              <div class="ac-hint" style="margin-top:6px;">When enabled, you can toggle column visibility in the data view using the eye icon.</div>
+            </div>
+          </section>
+
+          <!-- ── Optimizer Stats ── -->
+          <section id="ac-section-optimizer" class="ac-section">
+            <div class="ac-section-header">
+              <i data-lucide="zap" class="lucide-icon ac-section-icon"></i>
+              <div>
+                <h2 class="ac-section-title">Optimizer Stats</h2>
+                <p class="ac-section-desc">Session usage statistics and optimizer run configuration.</p>
+              </div>
+            </div>
+
+            <div class="ac-card">
+              <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
+                Session Manager
+                <span id="ac-opt-session-count" style="font-weight:400;font-size:11px;color:var(--fg-muted);">— loading…</span>
+              </div>
+              <div style="overflow-x:auto;margin-top:10px;border:1px solid var(--border);border-radius:6px;">
+                <table id="ac-opt-session-table" class="ac-stats-table">
+                  <thead>
+                    <tr>
+                      <th>Session</th><th>Msgs</th><th>Turns</th><th>Tokens In</th><th>Tokens Out</th><th>Total</th><th>Duration</th><th>Cost</th><th>Active</th><th>Switch</th>
+                    </tr>
+                  </thead>
+                  <tbody id="ac-opt-session-tbody">
+                    <tr><td colspan="10" class="ac-table-empty">Loading sessions…</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="ac-card">
+              <div class="ac-card-label">Run Mode</div>
+              <div style="display:flex;gap:8px;margin-top:10px;">
+                <button type="button" id="ac-opt-mode-live" class="ac-seg-btn active" data-mode="live" style="flex:1;">
+                  <i data-lucide="zap" class="lucide-icon" style="width:16px;height:16px;margin-bottom:4px;"></i><br>
+                  Live<br><span class="ac-seg-sub">After every message</span>
+                </button>
+                <button type="button" id="ac-opt-mode-scheduled" class="ac-seg-btn" data-mode="scheduled" style="flex:1;">
+                  <i data-lucide="calendar" class="lucide-icon" style="width:16px;height:16px;margin-bottom:4px;"></i><br>
+                  Scheduled<br><span class="ac-seg-sub">On a timer</span>
+                </button>
+              </div>
+            </div>
+
+            <div id="ac-opt-schedule-section" class="ac-card" style="display:none;">
+              <div class="ac-card-label">Schedule</div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px;">
+                <span class="ac-hint">Run every</span>
+                <select id="ac-opt-schedule-interval" class="ac-input" style="width:auto;">
+                  <option value="per-interaction">Message</option>
+                  <option value="hourly">Hour</option>
+                  <option value="daily">Day</option>
+                  <option value="weekly">Week</option>
+                </select>
+                <span class="ac-hint">or when interactions exceed</span>
+                <input type="number" id="ac-opt-schedule-min" class="ac-input" value="5" min="1" max="100" style="width:64px;">
+              </div>
+            </div>
+
+            <div class="ac-card" style="display:flex;gap:10px;align-items:center;justify-content:flex-end;flex-wrap:wrap;">
+              <span id="ac-opt-status" class="ac-status" style="flex:1;display:none;"></span>
+              <button id="ac-opt-save" class="ac-btn ac-btn-primary">Save Config</button>
+              <button id="ac-opt-run-now" class="ac-btn ac-btn-ghost">Run Now</button>
+            </div>
+          </section>
+
+          <!-- ── Git Providers ── -->
+          <section id="ac-section-git" class="ac-section">
+            <div class="ac-section-header">
+              <i data-lucide="git-branch" class="lucide-icon ac-section-icon"></i>
+              <div>
+                <h2 class="ac-section-title">Git Providers</h2>
+                <p class="ac-section-desc">GitHub token and repository sync configuration.</p>
+              </div>
+            </div>
+
+            <div class="ac-card">
+              <div class="ac-card-label">
+                GitHub Token
+                <span id="ac-gh-token-configured" style="font-weight:400;font-size:11px;color:var(--fg-muted);margin-left:8px;">—</span>
+              </div>
+              <div class="ac-field" style="margin-top:10px;">
+                <div style="display:flex;gap:8px;">
+                  <input type="password" id="ac-gh-token-input" class="ac-input" placeholder="ghp_... or github_pat_..." style="flex:1;">
+                  <button id="ac-gh-token-save" class="ac-btn ac-btn-primary" style="flex-shrink:0;">Save</button>
+                </div>
+                <div id="ac-gh-token-status" class="ac-status" style="display:none;margin-top:6px;"></div>
+              </div>
+              <details class="ac-details" style="margin-top:12px;">
+                <summary>How to create a GitHub token →</summary>
+                <div class="ac-details-body">
+                  <p><strong>Classic token:</strong></p>
+                  <ol>
+                    <li>Go to <a href="https://github.com/settings/tokens" target="_blank" style="color:var(--accent);">github.com/settings/tokens</a></li>
+                    <li>Click <strong>Generate new token (classic)</strong></li>
+                    <li>Select scope: <strong>repo</strong> (full control)</li>
+                    <li>Generate and copy the token</li>
+                  </ol>
+                  <p><strong>Fine-grained token:</strong></p>
+                  <ol>
+                    <li>Go to <a href="https://github.com/settings/tokens?type=beta" target="_blank" style="color:var(--accent);">tokens (fine-grained)</a></li>
+                    <li>Select this repository only</li>
+                    <li>Permissions → <strong>Contents: Read and write</strong></li>
+                    <li>Generate and copy the token</li>
+                  </ol>
+                </div>
+              </details>
+            </div>
+
+            <div class="ac-card">
+              <div class="ac-card-label">Repository Status</div>
+              <div id="ac-gh-status-area" style="margin-top:10px;">
+                <div class="ac-gh-status-grid">
+                  <div class="ac-gh-status-item"><span class="ac-gh-label">Branch</span><span id="ac-gh-branch" class="ac-gh-value">—</span></div>
+                  <div class="ac-gh-status-item"><span class="ac-gh-label">Remote</span><span id="ac-gh-remote" class="ac-gh-value">—</span></div>
+                  <div class="ac-gh-status-item"><span class="ac-gh-label">Last Commit</span><span id="ac-gh-last-commit" class="ac-gh-value">—</span></div>
+                  <div class="ac-gh-status-item"><span class="ac-gh-label">Sync</span><span id="ac-gh-ahead-behind" class="ac-gh-value">—</span></div>
+                  <div class="ac-gh-status-item"><span class="ac-gh-label">Changed Files</span><span id="ac-gh-file-count" class="ac-gh-value">—</span></div>
+                </div>
+                <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+                  <button id="ac-gh-refresh" class="ac-btn ac-btn-ghost">↻ Refresh</button>
+                  <span id="ac-gh-refresh-result" class="ac-hint"></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="ac-info-banner">
+              For full commit/push/pull controls, switch to the <a class="ac-tab-link" data-tab="github">GitHub tab</a>.
+            </div>
+          </section>
+
+        </div><!-- /app-config-content -->
+      </div><!-- /app-config-container -->
+    </div><!-- /tab-app-config -->
+
     <div id="tab-database" class="tab-content">
       <div id="db-viewer">
         <div id="db-toolbar" style="display:none;">
@@ -1202,7 +1490,7 @@
       // Delete-all button (skips local.db)
       var delAll = document.createElement('button');
       delAll.type = 'button';
-      delAll.innerHTML = '<i data-lucide="trash-2" style="width:13px;height:13px;display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;flex-shrink:0;" aria-hidden="true"></i>';
+      delAll.textContent = '🗑';
       delAll.title = 'Delete all databases (keeps local.db)';
       delAll.style.cssText = 'background:transparent;border:none;color:var(--fg-3);cursor:pointer;font-size:13px;line-height:1;padding:0 4px;border-radius:3px;';
       delAll.addEventListener('mouseenter', function() {
@@ -1532,7 +1820,8 @@
     { id: 'database',    icon: 'database',    label: 'Database'   },
     { id: 'github',      icon: 'github',      label: 'GitHub'     },
     { id: 'autoagent',   icon: 'palette',     label: 'AutoAgent'  },
-    { id: 'agents',      icon: 'bot',         label: 'Agents'     },
+    { id: 'agents',      icon: 'bot',              label: 'Agents'     },
+    { id: 'app-config',  icon: 'sliders-horizontal', label: 'App Config' },
   ];
 
   var nativeSelect = document.getElementById('main-tab-select');
@@ -1598,3 +1887,10 @@
 </script>
 </body>
 </html>
+  syncBtn(initActive.id.replace('tab-', '\));
+
+})();
+</script>
+</body>
+</html>
+l>
