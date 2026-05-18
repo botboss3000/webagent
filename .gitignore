@@ -45,6 +45,9 @@ logs/
 Thumbs.db
 nul
 
+# Temp / scratch
+temp/
+
 # Uploads
 uploads/*
 !uploads/.gitkeepvisuals/
