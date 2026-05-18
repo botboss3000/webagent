@@ -343,7 +343,7 @@ _CONNECTION_CATALOG = [
     {"connection_type": "discord",   "section": "channel",     "display_name": "Discord",          "status": "coming_soon"},
     {"connection_type": "slack",     "section": "channel",     "display_name": "Slack",            "status": "coming_soon"},
     # ── Integrations ──
-    {"connection_type": "google",    "section": "integration", "display_name": "Google",           "status": "coming_soon"},
+    {"connection_type": "google",    "section": "integration", "display_name": "Google",           "status": "available"},
     {"connection_type": "yahoo",     "section": "integration", "display_name": "Yahoo",            "status": "coming_soon"},
     {"connection_type": "microsoft", "section": "integration", "display_name": "Microsoft 365",    "status": "coming_soon"},
     {"connection_type": "github",    "section": "integration", "display_name": "GitHub",           "status": "coming_soon"},
@@ -358,10 +358,21 @@ async def get_agent_connections(agent_id: str, user_id: str = Query(...)):
     Return all connections for an agent, merged with the full catalog.
     Available connection types include stubs for coming-soon entries.
     Bot tokens in config are masked to last 4 chars.
+    For Google: merges user's auth_elements status (email, name, picture).
     """
     db = get_db()
     rows = await db.get_agent_connections(agent_id)
     saved = {r["connection_type"]: r for r in rows}
+
+    # Check if user has a connected Google account (via auth_elements)
+    google_auth = None
+    try:
+        elem = await db.auth_element_get(user_id, "google", "oauth")
+        if elem:
+            import json as _json2
+            google_auth = _json2.loads(elem.get("config", "{}")) if isinstance(elem.get("config"), str) else elem.get("config", {})
+    except Exception:
+        pass
 
     result = []
     for entry in _CONNECTION_CATALOG:
@@ -378,11 +389,24 @@ async def get_agent_connections(agent_id: str, user_id: str = Query(...)):
             if "bot_token" in config and config["bot_token"]:
                 tok = config["bot_token"]
                 config["bot_token"] = "•" * max(0, len(tok) - 4) + tok[-4:]
-        result.append({
+
+        item = {
             **entry,
             "enabled": bool(row["enabled"]) if row else False,
             "config": config,
-        })
+        }
+
+        # For Google: merge auth status from auth_elements
+        if ct == "google" and google_auth:
+            item["google_connected"] = True
+            item["google_email"] = google_auth.get("email", "")
+            item["google_name"] = google_auth.get("name", "")
+            item["google_picture"] = google_auth.get("picture", "")
+            item["google_connected_at"] = google_auth.get("connected_at", "")
+        elif ct == "google":
+            item["google_connected"] = False
+
+        result.append(item)
     return {"connections": result}
 
 
@@ -455,6 +479,41 @@ async def upsert_agent_connection(
             "config": resp_config,
         }
     }
+
+
+@router.get("/agents/{agent_id}/connections/google/authorize")
+async def google_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Generate Google OAuth authorization URL for a user+agent pair."""
+    from app.admin.integrations import get_google_creds, build_google_authorize_url
+    client_id, _ = await get_google_creds()
+    if not client_id:
+        return {"error": "Google OAuth not configured. Admin must set credentials in App Config → Integrations."}
+    authorize_url = await build_google_authorize_url(user_id=user_id, agent_id=agent_id)
+    return {"authorize_url": authorize_url}
+
+
+@router.delete("/agents/{agent_id}/connections/google/disconnect")
+async def google_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Disconnect Google account for a user and disable on this agent."""
+    from app.admin.integrations import revoke_and_delete_google
+    db = get_db()
+
+    # Revoke token and delete from auth_elements
+    deleted = await revoke_and_delete_google(user_id)
+
+    # Disable Google on this agent
+    try:
+        await db.upsert_agent_connection(
+            agent_id=agent_id,
+            connection_type="google",
+            section="integration",
+            enabled=False,
+            config={},
+        )
+    except Exception:
+        pass
+
+    return {"status": "ok", "deleted": deleted}
 
 
 @router.post("/agent-templates/config")

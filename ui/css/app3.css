@@ -1495,4 +1495,33 @@ body.light-mode .ac-btn-primary { background: #cc6a28; color: #fff; }
 body.light-mode .ac-btn-ghost { border-color: #9a7c65; color: #9a7c65; }
 body.light-mode .ac-seg-btn { background: #faf7f4; border-color: #d4c4b4; color: #2d1f14; }
 body.light-mode .ac-seg-btn.active { border-color: #cc6a28; background: rgba(204,107,40,0.06); color: #cc6a28; }
-body.light-mode .ac-info-banner { backgro
+body.light-mode .ac-info-banner { background: #faf7f4; border-left-color: #cc6a28; }
+
+/* ── Integrations ── */
+.ac-int-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 12px;
+  white-space: nowrap;
+}
+.ac-int-badge-on {
+  background: rgba(158, 206, 106, 0.15);
+  color: #9ece6a;
+}
+.ac-int-badge-off {
+  background: rgba(86, 95, 137, 0.2);
+  color: var(--fg-muted, #565f89);
+}
+.ac-int-account-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-base, #0d0d1a);
+  border: 1px solid var(--border, #2a2a4a);
+  border-radius: 8px;
+}
+body.light-mode .ac-int-badge-on { background: rgba(40, 167, 69, 0.12); color: #1a7c31; }
+body.light-mode .ac-int-badge-off { background: rgba(107, 82, 64, 0.12); color: #9a7c65; }
+body.light-mode .ac-int-account-info { background: #faf7f4; border-color: #d4c4b4; }
