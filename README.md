@@ -114,7 +114,9 @@ webAgent/
 ├── scripts/
 │   ├── start_webAgent.sh            # Unix: cd to repo root, background uvicorn (default :8080, PORT= overrides)
 │   ├── backfill_embeddings.py       # One-off: embed existing memory pages
-│   └── seed_tools.py                # Optional tool DB seeding
+│   ├── seed_tools.py                # Optional tool DB seeding
+│   └── export_agent_templates.py    # Reverse-seed: DB → app/context/agents/*.json
+├── export_agent_templates.bat  # Double-click: runs export_agent_templates.py (--dry-run supported)
 ├── migrations/             # Ad-hoc SQL snapshots (includes 007_channel_identities, 008_linking_codes, 009_multi_agent_system, 010_agent_name_backfill, 011_add_login_tracking); see migrations/README.md
 ├── supabase/migrations/    # e.g. 005_memory_system.sql (Supabase CLI / team workflow)
 ├── screenshots/            # Mounted at /screenshots
