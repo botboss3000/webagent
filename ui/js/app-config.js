@@ -514,56 +514,62 @@ async function _saveWebhookBaseUrl() {
 // ─────────────────────────────────────────────────────────────────────────
 
 function _initIntegrations() {
-  _qs('ac-int-google-save')?.addEventListener('click', _saveGoogleConfig);
-  _qs('ac-int-google-unconfigure')?.addEventListener('click', _unconfigureGoogle);
+  // Wire up save/unconfigure for all providers
+  for (const p of ['google', 'microsoft', 'yahoo', 'dropbox']) {
+    _qs(`ac-int-${p}-save`)?.addEventListener('click', () => _saveProviderConfig(p));
+    _qs(`ac-int-${p}-unconfigure`)?.addEventListener('click', () => _unconfigureProvider(p));
+  }
 }
 
 async function _loadIntegrations() {
-  const badge      = _qs('ac-int-google-badge');
-  const configured = _qs('ac-int-google-configured');
-  const form       = _qs('ac-int-google-form');
-
   try {
     const res = await _fetch(apiPath('/admin/integrations'));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-
-    if (data.google_configured) {
-      if (badge) { badge.textContent = 'Configured'; badge.className = 'ac-int-badge ac-int-badge-on'; }
-      if (configured) configured.style.display = 'block';
-      if (form) form.style.display = 'none';
-      const cidEl = _qs('ac-int-google-cid');
-      if (cidEl) cidEl.textContent = data.google_client_id || '';
-      const uriEl = _qs('ac-int-google-uri');
-      if (uriEl) uriEl.textContent = data.redirect_uri || '';
-    } else {
-      if (badge) { badge.textContent = 'Not configured'; badge.className = 'ac-int-badge ac-int-badge-off'; }
-      if (configured) configured.style.display = 'none';
-      if (form) form.style.display = 'block';
-      const formUri = _qs('ac-int-google-form-uri');
-      if (formUri) formUri.textContent = data.redirect_uri || '';
-    }
+    _applyProviderStatus('google',    data.google_configured,    data.google_client_id,    data.redirect_uri);
+    _applyProviderStatus('microsoft', data.microsoft_configured, data.microsoft_client_id, data.microsoft_redirect_uri);
+    _applyProviderStatus('yahoo',     data.yahoo_configured,     data.yahoo_client_id,     data.yahoo_redirect_uri);
+    _applyProviderStatus('dropbox',   data.dropbox_configured,   data.dropbox_client_id,   data.dropbox_redirect_uri);
   } catch (e) {
-    const statusEl = _qs('ac-int-google-status');
-    if (statusEl) {
-      statusEl.textContent = `Failed to load: ${e.message}`;
-      statusEl.style.color = '#f7768e';
-      statusEl.style.display = 'block';
+    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox']) {
+      const s = _qs(`ac-int-${p}-status`);
+      if (s) { s.textContent = `Failed to load: ${e.message}`; s.style.color = '#f7768e'; s.style.display = 'block'; }
     }
   }
 }
 
-async function _saveGoogleConfig() {
+function _applyProviderStatus(provider, configured, clientId, redirectUri) {
+  const badge      = _qs(`ac-int-${provider}-badge`);
+  const configuredEl = _qs(`ac-int-${provider}-configured`);
+  const form       = _qs(`ac-int-${provider}-form`);
+  if (configured) {
+    if (badge) { badge.textContent = 'Configured'; badge.className = 'ac-int-badge ac-int-badge-on'; }
+    if (configuredEl) configuredEl.style.display = 'block';
+    if (form) form.style.display = 'none';
+    const cidEl = _qs(`ac-int-${provider}-cid`);
+    if (cidEl) cidEl.textContent = clientId || '';
+    const uriEl = _qs(`ac-int-${provider}-uri`);
+    if (uriEl) uriEl.textContent = redirectUri || '';
+  } else {
+    if (badge) { badge.textContent = 'Not configured'; badge.className = 'ac-int-badge ac-int-badge-off'; }
+    if (configuredEl) configuredEl.style.display = 'none';
+    if (form) form.style.display = 'block';
+    const formUri = _qs(`ac-int-${provider}-form-uri`);
+    if (formUri) formUri.textContent = redirectUri || '';
+  }
+}
+
+async function _saveProviderConfig(provider) {
   if (!isAdmin()) { showRestrictedModal(); return; }
-  const cidInput = _qs('ac-int-google-input-cid');
-  const secInput = _qs('ac-int-google-input-secret');
-  const statusEl = _qs('ac-int-google-status');
+  const cidInput = _qs(`ac-int-${provider}-input-cid`);
+  const secInput = _qs(`ac-int-${provider}-input-secret`);
+  const statusEl = _qs(`ac-int-${provider}-status`);
   if (!cidInput?.value?.trim() || !secInput?.value?.trim()) {
     if (statusEl) { statusEl.textContent = 'Both Client ID and Client Secret are required.'; statusEl.style.color = '#e0af68'; statusEl.style.display = 'block'; }
     return;
   }
   try {
-    const res = await _fetch(apiPath('/admin/integrations/google'), {
+    const res = await _fetch(apiPath(`/admin/integrations/${provider}`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ client_id: cidInput.value.trim(), client_secret: secInput.value.trim() }),
@@ -571,25 +577,29 @@ async function _saveGoogleConfig() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     cidInput.value = '';
     secInput.value = '';
-    if (statusEl) { statusEl.textContent = 'Google OAuth configured.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; setTimeout(() => { statusEl.style.display = 'none'; }, 3000); }
+    if (statusEl) { statusEl.textContent = 'Configured successfully.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; setTimeout(() => { statusEl.style.display = 'none'; }, 3000); }
     _loadIntegrations();
   } catch (e) {
     if (statusEl) { statusEl.textContent = `Error: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
   }
 }
 
-async function _unconfigureGoogle() {
+async function _unconfigureProvider(provider) {
   if (!isAdmin()) { showRestrictedModal(); return; }
-  const statusEl = _qs('ac-int-google-status');
+  const statusEl = _qs(`ac-int-${provider}-status`);
   try {
-    const res = await _fetch(apiPath('/admin/integrations/google'), { method: 'DELETE' });
+    const res = await _fetch(apiPath(`/admin/integrations/${provider}`), { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    if (statusEl) { statusEl.textContent = 'Google OAuth unconfigured.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; setTimeout(() => { statusEl.style.display = 'none'; }, 3000); }
+    if (statusEl) { statusEl.textContent = 'Unconfigured.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; setTimeout(() => { statusEl.style.display = 'none'; }, 3000); }
     _loadIntegrations();
   } catch (e) {
     if (statusEl) { statusEl.textContent = `Error: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
   }
 }
+
+// Keep legacy aliases (referenced by any older inline calls)
+async function _saveGoogleConfig()    { return _saveProviderConfig('google'); }
+async function _unconfigureGoogle()   { return _unconfigureProvider('google'); }
 
 // ─────────────────────────────────────────────────────────────────────────
 // ── SECTION 3: Database ──────────────────────────────────────────────────
