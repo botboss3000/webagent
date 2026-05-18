@@ -561,12 +561,11 @@
                 </svg>
                 <div style="flex:1;">
                   <div style="font-weight:600;font-size:14px;">Google OAuth</div>
-                  <div class="ac-hint" style="margin:0;">App-level credentials for Google account linking</div>
+                  <div class="ac-hint" style="margin:0;">Gmail, Drive, Docs, Calendar — app-level credentials</div>
                 </div>
                 <span id="ac-int-google-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
               </div>
 
-              <!-- Configured state -->
               <div id="ac-int-google-configured" style="display:none;font-size:12px;">
                 <div style="display:flex;flex-direction:column;gap:6px;">
                   <div><span style="color:var(--fg-muted);">Client ID:</span> <code id="ac-int-google-cid" style="font-size:11px;"></code></div>
@@ -578,7 +577,6 @@
                 </div>
               </div>
 
-              <!-- Not configured state: input form -->
               <div id="ac-int-google-form" style="display:none;">
                 <div class="ac-field" style="margin-bottom:10px;">
                   <label class="ac-label">Client ID</label>
@@ -589,16 +587,14 @@
                   <input type="password" id="ac-int-google-input-secret" class="ac-input" placeholder="GOCSPX-..." autocomplete="off">
                 </div>
                 <div class="ac-field">
-                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add this to Google Cloud Console)</label>
+                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Google Cloud Console)</label>
                   <code id="ac-int-google-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-base,#0d0d1a);border-radius:4px;word-break:break-all;"></code>
                 </div>
                 <div style="margin-top:12px;">
                   <button id="ac-int-google-save" class="ac-btn ac-btn-primary">Save</button>
                 </div>
               </div>
-
               <span id="ac-int-google-status" class="ac-status" style="display:none;margin-top:8px;"></span>
-
               <details class="ac-details" style="margin-top:12px;">
                 <summary>Setup instructions</summary>
                 <div class="ac-details-body">
@@ -606,16 +602,182 @@
                     <li>Go to <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:var(--accent);">Google Cloud Console → Credentials</a></li>
                     <li>Create an OAuth 2.0 Client ID (Web application)</li>
                     <li>Add the <strong>Redirect URI</strong> shown above as an Authorized redirect URI</li>
-                    <li>Copy the Client ID and Client Secret into the fields above</li>
-                    <li>Click Save</li>
+                    <li>Copy the Client ID and Client Secret into the fields above and click Save</li>
                   </ol>
-                  <p style="margin-top:8px;color:var(--fg-muted);">Once configured, users can connect their Google accounts from each agent's Connections tab.</p>
                 </div>
               </details>
             </div>
 
-            <div class="ac-info-banner">
-              <strong style="color:var(--accent);">More Integrations</strong> — Microsoft 365, Yahoo, and other services are coming soon.
+            <!-- Microsoft OAuth Config -->
+            <div class="ac-card" id="ac-int-microsoft-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <rect x="1" y="1" width="10" height="10" fill="#F25022"/>
+                  <rect x="13" y="1" width="10" height="10" fill="#7FBA00"/>
+                  <rect x="1" y="13" width="10" height="10" fill="#00A4EF"/>
+                  <rect x="13" y="13" width="10" height="10" fill="#FFB900"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Microsoft 365 OAuth</div>
+                  <div class="ac-hint" style="margin:0;">Outlook, OneDrive, SharePoint — app-level credentials</div>
+                </div>
+                <span id="ac-int-microsoft-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
+              </div>
+
+              <div id="ac-int-microsoft-configured" style="display:none;font-size:12px;">
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <div><span style="color:var(--fg-muted);">Client ID:</span> <code id="ac-int-microsoft-cid" style="font-size:11px;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-microsoft-uri" style="font-size:11px;word-break:break-all;"></code></div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect their Microsoft accounts from each agent's <strong>Connections</strong> tab.</div>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-microsoft-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
+                </div>
+              </div>
+
+              <div id="ac-int-microsoft-form" style="display:none;">
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Application (Client) ID</label>
+                  <input type="text" id="ac-int-microsoft-input-cid" class="ac-input" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Client Secret Value</label>
+                  <input type="password" id="ac-int-microsoft-input-secret" class="ac-input" placeholder="Client secret value (not ID)" autocomplete="off">
+                </div>
+                <div class="ac-field">
+                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Azure App Registration)</label>
+                  <code id="ac-int-microsoft-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-base,#0d0d1a);border-radius:4px;word-break:break-all;"></code>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-microsoft-save" class="ac-btn ac-btn-primary">Save</button>
+                </div>
+              </div>
+              <span id="ac-int-microsoft-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+              <details class="ac-details" style="margin-top:12px;">
+                <summary>Setup instructions</summary>
+                <div class="ac-details-body">
+                  <ol style="margin:6px 0 0 16px;padding:0;">
+                    <li>Go to <a href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" style="color:var(--accent);">Azure Portal → App registrations</a></li>
+                    <li>Click <strong>New registration</strong> — choose "Accounts in any organizational directory and personal Microsoft accounts"</li>
+                    <li>Under <strong>Authentication</strong>, add the Redirect URI above as a Web platform redirect</li>
+                    <li>Under <strong>Certificates &amp; secrets</strong>, create a new Client secret and copy its <em>Value</em></li>
+                    <li>Copy the Application (Client) ID and Secret Value into the fields above and click Save</li>
+                    <li>Under <strong>API permissions</strong>, add: User.Read, Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, Files.ReadWrite.All, Sites.ReadWrite.All (delegated)</li>
+                  </ol>
+                </div>
+              </details>
+            </div>
+
+            <!-- Yahoo OAuth Config -->
+            <div class="ac-card" id="ac-int-yahoo-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#6001D2" d="M0 4h6.5l3.5 8.5L13.5 4H20l-7.5 16H7L9 16 0 4z"/>
+                  <circle fill="#6001D2" cx="20" cy="20" r="3"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Yahoo OAuth</div>
+                  <div class="ac-hint" style="margin:0;">Yahoo Mail — app-level credentials</div>
+                </div>
+                <span id="ac-int-yahoo-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
+              </div>
+
+              <div id="ac-int-yahoo-configured" style="display:none;font-size:12px;">
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <div><span style="color:var(--fg-muted);">Client ID:</span> <code id="ac-int-yahoo-cid" style="font-size:11px;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-yahoo-uri" style="font-size:11px;word-break:break-all;"></code></div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect their Yahoo accounts from each agent's <strong>Connections</strong> tab.</div>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-yahoo-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
+                </div>
+              </div>
+
+              <div id="ac-int-yahoo-form" style="display:none;">
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Client ID (Consumer Key)</label>
+                  <input type="text" id="ac-int-yahoo-input-cid" class="ac-input" placeholder="dj0yJi..." autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Client Secret (Consumer Secret)</label>
+                  <input type="password" id="ac-int-yahoo-input-secret" class="ac-input" placeholder="Consumer secret" autocomplete="off">
+                </div>
+                <div class="ac-field">
+                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Yahoo Developer Console)</label>
+                  <code id="ac-int-yahoo-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-base,#0d0d1a);border-radius:4px;word-break:break-all;"></code>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-yahoo-save" class="ac-btn ac-btn-primary">Save</button>
+                </div>
+              </div>
+              <span id="ac-int-yahoo-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+              <details class="ac-details" style="margin-top:12px;">
+                <summary>Setup instructions</summary>
+                <div class="ac-details-body">
+                  <ol style="margin:6px 0 0 16px;padding:0;">
+                    <li>Go to <a href="https://developer.yahoo.com/apps/create/" target="_blank" style="color:var(--accent);">Yahoo Developer Console → Create App</a></li>
+                    <li>Select <strong>Web Application</strong>, enable <strong>OpenID Connect</strong> and <strong>Yahoo Mail API</strong></li>
+                    <li>Add the <strong>Redirect URI</strong> above to the app's Callback Domain / Redirect URI list</li>
+                    <li>Copy the Consumer Key (Client ID) and Consumer Secret into the fields above and click Save</li>
+                  </ol>
+                </div>
+              </details>
+            </div>
+
+            <!-- Dropbox OAuth Config -->
+            <div class="ac-card" id="ac-int-dropbox-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#0061FF" d="M6 2L1 5.5 6 9l5-3.5L6 2zM1 12.5L6 16l5-3.5L6 9l-5 3.5zM6 16l5 3.5 5-3.5-5-3.5L6 16zM16 2l-5 3.5L16 9l5-3.5L16 2zM11 9l5 3.5 5-3.5L16 6l-5 3z"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Dropbox OAuth</div>
+                  <div class="ac-hint" style="margin:0;">File storage and sharing — app-level credentials</div>
+                </div>
+                <span id="ac-int-dropbox-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
+              </div>
+
+              <div id="ac-int-dropbox-configured" style="display:none;font-size:12px;">
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <div><span style="color:var(--fg-muted);">App Key:</span> <code id="ac-int-dropbox-cid" style="font-size:11px;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-dropbox-uri" style="font-size:11px;word-break:break-all;"></code></div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect their Dropbox accounts from each agent's <strong>Connections</strong> tab.</div>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-dropbox-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
+                </div>
+              </div>
+
+              <div id="ac-int-dropbox-form" style="display:none;">
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">App Key</label>
+                  <input type="text" id="ac-int-dropbox-input-cid" class="ac-input" placeholder="abcdefg1234567" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">App Secret</label>
+                  <input type="password" id="ac-int-dropbox-input-secret" class="ac-input" placeholder="App secret" autocomplete="off">
+                </div>
+                <div class="ac-field">
+                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Dropbox App Console)</label>
+                  <code id="ac-int-dropbox-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-base,#0d0d1a);border-radius:4px;word-break:break-all;"></code>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-dropbox-save" class="ac-btn ac-btn-primary">Save</button>
+                </div>
+              </div>
+              <span id="ac-int-dropbox-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+              <details class="ac-details" style="margin-top:12px;">
+                <summary>Setup instructions</summary>
+                <div class="ac-details-body">
+                  <ol style="margin:6px 0 0 16px;padding:0;">
+                    <li>Go to <a href="https://www.dropbox.com/developers/apps/create" target="_blank" style="color:var(--accent);">Dropbox App Console → Create app</a></li>
+                    <li>Choose <strong>Scoped access</strong> → <strong>Full Dropbox</strong></li>
+                    <li>On the Settings tab, add the <strong>Redirect URI</strong> above under <em>OAuth 2 → Redirect URIs</em></li>
+                    <li>On the Permissions tab, enable: account_info.read, files.metadata.read/write, files.content.read/write, sharing.read/write</li>
+                    <li>Copy the App Key and App Secret into the fields above and click Save</li>
+                  </ol>
+                </div>
+              </details>
             </div>
           </section>
 

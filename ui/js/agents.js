@@ -1021,8 +1021,9 @@ const _CONN_ICONS = {
   slack:     'briefcase',
   // Integrations
   google:    'search',
-  yahoo:     'circle',
-  microsoft: 'square',
+  microsoft: 'monitor',
+  yahoo:     'mail',
+  dropbox:   'folder-open',
   github:    'github',
   bank:      'landmark',
   search:    'globe',
@@ -1135,15 +1136,15 @@ function _buildConnectionCard(agent, conn) {
     });
   }
 
-  // Google OAuth handlers
-  const googleConnectBtn = card.querySelector('.conn-google-connect-btn');
-  if (googleConnectBtn) {
-    googleConnectBtn.addEventListener('click', () => _googleConnectFromAgent(agent, conn, card));
-  }
-  const googleDisconnectBtn = card.querySelector('.conn-google-disconnect-btn');
-  if (googleDisconnectBtn) {
-    googleDisconnectBtn.addEventListener('click', () => _googleDisconnectFromAgent(agent, conn, card));
-  }
+  // OAuth connect/disconnect handlers (works for google, microsoft, yahoo, dropbox)
+  card.querySelectorAll('[data-oauth-connect]').forEach(btn => {
+    const provider = btn.dataset.oauthConnect;
+    btn.addEventListener('click', () => _oauthConnectFromAgent(provider, agent, conn, card));
+  });
+  card.querySelectorAll('[data-oauth-disconnect]').forEach(btn => {
+    const provider = btn.dataset.oauthDisconnect;
+    btn.addEventListener('click', () => _oauthDisconnectFromAgent(provider, agent, conn, card));
+  });
 
   return card;
 }
@@ -1168,26 +1169,54 @@ function _buildConnectionBody(conn) {
     return el;
   }
 
-  if (conn.connection_type === 'google') {
-    if (conn.google_connected) {
+  // ── OAuth-backed integration providers ──────────────────────────────────
+  const _OAUTH_PROVIDERS = {
+    google: {
+      label: 'Google Account',
+      hint: 'Link your Google account for Gmail, Drive, Docs, and Calendar access.',
+    },
+    microsoft: {
+      label: 'Microsoft Account',
+      hint: 'Link your Microsoft account for Outlook, OneDrive, and SharePoint access.',
+    },
+    yahoo: {
+      label: 'Yahoo Account',
+      hint: 'Link your Yahoo account for Yahoo Mail access.',
+    },
+    dropbox: {
+      label: 'Dropbox Account',
+      hint: 'Link your Dropbox account for file storage and sharing access.',
+    },
+  };
+
+  const oauthInfo = _OAUTH_PROVIDERS[conn.connection_type];
+  if (oauthInfo) {
+    const ct = conn.connection_type;
+    const connected = conn[`${ct}_connected`];
+    const picture   = conn[`${ct}_picture`] || '';
+    const name      = conn[`${ct}_name`] || '';
+    const email     = conn[`${ct}_email`] || '';
+    const connAt    = conn[`${ct}_connected_at`] || '';
+
+    if (connected) {
       el.innerHTML = `
         <div class="conn-google-account">
-          ${conn.google_picture ? `<img src="${_esc(conn.google_picture)}" alt="" style="width:28px;height:28px;border-radius:50%;">` : ''}
+          ${picture ? `<img src="${_esc(picture)}" alt="" style="width:28px;height:28px;border-radius:50%;">` : ''}
           <div style="flex:1;min-width:0;">
-            <div style="font-weight:500;font-size:12px;">${_esc(conn.google_name || '')}</div>
-            <div style="font-size:11px;color:var(--fg-muted,#565f89);overflow:hidden;text-overflow:ellipsis;">${_esc(conn.google_email || '')}</div>
+            <div style="font-weight:500;font-size:12px;">${_esc(name)}</div>
+            <div style="font-size:11px;color:var(--fg-muted,#565f89);overflow:hidden;text-overflow:ellipsis;">${_esc(email)}</div>
           </div>
         </div>
         <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
-          <button class="agents-btn conn-google-disconnect-btn" style="color:#f7768e;border-color:#f7768e;">Disconnect</button>
-          ${conn.google_connected_at ? `<span style="font-size:10px;color:var(--fg-muted,#565f89);">Connected ${new Date(conn.google_connected_at).toLocaleDateString()}</span>` : ''}
+          <button class="agents-btn" data-oauth-disconnect="${ct}" style="color:#f7768e;border-color:#f7768e;">Disconnect</button>
+          ${connAt ? `<span style="font-size:10px;color:var(--fg-muted,#565f89);">Connected ${new Date(connAt).toLocaleDateString()}</span>` : ''}
         </div>
         <span class="conn-save-msg"></span>
       `;
     } else {
       el.innerHTML = `
-        <button class="agents-btn primary conn-google-connect-btn" style="width:100%;">Connect Google Account</button>
-        <span class="conn-field-hint" style="margin-top:6px;">Link your Google account for calendar, contacts, and identity access.</span>
+        <button class="agents-btn primary" data-oauth-connect="${ct}" style="width:100%;">Connect ${oauthInfo.label}</button>
+        <span class="conn-field-hint" style="margin-top:6px;">${oauthInfo.hint}</span>
         <span class="conn-save-msg"></span>
       `;
     }
@@ -1198,26 +1227,32 @@ function _buildConnectionBody(conn) {
   return null;
 }
 
-// ── Google OAuth helpers for Agent Connections tab ───────────────────────────
+// ── OAuth helpers for Agent Connections tab (generic, all providers) ──────────
 
-let _googleOauthPopup = null;
-let _googleOauthRefreshCallback = null;
+let _oauthPopup = null;
+let _oauthRefreshCallback = null;
 
-// Listen for OAuth popup completion
+// Listen for OAuth popup completion from any provider
 window.addEventListener('message', e => {
-  if (e.data?.type === 'google-oauth-success') {
-    if (_googleOauthPopup) { _googleOauthPopup.close(); _googleOauthPopup = null; }
-    if (_googleOauthRefreshCallback) { _googleOauthRefreshCallback(); _googleOauthRefreshCallback = null; }
+  const successTypes = [
+    'google-oauth-success',
+    'microsoft-oauth-success',
+    'yahoo-oauth-success',
+    'dropbox-oauth-success',
+  ];
+  if (successTypes.includes(e.data?.type)) {
+    if (_oauthPopup) { _oauthPopup.close(); _oauthPopup = null; }
+    if (_oauthRefreshCallback) { _oauthRefreshCallback(); _oauthRefreshCallback = null; }
   }
 });
 
-async function _googleConnectFromAgent(agent, conn, cardEl) {
+async function _oauthConnectFromAgent(provider, agent, conn, cardEl) {
   const msgEl = cardEl.querySelector('.conn-save-msg');
   if (msgEl) { msgEl.textContent = ''; msgEl.className = 'conn-save-msg'; }
 
   try {
     const res = await fetch(
-      `/api/v1/agents/${agent.id}/connections/google/authorize?user_id=${encodeURIComponent(app.currentUserId)}`
+      `/api/v1/agents/${agent.id}/connections/${provider}/authorize?user_id=${encodeURIComponent(app.currentUserId)}`
     );
     const data = await res.json();
     if (data.error) {
@@ -1225,14 +1260,14 @@ async function _googleConnectFromAgent(agent, conn, cardEl) {
       return;
     }
 
-    // Set up refresh callback to re-render the connections tab
-    _googleOauthRefreshCallback = () => {
+    // Set up refresh callback to re-render the connections tab after success
+    _oauthRefreshCallback = () => {
       const body = cardEl.closest('.agent-detail-panel')?.querySelector('.agent-detail-body');
       if (body) _renderConnectionsTab(body, agent);
     };
 
-    _googleOauthPopup = window.open(data.authorize_url, 'google-oauth', 'width=520,height=640,left=200,top=100');
-    if (!_googleOauthPopup) {
+    _oauthPopup = window.open(data.authorize_url, `${provider}-oauth`, 'width=520,height=640,left=200,top=100');
+    if (!_oauthPopup) {
       // Popup blocked — fallback to redirect
       window.location.href = data.authorize_url;
     }
@@ -1241,13 +1276,13 @@ async function _googleConnectFromAgent(agent, conn, cardEl) {
   }
 }
 
-async function _googleDisconnectFromAgent(agent, conn, cardEl) {
+async function _oauthDisconnectFromAgent(provider, agent, conn, cardEl) {
   const msgEl = cardEl.querySelector('.conn-save-msg');
   if (msgEl) { msgEl.textContent = ''; msgEl.className = 'conn-save-msg'; }
 
   try {
     const res = await fetch(
-      `/api/v1/agents/${agent.id}/connections/google/disconnect?user_id=${encodeURIComponent(app.currentUserId)}`,
+      `/api/v1/agents/${agent.id}/connections/${provider}/disconnect?user_id=${encodeURIComponent(app.currentUserId)}`,
       { method: 'DELETE' }
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

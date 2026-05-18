@@ -92,8 +92,8 @@ Events are routed on the frontend:
 | **`tools/`** | **`loader`** (dynamic tool loading + built-in injection: http_request, register_webhook, list_webhooks, delete_webhook, get_webhook_log, render_visual, plus **`delegate_to_agent` / `list_delegatable_agents`** for non-pipeline agents), **`core_tools`** (bootstrap tools: list_tools, search_tools, get_tool_definition, web_search, http_request, db_query, memory, session_search, get_time, get_date, get_weather, calculate), **`registry`** (create_tool, safety scanner, rating utilities), **`tracker`** (legacy execution tracker), **`browser`** (persistent Chromium), **`read_attachment`** (read uploaded files via `app/db/attachments/`), **`delegation.py`** (builds `delegate_to_agent` + `list_delegatable_agents` handlers; returns delegation sentinel JSON detected by the loop). |
 | **`visualizer/`** | **Multi-page workspace tools** — `render_visual`, `list_pages`, `create_page`, `delete_page`. Pages stored per-user at `visuals/users/<user_id>/<slug>.html` with a `pages.json` manifest. `pages.py` handles all page CRUD; `tool.py` implements `render_visual`. **`SKILL.md`** — agent guide for page building. Self-contained — delete to disable. |
 | **`models/schemas.py`** | Pydantic models (`ChatRequest`, etc.). |
-| **`admin/`** | **`review`** (`/admin/tools` — list/deprecate DB tools), **`db_mode`** (`/admin/db/` — cloud/local switch), **`settings`** (provider config, model list, metadata toggle), **`integrations`** (`/admin/integrations` — OAuth integration management: list connected services, authorize/disconnect Google OAuth), **`guardrails`** (path/command deny-list for source tools), **`communications`** (Telegram/WhatsApp plugin mgmt), **`source`** + **`source_tools`** (optional privileged filesystem & shell access — delete to disable), **`users.py`** (`GET /admin/users`, `POST /admin/users/{user_id}/set-admin` — admin user management). See [Administrator Tools](#administrator-tools). |
-| **`api/oauth.py`** | **`GET /api/v1/oauth/callback/google`** — Google OAuth callback: exchanges authorization code for tokens, fetches user profile, stores credentials in `auth_elements`, returns HTML that signals the opener window and closes the popup. |
+| **`admin/`** | **`review`** (`/admin/tools` — list/deprecate DB tools), **`db_mode`** (`/admin/db/` — cloud/local switch), **`settings`** (provider config, model list, metadata toggle), **`integrations`** (`/admin/integrations` — OAuth integration management: configure and revoke Google, Microsoft, Yahoo, Dropbox credentials; `GET /admin/integrations` returns status for all four providers), **`guardrails`** (path/command deny-list for source tools), **`communications`** (Telegram/WhatsApp plugin mgmt), **`source`** + **`source_tools`** (optional privileged filesystem & shell access — delete to disable), **`users.py`** (`GET /admin/users`, `POST /admin/users/{user_id}/set-admin` — admin user management). See [Administrator Tools](#administrator-tools). |
+| **`api/oauth.py`** | OAuth callbacks for all supported providers. **`GET /api/v1/oauth/callback/google`**, **`/callback/microsoft`**, **`/callback/yahoo`**, **`/callback/dropbox`** — each exchanges the authorization code for tokens, fetches the user profile, stores credentials in `auth_elements`, signals the opener popup, and closes the window. |
 | **`api/agents.py`** | **`GET /api/v1/agents/templates`** — list all agent templates. **`POST /api/v1/agents/templates`** — create a template (admin only). **`PUT /api/v1/agents/templates/{id}`** — update a template (admin only). **`DELETE /api/v1/agents/templates/{id}`** — delete a template (admin only). **`GET /api/v1/agents/my-agent`** — get the current user's active agent. **`POST /api/v1/agents/set-default`** — set the user's default agent template. |
 | **`openai_compat.py`** | OpenAI-compatible client wiring for OpenRouter. |
 
@@ -161,8 +161,14 @@ cp .env.example .env          # Windows (cmd): copy .env.example .env
 | `EMBED_DIM` | Embedding vector dimension (default: `1536`) |
 | `MAX_UPLOAD_SIZE_MB` | Max file upload size in MB (default: 25) |
 | `UPLOAD_DIR` | Directory for uploaded files (default: `uploads`) |
-| `GOOGLE_CLIENT_ID` | Google OAuth client ID (for Integrations page — Google account linking) |
+| `GOOGLE_CLIENT_ID` | Google OAuth client ID (Integrations page — Gmail, Drive, Docs, Calendar) |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
+| `MICROSOFT_CLIENT_ID` | Microsoft Azure App registration client ID (Integrations page — Outlook, OneDrive, SharePoint) |
+| `MICROSOFT_CLIENT_SECRET` | Microsoft client secret value |
+| `YAHOO_CLIENT_ID` | Yahoo Developer app consumer key (Integrations page — Yahoo Mail) |
+| `YAHOO_CLIENT_SECRET` | Yahoo consumer secret |
+| `DROPBOX_APP_KEY` | Dropbox App Console app key (Integrations page — file storage) |
+| `DROPBOX_APP_SECRET` | Dropbox app secret |
 | `BOOTSTRAP_ADMIN_ID` | User ID to auto-promote to admin on server start (first admin bootstrapping). Once an admin exists in `user_profiles`, this var has no further effect. |
 
 In **local** mode, Supabase vars are not required for storage; you still need **`OPENROUTER_API_KEY`** (and usually **`OPENROUTER_MODEL`**) for LLM calls.

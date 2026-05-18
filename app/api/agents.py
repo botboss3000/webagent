@@ -344,8 +344,9 @@ _CONNECTION_CATALOG = [
     {"connection_type": "slack",     "section": "channel",     "display_name": "Slack",            "status": "coming_soon"},
     # ── Integrations ──
     {"connection_type": "google",    "section": "integration", "display_name": "Google",           "status": "available"},
-    {"connection_type": "yahoo",     "section": "integration", "display_name": "Yahoo",            "status": "coming_soon"},
-    {"connection_type": "microsoft", "section": "integration", "display_name": "Microsoft 365",    "status": "coming_soon"},
+    {"connection_type": "microsoft", "section": "integration", "display_name": "Microsoft 365",    "status": "available"},
+    {"connection_type": "yahoo",     "section": "integration", "display_name": "Yahoo",            "status": "available"},
+    {"connection_type": "dropbox",   "section": "integration", "display_name": "Dropbox",          "status": "available"},
     {"connection_type": "github",    "section": "integration", "display_name": "GitHub",           "status": "coming_soon"},
     {"connection_type": "bank",      "section": "integration", "display_name": "Bank Accounts",    "status": "coming_soon"},
     {"connection_type": "search",    "section": "integration", "display_name": "Search Engine",    "status": "coming_soon"},
@@ -360,19 +361,24 @@ async def get_agent_connections(agent_id: str, user_id: str = Query(...)):
     Bot tokens in config are masked to last 4 chars.
     For Google: merges user's auth_elements status (email, name, picture).
     """
+    import json as _json
     db = get_db()
     rows = await db.get_agent_connections(agent_id)
     saved = {r["connection_type"]: r for r in rows}
 
-    # Check if user has a connected Google account (via auth_elements)
-    google_auth = None
-    try:
-        elem = await db.auth_element_get(user_id, "google", "oauth")
-        if elem:
-            import json as _json2
-            google_auth = _json2.loads(elem.get("config", "{}")) if isinstance(elem.get("config"), str) else elem.get("config", {})
-    except Exception:
-        pass
+    # Fetch auth_elements for all OAuth-backed providers in parallel
+    _OAUTH_PROVIDERS = ["google", "microsoft", "yahoo", "dropbox"]
+    provider_auth: dict[str, dict] = {}
+    for prov in _OAUTH_PROVIDERS:
+        try:
+            elem = await db.auth_element_get(user_id, prov, "oauth")
+            if elem:
+                cfg = elem.get("config", {})
+                if isinstance(cfg, str):
+                    cfg = _json.loads(cfg)
+                provider_auth[prov] = cfg
+        except Exception:
+            pass
 
     result = []
     for entry in _CONNECTION_CATALOG:
@@ -380,7 +386,6 @@ async def get_agent_connections(agent_id: str, user_id: str = Query(...)):
         row = saved.get(ct)
         config = {}
         if row:
-            import json as _json
             try:
                 config = _json.loads(row.get("config") or "{}")
             except Exception:
@@ -396,15 +401,17 @@ async def get_agent_connections(agent_id: str, user_id: str = Query(...)):
             "config": config,
         }
 
-        # For Google: merge auth status from auth_elements
-        if ct == "google" and google_auth:
-            item["google_connected"] = True
-            item["google_email"] = google_auth.get("email", "")
-            item["google_name"] = google_auth.get("name", "")
-            item["google_picture"] = google_auth.get("picture", "")
-            item["google_connected_at"] = google_auth.get("connected_at", "")
-        elif ct == "google":
-            item["google_connected"] = False
+        # Merge OAuth account info for providers that use auth_elements
+        if ct in _OAUTH_PROVIDERS:
+            auth = provider_auth.get(ct)
+            if auth:
+                item[f"{ct}_connected"] = True
+                item[f"{ct}_email"] = auth.get("email", "")
+                item[f"{ct}_name"] = auth.get("name", "")
+                item[f"{ct}_picture"] = auth.get("picture", "")
+                item[f"{ct}_connected_at"] = auth.get("connected_at", "")
+            else:
+                item[f"{ct}_connected"] = False
 
         result.append(item)
     return {"connections": result}
@@ -497,22 +504,95 @@ async def google_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     """Disconnect Google account for a user and disable on this agent."""
     from app.admin.integrations import revoke_and_delete_google
     db = get_db()
-
-    # Revoke token and delete from auth_elements
     deleted = await revoke_and_delete_google(user_id)
-
-    # Disable Google on this agent
     try:
         await db.upsert_agent_connection(
-            agent_id=agent_id,
-            connection_type="google",
-            section="integration",
-            enabled=False,
-            config={},
+            agent_id=agent_id, connection_type="google",
+            section="integration", enabled=False, config={},
         )
     except Exception:
         pass
+    return {"status": "ok", "deleted": deleted}
 
+
+@router.get("/agents/{agent_id}/connections/microsoft/authorize")
+async def microsoft_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Generate Microsoft OAuth authorization URL for a user+agent pair."""
+    from app.admin.integrations import get_microsoft_creds, build_microsoft_authorize_url
+    client_id, _ = await get_microsoft_creds()
+    if not client_id:
+        return {"error": "Microsoft OAuth not configured. Admin must set credentials in App Config → Integrations."}
+    authorize_url = await build_microsoft_authorize_url(user_id=user_id, agent_id=agent_id)
+    return {"authorize_url": authorize_url}
+
+
+@router.delete("/agents/{agent_id}/connections/microsoft/disconnect")
+async def microsoft_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Disconnect Microsoft account for a user and disable on this agent."""
+    from app.admin.integrations import revoke_and_delete_microsoft
+    db = get_db()
+    deleted = await revoke_and_delete_microsoft(user_id)
+    try:
+        await db.upsert_agent_connection(
+            agent_id=agent_id, connection_type="microsoft",
+            section="integration", enabled=False, config={},
+        )
+    except Exception:
+        pass
+    return {"status": "ok", "deleted": deleted}
+
+
+@router.get("/agents/{agent_id}/connections/yahoo/authorize")
+async def yahoo_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Generate Yahoo OAuth authorization URL for a user+agent pair."""
+    from app.admin.integrations import get_yahoo_creds, build_yahoo_authorize_url
+    client_id, _ = await get_yahoo_creds()
+    if not client_id:
+        return {"error": "Yahoo OAuth not configured. Admin must set credentials in App Config → Integrations."}
+    authorize_url = await build_yahoo_authorize_url(user_id=user_id, agent_id=agent_id)
+    return {"authorize_url": authorize_url}
+
+
+@router.delete("/agents/{agent_id}/connections/yahoo/disconnect")
+async def yahoo_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Disconnect Yahoo account for a user and disable on this agent."""
+    from app.admin.integrations import revoke_and_delete_yahoo
+    db = get_db()
+    deleted = await revoke_and_delete_yahoo(user_id)
+    try:
+        await db.upsert_agent_connection(
+            agent_id=agent_id, connection_type="yahoo",
+            section="integration", enabled=False, config={},
+        )
+    except Exception:
+        pass
+    return {"status": "ok", "deleted": deleted}
+
+
+@router.get("/agents/{agent_id}/connections/dropbox/authorize")
+async def dropbox_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Generate Dropbox OAuth authorization URL for a user+agent pair."""
+    from app.admin.integrations import get_dropbox_creds, build_dropbox_authorize_url
+    client_id, _ = await get_dropbox_creds()
+    if not client_id:
+        return {"error": "Dropbox OAuth not configured. Admin must set credentials in App Config → Integrations."}
+    authorize_url = await build_dropbox_authorize_url(user_id=user_id, agent_id=agent_id)
+    return {"authorize_url": authorize_url}
+
+
+@router.delete("/agents/{agent_id}/connections/dropbox/disconnect")
+async def dropbox_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Disconnect Dropbox account for a user and disable on this agent."""
+    from app.admin.integrations import revoke_and_delete_dropbox
+    db = get_db()
+    deleted = await revoke_and_delete_dropbox(user_id)
+    try:
+        await db.upsert_agent_connection(
+            agent_id=agent_id, connection_type="dropbox",
+            section="integration", enabled=False, config={},
+        )
+    except Exception:
+        pass
     return {"status": "ok", "deleted": deleted}
 
 
