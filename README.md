@@ -93,7 +93,7 @@ Events are routed on the frontend:
 | **`visualizer/`** | **Multi-page workspace tools** — `render_visual`, `list_pages`, `create_page`, `delete_page`. Pages stored per-user at `visuals/users/<user_id>/<slug>.html` with a `pages.json` manifest. `pages.py` handles all page CRUD; `tool.py` implements `render_visual`. **`SKILL.md`** — agent guide for page building. Self-contained — delete to disable. |
 | **`models/schemas.py`** | Pydantic models (`ChatRequest`, etc.). |
 | **`admin/`** | **`review`** (`/admin/tools` — list/deprecate DB tools), **`db_mode`** (`/admin/db/` — cloud/local switch), **`settings`** (provider config, model list, metadata toggle), **`integrations`** (`/admin/integrations` — OAuth integration management: configure and revoke Google, Microsoft, Yahoo, Dropbox credentials; `GET /admin/integrations` returns status for all four providers), **`guardrails`** (path/command deny-list for source tools), **`communications`** (Telegram/WhatsApp plugin mgmt), **`source`** + **`source_tools`** (optional privileged filesystem & shell access — delete to disable), **`users.py`** (`GET /admin/users`, `POST /admin/users/{user_id}/set-admin` — admin user management). See [Administrator Tools](#administrator-tools). |
-| **`api/oauth.py`** | OAuth callbacks for all supported providers. **`GET /api/v1/oauth/callback/google`**, **`/callback/microsoft`**, **`/callback/yahoo`**, **`/callback/dropbox`** — each exchanges the authorization code for tokens, fetches the user profile, stores credentials in `auth_elements`, signals the opener popup, and closes the window. |
+| **`api/oauth.py`** | OAuth callbacks for all supported providers. **`GET /api/v1/oauth/callback/{provider}`** — providers: `google`, `microsoft`, `yahoo`, `dropbox`, `meta` (Facebook+Instagram), `twitter`, `linkedin`, `tiktok`, `pinterest`, `reddit`, `snapchat`, `twitch`. Each callback exchanges the authorization code for tokens, stores credentials in `auth_elements`, signals the opener popup, and closes the window. Twitter and TikTok use PKCE. Meta stores under `service="meta"` and aliases to `facebook` and `instagram`. |
 | **`api/agents.py`** | **`GET /api/v1/agents/templates`** — list all agent templates. **`POST /api/v1/agents/templates`** — create a template (admin only). **`PUT /api/v1/agents/templates/{id}`** — update a template (admin only). **`DELETE /api/v1/agents/templates/{id}`** — delete a template (admin only). **`GET /api/v1/agents/my-agent`** — get the current user's active agent. **`POST /api/v1/agents/set-default`** — set the user's default agent template. |
 | **`openai_compat.py`** | OpenAI-compatible client wiring for OpenRouter. |
 
@@ -169,6 +169,22 @@ cp .env.example .env          # Windows (cmd): copy .env.example .env
 | `YAHOO_CLIENT_SECRET` | Yahoo consumer secret |
 | `DROPBOX_APP_KEY` | Dropbox App Console app key (Integrations page — file storage) |
 | `DROPBOX_APP_SECRET` | Dropbox app secret |
+| `META_APP_ID` | Meta App ID (Integrations page — Facebook + Instagram via one Meta app) |
+| `META_APP_SECRET` | Meta App Secret |
+| `TWITTER_CLIENT_ID` | Twitter/X OAuth 2.0 Client ID (Integrations page — X/Twitter; uses PKCE) |
+| `TWITTER_CLIENT_SECRET` | Twitter/X Client Secret |
+| `LINKEDIN_CLIENT_ID` | LinkedIn App Client ID (Integrations page — LinkedIn) |
+| `LINKEDIN_CLIENT_SECRET` | LinkedIn Client Secret |
+| `TIKTOK_CLIENT_KEY` | TikTok for Developers Client Key (Integrations page — TikTok; uses PKCE) |
+| `TIKTOK_CLIENT_SECRET` | TikTok Client Secret |
+| `PINTEREST_APP_ID` | Pinterest Developer App ID (Integrations page — Pinterest) |
+| `PINTEREST_APP_SECRET` | Pinterest App Secret |
+| `REDDIT_CLIENT_ID` | Reddit App Client ID (Integrations page — Reddit) |
+| `REDDIT_CLIENT_SECRET` | Reddit Client Secret |
+| `SNAPCHAT_CLIENT_ID` | Snap Kit App Client ID (Integrations page — Snapchat) |
+| `SNAPCHAT_CLIENT_SECRET` | Snapchat Client Secret |
+| `TWITCH_CLIENT_ID` | Twitch Developer App Client ID (Integrations page — Twitch) |
+| `TWITCH_CLIENT_SECRET` | Twitch Client Secret |
 | `BOOTSTRAP_ADMIN_ID` | User ID to auto-promote to admin on server start (first admin bootstrapping). Once an admin exists in `user_profiles`, this var has no further effect. |
 
 In **local** mode, Supabase vars are not required for storage; you still need **`OPENROUTER_API_KEY`** (and usually **`OPENROUTER_MODEL`**) for LLM calls.

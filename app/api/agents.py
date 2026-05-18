@@ -350,6 +350,16 @@ _CONNECTION_CATALOG = [
     {"connection_type": "github",    "section": "integration", "display_name": "GitHub",           "status": "coming_soon"},
     {"connection_type": "bank",      "section": "integration", "display_name": "Bank Accounts",    "status": "coming_soon"},
     {"connection_type": "search",    "section": "integration", "display_name": "Search Engine",    "status": "coming_soon"},
+    # ── Social Media ──
+    {"connection_type": "facebook",  "section": "social",      "display_name": "Facebook",         "status": "available"},
+    {"connection_type": "instagram", "section": "social",      "display_name": "Instagram",        "status": "available"},
+    {"connection_type": "twitter",   "section": "social",      "display_name": "X (Twitter)",      "status": "available"},
+    {"connection_type": "linkedin",  "section": "social",      "display_name": "LinkedIn",         "status": "available"},
+    {"connection_type": "tiktok",    "section": "social",      "display_name": "TikTok",           "status": "available"},
+    {"connection_type": "pinterest", "section": "social",      "display_name": "Pinterest",        "status": "available"},
+    {"connection_type": "reddit",    "section": "social",      "display_name": "Reddit",           "status": "available"},
+    {"connection_type": "snapchat",  "section": "social",      "display_name": "Snapchat",         "status": "available"},
+    {"connection_type": "twitch",    "section": "social",      "display_name": "Twitch",           "status": "available"},
 ]
 
 
@@ -366,17 +376,41 @@ async def get_agent_connections(agent_id: str, user_id: str = Query(...)):
     rows = await db.get_agent_connections(agent_id)
     saved = {r["connection_type"]: r for r in rows}
 
-    # Fetch auth_elements for all OAuth-backed providers in parallel
-    _OAUTH_PROVIDERS = ["google", "microsoft", "yahoo", "dropbox"]
+    # Fetch auth_elements for all OAuth-backed providers.
+    # Maps connection_type → service key stored in auth_elements.
+    # facebook and instagram both alias to the "meta" OAuth app.
+    _OAUTH_PROVIDERS = {
+        "google":    "google",
+        "microsoft": "microsoft",
+        "yahoo":     "yahoo",
+        "dropbox":   "dropbox",
+        "facebook":  "meta",
+        "instagram": "meta",
+        "twitter":   "twitter",
+        "linkedin":  "linkedin",
+        "tiktok":    "tiktok",
+        "pinterest": "pinterest",
+        "reddit":    "reddit",
+        "snapchat":  "snapchat",
+        "twitch":    "twitch",
+    }
+    # Cache fetched service records to avoid double-fetching (e.g. meta for both fb/ig)
+    _service_cache: dict[str, dict] = {}
     provider_auth: dict[str, dict] = {}
-    for prov in _OAUTH_PROVIDERS:
+    for ct, service_key in _OAUTH_PROVIDERS.items():
         try:
-            elem = await db.auth_element_get(user_id, prov, "oauth")
-            if elem:
-                cfg = elem.get("config", {})
-                if isinstance(cfg, str):
-                    cfg = _json.loads(cfg)
-                provider_auth[prov] = cfg
+            if service_key not in _service_cache:
+                elem = await db.auth_element_get(user_id, service_key, "oauth")
+                if elem:
+                    cfg = elem.get("config", {})
+                    if isinstance(cfg, str):
+                        cfg = _json.loads(cfg)
+                    _service_cache[service_key] = cfg
+                else:
+                    _service_cache[service_key] = {}
+            cfg = _service_cache[service_key]
+            if cfg:
+                provider_auth[ct] = cfg
         except Exception:
             pass
 
@@ -402,7 +436,7 @@ async def get_agent_connections(agent_id: str, user_id: str = Query(...)):
         }
 
         # Merge OAuth account info for providers that use auth_elements
-        if ct in _OAUTH_PROVIDERS:
+        if ct in _OAUTH_PROVIDERS:  # dict membership check
             auth = provider_auth.get(ct)
             if auth:
                 item[f"{ct}_connected"] = True
@@ -590,6 +624,254 @@ async def dropbox_disconnect_for_agent(agent_id: str, user_id: str = Query(...))
         await db.upsert_agent_connection(
             agent_id=agent_id, connection_type="dropbox",
             section="integration", enabled=False, config={},
+        )
+    except Exception:
+        pass
+    return {"status": "ok", "deleted": deleted}
+
+
+# ── Social Media OAuth routes ─────────────────────────────────────────────────
+# Meta covers both Facebook and Instagram via a single OAuth app.
+
+@router.get("/agents/{agent_id}/connections/facebook/authorize")
+async def facebook_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Generate Meta (Facebook/Instagram) OAuth authorization URL."""
+    from app.admin.integrations import get_meta_creds, build_meta_authorize_url
+    client_id, _ = await get_meta_creds()
+    if not client_id:
+        return {"error": "Meta OAuth not configured. Admin must set credentials in App Config → Integrations."}
+    authorize_url = await build_meta_authorize_url(user_id=user_id, agent_id=agent_id)
+    return {"authorize_url": authorize_url}
+
+
+@router.delete("/agents/{agent_id}/connections/facebook/disconnect")
+async def facebook_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Disconnect Meta account (removes Facebook + Instagram access) and disable on this agent."""
+    from app.admin.integrations import revoke_and_delete_meta
+    db = get_db()
+    deleted = await revoke_and_delete_meta(user_id)
+    for ct in ("facebook", "instagram"):
+        try:
+            await db.upsert_agent_connection(
+                agent_id=agent_id, connection_type=ct,
+                section="social", enabled=False, config={},
+            )
+        except Exception:
+            pass
+    return {"status": "ok", "deleted": deleted}
+
+
+@router.get("/agents/{agent_id}/connections/instagram/authorize")
+async def instagram_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Generate Meta (Facebook/Instagram) OAuth authorization URL."""
+    from app.admin.integrations import get_meta_creds, build_meta_authorize_url
+    client_id, _ = await get_meta_creds()
+    if not client_id:
+        return {"error": "Meta OAuth not configured. Admin must set credentials in App Config → Integrations."}
+    authorize_url = await build_meta_authorize_url(user_id=user_id, agent_id=agent_id)
+    return {"authorize_url": authorize_url}
+
+
+@router.delete("/agents/{agent_id}/connections/instagram/disconnect")
+async def instagram_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Disconnect Meta account (removes Facebook + Instagram access) and disable on this agent."""
+    from app.admin.integrations import revoke_and_delete_meta
+    db = get_db()
+    deleted = await revoke_and_delete_meta(user_id)
+    for ct in ("facebook", "instagram"):
+        try:
+            await db.upsert_agent_connection(
+                agent_id=agent_id, connection_type=ct,
+                section="social", enabled=False, config={},
+            )
+        except Exception:
+            pass
+    return {"status": "ok", "deleted": deleted}
+
+
+@router.get("/agents/{agent_id}/connections/twitter/authorize")
+async def twitter_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Generate Twitter/X OAuth authorization URL."""
+    from app.admin.integrations import get_twitter_creds, build_twitter_authorize_url
+    client_id, _ = await get_twitter_creds()
+    if not client_id:
+        return {"error": "Twitter/X OAuth not configured. Admin must set credentials in App Config → Integrations."}
+    authorize_url, _ = await build_twitter_authorize_url(user_id=user_id, agent_id=agent_id)
+    return {"authorize_url": authorize_url}
+
+
+@router.delete("/agents/{agent_id}/connections/twitter/disconnect")
+async def twitter_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Disconnect Twitter/X account and disable on this agent."""
+    from app.admin.integrations import revoke_and_delete_twitter
+    db = get_db()
+    deleted = await revoke_and_delete_twitter(user_id)
+    try:
+        await db.upsert_agent_connection(
+            agent_id=agent_id, connection_type="twitter",
+            section="social", enabled=False, config={},
+        )
+    except Exception:
+        pass
+    return {"status": "ok", "deleted": deleted}
+
+
+@router.get("/agents/{agent_id}/connections/linkedin/authorize")
+async def linkedin_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Generate LinkedIn OAuth authorization URL."""
+    from app.admin.integrations import get_linkedin_creds, build_linkedin_authorize_url
+    client_id, _ = await get_linkedin_creds()
+    if not client_id:
+        return {"error": "LinkedIn OAuth not configured. Admin must set credentials in App Config → Integrations."}
+    authorize_url = await build_linkedin_authorize_url(user_id=user_id, agent_id=agent_id)
+    return {"authorize_url": authorize_url}
+
+
+@router.delete("/agents/{agent_id}/connections/linkedin/disconnect")
+async def linkedin_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Disconnect LinkedIn account and disable on this agent."""
+    from app.admin.integrations import revoke_and_delete_linkedin
+    db = get_db()
+    deleted = await revoke_and_delete_linkedin(user_id)
+    try:
+        await db.upsert_agent_connection(
+            agent_id=agent_id, connection_type="linkedin",
+            section="social", enabled=False, config={},
+        )
+    except Exception:
+        pass
+    return {"status": "ok", "deleted": deleted}
+
+
+@router.get("/agents/{agent_id}/connections/tiktok/authorize")
+async def tiktok_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Generate TikTok OAuth authorization URL."""
+    from app.admin.integrations import get_tiktok_creds, build_tiktok_authorize_url
+    client_id, _ = await get_tiktok_creds()
+    if not client_id:
+        return {"error": "TikTok OAuth not configured. Admin must set credentials in App Config → Integrations."}
+    authorize_url, _ = await build_tiktok_authorize_url(user_id=user_id, agent_id=agent_id)
+    return {"authorize_url": authorize_url}
+
+
+@router.delete("/agents/{agent_id}/connections/tiktok/disconnect")
+async def tiktok_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Disconnect TikTok account and disable on this agent."""
+    from app.admin.integrations import revoke_and_delete_tiktok
+    db = get_db()
+    deleted = await revoke_and_delete_tiktok(user_id)
+    try:
+        await db.upsert_agent_connection(
+            agent_id=agent_id, connection_type="tiktok",
+            section="social", enabled=False, config={},
+        )
+    except Exception:
+        pass
+    return {"status": "ok", "deleted": deleted}
+
+
+@router.get("/agents/{agent_id}/connections/pinterest/authorize")
+async def pinterest_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Generate Pinterest OAuth authorization URL."""
+    from app.admin.integrations import get_pinterest_creds, build_pinterest_authorize_url
+    client_id, _ = await get_pinterest_creds()
+    if not client_id:
+        return {"error": "Pinterest OAuth not configured. Admin must set credentials in App Config → Integrations."}
+    authorize_url = await build_pinterest_authorize_url(user_id=user_id, agent_id=agent_id)
+    return {"authorize_url": authorize_url}
+
+
+@router.delete("/agents/{agent_id}/connections/pinterest/disconnect")
+async def pinterest_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Disconnect Pinterest account and disable on this agent."""
+    from app.admin.integrations import revoke_and_delete_pinterest
+    db = get_db()
+    deleted = await revoke_and_delete_pinterest(user_id)
+    try:
+        await db.upsert_agent_connection(
+            agent_id=agent_id, connection_type="pinterest",
+            section="social", enabled=False, config={},
+        )
+    except Exception:
+        pass
+    return {"status": "ok", "deleted": deleted}
+
+
+@router.get("/agents/{agent_id}/connections/reddit/authorize")
+async def reddit_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Generate Reddit OAuth authorization URL."""
+    from app.admin.integrations import get_reddit_creds, build_reddit_authorize_url
+    client_id, _ = await get_reddit_creds()
+    if not client_id:
+        return {"error": "Reddit OAuth not configured. Admin must set credentials in App Config → Integrations."}
+    authorize_url = await build_reddit_authorize_url(user_id=user_id, agent_id=agent_id)
+    return {"authorize_url": authorize_url}
+
+
+@router.delete("/agents/{agent_id}/connections/reddit/disconnect")
+async def reddit_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Disconnect Reddit account and disable on this agent."""
+    from app.admin.integrations import revoke_and_delete_reddit
+    db = get_db()
+    deleted = await revoke_and_delete_reddit(user_id)
+    try:
+        await db.upsert_agent_connection(
+            agent_id=agent_id, connection_type="reddit",
+            section="social", enabled=False, config={},
+        )
+    except Exception:
+        pass
+    return {"status": "ok", "deleted": deleted}
+
+
+@router.get("/agents/{agent_id}/connections/snapchat/authorize")
+async def snapchat_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Generate Snapchat OAuth authorization URL."""
+    from app.admin.integrations import get_snapchat_creds, build_snapchat_authorize_url
+    client_id, _ = await get_snapchat_creds()
+    if not client_id:
+        return {"error": "Snapchat OAuth not configured. Admin must set credentials in App Config → Integrations."}
+    authorize_url = await build_snapchat_authorize_url(user_id=user_id, agent_id=agent_id)
+    return {"authorize_url": authorize_url}
+
+
+@router.delete("/agents/{agent_id}/connections/snapchat/disconnect")
+async def snapchat_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Disconnect Snapchat account and disable on this agent."""
+    from app.admin.integrations import revoke_and_delete_snapchat
+    db = get_db()
+    deleted = await revoke_and_delete_snapchat(user_id)
+    try:
+        await db.upsert_agent_connection(
+            agent_id=agent_id, connection_type="snapchat",
+            section="social", enabled=False, config={},
+        )
+    except Exception:
+        pass
+    return {"status": "ok", "deleted": deleted}
+
+
+@router.get("/agents/{agent_id}/connections/twitch/authorize")
+async def twitch_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Generate Twitch OAuth authorization URL."""
+    from app.admin.integrations import get_twitch_creds, build_twitch_authorize_url
+    client_id, _ = await get_twitch_creds()
+    if not client_id:
+        return {"error": "Twitch OAuth not configured. Admin must set credentials in App Config → Integrations."}
+    authorize_url = await build_twitch_authorize_url(user_id=user_id, agent_id=agent_id)
+    return {"authorize_url": authorize_url}
+
+
+@router.delete("/agents/{agent_id}/connections/twitch/disconnect")
+async def twitch_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Disconnect Twitch account and disable on this agent."""
+    from app.admin.integrations import revoke_and_delete_twitch
+    db = get_db()
+    deleted = await revoke_and_delete_twitch(user_id)
+    try:
+        await db.upsert_agent_connection(
+            agent_id=agent_id, connection_type="twitch",
+            section="social", enabled=False, config={},
         )
     except Exception:
         pass

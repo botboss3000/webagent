@@ -1027,6 +1027,16 @@ const _CONN_ICONS = {
   github:    'github',
   bank:      'landmark',
   search:    'globe',
+  // Social Media
+  facebook:  'users',
+  instagram: 'camera',
+  twitter:   'twitter',
+  linkedin:  'linkedin',
+  tiktok:    'music',
+  pinterest: 'image',
+  reddit:    'message-square',
+  snapchat:  'zap',
+  twitch:    'tv',
 };
 
 async function _renderConnectionsTab(body, agent) {
@@ -1049,6 +1059,7 @@ async function _renderConnectionsTab(body, agent) {
   const sections = [
     { key: 'channel',     label: 'Channels',     hint: 'How this agent sends and receives messages.' },
     { key: 'integration', label: 'Integrations', hint: 'Services and data sources this agent can access.' },
+    { key: 'social',      label: 'Social Media', hint: 'Social platforms this agent can post and interact on.' },
   ];
 
   for (const sec of sections) {
@@ -1169,7 +1180,7 @@ function _buildConnectionBody(conn) {
     return el;
   }
 
-  // ── OAuth-backed integration providers ──────────────────────────────────
+  // ── OAuth-backed integration + social providers ──────────────────────────
   const _OAUTH_PROVIDERS = {
     google: {
       label: 'Google Account',
@@ -1186,6 +1197,42 @@ function _buildConnectionBody(conn) {
     dropbox: {
       label: 'Dropbox Account',
       hint: 'Link your Dropbox account for file storage and sharing access.',
+    },
+    facebook: {
+      label: 'Facebook (via Meta)',
+      hint: 'Link your Meta account for Facebook Pages and feed access.',
+    },
+    instagram: {
+      label: 'Instagram (via Meta)',
+      hint: 'Link your Meta account for Instagram Business account access.',
+    },
+    twitter: {
+      label: 'X (Twitter) Account',
+      hint: 'Link your X account to read and post tweets.',
+    },
+    linkedin: {
+      label: 'LinkedIn Account',
+      hint: 'Link your LinkedIn account for profile and company page access.',
+    },
+    tiktok: {
+      label: 'TikTok Account',
+      hint: 'Link your TikTok account for video and account access.',
+    },
+    pinterest: {
+      label: 'Pinterest Account',
+      hint: 'Link your Pinterest account for board and pin access.',
+    },
+    reddit: {
+      label: 'Reddit Account',
+      hint: 'Link your Reddit account to read and post to subreddits.',
+    },
+    snapchat: {
+      label: 'Snapchat Account',
+      hint: 'Link your Snapchat account for story and audience access.',
+    },
+    twitch: {
+      label: 'Twitch Account',
+      hint: 'Link your Twitch account for channel and stream data access.',
     },
   };
 
@@ -1239,6 +1286,14 @@ window.addEventListener('message', e => {
     'microsoft-oauth-success',
     'yahoo-oauth-success',
     'dropbox-oauth-success',
+    'meta-oauth-success',
+    'twitter-oauth-success',
+    'linkedin-oauth-success',
+    'tiktok-oauth-success',
+    'pinterest-oauth-success',
+    'reddit-oauth-success',
+    'snapchat-oauth-success',
+    'twitch-oauth-success',
   ];
   if (successTypes.includes(e.data?.type)) {
     if (_oauthPopup) { _oauthPopup.close(); _oauthPopup = null; }
