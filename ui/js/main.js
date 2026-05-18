@@ -19,6 +19,7 @@ import { initOptimizer } from './optimizer.js';
 import { initGithub } from './github.js';
 import { initAutoAgent } from './autoagent.js';
 import { initAgents } from './agents.js';
+import { initAppConfig } from './app-config.js';
 import { initChatResize } from './chatResize.js';
 import { isAuthenticated, showLeftOverlay, hideLeftOverlay } from './left-login.js';
 import './icons.js'; // auto-renders Lucide icons on DOM mutations
@@ -52,6 +53,7 @@ initDbViewer();
 initGithub();
 initAutoAgent();
 initAgents();
+initAppConfig();
 initSettings();
 initConnections();
 initOptimizer();
