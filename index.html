@@ -26,40 +26,6 @@
 
 <div id="status-bar">
 
-  <!-- Config menu -->
-  <div class="settings-dropdown">
-    <button id="settings-menu-btn" class="config-btn-pill">
-      <i data-lucide="settings" class="lucide-icon" style="width:14px;height:14px;"></i>
-      Config
-      <i data-lucide="chevron-down" class="lucide-icon" style="width:12px;height:12px;opacity:0.6;"></i>
-    </button>
-    <div id="settings-dropdown-menu" class="settings-dropdown-content" style="display:none;">
-
-      <div class="settings-menu-item" id="llm-menu-item">
-        <i data-lucide="bot" class="lucide-icon menu-icon"></i><span>LLM</span>
-      </div>
-      <div class="settings-menu-item" id="connections-menu-item">
-        <i data-lucide="plug" class="lucide-icon menu-icon"></i><span>Connections</span>
-      </div>
-      <div class="settings-menu-item" id="database-menu-item">
-        <i data-lucide="database" class="lucide-icon menu-icon"></i><span>Database</span>
-      </div>
-      <div class="settings-menu-item" id="optimizer-menu-item">
-        <i data-lucide="zap" class="lucide-icon menu-icon"></i><span>Optimizer</span>
-      </div>
-      <div class="settings-menu-item" id="github-menu-item">
-        <i data-lucide="github" class="lucide-icon menu-icon"></i><span>GitHub</span>
-      </div>
-
-      <hr style="border:none;border-top:1px solid rgba(255,255,255,0.05);margin:4px 0;">
-
-      <div class="settings-menu-item" id="btn-signout" style="color:var(--signout);">
-        <i data-lucide="log-out" class="lucide-icon menu-icon"></i><span>Sign Out</span>
-      </div>
-
-    </div>
-  </div>
-
   <!-- Tab select: hidden native <select> for JS compat + custom pill button + popup -->
   <div class="status-group tab-select-group" style="position:relative;">
     <select id="main-tab-select" style="display:none;" aria-hidden="true">
