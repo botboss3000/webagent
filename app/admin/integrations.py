@@ -29,7 +29,7 @@ from typing import Optional
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Header, Query
+from fastapi import APIRouter, Header, Query, Request
 from jose import jwt as jose_jwt
 from pydantic import BaseModel
 
@@ -186,8 +186,16 @@ def resolve_user_id(authorization: str = "", token_qs: str = "") -> str:
     return ANONYMOUS_KEY
 
 
-def _get_base_url() -> str:
-    """Return the configured base URL (from env or webhook_base_url.txt)."""
+def _get_base_url(request: Optional[Request] = None) -> str:
+    """Return the configured base URL.
+
+    Priority order:
+    1. WEBHOOK_BASE_URL env var (explicit override)
+    2. webhook_base_url.txt file
+    3. Derived from the incoming HTTP request (scheme + host) — works correctly
+       on Cloud Run and any other hosted environment without extra config
+    4. Fallback to http://localhost:8000
+    """
     from pathlib import Path
     base_url = os.environ.get("WEBHOOK_BASE_URL", "")
     if not base_url:
@@ -197,6 +205,9 @@ def _get_base_url() -> str:
                 base_url = wh_file.read_text().strip()
         except Exception:
             pass
+    if not base_url and request is not None:
+        # request.base_url is e.g. "https://myapp.run.app/" — strip trailing slash
+        base_url = str(request.base_url).rstrip("/")
     return base_url or "http://localhost:8000"
 
 
@@ -267,8 +278,8 @@ def get_google_creds_sync() -> tuple[str, str]:
     )
 
 
-def get_redirect_uri() -> str:
-    return f"{_get_base_url().rstrip('/')}/api/v1/oauth/callback/google"
+def get_redirect_uri(request: Optional[Request] = None) -> str:
+    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/google"
 
 
 async def build_google_authorize_url(user_id: str, agent_id: str = "") -> str:
@@ -330,8 +341,8 @@ async def get_microsoft_creds() -> tuple[str, str]:
     )
 
 
-def get_microsoft_redirect_uri() -> str:
-    return f"{_get_base_url().rstrip('/')}/api/v1/oauth/callback/microsoft"
+def get_microsoft_redirect_uri(request: Optional[Request] = None) -> str:
+    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/microsoft"
 
 
 async def build_microsoft_authorize_url(user_id: str, agent_id: str = "") -> str:
@@ -379,8 +390,8 @@ async def get_yahoo_creds() -> tuple[str, str]:
     )
 
 
-def get_yahoo_redirect_uri() -> str:
-    return f"{_get_base_url().rstrip('/')}/api/v1/oauth/callback/yahoo"
+def get_yahoo_redirect_uri(request: Optional[Request] = None) -> str:
+    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/yahoo"
 
 
 async def build_yahoo_authorize_url(user_id: str, agent_id: str = "") -> str:
@@ -427,8 +438,8 @@ async def get_dropbox_creds() -> tuple[str, str]:
     )
 
 
-def get_dropbox_redirect_uri() -> str:
-    return f"{_get_base_url().rstrip('/')}/api/v1/oauth/callback/dropbox"
+def get_dropbox_redirect_uri(request: Optional[Request] = None) -> str:
+    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/dropbox"
 
 
 async def build_dropbox_authorize_url(user_id: str, agent_id: str = "") -> str:
@@ -485,8 +496,8 @@ async def get_meta_creds() -> tuple[str, str]:
     return (os.environ.get("META_APP_ID", ""), os.environ.get("META_APP_SECRET", ""))
 
 
-def get_meta_redirect_uri() -> str:
-    return f"{_get_base_url().rstrip('/')}/api/v1/oauth/callback/meta"
+def get_meta_redirect_uri(request: Optional[Request] = None) -> str:
+    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/meta"
 
 
 async def build_meta_authorize_url(user_id: str, agent_id: str = "") -> str:
@@ -543,8 +554,8 @@ async def get_twitter_creds() -> tuple[str, str]:
     return (os.environ.get("TWITTER_CLIENT_ID", ""), os.environ.get("TWITTER_CLIENT_SECRET", ""))
 
 
-def get_twitter_redirect_uri() -> str:
-    return f"{_get_base_url().rstrip('/')}/api/v1/oauth/callback/twitter"
+def get_twitter_redirect_uri(request: Optional[Request] = None) -> str:
+    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/twitter"
 
 
 async def build_twitter_authorize_url(user_id: str, agent_id: str = "") -> tuple[str, str]:
@@ -605,8 +616,8 @@ async def get_linkedin_creds() -> tuple[str, str]:
     return (os.environ.get("LINKEDIN_CLIENT_ID", ""), os.environ.get("LINKEDIN_CLIENT_SECRET", ""))
 
 
-def get_linkedin_redirect_uri() -> str:
-    return f"{_get_base_url().rstrip('/')}/api/v1/oauth/callback/linkedin"
+def get_linkedin_redirect_uri(request: Optional[Request] = None) -> str:
+    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/linkedin"
 
 
 async def build_linkedin_authorize_url(user_id: str, agent_id: str = "") -> str:
@@ -647,8 +658,8 @@ async def get_tiktok_creds() -> tuple[str, str]:
     return (os.environ.get("TIKTOK_CLIENT_KEY", ""), os.environ.get("TIKTOK_CLIENT_SECRET", ""))
 
 
-def get_tiktok_redirect_uri() -> str:
-    return f"{_get_base_url().rstrip('/')}/api/v1/oauth/callback/tiktok"
+def get_tiktok_redirect_uri(request: Optional[Request] = None) -> str:
+    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/tiktok"
 
 
 async def build_tiktok_authorize_url(user_id: str, agent_id: str = "") -> str:
@@ -707,8 +718,8 @@ async def get_pinterest_creds() -> tuple[str, str]:
     return (os.environ.get("PINTEREST_APP_ID", ""), os.environ.get("PINTEREST_APP_SECRET", ""))
 
 
-def get_pinterest_redirect_uri() -> str:
-    return f"{_get_base_url().rstrip('/')}/api/v1/oauth/callback/pinterest"
+def get_pinterest_redirect_uri(request: Optional[Request] = None) -> str:
+    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/pinterest"
 
 
 async def build_pinterest_authorize_url(user_id: str, agent_id: str = "") -> str:
@@ -749,8 +760,8 @@ async def get_reddit_creds() -> tuple[str, str]:
     return (os.environ.get("REDDIT_CLIENT_ID", ""), os.environ.get("REDDIT_CLIENT_SECRET", ""))
 
 
-def get_reddit_redirect_uri() -> str:
-    return f"{_get_base_url().rstrip('/')}/api/v1/oauth/callback/reddit"
+def get_reddit_redirect_uri(request: Optional[Request] = None) -> str:
+    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/reddit"
 
 
 async def build_reddit_authorize_url(user_id: str, agent_id: str = "") -> str:
@@ -808,8 +819,8 @@ async def get_snapchat_creds() -> tuple[str, str]:
     return (os.environ.get("SNAPCHAT_CLIENT_ID", ""), os.environ.get("SNAPCHAT_CLIENT_SECRET", ""))
 
 
-def get_snapchat_redirect_uri() -> str:
-    return f"{_get_base_url().rstrip('/')}/api/v1/oauth/callback/snapchat"
+def get_snapchat_redirect_uri(request: Optional[Request] = None) -> str:
+    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/snapchat"
 
 
 async def build_snapchat_authorize_url(user_id: str, agent_id: str = "") -> str:
@@ -864,8 +875,8 @@ async def get_twitch_creds() -> tuple[str, str]:
     return (os.environ.get("TWITCH_CLIENT_ID", ""), os.environ.get("TWITCH_CLIENT_SECRET", ""))
 
 
-def get_twitch_redirect_uri() -> str:
-    return f"{_get_base_url().rstrip('/')}/api/v1/oauth/callback/twitch"
+def get_twitch_redirect_uri(request: Optional[Request] = None) -> str:
+    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/twitch"
 
 
 async def build_twitch_authorize_url(user_id: str, agent_id: str = "") -> str:
@@ -914,6 +925,7 @@ GoogleOAuthConfigRequest = OAuthConfigRequest
 
 @router.get("")
 async def get_integration_config(
+    request: Request,
     authorization: Optional[str] = Header(None),
     token: Optional[str] = Query(None),
 ):
@@ -938,41 +950,41 @@ async def get_integration_config(
         # Productivity
         "google_configured":    bool(google_cid and google_csec),
         "google_client_id":     _mask(google_cid),
-        "redirect_uri":         get_redirect_uri(),
+        "redirect_uri":         get_redirect_uri(request),
         "microsoft_configured": bool(ms_cid and ms_csec),
         "microsoft_client_id":  _mask(ms_cid),
-        "microsoft_redirect_uri": get_microsoft_redirect_uri(),
+        "microsoft_redirect_uri": get_microsoft_redirect_uri(request),
         "yahoo_configured":     bool(yahoo_cid and yahoo_csec),
         "yahoo_client_id":      _mask(yahoo_cid),
-        "yahoo_redirect_uri":   get_yahoo_redirect_uri(),
+        "yahoo_redirect_uri":   get_yahoo_redirect_uri(request),
         "dropbox_configured":   bool(dbx_cid and dbx_csec),
         "dropbox_client_id":    _mask(dbx_cid),
-        "dropbox_redirect_uri": get_dropbox_redirect_uri(),
+        "dropbox_redirect_uri": get_dropbox_redirect_uri(request),
         # Social media
         "meta_configured":      bool(meta_cid and meta_csec),
         "meta_client_id":       _mask(meta_cid),
-        "meta_redirect_uri":    get_meta_redirect_uri(),
+        "meta_redirect_uri":    get_meta_redirect_uri(request),
         "twitter_configured":   bool(tw_cid and tw_csec),
         "twitter_client_id":    _mask(tw_cid),
-        "twitter_redirect_uri": get_twitter_redirect_uri(),
+        "twitter_redirect_uri": get_twitter_redirect_uri(request),
         "linkedin_configured":  bool(li_cid and li_csec),
         "linkedin_client_id":   _mask(li_cid),
-        "linkedin_redirect_uri": get_linkedin_redirect_uri(),
+        "linkedin_redirect_uri": get_linkedin_redirect_uri(request),
         "tiktok_configured":    bool(tt_cid and tt_csec),
         "tiktok_client_id":     _mask(tt_cid),
-        "tiktok_redirect_uri":  get_tiktok_redirect_uri(),
+        "tiktok_redirect_uri":  get_tiktok_redirect_uri(request),
         "pinterest_configured": bool(pin_cid and pin_csec),
         "pinterest_client_id":  _mask(pin_cid),
-        "pinterest_redirect_uri": get_pinterest_redirect_uri(),
+        "pinterest_redirect_uri": get_pinterest_redirect_uri(request),
         "reddit_configured":    bool(red_cid and red_csec),
         "reddit_client_id":     _mask(red_cid),
-        "reddit_redirect_uri":  get_reddit_redirect_uri(),
+        "reddit_redirect_uri":  get_reddit_redirect_uri(request),
         "snapchat_configured":  bool(snap_cid and snap_csec),
         "snapchat_client_id":   _mask(snap_cid),
-        "snapchat_redirect_uri": get_snapchat_redirect_uri(),
+        "snapchat_redirect_uri": get_snapchat_redirect_uri(request),
         "twitch_configured":    bool(twitch_cid and twitch_csec),
         "twitch_client_id":     _mask(twitch_cid),
-        "twitch_redirect_uri":  get_twitch_redirect_uri(),
+        "twitch_redirect_uri":  get_twitch_redirect_uri(request),
     }
 
 

@@ -1,15 +1,18 @@
 """
 Admin endpoints for managing communication plugins.
 
-- GET /admin/communications/plugins — list all plugins
+- GET /admin/communications/plugins — list all plugins with status
 - POST /admin/communications/plugins/{name}/enable — enable a plugin
 - POST /admin/communications/plugins/{name}/disable — disable a plugin
 - PUT /admin/communications/webhook-url — set public webhook base URL
+- POST /admin/communications/plugins/{name}/token — save a single bot token (Telegram compat)
+- POST /admin/communications/plugins/{name}/credentials — save arbitrary credentials for any plugin
 - POST /admin/communications/plugins/reload — re-discover plugins
 """
 
 import json
 import logging
+from typing import Any, Dict
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
@@ -28,6 +31,10 @@ class PluginStatus(BaseModel):
     name: str
     enabled: bool
     has_token: bool
+
+
+class CredentialsRequest(BaseModel):
+    credentials: Dict[str, Any]
 
 
 @router.get("/plugins")
@@ -188,6 +195,69 @@ async def set_plugin_token(name: str, req: WebhookUrlRequest, http_request: Requ
         "has_token": True,
         "webhook_base_url": server_url,
         "webhook_registered": webhook_ok if not is_local else False,
+        "mode": mode,
+    }
+
+
+@router.post("/plugins/{name}/credentials")
+async def set_plugin_credentials(name: str, req: CredentialsRequest, http_request: Request):
+    """
+    Save arbitrary credentials for any plugin (account_sid/auth_token/from_number for Twilio,
+    bot_token/public_key for Discord, bot_token/signing_secret for Slack, etc.).
+    Saves to registry.json, auto-enables the plugin, and registers webhooks where applicable.
+    """
+    pm = get_plugin_manager()
+    plugin = pm.get_plugin(name)
+    if not plugin:
+        return {"status": "error", "message": f"Plugin '{name}' not found"}
+
+    # Save credentials to registry
+    registry = getattr(pm, "_registry", {})
+    plugin_cfg = registry.setdefault("plugins", {}).setdefault(name, {})
+    plugin_cfg.update(req.credentials)
+
+    from pathlib import Path
+    import json as _json
+    reg_path = Path(__file__).resolve().parent.parent / "communications" / "registry.json"
+
+    # Auto-detect server URL if not set
+    server_url = registry.get("webhook_base_url", "")
+    if not server_url:
+        scheme = str(http_request.url.scheme)
+        host = str(http_request.url.hostname)
+        port = http_request.url.port
+        if port and port not in (80, 443):
+            server_url = f"{scheme}://{host}:{port}"
+        else:
+            server_url = f"{scheme}://{host}"
+        registry["webhook_base_url"] = server_url
+
+    reg_path.write_text(_json.dumps(registry, indent=2), encoding="utf-8")
+
+    # Re-init plugin with new credentials
+    plugin._registry = registry
+
+    # Auto-enable
+    pm.enable_plugin(name)
+
+    # Register webhook if possible and URL is public
+    is_local = not server_url or any(h in server_url for h in ("localhost", "127.0.0.1", "0.0.0.0"))
+    webhook_registered = False
+    mode = "webhook"
+
+    if hasattr(plugin, 'start_polling') and is_local:
+        await plugin.start_polling()
+        mode = "polling"
+    elif hasattr(plugin, 'set_webhook_url') and not is_local:
+        webhook_registered = await plugin.set_webhook_url(server_url)
+        mode = "webhook"
+
+    return {
+        "status": "ok",
+        "message": f"Credentials saved for '{name}', mode: {mode}",
+        "plugin": name,
+        "webhook_base_url": server_url,
+        "webhook_registered": webhook_registered,
         "mode": mode,
     }
 
