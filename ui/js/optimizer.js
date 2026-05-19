@@ -544,13 +544,7 @@ async function runNow() {
 // ── Event wiring ──
 
 function _init() {
-  // Menu item
-  MENU_ITEM.addEventListener('click', (e) => {
-    e.stopPropagation();
-    // Close the dropdown
-    document.getElementById('settings-dropdown-menu').style.display = 'none';
-    openModal();
-  });
+  // Menu item (no longer rendered — app config page replaced the dropdown)
 
   // Close
   CLOSE_BTN.addEventListener('click', closeModal);

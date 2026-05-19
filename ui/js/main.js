@@ -76,13 +76,3 @@ setInterval(() => {
   if (!app.agentWs || app.agentWs.readyState > 1) connectAgent();
 }, 10000);
 
-// ── Sign Out ────────────────────────────────────────────────────────────
-document.getElementById('btn-signout')?.addEventListener('click', () => {
-  localStorage.removeItem('auth_token');
-  localStorage.removeItem('auth_username');
-  localStorage.removeItem('auth_user_id');
-  localStorage.removeItem('auth_display_name');
-  localStorage.removeItem('remember_token');
-  localStorage.removeItem('terminalUserId');
-  window.location.reload();
-});
