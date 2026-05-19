@@ -1093,6 +1093,77 @@ async function _renderConnectionsTab(body, agent) {
     secEl.appendChild(grid);
     body.appendChild(secEl);
   }
+
+  // Populate Telegram mode badge and wire Test button
+  _loadTelegramCardStatus(body);
+}
+
+async function _loadTelegramCardStatus(body) {
+  let mode = 'unknown';
+  try {
+    const r = await fetch('/admin/communications/plugins');
+    if (r.ok) {
+      const d = await r.json();
+      const base = d.webhook_base_url || '';
+      const local = ['localhost', '127.0.0.1', '0.0.0.0'];
+      mode = (base && !local.some(h => base.includes(h))) ? 'webhook' : 'polling';
+    }
+  } catch (_e) {}
+
+  const modeBadge = mode === 'webhook'
+    ? '<span style="font-size:10px;background:#1a3a2a;color:#9ece6a;padding:2px 6px;border-radius:3px;font-weight:600;">WEBHOOK</span>'
+    : '<span style="font-size:10px;background:#2a2a4a;color:#7dcfff;padding:2px 6px;border-radius:3px;font-weight:600;">POLLING</span>';
+
+  const modeNote = mode === 'webhook'
+    ? '<span style="font-size:11px;color:#565f89;margin-left:4px;">Messages arrive via webhook</span>'
+    : '<span style="font-size:11px;color:#565f89;margin-left:4px;">Server is polling for messages</span>';
+
+  body.querySelectorAll('.conn-tg-mode-info').forEach(el => {
+    el.innerHTML = modeBadge + modeNote;
+  });
+
+  // Cache real token value as user types (prevents Chrome autofill corruption)
+  body.querySelectorAll('.conn-token-input').forEach(inp => {
+    inp.dataset.realValue = inp.value;
+    inp.addEventListener('input', () => { inp.dataset.realValue = inp.value; });
+  });
+
+  body.querySelectorAll('.conn-tg-test-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const card = btn.closest('.conn-fields');
+      const tokenInput = card && card.querySelector('.conn-token-input');
+      const statusEl = card && card.querySelector('.conn-tg-test-status');
+      const token = tokenInput ? tokenInput.value.trim() : '';
+      if (!token) {
+        if (statusEl) { statusEl.textContent = 'Enter a token first.'; statusEl.style.color = '#e0af68'; }
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = 'Testing...';
+      if (statusEl) statusEl.textContent = '';
+      try {
+        const r = await fetch('/admin/communications/plugins/telegram/test-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token }),
+        });
+        const result = await r.json();
+        if (statusEl) {
+          if (result.status === 'ok') {
+            statusEl.textContent = 'Connected as @' + result.bot_username + ' (' + result.bot_name + ')';
+            statusEl.style.color = '#9ece6a';
+          } else {
+            statusEl.textContent = 'Failed: ' + (result.message || 'unknown');
+            statusEl.style.color = '#f7768e';
+          }
+        }
+      } catch (e) {
+        if (statusEl) { statusEl.textContent = 'Error: ' + e.message; statusEl.style.color = '#f7768e'; }
+      }
+      btn.disabled = false;
+      btn.textContent = 'Test Connection';
+    });
+  });
 }
 
 function _buildConnectionCard(agent, conn) {
@@ -1171,10 +1242,15 @@ function _buildConnectionBody(conn) {
     el.innerHTML = `
       <label class="conn-field-label">Bot Token</label>
       <div class="conn-token-row">
-        <input type="password" class="conn-token-input agents-input" placeholder="Enter bot token…" value="${_esc(tokenVal)}" autocomplete="off">
+        <input type="text" class="conn-token-input agents-input" placeholder="Enter bot token..." value="${_esc(tokenVal)}" autocomplete="one-time-code" style="font-family:monospace;">
         <button class="agents-btn primary conn-save-btn">Save</button>
       </div>
-      <span class="conn-field-hint">Create a bot via <a href="https://t.me/BotFather" target="_blank" style="color:#7aa2f7">@BotFather</a> to get a token.</span>
+      <span class="conn-field-hint">From <a href="https://t.me/BotFather" target="_blank" style="color:#7aa2f7">@BotFather</a> &mdash; format: <code style="font-size:10px;color:#a9b1d6;">1234567890:ABCdef...</code></span>
+      <div class="conn-tg-mode-info" style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:18px;"></div>
+      <div style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <button class="agents-btn conn-tg-test-btn" style="font-size:11px;padding:4px 10px;">Test Connection</button>
+        <span class="conn-tg-test-status" style="font-size:11px;"></span>
+      </div>
       <span class="conn-save-msg"></span>
     `;
     return el;
@@ -1357,7 +1433,8 @@ async function _saveConnection(agent, conn, cardEl, enabled) {
 
   const config = {};
   if (conn.connection_type === 'telegram' && tokenInput) {
-    config.bot_token = tokenInput.value.trim();
+    // Use cached real value (prevents Chrome autofill from corrupting the token)
+    config.bot_token = (tokenInput.dataset.realValue ?? tokenInput.value).trim();
   }
 
   try {
@@ -1374,8 +1451,9 @@ async function _saveConnection(agent, conn, cardEl, enabled) {
       conn.enabled = enabled;
       conn.config = data.connection?.config || conn.config;
       cardEl.classList.toggle('enabled', enabled);
-      if (tokenInput && data.connection?.config?.bot_token) {
-        tokenInput.value = data.connection.config.bot_token;
+      // Restore cached value so Chrome autofill can't replace it with bullets
+      if (tokenInput && tokenInput.dataset.realValue) {
+        tokenInput.value = tokenInput.dataset.realValue;
       }
       if (msgEl) { msgEl.textContent = '✓ Saved'; }
     } else {

@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -76,6 +77,33 @@ async def delete_webhook(bot_token: str) -> bool:
         return False
 
 
+async def get_webhook_info(bot_token: str) -> dict:
+    """Return current webhook info from Telegram (url, pending count, last error)."""
+    api_url = f"{TELEGRAM_API}{bot_token}/getWebhookInfo"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(api_url)
+            data = resp.json()
+            if data.get("ok"):
+                return data.get("result", {})
+            return {}
+    except Exception as e:
+        logger.error("Telegram getWebhookInfo error: %s", e)
+        return {}
+
+
+async def get_me(bot_token: str) -> dict:
+    """Return bot identity info (id, first_name, username) via getMe."""
+    api_url = f"{TELEGRAM_API}{bot_token}/getMe"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(api_url)
+            return resp.json()
+    except Exception as e:
+        logger.error("Telegram getMe error: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
 # ── Plugin class ────────────────────────────────────────────────────────────
 
 
@@ -88,6 +116,8 @@ class TelegramPlugin(CommunicationPlugin):
         self._bot_token: Optional[str] = None
         self._polling_task: Optional[asyncio.Task] = None
         self._last_update_id: int = 0
+        self.conflict_detected: bool = False
+        self.last_message_at: Optional[str] = None
 
     @property
     def is_polling(self) -> bool:
@@ -261,7 +291,16 @@ class TelegramPlugin(CommunicationPlugin):
                     resp = await client.get(url, params=params)
                     data = resp.json()
 
+                if resp.status_code == 409:
+                    self.conflict_detected = True
+                    logger.warning(
+                        "Telegram polling 409 conflict — another instance may be connected to this bot"
+                    )
+                    await asyncio.sleep(10)
+                    continue
+
                 if data.get("ok"):
+                    self.conflict_detected = False  # clear on successful poll
                     updates = data.get("result", [])
                     for update in updates:
                         update_id = update.get("update_id", 0)
@@ -273,6 +312,7 @@ class TelegramPlugin(CommunicationPlugin):
                         chat_id = str(message.get("chat", {}).get("id", ""))
                         text = message.get("text", "")
                         if chat_id and text:
+                            self.last_message_at = datetime.now(timezone.utc).isoformat()
                             try:
                                 from app.communications.processor import process_channel_message
                                 await process_channel_message(
@@ -308,7 +348,19 @@ class TelegramPlugin(CommunicationPlugin):
             return False
         return await delete_webhook(token)
 
+    async def get_webhook_info(self) -> dict:
+        """Return Telegram's current webhook registration info for this bot."""
+        token = await self._resolve_token()
+        if not token:
+            return {}
+        return await get_webhook_info(token)
 
-# ── Plugin discovery hook ───────────────────────────────────────────────────
+    async def get_me(self) -> dict:
+        """Return bot identity via getMe — confirms token is valid."""
+        token = await self._resolve_token()
+        if not token:
+            return {"ok": False, "error": "No token configured"}
+        return await get_me(token)
 
+# -- Plugin discovery hook --
 plugin_cls = TelegramPlugin
