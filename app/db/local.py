@@ -1005,6 +1005,25 @@ class LocalBackend(StorageBackend):
             conn.commit()
             logger.info("Ensured admin_default is_admin=1")
 
+            # ── Migration 015: backfill is_admin_agent=1 on agents rows from admin templates ──
+            # Any row in the agents table whose template_id maps to an admin-flagged template
+            # should inherit is_admin_agent=1.  We backfill by cross-referencing agent_templates.
+            conn.execute(
+                """UPDATE agents
+                   SET is_admin_agent = 1
+                   WHERE is_admin_agent = 0
+                     AND template_id IN (
+                         SELECT id FROM agent_templates WHERE is_admin_agent = 1
+                     )"""
+            )
+            # Also directly flag any row whose template_id is 'admin-agent' in case the
+            # agent_templates row hasn't been re-seeded yet during this startup pass.
+            conn.execute(
+                "UPDATE agents SET is_admin_agent = 1 WHERE template_id = 'admin-agent' AND is_admin_agent = 0"
+            )
+            conn.commit()
+            logger.info("Migration 015: backfilled is_admin_agent on agents rows")
+
             # ── Seed: p5js visualizer skill template ──
             self._seed_visualizer_template(conn)
 
@@ -3415,9 +3434,9 @@ class LocalBackend(StorageBackend):
                     bootstrap_tools, template_id, is_user_default,
                     allowed_tools, custom_tool_ids,
                     trigger_type, trigger_key, loop_logic,
-                    safety_policy,
+                    safety_policy, is_admin_agent,
                     created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'[]','[]',?,?,?,'{}',?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'[]','[]',?,?,?,'{}',?,?,?)""",
                 (
                     agent_id, user_id, user_id, name, description,
                     tpl.get("system_prompt", ""),
@@ -3437,6 +3456,7 @@ class LocalBackend(StorageBackend):
                     tpl.get("trigger_type", "user_input"),
                     tpl.get("trigger_key"),
                     tpl.get("loop_logic", "[]"),
+                    1 if tpl.get("is_admin_agent") else 0,
                     now, now,
                 ),
             )

@@ -538,8 +538,7 @@
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-google-uri" style="font-size:11px;word-break:break-all;"></code></div>
                   <div class="ac-hint" style="margin-top:4px;">Users connect their Google accounts from each agent's <strong>Connections</strong> tab.</div>
                 </div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-google-edit" class="ac-btn ac-btn-ghost">Edit</button>
+                <div style="margin-top:12px;">
                   <button id="ac-int-google-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
                 </div>
               </div>
@@ -597,8 +596,7 @@
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-microsoft-uri" style="font-size:11px;word-break:break-all;"></code></div>
                   <div class="ac-hint" style="margin-top:4px;">Users connect their Microsoft accounts from each agent's <strong>Connections</strong> tab.</div>
                 </div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-microsoft-edit" class="ac-btn ac-btn-ghost">Edit</button>
+                <div style="margin-top:12px;">
                   <button id="ac-int-microsoft-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
                 </div>
               </div>
@@ -656,8 +654,7 @@
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-yahoo-uri" style="font-size:11px;word-break:break-all;"></code></div>
                   <div class="ac-hint" style="margin-top:4px;">Users connect their Yahoo accounts from each agent's <strong>Connections</strong> tab.</div>
                 </div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-yahoo-edit" class="ac-btn ac-btn-ghost">Edit</button>
+                <div style="margin-top:12px;">
                   <button id="ac-int-yahoo-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
                 </div>
               </div>
@@ -712,8 +709,7 @@
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-dropbox-uri" style="font-size:11px;word-break:break-all;"></code></div>
                   <div class="ac-hint" style="margin-top:4px;">Users connect their Dropbox accounts from each agent's <strong>Connections</strong> tab.</div>
                 </div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-dropbox-edit" class="ac-btn ac-btn-ghost">Edit</button>
+                <div style="margin-top:12px;">
                   <button id="ac-int-dropbox-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
                 </div>
               </div>
@@ -778,8 +774,7 @@
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-meta-uri" style="font-size:11px;word-break:break-all;"></code></div>
                   <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
                 </div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-meta-edit" class="ac-btn ac-btn-ghost">Edit</button>
+                <div style="margin-top:12px;">
                   <button id="ac-int-meta-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
                 </div>
               </div>
@@ -834,8 +829,7 @@
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-twitter-uri" style="font-size:11px;word-break:break-all;"></code></div>
                   <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
                 </div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-twitter-edit" class="ac-btn ac-btn-ghost">Edit</button>
+                <div style="margin-top:12px;">
                   <button id="ac-int-twitter-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
                 </div>
               </div>
@@ -890,8 +884,7 @@
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-linkedin-uri" style="font-size:11px;word-break:break-all;"></code></div>
                   <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
                 </div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-linkedin-edit" class="ac-btn ac-btn-ghost">Edit</button>
+                <div style="margin-top:12px;">
                   <button id="ac-int-linkedin-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
                 </div>
               </div>
@@ -946,8 +939,7 @@
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-tiktok-uri" style="font-size:11px;word-break:break-all;"></code></div>
                   <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
                 </div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-tiktok-edit" class="ac-btn ac-btn-ghost">Edit</button>
+                <div style="margin-top:12px;">
                   <button id="ac-int-tiktok-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
                 </div>
               </div>
@@ -1001,8 +993,7 @@
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-pinterest-uri" style="font-size:11px;word-break:break-all;"></code></div>
                   <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
                 </div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-pinterest-edit" class="ac-btn ac-btn-ghost">Edit</button>
+                <div style="margin-top:12px;">
                   <button id="ac-int-pinterest-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
                 </div>
               </div>
@@ -1056,8 +1047,7 @@
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-reddit-uri" style="font-size:11px;word-break:break-all;"></code></div>
                   <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
                 </div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-reddit-edit" class="ac-btn ac-btn-ghost">Edit</button>
+                <div style="margin-top:12px;">
                   <button id="ac-int-reddit-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
                 </div>
               </div>
@@ -1111,8 +1101,7 @@
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-snapchat-uri" style="font-size:11px;word-break:break-all;"></code></div>
                   <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
                 </div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-snapchat-edit" class="ac-btn ac-btn-ghost">Edit</button>
+                <div style="margin-top:12px;">
                   <button id="ac-int-snapchat-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
                 </div>
               </div>
@@ -1166,8 +1155,7 @@
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-twitch-uri" style="font-size:11px;word-break:break-all;"></code></div>
                   <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
                 </div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-twitch-edit" class="ac-btn ac-btn-ghost">Edit</button>
+                <div style="margin-top:12px;">
                   <button id="ac-int-twitch-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
                 </div>
               </div>

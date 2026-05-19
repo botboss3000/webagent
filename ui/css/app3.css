@@ -1525,3 +1525,150 @@ body.light-mode .ac-info-banner { background: #faf7f4; border-left-color: #cc6a2
 body.light-mode .ac-int-badge-on { background: rgba(40, 167, 69, 0.12); color: #1a7c31; }
 body.light-mode .ac-int-badge-off { background: rgba(107, 82, 64, 0.12); color: #9a7c65; }
 body.light-mode .ac-int-account-info { background: #faf7f4; border-color: #d4c4b4; }
+
+/* ── Communications channel grid ── */
+.ac-comm-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+  margin-top: 4px;
+}
+.ac-comm-card {
+  background: var(--bg-card, #13131f);
+  border: 1px solid var(--border, #2a2a4a);
+  border-radius: 10px;
+  position: relative;       /* anchor for the floating panel */
+  transition: border-color 0.15s;
+}
+.ac-comm-card:hover { border-color: rgba(125,207,255,0.35); }
+.ac-comm-card.panel-open { border-color: var(--accent, #7dcfff); z-index: 10; }
+.ac-comm-card-dim {
+  opacity: 0.6;
+  pointer-events: none;
+}
+.ac-comm-card-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 14px 14px 14px;
+}
+.ac-comm-logo {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.04);
+}
+.ac-comm-meta {
+  flex: 1;
+  min-width: 0;
+}
+.ac-comm-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-1, #c0caf5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ac-comm-desc {
+  font-size: 11px;
+  color: var(--fg-muted, #565f89);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ac-comm-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 3px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.ac-comm-badge-active {
+  background: rgba(158,206,106,0.15);
+  color: #9ece6a;
+}
+.ac-comm-badge-inactive {
+  background: rgba(247,118,142,0.12);
+  color: #f7768e;
+}
+.ac-comm-badge-unconfigured {
+  background: rgba(86,95,137,0.18);
+  color: var(--fg-muted, #565f89);
+}
+.ac-comm-badge-dim {
+  background: rgba(86,95,137,0.12);
+  color: var(--fg-muted, #565f89);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 10px;
+}
+.ac-comm-toggle-btn {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 11px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #2a2a4a);
+  background: transparent;
+  color: var(--accent, #7dcfff);
+  cursor: pointer;
+  flex-shrink: 0;
+  font-family: inherit;
+  transition: background 0.12s, border-color 0.12s;
+}
+.ac-comm-toggle-btn:hover { background: rgba(125,207,255,0.08); border-color: var(--accent,#7dcfff); }
+.ac-comm-toggle-btn.open { background: rgba(125,207,255,0.1); border-color: var(--accent,#7dcfff); }
+.ac-comm-panel {
+  display: none;
+  position: absolute;
+  top: calc(100% - 14px);  /* overlap upward into the card, hiding its bottom corners */
+  left: -1px;
+  right: -1px;
+  z-index: 200;
+  padding: 24px 14px 16px; /* extra top padding to clear the overlap zone */
+  border: 1px solid var(--accent, #7dcfff);
+  border-top: none;
+  border-radius: 0 0 10px 10px;
+  background: var(--bg-card, #13131f);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.55);
+}
+.ac-comm-panel.open { display: block; }
+.ac-comm-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.ac-comm-webhook-url {
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: var(--bg-base, #0d0d1a);
+  border: 1px solid var(--border, #2a2a4a);
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--fg-2, #a9b1d6);
+  word-break: break-all;
+}
+
+/* Light mode overrides for comm grid */
+body.light-mode .ac-comm-card { background: #ffffff; border-color: #e8ddd0; }
+body.light-mode .ac-comm-card:hover { border-color: rgba(204,107,40,0.4); }
+body.light-mode .ac-comm-name { color: #2d1f14; }
+body.light-mode .ac-comm-desc { color: #9a7c65; }
+body.light-mode .ac-comm-toggle-btn { border-color: #d4c4b4; color: #cc6a28; }
+body.light-mode .ac-comm-toggle-btn:hover { background: rgba(204,107,40,0.06); border-color: #cc6a28; }
+body.light-mode .ac-comm-panel { background: #ffffff; border-color: #cc6a28; box-shadow: 0 12px 32px rgba(0,0,0,0.12); }
+body.light-mode .ac-comm-webhook-url { background: #faf7f4; border-color: #d4c4b4; }
+body.light-mode .ac-comm-badge-active { background: rgba(40,167,69,0.12); color: #1a7c31; }
+body.light-mode .ac-comm-badge-inactive { background: rgba(220,53,69,0.1); color: #dc3545; }
+body.light-mode .ac-comm-badge-unconfigured { background: rgba(107,82,64,0.1); color: #9a7c65; }
