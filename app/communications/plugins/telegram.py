@@ -114,6 +114,7 @@ class TelegramPlugin(CommunicationPlugin):
     def __init__(self, registry: dict):
         self._registry = registry
         self._bot_token: Optional[str] = None
+        self._agent_id: Optional[str] = None  # set by manager for per-agent pollers
         self._polling_task: Optional[asyncio.Task] = None
         self._last_update_id: int = 0
         self.conflict_detected: bool = False
@@ -316,7 +317,8 @@ class TelegramPlugin(CommunicationPlugin):
                             try:
                                 from app.communications.processor import process_channel_message
                                 await process_channel_message(
-                                    self.name, chat_id, text, self
+                                    self.name, chat_id, text, self,
+                                    agent_id=self._agent_id,
                                 )
                             except Exception as e:
                                 logger.error("Polling message processing error: %s", e)

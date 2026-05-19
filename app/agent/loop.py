@@ -1331,4 +1331,6 @@ async def run_agent_loop_buffered(
                     f"Please try a more specific request or use the stream endpoint for long-running tasks."
                 )
     else:
-        awai
+        await _run()
+
+    return final_response

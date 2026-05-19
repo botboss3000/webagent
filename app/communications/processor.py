@@ -38,6 +38,7 @@ async def process_channel_message(
     external_id: str,
     message_text: str,
     plugin,
+    agent_id: str | None = None,
 ) -> str:
     """
     Process an incoming message from a communication channel.
@@ -73,21 +74,24 @@ async def process_channel_message(
         }).execute()
         logger.info("Created session %s for channel user %s", session_id, user_id)
 
-    # 3. Check for verification code reply
-    if identity.user_tier == "anonymous":
-        if message_text.strip().isdigit() and len(message_text.strip()) == 6:
-            is_valid = await verify_code(channel, external_id, message_text.strip())
-            if is_valid:
-                await upgrade_to_verified(identity)
-                reply = "✅ You're verified! You now have full access. How can I help you?"
-                await plugin.send_message(external_id, reply)
-                return reply
-
-    # 4. Route based on user tier
-    if identity.user_tier == "anonymous":
-        reply = await _run_registration_agent(plugin, identity, user_id, message_text, channel)
+    # 3. If we know which agent owns this channel, auto-register the user as a
+    #    member and respond immediately — no registration gate required.
+    if agent_id:
+        await db.add_agent_member(agent_id, user_id)
+        reply = await _run_agent_loop(plugin, identity, user_id, message_text, channel, agent_id=agent_id)
     else:
-        reply = await _run_agent_loop(plugin, identity, user_id, message_text, channel)
+        # Legacy path: no specific agent known — fall back to tier-based routing.
+        if identity.user_tier == "anonymous":
+            if message_text.strip().isdigit() and len(message_text.strip()) == 6:
+                is_valid = await verify_code(channel, external_id, message_text.strip())
+                if is_valid:
+                    await upgrade_to_verified(identity)
+                    reply = "✅ You're verified! You now have full access. How can I help you?"
+                    await plugin.send_message(external_id, reply)
+                    return reply
+            reply = await _run_registration_agent(plugin, identity, user_id, message_text, channel)
+        else:
+            reply = await _run_agent_loop(plugin, identity, user_id, message_text, channel)
 
     # 5. Send reply
     await plugin.send_message(external_id, reply)
@@ -96,6 +100,7 @@ async def process_channel_message(
 
 async def _run_registration_agent(
     plugin, identity: ChannelIdentity, user_id: str, message_text: str, channel: str,
+    agent_id: str | None = None,
 ) -> str:
     """Run the agent loop with a registration-focused system prompt."""
     try:
@@ -108,19 +113,28 @@ async def _run_registration_agent(
             metadata=json.dumps({"source": f"{channel}/registration"}),
         )
 
-        agent = await db.get_agent_for_user(user_id)
-        if agent is None:
-            agent = await db.create_agent_for_user(user_id)
-
-        # ── Fetch agent + context docs in one query ──
-        agent_with_ctx = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
-        if agent_with_ctx:
-            agent = agent_with_ctx
+        # If we know which agent owns this channel, load it directly.
+        # Otherwise fall back to looking up (or creating) an agent for this user.
+        if agent_id:
+            agent = await db.get_agent_by_id(agent_id)
+            agent_with_ctx = await db.fetch_agent_by_id_with_context(agent_id, CONTEXT_SECTION_TYPES)
+            if agent_with_ctx:
+                agent = agent_with_ctx
+        else:
+            agent = await db.get_agent_for_user(user_id)
+            if agent is None:
+                agent = await db.create_agent_for_user(user_id)
+            agent_with_ctx = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
+            if agent_with_ctx:
+                agent = agent_with_ctx
 
         if not agent.get("context_documents"):
             copied = await db.copy_defaults_to_agent(agent["id"])
             if copied > 0:
-                agent = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
+                if agent_id:
+                    agent = await db.fetch_agent_by_id_with_context(agent_id, CONTEXT_SECTION_TYPES)
+                else:
+                    agent = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
 
         context_docs = agent.get("context_documents", [])
 
@@ -140,6 +154,7 @@ async def _run_registration_agent(
             session_id=session_id,
             user_message=message_text,
             system_prompt=system_prompt,
+            agent_id=agent.get("id", ""),
             history=history,
             max_turns=5,
             channel=channel,
@@ -153,6 +168,7 @@ async def _run_registration_agent(
 
 async def _run_agent_loop(
     plugin, identity: ChannelIdentity, user_id: str, message_text: str, channel: str,
+    agent_id: str | None = None,
 ) -> str:
     """Run the normal agent loop for a registered user."""
     try:
@@ -165,19 +181,28 @@ async def _run_agent_loop(
             metadata=json.dumps({"source": f"{channel}/message"}),
         )
 
-        agent = await db.get_agent_for_user(user_id)
-        if agent is None:
-            agent = await db.create_agent_for_user(user_id)
-
-        # ── Fetch agent + context docs in one query ──
-        agent_with_ctx = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
-        if agent_with_ctx:
-            agent = agent_with_ctx
+        # If we know which agent owns this channel, load it directly.
+        # Otherwise fall back to looking up (or creating) an agent for this user.
+        if agent_id:
+            agent = await db.get_agent_by_id(agent_id)
+            agent_with_ctx = await db.fetch_agent_by_id_with_context(agent_id, CONTEXT_SECTION_TYPES)
+            if agent_with_ctx:
+                agent = agent_with_ctx
+        else:
+            agent = await db.get_agent_for_user(user_id)
+            if agent is None:
+                agent = await db.create_agent_for_user(user_id)
+            agent_with_ctx = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
+            if agent_with_ctx:
+                agent = agent_with_ctx
 
         if not agent.get("context_documents"):
             copied = await db.copy_defaults_to_agent(agent["id"])
             if copied > 0:
-                agent = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
+                if agent_id:
+                    agent = await db.fetch_agent_by_id_with_context(agent_id, CONTEXT_SECTION_TYPES)
+                else:
+                    agent = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
 
         context_docs = agent.get("context_documents", [])
 
@@ -215,6 +240,7 @@ async def _run_agent_loop(
             session_id=session_id,
             user_message=message_text,
             system_prompt=system_prompt,
+            agent_id=agent.get("id", ""),
             history=history,
             max_turns=agent.get("max_turn_count", 10),
             channel=channel,
