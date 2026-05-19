@@ -1,9 +1,8 @@
 {
-  "webhook_base_url": "http://localhost:8080",
+  "webhook_base_url": "",
   "plugins": {
     "telegram": {
-      "enabled": true,
-      "bot_token": "8708293911:AAGs5IIGv2vSD_P5r6yViOn39DrPNqD33FQ"
+      "enabled": true
     }
   }
 }

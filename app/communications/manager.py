@@ -1,5 +1,5 @@
 """
-Plugin manager — discovers, enables/disables communication plugins.
+Plugin manager -- discovers, enables/disables communication plugins.
 
 Reads registry.json for config. Provides tools to the agent loop.
 """
@@ -70,7 +70,6 @@ class PluginManager:
                 mod = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(mod)
 
-                # Each module must define a plugin_cls attribute
                 plugin_cls = getattr(mod, "plugin_cls", None)
                 if plugin_cls is None:
                     logger.debug("Plugin %s has no plugin_cls, skipping", mod_name)
@@ -128,8 +127,14 @@ class PluginManager:
     async def start_polling_for_offline_plugins(self) -> None:
         """Start polling for all enabled plugins without a reachable webhook URL.
         Called on server startup. Also loads per-agent Telegram connections."""
+        # Env var takes highest priority -- if set to a public URL, never poll
+        env_url = os.environ.get("WEBHOOK_BASE_URL", "").rstrip("/")
+        _local_hints = ("localhost", "127.0.0.1", "0.0.0.0")
+        if env_url and not any(h in env_url for h in _local_hints):
+            logger.info("WEBHOOK_BASE_URL env var is set (%s), skipping auto-polling", env_url)
+            return
         base_url = self._registry.get("webhook_base_url", "")
-        is_offline = not base_url or "localhost" in base_url or "127.0.0.1" in base_url
+        is_offline = not base_url or any(h in base_url for h in _local_hints)
         if not is_offline:
             logger.info("Webhook base URL is set (%s), skipping auto-polling", base_url)
             return
@@ -180,7 +185,7 @@ class PluginManager:
             self._plugins[key] = plugin
             if hasattr(plugin, "start_polling"):
                 await plugin.start_polling()
-                logger.info("Started extra Telegram poller for agent %s (token …%s)",
+                logger.info("Started extra Telegram poller for agent %s (token ...%s)",
                             agent_id, token[-4:])
         except Exception as e:
             logger.error("Failed to start extra Telegram poller: %s", e)
@@ -190,7 +195,7 @@ class PluginManager:
         await self._start_agent_connection_polling()
 
 
-# ── Global singleton ──
+# -- Global singleton --
 _plugin_manager: Optional[PluginManager] = None
 
 

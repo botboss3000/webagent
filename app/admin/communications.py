@@ -1,13 +1,15 @@
 """
 Admin endpoints for managing communication plugins.
 
-- GET /admin/communications/plugins — list all plugins with status
-- POST /admin/communications/plugins/{name}/enable — enable a plugin
-- POST /admin/communications/plugins/{name}/disable — disable a plugin
-- PUT /admin/communications/webhook-url — set public webhook base URL
-- POST /admin/communications/plugins/{name}/token — save a single bot token (Telegram compat)
-- POST /admin/communications/plugins/{name}/credentials — save arbitrary credentials for any plugin
-- POST /admin/communications/plugins/reload — re-discover plugins
+- GET /admin/communications/plugins -- list all plugins with status
+- POST /admin/communications/plugins/{name}/enable -- enable a plugin
+- POST /admin/communications/plugins/{name}/disable -- disable a plugin
+- PUT /admin/communications/webhook-url -- set public webhook base URL
+- POST /admin/communications/plugins/{name}/token -- save bot token (Telegram)
+- POST /admin/communications/plugins/{name}/credentials -- save arbitrary credentials
+- GET /admin/communications/plugins/{name}/health -- live health info
+- POST /admin/communications/plugins/{name}/test -- test connection (getMe)
+- POST /admin/communications/plugins/reload -- re-discover plugins
 """
 
 import json
@@ -21,6 +23,8 @@ from app.communications.manager import get_plugin_manager, reload_plugins
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/communications", tags=["admin"])
+
+_LOCAL_HINTS = ("localhost", "127.0.0.1", "0.0.0.0")
 
 
 class WebhookUrlRequest(BaseModel):
@@ -55,7 +59,6 @@ async def list_plugins():
             "webhook_path": p.webhook_path,
             "tool_count": len(p.get_tools()),
         })
-    # Also include the base URL
     registry = getattr(pm, "_registry", {})
     return {
         "plugins": plugins,
@@ -72,15 +75,13 @@ async def enable_plugin(name: str):
         return {"status": "error", "message": f"Plugin '{name}' not found"}
 
     plugin = pm.get_plugin(name)
-    if plugin and hasattr(plugin, 's') and hasattr(plugin, 'set_webhook_url'):
+    if plugin and hasattr(plugin, 'set_webhook_url'):
         registry = getattr(pm, "_registry", {})
         base_url = registry.get("webhook_base_url", "")
-        # If a reachable webhook URL is configured, use webhook
-        if base_url and not ("localhost" in base_url or "127.0.0.1" in base_url):
+        if base_url and not any(h in base_url for h in _LOCAL_HINTS):
             await plugin.set_webhook_url(base_url)
             logger.info("%s enabled with webhook at %s", name, base_url)
         else:
-            # No reachable webhook → start polling
             if hasattr(plugin, 'start_polling'):
                 await plugin.start_polling()
                 logger.info("%s enabled with polling (no public webhook URL)", name)
@@ -90,14 +91,12 @@ async def enable_plugin(name: str):
 
 @router.post("/plugins/{name}/disable")
 async def disable_plugin(name: str):
-    """Disable a plugin. Stops polling if active."""
+    """Disable a plugin. Stops polling and removes webhook."""
     pm = get_plugin_manager()
 
-    # Stop polling first (if any)
     plugin = pm.get_plugin(name)
     if plugin and hasattr(plugin, 'stop_polling'):
         await plugin.stop_polling()
-    # Remove webhook
     if plugin and hasattr(plugin, 'delete_webhook_url'):
         await plugin.delete_webhook_url()
 
@@ -113,25 +112,25 @@ async def set_webhook_url(req: WebhookUrlRequest):
     pm = get_plugin_manager()
     registry = getattr(pm, "_registry", {})
     registry["webhook_base_url"] = req.url.rstrip("/")
-    
+
     import json as _json
     from pathlib import Path
     reg_path = Path(__file__).resolve().parent.parent / "communications" / "registry.json"
     reg_path.write_text(_json.dumps(registry, indent=2), encoding="utf-8")
-    
+
     results = {}
     for plugin in pm.get_enabled_plugins():
         if hasattr(plugin, 'set_webhook_url'):
             ok = await plugin.set_webhook_url(req.url)
             results[plugin.name] = "ok" if ok else "failed"
-    
+
     return {"status": "ok", "webhook_base_url": req.url, "results": results}
 
 
 @router.post("/plugins/{name}/token")
 async def set_plugin_token(name: str, req: WebhookUrlRequest, http_request: Request):
-    """Set a bot token for a plugin. Saves to registry.json, auto-detects
-    the server URL from the incoming request, and registers the webhook."""
+    """Save a bot token for a plugin. Auto-detects server URL, registers webhook
+    or starts polling. Returns foreign_webhook_url if bot was connected elsewhere."""
     pm = get_plugin_manager()
     plugin = pm.get_plugin(name)
     if not plugin:
@@ -151,7 +150,6 @@ async def set_plugin_token(name: str, req: WebhookUrlRequest, http_request: Requ
     # Auto-detect server URL from the incoming request if base URL not set
     server_url = registry.get("webhook_base_url", "")
     if not server_url:
-        # Build base URL from the request: scheme://host
         scheme = str(http_request.url.scheme)
         host = str(http_request.url.hostname)
         port = http_request.url.port
@@ -159,6 +157,10 @@ async def set_plugin_token(name: str, req: WebhookUrlRequest, http_request: Requ
             server_url = f"{scheme}://{host}:{port}"
         else:
             server_url = f"{scheme}://{host}"
+        # Respect X-Forwarded-Proto for TLS-terminating proxies (Cloud Run etc.)
+        forwarded_proto = http_request.headers.get("x-forwarded-proto", "")
+        if forwarded_proto and server_url.startswith("http://"):
+            server_url = "https://" + server_url[len("http://"):]
         registry["webhook_base_url"] = server_url
         logger.info("Auto-detected server URL: %s", server_url)
 
@@ -167,26 +169,36 @@ async def set_plugin_token(name: str, req: WebhookUrlRequest, http_request: Requ
     # Re-init plugin so it picks up the new token
     plugin._bot_token = token
 
-    # Auto-enable the plugin
+    # Auto-enable
     pm.enable_plugin(name)
 
-    # Decide: webhook (public URL) or polling (localhost / no URL)
-    is_local = not server_url or "localhost" in server_url or "127.0.0.1" in server_url
+    is_local = not server_url or any(h in server_url for h in _LOCAL_HINTS)
+    foreign_webhook_url = None
+    webhook_ok = False
+
     if is_local:
-        # Start polling
+        # Delete any existing webhook to avoid 409 conflict, then start polling
+        if hasattr(plugin, 'delete_webhook_url'):
+            await plugin.delete_webhook_url()
         if hasattr(plugin, 'start_polling'):
             await plugin.start_polling()
             logger.info("Telegram polling started (server URL is localhost)")
-        webhook_ok = False
-        webhook_mode = False
     else:
-        # Register webhook
+        # Check if the bot is already registered to a different URL
+        if hasattr(plugin, 'get_webhook_info'):
+            info = await plugin.get_webhook_info()
+            registered_url = info.get("url", "")
+            expected_url = f"{server_url.rstrip('/')}/api/v1/webhooks/{name}"
+            if registered_url and registered_url != expected_url:
+                foreign_webhook_url = registered_url
+                logger.info("Bot was at %s, taking over with %s", registered_url, expected_url)
+
+        # Stop any running polling loop, then register webhook
+        if hasattr(plugin, 'stop_polling'):
+            await plugin.stop_polling()
         if hasattr(plugin, 'set_webhook_url'):
             webhook_ok = await plugin.set_webhook_url(server_url)
-            logger.info("Telegram webhook registration at %s: %s", server_url + "/api/v1/webhooks/telegram", "ok" if webhook_ok else "failed")
-        else:
-            webhook_ok = False
-        webhook_mode = True
+            logger.info("Webhook registration: %s", "ok" if webhook_ok else "failed")
 
     mode = "polling" if is_local else "webhook"
     return {
@@ -194,24 +206,20 @@ async def set_plugin_token(name: str, req: WebhookUrlRequest, http_request: Requ
         "message": f"Token saved for plugin '{name}', mode: {mode}",
         "has_token": True,
         "webhook_base_url": server_url,
-        "webhook_registered": webhook_ok if not is_local else False,
+        "webhook_registered": webhook_ok,
         "mode": mode,
+        "foreign_webhook_url": foreign_webhook_url,
     }
 
 
 @router.post("/plugins/{name}/credentials")
 async def set_plugin_credentials(name: str, req: CredentialsRequest, http_request: Request):
-    """
-    Save arbitrary credentials for any plugin (account_sid/auth_token/from_number for Twilio,
-    bot_token/public_key for Discord, bot_token/signing_secret for Slack, etc.).
-    Saves to registry.json, auto-enables the plugin, and registers webhooks where applicable.
-    """
+    """Save arbitrary credentials for any plugin. Auto-enables and registers webhooks."""
     pm = get_plugin_manager()
     plugin = pm.get_plugin(name)
     if not plugin:
         return {"status": "error", "message": f"Plugin '{name}' not found"}
 
-    # Save credentials to registry
     registry = getattr(pm, "_registry", {})
     plugin_cfg = registry.setdefault("plugins", {}).setdefault(name, {})
     plugin_cfg.update(req.credentials)
@@ -220,7 +228,6 @@ async def set_plugin_credentials(name: str, req: CredentialsRequest, http_reques
     import json as _json
     reg_path = Path(__file__).resolve().parent.parent / "communications" / "registry.json"
 
-    # Auto-detect server URL if not set
     server_url = registry.get("webhook_base_url", "")
     if not server_url:
         scheme = str(http_request.url.scheme)
@@ -230,26 +237,39 @@ async def set_plugin_credentials(name: str, req: CredentialsRequest, http_reques
             server_url = f"{scheme}://{host}:{port}"
         else:
             server_url = f"{scheme}://{host}"
+        forwarded_proto = http_request.headers.get("x-forwarded-proto", "")
+        if forwarded_proto and server_url.startswith("http://"):
+            server_url = "https://" + server_url[len("http://"):]
         registry["webhook_base_url"] = server_url
 
     reg_path.write_text(_json.dumps(registry, indent=2), encoding="utf-8")
 
-    # Re-init plugin with new credentials
     plugin._registry = registry
-
-    # Auto-enable
     pm.enable_plugin(name)
 
-    # Register webhook if possible and URL is public
-    is_local = not server_url or any(h in server_url for h in ("localhost", "127.0.0.1", "0.0.0.0"))
+    is_local = not server_url or any(h in server_url for h in _LOCAL_HINTS)
     webhook_registered = False
+    foreign_webhook_url = None
     mode = "webhook"
 
-    if hasattr(plugin, 'start_polling') and is_local:
-        await plugin.start_polling()
+    if is_local:
+        if hasattr(plugin, 'delete_webhook_url'):
+            await plugin.delete_webhook_url()
+        if hasattr(plugin, 'start_polling'):
+            await plugin.start_polling()
         mode = "polling"
-    elif hasattr(plugin, 'set_webhook_url') and not is_local:
-        webhook_registered = await plugin.set_webhook_url(server_url)
+    else:
+        if hasattr(plugin, 'get_webhook_info'):
+            info = await plugin.get_webhook_info()
+            registered_url = info.get("url", "")
+            expected_url = f"{server_url.rstrip('/')}/api/v1/webhooks/{name}"
+            if registered_url and registered_url != expected_url:
+                foreign_webhook_url = registered_url
+
+        if hasattr(plugin, 'stop_polling'):
+            await plugin.stop_polling()
+        if hasattr(plugin, 'set_webhook_url'):
+            webhook_registered = await plugin.set_webhook_url(server_url)
         mode = "webhook"
 
     return {
@@ -259,7 +279,95 @@ async def set_plugin_credentials(name: str, req: CredentialsRequest, http_reques
         "webhook_base_url": server_url,
         "webhook_registered": webhook_registered,
         "mode": mode,
+        "foreign_webhook_url": foreign_webhook_url,
     }
+
+
+@router.get("/plugins/{name}/health")
+async def get_plugin_health(name: str):
+    """Return live health info: mode, conflict status, last message, webhook registration."""
+    pm = get_plugin_manager()
+    plugin = pm.get_plugin(name)
+    if not plugin:
+        return {"status": "error", "message": f"Plugin '{name}' not found"}
+
+    is_polling = getattr(plugin, 'is_polling', False)
+    mode = "polling" if is_polling else ("webhook" if plugin.enabled else "disabled")
+
+    result = {
+        "name": name,
+        "enabled": plugin.enabled,
+        "mode": mode,
+        "is_polling": is_polling,
+        "conflict_detected": getattr(plugin, 'conflict_detected', False),
+        "last_message_at": getattr(plugin, 'last_message_at', None),
+        "webhook_info": None,
+    }
+
+    if hasattr(plugin, 'get_webhook_info') and plugin.enabled:
+        try:
+            result["webhook_info"] = await plugin.get_webhook_info()
+        except Exception as e:
+            logger.warning("Could not fetch webhook info for %s: %s", name, e)
+
+    return result
+
+
+@router.post("/plugins/{name}/test")
+async def test_plugin_connection(name: str):
+    """Test a plugin's credentials with a lightweight API call.
+    For Telegram: calls getMe and returns the bot name and username."""
+    pm = get_plugin_manager()
+    plugin = pm.get_plugin(name)
+    if not plugin:
+        return {"status": "error", "message": f"Plugin '{name}' not found"}
+
+    if not hasattr(plugin, 'get_me'):
+        return {"status": "error", "message": f"Test not supported for plugin '{name}'"}
+
+    try:
+        result = await plugin.get_me()
+        if result.get("ok"):
+            bot = result.get("result", {})
+            return {
+                "status": "ok",
+                "bot_name": bot.get("first_name", ""),
+                "bot_username": bot.get("username", ""),
+                "bot_id": bot.get("id"),
+            }
+        else:
+            desc = result.get("description", "Token is invalid or bot was deleted")
+            return {"status": "error", "message": desc}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+class TokenTestRequest(BaseModel):
+    token: str
+
+
+@router.post("/plugins/{name}/test-token")
+async def test_plugin_token(name: str, req: TokenTestRequest):
+    """Test a specific bot token directly (for per-agent connections).
+    Does not require the token to be saved; calls getMe and returns bot info."""
+    if not req.token:
+        return {"status": "error", "message": "No token provided"}
+    try:
+        from app.communications.plugins.telegram import get_me
+        result = await get_me(req.token)
+        if result.get("ok"):
+            bot = result.get("result", {})
+            return {
+                "status": "ok",
+                "bot_name": bot.get("first_name", ""),
+                "bot_username": bot.get("username", ""),
+                "bot_id": bot.get("id"),
+            }
+        else:
+            desc = result.get("description", "Token is invalid or bot was deleted")
+            return {"status": "error", "message": desc}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 @router.post("/plugins/reload")

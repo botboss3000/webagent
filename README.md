@@ -186,6 +186,7 @@ cp .env.example .env          # Windows (cmd): copy .env.example .env
 | `TWITCH_CLIENT_ID` | Twitch Developer App Client ID (Integrations page — Twitch) |
 | `TWITCH_CLIENT_SECRET` | Twitch Client Secret |
 | `BOOTSTRAP_ADMIN_ID` | User ID to auto-promote to admin on server start (first admin bootstrapping). Once an admin exists in `user_profiles`, this var has no further effect. |
+| `WEBHOOK_BASE_URL` | Public base URL of this server (e.g. `https://myservice.run.app`). Set this on Cloud Run or any hosted environment — the app uses it at startup to register webhooks instead of falling back to polling. Auto-detected from the incoming request when first connecting a bot via the UI if not set. |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token (env-var fallback; UI-set value in `registry.json` takes priority). |
 | `TWILIO_ACCOUNT_SID` | Twilio Account SID (env-var fallback for SMS and WhatsApp plugins). |
 | `TWILIO_AUTH_TOKEN` | Twilio Auth Token (env-var fallback for SMS and WhatsApp plugins). |

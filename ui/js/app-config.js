@@ -538,8 +538,12 @@ async function _loadConnections() {
   });
 
   try {
-    const resp = await _fetch(apiPath('/admin/communications/plugins'));
-    const data = await resp.json();
+    const [pluginsResp, healthResp] = await Promise.all([
+      _fetch(apiPath('/admin/communications/plugins')),
+      _fetch(apiPath('/admin/communications/plugins/telegram/health')).catch(() => null),
+    ]);
+    const data = await pluginsResp.json();
+    const health = healthResp ? await healthResp.json().catch(() => null) : null;
 
     if (baseUrlEl) baseUrlEl.value = data.webhook_base_url || '';
 
@@ -551,6 +555,9 @@ async function _loadConnections() {
       _applyCommBadge(badgeId, p.enabled, p.has_token);
     }
 
+    // Populate the Telegram status card in App Config
+    _renderTelegramCard(data, health);
+
     // Load registered webhooks list
     await _loadWebhookList(data.webhook_base_url || window.location.origin);
 
@@ -561,6 +568,51 @@ async function _loadConnections() {
     });
     if (listEl) listEl.innerHTML = '<div class="ac-hint" style="color:#f7768e;">Failed to load plugin status.</div>';
   }
+}
+
+function _renderTelegramCard(pluginsData, health) {
+  const el = _qs('ac-conn-telegram-status');
+  if (!el) return;
+
+  const tg = (pluginsData.plugins || []).find(p => p.name === 'telegram');
+  if (!tg) { el.textContent = 'Telegram plugin not found.'; return; }
+
+  const mode = health?.mode || 'unknown';
+  const conflict = health?.conflict_detected || false;
+  const lastMsg = health?.last_message_at || null;
+  const configured = tg.has_token;
+  const enabled = tg.enabled;
+
+  const modeBadge = mode === 'polling'
+    ? `<span style="font-size:10px;background:#2a2a4a;color:#7dcfff;padding:2px 5px;border-radius:3px;font-weight:600;">POLLING</span>`
+    : mode === 'webhook'
+    ? `<span style="font-size:10px;background:#1a3a2a;color:#9ece6a;padding:2px 5px;border-radius:3px;font-weight:600;">WEBHOOK</span>`
+    : '';
+
+  let statusColor = configured && enabled ? '#9ece6a' : '#565f89';
+  if (conflict) statusColor = '#e0af68';
+
+  let html = `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">`;
+  html += `<span style="color:${statusColor};font-size:12px;font-weight:600;">`;
+  html += configured && enabled ? '● Active' : configured ? '○ Disabled' : '○ Not configured';
+  html += `</span>${modeBadge}`;
+
+  if (lastMsg) {
+    const d = new Date(lastMsg);
+    html += `<span style="font-size:11px;color:#565f89;">Last msg: ${d.toLocaleString()}</span>`;
+  }
+  html += `</div>`;
+
+  if (conflict) {
+    html += `<div style="margin-top:6px;font-size:11px;color:#e0af68;">⚠ Polling conflict — another instance may be connected.</div>`;
+  }
+
+  if (!configured) {
+    html += `<div style="margin-top:6px;font-size:11px;color:#565f89;">Configure Telegram in the <strong>Connections</strong> panel (settings menu).</div>`;
+  }
+
+  el.innerHTML = html;
+  el.style.padding = '6px 0';
 }
 
 async function _loadWebhookList(baseUrl) {
@@ -622,7 +674,9 @@ async function _savePluginToken(pluginName, token, statusId, badgeId, webhookUrl
     });
     const data = await res.json();
     if (data.status === 'ok') {
-      _commStatus(statusId, `Saved · mode: ${data.mode || 'webhook'}`, true);
+      let msg = `Connected · ${data.mode || 'webhook'} mode`;
+      if (data.foreign_webhook_url) msg += ` · took over from ${data.foreign_webhook_url}`;
+      _commStatus(statusId, msg, true);
       _applyCommBadge(badgeId, true, true);
       if (webhookUrlId && data.webhook_base_url) {
         const wurl = _qs(webhookUrlId);
