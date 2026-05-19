@@ -689,3 +689,21 @@ class StorageBackend(ABC):
         Returns the updated agent row dict, or None if not found/not owned.
         """
         ...
+
+    @abstractmethod
+    async def get_agent_roles(self, agent_id: str) -> dict:
+        """Return {'admin_users': [...], 'member_users': [...]} for an agent."""
+        ...
+
+    @abstractmethod
+    async def add_agent_member(self, agent_id: str, user_id: str) -> bool:
+        """
+        Add user_id to the agent's member_users list if not already present.
+        Returns True if newly added, False if already a member or admin.
+        """
+        ...
+
+    @abstractmethod
+    async def is_agent_member(self, agent_id: str, user_id: str) -> bool:
+        """Return True if user_id is a member or admin of the agent."""
+        ...

@@ -159,7 +159,9 @@ CREATE TABLE IF NOT EXISTS agents (
     assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    turn_count INTEGER NOT NULL DEFAULT 0
+    turn_count INTEGER NOT NULL DEFAULT 0,
+    admin_users TEXT NOT NULL DEFAULT '[]',
+    member_users TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE INDEX IF NOT EXISTS idx_agents_user ON agents(user_id);
@@ -1023,6 +1025,22 @@ class LocalBackend(StorageBackend):
             )
             conn.commit()
             logger.info("Migration 015: backfilled is_admin_agent on agents rows")
+
+            # ── Migration 016: add admin_users + member_users to agents ──
+            ag_cols_016 = {row[1] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
+            if "admin_users" not in ag_cols_016:
+                conn.execute("ALTER TABLE agents ADD COLUMN admin_users TEXT NOT NULL DEFAULT '[]'")
+                logger.info("Added agents.admin_users column")
+            if "member_users" not in ag_cols_016:
+                conn.execute("ALTER TABLE agents ADD COLUMN member_users TEXT NOT NULL DEFAULT '[]'")
+                logger.info("Added agents.member_users column")
+            # Backfill: agent owner (user_id) becomes the first admin
+            conn.execute(
+                """UPDATE agents SET admin_users = json_array(user_id)
+                   WHERE admin_users = '[]' AND user_id IS NOT NULL AND user_id != ''"""
+            )
+            conn.commit()
+            logger.info("Migration 016: added admin_users/member_users, backfilled agent owners as admins")
 
             # ── Seed: p5js visualizer skill template ──
             self._seed_visualizer_template(conn)
@@ -3641,6 +3659,51 @@ class LocalBackend(StorageBackend):
             return [dict(r) for r in rows]
         finally:
             conn.close()
+
+    # ── Agent membership (admin_users / member_users) ───────────────────────
+
+    async def get_agent_roles(self, agent_id: str) -> dict:
+        """Return {'admin_users': [...], 'member_users': [...]} for an agent."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT admin_users, member_users FROM agents WHERE id = ?", (agent_id,)
+            ).fetchone()
+            if not row:
+                return {"admin_users": [], "member_users": []}
+            return {
+                "admin_users": json.loads(row["admin_users"] or "[]"),
+                "member_users": json.loads(row["member_users"] or "[]"),
+            }
+        finally:
+            conn.close()
+
+    async def add_agent_member(self, agent_id: str, user_id: str) -> bool:
+        """
+        Add user_id to an agent's member_users list if not already present.
+        Returns True if the user was newly added, False if already a member.
+        """
+        roles = await self.get_agent_roles(agent_id)
+        if user_id in roles["member_users"] or user_id in roles["admin_users"]:
+            return False
+        new_members = roles["member_users"] + [user_id]
+        now = _now_iso()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE agents SET member_users = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(new_members), now, agent_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return True
+
+    async def is_agent_member(self, agent_id: str, user_id: str) -> bool:
+        """Return True if user_id is a member or admin of the agent."""
+        roles = await self.get_agent_roles(agent_id)
+        return user_id in roles["member_users"] or user_id in roles["admin_users"]
 
 
 class _LocalTableProxy:

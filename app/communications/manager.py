@@ -177,11 +177,20 @@ class PluginManager:
         """Spin up an additional TelegramPlugin poller for a per-agent bot token."""
         try:
             from app.communications.plugins.telegram import TelegramPlugin
+            key = f"telegram:{token[-6:]}"
+
+            # Stop and remove any existing poller for this token so we never
+            # end up with duplicate pollers after a reload_agent_connections call.
+            existing = self._plugins.get(key)
+            if existing and hasattr(existing, "stop_polling"):
+                await existing.stop_polling()
+                logger.info("Stopped existing poller for token ...%s before reload", token[-4:])
+
             extra_registry = dict(self._registry)
             extra_registry["plugins"] = dict(self._registry.get("plugins", {}))
             extra_registry["plugins"]["telegram"] = {"enabled": True, "bot_token": token}
             plugin = TelegramPlugin(registry=extra_registry)
-            key = f"telegram:{token[-6:]}"
+            plugin._agent_id = agent_id  # so the polling loop routes messages to this agent
             self._plugins[key] = plugin
             if hasattr(plugin, "start_polling"):
                 await plugin.start_polling()

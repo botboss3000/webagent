@@ -1048,6 +1048,49 @@ class SupabaseBackend(StorageBackend):
         lb = LocalBackend()
         return await lb.get_or_resolve_session_agent(session_id, user_id, template_id)
 
+    # ── Agent membership (admin_users / member_users) ────────────────────────
+
+    async def get_agent_roles(self, agent_id: str) -> dict:
+        """Return admin_users and member_users for an agent."""
+        try:
+            import json as _json
+            res = (
+                self._client.table("agents")
+                .select("admin_users, member_users")
+                .eq("id", agent_id)
+                .limit(1)
+                .execute()
+            )
+            row = res.data[0] if res.data else None
+            if not row:
+                return {"admin_users": [], "member_users": []}
+            return {
+                "admin_users": _json.loads(row.get("admin_users") or "[]"),
+                "member_users": _json.loads(row.get("member_users") or "[]"),
+            }
+        except Exception as e:
+            logger.warning("get_agent_roles failed: %s", e)
+            return {"admin_users": [], "member_users": []}
+
+    async def add_agent_member(self, agent_id: str, user_id: str) -> bool:
+        """Add user_id to an agent's member_users list if not already present."""
+        try:
+            import json as _json
+            roles = await self.get_agent_roles(agent_id)
+            if user_id in roles["member_users"] or user_id in roles["admin_users"]:
+                return False
+            new_members = _json.dumps(roles["member_users"] + [user_id])
+            self._client.table("agents").update({"member_users": new_members}).eq("id", agent_id).execute()
+            return True
+        except Exception as e:
+            logger.warning("add_agent_member failed: %s", e)
+            return False
+
+    async def is_agent_member(self, agent_id: str, user_id: str) -> bool:
+        """Return True if user_id is a member or admin of the agent."""
+        roles = await self.get_agent_roles(agent_id)
+        return user_id in roles["member_users"] or user_id in roles["admin_users"]
+
     # ---- Interrupt Handling ----
 
     async def set_interrupt(self, session_id: str) -> None:
