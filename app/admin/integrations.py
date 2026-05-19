@@ -288,10 +288,10 @@ def get_redirect_uri(request: Optional[Request] = None) -> str:
     return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/google"
 
 
-async def build_google_authorize_url(user_id: str, agent_id: str = "") -> str:
+async def build_google_authorize_url(user_id: str, agent_id: str = "", request: Optional[Request] = None) -> str:
     """Build the full Google OAuth authorization URL."""
     client_id, _ = await get_google_creds()
-    redirect_uri = get_redirect_uri()
+    redirect_uri = get_redirect_uri(request)
     state = make_state_token(user_id, agent_id, provider="google")
     params = {
         "client_id": client_id,

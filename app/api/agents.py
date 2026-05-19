@@ -20,7 +20,7 @@ POST /api/v1/agents/test                — run a test message through an agent 
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.db import get_db
@@ -523,13 +523,13 @@ async def upsert_agent_connection(
 
 
 @router.get("/agents/{agent_id}/connections/google/authorize")
-async def google_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
+async def google_authorize_for_agent(request: Request, agent_id: str, user_id: str = Query(...)):
     """Generate Google OAuth authorization URL for a user+agent pair."""
     from app.admin.integrations import get_google_creds, build_google_authorize_url
     client_id, _ = await get_google_creds()
     if not client_id:
         return {"error": "Google OAuth not configured. Admin must set credentials in App Config → Integrations."}
-    authorize_url = await build_google_authorize_url(user_id=user_id, agent_id=agent_id)
+    authorize_url = await build_google_authorize_url(user_id=user_id, agent_id=agent_id, request=request)
     return {"authorize_url": authorize_url}
 
 
