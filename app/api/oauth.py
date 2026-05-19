@@ -13,7 +13,7 @@ import os
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, Query as QueryParam
+from fastapi import APIRouter, Query as QueryParam, Request
 from fastapi.responses import HTMLResponse
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,7 @@ _ERROR_HTML = """<!DOCTYPE html>
 
 @router.get("/callback/google")
 async def google_callback(
+    request: Request,
     code: str = QueryParam(None),
     state: str = QueryParam(None),
     error: str = QueryParam(None),
@@ -87,7 +88,7 @@ async def google_callback(
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Google OAuth not configured on server.", status_code=500)
 
-    redirect_uri = get_redirect_uri()
+    redirect_uri = get_redirect_uri(request)
 
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(
