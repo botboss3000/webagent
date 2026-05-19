@@ -206,8 +206,14 @@ def _get_base_url(request: Optional[Request] = None) -> str:
         except Exception:
             pass
     if not base_url and request is not None:
-        # request.base_url is e.g. "https://myapp.run.app/" — strip trailing slash
-        base_url = str(request.base_url).rstrip("/")
+        # Derive from the incoming request. Behind a TLS-terminating proxy (e.g.
+        # Cloud Run), the app sees http:// internally but the real scheme is in
+        # the X-Forwarded-Proto header — use that when present.
+        derived = str(request.base_url).rstrip("/")
+        forwarded_proto = request.headers.get("x-forwarded-proto", "")
+        if forwarded_proto and derived.startswith("http://"):
+            derived = "https://" + derived[len("http://"):]
+        base_url = derived
     return base_url or "http://localhost:8000"
 
 
