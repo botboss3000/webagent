@@ -5,11 +5,13 @@
  *
  * Sections:
  *   1. Default LLM       — provider, base URL, API key, model
- *   2. Communications    — Telegram, Twilio SMS/WhatsApp, Discord, Slack channel config
- *   3. Integrations      — Google OAuth and third-party service connections
- *   4. Database          — cloud / local toggle, display settings
- *   5. Optimizer Stats   — session stats table, run mode, schedule
- *   6. Git Providers     — GitHub token, repo status quick-view
+ *   2. Integrations      — Google OAuth and third-party service connections
+ *   3. Database          — cloud / local toggle, display settings
+ *   4. Optimizer Stats   — session stats table, run mode, schedule
+ *   5. Git Providers     — GitHub token, repo status quick-view
+ *
+ * Note: App Connections (webhooks, Telegram bot config) was removed — managed
+ *       via each agent's Connections tab instead.
  */
 
 import { apiPath } from './config.js';
@@ -55,7 +57,7 @@ let _parallelUidCounter = 0;
 // ── Sidebar nav + scroll highlighting ────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────
 const _SECTION_KEY = 'appConfig_activeSection';
-const _VALID_SECTIONS = ['llm', 'connections', 'integrations', 'database', 'optimizer', 'git'];
+const _VALID_SECTIONS = ['llm', 'integrations', 'database', 'optimizer', 'git'];
 let _activeSection = localStorage.getItem(_SECTION_KEY) || 'llm';
 
 function _showSection(section) {
@@ -432,331 +434,6 @@ function _renderParallelRows() {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// ── SECTION 2: Communications ────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────────────────
-
-// Map plugin names → badge element IDs (for status updates)
-const _COMM_BADGES = {
-  telegram:        'ac-tg-badge',
-  twilio_sms:      'ac-twilio-sms-badge',
-  twilio_whatsapp: 'ac-twilio-wa-badge',
-  discord:         'ac-discord-badge',
-  slack:           'ac-slack-badge',
-};
-
-function _initConnections() {
-  // Public server URL save
-  _qs('ac-conn-base-url-save')?.addEventListener('click', _saveWebhookBaseUrl);
-
-  // Wire up expand/collapse toggle buttons
-  document.querySelectorAll('.ac-comm-toggle-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const panelId = btn.dataset.target;
-      const panel = _qs(panelId);
-      if (!panel) return;
-      const isOpen = panel.classList.contains('open');
-      // Close all panels and reset all cards
-      document.querySelectorAll('.ac-comm-panel').forEach(p => {
-        p.classList.remove('open');
-        p.style.display = 'none';
-      });
-      document.querySelectorAll('.ac-comm-toggle-btn').forEach(b => b.classList.remove('open'));
-      document.querySelectorAll('.ac-comm-card').forEach(c => c.classList.remove('panel-open'));
-      // Toggle the clicked one open
-      if (!isOpen) {
-        panel.classList.add('open');
-        panel.style.display = 'block';
-        btn.classList.add('open');
-        // Mark the parent card so it gets z-index elevation
-        btn.closest('.ac-comm-card')?.classList.add('panel-open');
-      }
-    });
-  });
-
-  // ── Telegram ──
-  _qs('ac-tg-save')?.addEventListener('click', async () => {
-    if (!isAdmin()) { showRestrictedModal(); return; }
-    const token = _qs('ac-tg-token')?.value.trim();
-    if (!token) { _commStatus('ac-tg-status', 'Enter a bot token first.', false); return; }
-    await _savePluginToken('telegram', token, 'ac-tg-status', 'ac-tg-badge', 'ac-tg-webhook-url');
-  });
-  _qs('ac-tg-disable')?.addEventListener('click', () => _disablePlugin('telegram', 'ac-tg-badge', 'ac-tg-status'));
-
-  // ── Twilio SMS ──
-  _qs('ac-twilio-sms-save')?.addEventListener('click', async () => {
-    if (!isAdmin()) { showRestrictedModal(); return; }
-    const sid   = _qs('ac-twilio-sms-sid')?.value.trim();
-    const token = _qs('ac-twilio-sms-token')?.value.trim();
-    const from  = _qs('ac-twilio-sms-from')?.value.trim();
-    if (!sid || !token) { _commStatus('ac-twilio-sms-status', 'Account SID and Auth Token are required.', false); return; }
-    await _savePluginCredentials('twilio_sms', { account_sid: sid, auth_token: token, from_number: from }, 'ac-twilio-sms-status', 'ac-twilio-sms-badge');
-  });
-  _qs('ac-twilio-sms-disable')?.addEventListener('click', () => _disablePlugin('twilio_sms', 'ac-twilio-sms-badge', 'ac-twilio-sms-status'));
-
-  // ── Twilio WhatsApp ──
-  _qs('ac-twilio-wa-save')?.addEventListener('click', async () => {
-    if (!isAdmin()) { showRestrictedModal(); return; }
-    const sid   = _qs('ac-twilio-wa-sid')?.value.trim();
-    const token = _qs('ac-twilio-wa-token')?.value.trim();
-    const from  = _qs('ac-twilio-wa-from')?.value.trim();
-    if (!sid || !token) { _commStatus('ac-twilio-wa-status', 'Account SID and Auth Token are required.', false); return; }
-    await _savePluginCredentials('twilio_whatsapp', { account_sid: sid, auth_token: token, from_number: from }, 'ac-twilio-wa-status', 'ac-twilio-wa-badge');
-  });
-  _qs('ac-twilio-wa-disable')?.addEventListener('click', () => _disablePlugin('twilio_whatsapp', 'ac-twilio-wa-badge', 'ac-twilio-wa-status'));
-
-  // ── Discord ──
-  _qs('ac-discord-save')?.addEventListener('click', async () => {
-    if (!isAdmin()) { showRestrictedModal(); return; }
-    const token  = _qs('ac-discord-token')?.value.trim();
-    const appId  = _qs('ac-discord-app-id')?.value.trim();
-    const pubkey = _qs('ac-discord-pubkey')?.value.trim();
-    if (!token) { _commStatus('ac-discord-status', 'Bot Token is required.', false); return; }
-    await _savePluginCredentials('discord', { bot_token: token, application_id: appId, public_key: pubkey }, 'ac-discord-status', 'ac-discord-badge');
-  });
-  _qs('ac-discord-disable')?.addEventListener('click', () => _disablePlugin('discord', 'ac-discord-badge', 'ac-discord-status'));
-
-  // ── Slack ──
-  _qs('ac-slack-save')?.addEventListener('click', async () => {
-    if (!isAdmin()) { showRestrictedModal(); return; }
-    const token  = _qs('ac-slack-token')?.value.trim();
-    const secret = _qs('ac-slack-secret')?.value.trim();
-    if (!token) { _commStatus('ac-slack-status', 'Bot Token is required.', false); return; }
-    await _savePluginCredentials('slack', { bot_token: token, signing_secret: secret }, 'ac-slack-status', 'ac-slack-badge');
-  });
-  _qs('ac-slack-disable')?.addEventListener('click', () => _disablePlugin('slack', 'ac-slack-badge', 'ac-slack-status'));
-}
-
-async function _loadConnections() {
-  const listEl    = _qs('ac-conn-webhook-list');
-  const baseUrlEl = _qs('ac-conn-base-url');
-
-  // Reset badges to loading state
-  Object.values(_COMM_BADGES).forEach(badgeId => {
-    const el = _qs(badgeId);
-    if (el) { el.textContent = '…'; el.className = 'ac-comm-badge ac-comm-badge-unconfigured'; }
-  });
-
-  try {
-    const [pluginsResp, healthResp] = await Promise.all([
-      _fetch(apiPath('/admin/communications/plugins')),
-      _fetch(apiPath('/admin/communications/plugins/telegram/health')).catch(() => null),
-    ]);
-    const data = await pluginsResp.json();
-    const health = healthResp ? await healthResp.json().catch(() => null) : null;
-
-    if (baseUrlEl) baseUrlEl.value = data.webhook_base_url || '';
-
-    // Update badges from plugin list
-    const plugins = data.plugins || [];
-    for (const p of plugins) {
-      const badgeId = _COMM_BADGES[p.name];
-      if (!badgeId) continue;
-      _applyCommBadge(badgeId, p.enabled, p.has_token);
-    }
-
-    // Populate the Telegram status card in App Config
-    _renderTelegramCard(data, health);
-
-    // Load registered webhooks list
-    await _loadWebhookList(data.webhook_base_url || window.location.origin);
-
-  } catch (e) {
-    Object.values(_COMM_BADGES).forEach(badgeId => {
-      const el = _qs(badgeId);
-      if (el) { el.textContent = 'Error'; el.className = 'ac-comm-badge ac-comm-badge-inactive'; }
-    });
-    if (listEl) listEl.innerHTML = '<div class="ac-hint" style="color:#f7768e;">Failed to load plugin status.</div>';
-  }
-}
-
-function _renderTelegramCard(pluginsData, health) {
-  const el = _qs('ac-conn-telegram-status');
-  if (!el) return;
-
-  const tg = (pluginsData.plugins || []).find(p => p.name === 'telegram');
-  if (!tg) { el.textContent = 'Telegram plugin not found.'; return; }
-
-  const mode = health?.mode || 'unknown';
-  const conflict = health?.conflict_detected || false;
-  const lastMsg = health?.last_message_at || null;
-  const configured = tg.has_token;
-  const enabled = tg.enabled;
-
-  const modeBadge = mode === 'polling'
-    ? `<span style="font-size:10px;background:#2a2a4a;color:#7dcfff;padding:2px 5px;border-radius:3px;font-weight:600;">POLLING</span>`
-    : mode === 'webhook'
-    ? `<span style="font-size:10px;background:#1a3a2a;color:#9ece6a;padding:2px 5px;border-radius:3px;font-weight:600;">WEBHOOK</span>`
-    : '';
-
-  let statusColor = configured && enabled ? '#9ece6a' : '#565f89';
-  if (conflict) statusColor = '#e0af68';
-
-  let html = `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">`;
-  html += `<span style="color:${statusColor};font-size:12px;font-weight:600;">`;
-  html += configured && enabled ? '● Active' : configured ? '○ Disabled' : '○ Not configured';
-  html += `</span>${modeBadge}`;
-
-  if (lastMsg) {
-    const d = new Date(lastMsg);
-    html += `<span style="font-size:11px;color:#565f89;">Last msg: ${d.toLocaleString()}</span>`;
-  }
-  html += `</div>`;
-
-  if (conflict) {
-    html += `<div style="margin-top:6px;font-size:11px;color:#e0af68;">⚠ Polling conflict — another instance may be connected.</div>`;
-  }
-
-  if (!configured) {
-    html += `<div style="margin-top:6px;font-size:11px;color:#565f89;">Configure Telegram in the <strong>Connections</strong> panel (settings menu).</div>`;
-  }
-
-  el.innerHTML = html;
-  el.style.padding = '6px 0';
-}
-
-async function _loadWebhookList(baseUrl) {
-  const listEl = _qs('ac-conn-webhook-list');
-  if (!listEl) return;
-  try {
-    const resp = await _fetch(apiPath('/admin/webhooks'));
-    const data = await resp.json();
-    const webhooks = data.webhooks || [];
-    const effectiveBase = baseUrl || data.webhook_base_url || window.location.origin;
-    if (!webhooks.length) {
-      listEl.innerHTML = '<div class="ac-hint">No webhooks registered. Activate a channel above to register its webhook endpoint.</div>';
-    } else {
-      listEl.innerHTML = webhooks.map(w => {
-        const name = w.plugin_name || w.webhook_id;
-        const url  = `${effectiveBase}/api/v1/webhooks/${name}`;
-        return `
-          <div style="padding:8px 10px;background:var(--bg-base,#0d0d1a);border:1px solid var(--border,#2a2a4a);border-radius:6px;font-size:12px;">
-            <div style="font-weight:600;color:var(--fg-1,#c0caf5);">${_esc(name)}</div>
-            <div style="color:var(--fg-muted,#565f89);margin-top:2px;word-break:break-all;">${_esc(url)}</div>
-          </div>`;
-      }).join('');
-    }
-  } catch (e) {
-    if (listEl) listEl.innerHTML = '<div class="ac-hint">Could not load webhook list.</div>';
-  }
-}
-
-function _applyCommBadge(badgeId, enabled, hasToken) {
-  const el = _qs(badgeId);
-  if (!el) return;
-  if (enabled && hasToken) {
-    el.textContent = 'Active';
-    el.className = 'ac-comm-badge ac-comm-badge-active';
-  } else if (hasToken && !enabled) {
-    el.textContent = 'Inactive';
-    el.className = 'ac-comm-badge ac-comm-badge-inactive';
-  } else {
-    el.textContent = 'Not configured';
-    el.className = 'ac-comm-badge ac-comm-badge-unconfigured';
-  }
-}
-
-function _commStatus(statusId, msg, ok) {
-  const el = _qs(statusId);
-  if (!el) return;
-  el.textContent = msg;
-  el.style.color = ok ? '#9ece6a' : '#f7768e';
-  el.style.display = 'inline';
-  if (ok) setTimeout(() => { el.style.display = 'none'; }, 4000);
-}
-
-async function _savePluginToken(pluginName, token, statusId, badgeId, webhookUrlId) {
-  try {
-    const res = await _fetch(apiPath(`/admin/communications/plugins/${pluginName}/token`), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: token }),
-    });
-    const data = await res.json();
-    if (data.status === 'ok') {
-      let msg = `Connected · ${data.mode || 'webhook'} mode`;
-      if (data.foreign_webhook_url) msg += ` · took over from ${data.foreign_webhook_url}`;
-      _commStatus(statusId, msg, true);
-      _applyCommBadge(badgeId, true, true);
-      if (webhookUrlId && data.webhook_base_url) {
-        const wurl = _qs(webhookUrlId);
-        if (wurl) {
-          wurl.innerHTML = `<strong>Webhook URL:</strong> ${_esc(data.webhook_base_url)}/api/v1/webhooks/${pluginName}`;
-          wurl.style.display = 'block';
-        }
-      }
-      _loadWebhookList(data.webhook_base_url || '');
-    } else {
-      _commStatus(statusId, data.message || 'Failed to save.', false);
-    }
-  } catch (e) {
-    _commStatus(statusId, `Error: ${e.message}`, false);
-  }
-}
-
-async function _savePluginCredentials(pluginName, credentials, statusId, badgeId) {
-  try {
-    const res = await _fetch(apiPath(`/admin/communications/plugins/${pluginName}/credentials`), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ credentials }),
-    });
-    const data = await res.json();
-    if (data.status === 'ok') {
-      _commStatus(statusId, `Saved · mode: ${data.mode || 'webhook'}`, true);
-      _applyCommBadge(badgeId, true, true);
-      _loadWebhookList(data.webhook_base_url || '');
-    } else {
-      _commStatus(statusId, data.message || 'Failed to save.', false);
-    }
-  } catch (e) {
-    _commStatus(statusId, `Error: ${e.message}`, false);
-  }
-}
-
-async function _disablePlugin(pluginName, badgeId, statusId) {
-  if (!isAdmin()) { showRestrictedModal(); return; }
-  try {
-    const res = await _fetch(apiPath(`/admin/communications/plugins/${pluginName}/disable`), { method: 'POST' });
-    const data = await res.json();
-    if (data.status === 'ok') {
-      _commStatus(statusId, 'Disabled.', true);
-      const badge = _qs(badgeId);
-      if (badge) { badge.textContent = 'Inactive'; badge.className = 'ac-comm-badge ac-comm-badge-inactive'; }
-    } else {
-      _commStatus(statusId, data.message || 'Failed to disable.', false);
-    }
-  } catch (e) {
-    _commStatus(statusId, `Error: ${e.message}`, false);
-  }
-}
-
-async function _saveWebhookBaseUrl() {
-  if (!isAdmin()) { showRestrictedModal(); return; }
-  const el = _qs('ac-conn-base-url');
-  const statusEl = _qs('ac-conn-base-url-status');
-  if (!el) return;
-  try {
-    const res = await _fetch(apiPath('/admin/webhooks/base-url'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ base_url: el.value.trim() }),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    if (statusEl) {
-      statusEl.textContent = 'Saved';
-      statusEl.style.color = '#9ece6a';
-      statusEl.style.display = 'inline';
-      setTimeout(() => { statusEl.style.display = 'none'; }, 3000);
-    }
-  } catch (e) {
-    if (statusEl) {
-      statusEl.textContent = `Error: ${e.message}`;
-      statusEl.style.color = '#f7768e';
-      statusEl.style.display = 'inline';
-    }
-  }
-}
 
 // ─────────────────────────────────────────────────────────────────────────
 // ── SECTION 2b: Integrations ─────────────────────────────────────────────
@@ -1206,7 +883,6 @@ async function _saveGitHubToken() {
 export function initAppConfig() {
   _initNav();
   _initLLM();
-  _initConnections();
   _initIntegrations();
   _initDatabase();
   _initOptimizer();
@@ -1222,7 +898,6 @@ export async function startAppConfig() {
 
   // Load all sections in parallel (non-blocking)
   _loadLLM();
-  _loadConnections();
   _loadIntegrations();
   _loadDatabase();
   _loadOptimizer();
