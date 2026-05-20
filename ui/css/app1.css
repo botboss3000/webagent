@@ -1124,7 +1124,8 @@
     background: #ffeee0;
   }
   body.light-mode #user-label,
-  body.light-mode #session-label { color: #b09580; }
+  body.light-mode #session-label,
+  body.light-mode #agent-label { color: #b09580; }
   body.light-mode .status-btn {
     background: #fff2e6;
     border-color: #ffdec4;

@@ -270,6 +270,8 @@ async def chat(request: ChatRequest):
                 )
 
         # ── Assign agent first (context rows are keyed by agent_id) ──
+        if agent is None and getattr(request, 'agent_id', None):
+            agent = await db.get_agent_by_id(request.agent_id)
         if agent is None:
             agent = await db.get_agent_for_user(request.user_id)
         if agent is None:
@@ -622,6 +624,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                 f"Check that agent template '{opt_template_id}' exists."
             )
     else:
+        req_agent_id = getattr(request, 'agent_id', None)
         req_template = getattr(request, 'agent_template_id', None)
         if req_template == 'admin-agent':
             if not await db.is_user_admin(request.user_id):
@@ -631,6 +634,8 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                 user_id=request.user_id,
                 template_id='admin-agent',
             )
+        elif req_agent_id:
+            agent = await db.get_agent_by_id(req_agent_id)
         else:
             agent = await db.get_agent_for_user(request.user_id)
         if agent is None:

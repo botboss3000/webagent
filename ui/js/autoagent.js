@@ -152,6 +152,7 @@ async function sendPrompt() {
     session_id: app.currentSessionId,
     user_id: app.currentUserId,
   };
+  if (app.currentAgentId) payload.agent_id = app.currentAgentId;
 
   try {
     const resp = await fetch(apiPath('/api/v1/chat/stream'), {

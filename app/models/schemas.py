@@ -33,6 +33,7 @@ class ChatRequest(BaseModel):
     history: Optional[List[HistoryMessagePayload]] = None
     attachment_ids: Optional[List[str]] = None
     agent_template_id: Optional[str] = None  # request a specific agent template for this session
+    agent_id: Optional[str] = None  # request a specific custom agent by ID for this session
 
 
 class ChatResponse(BaseModel):

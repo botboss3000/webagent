@@ -32,6 +32,7 @@ export const app = {
 
   currentSessionId: '',
   currentUserId: '',
+  currentAgentId: '',
   localUserId: '',
 
   dbTables: [],
