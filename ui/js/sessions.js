@@ -61,8 +61,8 @@ export async function populateAgentSelect(userId) {
       sel.appendChild(opt);
     }
 
-    // Pre-select: saved > default > first option
-    let target = saved || defaultAgentId;
+    // Pre-select: __agentId (public URL) > saved > default > first option
+    let target = window.__agentId || saved || defaultAgentId;
     let found = false;
     for (const o of sel.options) {
       if (o.value === target) { o.selected = true; found = true; break; }
@@ -70,6 +70,11 @@ export async function populateAgentSelect(userId) {
     if (!found && sel.options.length) sel.options[0].selected = true;
 
     app.currentAgentId = sel.value || '';
+
+    // Lock the selector when visiting a public agent URL
+    if (window.__agentId) {
+      sel.disabled = true;
+    }
   } catch (e) {
     console.warn('Failed to load agents for selector:', e);
   }

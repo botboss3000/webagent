@@ -26,6 +26,39 @@ import './icons.js'; // auto-renders Lucide icons on DOM mutations
 
 bindDom();
 
+// ── Anonymous session for public agent URLs ──────────────────────────────
+// If the server injected __agentId and no auth token exists, create an
+// anonymous session so the visitor can chat without logging in.
+async function _initAnonSession() {
+  if (!window.__agentId) return;
+  if (localStorage.getItem('auth_token')) return;
+
+  let browserId = localStorage.getItem('anon_browser_id');
+  if (!browserId) {
+    browserId = crypto.randomUUID();
+    localStorage.setItem('anon_browser_id', browserId);
+  }
+
+  try {
+    const res = await fetch(`/api/v1/agents/${window.__agentId}/anon-session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ browser_id: browserId }),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    localStorage.setItem('auth_token', data.token);
+    localStorage.setItem('auth_user_id', data.user_id);
+    app.currentUserId = data.user_id;
+    app.localUserId = data.user_id;
+  } catch (e) {
+    console.warn('anon session init failed:', e);
+  }
+}
+
+// Run anon auth, then continue init. For non-anon visitors this resolves immediately.
+const _anonReady = _initAnonSession();
+
 // ── JS error debugging ────────────────────────────────────────────────────
 // Catches unhandled JS errors and module load failures. Shows a visible
 // red banner so the issue is obvious even without DevTools open, and also
@@ -92,25 +125,6 @@ window.addEventListener('unhandledrejection', (e) => {
   _showJsErrorBanner(msg, 'unhandledrejection');
 });
 
-// ── Left panel login gate ─────────────────────────────────────────────────
-// If not authenticated, show login overlay covering all left-side tabs
-if (!isAuthenticated()) {
-  showLeftOverlay();
-}
-initDbModeUi();
-initTerminal();
-initChat();
-ensureAttachmentsInit();
-initReconnect();
-registerSessionApi();
-
-try {
-  connectTerminal();
-  connectAgent();
-} catch (e) {
-  _showJsErrorBanner(e.message, 'connectAgent/connectTerminal');
-}
-
 // Wrap each init call so one broken module can't silently prevent the rest
 // from loading. Any error is surfaced in the banner above.
 function _safeInit(name, fn) {
@@ -122,20 +136,42 @@ function _safeInit(name, fn) {
   }
 }
 
-_safeInit('initTabs',        initTabs);
-_safeInit('initStream',      initStream);
-_safeInit('initLoop',        initLoop);
-_safeInit('initLoopVisual',  initLoopVisual);
-_safeInit('initDbViewer',    initDbViewer);
-_safeInit('initGithub',      initGithub);
-_safeInit('initAutoAgent',   initAutoAgent);
-_safeInit('initAgents',      initAgents);
-_safeInit('initAppConfig',   initAppConfig);
-_safeInit('initSettings',    initSettings);
-_safeInit('initConnections', initConnections);
-_safeInit('initOptimizer',   initOptimizer);
-_safeInit('initSessions',    initSessions);
-_safeInit('initChatResize',  initChatResize);
+// Wait for anon session (if needed) before running the rest of init,
+// so auth_token + user_id are available for all downstream modules.
+_anonReady.then(() => {
+  // ── Left panel login gate ───────────────────────────────────────────
+  if (!isAuthenticated()) {
+    showLeftOverlay();
+  }
+  initDbModeUi();
+  initTerminal();
+  initChat();
+  ensureAttachmentsInit();
+  initReconnect();
+  registerSessionApi();
+
+  try {
+    connectTerminal();
+    connectAgent();
+  } catch (e) {
+    _showJsErrorBanner(e.message, 'connectAgent/connectTerminal');
+  }
+
+  _safeInit('initTabs',        initTabs);
+  _safeInit('initStream',      initStream);
+  _safeInit('initLoop',        initLoop);
+  _safeInit('initLoopVisual',  initLoopVisual);
+  _safeInit('initDbViewer',    initDbViewer);
+  _safeInit('initGithub',      initGithub);
+  _safeInit('initAutoAgent',   initAutoAgent);
+  _safeInit('initAgents',      initAgents);
+  _safeInit('initAppConfig',   initAppConfig);
+  _safeInit('initSettings',    initSettings);
+  _safeInit('initConnections', initConnections);
+  _safeInit('initOptimizer',   initOptimizer);
+  _safeInit('initSessions',    initSessions);
+  _safeInit('initChatResize',  initChatResize);
+});
 
 // ── Visibility change: reconnect when user returns to this tab ──
 document.addEventListener('visibilitychange', () => {

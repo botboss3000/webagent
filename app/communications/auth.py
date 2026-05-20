@@ -13,6 +13,7 @@ import json
 import logging
 import secrets
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -109,8 +110,13 @@ async def get_identity(channel: str, external_id: str) -> Optional[ChannelIdenti
 async def create_anonymous_identity(channel: str, external_id: str) -> ChannelIdentity:
     """
     Create a new anonymous identity for a first-time contact.
+
+    Generates a UUID-based user_id so the internal account is not tied to
+    the raw channel identifier (e.g. Telegram chat_id).  The mapping from
+    (channel, external_id) → user_id is persisted in channel_identities and
+    used on every subsequent message from the same contact.
     """
-    user_id = f"{channel}:{external_id}"
+    user_id = f"anon_{uuid.uuid4().hex[:16]}"
     identity = ChannelIdentity(
         channel=channel,
         external_id=external_id,
@@ -213,6 +219,78 @@ async def _upsert_identity(identity: ChannelIdentity) -> None:
         ).execute()
     except Exception as e:
         logger.warning("Failed to upsert identity: %s", e)
+
+
+# ── Migration helpers ──────────────────────────────────────────────────────
+
+
+async def migrate_anonymous_to_user(anon_user_id: str, target_user_id: str) -> int:
+    """
+    Migrate all interactions and sessions from an anonymous user to an
+    existing registered user.  Updates the channel_identity row to point
+    at the target user, re-parents sessions and interactions, then returns
+    the number of interactions moved.
+    """
+    import sqlite3 as _sqlite3
+
+    db = get_db()
+    raw = db.get_raw_client()
+    moved = 0
+    try:
+        db_path = getattr(raw, '_db_path', None)
+        if db_path:
+            conn = _sqlite3.connect(db_path)
+            conn.row_factory = _sqlite3.Row
+            try:
+                cur = conn.execute(
+                    "UPDATE interactions SET session_id = ? WHERE session_id = ?",
+                    (target_user_id, anon_user_id),
+                )
+                moved = cur.rowcount
+
+                conn.execute(
+                    "DELETE FROM sessions WHERE id = ? AND user_id = ?",
+                    (anon_user_id, anon_user_id),
+                )
+
+                conn.execute(
+                    "UPDATE channel_identities SET user_id = ? WHERE user_id = ?",
+                    (target_user_id, anon_user_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        else:
+            raw.table("interactions").update({"session_id": target_user_id}).eq("session_id", anon_user_id).execute()
+            raw.table("sessions").delete().eq("id", anon_user_id).eq("user_id", anon_user_id).execute()
+            raw.table("channel_identities").update({"user_id": target_user_id}).eq("user_id", anon_user_id).execute()
+    except Exception as e:
+        logger.warning("migrate_anonymous_to_user error: %s", e)
+    return moved
+
+
+async def find_user_by_display_name(display_name: str) -> str | None:
+    """
+    Look up an existing non-anonymous user by display name in
+    channel_identities.  Returns the user_id if found, else None.
+    """
+    try:
+        db = get_db()
+        raw = db.get_raw_client()
+        resp = (
+            raw.table("channel_identities")
+            .select("user_id, user_tier")
+            .eq("display_name", display_name)
+            .neq("user_tier", "anonymous")
+            .limit(1)
+            .execute()
+        )
+        rows = resp.data if hasattr(resp, 'data') else (resp or [])
+        if rows:
+            return rows[0]["user_id"]
+    except Exception as e:
+        logger.warning("find_user_by_display_name error: %s", e)
+    return None
 
 
 # ── Registration system prompt ──────────────────────────────────────────────

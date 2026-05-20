@@ -161,6 +161,37 @@
   line-height: 1.5;
   padding-left: 56px;
 }
+.agent-card-url {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 56px;
+  margin-top: 4px;
+}
+.agent-url-text {
+  font-size: 11px;
+  color: #565f89;
+  font-family: 'JetBrains Mono', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 340px;
+  user-select: all;
+}
+.agent-url-copy {
+  background: none;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 1px 5px;
+  line-height: 1;
+  color: #7a8ab0;
+  transition: border-color 0.15s;
+}
+.agent-url-copy:hover {
+  border-color: #5a6aaa;
+}
 
 .agent-card-stats {
   display: flex;
@@ -545,6 +576,9 @@ body.light-mode .agent-detail-panel   { background: #fff7f0; border-color: #ff8c
 body.light-mode .agent-card-name      { color: #3d2c2e; }
 body.light-mode .agent-card-model     { color: #b09080; }
 body.light-mode .agent-card-desc      { color: #7a5a4a; }
+body.light-mode .agent-url-text       { color: #9a8a7a; }
+body.light-mode .agent-url-copy       { border-color: #d0c0b0; color: #7a5a4a; }
+body.light-mode .agent-url-copy:hover { border-color: #a08060; }
 body.light-mode .agent-stat           { color: #b09080; }
 body.light-mode .agent-badge.system   { background: #f0fff0; color: #3a7a3a; border-color: #c0e0c0; }
 body.light-mode .agent-badge.custom   { background: #fff2e6; color: #cc6a28; border-color: #ffdec4; }

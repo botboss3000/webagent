@@ -58,6 +58,7 @@ class UpdateAgentRequest(BaseModel):
     trigger_key: Optional[str] = None
     loop_logic: Optional[List] = None
     safety_policy: Optional[Dict[str, Any]] = None
+    user_mode: Optional[str] = None
 
 
 class UpdateTemplateRequest(BaseModel):
@@ -70,6 +71,10 @@ class UpsertConnectionRequest(BaseModel):
     user_id: str
     enabled: bool
     config: Optional[Dict[str, Any]] = None
+
+
+class AnonSessionRequest(BaseModel):
+    browser_id: Optional[str] = None
 
 
 class SetDefaultRequest(BaseModel):
@@ -116,6 +121,22 @@ async def _require_admin(db, user_id: str) -> None:
     """Raise 403 if user is not an admin."""
     if not await db.is_user_admin(user_id):
         raise HTTPException(status_code=403, detail="Admin access required.")
+
+
+async def _is_agent_admin(db, agent_id: str, user_id: str) -> bool:
+    """Return True if user is a global admin OR in the agent's admin_users list."""
+    if await db.is_user_admin(user_id):
+        return True
+    roles = await db.get_agent_roles(agent_id)
+    return user_id in roles["admin_users"]
+
+
+async def _require_connection_enabled(db, agent_id: str, connection_type: str) -> None:
+    """Raise 403 if the connection is not enabled on this agent."""
+    rows = await db.get_agent_connections(agent_id)
+    conn = next((r for r in rows if r["connection_type"] == connection_type), None)
+    if not conn or not conn.get("enabled"):
+        raise HTTPException(status_code=403, detail="This integration is not enabled by the agent admin.")
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -448,7 +469,8 @@ async def get_agent_connections(agent_id: str, user_id: str = Query(...)):
                 item[f"{ct}_connected"] = False
 
         result.append(item)
-    return {"connections": result}
+    is_admin = await _is_agent_admin(db, agent_id, user_id)
+    return {"connections": result, "user_role": "admin" if is_admin else "member"}
 
 
 @router.put("/agents/{agent_id}/connections/{connection_type}")
@@ -464,6 +486,9 @@ async def upsert_agent_connection(
     """
     import json as _json
     db = get_db()
+
+    if not await _is_agent_admin(db, agent_id, req.user_id):
+        raise HTTPException(status_code=403, detail="Only agent admins can modify connection settings.")
 
     # Resolve catalog entry for section
     catalog_entry = next(
@@ -525,6 +550,8 @@ async def upsert_agent_connection(
 @router.get("/agents/{agent_id}/connections/google/authorize")
 async def google_authorize_for_agent(request: Request, agent_id: str, user_id: str = Query(...)):
     """Generate Google OAuth authorization URL for a user+agent pair."""
+    db = get_db()
+    await _require_connection_enabled(db, agent_id, "google")
     from app.admin.integrations import get_google_creds, build_google_authorize_url
     client_id, _ = await get_google_creds()
     if not client_id:
@@ -535,23 +562,17 @@ async def google_authorize_for_agent(request: Request, agent_id: str, user_id: s
 
 @router.delete("/agents/{agent_id}/connections/google/disconnect")
 async def google_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Google account for a user and disable on this agent."""
+    """Disconnect Google account for a user (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_google
-    db = get_db()
     deleted = await revoke_and_delete_google(user_id)
-    try:
-        await db.upsert_agent_connection(
-            agent_id=agent_id, connection_type="google",
-            section="integration", enabled=False, config={},
-        )
-    except Exception:
-        pass
     return {"status": "ok", "deleted": deleted}
 
 
 @router.get("/agents/{agent_id}/connections/microsoft/authorize")
 async def microsoft_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
     """Generate Microsoft OAuth authorization URL for a user+agent pair."""
+    db = get_db()
+    await _require_connection_enabled(db, agent_id, "microsoft")
     from app.admin.integrations import get_microsoft_creds, build_microsoft_authorize_url
     client_id, _ = await get_microsoft_creds()
     if not client_id:
@@ -562,23 +583,17 @@ async def microsoft_authorize_for_agent(agent_id: str, user_id: str = Query(...)
 
 @router.delete("/agents/{agent_id}/connections/microsoft/disconnect")
 async def microsoft_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Microsoft account for a user and disable on this agent."""
+    """Disconnect Microsoft account for a user (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_microsoft
-    db = get_db()
     deleted = await revoke_and_delete_microsoft(user_id)
-    try:
-        await db.upsert_agent_connection(
-            agent_id=agent_id, connection_type="microsoft",
-            section="integration", enabled=False, config={},
-        )
-    except Exception:
-        pass
     return {"status": "ok", "deleted": deleted}
 
 
 @router.get("/agents/{agent_id}/connections/yahoo/authorize")
 async def yahoo_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
     """Generate Yahoo OAuth authorization URL for a user+agent pair."""
+    db = get_db()
+    await _require_connection_enabled(db, agent_id, "yahoo")
     from app.admin.integrations import get_yahoo_creds, build_yahoo_authorize_url
     client_id, _ = await get_yahoo_creds()
     if not client_id:
@@ -589,23 +604,17 @@ async def yahoo_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
 
 @router.delete("/agents/{agent_id}/connections/yahoo/disconnect")
 async def yahoo_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Yahoo account for a user and disable on this agent."""
+    """Disconnect Yahoo account for a user (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_yahoo
-    db = get_db()
     deleted = await revoke_and_delete_yahoo(user_id)
-    try:
-        await db.upsert_agent_connection(
-            agent_id=agent_id, connection_type="yahoo",
-            section="integration", enabled=False, config={},
-        )
-    except Exception:
-        pass
     return {"status": "ok", "deleted": deleted}
 
 
 @router.get("/agents/{agent_id}/connections/dropbox/authorize")
 async def dropbox_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
     """Generate Dropbox OAuth authorization URL for a user+agent pair."""
+    db = get_db()
+    await _require_connection_enabled(db, agent_id, "dropbox")
     from app.admin.integrations import get_dropbox_creds, build_dropbox_authorize_url
     client_id, _ = await get_dropbox_creds()
     if not client_id:
@@ -616,17 +625,9 @@ async def dropbox_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
 
 @router.delete("/agents/{agent_id}/connections/dropbox/disconnect")
 async def dropbox_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Dropbox account for a user and disable on this agent."""
+    """Disconnect Dropbox account for a user (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_dropbox
-    db = get_db()
     deleted = await revoke_and_delete_dropbox(user_id)
-    try:
-        await db.upsert_agent_connection(
-            agent_id=agent_id, connection_type="dropbox",
-            section="integration", enabled=False, config={},
-        )
-    except Exception:
-        pass
     return {"status": "ok", "deleted": deleted}
 
 
@@ -636,6 +637,8 @@ async def dropbox_disconnect_for_agent(agent_id: str, user_id: str = Query(...))
 @router.get("/agents/{agent_id}/connections/facebook/authorize")
 async def facebook_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
     """Generate Meta (Facebook/Instagram) OAuth authorization URL."""
+    db = get_db()
+    await _require_connection_enabled(db, agent_id, "facebook")
     from app.admin.integrations import get_meta_creds, build_meta_authorize_url
     client_id, _ = await get_meta_creds()
     if not client_id:
@@ -646,24 +649,17 @@ async def facebook_authorize_for_agent(agent_id: str, user_id: str = Query(...))
 
 @router.delete("/agents/{agent_id}/connections/facebook/disconnect")
 async def facebook_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Meta account (removes Facebook + Instagram access) and disable on this agent."""
+    """Disconnect Meta account (removes Facebook + Instagram access, preserves admin toggle)."""
     from app.admin.integrations import revoke_and_delete_meta
-    db = get_db()
     deleted = await revoke_and_delete_meta(user_id)
-    for ct in ("facebook", "instagram"):
-        try:
-            await db.upsert_agent_connection(
-                agent_id=agent_id, connection_type=ct,
-                section="social", enabled=False, config={},
-            )
-        except Exception:
-            pass
     return {"status": "ok", "deleted": deleted}
 
 
 @router.get("/agents/{agent_id}/connections/instagram/authorize")
 async def instagram_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
     """Generate Meta (Facebook/Instagram) OAuth authorization URL."""
+    db = get_db()
+    await _require_connection_enabled(db, agent_id, "instagram")
     from app.admin.integrations import get_meta_creds, build_meta_authorize_url
     client_id, _ = await get_meta_creds()
     if not client_id:
@@ -674,24 +670,17 @@ async def instagram_authorize_for_agent(agent_id: str, user_id: str = Query(...)
 
 @router.delete("/agents/{agent_id}/connections/instagram/disconnect")
 async def instagram_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Meta account (removes Facebook + Instagram access) and disable on this agent."""
+    """Disconnect Meta account (removes Facebook + Instagram access, preserves admin toggle)."""
     from app.admin.integrations import revoke_and_delete_meta
-    db = get_db()
     deleted = await revoke_and_delete_meta(user_id)
-    for ct in ("facebook", "instagram"):
-        try:
-            await db.upsert_agent_connection(
-                agent_id=agent_id, connection_type=ct,
-                section="social", enabled=False, config={},
-            )
-        except Exception:
-            pass
     return {"status": "ok", "deleted": deleted}
 
 
 @router.get("/agents/{agent_id}/connections/twitter/authorize")
 async def twitter_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
     """Generate Twitter/X OAuth authorization URL."""
+    db = get_db()
+    await _require_connection_enabled(db, agent_id, "twitter")
     from app.admin.integrations import get_twitter_creds, build_twitter_authorize_url
     client_id, _ = await get_twitter_creds()
     if not client_id:
@@ -702,23 +691,17 @@ async def twitter_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
 
 @router.delete("/agents/{agent_id}/connections/twitter/disconnect")
 async def twitter_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Twitter/X account and disable on this agent."""
+    """Disconnect Twitter/X account (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_twitter
-    db = get_db()
     deleted = await revoke_and_delete_twitter(user_id)
-    try:
-        await db.upsert_agent_connection(
-            agent_id=agent_id, connection_type="twitter",
-            section="social", enabled=False, config={},
-        )
-    except Exception:
-        pass
     return {"status": "ok", "deleted": deleted}
 
 
 @router.get("/agents/{agent_id}/connections/linkedin/authorize")
 async def linkedin_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
     """Generate LinkedIn OAuth authorization URL."""
+    db = get_db()
+    await _require_connection_enabled(db, agent_id, "linkedin")
     from app.admin.integrations import get_linkedin_creds, build_linkedin_authorize_url
     client_id, _ = await get_linkedin_creds()
     if not client_id:
@@ -729,23 +712,17 @@ async def linkedin_authorize_for_agent(agent_id: str, user_id: str = Query(...))
 
 @router.delete("/agents/{agent_id}/connections/linkedin/disconnect")
 async def linkedin_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect LinkedIn account and disable on this agent."""
+    """Disconnect LinkedIn account (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_linkedin
-    db = get_db()
     deleted = await revoke_and_delete_linkedin(user_id)
-    try:
-        await db.upsert_agent_connection(
-            agent_id=agent_id, connection_type="linkedin",
-            section="social", enabled=False, config={},
-        )
-    except Exception:
-        pass
     return {"status": "ok", "deleted": deleted}
 
 
 @router.get("/agents/{agent_id}/connections/tiktok/authorize")
 async def tiktok_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
     """Generate TikTok OAuth authorization URL."""
+    db = get_db()
+    await _require_connection_enabled(db, agent_id, "tiktok")
     from app.admin.integrations import get_tiktok_creds, build_tiktok_authorize_url
     client_id, _ = await get_tiktok_creds()
     if not client_id:
@@ -756,23 +733,17 @@ async def tiktok_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
 
 @router.delete("/agents/{agent_id}/connections/tiktok/disconnect")
 async def tiktok_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect TikTok account and disable on this agent."""
+    """Disconnect TikTok account (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_tiktok
-    db = get_db()
     deleted = await revoke_and_delete_tiktok(user_id)
-    try:
-        await db.upsert_agent_connection(
-            agent_id=agent_id, connection_type="tiktok",
-            section="social", enabled=False, config={},
-        )
-    except Exception:
-        pass
     return {"status": "ok", "deleted": deleted}
 
 
 @router.get("/agents/{agent_id}/connections/pinterest/authorize")
 async def pinterest_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
     """Generate Pinterest OAuth authorization URL."""
+    db = get_db()
+    await _require_connection_enabled(db, agent_id, "pinterest")
     from app.admin.integrations import get_pinterest_creds, build_pinterest_authorize_url
     client_id, _ = await get_pinterest_creds()
     if not client_id:
@@ -783,23 +754,17 @@ async def pinterest_authorize_for_agent(agent_id: str, user_id: str = Query(...)
 
 @router.delete("/agents/{agent_id}/connections/pinterest/disconnect")
 async def pinterest_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Pinterest account and disable on this agent."""
+    """Disconnect Pinterest account (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_pinterest
-    db = get_db()
     deleted = await revoke_and_delete_pinterest(user_id)
-    try:
-        await db.upsert_agent_connection(
-            agent_id=agent_id, connection_type="pinterest",
-            section="social", enabled=False, config={},
-        )
-    except Exception:
-        pass
     return {"status": "ok", "deleted": deleted}
 
 
 @router.get("/agents/{agent_id}/connections/reddit/authorize")
 async def reddit_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
     """Generate Reddit OAuth authorization URL."""
+    db = get_db()
+    await _require_connection_enabled(db, agent_id, "reddit")
     from app.admin.integrations import get_reddit_creds, build_reddit_authorize_url
     client_id, _ = await get_reddit_creds()
     if not client_id:
@@ -810,23 +775,17 @@ async def reddit_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
 
 @router.delete("/agents/{agent_id}/connections/reddit/disconnect")
 async def reddit_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Reddit account and disable on this agent."""
+    """Disconnect Reddit account (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_reddit
-    db = get_db()
     deleted = await revoke_and_delete_reddit(user_id)
-    try:
-        await db.upsert_agent_connection(
-            agent_id=agent_id, connection_type="reddit",
-            section="social", enabled=False, config={},
-        )
-    except Exception:
-        pass
     return {"status": "ok", "deleted": deleted}
 
 
 @router.get("/agents/{agent_id}/connections/snapchat/authorize")
 async def snapchat_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
     """Generate Snapchat OAuth authorization URL."""
+    db = get_db()
+    await _require_connection_enabled(db, agent_id, "snapchat")
     from app.admin.integrations import get_snapchat_creds, build_snapchat_authorize_url
     client_id, _ = await get_snapchat_creds()
     if not client_id:
@@ -837,23 +796,17 @@ async def snapchat_authorize_for_agent(agent_id: str, user_id: str = Query(...))
 
 @router.delete("/agents/{agent_id}/connections/snapchat/disconnect")
 async def snapchat_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Snapchat account and disable on this agent."""
+    """Disconnect Snapchat account (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_snapchat
-    db = get_db()
     deleted = await revoke_and_delete_snapchat(user_id)
-    try:
-        await db.upsert_agent_connection(
-            agent_id=agent_id, connection_type="snapchat",
-            section="social", enabled=False, config={},
-        )
-    except Exception:
-        pass
     return {"status": "ok", "deleted": deleted}
 
 
 @router.get("/agents/{agent_id}/connections/twitch/authorize")
 async def twitch_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
     """Generate Twitch OAuth authorization URL."""
+    db = get_db()
+    await _require_connection_enabled(db, agent_id, "twitch")
     from app.admin.integrations import get_twitch_creds, build_twitch_authorize_url
     client_id, _ = await get_twitch_creds()
     if not client_id:
@@ -864,18 +817,39 @@ async def twitch_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
 
 @router.delete("/agents/{agent_id}/connections/twitch/disconnect")
 async def twitch_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Twitch account and disable on this agent."""
+    """Disconnect Twitch account (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_twitch
-    db = get_db()
     deleted = await revoke_and_delete_twitch(user_id)
-    try:
-        await db.upsert_agent_connection(
-            agent_id=agent_id, connection_type="twitch",
-            section="social", enabled=False, config={},
-        )
-    except Exception:
-        pass
     return {"status": "ok", "deleted": deleted}
+
+
+@router.post("/agents/{agent_id}/anon-session")
+async def create_anon_session(agent_id: str, req: AnonSessionRequest):
+    """
+    Create an anonymous session for a public agent URL visitor.
+    No JWT required. Returns a token so the visitor can chat.
+    """
+    import uuid as _uuid_mod
+    db = get_db()
+
+    agent = await db.get_agent_by_id(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+
+    browser_id = req.browser_id or _uuid_mod.uuid4().hex
+    from app.communications.auth import get_or_create_identity
+    identity = await get_or_create_identity(channel="web_public", external_id=browser_id)
+
+    await db.add_agent_member(agent_id, identity.user_id)
+
+    from app.auth.jwt import create_access_token
+    token = create_access_token(username=identity.user_id, user_id=identity.user_id)
+
+    return {
+        "token": token,
+        "user_id": identity.user_id,
+        "session_id": identity.user_id,
+    }
 
 
 @router.post("/agent-templates/config")

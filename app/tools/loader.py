@@ -439,14 +439,31 @@ class ToolLoader:
         async def _register_user_wrapper(name: str, source_channel: str = ""):
             """Register a user who just verified their channel identity."""
             import json
-            from app.communications.auth import get_identity, upgrade_to_verified, ChannelIdentity
+            from app.communications.auth import (
+                get_identity, upgrade_to_verified,
+                find_user_by_display_name, migrate_anonymous_to_user,
+            )
 
-            # The user_id passed to load_tools tells us who the agent is talking about.
-            # But registration happens via the channel, so we need to find the identity.
-            # The user_id format is "channel:external_id"
+            chan, ext_id = None, None
             if ":" in user_id:
                 chan, ext_id = user_id.split(":", 1)
             else:
+                try:
+                    _raw = get_db().get_raw_client()
+                    resp = (
+                        _raw.table("channel_identities")
+                        .select("channel, external_id")
+                        .eq("user_id", user_id)
+                        .limit(1)
+                        .execute()
+                    )
+                    rows = resp.data if hasattr(resp, 'data') else (resp or [])
+                    if rows:
+                        chan, ext_id = rows[0]["channel"], rows[0]["external_id"]
+                except Exception:
+                    pass
+
+            if not chan or not ext_id:
                 return json.dumps({"error": "cannot determine channel identity"})
 
             identity = await get_identity(chan, ext_id)
@@ -455,6 +472,19 @@ class ToolLoader:
 
             if identity.user_tier == "full":
                 return json.dumps({"status": "ok", "message": "Already fully registered."})
+
+            existing_uid = await find_user_by_display_name(name)
+            if existing_uid and existing_uid != user_id:
+                moved = await migrate_anonymous_to_user(user_id, existing_uid)
+                identity = await upgrade_to_verified(identity, display_name=name)
+                return json.dumps({
+                    "status": "ok",
+                    "user_tier": identity.user_tier,
+                    "display_name": identity.display_name,
+                    "migrated_to": existing_uid,
+                    "interactions_moved": moved,
+                    "message": f"Welcome back, {name}! Your messages have been linked to your existing account.",
+                })
 
             identity = await upgrade_to_verified(identity, display_name=name)
             return json.dumps({
