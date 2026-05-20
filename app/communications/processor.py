@@ -9,7 +9,7 @@ Avoids duplicating the agent loop logic.
 import json
 import logging
 
-# Display names for each channel — shown as the session title in the UI
+# Display names for each channel -- shown as the session title in the UI
 CHANNEL_DISPLAY_NAMES: dict[str, str] = {
     "telegram": "Telegram",
     "whatsapp": "WhatsApp",
@@ -52,6 +52,7 @@ async def process_channel_message(
         external_id: Channel-specific user ID, e.g. chat_id
         message_text: Raw message text
         plugin: The CommunicationPlugin instance (for sending replies)
+        agent_id: Optional agent ID if the channel connection is per-agent
 
     Returns:
         The reply text that was sent to the user
@@ -66,34 +67,63 @@ async def process_channel_message(
     try:
         await db.assert_session_owned(user_id, session_id)
     except PermissionError:
-        raw = db.get_raw_client()
-        raw.table("sessions").insert({
-            "id": session_id,
-            "user_id": user_id,
-            "title": CHANNEL_DISPLAY_NAMES.get(channel, channel.capitalize()),
-        }).execute()
-        logger.info("Created session %s for channel user %s", session_id, user_id)
+        try:
+            raw = db.get_raw_client()
+            session_row = {
+                "id": session_id,
+                "user_id": user_id,
+                "title": CHANNEL_DISPLAY_NAMES.get(channel, channel.capitalize()),
+            }
+            # Attach the owning agent when known so the session is bound from the start.
+            if agent_id:
+                session_row["agent_id"] = agent_id
+            raw.table("sessions").insert(session_row).execute()
+            logger.info("Created session %s for channel user %s (agent %s)",
+                        session_id, user_id, agent_id)
+        except Exception as sess_err:
+            # Another concurrent request may have created the session already;
+            # verify ownership rather than hard-failing.
+            logger.warning("Session insert failed (%s) -- checking if it already exists", sess_err)
+            await db.assert_session_owned(user_id, session_id)
 
-    # 3. If we know which agent owns this channel, auto-register the user as a
-    #    member and respond immediately — no registration gate required.
+    # 3. Route based on agent connection config.
     if agent_id:
         await db.add_agent_member(agent_id, user_id)
-        reply = await _run_agent_loop(plugin, identity, user_id, message_text, channel, agent_id=agent_id)
+
+        user_mode = "anonymous"
+        try:
+            agent_row = await db.get_agent_by_id(agent_id)
+            if agent_row:
+                user_mode = agent_row.get("user_mode", "anonymous")
+        except Exception as cfg_err:
+            logger.warning("Could not read user_mode for agent %s: %s", agent_id, cfg_err)
+
+        if user_mode == "register" and identity.user_tier == "anonymous":
+            if message_text.strip().isdigit() and len(message_text.strip()) == 6:
+                is_valid = await verify_code(channel, external_id, message_text.strip())
+                if is_valid:
+                    await upgrade_to_verified(identity)
+                    reply = "You're verified! You now have full access. How can I help you?"
+                    await plugin.send_message(external_id, reply)
+                    return reply
+            reply = await _run_registration_agent(plugin, identity, user_id, message_text, channel, agent_id=agent_id)
+        else:
+            reply = await _run_agent_loop(plugin, identity, user_id, message_text, channel, agent_id=agent_id)
     else:
-        # Legacy path: no specific agent known — fall back to tier-based routing.
+        # Legacy path: no specific agent known -- fall back to tier-based routing.
         if identity.user_tier == "anonymous":
             if message_text.strip().isdigit() and len(message_text.strip()) == 6:
                 is_valid = await verify_code(channel, external_id, message_text.strip())
                 if is_valid:
                     await upgrade_to_verified(identity)
-                    reply = "✅ You're verified! You now have full access. How can I help you?"
+                    reply = "You're verified! You now have full access. How can I help you?"
                     await plugin.send_message(external_id, reply)
                     return reply
             reply = await _run_registration_agent(plugin, identity, user_id, message_text, channel)
         else:
             reply = await _run_agent_loop(plugin, identity, user_id, message_text, channel)
 
-    # 5. Send reply
+    # 4. Send reply
     await plugin.send_message(external_id, reply)
     return reply
 
@@ -111,6 +141,8 @@ async def _run_registration_agent(
             user_id, session_id, role="user", content=message_text,
             channel=channel,
             metadata=json.dumps({"source": f"{channel}/registration"}),
+            sender_id=user_id,
+            receiver_id=agent_id,
         )
 
         # If we know which agent owns this channel, load it directly.
@@ -139,6 +171,16 @@ async def _run_registration_agent(
         context_docs = agent.get("context_documents", [])
 
         registration_prompt = get_registration_system_prompt(identity)
+
+        # Include channel context so the agent knows how to reach this user.
+        if channel and identity.external_id:
+            tool_name = f"send_{channel}_message"
+            registration_prompt += (
+                f"\n\n[Channel context: This conversation is happening over {channel}. "
+                f"The user's {channel} ID is {identity.external_id}. "
+                f"To send them a message use `{tool_name}` with chat_id={identity.external_id}.]"
+            )
+
         system_prompt = await build_system_prompt(
             context_docs, brain_context=None, user_id=user_id,
             agent_system_prompt=registration_prompt,
@@ -162,8 +204,8 @@ async def _run_registration_agent(
 
         return reply
     except Exception as e:
-        logger.error("Registration agent error: %s", e, exc_info=True)
-        return "⚠️ Sorry, something went wrong. Please try again."
+        logger.error("Registration agent error for %s: %s", user_id, e, exc_info=True)
+        return "Sorry, something went wrong. Please try again."
 
 
 async def _run_agent_loop(
@@ -179,6 +221,8 @@ async def _run_agent_loop(
             user_id, session_id, role="user", content=message_text,
             channel=channel,
             metadata=json.dumps({"source": f"{channel}/message"}),
+            sender_id=user_id,
+            receiver_id=agent_id,
         )
 
         # If we know which agent owns this channel, load it directly.
@@ -215,7 +259,7 @@ async def _run_agent_loop(
                 title = r.get("title", slug)
                 ct = r.get("compiled_truth", "")[:300]
                 rank = r.get("rank", 0)
-                lines.append(f"## {slug} — {title} (score: {rank:.2f})")
+                lines.append(f"[{slug}] {title} (score: {rank:.2f})")
                 if ct:
                     lines.append(ct)
                 lines.append("")
@@ -224,6 +268,17 @@ async def _run_agent_loop(
         agent_system_prompt = agent.get("system_prompt", "")
         if identity.user_tier == "anonymous":
             agent_system_prompt += "\n\n" + get_anonymous_limit_prompt()
+
+        # Tell the agent which channel it's on and how to reach the user proactively.
+        # This lets it call send_telegram_message (or equivalent) with the correct ID.
+        if channel and identity.external_id:
+            tool_name = f"send_{channel}_message"
+            agent_system_prompt += (
+                f"\n\n[Channel context: This conversation is happening over {channel}. "
+                f"The user's {channel} ID is {identity.external_id}. "
+                f"To proactively send them a message use the `{tool_name}` tool "
+                f"with chat_id={identity.external_id}.]"
+            )
 
         system_prompt = await build_system_prompt(
             context_docs, brain_context, user_id,
@@ -249,4 +304,4 @@ async def _run_agent_loop(
         return reply
     except Exception as e:
         logger.error("Agent loop error for %s: %s", user_id, e, exc_info=True)
-        return "⚠️ Sorry, I encountered an error. Please try again."
+        return "Sorry, I encountered an error. Please try again."

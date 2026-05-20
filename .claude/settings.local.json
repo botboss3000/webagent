@@ -6,7 +6,9 @@
       "mcp__Claude_Preview__preview_start",
       "Bash(python -c \"from app.api.oauth import router; print\\('OK', router.prefix\\)\")",
       "Bash(taskkill /F /IM python.exe)",
-      "Bash(powershell -Command \"Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force; 'done'\")"
+      "Bash(powershell -Command \"Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force; 'done'\")",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Alex R\\\\Projects\\\\webagent\" -Recurse -Directory)",
+      "Bash(Select-Object -ExpandProperty FullName)"
     ]
   }
 }

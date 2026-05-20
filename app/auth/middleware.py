@@ -1,6 +1,7 @@
 """Auth middleware — protects API routes and the main UI."""
 
 import logging
+import re
 from fastapi import Request, HTTPException
 from fastapi.responses import RedirectResponse, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -26,6 +27,17 @@ PUBLIC_PATHS = {
 # Static asset prefixes (CSS, JS, images — always public)
 PUBLIC_PREFIXES = ("/ui/", "/uploads/", "/screenshots/")
 
+# UUID pattern for public agent URLs (/{agent_id})
+_UUID_RE = re.compile(
+    r"^/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+# Anon session endpoint pattern
+_ANON_SESSION_RE = re.compile(
+    r"^/api/v1/agents/[0-9a-f-]+/anon-session$",
+    re.IGNORECASE,
+)
+
 
 class AuthMiddleware(BaseHTTPMiddleware):
     """Check JWT token on protected routes. Redirect to login.html if missing."""
@@ -40,6 +52,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # Allow public paths
         if path in PUBLIC_PATHS or any(path.startswith(p) for p in PUBLIC_PREFIXES):
+            return await call_next(request)
+
+        # Allow public agent URLs (/{uuid}) and anon-session API
+        if _UUID_RE.match(path) or _ANON_SESSION_RE.match(path):
             return await call_next(request)
 
         # Allow docs

@@ -288,6 +288,10 @@ function _renderList() {
         </div>
       </div>
       ${agent.description ? `<div class="agent-card-desc">${_esc(agent.description)}</div>` : ''}
+      <div class="agent-card-url">
+        <span class="agent-url-text">${location.origin}/${agent.id}</span>
+        <button class="agent-url-copy" title="Copy URL">📋</button>
+      </div>
       <div class="agent-card-stats">
         <span class="agent-stat"><span class="agent-stat-icon">↻</span>${turns} turns</span>
         <span class="agent-stat"><span class="agent-stat-icon">⋮</span>${temp}</span>
@@ -304,6 +308,17 @@ function _renderList() {
     const deleteBtn = card.querySelector('.delete-btn');
     if (deleteBtn) {
       deleteBtn.addEventListener('click', e => { e.stopPropagation(); _deleteAgent(agent); });
+    }
+    const copyUrlBtn = card.querySelector('.agent-url-copy');
+    if (copyUrlBtn) {
+      copyUrlBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        const url = `${location.origin}/${agent.id}`;
+        navigator.clipboard.writeText(url).then(() => {
+          copyUrlBtn.textContent = '✓';
+          setTimeout(() => { copyUrlBtn.textContent = '📋'; }, 1500);
+        });
+      });
     }
 
     card.addEventListener('click', () => _selectAgent(agent));
@@ -475,6 +490,47 @@ function _renderConfigTab(body, agent, panelEl) {
       keyInput.placeholder = _triggerKeyPlaceholder(triggerSel.value);
     });
   }
+
+  // User mode (applies across all channels)
+  const umGroup = document.createElement('div');
+  umGroup.className = 'agents-field-group';
+  const umMode = agent.user_mode || 'anonymous';
+  umGroup.innerHTML = `
+    <label class="agents-field-label">User Mode</label>
+    <span class="agents-field-hint">How this agent handles users across all channels.</span>
+    <div class="conn-user-mode" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;padding:6px 10px;border-radius:6px;border:1px solid ${umMode === 'anonymous' ? '#7aa2f7' : 'var(--border,#2a2a3a)'};background:${umMode === 'anonymous' ? 'rgba(122,162,247,0.08)' : 'transparent'};">
+        <input type="radio" name="agent-user-mode-${_esc(agent.id)}" value="anonymous" data-field="user_mode" ${umMode === 'anonymous' ? 'checked' : ''} style="accent-color:#7aa2f7;" ${!isEditable ? 'disabled' : ''}>
+        Anonymous
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;padding:6px 10px;border-radius:6px;border:1px solid ${umMode === 'register' ? '#7aa2f7' : 'var(--border,#2a2a3a)'};background:${umMode === 'register' ? 'rgba(122,162,247,0.08)' : 'transparent'};">
+        <input type="radio" name="agent-user-mode-${_esc(agent.id)}" value="register" data-field="user_mode" ${umMode === 'register' ? 'checked' : ''} style="accent-color:#7aa2f7;" ${!isEditable ? 'disabled' : ''}>
+        Register
+      </label>
+    </div>
+    <span class="conn-user-mode-hint" style="font-size:11px;color:var(--fg-muted,#565f89);display:block;margin-top:4px;">${umMode === 'register'
+      ? 'Agent guides new users to register and links accounts across channels.'
+      : 'Users get auto-generated anonymous IDs. No registration required.'}</span>
+  `;
+  if (isEditable) {
+    umGroup.querySelectorAll('[data-field="user_mode"]').forEach(radio => {
+      radio.addEventListener('change', () => {
+        const selected = umGroup.querySelector('[data-field="user_mode"]:checked')?.value || 'anonymous';
+        umGroup.querySelectorAll('.conn-user-mode label').forEach(lbl => {
+          const val = lbl.querySelector('input')?.value;
+          lbl.style.borderColor = val === selected ? '#7aa2f7' : 'var(--border,#2a2a3a)';
+          lbl.style.background = val === selected ? 'rgba(122,162,247,0.08)' : 'transparent';
+        });
+        const hintEl = umGroup.querySelector('.conn-user-mode-hint');
+        if (hintEl) {
+          hintEl.textContent = selected === 'register'
+            ? 'Agent guides new users to register and links accounts across channels.'
+            : 'Users get auto-generated anonymous IDs. No registration required.';
+        }
+      });
+    });
+  }
+  body.appendChild(umGroup);
 
   // Five prompt sections
   const FIELDS = [
@@ -1043,18 +1099,29 @@ async function _renderConnectionsTab(body, agent) {
   body.innerHTML = '<div class="conn-loading">Loading connections…</div>';
 
   let connections = [];
+  let userRole = 'member';
   try {
     const res = await fetch(`/api/v1/agents/${agent.id}/connections?user_id=${encodeURIComponent(app.currentUserId)}`);
     if (res.ok) {
       const data = await res.json();
       connections = data.connections || [];
+      userRole = data.user_role || 'member';
     }
   } catch (e) {
     body.innerHTML = `<div class="conn-loading" style="color:#f7768e">Failed to load connections: ${_esc(e.message)}</div>`;
     return;
   }
 
+  const canEdit = userRole === 'admin';
+
   body.innerHTML = '';
+
+  if (!canEdit) {
+    const notice = document.createElement('div');
+    notice.style.cssText = 'font-size:11px;color:#565f89;padding:8px 12px;background:#1a1b26;border:1px solid #2a2a4a;border-radius:6px;margin-bottom:12px;line-height:1.5;';
+    notice.textContent = 'Integration toggles are managed by agent admins. You can connect your accounts on enabled integrations.';
+    body.appendChild(notice);
+  }
 
   const sections = [
     { key: 'channel',     label: 'Channels',     hint: 'How this agent sends and receives messages.' },
@@ -1081,7 +1148,7 @@ async function _renderConnectionsTab(body, agent) {
     grid.className = 'conn-grid';
 
     for (const conn of items) {
-      grid.appendChild(_buildConnectionCard(agent, conn));
+      grid.appendChild(_buildConnectionCard(agent, conn, canEdit));
     }
 
     header.addEventListener('click', () => {
@@ -1166,12 +1233,16 @@ async function _loadTelegramCardStatus(body) {
   });
 }
 
-function _buildConnectionCard(agent, conn) {
+function _buildConnectionCard(agent, conn, canEdit = true) {
   const isComingSoon = conn.status === 'coming_soon';
   const card = document.createElement('div');
   card.className = 'conn-card' + (isComingSoon ? ' coming-soon' : '') + (conn.enabled ? ' enabled' : '');
 
   const connIcon = icon(_CONN_ICONS[conn.connection_type] || 'plug', { size: '16px' });
+
+  const toggleTitle = canEdit
+    ? (conn.enabled ? 'Disable' : 'Enable')
+    : (conn.enabled ? 'Enabled (admin only)' : 'Disabled (admin only)');
 
   // ── Always-visible header ──
   const header = document.createElement('div');
@@ -1181,8 +1252,8 @@ function _buildConnectionCard(agent, conn) {
     <span class="conn-name">${_esc(conn.display_name)}</span>
     ${isComingSoon
       ? '<span class="conn-badge coming-soon">Coming soon</span>'
-      : `<label class="conn-toggle-wrap" title="${conn.enabled ? 'Disable' : 'Enable'}">
-           <input type="checkbox" class="conn-toggle" ${conn.enabled ? 'checked' : ''}>
+      : `<label class="conn-toggle-wrap" title="${toggleTitle}">
+           <input type="checkbox" class="conn-toggle" ${conn.enabled ? 'checked' : ''} ${canEdit ? '' : 'disabled'}>
            <span class="conn-toggle-track"></span>
          </label>`
     }
@@ -1190,7 +1261,7 @@ function _buildConnectionCard(agent, conn) {
   card.appendChild(header);
 
   // ── Expandable body (provider-specific, hidden by default) ──
-  const connBody = _buildConnectionBody(conn);
+  const connBody = _buildConnectionBody(conn, canEdit);
   if (connBody) {
     card.appendChild(connBody);
     // Click header (not toggle) to expand/collapse
@@ -1203,15 +1274,15 @@ function _buildConnectionCard(agent, conn) {
 
   if (isComingSoon) return card;
 
-  // Toggle handler
+  // Toggle handler (admin only)
   const toggle = card.querySelector('.conn-toggle');
-  if (toggle) {
+  if (toggle && canEdit) {
     toggle.addEventListener('change', () => _saveConnection(agent, conn, card, toggle.checked));
   }
 
-  // Save button handler
+  // Save button handler (admin only)
   const saveBtn = card.querySelector('.conn-save-btn');
-  if (saveBtn) {
+  if (saveBtn && canEdit) {
     saveBtn.addEventListener('click', () => {
       const enabled = toggle ? toggle.checked : conn.enabled;
       _saveConnection(agent, conn, card, enabled);
@@ -1231,13 +1302,24 @@ function _buildConnectionCard(agent, conn) {
   return card;
 }
 
-function _buildConnectionBody(conn) {
+function _buildConnectionBody(conn, canEdit = true) {
   if (conn.status === 'coming_soon') return null;
 
   const el = document.createElement('div');
   el.className = 'conn-fields';
 
   if (conn.connection_type === 'telegram') {
+    if (!canEdit) {
+      const tokenVal = conn.config?.bot_token || '';
+      el.innerHTML = `
+        <label class="conn-field-label">Bot Token</label>
+        <div class="conn-token-row">
+          <input type="text" class="agents-input" value="${tokenVal ? '••••••' + _esc(tokenVal.slice(-4)) : 'Not configured'}" readonly style="font-family:monospace;opacity:0.6;">
+        </div>
+        <div class="conn-tg-mode-info" style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:18px;"></div>
+      `;
+      return el;
+    }
     const tokenVal = conn.config?.bot_token || '';
     el.innerHTML = `
       <label class="conn-field-label">Bot Token</label>
@@ -1336,6 +1418,10 @@ function _buildConnectionBody(conn) {
         </div>
         <span class="conn-save-msg"></span>
       `;
+    } else if (!canEdit && !conn.enabled) {
+      el.innerHTML = `
+        <span style="font-size:12px;color:#565f89;">Not enabled by admin</span>
+      `;
     } else {
       el.innerHTML = `
         <button class="agents-btn primary" data-oauth-connect="${ct}" style="width:100%;">Connect ${oauthInfo.label}</button>
@@ -1433,7 +1519,6 @@ async function _saveConnection(agent, conn, cardEl, enabled) {
 
   const config = {};
   if (conn.connection_type === 'telegram' && tokenInput) {
-    // Use cached real value (prevents Chrome autofill from corrupting the token)
     config.bot_token = (tokenInput.dataset.realValue ?? tokenInput.value).trim();
   }
 
@@ -3067,6 +3152,8 @@ async function _saveChanges(agent, barEl, panelEl) {
   for (const k of ['agent_prompt','user_prompt','skills_prompt','tasks_prompt','misc_prompt']) {
     const v = fv(k); if (v !== undefined) updates[k] = v;
   }
+  const umChecked = panelEl.querySelector('[data-field="user_mode"]:checked');
+  if (umChecked) updates.user_mode = umChecked.value;
 
   try {
     const res = await fetch(`/api/v1/agents/${agent.id}`, {

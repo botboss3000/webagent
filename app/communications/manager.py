@@ -139,7 +139,7 @@ class PluginManager:
             logger.info("Webhook base URL is set (%s), skipping auto-polling", base_url)
             return
         for plugin in self.get_enabled_plugins():
-            if hasattr(plugin, 'start_polling'):
+            if hasattr(plugin, "start_polling"):
                 await plugin.start_polling()
                 logger.info("Auto-started polling for %s", plugin.name)
         # Also start polling for any per-agent Telegram tokens not in registry
@@ -179,9 +179,15 @@ class PluginManager:
             from app.communications.plugins.telegram import TelegramPlugin
             key = f"telegram:{token[-6:]}"
 
-            # Stop and remove any existing poller for this token so we never
-            # end up with duplicate pollers after a reload_agent_connections call.
+            # Preserve the last acknowledged update_id so we don't re-deliver old
+            # messages when the poller is restarted (e.g. after a connection save).
+            last_update_id = 0
             existing = self._plugins.get(key)
+            if existing and hasattr(existing, "_last_update_id"):
+                last_update_id = existing._last_update_id
+                logger.info("Preserving update offset %d for token ...%s",
+                            last_update_id, token[-4:])
+
             if existing and hasattr(existing, "stop_polling"):
                 await existing.stop_polling()
                 logger.info("Stopped existing poller for token ...%s before reload", token[-4:])
@@ -193,14 +199,34 @@ class PluginManager:
             plugin._agent_id = agent_id  # so the polling loop routes messages to this agent
             self._plugins[key] = plugin
             if hasattr(plugin, "start_polling"):
-                await plugin.start_polling()
-                logger.info("Started extra Telegram poller for agent %s (token ...%s)",
-                            agent_id, token[-4:])
+                await plugin.start_polling(initial_update_id=last_update_id)
+                logger.info("Started extra Telegram poller for agent %s (token ...%s, offset=%d)",
+                            agent_id, token[-4:], last_update_id)
         except Exception as e:
             logger.error("Failed to start extra Telegram poller: %s", e)
 
     async def reload_agent_connections(self) -> None:
-        """Reload per-agent Telegram connections (called after UI saves a new token)."""
+        """Reload per-agent Telegram connections (called after UI saves a new token).
+
+        Only starts polling when running in offline/local mode.  In webhook mode the
+        inbound webhook endpoint already handles messages, so starting a concurrent
+        polling loop would cause the same message to be processed twice.
+        """
+        env_url = os.environ.get("WEBHOOK_BASE_URL", "").rstrip("/")
+        _local_hints = ("localhost", "127.0.0.1", "0.0.0.0")
+        if env_url and not any(h in env_url for h in _local_hints):
+            logger.info(
+                "reload_agent_connections: webhook mode (WEBHOOK_BASE_URL=%s) -- skipping polling",
+                env_url,
+            )
+            return
+        base_url = self._registry.get("webhook_base_url", "")
+        if base_url and not any(h in base_url for h in _local_hints):
+            logger.info(
+                "reload_agent_connections: webhook mode (registry url=%s) -- skipping polling",
+                base_url,
+            )
+            return
         await self._start_agent_connection_polling()
 
 

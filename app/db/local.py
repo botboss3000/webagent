@@ -161,7 +161,8 @@ CREATE TABLE IF NOT EXISTS agents (
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     turn_count INTEGER NOT NULL DEFAULT 0,
     admin_users TEXT NOT NULL DEFAULT '[]',
-    member_users TEXT NOT NULL DEFAULT '[]'
+    member_users TEXT NOT NULL DEFAULT '[]',
+    user_mode TEXT NOT NULL DEFAULT 'anonymous'
 );
 
 CREATE INDEX IF NOT EXISTS idx_agents_user ON agents(user_id);
@@ -1041,6 +1042,13 @@ class LocalBackend(StorageBackend):
             )
             conn.commit()
             logger.info("Migration 016: added admin_users/member_users, backfilled agent owners as admins")
+
+            # ── Migration 017: add user_mode to agents ──
+            ag_cols_017 = {row[1] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
+            if "user_mode" not in ag_cols_017:
+                conn.execute("ALTER TABLE agents ADD COLUMN user_mode TEXT NOT NULL DEFAULT 'anonymous'")
+                conn.commit()
+                logger.info("Added agents.user_mode column")
 
             # ── Seed: p5js visualizer skill template ──
             self._seed_visualizer_template(conn)
@@ -3552,7 +3560,7 @@ class LocalBackend(StorageBackend):
             "model", "temperature", "max_tokens",
             "allowed_tools", "custom_tool_ids",
             "trigger_type", "trigger_key", "loop_logic",
-            "safety_policy",
+            "safety_policy", "user_mode",
         }
         safe = {}
         for k, v in updates.items():
@@ -3749,6 +3757,10 @@ class _LocalQueryBuilder:
         self._filters.append(("in", field, values))
         return self
 
+    def neq(self, field: str, value: Any) -> "_LocalQueryBuilder":
+        self._filters.append(("neq", field, value))
+        return self
+
     def ilike(self, field: str, pattern: str) -> "_LocalQueryBuilder":
         self._filters.append(("ilike", field, pattern))
         return self
@@ -3768,6 +3780,9 @@ class _LocalQueryBuilder:
         for op, field, value in self._filters:
             if op == "eq":
                 clauses.append(f"{field} = ?")
+                params.append(value)
+            elif op == "neq":
+                clauses.append(f"{field} != ?")
                 params.append(value)
             elif op == "in":
                 placeholders = ",".join("?" for _ in value)

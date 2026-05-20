@@ -249,8 +249,13 @@ class TelegramPlugin(CommunicationPlugin):
             self._bot_token = token
         return token
 
-    async def start_polling(self) -> None:
-        """Start the background long-polling loop."""
+    async def start_polling(self, initial_update_id: int = 0) -> None:
+        """Start the background long-polling loop.
+
+        Args:
+            initial_update_id: Resume from this offset instead of 0, so already-processed
+                messages are not re-delivered when the poller is restarted.
+        """
         if self.is_polling:
             logger.info("Telegram polling already running")
             return
@@ -262,9 +267,9 @@ class TelegramPlugin(CommunicationPlugin):
                 logger.info("Deleted existing webhook before starting polling")
             except Exception:
                 pass
-        self._last_update_id = 0
+        self._last_update_id = initial_update_id
         self._polling_task = asyncio.create_task(self._polling_loop())
-        logger.info("Telegram polling started")
+        logger.info("Telegram polling started (offset=%d)", initial_update_id)
 
     async def stop_polling(self) -> None:
         """Stop the background polling loop."""

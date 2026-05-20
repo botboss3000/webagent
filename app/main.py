@@ -255,6 +255,30 @@ async def login_ui():
 async def health_check():
     return {"status": "healthy"}
 
+
+import re as _re
+_AGENT_UUID_RE = _re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    _re.IGNORECASE,
+)
+
+@app.get("/{agent_id}", response_class=HTMLResponse, include_in_schema=False)
+async def public_agent_chat(agent_id: str):
+    """Serve the main UI with a specific agent pre-selected (public access)."""
+    if not _AGENT_UUID_RE.match(agent_id):
+        return HTMLResponse("<p>Not found</p>", status_code=404)
+    from app.db import get_db as _get_db
+    db = _get_db()
+    agent = await db.get_agent_by_id(agent_id)
+    if not agent:
+        return HTMLResponse("<p>Agent not found</p>", status_code=404)
+    if not _ROOT_INDEX_HTML.is_file():
+        return HTMLResponse("<p>Missing index.html</p>", status_code=404)
+    html = _ROOT_INDEX_HTML.read_text(encoding="utf-8")
+    inject = f'<script>window.__agentId = "{agent_id}";</script>\n</head>'
+    html = html.replace("</head>", inject, 1)
+    return HTMLResponse(content=html)
+
 @app.get("/test", response_class=HTMLResponse)
 async def test_interface():
     """Serve the test interface HTML page."""
