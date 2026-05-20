@@ -6,7 +6,7 @@
     max-width: 130px;
   }
   .status-select:focus { border-color: #7dcfff; }
-  #user-label, #session-label { display: flex; align-items: center; gap: 4px; color: #565f89; font-size: 11px; }
+  #user-label, #session-label, #agent-label { display: flex; align-items: center; gap: 4px; color: #565f89; font-size: 11px; }
   .status-btn {
     background: #2a2a4a;
     border: 1px solid #3b4261;

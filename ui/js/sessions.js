@@ -12,6 +12,69 @@ export function generateUUID() {
   return crypto.randomUUID();
 }
 
+// ── Agent selector ───────────────────────────────────────────────────────────
+
+export async function populateAgentSelect(userId) {
+  const sel = document.getElementById('agent-select');
+  if (!sel || !userId) return;
+
+  try {
+    const [agentsRes, templatesRes, profileRes] = await Promise.all([
+      fetch(apiPath(`/api/v1/agents?user_id=${encodeURIComponent(userId)}`)),
+      fetch(apiPath(`/api/v1/agents/templates?user_id=${encodeURIComponent(userId)}`)),
+      fetch(apiPath(`/api/v1/user/profile?user_id=${encodeURIComponent(userId)}`)),
+    ]);
+    const agentsData = agentsRes.ok ? await agentsRes.json() : { agents: [] };
+    const templatesData = templatesRes.ok ? await templatesRes.json() : { templates: [] };
+    const profileData = profileRes.ok ? await profileRes.json() : {};
+
+    const defaultAgentId = profileData.default_agent_id || 'default';
+    const saved = localStorage.getItem('selectedAgentId');
+
+    sel.innerHTML = '';
+
+    const templates = (templatesData.templates || []).filter(t => t.id !== 'admin-agent');
+    for (const t of templates) {
+      const opt = document.createElement('option');
+      opt.value = t.id;
+      opt.dataset.type = 'template';
+      const label = t.name || t.id;
+      opt.textContent = label.length > 22 ? label.slice(0, 22) + '...' : label;
+      opt.title = t.name || t.id;
+      sel.appendChild(opt);
+    }
+
+    const customs = agentsData.agents || [];
+    if (customs.length && templates.length) {
+      const sep = document.createElement('option');
+      sep.disabled = true;
+      sep.textContent = '───────────';
+      sel.appendChild(sep);
+    }
+    for (const a of customs) {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.dataset.type = 'custom';
+      const label = a.name || a.id.slice(0, 12);
+      opt.textContent = label.length > 22 ? label.slice(0, 22) + '...' : label;
+      opt.title = a.name || a.id;
+      sel.appendChild(opt);
+    }
+
+    // Pre-select: saved > default > first option
+    let target = saved || defaultAgentId;
+    let found = false;
+    for (const o of sel.options) {
+      if (o.value === target) { o.selected = true; found = true; break; }
+    }
+    if (!found && sel.options.length) sel.options[0].selected = true;
+
+    app.currentAgentId = sel.value || '';
+  } catch (e) {
+    console.warn('Failed to load agents for selector:', e);
+  }
+}
+
 export async function populateUserSelect() {
   // Update user ID display in header
   const topUserIdVal = document.getElementById('top-user-id-val');
@@ -286,7 +349,29 @@ export function initSessions() {
     // WS is per-user — no reconnect needed on session switch
   });
 
+  // ── Agent selector change handler ──
+  const agentSelect = document.getElementById('agent-select');
+  if (agentSelect) {
+    agentSelect.addEventListener('change', () => {
+      const newAgentId = agentSelect.value;
+      if (!newAgentId || newAgentId === app.currentAgentId) return;
+      app.currentAgentId = newAgentId;
+      localStorage.setItem('selectedAgentId', newAgentId);
+      // Sessions are bound to agents — start a fresh session
+      app.currentSessionId = generateUUID();
+      localStorage.setItem('terminalSessionId', app.currentSessionId);
+      app.chatMessages.innerHTML = '';
+      app.addChatBubble('agent', 'Switched agent. New session started.');
+      populateSessionSelect(app.currentUserId);
+      streamSessionChanged();
+      loopSessionChanged();
+      loopVisualSessionChanged();
+      autoAgentSessionChanged();
+    });
+  }
+
   populateUserSelect().then(function () {
+    if (app.currentUserId) populateAgentSelect(app.currentUserId);
     if (app.currentSessionId) {
       loadSessionChat(app.currentSessionId);
     }

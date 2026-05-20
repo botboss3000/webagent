@@ -118,11 +118,13 @@ async function sendMessage() {
   app.isProcessing = true;
 
   // Build payload
-  const payload = addAttachmentsToMessage({
+  const base = {
     message: text,
     session_id: app.currentSessionId,
     user_id: app.currentUserId,
-  });
+  };
+  if (app.currentAgentId) base.agent_id = app.currentAgentId;
+  const payload = addAttachmentsToMessage(base);
   if (app.clearPendingAttachments) app.clearPendingAttachments();
 
   // Reset any previous SSE reader
