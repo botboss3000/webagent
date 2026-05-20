@@ -67,7 +67,21 @@ export async function populateAgentSelect(userId) {
     for (const o of sel.options) {
       if (o.value === target) { o.selected = true; found = true; break; }
     }
-    if (!found && sel.options.length) sel.options[0].selected = true;
+
+    // For public agent URLs: if the specific agent isn't in the list (anon user
+    // doesn't own it), add a synthetic option so the correct UUID is sent to chat.
+    if (!found && window.__agentId) {
+      sel.innerHTML = '';
+      const opt = document.createElement('option');
+      opt.value = window.__agentId;
+      const label = window.__agentName || window.__agentId.slice(0, 12);
+      opt.textContent = label.length > 22 ? label.slice(0, 22) + '...' : label;
+      opt.title = window.__agentName || window.__agentId;
+      opt.selected = true;
+      sel.appendChild(opt);
+    } else if (!found && sel.options.length) {
+      sel.options[0].selected = true;
+    }
 
     app.currentAgentId = sel.value || '';
 

@@ -96,7 +96,7 @@ def _safe_agent(agent: dict) -> dict:
     result = {k: v for k, v in agent.items() if k not in HIDDEN}
     # Deserialize JSON list fields so the client receives actual arrays
     import json as _json
-    for field in ("allowed_tools", "custom_tool_ids", "loop_logic"):
+    for field in ("allowed_tools", "custom_tool_ids", "loop_logic", "admin_users", "member_users"):
         raw = result.get(field)
         if isinstance(raw, str):
             try:
@@ -180,8 +180,7 @@ async def list_agent_templates(
 @router.get("/agents")
 async def list_agents(user_id: str = Query(...)):
     """
-    List agents from the agents table that are assigned to the user
-    (user_id = this user or owner_user_id = this user).
+    List agents from the agents table where the user is in admin_users.
     System templates are excluded — only actual agent rows are returned.
     Each entry includes a 'source' field: 'custom'.
     """
@@ -219,7 +218,7 @@ async def get_agent(agent_id: str, user_id: str = Query(...)):
     # Check custom agents table
     agents = await db.list_agents_for_user(user_id)
     for a in agents:
-        if a.get("id") == agent_id or a.get("user_id") == agent_id:
+        if a.get("id") == agent_id:
             return {"agent": _safe_agent(a)}
     raise HTTPException(status_code=404, detail="Agent not found.")
 
@@ -236,7 +235,7 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest):
                if k not in ("user_id",) and v is not None}
     updated = await db.update_agent_fields(
         agent_id=agent_id,
-        owner_user_id=req.user_id,
+        user_id=req.user_id,
         updates=updates,
     )
     if updated is None:
@@ -251,7 +250,7 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest):
 async def delete_agent(agent_id: str, user_id: str = Query(...)):
     """Delete a custom agent. Cannot delete system agents."""
     db = get_db()
-    deleted = await db.delete_custom_agent(agent_id=agent_id, owner_user_id=user_id)
+    deleted = await db.delete_custom_agent(agent_id=agent_id, user_id=user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Agent not found, not owned by this user, or is a system agent.")
     return {"deleted": True, "agent_id": agent_id}
@@ -821,6 +820,22 @@ async def twitch_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     from app.admin.integrations import revoke_and_delete_twitch
     deleted = await revoke_and_delete_twitch(user_id)
     return {"status": "ok", "deleted": deleted}
+
+
+class ManageAdminRequest(BaseModel):
+    user_id: str        # caller (must already be admin)
+    target_user_id: str # user to add as admin
+
+
+@router.post("/agents/{agent_id}/admins")
+async def add_agent_admin(agent_id: str, req: ManageAdminRequest):
+    """Add target_user_id to an agent's admin_users list. Caller must be an existing admin."""
+    db = get_db()
+    if not await _is_agent_admin(db, agent_id, req.user_id):
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    added = await db.add_agent_admin(agent_id, req.target_user_id)
+    roles = await db.get_agent_roles(agent_id)
+    return {"admin_users": roles["admin_users"], "added": added}
 
 
 @router.post("/agents/{agent_id}/anon-session")

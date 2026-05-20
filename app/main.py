@@ -21,9 +21,10 @@ load_dotenv(dotenv_path=_DOTENV_PATH)
 from app.admin.settings import apply_provider_config
 apply_provider_config()
 
-from fastapi import FastAPI
+import traceback
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -92,6 +93,13 @@ app = FastAPI(
     description="webAgent — FastAPI service with tool-calling agent loop and WebSocket streaming",
     version="0.1.0"
 )
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    logger.error("Unhandled exception on %s %s\n%s", request.method, request.url.path, tb)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error", "error": str(exc)})
 
 
 # ── Favicon ──
@@ -275,7 +283,8 @@ async def public_agent_chat(agent_id: str):
     if not _ROOT_INDEX_HTML.is_file():
         return HTMLResponse("<p>Missing index.html</p>", status_code=404)
     html = _ROOT_INDEX_HTML.read_text(encoding="utf-8")
-    inject = f'<script>window.__agentId = "{agent_id}";</script>\n</head>'
+    agent_name = agent.get("name", "Agent")
+    inject = f'<script>window.__agentId = "{agent_id}"; window.__agentName = {repr(agent_name)};</script>\n</head>'
     html = html.replace("</head>", inject, 1)
     return HTMLResponse(content=html)
 
@@ -326,6 +335,16 @@ async def startup():
             await pm.start_polling_for_offline_plugins()
     except Exception as e:
         logger.warning("Failed to register/poll on startup: %s", e)
+
+    # ── Backfill admin_users for existing agents ──
+    try:
+        from app.db import get_db as _get_db_backfill
+        _db_bf = _get_db_backfill()
+        _n = await _db_bf.backfill_agent_admin_users()
+        if _n:
+            logger.info("Backfilled admin_users for %d agents", _n)
+    except Exception as _bf_err:
+        logger.warning("admin_users backfill failed: %s", _bf_err)
 
     # ── Seed LLM config from env vars into auth_elements (cloud-first deploy) ──
     api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")

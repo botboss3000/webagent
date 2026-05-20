@@ -660,9 +660,9 @@ class StorageBackend(ABC):
         ...
 
     @abstractmethod
-    async def delete_custom_agent(self, agent_id: str, owner_user_id: str) -> bool:
+    async def delete_custom_agent(self, agent_id: str, user_id: str) -> bool:
         """
-        Delete a custom agent owned by owner_user_id.
+        Delete a custom agent. Caller must be in admin_users.
         Returns True if a row was deleted, False if not found or not owned.
         """
         ...
@@ -681,11 +681,11 @@ class StorageBackend(ABC):
     async def update_agent_fields(
         self,
         agent_id: str,
-        owner_user_id: str,
+        user_id: str,
         updates: dict,
     ) -> Optional[dict]:
         """
-        Update editable fields on a custom agent owned by owner_user_id.
+        Update editable fields on a custom agent. Caller must be in admin_users.
         Returns the updated agent row dict, or None if not found/not owned.
         """
         ...

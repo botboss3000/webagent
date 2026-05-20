@@ -636,6 +636,16 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             )
         elif req_agent_id:
             agent = await db.get_agent_by_id(req_agent_id)
+            if agent:
+                admin_users = agent.get("admin_users") or []
+                if isinstance(admin_users, str):
+                    import json as _json
+                    try:
+                        admin_users = _json.loads(admin_users)
+                    except Exception:
+                        admin_users = []
+                if request.user_id not in admin_users:
+                    await db.add_agent_member(req_agent_id, request.user_id)
         else:
             agent = await db.get_agent_for_user(request.user_id)
         if agent is None:
