@@ -38,7 +38,7 @@ DEFAULT_NODE_ORDER: List[str] = [
     "load_context", "copy_defaults", "skip_gate", "memory_search", "resolve_attach",
     "build_prompt", "build_history",
     # LOOP INIT (stream_agent_events, before while-loop)
-    "load_provider", "load_tools", "assemble_msgs",
+    "load_provider", "load_tools", "integration_status", "assemble_msgs",
     # INFERENCE (per-turn while-loop)
     "interrupt_chk", "turn_counter", "permission_chk", "build_tool_defs",
     "parallel_mode", "llm_call",

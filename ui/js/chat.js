@@ -12,6 +12,27 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+const URL_RE = /https?:\/\/[^\s<>"]+/g;
+
+function linkifyText(text) {
+  const frag = document.createDocumentFragment();
+  let last = 0;
+  let match;
+  URL_RE.lastIndex = 0;
+  while ((match = URL_RE.exec(text)) !== null) {
+    if (match.index > last) frag.appendChild(document.createTextNode(text.slice(last, match.index)));
+    const a = document.createElement('a');
+    a.href = match[0];
+    a.textContent = match[0];
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    frag.appendChild(a);
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+  return frag;
+}
+
 function addChatBubble(role, text, extraClass, imageUrl) {
   const bubble = document.createElement('div');
   bubble.className = 'chat-bubble ' + role + (extraClass ? ' ' + extraClass : '');
@@ -22,7 +43,7 @@ function addChatBubble(role, text, extraClass, imageUrl) {
     label.textContent = 'You';
     bubble.appendChild(label);
   }
-  bubble.appendChild(document.createTextNode(text));
+  bubble.appendChild(linkifyText(text));
   if (imageUrl) {
     const img = document.createElement('img');
     img.src = imageUrl;
@@ -72,7 +93,7 @@ function updateLastBubble(text, extraClass, imageUrl) {
   const last = bubbles[bubbles.length - 1];
   if (!last) return;
   while (last.childNodes.length > 1) last.removeChild(last.lastChild);
-  last.appendChild(document.createTextNode(text));
+  last.appendChild(linkifyText(text));
   if (imageUrl) {
     const img = document.createElement('img');
     img.src = imageUrl;
@@ -235,6 +256,17 @@ function sendFromExpand() {
   app.chatInput.value = text;
   closeChatExpand();
   sendMessage();
+}
+
+export function abortChatStream() {
+  if (app._sseAbortController) {
+    app._sseAbortController.abort();
+    app._sseAbortController = null;
+  }
+  window.__sseActive = false;
+  app.agentBuffer = '';
+  app.isProcessing = false;
+  if (app.chatSend) app.chatSend.disabled = false;
 }
 
 export function initChat() {

@@ -528,7 +528,7 @@ async def stream_agent_events(
             agent_name = _agent_rec["name"]
 
     load_start = time.time()
-    tools = await load_tools(user_id, agent_template_id=agent_template_id,
+    tools = await load_tools(user_id, agent_id=agent_id, agent_template_id=agent_template_id,
                               is_admin_agent=bool(_agent_rec.get("is_admin_agent")) if _agent_rec else False,
                               allowed_tools=allowed_tools)
     load_duration = int((time.time() - load_start) * 1000)
@@ -538,6 +538,62 @@ async def stream_agent_events(
            "step": "load_tools", "count": len(tools),
            "names": list(tools.keys()),
            "duration_ms": load_duration}
+
+    # ── Integration status: inject available OAuth integrations into system prompt ──
+    _OAUTH_PROVIDER_TYPES = {"google", "microsoft", "yahoo", "dropbox", "meta",
+                              "twitter", "linkedin", "tiktok", "pinterest",
+                              "reddit", "snapchat", "twitch"}
+    _int_summary: list = []
+    if agent_id:
+        try:
+            _int_rows = await db.get_agent_connections(agent_id)
+            _enabled_oauth = [r for r in _int_rows
+                              if r.get("enabled") and r.get("connection_type") in _OAUTH_PROVIDER_TYPES]
+            for _r in _enabled_oauth:
+                _ct = _r["connection_type"]
+                try:
+                    _elem = await db.auth_element_get(user_id, _ct, "oauth")
+                except Exception:
+                    _elem = None
+                if _elem and _elem.get("secret_ref"):
+                    import json as _jmod
+                    _cfg = _elem.get("config") or {}
+                    if isinstance(_cfg, str):
+                        try:
+                            _cfg = _jmod.loads(_cfg)
+                        except Exception:
+                            _cfg = {}
+                    _email = _cfg.get("email") or _cfg.get("name") or ""
+                    _int_summary.append({
+                        "provider": _ct,
+                        "connected": True,
+                        "account": _email,
+                    })
+                else:
+                    _int_summary.append({
+                        "provider": _ct,
+                        "connected": False,
+                    })
+        except Exception:
+            pass
+
+    if _int_summary:
+        _int_lines = []
+        for _s in _int_summary:
+            if _s["connected"]:
+                _acc = f' as {_s["account"]}' if _s.get("account") else ""
+                _int_lines.append(f'- {_s["provider"].title()}: connected{_acc}')
+            else:
+                _int_lines.append(
+                    f'- {_s["provider"].title()}: not connected'
+                    f' — call check_oauth_connection("{_s["provider"]}") to get a connect link for the user'
+                )
+        system_prompt = (system_prompt or "") + "\n\n## Available Integrations\n" + "\n".join(_int_lines)
+
+    yield {"type": "pipeline", "level": "pipeline",
+           "step": "integration_status",
+           "count": len(_int_summary),
+           "integrations": _int_summary}
 
     # Build message list
     messages: List[Dict[str, Any]] = []
@@ -1151,7 +1207,7 @@ async def stream_agent_events(
                                 from app.tools.loader import load_tools as _load_tools
                                 # Fetch delegated agent record for is_admin_agent flag
                                 _deleg_rec = await db.resolve_agent(user_id, _tpl_id) if hasattr(db, "resolve_agent") else {}
-                                tools = await _load_tools(user_id, agent_template_id=_tpl_id,
+                                tools = await _load_tools(user_id, agent_id=agent_id, agent_template_id=_tpl_id,
                                                           is_admin_agent=bool(_deleg_rec.get("is_admin_agent")))
 
                                 # Inject new agent's system prompt as a system message

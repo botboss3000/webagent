@@ -47,6 +47,7 @@
     "build_history",
     "load_provider",
     "load_tools",
+    "integration_status",
     "assemble_msgs",
     "interrupt_chk",
     "turn_counter",

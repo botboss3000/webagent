@@ -1200,19 +1200,25 @@ async function _loadTelegramCardStatus(body) {
       const card = btn.closest('.conn-fields');
       const tokenInput = card && card.querySelector('.conn-token-input');
       const statusEl = card && card.querySelector('.conn-tg-test-status');
-      const token = tokenInput ? tokenInput.value.trim() : '';
-      if (!token) {
+      const rawToken = tokenInput ? (tokenInput.dataset.realValue?.trim() || tokenInput.value.trim()) : '';
+      const isMasked = rawToken.includes('•');
+      const agentId = btn.dataset.agentId || null;
+      const connType = btn.dataset.connType || 'telegram';
+      if (!rawToken && !agentId) {
         if (statusEl) { statusEl.textContent = 'Enter a token first.'; statusEl.style.color = '#e0af68'; }
         return;
       }
       btn.disabled = true;
       btn.textContent = 'Testing...';
       if (statusEl) statusEl.textContent = '';
+      const payload = isMasked
+        ? { agent_id: agentId, connection_type: connType }
+        : { token: rawToken, agent_id: agentId, connection_type: connType };
       try {
         const r = await fetch('/admin/communications/plugins/telegram/test-token', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token }),
+          body: JSON.stringify(payload),
         });
         const result = await r.json();
         if (statusEl) {
@@ -1261,7 +1267,7 @@ function _buildConnectionCard(agent, conn, canEdit = true) {
   card.appendChild(header);
 
   // ── Expandable body (provider-specific, hidden by default) ──
-  const connBody = _buildConnectionBody(conn, canEdit);
+  const connBody = _buildConnectionBody(conn, canEdit, agent.id);
   if (connBody) {
     card.appendChild(connBody);
     // Click header (not toggle) to expand/collapse
@@ -1302,7 +1308,7 @@ function _buildConnectionCard(agent, conn, canEdit = true) {
   return card;
 }
 
-function _buildConnectionBody(conn, canEdit = true) {
+function _buildConnectionBody(conn, canEdit = true, agentId = null) {
   if (conn.status === 'coming_soon') return null;
 
   const el = document.createElement('div');
@@ -1330,7 +1336,7 @@ function _buildConnectionBody(conn, canEdit = true) {
       <span class="conn-field-hint">From <a href="https://t.me/BotFather" target="_blank" style="color:#7aa2f7">@BotFather</a> &mdash; format: <code style="font-size:10px;color:#a9b1d6;">1234567890:ABCdef...</code></span>
       <div class="conn-tg-mode-info" style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:18px;"></div>
       <div style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-        <button class="agents-btn conn-tg-test-btn" style="font-size:11px;padding:4px 10px;">Test Connection</button>
+        <button class="agents-btn conn-tg-test-btn" data-agent-id="${agentId || ''}" data-conn-type="telegram" style="font-size:11px;padding:4px 10px;">Test Connection</button>
         <span class="conn-tg-test-status" style="font-size:11px;"></span>
       </div>
       <span class="conn-save-msg"></span>
@@ -2329,7 +2335,7 @@ function _lvShowEditPanel(nd, nodeEl, container, agent) {
     }
   }
 
-  const _INFO_NODES = new Set(['load_context', 'build_prompt', 'build_history', 'load_tools', 'assemble_msgs']);
+  const _INFO_NODES = new Set(['load_context', 'build_prompt', 'build_history', 'load_tools', 'integration_status', 'assemble_msgs']);
   if (!_INFO_NODES.has(nd.id)) {
   const saveBar = document.createElement('div');
   saveBar.className = 'lv-edit-save-bar';

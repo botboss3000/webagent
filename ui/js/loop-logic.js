@@ -175,6 +175,7 @@ function eventToNodeId(event) {
 
       // LOOP INIT
       case 'load_tools':            return 'load_tools';
+      case 'integration_status':    return 'integration_status';
 
       // INFERENCE (per-turn)
       case 'turn_start':            return 'interrupt_chk';

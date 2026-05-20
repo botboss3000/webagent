@@ -67,6 +67,8 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "restart_server":                {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": True,  "agent_types": ["admin"]},
     # ── Auth / comms ──
     "register_user":                 {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
+    # ── OAuth integration ──
+    "check_oauth_connection":        {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
 }
 
 
@@ -97,7 +99,7 @@ class ToolLoader:
     def __init__(self):
         self._client = get_db().get_raw_client()
 
-    async def load_tools(self, user_id: str, agent_template_id: Optional[str] = None, is_admin_agent: bool = False) -> Dict[str, 'ToolInfo']:
+    async def load_tools(self, user_id: str, agent_id: str = "", agent_template_id: Optional[str] = None, is_admin_agent: bool = False) -> Dict[str, 'ToolInfo']:
         """
         Load all active tools for a user from the tools table.
         Each tool's `code` field contains the full async function to execute.
@@ -135,11 +137,11 @@ class ToolLoader:
             logger.debug(f"Loaded tool {name} for user {user_id}")
 
         # ── Inject built-in tools (override any DB versions) ──
-        self._inject_builtin_tools(tools, user_id, agent_template_id=agent_template_id, is_admin_agent=is_admin_agent)
+        self._inject_builtin_tools(tools, user_id, agent_id=agent_id, agent_template_id=agent_template_id, is_admin_agent=is_admin_agent)
 
         return tools
 
-    def _inject_builtin_tools(self, tools: Dict[str, ToolInfo], user_id: str, agent_template_id: Optional[str] = None, is_admin_agent: bool = False) -> None:
+    def _inject_builtin_tools(self, tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "", agent_template_id: Optional[str] = None, is_admin_agent: bool = False) -> None:
         """Inject built-in tools that are always available regardless of DB state."""
 
         # ── create_tool (always available) ──
@@ -1096,6 +1098,138 @@ class ToolLoader:
             },
         )
 
+        # ── check_oauth_connection ──────────────────────────────────────────────
+        _captured_agent_id = agent_id
+
+        async def _check_oauth_connection_wrapper(provider: str) -> str:
+            import json as _json
+            from app.db import get_db as _get_db
+            from app.admin.integrations import (
+                get_google_creds, build_google_authorize_url,
+                get_microsoft_creds, build_microsoft_authorize_url,
+                get_yahoo_creds, build_yahoo_authorize_url,
+                get_dropbox_creds, build_dropbox_authorize_url,
+                get_meta_creds, build_meta_authorize_url,
+                get_twitter_creds, build_twitter_authorize_url,
+                get_linkedin_creds, build_linkedin_authorize_url,
+                get_tiktok_creds, build_tiktok_authorize_url,
+                get_pinterest_creds, build_pinterest_authorize_url,
+                get_reddit_creds, build_reddit_authorize_url,
+                get_snapchat_creds, build_snapchat_authorize_url,
+                get_twitch_creds, build_twitch_authorize_url,
+            )
+
+            _aliases = {"facebook": "meta", "instagram": "meta", "x": "twitter", "gmail": "google", "drive": "google", "calendar": "google", "outlook": "microsoft"}
+            provider = _aliases.get(provider.lower().strip(), provider.lower().strip())
+
+            _supported = {
+                "google":    (get_google_creds,    build_google_authorize_url,    "Google"),
+                "microsoft": (get_microsoft_creds, build_microsoft_authorize_url, "Microsoft"),
+                "yahoo":     (get_yahoo_creds,     build_yahoo_authorize_url,     "Yahoo"),
+                "dropbox":   (get_dropbox_creds,   build_dropbox_authorize_url,   "Dropbox"),
+                "meta":      (get_meta_creds,      build_meta_authorize_url,      "Facebook/Instagram"),
+                "twitter":   (get_twitter_creds,   build_twitter_authorize_url,   "Twitter/X"),
+                "linkedin":  (get_linkedin_creds,  build_linkedin_authorize_url,  "LinkedIn"),
+                "tiktok":    (get_tiktok_creds,    build_tiktok_authorize_url,    "TikTok"),
+                "pinterest": (get_pinterest_creds, build_pinterest_authorize_url, "Pinterest"),
+                "reddit":    (get_reddit_creds,    build_reddit_authorize_url,    "Reddit"),
+                "snapchat":  (get_snapchat_creds,  build_snapchat_authorize_url,  "Snapchat"),
+                "twitch":    (get_twitch_creds,    build_twitch_authorize_url,    "Twitch"),
+            }
+
+            if provider not in _supported:
+                return _json.dumps({
+                    "status": "unsupported",
+                    "message": f"Provider '{provider}' is not recognized. Supported: {', '.join(_supported)}.",
+                })
+
+            get_creds_fn, build_url_fn, display_name = _supported[provider]
+            _db = _get_db()
+
+            # Check if integration is enabled for this agent
+            if _captured_agent_id:
+                try:
+                    rows = await _db.get_agent_connections(_captured_agent_id)
+                    conn_row = next((r for r in rows if r["connection_type"] == provider), None)
+                    if not conn_row or not conn_row.get("enabled"):
+                        return _json.dumps({
+                            "status": "not_enabled",
+                            "message": f"{display_name} integration is not enabled for this agent. Ask your agent admin to enable it in the Integrations tab.",
+                        })
+                except Exception:
+                    pass  # If we can't check, proceed to creds check
+
+            # Check if admin has configured OAuth credentials
+            try:
+                client_id, _ = await get_creds_fn()
+            except Exception:
+                client_id = None
+            if not client_id:
+                return _json.dumps({
+                    "status": "not_configured",
+                    "message": f"{display_name} integration has not been configured. An admin must set up the OAuth credentials in App Config → Integrations.",
+                })
+
+            # Check if user already has a connected token
+            try:
+                elem = await _db.auth_element_get(user_id, provider, "oauth")
+                if elem and elem.get("secret_ref"):
+                    config = elem.get("config") or {}
+                    if isinstance(config, str):
+                        try:
+                            config = _json.loads(config)
+                        except Exception:
+                            config = {}
+                    email = config.get("email") or config.get("name") or ""
+                    display = f" as {email}" if email else ""
+                    return _json.dumps({
+                        "status": "connected",
+                        "message": f"Your {display_name} account is already connected{display}.",
+                        "email": email,
+                    })
+            except Exception:
+                pass
+
+            # Generate the connect URL
+            try:
+                result = await build_url_fn(user_id=user_id, agent_id=_captured_agent_id)
+                authorize_url = result[0] if isinstance(result, tuple) else result
+            except Exception as e:
+                return _json.dumps({
+                    "status": "error",
+                    "message": f"Could not generate a connect link for {display_name}: {e}",
+                })
+
+            return _json.dumps({
+                "status": "not_connected",
+                "message": f"{display_name} integration is set up. Please connect your account: [{display_name}]({authorize_url})",
+                "authorize_url": authorize_url,
+            })
+
+        tools["check_oauth_connection"] = ToolInfo(
+            name="check_oauth_connection",
+            handler=_check_oauth_connection_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "description": (
+                            "The OAuth provider to check. Call this whenever the user wants to do something "
+                            "that requires a connected account and you are not sure if they have connected it. "
+                            "Examples: 'check my email' or 'read my Gmail' → google; 'post to Twitter' → twitter; "
+                            "'access my Drive' or 'check my calendar' → google; 'read Outlook' → microsoft; "
+                            "'upload to Dropbox' → dropbox; 'post to LinkedIn' → linkedin; "
+                            "'post to Facebook/Instagram' → meta. "
+                            "Supported values: google, microsoft, yahoo, dropbox, meta, twitter, linkedin, "
+                            "tiktok, pinterest, reddit, snapchat, twitch."
+                        ),
+                    },
+                },
+                "required": ["provider"],
+            },
+        )
+
 
     def _make_handler(self, row: dict, user_id: str) -> Callable:
         """Compile tool code and wrap it with user context."""
@@ -1176,6 +1310,7 @@ _tool_loader = ToolLoader()
 
 async def load_tools(
     user_id: str,
+    agent_id: str = "",
     agent_template_id: Optional[str] = None,
     is_admin_agent: bool = False,
     allowed_tools: Optional[List[str]] = None,
@@ -1196,7 +1331,7 @@ async def load_tools(
     Returns:
         Dictionary mapping tool names to ToolInfo objects.
     """
-    tools = await _tool_loader.load_tools(user_id, agent_template_id=agent_template_id, is_admin_agent=is_admin_agent)
+    tools = await _tool_loader.load_tools(user_id, agent_id=agent_id, agent_template_id=agent_template_id, is_admin_agent=is_admin_agent)
 
     # Propagate requires_confirmation from BUILTIN_TOOL_METADATA to built-in ToolInfo entries.
     # DB tools already have this set from their row; built-ins need it applied from metadata.

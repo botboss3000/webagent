@@ -5,6 +5,7 @@ import { loopSessionChanged } from './loop.js';
 import { loopVisualSessionChanged } from './loop-logic.js';
 import { autoAgentSessionChanged } from './autoagent.js';
 import { streamSessionChanged } from './stream.js';
+import { abortChatStream } from './chat.js';
 import { apiPath } from './config.js';
 import { icon } from './icons.js';
 
@@ -344,6 +345,7 @@ export function initSessions() {
 
   sessionSelect.addEventListener('change', (e) => {
     resetDeleteConfirm();
+    abortChatStream();
     const sid = e.target.value;
     if (!sid || sid === '__new_session__') {
       app.currentSessionId = generateUUID();
@@ -374,6 +376,7 @@ export function initSessions() {
     agentSelect.addEventListener('change', () => {
       const newAgentId = agentSelect.value;
       if (!newAgentId || newAgentId === app.currentAgentId) return;
+      abortChatStream();
       app.currentAgentId = newAgentId;
       localStorage.setItem('selectedAgentId', newAgentId);
       // Sessions are bound to agents — start a fresh session

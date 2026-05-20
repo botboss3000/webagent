@@ -45,6 +45,9 @@
     "load_tools": [
       { "name": "Settings → Agent",      "type": "admin",   "desc": "Configure which tools are enabled or disabled for this agent" }
     ],
+    "integration_status": [
+      { "name": "Settings → Integrations", "type": "admin", "desc": "Enable OAuth integrations for this agent in the Integrations tab" }
+    ],
     "assemble_msgs": [
       { "name": "Settings → Agent",      "type": "admin",   "desc": "Assembled as: [system_prompt, ...history, {role:\"user\"}]" }
     ],
@@ -241,6 +244,16 @@
         { "key": "Sources", "val": "BUILTIN_TOOL_METADATA + skills table" },
         { "key": "Filter",  "val": "agent.allowed_tools = list of disabled tool names" },
         { "key": "Output",  "val": "List of tool dicts: name, description, parameters schema" }
+      ]
+    },
+    "integration_status": {
+      "desc": "Checks which OAuth integrations are enabled for this agent and whether the user has connected them. Injects a summary into the system prompt so the agent knows which services are available — and can surface a connect link via check_oauth_connection() when the user needs to link an account.",
+      "details": [
+        { "key": "Source",       "val": "agent_connections table (enabled OAuth providers) + auth_elements table (user tokens)" },
+        { "key": "Injects",      "val": "## Available Integrations block appended to system prompt (only when integrations exist)" },
+        { "key": "Connected",    "val": "Provider listed with connected account email" },
+        { "key": "Not connected","val": "Provider listed with instruction to call check_oauth_connection(provider)" },
+        { "key": "User action",  "val": "Agent calls check_oauth_connection() → returns clickable link → user completes OAuth in popup (same link as Integrations tab)" }
       ]
     },
     "assemble_msgs": {
