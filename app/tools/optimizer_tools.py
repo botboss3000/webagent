@@ -688,7 +688,7 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
     #     The agent row is then copied into the temp DB (same ID) so chat.py can find
     #     it after switching the db pointer to the temp DB for this session.
     _agent_cols = (
-        "id", "user_id", "owner_user_id", "template_id", "system_prompt",
+        "id", "template_id", "system_prompt",
         "max_turn_count", "model", "provider", "temperature", "max_tokens",
         "status", "metadata", "agent_prompt", "user_prompt",
         "skills_prompt", "tasks_prompt", "misc_prompt", "created_at", "updated_at",

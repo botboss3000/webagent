@@ -133,9 +133,7 @@ CREATE TABLE IF NOT EXISTS agent_templates (
 
 CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
     template_id TEXT,
-    owner_user_id TEXT,
     name TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
     is_user_default INTEGER NOT NULL DEFAULT 0,
@@ -164,8 +162,6 @@ CREATE TABLE IF NOT EXISTS agents (
     member_users TEXT NOT NULL DEFAULT '[]',
     user_mode TEXT NOT NULL DEFAULT 'anonymous'
 );
-
-CREATE INDEX IF NOT EXISTS idx_agents_user ON agents(user_id);
 
 -- ============================================================
 -- Agent Connections: per-agent channel/integration config
@@ -624,7 +620,10 @@ class LocalBackend(StorageBackend):
             # Detect old schema and rename before SCHEMA_SQL runs
             cursor = conn.execute("PRAGMA table_info(agents)")
             cols = {row[1] for row in cursor.fetchall()}
-            if cols and "user_id" not in cols:
+            # Only rename when truly ancient v1 schema (no user_id AND no admin_users)
+            if cols and "user_id" not in cols and "admin_users" not in cols:
+                # Drop stale agents_v1 if it exists from a previous partial run
+                conn.execute("DROP TABLE IF EXISTS agents_v1")
                 conn.execute("ALTER TABLE agents RENAME TO agents_v1")
                 conn.commit()
 
@@ -693,8 +692,8 @@ class LocalBackend(StorageBackend):
                 _mig_now = _now_iso()
                 conn.execute(
                     """INSERT OR IGNORE INTO agents
-                       (id, user_id, max_turn_count, status, assigned_at, created_at, updated_at)
-                       SELECT id, 'migrated_default', max_turn_count, 'active',
+                       (id, max_turn_count, status, assigned_at, created_at, updated_at)
+                       SELECT id, max_turn_count, 'active',
                               ?, ?, ?
                        FROM agents_v1 WHERE id = 'default_agent'""",
                     (_mig_now, _mig_now, _mig_now),
@@ -867,7 +866,6 @@ class LocalBackend(StorageBackend):
             # ── Migration: add multi-agent fields to agents ──
             ag_cols = {row[1] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
             _ag_new_cols = [
-                ("owner_user_id",  "TEXT"),
                 ("is_user_default","INTEGER NOT NULL DEFAULT 0"),
                 ("name",           "TEXT NOT NULL DEFAULT ''"),
                 ("description",    "TEXT NOT NULL DEFAULT ''"),
@@ -925,24 +923,21 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Dropped UNIQUE constraint on agents.user_id")
 
-            # ── Migration: backfill agents.owner_user_id for existing default agents ──
-            # Default agents have user_id = actual_user_id (no underscore prefix from template)
-            # Optimizer/closer agents have user_id like "opt_planner_USER_ID" — owner_user_id
-            # is set at creation time for new agents; existing ones are left NULL by this migration
-            # (they were created before owner_user_id was populated for opt_ agents).
-            conn.execute(
-                """UPDATE agents SET owner_user_id = user_id
-                   WHERE owner_user_id IS NULL
-                   AND (template_id = 'default' OR template_id IS NULL)
-                   AND user_id NOT LIKE 'opt_%'"""
-            )
-            conn.commit()
+            # ── Migration: backfill admin_users for existing default agents (legacy path) ──
+            _ag_cols_uid = {row[1] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
+            if "owner_user_id" in _ag_cols_uid and "user_id" in _ag_cols_uid:
+                conn.execute(
+                    """UPDATE agents SET owner_user_id = user_id
+                       WHERE owner_user_id IS NULL
+                       AND (template_id = 'default' OR template_id IS NULL)
+                       AND user_id NOT LIKE 'opt_%'"""
+                )
+                conn.commit()
 
             # ── Migration: set is_user_default=1 for existing default agents ──
             conn.execute(
                 """UPDATE agents SET is_user_default = 1
                    WHERE (template_id = 'default' OR template_id IS NULL)
-                   AND user_id NOT LIKE 'opt_%'
                    AND is_user_default = 0"""
             )
             conn.commit()
@@ -951,8 +946,7 @@ class LocalBackend(StorageBackend):
             # Any agent with owner_user_id set but no name yet gets the default 'autoAgent'.
             conn.execute(
                 """UPDATE agents SET name = 'autoAgent'
-                   WHERE (name IS NULL OR name = '')
-                   AND owner_user_id IS NOT NULL"""
+                   WHERE (name IS NULL OR name = '')"""
             )
             conn.commit()
             logger.info("Backfilled agents.name = 'autoAgent' for user-owned agents")
@@ -1035,11 +1029,18 @@ class LocalBackend(StorageBackend):
             if "member_users" not in ag_cols_016:
                 conn.execute("ALTER TABLE agents ADD COLUMN member_users TEXT NOT NULL DEFAULT '[]'")
                 logger.info("Added agents.member_users column")
-            # Backfill: agent owner (user_id) becomes the first admin
-            conn.execute(
-                """UPDATE agents SET admin_users = json_array(user_id)
-                   WHERE admin_users = '[]' AND user_id IS NOT NULL AND user_id != ''"""
-            )
+            # Backfill: agent owner becomes the first admin
+            _ag_cols_016b = {row[1] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
+            if "user_id" in _ag_cols_016b:
+                conn.execute(
+                    """UPDATE agents SET admin_users = json_array(user_id)
+                       WHERE admin_users = '[]' AND user_id IS NOT NULL AND user_id != ''"""
+                )
+            elif "owner_user_id" in _ag_cols_016b:
+                conn.execute(
+                    """UPDATE agents SET admin_users = json_array(owner_user_id)
+                       WHERE admin_users = '[]' AND owner_user_id IS NOT NULL AND owner_user_id != ''"""
+                )
             conn.commit()
             logger.info("Migration 016: added admin_users/member_users, backfilled agent owners as admins")
 
@@ -1049,6 +1050,166 @@ class LocalBackend(StorageBackend):
                 conn.execute("ALTER TABLE agents ADD COLUMN user_mode TEXT NOT NULL DEFAULT 'anonymous'")
                 conn.commit()
                 logger.info("Added agents.user_mode column")
+
+            # ── Migration 018: drop agents.user_id and owner_user_id columns ──
+            ag_cols_018 = {row[1] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
+            _cols_to_drop_018 = [c for c in ("user_id", "owner_user_id") if c in ag_cols_018]
+            if _cols_to_drop_018:
+                try:
+                    conn.execute("DROP INDEX IF EXISTS idx_agents_user")
+                    for _col in _cols_to_drop_018:
+                        conn.execute(f"ALTER TABLE agents DROP COLUMN {_col}")
+                    conn.commit()
+                    logger.info("Migration 018: dropped agents columns: %s", _cols_to_drop_018)
+                except Exception as _e018:
+                    logger.warning("Migration 018: could not drop via ALTER TABLE DROP COLUMN (%s); falling back to table recreation", _e018)
+                    conn.rollback()
+                    # Build SELECT list from columns that exist (minus the ones to drop)
+                    _keep_018 = [r[1] for r in conn.execute("PRAGMA table_info(agents)").fetchall() if r[1] not in ("user_id", "owner_user_id")]
+                    col_list_018 = ", ".join(_keep_018)
+                    conn.execute("PRAGMA foreign_keys = OFF")
+                    # Use explicit DDL so PRIMARY KEY is preserved (CREATE TABLE ... AS SELECT drops constraints)
+                    conn.executescript(f"""
+                        CREATE TABLE agents_018 (
+                            id TEXT PRIMARY KEY,
+                            template_id TEXT,
+                            name TEXT NOT NULL DEFAULT '',
+                            description TEXT NOT NULL DEFAULT '',
+                            is_user_default INTEGER NOT NULL DEFAULT 0,
+                            system_prompt TEXT NOT NULL DEFAULT '',
+                            max_turn_count INTEGER NOT NULL DEFAULT 10,
+                            model TEXT,
+                            provider TEXT,
+                            temperature REAL NOT NULL DEFAULT 0.0,
+                            max_tokens INTEGER NOT NULL DEFAULT 4096,
+                            status TEXT NOT NULL DEFAULT 'active',
+                            metadata TEXT NOT NULL DEFAULT '{{}}',
+                            agent_prompt TEXT NOT NULL DEFAULT '',
+                            user_prompt TEXT NOT NULL DEFAULT '',
+                            skills_prompt TEXT NOT NULL DEFAULT '',
+                            tasks_prompt TEXT NOT NULL DEFAULT '',
+                            misc_prompt TEXT NOT NULL DEFAULT '',
+                            bootstrap_tools TEXT NOT NULL DEFAULT '',
+                            allowed_tools TEXT NOT NULL DEFAULT '[]',
+                            custom_tool_ids TEXT NOT NULL DEFAULT '[]',
+                            trigger_type TEXT NOT NULL DEFAULT 'user_input',
+                            trigger_key TEXT,
+                            loop_logic TEXT NOT NULL DEFAULT '[]',
+                            safety_policy TEXT NOT NULL DEFAULT '{{}}',
+                            is_admin_agent INTEGER NOT NULL DEFAULT 0,
+                            assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+                            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                            turn_count INTEGER NOT NULL DEFAULT 0,
+                            admin_users TEXT NOT NULL DEFAULT '[]',
+                            member_users TEXT NOT NULL DEFAULT '[]',
+                            user_mode TEXT NOT NULL DEFAULT 'anonymous'
+                        );
+                        INSERT INTO agents_018 ({col_list_018}) SELECT {col_list_018} FROM agents;
+                        DROP TABLE agents;
+                        ALTER TABLE agents_018 RENAME TO agents;
+                    """)
+                    conn.execute("PRAGMA foreign_keys = ON")
+                    conn.commit()
+                    logger.info("Migration 018 (fallback): recreated agents table without user_id/owner_user_id")
+
+            # ── Migration 019: repair agents table if PRIMARY KEY was lost by migration 018 fallback ──
+            # The CREATE TABLE ... AS SELECT fallback drops all constraints; check and fix.
+            _pk_col_019 = next(
+                (r[1] for r in conn.execute("PRAGMA table_info(agents)").fetchall() if r[5] == 1),
+                None,
+            )
+            if _pk_col_019 != "id":
+                logger.warning("Migration 019: agents.id is not PRIMARY KEY (pk=%s); recreating table", _pk_col_019)
+                _keep_019 = [r[1] for r in conn.execute("PRAGMA table_info(agents)").fetchall() if r[1] not in ("user_id", "owner_user_id")]
+                col_list_019 = ", ".join(_keep_019)
+                conn.execute("PRAGMA foreign_keys = OFF")
+                conn.executescript(f"""
+                    CREATE TABLE agents_019 (
+                        id TEXT PRIMARY KEY,
+                        template_id TEXT,
+                        name TEXT NOT NULL DEFAULT '',
+                        description TEXT NOT NULL DEFAULT '',
+                        is_user_default INTEGER NOT NULL DEFAULT 0,
+                        system_prompt TEXT NOT NULL DEFAULT '',
+                        max_turn_count INTEGER NOT NULL DEFAULT 10,
+                        model TEXT,
+                        provider TEXT,
+                        temperature REAL NOT NULL DEFAULT 0.0,
+                        max_tokens INTEGER NOT NULL DEFAULT 4096,
+                        status TEXT NOT NULL DEFAULT 'active',
+                        metadata TEXT NOT NULL DEFAULT '{{}}',
+                        agent_prompt TEXT NOT NULL DEFAULT '',
+                        user_prompt TEXT NOT NULL DEFAULT '',
+                        skills_prompt TEXT NOT NULL DEFAULT '',
+                        tasks_prompt TEXT NOT NULL DEFAULT '',
+                        misc_prompt TEXT NOT NULL DEFAULT '',
+                        bootstrap_tools TEXT NOT NULL DEFAULT '',
+                        allowed_tools TEXT NOT NULL DEFAULT '[]',
+                        custom_tool_ids TEXT NOT NULL DEFAULT '[]',
+                        trigger_type TEXT NOT NULL DEFAULT 'user_input',
+                        trigger_key TEXT,
+                        loop_logic TEXT NOT NULL DEFAULT '[]',
+                        safety_policy TEXT NOT NULL DEFAULT '{{}}',
+                        is_admin_agent INTEGER NOT NULL DEFAULT 0,
+                        assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        turn_count INTEGER NOT NULL DEFAULT 0,
+                        admin_users TEXT NOT NULL DEFAULT '[]',
+                        member_users TEXT NOT NULL DEFAULT '[]',
+                        user_mode TEXT NOT NULL DEFAULT 'anonymous'
+                    );
+                    INSERT INTO agents_019 ({col_list_019}) SELECT {col_list_019} FROM agents;
+                    DROP TABLE agents;
+                    ALTER TABLE agents_019 RENAME TO agents;
+                """)
+                conn.execute("PRAGMA foreign_keys = ON")
+                conn.commit()
+                logger.info("Migration 019: agents table repaired with proper PRIMARY KEY")
+
+            # ── Migration 020: fix agent_connections FK if it references stale agents_v1 ──
+            # SQLite auto-updates FK refs when a table is renamed with foreign_keys=ON.
+            # If agents was renamed → agents_v1 during pre-migration, agent_connections
+            # ends up with REFERENCES agents_v1(id) instead of agents(id).
+            _ac_fk_rows = conn.execute("PRAGMA foreign_key_list(agent_connections)").fetchall()
+            _ac_fk_wrong = any(
+                r[2] != "agents" for r in _ac_fk_rows if r[3] == "agent_id"
+            )
+            if _ac_fk_wrong or not any(r[3] == "agent_id" for r in _ac_fk_rows):
+                logger.warning("Migration 020: agent_connections FK is stale; recreating table")
+                conn.execute("PRAGMA foreign_keys = OFF")
+                conn.executescript("""
+                    CREATE TABLE agent_connections_020 (
+                        id              TEXT PRIMARY KEY,
+                        agent_id        TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+                        connection_type TEXT NOT NULL,
+                        section         TEXT NOT NULL DEFAULT 'channel',
+                        enabled         INTEGER NOT NULL DEFAULT 0,
+                        config          TEXT NOT NULL DEFAULT '{}',
+                        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                        UNIQUE(agent_id, connection_type)
+                    );
+                    INSERT OR IGNORE INTO agent_connections_020
+                        SELECT id, agent_id, connection_type, section, enabled, config, created_at, updated_at
+                        FROM agent_connections;
+                    DROP TABLE agent_connections;
+                    ALTER TABLE agent_connections_020 RENAME TO agent_connections;
+                    CREATE INDEX IF NOT EXISTS idx_agent_conn_agent ON agent_connections(agent_id);
+                    CREATE INDEX IF NOT EXISTS idx_agent_conn_type  ON agent_connections(connection_type);
+                """)
+                conn.execute("PRAGMA foreign_keys = ON")
+                conn.commit()
+                logger.info("Migration 020: agent_connections FK fixed to reference agents")
+            # Clean up any stale agents_v1 left by the pre-migration rename
+            _has_agents_v1 = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agents_v1'"
+            ).fetchone()
+            if _has_agents_v1:
+                conn.execute("DROP TABLE agents_v1")
+                conn.commit()
+                logger.info("Migration 020: dropped stale agents_v1 table")
 
             # ── Seed: p5js visualizer skill template ──
             self._seed_visualizer_template(conn)
@@ -2394,7 +2555,8 @@ class LocalBackend(StorageBackend):
         conn = self._get_conn()
         try:
             row = conn.execute(
-                "SELECT * FROM agents WHERE user_id = ? LIMIT 1", (user_id,)
+                """SELECT * FROM agents WHERE is_user_default = 1
+                   AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?) LIMIT 1""", (user_id,)
             ).fetchone()
             return dict(row) if row else None
         finally:
@@ -2422,7 +2584,11 @@ class LocalBackend(StorageBackend):
         """
         conn = self._get_conn()
         try:
-            row = conn.execute("SELECT * FROM agents WHERE user_id = ?", (user_id,)).fetchone()
+            row = conn.execute(
+                """SELECT * FROM agents WHERE is_user_default = 1
+                   AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?) LIMIT 1""",
+                (user_id,)
+            ).fetchone()
             if not row:
                 return None
             agent_dict = dict(row)
@@ -2486,14 +2652,14 @@ class LocalBackend(StorageBackend):
             agent_id = _uuid()
             conn.execute(
                 """INSERT INTO agents
-                   (id, user_id, owner_user_id, name,
+                   (id, name,
                     system_prompt, max_turn_count, model, provider,
                     temperature, max_tokens, status, metadata,
                     agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
                     bootstrap_tools, trigger_type, trigger_key, loop_logic,
-                    is_user_default, assigned_at, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
-                (agent_id, user_id, user_id, tpl_data.get("name", "autoAgent"),
+                    is_user_default, admin_users, assigned_at, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
+                (agent_id, tpl_data.get("name", "autoAgent"),
                  tpl_data["system_prompt"],
                  tpl_data["max_turn_count"],
                  tpl_data["model"],
@@ -2510,6 +2676,7 @@ class LocalBackend(StorageBackend):
                  tpl_data.get("trigger_type", "user_input"),
                  tpl_data.get("trigger_key"),
                  tpl_data.get("loop_logic", "[]"),
+                 json.dumps([user_id]),
                  now, now, now),
             )
             conn.commit()
@@ -2633,10 +2800,11 @@ class LocalBackend(StorageBackend):
             # Ensure templates are seeded from JSON
             self._seed_agent_templates_from_json_files(conn)
 
-            # Check for existing agent with matching user_id + template_id
+            # Check for existing agent with matching admin_users + template_id
             row = conn.execute(
-                "SELECT * FROM agents WHERE user_id = ? AND template_id = ? LIMIT 1",
-                (user_id, template_id),
+                """SELECT * FROM agents WHERE template_id = ?
+                   AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?) LIMIT 1""",
+                (template_id, user_id),
             ).fetchone()
             if row:
                 ad = dict(row)
@@ -2819,11 +2987,11 @@ class LocalBackend(StorageBackend):
                 _owner = user_id
                 conn.execute(
                     """INSERT INTO agents
-                       (id, user_id, owner_user_id, template_id, name, system_prompt, max_turn_count, model, provider,
+                       (id, template_id, name, system_prompt, max_turn_count, model, provider,
                         temperature, max_tokens, status, metadata, trigger_type, trigger_key, loop_logic,
-                        is_admin_agent, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)""",
-                    (agent_id, user_id, _owner, template_id,
+                        is_admin_agent, admin_users, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (agent_id, template_id,
                      agent.get("name", ""),
                      agent.get("system_prompt", ""),
                      agent.get("max_turn_count", 10),
@@ -2836,6 +3004,7 @@ class LocalBackend(StorageBackend):
                      agent.get("trigger_key"),
                      agent.get("loop_logic", "[]"),
                      1 if agent.get("is_admin_agent") else 0,
+                     json.dumps([user_id]),
                      now, now),
                 )
                 conn.commit()
@@ -3353,7 +3522,14 @@ class LocalBackend(StorageBackend):
         try:
             rows = conn.execute(
                 """SELECT * FROM agents
-                   WHERE user_id = ? OR owner_user_id = ?
+                   WHERE EXISTS (
+                           SELECT 1 FROM json_each(admin_users)
+                           WHERE value = ?
+                         )
+                      OR EXISTS (
+                           SELECT 1 FROM json_each(member_users)
+                           WHERE value = ?
+                         )
                    ORDER BY created_at ASC""",
                 (user_id, user_id),
             ).fetchall()
@@ -3388,7 +3564,14 @@ class LocalBackend(StorageBackend):
                 try:
                     srows = sconn.execute(
                         """SELECT * FROM agents
-                           WHERE user_id = ? OR owner_user_id = ?
+                           WHERE EXISTS (
+                                   SELECT 1 FROM json_each(admin_users)
+                                   WHERE value = ?
+                                 )
+                              OR EXISTS (
+                                   SELECT 1 FROM json_each(member_users)
+                                   WHERE value = ?
+                                 )
                            ORDER BY created_at ASC""",
                         (user_id, user_id),
                     ).fetchall()
@@ -3453,7 +3636,7 @@ class LocalBackend(StorageBackend):
         try:
             conn.execute(
                 """INSERT INTO agents
-                   (id, user_id, owner_user_id, name, description,
+                   (id, name, description,
                     system_prompt, max_turn_count, model, provider,
                     temperature, max_tokens, metadata,
                     agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
@@ -3461,10 +3644,11 @@ class LocalBackend(StorageBackend):
                     allowed_tools, custom_tool_ids,
                     trigger_type, trigger_key, loop_logic,
                     safety_policy, is_admin_agent,
+                    admin_users,
                     created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'[]','[]',?,?,?,'{}',?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'[]','[]',?,?,?,'{}',?,?,?,?)""",
                 (
-                    agent_id, user_id, user_id, name, description,
+                    agent_id, name, description,
                     tpl.get("system_prompt", ""),
                     tpl.get("max_turn_count", 40),
                     tpl.get("model", ""),
@@ -3483,6 +3667,7 @@ class LocalBackend(StorageBackend):
                     tpl.get("trigger_key"),
                     tpl.get("loop_logic", "[]"),
                     1 if tpl.get("is_admin_agent") else 0,
+                    json.dumps([user_id]),
                     now, now,
                 ),
             )
@@ -3495,9 +3680,9 @@ class LocalBackend(StorageBackend):
         result["source"] = "custom"
         return result
 
-    async def delete_custom_agent(self, agent_id: str, owner_user_id: str) -> bool:
+    async def delete_custom_agent(self, agent_id: str, user_id: str) -> bool:
         """
-        Delete a custom agent owned by owner_user_id.
+        Delete a custom agent. Caller must be in admin_users.
         System agents (template rows) cannot be deleted via this path.
         Returns True if a row was deleted, False if not found or not owned.
         """
@@ -3505,9 +3690,9 @@ class LocalBackend(StorageBackend):
         try:
             cursor = conn.execute(
                 """DELETE FROM agents
-                   WHERE id = ? AND owner_user_id = ?
-                   AND (is_user_default = 0 OR owner_user_id IS NOT NULL)""",
-                (agent_id, owner_user_id),
+                   WHERE id = ? AND is_user_default = 0
+                   AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)""",
+                (agent_id, user_id),
             )
             conn.commit()
             return cursor.rowcount > 0
@@ -3544,11 +3729,11 @@ class LocalBackend(StorageBackend):
     async def update_agent_fields(
         self,
         agent_id: str,
-        owner_user_id: str,
+        user_id: str,
         updates: dict,
     ) -> Optional[dict]:
         """
-        Update editable fields on a custom agent owned by owner_user_id.
+        Update editable fields on a custom agent. Caller must be in admin_users.
         Allowed fields: name, description, max_turn_count,
                         agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt.
         Returns the updated agent row dict, or None if not found/not owned.
@@ -3577,8 +3762,9 @@ class LocalBackend(StorageBackend):
             conn = self._get_conn()
             try:
                 row = conn.execute(
-                    "SELECT * FROM agents WHERE id = ? AND owner_user_id = ?",
-                    (agent_id, owner_user_id),
+                    """SELECT * FROM agents WHERE id = ?
+                       AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)""",
+                    (agent_id, user_id),
                 ).fetchone()
             finally:
                 conn.close()
@@ -3587,12 +3773,12 @@ class LocalBackend(StorageBackend):
         now = _now_iso()
         safe["updated_at"] = now
         set_clause = ", ".join(f"{k} = ?" for k in safe)
-        values = list(safe.values()) + [agent_id, owner_user_id]
+        values = list(safe.values()) + [agent_id, user_id]
 
         conn = self._get_conn()
         try:
             cursor = conn.execute(
-                f"UPDATE agents SET {set_clause} WHERE id = ? AND owner_user_id = ?",
+                f"UPDATE agents SET {set_clause} WHERE id = ? AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)",
                 values,
             )
             conn.commit()
@@ -3707,6 +3893,54 @@ class LocalBackend(StorageBackend):
             finally:
                 conn.close()
         return True
+
+    async def add_agent_admin(self, agent_id: str, user_id: str) -> bool:
+        """
+        Add user_id to an agent's admin_users list if not already present.
+        Returns True if newly added, False if already an admin.
+        """
+        roles = await self.get_agent_roles(agent_id)
+        if user_id in roles["admin_users"]:
+            return False
+        new_admins = roles["admin_users"] + [user_id]
+        now = _now_iso()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE agents SET admin_users = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(new_admins), now, agent_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return True
+
+    async def backfill_agent_admin_users(self) -> int:
+        """
+        One-time migration: for agents where admin_users is empty, no owner can be determined.
+        Returns number of rows updated.
+        """
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT id FROM agents
+                   WHERE admin_users = '[]' OR admin_users IS NULL OR admin_users = ''"""
+            ).fetchall()
+            updated = 0
+            now = _now_iso()
+            for row in rows:
+                owner = None
+                if owner:
+                    conn.execute(
+                        "UPDATE agents SET admin_users = ?, updated_at = ? WHERE id = ?",
+                        (json.dumps([owner]), now, row["id"]),
+                    )
+                    updated += 1
+            conn.commit()
+            return updated
+        finally:
+            conn.close()
 
     async def is_agent_member(self, agent_id: str, user_id: str) -> bool:
         """Return True if user_id is a member or admin of the agent."""

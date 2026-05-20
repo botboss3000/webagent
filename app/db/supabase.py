@@ -711,7 +711,8 @@ class SupabaseBackend(StorageBackend):
             res = (
                 self._client.table("agents")
                 .select("*")
-                .eq("user_id", user_id)
+                .eq("is_user_default", True)
+                .contains("admin_users", [user_id])
                 .limit(1)
                 .execute()
             )
@@ -751,7 +752,8 @@ class SupabaseBackend(StorageBackend):
                 .select(
                     "*, context(id, context_type, title, content, tags, created_at, updated_at)"
                 )
-                .eq("user_id", user_id)
+                .eq("is_user_default", True)
+                .contains("admin_users", [user_id])
                 .limit(1)
             )
             if context_types:
@@ -835,7 +837,8 @@ class SupabaseBackend(StorageBackend):
             now = datetime.now(timezone.utc).isoformat()
             agent_data = {
                 "id": str(uuid.uuid4()),
-                "user_id": user_id,
+                "is_user_default": True,
+                "admin_users": [user_id],
                 "system_prompt": tpl["system_prompt"],
                 "max_turn_count": tpl["max_turn_count"],
                 "model": tpl["model"],
