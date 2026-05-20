@@ -76,7 +76,7 @@
     color: #c0caf5;
     flex-shrink: 0;
   }
-  #header-user-session { display: flex; align-items: center; gap: 12px; width: 100%; }
+  #header-user-session { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; }
   #chat-header .sub { color: #565f89; font-weight: 400; font-size: 11px; }
   #chat-header .actions { display: flex; gap: 8px; }
   #chat-header button {
