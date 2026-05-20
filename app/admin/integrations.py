@@ -170,6 +170,38 @@ TWITCH_SCOPES = [
     "chat:edit",
 ]
 
+# Map each provider to its config service key and default scope list
+_PROVIDER_SCOPE_DEFAULTS: dict[str, tuple[str, list]] = {
+    "google":    ("google_oauth_config",    GOOGLE_SCOPES),
+    "microsoft": ("microsoft_oauth_config", MICROSOFT_SCOPES),
+    "yahoo":     ("yahoo_oauth_config",     YAHOO_SCOPES),
+    "dropbox":   ("dropbox_oauth_config",   DROPBOX_SCOPES),
+    "meta":      ("meta_oauth_config",      META_SCOPES),
+    "twitter":   ("twitter_oauth_config",   TWITTER_SCOPES),
+    "linkedin":  ("linkedin_oauth_config",  LINKEDIN_SCOPES),
+    "tiktok":    ("tiktok_oauth_config",    TIKTOK_SCOPES),
+    "pinterest": ("pinterest_oauth_config", PINTEREST_SCOPES),
+    "reddit":    ("reddit_oauth_config",    REDDIT_SCOPES),
+    "snapchat":  ("snapchat_oauth_config",  SNAPCHAT_SCOPES),
+    "twitch":    ("twitch_oauth_config",    TWITCH_SCOPES),
+}
+
+
+async def _get_enabled_scopes(config_service: str, default_scopes: list) -> list:
+    """Return admin-configured scopes for a provider, or the full default list."""
+    try:
+        from app.db import get_db
+        db = get_db()
+        elem = await db.auth_element_get(_ADMIN_USER, config_service, "default")
+        if elem and elem.get("config"):
+            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
+            scopes = config.get("enabled_scopes")
+            if scopes and isinstance(scopes, list) and len(scopes) > 0:
+                return scopes
+    except Exception:
+        pass
+    return default_scopes
+
 
 # ── Shared helpers (used by app/api/agents.py and app/api/oauth.py) ──────
 
@@ -293,11 +325,12 @@ async def build_google_authorize_url(user_id: str, agent_id: str = "", request: 
     client_id, _ = await get_google_creds()
     redirect_uri = get_redirect_uri(request)
     state = make_state_token(user_id, agent_id, provider="google")
+    scopes = await _get_enabled_scopes("google_oauth_config", GOOGLE_SCOPES)
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": " ".join(GOOGLE_SCOPES),
+        "scope": " ".join(scopes),
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
@@ -356,11 +389,12 @@ async def build_microsoft_authorize_url(user_id: str, agent_id: str = "") -> str
     client_id, _ = await get_microsoft_creds()
     redirect_uri = get_microsoft_redirect_uri()
     state = make_state_token(user_id, agent_id, provider="microsoft")
+    scopes = await _get_enabled_scopes("microsoft_oauth_config", MICROSOFT_SCOPES)
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": " ".join(MICROSOFT_SCOPES),
+        "scope": " ".join(scopes),
         "response_mode": "query",
         "state": state,
     }
@@ -405,11 +439,12 @@ async def build_yahoo_authorize_url(user_id: str, agent_id: str = "") -> str:
     client_id, _ = await get_yahoo_creds()
     redirect_uri = get_yahoo_redirect_uri()
     state = make_state_token(user_id, agent_id, provider="yahoo")
+    scopes = await _get_enabled_scopes("yahoo_oauth_config", YAHOO_SCOPES)
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": " ".join(YAHOO_SCOPES),
+        "scope": " ".join(scopes),
         "state": state,
     }
     return f"https://api.login.yahoo.com/oauth2/request_auth?{urlencode(params)}"
@@ -453,11 +488,12 @@ async def build_dropbox_authorize_url(user_id: str, agent_id: str = "") -> str:
     client_id, _ = await get_dropbox_creds()
     redirect_uri = get_dropbox_redirect_uri()
     state = make_state_token(user_id, agent_id, provider="dropbox")
+    scopes = await _get_enabled_scopes("dropbox_oauth_config", DROPBOX_SCOPES)
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": " ".join(DROPBOX_SCOPES),
+        "scope": " ".join(scopes),
         "token_access_type": "offline",
         "state": state,
     }
@@ -510,11 +546,12 @@ async def build_meta_authorize_url(user_id: str, agent_id: str = "") -> str:
     client_id, _ = await get_meta_creds()
     redirect_uri = get_meta_redirect_uri()
     state = make_state_token(user_id, agent_id, provider="meta")
+    scopes = await _get_enabled_scopes("meta_oauth_config", META_SCOPES)
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": ",".join(META_SCOPES),
+        "scope": ",".join(scopes),
         "state": state,
     }
     return f"https://www.facebook.com/v19.0/dialog/oauth?{urlencode(params)}"
@@ -570,11 +607,12 @@ async def build_twitter_authorize_url(user_id: str, agent_id: str = "") -> tuple
     redirect_uri = get_twitter_redirect_uri()
     verifier, challenge = _pkce_pair()
     state = make_state_token(user_id, agent_id, provider="twitter", pkce_verifier=verifier)
+    scopes = await _get_enabled_scopes("twitter_oauth_config", TWITTER_SCOPES)
     params = {
         "response_type": "code",
         "client_id": client_id,
         "redirect_uri": redirect_uri,
-        "scope": " ".join(TWITTER_SCOPES),
+        "scope": " ".join(scopes),
         "state": state,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
@@ -630,11 +668,12 @@ async def build_linkedin_authorize_url(user_id: str, agent_id: str = "") -> str:
     client_id, _ = await get_linkedin_creds()
     redirect_uri = get_linkedin_redirect_uri()
     state = make_state_token(user_id, agent_id, provider="linkedin")
+    scopes = await _get_enabled_scopes("linkedin_oauth_config", LINKEDIN_SCOPES)
     params = {
         "response_type": "code",
         "client_id": client_id,
         "redirect_uri": redirect_uri,
-        "scope": " ".join(LINKEDIN_SCOPES),
+        "scope": " ".join(scopes),
         "state": state,
     }
     return f"https://www.linkedin.com/oauth/v2/authorization?{urlencode(params)}"
@@ -673,11 +712,12 @@ async def build_tiktok_authorize_url(user_id: str, agent_id: str = "") -> str:
     redirect_uri = get_tiktok_redirect_uri()
     verifier, challenge = _pkce_pair()
     state = make_state_token(user_id, agent_id, provider="tiktok", pkce_verifier=verifier)
+    scopes = await _get_enabled_scopes("tiktok_oauth_config", TIKTOK_SCOPES)
     params = {
         "client_key": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": ",".join(TIKTOK_SCOPES),
+        "scope": ",".join(scopes),
         "state": state,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
@@ -732,11 +772,12 @@ async def build_pinterest_authorize_url(user_id: str, agent_id: str = "") -> str
     client_id, _ = await get_pinterest_creds()
     redirect_uri = get_pinterest_redirect_uri()
     state = make_state_token(user_id, agent_id, provider="pinterest")
+    scopes = await _get_enabled_scopes("pinterest_oauth_config", PINTEREST_SCOPES)
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": ",".join(PINTEREST_SCOPES),
+        "scope": ",".join(scopes),
         "state": state,
     }
     return f"https://www.pinterest.com/oauth/?{urlencode(params)}"
@@ -774,11 +815,12 @@ async def build_reddit_authorize_url(user_id: str, agent_id: str = "") -> str:
     client_id, _ = await get_reddit_creds()
     redirect_uri = get_reddit_redirect_uri()
     state = make_state_token(user_id, agent_id, provider="reddit")
+    scopes = await _get_enabled_scopes("reddit_oauth_config", REDDIT_SCOPES)
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": " ".join(REDDIT_SCOPES),
+        "scope": " ".join(scopes),
         "state": state,
         "duration": "permanent",
     }
@@ -833,11 +875,12 @@ async def build_snapchat_authorize_url(user_id: str, agent_id: str = "") -> str:
     client_id, _ = await get_snapchat_creds()
     redirect_uri = get_snapchat_redirect_uri()
     state = make_state_token(user_id, agent_id, provider="snapchat")
+    scopes = await _get_enabled_scopes("snapchat_oauth_config", SNAPCHAT_SCOPES)
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": " ".join(SNAPCHAT_SCOPES),
+        "scope": " ".join(scopes),
         "state": state,
     }
     return f"https://accounts.snapchat.com/login/oauth2/authorize?{urlencode(params)}"
@@ -889,11 +932,12 @@ async def build_twitch_authorize_url(user_id: str, agent_id: str = "") -> str:
     client_id, _ = await get_twitch_creds()
     redirect_uri = get_twitch_redirect_uri()
     state = make_state_token(user_id, agent_id, provider="twitch")
+    scopes = await _get_enabled_scopes("twitch_oauth_config", TWITCH_SCOPES)
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": " ".join(TWITCH_SCOPES),
+        "scope": " ".join(scopes),
         "state": state,
     }
     return f"https://id.twitch.tv/oauth2/authorize?{urlencode(params)}"
@@ -924,6 +968,7 @@ async def revoke_and_delete_twitch(user_id: str) -> bool:
 class OAuthConfigRequest(BaseModel):
     client_id: str
     client_secret: str
+    scopes: Optional[list[str]] = None
 
 # Keep old name for backward compat
 GoogleOAuthConfigRequest = OAuthConfigRequest
@@ -952,44 +997,70 @@ async def get_integration_config(
     snap_cid, snap_csec       = await get_snapchat_creds()
     twitch_cid, twitch_csec   = await get_twitch_creds()
 
+    # Fetch enabled scopes for all providers (returns defaults when unconfigured)
+    g_scopes    = await _get_enabled_scopes("google_oauth_config",    GOOGLE_SCOPES)
+    ms_scopes   = await _get_enabled_scopes("microsoft_oauth_config", MICROSOFT_SCOPES)
+    yh_scopes   = await _get_enabled_scopes("yahoo_oauth_config",     YAHOO_SCOPES)
+    dbx_scopes  = await _get_enabled_scopes("dropbox_oauth_config",   DROPBOX_SCOPES)
+    meta_scopes = await _get_enabled_scopes("meta_oauth_config",      META_SCOPES)
+    tw_scopes   = await _get_enabled_scopes("twitter_oauth_config",   TWITTER_SCOPES)
+    li_scopes   = await _get_enabled_scopes("linkedin_oauth_config",  LINKEDIN_SCOPES)
+    tt_scopes   = await _get_enabled_scopes("tiktok_oauth_config",    TIKTOK_SCOPES)
+    pin_scopes  = await _get_enabled_scopes("pinterest_oauth_config", PINTEREST_SCOPES)
+    red_scopes  = await _get_enabled_scopes("reddit_oauth_config",    REDDIT_SCOPES)
+    snap_scopes = await _get_enabled_scopes("snapchat_oauth_config",  SNAPCHAT_SCOPES)
+    twit_scopes = await _get_enabled_scopes("twitch_oauth_config",    TWITCH_SCOPES)
+
     return {
         # Productivity
         "google_configured":    bool(google_cid and google_csec),
         "google_client_id":     _mask(google_cid),
+        "google_scopes":        g_scopes,
         "redirect_uri":         get_redirect_uri(request),
         "microsoft_configured": bool(ms_cid and ms_csec),
         "microsoft_client_id":  _mask(ms_cid),
+        "microsoft_scopes":     ms_scopes,
         "microsoft_redirect_uri": get_microsoft_redirect_uri(request),
         "yahoo_configured":     bool(yahoo_cid and yahoo_csec),
         "yahoo_client_id":      _mask(yahoo_cid),
+        "yahoo_scopes":         yh_scopes,
         "yahoo_redirect_uri":   get_yahoo_redirect_uri(request),
         "dropbox_configured":   bool(dbx_cid and dbx_csec),
         "dropbox_client_id":    _mask(dbx_cid),
+        "dropbox_scopes":       dbx_scopes,
         "dropbox_redirect_uri": get_dropbox_redirect_uri(request),
         # Social media
         "meta_configured":      bool(meta_cid and meta_csec),
         "meta_client_id":       _mask(meta_cid),
+        "meta_scopes":          meta_scopes,
         "meta_redirect_uri":    get_meta_redirect_uri(request),
         "twitter_configured":   bool(tw_cid and tw_csec),
         "twitter_client_id":    _mask(tw_cid),
+        "twitter_scopes":       tw_scopes,
         "twitter_redirect_uri": get_twitter_redirect_uri(request),
         "linkedin_configured":  bool(li_cid and li_csec),
         "linkedin_client_id":   _mask(li_cid),
+        "linkedin_scopes":      li_scopes,
         "linkedin_redirect_uri": get_linkedin_redirect_uri(request),
         "tiktok_configured":    bool(tt_cid and tt_csec),
         "tiktok_client_id":     _mask(tt_cid),
+        "tiktok_scopes":        tt_scopes,
         "tiktok_redirect_uri":  get_tiktok_redirect_uri(request),
         "pinterest_configured": bool(pin_cid and pin_csec),
         "pinterest_client_id":  _mask(pin_cid),
+        "pinterest_scopes":     pin_scopes,
         "pinterest_redirect_uri": get_pinterest_redirect_uri(request),
         "reddit_configured":    bool(red_cid and red_csec),
         "reddit_client_id":     _mask(red_cid),
+        "reddit_scopes":        red_scopes,
         "reddit_redirect_uri":  get_reddit_redirect_uri(request),
         "snapchat_configured":  bool(snap_cid and snap_csec),
         "snapchat_client_id":   _mask(snap_cid),
+        "snapchat_scopes":      snap_scopes,
         "snapchat_redirect_uri": get_snapchat_redirect_uri(request),
         "twitch_configured":    bool(twitch_cid and twitch_csec),
         "twitch_client_id":     _mask(twitch_cid),
+        "twitch_scopes":        twit_scopes,
         "twitch_redirect_uri":  get_twitch_redirect_uri(request),
     }
 
@@ -1003,10 +1074,13 @@ async def save_google_config(
     """Save Google OAuth credentials (admin). Stored in auth_elements table."""
     from app.db import get_db
     db = get_db()
+    cfg: dict = {"client_id": req.client_id.strip()}
+    if req.scopes is not None:
+        cfg["enabled_scopes"] = req.scopes
     await db.auth_element_set(
         user_id=_ADMIN_USER,
         service="google_oauth_config",
-        config={"client_id": req.client_id.strip()},
+        config=cfg,
         secret_ref=req.client_secret.strip(),
         label="default",
     )
@@ -1036,10 +1110,13 @@ async def save_microsoft_config(
     """Save Microsoft OAuth credentials (admin)."""
     from app.db import get_db
     db = get_db()
+    cfg: dict = {"client_id": req.client_id.strip()}
+    if req.scopes is not None:
+        cfg["enabled_scopes"] = req.scopes
     await db.auth_element_set(
         user_id=_ADMIN_USER,
         service="microsoft_oauth_config",
-        config={"client_id": req.client_id.strip()},
+        config=cfg,
         secret_ref=req.client_secret.strip(),
         label="default",
     )
@@ -1069,10 +1146,13 @@ async def save_yahoo_config(
     """Save Yahoo OAuth credentials (admin)."""
     from app.db import get_db
     db = get_db()
+    cfg: dict = {"client_id": req.client_id.strip()}
+    if req.scopes is not None:
+        cfg["enabled_scopes"] = req.scopes
     await db.auth_element_set(
         user_id=_ADMIN_USER,
         service="yahoo_oauth_config",
-        config={"client_id": req.client_id.strip()},
+        config=cfg,
         secret_ref=req.client_secret.strip(),
         label="default",
     )
@@ -1102,10 +1182,13 @@ async def save_dropbox_config(
     """Save Dropbox OAuth credentials (admin)."""
     from app.db import get_db
     db = get_db()
+    cfg: dict = {"client_id": req.client_id.strip()}
+    if req.scopes is not None:
+        cfg["enabled_scopes"] = req.scopes
     await db.auth_element_set(
         user_id=_ADMIN_USER,
         service="dropbox_oauth_config",
-        config={"client_id": req.client_id.strip()},
+        config=cfg,
         secret_ref=req.client_secret.strip(),
         label="default",
     )
@@ -1138,10 +1221,13 @@ def _make_social_endpoints(provider: str, config_key: str, label: str):
     ):
         from app.db import get_db
         db = get_db()
+        cfg: dict = {"client_id": req.client_id.strip()}
+        if req.scopes is not None:
+            cfg["enabled_scopes"] = req.scopes
         await db.auth_element_set(
             user_id=_ADMIN_USER,
             service=config_key,
-            config={"client_id": req.client_id.strip()},
+            config=cfg,
             secret_ref=req.client_secret.strip(),
             label="default",
         )

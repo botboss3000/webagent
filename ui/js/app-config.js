@@ -439,9 +439,254 @@ function _renderParallelRows() {
 // ── SECTION 2b: Integrations ─────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────
 
+const _PROVIDER_SCOPES = {
+  google: [
+    { value: 'openid',                                              label: 'Sign in (OpenID)' },
+    { value: 'email',                                               label: 'Email address' },
+    { value: 'profile',                                             label: 'Basic profile' },
+    { value: 'https://www.googleapis.com/auth/drive.file',          label: 'Drive: app-created files' },
+    { value: 'https://www.googleapis.com/auth/drive',               label: 'Drive: all files (read & write)' },
+    { value: 'https://www.googleapis.com/auth/drive.readonly',      label: 'Drive: all files (read only)' },
+    { value: 'https://www.googleapis.com/auth/docs',                label: 'Docs: read & write' },
+    { value: 'https://www.googleapis.com/auth/docs.readonly',       label: 'Docs: read only' },
+    { value: 'https://www.googleapis.com/auth/calendar',            label: 'Calendar: read & write' },
+    { value: 'https://www.googleapis.com/auth/calendar.readonly',   label: 'Calendar: read only' },
+    { value: 'https://www.googleapis.com/auth/gmail.modify',        label: 'Gmail: read & modify' },
+    { value: 'https://www.googleapis.com/auth/gmail.compose',       label: 'Gmail: compose' },
+    { value: 'https://www.googleapis.com/auth/gmail.readonly',      label: 'Gmail: read only' },
+  ],
+  microsoft: [
+    { value: 'openid',               label: 'Sign in (OpenID)' },
+    { value: 'email',                label: 'Email address' },
+    { value: 'profile',              label: 'Basic profile' },
+    { value: 'offline_access',       label: 'Stay signed in (refresh tokens)' },
+    { value: 'User.Read',            label: 'User profile' },
+    { value: 'Mail.ReadWrite',       label: 'Mail: read & write' },
+    { value: 'Mail.Send',            label: 'Mail: send' },
+    { value: 'Calendars.ReadWrite',  label: 'Calendar: read & write' },
+    { value: 'Files.ReadWrite.All',  label: 'OneDrive: read & write' },
+    { value: 'Sites.ReadWrite.All',  label: 'SharePoint: read & write' },
+  ],
+  yahoo: [
+    { value: 'openid',   label: 'Sign in (OpenID)' },
+    { value: 'email',    label: 'Email address' },
+    { value: 'profile',  label: 'Basic profile' },
+    { value: 'mail-r',   label: 'Mail: read' },
+    { value: 'mail-w',   label: 'Mail: write' },
+  ],
+  dropbox: [
+    { value: 'account_info.read',      label: 'Account info' },
+    { value: 'files.metadata.read',    label: 'Files: read metadata' },
+    { value: 'files.metadata.write',   label: 'Files: write metadata' },
+    { value: 'files.content.read',     label: 'Files: read content' },
+    { value: 'files.content.write',    label: 'Files: write content' },
+    { value: 'sharing.read',           label: 'Sharing: read' },
+    { value: 'sharing.write',          label: 'Sharing: write' },
+  ],
+  meta: [
+    { value: 'public_profile',              label: 'Public profile' },
+    { value: 'email',                       label: 'Email address' },
+    { value: 'pages_manage_posts',          label: 'Pages: manage posts' },
+    { value: 'pages_read_engagement',       label: 'Pages: read engagement' },
+    { value: 'instagram_basic',             label: 'Instagram: basic' },
+    { value: 'instagram_content_publish',   label: 'Instagram: publish content' },
+    { value: 'instagram_manage_comments',   label: 'Instagram: manage comments' },
+    { value: 'instagram_manage_insights',   label: 'Instagram: insights' },
+  ],
+  twitter: [
+    { value: 'tweet.read',          label: 'Tweets: read' },
+    { value: 'tweet.write',         label: 'Tweets: write' },
+    { value: 'tweet.moderate.write',label: 'Tweets: moderate' },
+    { value: 'users.read',          label: 'Users: read' },
+    { value: 'follows.read',        label: 'Follows: read' },
+    { value: 'follows.write',       label: 'Follows: write' },
+    { value: 'offline.access',      label: 'Stay signed in (refresh tokens)' },
+    { value: 'like.read',           label: 'Likes: read' },
+    { value: 'like.write',          label: 'Likes: write' },
+    { value: 'dm.read',             label: 'DMs: read' },
+    { value: 'dm.write',            label: 'DMs: write' },
+  ],
+  linkedin: [
+    { value: 'openid',          label: 'Sign in (OpenID)' },
+    { value: 'profile',         label: 'Basic profile' },
+    { value: 'email',           label: 'Email address' },
+    { value: 'w_member_social', label: 'Posts: write' },
+    { value: 'r_liteprofile',   label: 'Profile: read' },
+    { value: 'r_emailaddress',  label: 'Email: read' },
+  ],
+  tiktok: [
+    { value: 'user.info.basic',    label: 'User: basic info' },
+    { value: 'user.info.profile',  label: 'User: profile' },
+    { value: 'video.list',         label: 'Videos: list' },
+    { value: 'video.upload',       label: 'Videos: upload' },
+    { value: 'video.publish',      label: 'Videos: publish' },
+  ],
+  pinterest: [
+    { value: 'boards:read',         label: 'Boards: read' },
+    { value: 'boards:write',        label: 'Boards: write' },
+    { value: 'pins:read',           label: 'Pins: read' },
+    { value: 'pins:write',          label: 'Pins: write' },
+    { value: 'user_accounts:read',  label: 'Account: read' },
+  ],
+  reddit: [
+    { value: 'identity',        label: 'Identity' },
+    { value: 'read',            label: 'Posts: read' },
+    { value: 'submit',          label: 'Posts: submit' },
+    { value: 'history',         label: 'History' },
+    { value: 'mysubreddits',    label: 'Subreddits' },
+    { value: 'privatemessages', label: 'Messages' },
+  ],
+  snapchat: [
+    { value: 'https://auth.snapchat.com/oauth2/api/user.display_name',   label: 'Display name' },
+    { value: 'https://auth.snapchat.com/oauth2/api/user.bitmoji.avatar', label: 'Bitmoji avatar' },
+    { value: 'https://auth.snapchat.com/oauth2/api/user.external_id',    label: 'External ID' },
+  ],
+  twitch: [
+    { value: 'user:read:email',              label: 'Email address' },
+    { value: 'user:read:follows',            label: 'Follows: read' },
+    { value: 'channel:read:subscriptions',   label: 'Subscriptions: read' },
+    { value: 'channel:manage:broadcast',     label: 'Broadcast: manage' },
+    { value: 'clips:edit',                   label: 'Clips: edit' },
+    { value: 'chat:read',                    label: 'Chat: read' },
+    { value: 'chat:edit',                    label: 'Chat: write' },
+  ],
+};
+
+function _renderScopeCheckboxes(provider) {
+  const formEl = document.getElementById(`ac-int-${provider}-form`);
+  if (!formEl) return;
+  const scopes = _PROVIDER_SCOPES[provider];
+  if (!scopes || scopes.length === 0) return;
+
+  const container = document.createElement('div');
+  container.id = `ac-int-${provider}-scopes-wrap`;
+  container.style.cssText = 'margin-top:14px;';
+
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;';
+  header.innerHTML = `
+    <label class="ac-label" style="margin:0;">Enabled Scopes</label>
+    <span style="font-size:11px;color:var(--fg-muted);">
+      <a href="#" id="ac-int-${provider}-scopes-all" style="color:var(--fg-muted);text-decoration:underline;">all</a>
+      &nbsp;/&nbsp;
+      <a href="#" id="ac-int-${provider}-scopes-none" style="color:var(--fg-muted);text-decoration:underline;">none</a>
+    </span>`;
+  container.appendChild(header);
+
+  const grid = document.createElement('div');
+  grid.id = `ac-int-${provider}-scopes-grid`;
+  grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;';
+
+  scopes.forEach((scope, i) => {
+    const row = document.createElement('label');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;color:var(--fg-main);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    row.title = scope.value;
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.id = `ac-scope-${provider}-${i}`;
+    cb.value = scope.value;
+    cb.checked = true;
+    cb.style.cssText = 'flex-shrink:0;accent-color:var(--accent);';
+    row.appendChild(cb);
+    row.appendChild(document.createTextNode(scope.label));
+    grid.appendChild(row);
+  });
+  container.appendChild(grid);
+
+  // Insert before the save button row
+  const saveBtn = document.getElementById(`ac-int-${provider}-save`);
+  const saveRow = saveBtn ? saveBtn.parentElement : null;
+  if (saveRow && saveRow.parentElement === formEl) {
+    formEl.insertBefore(container, saveRow);
+  } else {
+    formEl.appendChild(container);
+  }
+
+  // "all" / "none" links
+  document.getElementById(`ac-int-${provider}-scopes-all`)?.addEventListener('click', e => {
+    e.preventDefault();
+    grid.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = true);
+  });
+  document.getElementById(`ac-int-${provider}-scopes-none`)?.addEventListener('click', e => {
+    e.preventDefault();
+    grid.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = false);
+  });
+}
+
+function _setScopeSelection(provider, enabledScopes) {
+  const grid = document.getElementById(`ac-int-${provider}-scopes-grid`);
+  if (!grid) return;
+  const checkboxes = grid.querySelectorAll('input[type=checkbox]');
+  if (!enabledScopes || enabledScopes.length === 0) {
+    checkboxes.forEach(cb => cb.checked = true);
+    return;
+  }
+  const set = new Set(enabledScopes);
+  checkboxes.forEach(cb => { cb.checked = set.has(cb.value); });
+}
+
+function _getSelectedScopes(provider) {
+  const grid = document.getElementById(`ac-int-${provider}-scopes-grid`);
+  if (!grid) return null;
+  const checked = [...grid.querySelectorAll('input[type=checkbox]')]
+    .filter(cb => cb.checked)
+    .map(cb => cb.value);
+  return checked;
+}
+
+function _initCollapsible(provider) {
+  const card = document.getElementById(`ac-int-${provider}-card`);
+  if (!card) return;
+  const header = card.querySelector(':scope > div');
+  if (!header) return;
+
+  // Wrap everything after the header in a collapsible body div
+  const body = document.createElement('div');
+  body.id = `ac-int-${provider}-body`;
+  body.style.display = 'none';
+  [...card.children].slice(1).forEach(el => body.appendChild(el));
+  card.appendChild(body);
+
+  // Remove header bottom margin (restored when expanded)
+  header.style.marginBottom = '0';
+  header.style.cursor = 'pointer';
+  header.style.userSelect = 'none';
+
+  // Chevron icon — appended after the badge
+  const chevron = document.createElement('span');
+  chevron.id = `ac-int-${provider}-chevron`;
+  chevron.style.cssText = 'display:flex;align-items:center;margin-left:8px;flex-shrink:0;transition:transform 0.2s;color:var(--fg-muted);';
+  chevron.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>`;
+  header.appendChild(chevron);
+
+  header.addEventListener('click', e => {
+    if (e.target.closest('button, a, input')) return;
+    _toggleCard(provider);
+  });
+}
+
+function _toggleCard(provider, forceOpen) {
+  const body = document.getElementById(`ac-int-${provider}-body`);
+  const chevron = document.getElementById(`ac-int-${provider}-chevron`);
+  const card = document.getElementById(`ac-int-${provider}-card`);
+  const header = card?.querySelector(':scope > div');
+  if (!body) return;
+  const isOpen = body.style.display !== 'none';
+  const open = forceOpen !== undefined ? forceOpen : !isOpen;
+  body.style.display = open ? 'block' : 'none';
+  if (chevron) chevron.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)';
+  if (header) header.style.marginBottom = open ? '12px' : '0';
+}
+
+function _expandCard(provider) {
+  _toggleCard(provider, true);
+}
+
 function _initIntegrations() {
-  // Wire up save/edit/unconfigure for all providers
-  for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch']) {
+  const providers = ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch'];
+  for (const p of providers) {
+    _initCollapsible(p);
+    _renderScopeCheckboxes(p);
     _qs(`ac-int-${p}-save`)?.addEventListener('click', () => _saveProviderConfig(p));
     _qs(`ac-int-${p}-edit`)?.addEventListener('click', () => _editProviderConfig(p));
     _qs(`ac-int-${p}-unconfigure`)?.addEventListener('click', () => _unconfigureProvider(p));
@@ -453,18 +698,18 @@ async function _loadIntegrations() {
     const res = await _fetch(apiPath('/admin/integrations'));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    _applyProviderStatus('google',    data.google_configured,    data.google_client_id,    data.redirect_uri);
-    _applyProviderStatus('microsoft', data.microsoft_configured, data.microsoft_client_id, data.microsoft_redirect_uri);
-    _applyProviderStatus('yahoo',     data.yahoo_configured,     data.yahoo_client_id,     data.yahoo_redirect_uri);
-    _applyProviderStatus('dropbox',   data.dropbox_configured,   data.dropbox_client_id,   data.dropbox_redirect_uri);
-    _applyProviderStatus('meta',      data.meta_configured,      data.meta_client_id,      data.meta_redirect_uri);
-    _applyProviderStatus('twitter',   data.twitter_configured,   data.twitter_client_id,   data.twitter_redirect_uri);
-    _applyProviderStatus('linkedin',  data.linkedin_configured,  data.linkedin_client_id,  data.linkedin_redirect_uri);
-    _applyProviderStatus('tiktok',    data.tiktok_configured,    data.tiktok_client_id,    data.tiktok_redirect_uri);
-    _applyProviderStatus('pinterest', data.pinterest_configured, data.pinterest_client_id, data.pinterest_redirect_uri);
-    _applyProviderStatus('reddit',    data.reddit_configured,    data.reddit_client_id,    data.reddit_redirect_uri);
-    _applyProviderStatus('snapchat',  data.snapchat_configured,  data.snapchat_client_id,  data.snapchat_redirect_uri);
-    _applyProviderStatus('twitch',    data.twitch_configured,    data.twitch_client_id,    data.twitch_redirect_uri);
+    _applyProviderStatus('google',    data.google_configured,    data.google_client_id,    data.redirect_uri,              data.google_scopes);
+    _applyProviderStatus('microsoft', data.microsoft_configured, data.microsoft_client_id, data.microsoft_redirect_uri,    data.microsoft_scopes);
+    _applyProviderStatus('yahoo',     data.yahoo_configured,     data.yahoo_client_id,     data.yahoo_redirect_uri,        data.yahoo_scopes);
+    _applyProviderStatus('dropbox',   data.dropbox_configured,   data.dropbox_client_id,   data.dropbox_redirect_uri,      data.dropbox_scopes);
+    _applyProviderStatus('meta',      data.meta_configured,      data.meta_client_id,      data.meta_redirect_uri,         data.meta_scopes);
+    _applyProviderStatus('twitter',   data.twitter_configured,   data.twitter_client_id,   data.twitter_redirect_uri,      data.twitter_scopes);
+    _applyProviderStatus('linkedin',  data.linkedin_configured,  data.linkedin_client_id,  data.linkedin_redirect_uri,     data.linkedin_scopes);
+    _applyProviderStatus('tiktok',    data.tiktok_configured,    data.tiktok_client_id,    data.tiktok_redirect_uri,       data.tiktok_scopes);
+    _applyProviderStatus('pinterest', data.pinterest_configured, data.pinterest_client_id, data.pinterest_redirect_uri,    data.pinterest_scopes);
+    _applyProviderStatus('reddit',    data.reddit_configured,    data.reddit_client_id,    data.reddit_redirect_uri,       data.reddit_scopes);
+    _applyProviderStatus('snapchat',  data.snapchat_configured,  data.snapchat_client_id,  data.snapchat_redirect_uri,     data.snapchat_scopes);
+    _applyProviderStatus('twitch',    data.twitch_configured,    data.twitch_client_id,    data.twitch_redirect_uri,       data.twitch_scopes);
   } catch (e) {
     for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch']) {
       const s = _qs(`ac-int-${p}-status`);
@@ -473,10 +718,10 @@ async function _loadIntegrations() {
   }
 }
 
-function _applyProviderStatus(provider, configured, clientId, redirectUri) {
-  const badge      = _qs(`ac-int-${provider}-badge`);
+function _applyProviderStatus(provider, configured, clientId, redirectUri, enabledScopes) {
+  const badge        = _qs(`ac-int-${provider}-badge`);
   const configuredEl = _qs(`ac-int-${provider}-configured`);
-  const form       = _qs(`ac-int-${provider}-form`);
+  const form         = _qs(`ac-int-${provider}-form`);
   if (configured) {
     if (badge) { badge.textContent = 'Configured'; badge.className = 'ac-int-badge ac-int-badge-on'; }
     if (configuredEl) configuredEl.style.display = 'block';
@@ -485,6 +730,19 @@ function _applyProviderStatus(provider, configured, clientId, redirectUri) {
     if (cidEl) cidEl.textContent = clientId || '';
     const uriEl = _qs(`ac-int-${provider}-uri`);
     if (uriEl) uriEl.textContent = redirectUri || '';
+    // Show scope count in configured summary
+    let scopeCountEl = document.getElementById(`ac-int-${provider}-scope-count`);
+    if (!scopeCountEl && configuredEl) {
+      scopeCountEl = document.createElement('div');
+      scopeCountEl.id = `ac-int-${provider}-scope-count`;
+      scopeCountEl.style.cssText = 'font-size:12px;color:var(--fg-muted);margin-top:4px;';
+      configuredEl.querySelector('div')?.appendChild(scopeCountEl);
+    }
+    if (scopeCountEl) {
+      const total = (_PROVIDER_SCOPES[provider] || []).length;
+      const active = enabledScopes ? enabledScopes.length : total;
+      scopeCountEl.textContent = `${active} of ${total} scopes enabled`;
+    }
   } else {
     if (badge) { badge.textContent = 'Not configured'; badge.className = 'ac-int-badge ac-int-badge-off'; }
     if (configuredEl) configuredEl.style.display = 'none';
@@ -492,6 +750,7 @@ function _applyProviderStatus(provider, configured, clientId, redirectUri) {
     const formUri = _qs(`ac-int-${provider}-form-uri`);
     if (formUri) formUri.textContent = redirectUri || '';
   }
+  _setScopeSelection(provider, enabledScopes || null);
 }
 
 function _editProviderConfig(provider) {
@@ -523,17 +782,23 @@ async function _saveProviderConfig(provider) {
     if (statusEl) { statusEl.textContent = 'Both Client ID and Client Secret are required.'; statusEl.style.color = '#e0af68'; statusEl.style.display = 'block'; }
     return;
   }
+  const selectedScopes = _getSelectedScopes(provider);
   try {
     const res = await _fetch(apiPath(`/admin/integrations/${provider}`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: cidInput.value.trim(), client_secret: secInput.value.trim() }),
+      body: JSON.stringify({
+        client_id: cidInput.value.trim(),
+        client_secret: secInput.value.trim(),
+        scopes: selectedScopes,
+      }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     cidInput.value = '';
     secInput.value = '';
     if (statusEl) { statusEl.textContent = 'Configured successfully.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; setTimeout(() => { statusEl.style.display = 'none'; }, 3000); }
     _loadIntegrations();
+    _expandCard(provider);
   } catch (e) {
     if (statusEl) { statusEl.textContent = `Error: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
   }
