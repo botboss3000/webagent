@@ -4,7 +4,7 @@
 // Single source of truth for node positions, edge topology, and SVG rendering.
 // Consumed by loop-logic.js (live runtime view) and agents.js (config/test view).
 //
-// 9 stages  ·  36 nodes  ·  matches app/api/chat.py + app/agent/loop.py exactly
+// 9 stages  ·  37 nodes  ·  matches app/api/chat.py + app/agent/loop.py exactly
 
 export const LOOP_W = 1560;
 export const LOOP_H = 400;
@@ -59,9 +59,10 @@ export const LOOP_NODES = [
   { id: 'build_history',   label: 'Build History',    type: 'process',  cx: 396,  cy: 216, hw: 60, hh: 13 },
 
   // ── LOOP INIT  (once per request, before the while loop) ─────────────────────
-  { id: 'load_provider',   label: 'Load Provider',    type: 'process',  cx: 578,  cy: 168, hw: 60, hh: 13 },
-  { id: 'load_tools',      label: 'Load Tools',       type: 'process',  cx: 578,  cy: 202, hw: 60, hh: 13 },
-  { id: 'assemble_msgs',   label: 'Assemble Msgs',    type: 'process',  cx: 578,  cy: 236, hw: 60, hh: 13 },
+  { id: 'load_provider',       label: 'Load Provider',      type: 'process',  cx: 578,  cy: 152, hw: 60, hh: 13 },
+  { id: 'load_tools',          label: 'Load Tools',         type: 'process',  cx: 578,  cy: 186, hw: 60, hh: 13 },
+  { id: 'integration_status',  label: 'Integration Status', type: 'process',  cx: 578,  cy: 220, hw: 66, hh: 13 },
+  { id: 'assemble_msgs',       label: 'Assemble Msgs',      type: 'process',  cx: 578,  cy: 254, hw: 60, hh: 13 },
 
   // ── INFERENCE  (per-turn while loop) ─────────────────────────────────────────
   { id: 'interrupt_chk',   label: 'Interrupt Chk',    type: 'decision', cx: 762,  cy: 100, hw: 58, hh: 13 },
@@ -116,8 +117,9 @@ export const LOOP_EDGES = [
   { from: 'build_history',   to: 'load_provider'                                                },
 
   // LOOP INIT chain
-  { from: 'load_provider',   to: 'load_tools',      vertical: true                              },
-  { from: 'load_tools',      to: 'assemble_msgs',   vertical: true                              },
+  { from: 'load_provider',      to: 'load_tools',          vertical: true                          },
+  { from: 'load_tools',         to: 'integration_status', vertical: true                          },
+  { from: 'integration_status', to: 'assemble_msgs',      vertical: true                          },
 
   // LOOP INIT → INFERENCE
   { from: 'assemble_msgs',   to: 'interrupt_chk'                                                },
@@ -175,7 +177,7 @@ const _H_GROUPS = [
     left: 159,  right: 275  },
   { nodeIds: ['load_context','memory_search','resolve_attach','build_prompt','build_history'],
     left: 336,  right: 456  },
-  { nodeIds: ['load_provider','load_tools','assemble_msgs'],
+  { nodeIds: ['load_provider','load_tools','integration_status','assemble_msgs'],
     left: 518,  right: 638  },
   { nodeIds: ['interrupt_chk','turn_counter','build_tool_defs','parallel_mode','llm_call'],
     left: 704,  right: 820  },
@@ -230,7 +232,7 @@ export function buildHorizontalLayout(availableWidth) {
 }
 
 // ── buildVerticalLayout ───────────────────────────────────────────────────────
-// All 36 nodes stacked in a single column, stages as horizontal bands.
+// All 33 nodes stacked in a single column, stages as horizontal bands.
 export function buildVerticalLayout(availableWidth) {
   const w  = Math.max(availableWidth > 0 ? availableWidth : 360, 260);
   const cx = w / 2;
@@ -249,48 +251,49 @@ export function buildVerticalLayout(availableWidth) {
     { id: 'build_prompt',    label: 'Build Prompt',     type: 'process',  cx,        cy: 424,  hw: 60, hh: 13 },
     { id: 'build_history',   label: 'Build History',    type: 'process',  cx,        cy: 458,  hw: 60, hh: 13 },
     // LOOP INIT
-    { id: 'load_provider',   label: 'Load Provider',    type: 'process',  cx,        cy: 594,  hw: 60, hh: 13 },
-    { id: 'load_tools',      label: 'Load Tools',       type: 'process',  cx,        cy: 628,  hw: 60, hh: 13 },
-    { id: 'assemble_msgs',   label: 'Assemble Msgs',    type: 'process',  cx,        cy: 662,  hw: 60, hh: 13 },
+    { id: 'load_provider',      label: 'Load Provider',      type: 'process',  cx,        cy: 594,  hw: 60, hh: 13 },
+    { id: 'load_tools',         label: 'Load Tools',         type: 'process',  cx,        cy: 628,  hw: 60, hh: 13 },
+    { id: 'integration_status', label: 'Integration Status', type: 'process',  cx,        cy: 662,  hw: 66, hh: 13 },
+    { id: 'assemble_msgs',      label: 'Assemble Msgs',      type: 'process',  cx,        cy: 696,  hw: 60, hh: 13 },
     // INFERENCE
-    { id: 'interrupt_chk',   label: 'Interrupt Chk',    type: 'decision', cx,        cy: 730,  hw: 58, hh: 13 },
-    { id: 'turn_counter',    label: 'Turn Counter',     type: 'process',  cx,        cy: 764,  hw: 58, hh: 13 },
-    { id: 'build_tool_defs', label: 'Tool Defs',        type: 'process',  cx,        cy: 798,  hw: 58, hh: 13 },
-    { id: 'parallel_mode',   label: 'Parallel Mode',    type: 'process',  cx,        cy: 832,  hw: 58, hh: 13 },
-    { id: 'llm_call',        label: 'LLM Call',         type: 'llm',      cx,        cy: 870,  hw: 55, hh: 20 },
+    { id: 'interrupt_chk',   label: 'Interrupt Chk',    type: 'decision', cx,        cy: 764,  hw: 58, hh: 13 },
+    { id: 'turn_counter',    label: 'Turn Counter',     type: 'process',  cx,        cy: 798,  hw: 58, hh: 13 },
+    { id: 'build_tool_defs', label: 'Tool Defs',        type: 'process',  cx,        cy: 832,  hw: 58, hh: 13 },
+    { id: 'parallel_mode',   label: 'Parallel Mode',    type: 'process',  cx,        cy: 866,  hw: 58, hh: 13 },
+    { id: 'llm_call',        label: 'LLM Call',         type: 'llm',      cx,        cy: 904,  hw: 55, hh: 20 },
     // ROUTING
-    { id: 'db_persist_asst', label: 'Persist Asst',     type: 'process',  cx,        cy: 972,  hw: 60, hh: 13 },
-    { id: 'validate_tools',  label: 'Validate',          type: 'process',  cx,        cy: 1006, hw: 60, hh: 13 },
-    { id: 'destructive_chk', label: 'Destructive Chk',  type: 'guard',    cx,        cy: 1040, hw: 60, hh: 13 },
-    { id: 'guardrails',      label: 'Guardrails',        type: 'guard',    cx,        cy: 1074, hw: 60, hh: 13 },
-    { id: 'post_val_chk',    label: 'Post-Val Chk',     type: 'process',  cx,        cy: 1108, hw: 60, hh: 13 },
+    { id: 'db_persist_asst', label: 'Persist Asst',     type: 'process',  cx,        cy: 1006, hw: 60, hh: 13 },
+    { id: 'validate_tools',  label: 'Validate',          type: 'process',  cx,        cy: 1040, hw: 60, hh: 13 },
+    { id: 'destructive_chk', label: 'Destructive Chk',  type: 'guard',    cx,        cy: 1074, hw: 60, hh: 13 },
+    { id: 'guardrails',      label: 'Guardrails',        type: 'guard',    cx,        cy: 1108, hw: 60, hh: 13 },
+    { id: 'post_val_chk',    label: 'Post-Val Chk',     type: 'process',  cx,        cy: 1142, hw: 60, hh: 13 },
     // EXECUTION
-    { id: 'execute_tools',   label: 'Execute Tools',    type: 'process',  cx,        cy: 1176, hw: 62, hh: 16 },
-    { id: 'db_persist_tool', label: 'Persist Tool',     type: 'process',  cx,        cy: 1226, hw: 62, hh: 13 },
-    { id: 'delegation_chk',  label: 'Delegation Chk',   type: 'process',  cx,        cy: 1260, hw: 62, hh: 13 },
-    { id: 'skill_track',     label: 'Skill Track',      type: 'process',  cx,        cy: 1294, hw: 62, hh: 13 },
+    { id: 'execute_tools',   label: 'Execute Tools',    type: 'process',  cx,        cy: 1210, hw: 62, hh: 16 },
+    { id: 'db_persist_tool', label: 'Persist Tool',     type: 'process',  cx,        cy: 1260, hw: 62, hh: 13 },
+    { id: 'delegation_chk',  label: 'Delegation Chk',   type: 'process',  cx,        cy: 1294, hw: 62, hh: 13 },
+    { id: 'skill_track',     label: 'Skill Track',      type: 'process',  cx,        cy: 1328, hw: 62, hh: 13 },
     // CONTINUE?
-    { id: 'check_continue',  label: 'Continue?',        type: 'decision', cx,        cy: 1362, hw: 58, hh: 18 },
+    { id: 'check_continue',  label: 'Continue?',        type: 'decision', cx,        cy: 1396, hw: 58, hh: 18 },
     // OUTPUT
-    { id: 'final_response',  label: 'Final Response',   type: 'output',   cx,        cy: 1430, hw: 62, hh: 14 },
-    { id: 'db_persist_final',label: 'Persist Final',    type: 'process',  cx,        cy: 1472, hw: 62, hh: 13 },
-    { id: 'memory_save',     label: 'Memory Save',      type: 'process',  cx,        cy: 1506, hw: 62, hh: 13 },
-    { id: 'fire_optimizer',  label: 'Fire Optimizer',   type: 'process',  cx,        cy: 1540, hw: 62, hh: 13 },
+    { id: 'final_response',  label: 'Final Response',   type: 'output',   cx,        cy: 1464, hw: 62, hh: 14 },
+    { id: 'db_persist_final',label: 'Persist Final',    type: 'process',  cx,        cy: 1506, hw: 62, hh: 13 },
+    { id: 'memory_save',     label: 'Memory Save',      type: 'process',  cx,        cy: 1540, hw: 62, hh: 13 },
+    { id: 'fire_optimizer',  label: 'Fire Optimizer',   type: 'process',  cx,        cy: 1574, hw: 62, hh: 13 },
   ];
 
   const stages = [
     { label: 'INPUT',     y1: 20,   y2: 78,   color: '#7dcfff' },
     { label: 'PRE-LOOP',  y1: 92,   y2: 280,  color: '#f7768e' },
     { label: 'CONTEXT',   y1: 294,  y2: 552,  color: '#c0caf5' },
-    { label: 'LOOP INIT', y1: 566,  y2: 688,  color: '#2ac3de' },
-    { label: 'INFERENCE', y1: 702,  y2: 938,  color: '#bb9af7' },
-    { label: 'ROUTING',   y1: 952,  y2: 1134, color: '#e0af68' },
-    { label: 'EXECUTION', y1: 1148, y2: 1320, color: '#a9b1d6' },
-    { label: 'CONTINUE?', y1: 1334, y2: 1394, color: '#e0af68' },
-    { label: 'OUTPUT',    y1: 1408, y2: 1568, color: '#9ece6a' },
+    { label: 'LOOP INIT', y1: 566,  y2: 722,  color: '#2ac3de' },
+    { label: 'INFERENCE', y1: 736,  y2: 972,  color: '#bb9af7' },
+    { label: 'ROUTING',   y1: 986,  y2: 1168, color: '#e0af68' },
+    { label: 'EXECUTION', y1: 1182, y2: 1354, color: '#a9b1d6' },
+    { label: 'CONTINUE?', y1: 1368, y2: 1428, color: '#e0af68' },
+    { label: 'OUTPUT',    y1: 1442, y2: 1602, color: '#9ece6a' },
   ];
 
-  return { nodes, stages, canvasW: w, canvasH: 1580, mode: 'vertical' };
+  return { nodes, stages, canvasW: w, canvasH: 1614, mode: 'vertical' };
 }
 
 // ── Edge path computation ─────────────────────────────────────────────────────

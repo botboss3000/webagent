@@ -14,7 +14,7 @@ Admin endpoints for managing communication plugins.
 
 import json
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
@@ -343,18 +343,37 @@ async def test_plugin_connection(name: str):
 
 
 class TokenTestRequest(BaseModel):
-    token: str
+    token: Optional[str] = None
+    agent_id: Optional[str] = None
+    connection_type: Optional[str] = None
 
 
 @router.post("/plugins/{name}/test-token")
 async def test_plugin_token(name: str, req: TokenTestRequest):
     """Test a specific bot token directly (for per-agent connections).
-    Does not require the token to be saved; calls getMe and returns bot info."""
-    if not req.token:
-        return {"status": "error", "message": "No token provided"}
+    Does not require the token to be saved; calls getMe and returns bot info.
+    If token is masked (contains •) or absent, fetches real token from DB using agent_id."""
+    token = req.token or ""
+    if not token or "•" in token:
+        if not req.agent_id:
+            return {"status": "error", "message": "No token provided"}
+        try:
+            from app.db import get_db
+            db = get_db()
+            conn_type = req.connection_type or name
+            rows = await db.get_agent_connections(req.agent_id)
+            row = next((r for r in rows if r["connection_type"] == conn_type), None)
+            if not row:
+                return {"status": "error", "message": "No saved token found"}
+            cfg = json.loads(row.get("config") or "{}")
+            token = cfg.get("bot_token", "")
+            if not token:
+                return {"status": "error", "message": "No saved token found"}
+        except Exception as e:
+            return {"status": "error", "message": f"Could not retrieve token: {e}"}
     try:
         from app.communications.plugins.telegram import get_me
-        result = await get_me(req.token)
+        result = await get_me(token)
         if result.get("ok"):
             bot = result.get("result", {})
             return {
