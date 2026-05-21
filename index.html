@@ -1522,29 +1522,25 @@
               <label class="ac-label" style="margin-top:10px;">Provider</label>
               <select id="ac-sched-provider" class="ac-input">
                 <option value="local">Local (in-process)</option>
-                <option value="google">Google Cloud Scheduler (coming soon)</option>
               </select>
 
-              <div id="ac-sched-google-fields" style="display:none;margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-                <div>
-                  <label class="ac-label">Project ID</label>
-                  <input id="ac-sched-google-project" class="ac-input" type="text" placeholder="my-gcp-project" />
-                </div>
-                <div>
-                  <label class="ac-label">Region</label>
-                  <input id="ac-sched-google-region" class="ac-input" type="text" placeholder="us-central1" />
-                </div>
-              </div>
+              <div id="ac-sched-provider-desc" class="ac-hint" style="margin-top:6px;font-size:11px;"></div>
 
-              <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">
+              <div id="ac-sched-fields" style="margin-top:12px;display:flex;flex-direction:column;gap:10px;"></div>
+
+              <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:14px;">
+                <button id="ac-sched-test" class="ac-btn">Test Connection</button>
                 <button id="ac-sched-save" class="ac-btn ac-btn-primary">Save</button>
+                <button id="ac-sched-sync" class="ac-btn">Push All Jobs</button>
                 <button id="ac-sched-refresh" class="ac-btn">Refresh Status</button>
               </div>
+
+              <div id="ac-sched-test-result" style="margin-top:8px;font-size:11px;color:var(--muted);"></div>
 
               <pre id="ac-sched-status" style="margin-top:10px;padding:8px;background:var(--panel-2,#0d0d1a);border:1px solid var(--border,#2a2a4a);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;color:var(--muted);"></pre>
 
               <div class="ac-info-banner" style="margin-top:10px;font-size:11px;">
-                Local scheduler runs jobs inside this process. It needs the server to stay up — fine for local mode, not suitable for stateless cloud deployments. Google Cloud Scheduler integration is stubbed and not yet wired.
+                The fire webhook (<code>POST /api/v1/automations/fire/&lt;id&gt;?token=&lt;...&gt;</code>) must be reachable from the chosen provider. Set <code>WEBHOOK_BASE_URL</code> to your public server URL, or fill in the per-provider <code>fire_base_url</code> field below.
               </div>
             </div>
           </section>

@@ -49,6 +49,17 @@ def _instantiate(provider: str) -> SchedulerBackend:
     if p == "local":
         from app.scheduler.local import LocalScheduler
         return LocalScheduler()
+    # Look up remote provider in the registry.
+    from app.scheduler.providers import get_provider_class
+    cls = get_provider_class(p)
+    if cls is not None:
+        try:
+            from app.admin.scheduler_config import get_settings_for
+            settings = get_settings_for(p)
+        except Exception:
+            settings = {}
+        return cls(settings)  # type: ignore[call-arg]
+    # Legacy stub kept for backwards-compat config files.
     if p == "google":
         from app.scheduler.google import GoogleScheduler
         return GoogleScheduler()

@@ -218,6 +218,9 @@ CREATE TABLE IF NOT EXISTS agent_automations (
     last_error          TEXT,
     last_session_id     TEXT,
     source_hash         TEXT NOT NULL DEFAULT '',
+    fire_token          TEXT,
+    external_job_id     TEXT,
+    external_provider   TEXT,
     created_at          TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -794,6 +797,21 @@ class LocalBackend(StorageBackend):
                 conn.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
                 conn.commit()
                 logger.info("Added sessions.pinned column")
+
+            # ── Migration: add fire_token / external_job_id / external_provider to agent_automations ──
+            try:
+                cursor = conn.execute("PRAGMA table_info(agent_automations)")
+                auto_cols = {row[1] for row in cursor.fetchall()}
+                if auto_cols:
+                    if "fire_token" not in auto_cols:
+                        conn.execute("ALTER TABLE agent_automations ADD COLUMN fire_token TEXT")
+                    if "external_job_id" not in auto_cols:
+                        conn.execute("ALTER TABLE agent_automations ADD COLUMN external_job_id TEXT")
+                    if "external_provider" not in auto_cols:
+                        conn.execute("ALTER TABLE agent_automations ADD COLUMN external_provider TEXT")
+                    conn.commit()
+            except Exception as _e:
+                logger.warning("agent_automations migration failed: %s", _e)
 
             # ── Migration: backfill 'automation' admin-base slot for every agent ──
             try:
@@ -4649,6 +4667,17 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
+    async def get_automation_by_fire_token(self, automation_id: str, token: str) -> Optional[dict]:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM agent_automations WHERE id = ? AND fire_token = ?",
+                (automation_id, token),
+            ).fetchone()
+            return self._automation_row_to_dict(row) if row else None
+        finally:
+            conn.close()
+
     async def upsert_automation(
         self,
         *,
@@ -4727,6 +4756,7 @@ class LocalBackend(StorageBackend):
             "timezone", "channel", "channel_recipient", "silent",
             "enabled", "next_run_at", "last_run_at", "last_status",
             "last_error", "last_session_id",
+            "fire_token", "external_job_id", "external_provider",
         }
         sets = []
         params: List[Any] = []
