@@ -396,6 +396,9 @@
         <!-- Sidebar nav -->
         <nav id="app-config-sidebar">
           <div class="ac-nav-title">App Config</div>
+          <a class="ac-nav-item" data-section="app-settings" href="#ac-section-app-settings">
+            <i data-lucide="settings-2" class="lucide-icon ac-nav-icon"></i>App Settings
+          </a>
           <a class="ac-nav-item active" data-section="llm" href="#ac-section-llm">
             <i data-lucide="bot" class="lucide-icon ac-nav-icon"></i>Default LLM
           </a>
@@ -411,9 +414,6 @@
           </a>
           <a class="ac-nav-item" data-section="git" href="#ac-section-git">
             <i data-lucide="git-branch" class="lucide-icon ac-nav-icon"></i>Git Providers
-          </a>
-          <a class="ac-nav-item" data-section="app-settings" href="#ac-section-app-settings">
-            <i data-lucide="settings-2" class="lucide-icon ac-nav-icon"></i>App Settings
           </a>
         </nav>
 
@@ -1417,7 +1417,9 @@
                   Extend default LLM to agents
                 </label>
                 <div class="ac-hint">When enabled, agents can select "Use app default" for their LLM. When disabled, each agent must configure its own LLM.</div>
-                <div id="ac-extend-llm-warning" class="ac-hint" style="display:none;color:#e0af68;margin-top:6px;">Warning: agents currently set to "Use app default" will have no LLM configured until an admin assigns them a custom one.</div>
+                <div style="margin-top:10px;padding:10px 12px;background:rgba(224,175,104,0.12);border:1px solid rgba(224,175,104,0.4);border-radius:6px;color:#e0af68;font-size:13px;line-height:1.5;">
+                  <strong>Warning:</strong> Any agents currently configured to use the app default LLM will have their LLM disconnected. They will stop working until an admin assigns them a custom LLM.
+                </div>
               </div>
               <div class="ac-actions">
                 <button id="ac-app-settings-save" class="ac-btn ac-btn-primary">Save</button>

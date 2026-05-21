@@ -443,128 +443,6 @@ function _renderConfigTab(body, agent, panelEl) {
       agent.description || '', false, 2);
   }
 
-  // Turn count
-  const tcGroup = document.createElement('div');
-  tcGroup.className = 'agents-field-group';
-  tcGroup.innerHTML = `
-    <label class="agents-field-label">Max Turn Count</label>
-    <span class="agents-field-hint">Maximum number of tool-calling turns per session.</span>
-    <input type="number" class="agents-input" data-field="max_turn_count"
-      value="${agent.max_turn_count || 10}" min="1" max="99999"
-      ${!isEditable ? 'readonly' : ''} style="width:100px">
-  `;
-  body.appendChild(tcGroup);
-
-  // trigger type
-  if (isEditable) {
-    const triggerRow = document.createElement('div');
-    triggerRow.className = 'agents-field-group';
-    const triggerLabel = document.createElement('label');
-    triggerLabel.className = 'agents-field-label';
-    triggerLabel.textContent = 'Trigger';
-    const triggerSel = document.createElement('select');
-    triggerSel.className = 'agents-input';
-    triggerSel.dataset.field = 'trigger_type';
-    for (const [val, text] of [
-      ['user_input',    'User Input'],
-      ['slash_command', 'Slash Command'],
-      ['tool_call',     'Tool Call'],
-      ['schedule',      'Schedule'],
-      ['webhook',       'Webhook'],
-      ['background',    'Background'],
-    ]) {
-      const opt = document.createElement('option');
-      opt.value = val;
-      opt.textContent = text;
-      if ((agent.trigger_type || 'user_input') === val) opt.selected = true;
-      triggerSel.appendChild(opt);
-    }
-    triggerRow.appendChild(triggerLabel);
-    triggerRow.appendChild(triggerSel);
-    body.appendChild(triggerRow);
-
-    const keyRow = document.createElement('div');
-    keyRow.className = 'agents-field-group';
-    keyRow.style.display = (agent.trigger_type && agent.trigger_type !== 'user_input') ? '' : 'none';
-    const keyLabel = document.createElement('label');
-    keyLabel.className = 'agents-field-label';
-    keyLabel.textContent = 'Trigger Key';
-    const keyInput = document.createElement('input');
-    keyInput.type = 'text';
-    keyInput.className = 'agents-input';
-    keyInput.dataset.field = 'trigger_key';
-    keyInput.value = agent.trigger_key || '';
-    keyInput.placeholder = _triggerKeyPlaceholder(agent.trigger_type || 'user_input');
-    keyRow.appendChild(keyLabel);
-    keyRow.appendChild(keyInput);
-    body.appendChild(keyRow);
-
-    triggerSel.addEventListener('change', () => {
-      keyRow.style.display = triggerSel.value !== 'user_input' ? '' : 'none';
-      keyInput.placeholder = _triggerKeyPlaceholder(triggerSel.value);
-    });
-  }
-
-  // User mode (applies across all channels)
-  const umGroup = document.createElement('div');
-  umGroup.className = 'agents-field-group';
-  const umMode = agent.user_mode || 'anonymous';
-  umGroup.innerHTML = `
-    <label class="agents-field-label">User Mode</label>
-    <span class="agents-field-hint">How this agent handles users across all channels.</span>
-    <div class="conn-user-mode" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">
-      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;padding:6px 10px;border-radius:6px;border:1px solid ${umMode === 'anonymous' ? '#7aa2f7' : 'var(--border,#2a2a3a)'};background:${umMode === 'anonymous' ? 'rgba(122,162,247,0.08)' : 'transparent'};">
-        <input type="radio" name="agent-user-mode-${_esc(agent.id)}" value="anonymous" data-field="user_mode" ${umMode === 'anonymous' ? 'checked' : ''} style="accent-color:#7aa2f7;" ${!isEditable ? 'disabled' : ''}>
-        Anonymous
-      </label>
-      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;padding:6px 10px;border-radius:6px;border:1px solid ${umMode === 'register' ? '#7aa2f7' : 'var(--border,#2a2a3a)'};background:${umMode === 'register' ? 'rgba(122,162,247,0.08)' : 'transparent'};">
-        <input type="radio" name="agent-user-mode-${_esc(agent.id)}" value="register" data-field="user_mode" ${umMode === 'register' ? 'checked' : ''} style="accent-color:#7aa2f7;" ${!isEditable ? 'disabled' : ''}>
-        Register
-      </label>
-    </div>
-    <span class="conn-user-mode-hint" style="font-size:11px;color:var(--fg-muted,#565f89);display:block;margin-top:4px;">${umMode === 'register'
-      ? 'Agent guides new users to register and links accounts across channels.'
-      : 'Users get auto-generated anonymous IDs. No registration required.'}</span>
-  `;
-  if (isEditable) {
-    umGroup.querySelectorAll('[data-field="user_mode"]').forEach(radio => {
-      radio.addEventListener('change', () => {
-        const selected = umGroup.querySelector('[data-field="user_mode"]:checked')?.value || 'anonymous';
-        umGroup.querySelectorAll('.conn-user-mode label').forEach(lbl => {
-          const val = lbl.querySelector('input')?.value;
-          lbl.style.borderColor = val === selected ? '#7aa2f7' : 'var(--border,#2a2a3a)';
-          lbl.style.background = val === selected ? 'rgba(122,162,247,0.08)' : 'transparent';
-        });
-        const hintEl = umGroup.querySelector('.conn-user-mode-hint');
-        if (hintEl) {
-          hintEl.textContent = selected === 'register'
-            ? 'Agent guides new users to register and links accounts across channels.'
-            : 'Users get auto-generated anonymous IDs. No registration required.';
-        }
-      });
-    });
-  }
-  body.appendChild(umGroup);
-
-  // ── Prompt slots ────────────────────────────────────────────────────────
-  // Admin (isEditable) sees the full slot editor; everyone else sees the
-  // override view for unlocked slots + read-only base for locked ones.
-  const slotsHost = document.createElement('div');
-  slotsHost.className = 'agents-field-group';
-  slotsHost.dataset.role = 'slots-host';
-  slotsHost.innerHTML = `
-    <label class="agents-field-label">Prompt Slots</label>
-    <span class="agents-field-hint">${isEditable
-      ? 'Slots are concatenated in order into the system message. Lock a slot to keep it admin-only; otherwise users may write overrides.'
-      : 'You can override unlocked slots for yourself without affecting other users.'}</span>
-    <div class="agents-slots-list" data-role="slots-list" style="margin-top:8px;"></div>
-    ${isEditable ? '<button type="button" class="agents-btn" data-role="slots-add" style="margin-top:8px;">+ Add slot</button>' : ''}
-  `;
-  body.appendChild(slotsHost);
-  // Track slot edit state on the panel for save handlers.
-  panelEl._slotState = { slots: [], overrides: {}, resetOverridesFor: new Set(), userRole: 'member', loaded: false };
-  _loadAndRenderSlots(panelEl, agent, isEditable);
-
   // ── Per-agent LLM card ───────────────────────────────────────────────────
   if (isEditable) {
     const llmCfg = agent.llm_config || { use_default: true };
@@ -849,6 +727,171 @@ function _renderConfigTab(body, agent, panelEl) {
       } catch (e) { /* silent */ }
     })();
   }
+
+  // Turn count
+  const tcGroup = document.createElement('div');
+  tcGroup.className = 'agents-field-group';
+  tcGroup.innerHTML = `
+    <label class="agents-field-label">Max Turn Count</label>
+    <span class="agents-field-hint">Maximum number of tool-calling turns per session.</span>
+    <input type="number" class="agents-input" data-field="max_turn_count"
+      value="${agent.max_turn_count || 10}" min="1" max="99999"
+      ${!isEditable ? 'readonly' : ''} style="width:100px">
+  `;
+  body.appendChild(tcGroup);
+
+  // User mode (applies across all channels)
+  const umGroup = document.createElement('div');
+  umGroup.className = 'agents-field-group';
+  const umMode = agent.user_mode || 'anonymous';
+  umGroup.innerHTML = `
+    <label class="agents-field-label">User Mode</label>
+    <span class="agents-field-hint">How this agent handles users across all channels.</span>
+    <div class="conn-user-mode" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;padding:6px 10px;border-radius:6px;border:1px solid ${umMode === 'anonymous' ? '#7aa2f7' : 'var(--border,#2a2a3a)'};background:${umMode === 'anonymous' ? 'rgba(122,162,247,0.08)' : 'transparent'};">
+        <input type="radio" name="agent-user-mode-${_esc(agent.id)}" value="anonymous" data-field="user_mode" ${umMode === 'anonymous' ? 'checked' : ''} style="accent-color:#7aa2f7;" ${!isEditable ? 'disabled' : ''}>
+        Anonymous
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;padding:6px 10px;border-radius:6px;border:1px solid ${umMode === 'register' ? '#7aa2f7' : 'var(--border,#2a2a3a)'};background:${umMode === 'register' ? 'rgba(122,162,247,0.08)' : 'transparent'};">
+        <input type="radio" name="agent-user-mode-${_esc(agent.id)}" value="register" data-field="user_mode" ${umMode === 'register' ? 'checked' : ''} style="accent-color:#7aa2f7;" ${!isEditable ? 'disabled' : ''}>
+        Register
+      </label>
+    </div>
+    <span class="conn-user-mode-hint" style="font-size:11px;color:var(--fg-muted,#565f89);display:block;margin-top:4px;">${umMode === 'register'
+      ? 'Agent guides new users to register and links accounts across channels.'
+      : 'Users get auto-generated anonymous IDs. No registration required.'}</span>
+  `;
+  if (isEditable) {
+    umGroup.querySelectorAll('[data-field="user_mode"]').forEach(radio => {
+      radio.addEventListener('change', () => {
+        const selected = umGroup.querySelector('[data-field="user_mode"]:checked')?.value || 'anonymous';
+        umGroup.querySelectorAll('.conn-user-mode label').forEach(lbl => {
+          const val = lbl.querySelector('input')?.value;
+          lbl.style.borderColor = val === selected ? '#7aa2f7' : 'var(--border,#2a2a3a)';
+          lbl.style.background = val === selected ? 'rgba(122,162,247,0.08)' : 'transparent';
+        });
+        const hintEl = umGroup.querySelector('.conn-user-mode-hint');
+        if (hintEl) {
+          hintEl.textContent = selected === 'register'
+            ? 'Agent guides new users to register and links accounts across channels.'
+            : 'Users get auto-generated anonymous IDs. No registration required.';
+        }
+      });
+    });
+  }
+  body.appendChild(umGroup);
+
+  // trigger type
+  if (isEditable) {
+    const triggerRow = document.createElement('div');
+    triggerRow.className = 'agents-field-group';
+    const triggerLabel = document.createElement('label');
+    triggerLabel.className = 'agents-field-label';
+    triggerLabel.textContent = 'Trigger';
+    const triggerSel = document.createElement('select');
+    triggerSel.className = 'agents-input';
+    triggerSel.dataset.field = 'trigger_type';
+    for (const [val, text] of [
+      ['user_input',    'User Input'],
+      ['slash_command', 'Slash Command'],
+      ['tool_call',     'Tool Call'],
+      ['schedule',      'Schedule'],
+      ['webhook',       'Webhook'],
+      ['background',    'Background'],
+    ]) {
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = text;
+      if ((agent.trigger_type || 'user_input') === val) opt.selected = true;
+      triggerSel.appendChild(opt);
+    }
+    triggerRow.appendChild(triggerLabel);
+    triggerRow.appendChild(triggerSel);
+    body.appendChild(triggerRow);
+
+    const keyRow = document.createElement('div');
+    keyRow.className = 'agents-field-group';
+    keyRow.style.display = (agent.trigger_type && agent.trigger_type !== 'user_input') ? '' : 'none';
+    const keyLabel = document.createElement('label');
+    keyLabel.className = 'agents-field-label';
+    keyLabel.textContent = 'Trigger Key';
+    const keyInput = document.createElement('input');
+    keyInput.type = 'text';
+    keyInput.className = 'agents-input';
+    keyInput.dataset.field = 'trigger_key';
+    keyInput.value = agent.trigger_key || '';
+    keyInput.placeholder = _triggerKeyPlaceholder(agent.trigger_type || 'user_input');
+    keyRow.appendChild(keyLabel);
+    keyRow.appendChild(keyInput);
+    body.appendChild(keyRow);
+
+    triggerSel.addEventListener('change', () => {
+      keyRow.style.display = triggerSel.value !== 'user_input' ? '' : 'none';
+      keyInput.placeholder = _triggerKeyPlaceholder(triggerSel.value);
+    });
+  }
+
+  // ── Prompt slots ────────────────────────────────────────────────────────
+  // Admin (isEditable) sees the full slot editor; everyone else sees the
+  // override view for unlocked slots + read-only base for locked ones.
+  const slotsHost = document.createElement('div');
+  slotsHost.className = 'agents-field-group';
+  slotsHost.dataset.role = 'slots-host';
+
+  const slotsCard = document.createElement('div');
+  slotsCard.className = 'agents-llm-card';
+
+  const slotsHeader = document.createElement('div');
+  slotsHeader.className = 'agents-llm-header';
+  const slotsTitle = document.createElement('span');
+  slotsTitle.className = 'agents-llm-title';
+  slotsTitle.textContent = 'Prompt Slots';
+  const slotsChevron = document.createElement('span');
+  slotsChevron.className = 'agents-llm-chevron';
+  slotsChevron.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>`;
+  slotsHeader.appendChild(slotsTitle);
+  slotsHeader.appendChild(slotsChevron);
+
+  const slotsBody = document.createElement('div');
+  slotsBody.className = 'agents-llm-body';
+  slotsBody.style.display = 'none';
+
+  slotsHeader.addEventListener('click', () => {
+    const open = slotsBody.style.display === 'none';
+    slotsBody.style.display = open ? 'flex' : 'none';
+    slotsChevron.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)';
+  });
+
+  const slotsHint = document.createElement('span');
+  slotsHint.className = 'agents-field-hint';
+  slotsHint.textContent = isEditable
+    ? 'Slots are concatenated in order into the system message. Lock a slot to keep it admin-only; otherwise users may write overrides.'
+    : 'You can override unlocked slots for yourself without affecting other users.';
+  slotsBody.appendChild(slotsHint);
+
+  const slotsList = document.createElement('div');
+  slotsList.className = 'agents-slots-list';
+  slotsList.dataset.role = 'slots-list';
+  slotsList.style.marginTop = '8px';
+  slotsBody.appendChild(slotsList);
+
+  if (isEditable) {
+    const slotsAddBtn = document.createElement('button');
+    slotsAddBtn.type = 'button';
+    slotsAddBtn.className = 'agents-btn';
+    slotsAddBtn.dataset.role = 'slots-add';
+    slotsAddBtn.style.marginTop = '8px';
+    slotsAddBtn.textContent = '+ Add slot';
+    slotsBody.appendChild(slotsAddBtn);
+  }
+
+  slotsCard.appendChild(slotsHeader);
+  slotsCard.appendChild(slotsBody);
+  slotsHost.appendChild(slotsCard);
+  body.appendChild(slotsHost);
+  // Track slot edit state on the panel for save handlers.
+  panelEl._slotState = { slots: [], overrides: {}, resetOverridesFor: new Set(), userRole: 'member', loaded: false };
+  _loadAndRenderSlots(panelEl, agent, isEditable);
 
   // Admin-only: Discoverable toggle for system templates
   if (!isEditable && _userIsAdmin && agent.source === 'template') {
