@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
 class LoginRequest(BaseModel):
-    username: str
+    email: str
     password: str
     remember_me: bool = False
 
@@ -29,7 +29,7 @@ class LoginResponse(BaseModel):
 
 
 class RegisterRequest(BaseModel):
-    username: str
+    email: str
     password: str
     display_name: str = ""
 
@@ -62,9 +62,9 @@ async def login(req: LoginRequest):
     If remember_me is True, a persistent remember token is generated
     (invalidates any previous one). Returns it alongside the JWT.
     """
-    user = authenticate(req.username, req.password)
+    user = authenticate(req.email, req.password)
     if user is None:
-        raise HTTPException(status_code=401, detail="Invalid username or password")
+        raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.is_approved:
         raise HTTPException(status_code=403, detail="Account pending admin approval")
 
@@ -77,7 +77,7 @@ async def login(req: LoginRequest):
     )
 
     if req.remember_me:
-        remember = set_remember_token(user.username)
+        remember = set_remember_token(req.email)
         if remember:
             resp.remember_token = remember
 
@@ -134,9 +134,9 @@ async def register(req: RegisterRequest):
         raise HTTPException(status_code=403, detail="Registration is disabled. This app is private.")
 
     auto_approve = (mode != "admin_approval")
-    user = register_user(req.username, req.password, req.display_name, is_approved=auto_approve)
+    user = register_user(req.email, req.password, req.display_name, is_approved=auto_approve)
     if user is None:
-        raise HTTPException(status_code=409, detail="Username already exists")
+        raise HTTPException(status_code=409, detail="Email already registered")
 
     if not auto_approve:
         # Created but unapproved — no token issued, client must wait for admin

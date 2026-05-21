@@ -175,6 +175,7 @@ function eventToNodeId(event) {
 
       // LOOP INIT
       case 'load_tools':            return 'load_tools';
+      case 'data_src_loaded':       return 'data_src_load';
       case 'integration_status':    return 'integration_status';
 
       // INFERENCE (per-turn)
@@ -196,6 +197,8 @@ function eventToNodeId(event) {
       // EXECUTION
       case 'execute_start':
       case 'execute_end':           return 'execute_tools';
+      case 'data_src_query_started':
+      case 'data_src_query_finished': return 'data_src_exec';
       case 'agent_delegation':      return 'delegation_chk';
 
       // CONTINUE?

@@ -26,6 +26,7 @@ async def build_system_prompt(
     docs: List[Dict],
     brain_context: Optional[str] = None,
     user_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
 ) -> str:
     """Assemble the final system prompt from resolved slot docs + brain context.
 
@@ -33,6 +34,10 @@ async def build_system_prompt(
     each entry is already a fully merged admin-base + user-override slot,
     in the admin's chosen order. We concatenate the contents as-is so admins
     keep full control over headings and formatting.
+
+    When `agent_id` is provided, any external data sources attached to that
+    agent (with inject_schema_in_prompt = 1) get summarized into a
+    `# [DATA SOURCES]` section.
     """
     sections: List[str] = []
     for doc in docs:
@@ -50,6 +55,11 @@ async def build_system_prompt(
         if fallback:
             sections.append(fallback)
 
+    if agent_id:
+        ds_block = await format_data_sources_for_prompt(agent_id)
+        if ds_block:
+            sections.append(ds_block)
+
     if brain_context:
         sections.append("# [BRAIN CONTEXT]")
         intro = (fr.get("brain_context_intro") or "").strip()
@@ -58,6 +68,43 @@ async def build_system_prompt(
         sections.append(brain_context)
 
     return "\n\n".join(s for s in sections if s.strip()).strip()
+
+
+async def format_data_sources_for_prompt(agent_id: str) -> str:
+    """Build the `# [DATA SOURCES]` block for an agent's enabled attachments.
+
+    Returns "" when the agent has no attached sources or every attachment has
+    inject_schema_in_prompt = 0.
+    """
+    from app.db import get_db
+    from app.connectors import get_connector
+
+    db = get_db()
+    try:
+        attachments = await db.agent_data_source_list(agent_id, enabled_only=True)
+    except Exception:
+        return ""
+    snippets: List[str] = []
+    for att in attachments:
+        if not att.get("inject_schema_in_prompt"):
+            continue
+        ds = {
+            "id": att.get("data_source_id"),
+            "name": att.get("name"),
+            "type": att.get("type"),
+            "config": att.get("config") or {},
+            "schema_cache": att.get("schema_cache") or {},
+        }
+        try:
+            connector = get_connector(ds["type"])
+            snippet = connector.prompt_snippet(ds, att)
+        except Exception:
+            snippet = ""
+        if snippet:
+            snippets.append(snippet.strip())
+    if not snippets:
+        return ""
+    return "# [DATA SOURCES]\n\n" + "\n\n".join(snippets)
 
 
 def format_attachments_for_prompt(attachments: List[Dict]) -> str:

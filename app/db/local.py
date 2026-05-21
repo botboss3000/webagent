@@ -542,6 +542,101 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     last_login_at       TEXT
 );
 
+-- ============================================================
+-- Per-Agent External Data Sources
+-- Each agent can attach data sources (SQL DBs, doc stores, REST APIs,
+-- domain-scoped web search, etc). Connector implementations live in
+-- app/connectors/. The agent gains synthetic tools at load time
+-- (not stored in the `tools` table — rebuilt every request).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS data_sources (
+    id                    TEXT PRIMARY KEY,
+    user_id               TEXT NOT NULL,
+    name                  TEXT NOT NULL,
+    type                  TEXT NOT NULL CHECK (type IN (
+                              'sql_postgres','sql_mysql','rest_api',
+                              'doc_store','web_search_domain',
+                              'notion','confluence','shopify',
+                              'airtable','google_sheets'
+                          )),
+    config                TEXT NOT NULL DEFAULT '{}',   -- JSON: non-sensitive
+    auth_element_id       TEXT,                          -- FK -> auth_elements(id), nullable
+    schema_cache          TEXT NOT NULL DEFAULT '{}',   -- JSON: introspected tables/endpoints
+    safety_policy         TEXT NOT NULL DEFAULT '{}',   -- JSON: allowed_statements, allowed_tables, row_limit, destructive
+    status                TEXT NOT NULL DEFAULT 'unverified'
+                          CHECK (status IN ('unverified','active','error','disabled')),
+    last_test_message     TEXT,
+    last_tested_at        TEXT,
+    last_introspected_at  TEXT,
+    created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_data_sources_user ON data_sources(user_id);
+CREATE INDEX IF NOT EXISTS idx_data_sources_type ON data_sources(type);
+
+CREATE TABLE IF NOT EXISTS agent_data_sources (
+    id                       TEXT PRIMARY KEY,
+    agent_id                 TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    data_source_id           TEXT NOT NULL REFERENCES data_sources(id) ON DELETE CASCADE,
+    tool_alias               TEXT,
+    enabled                  INTEGER NOT NULL DEFAULT 1,
+    inject_schema_in_prompt  INTEGER NOT NULL DEFAULT 1,
+    created_at               TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(agent_id, data_source_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_data_sources_agent ON agent_data_sources(agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_data_sources_source ON agent_data_sources(data_source_id);
+
+-- Chunked + embedded docs for doc_store connectors. Mirrors memory_chunks shape
+-- but keyed by data_source_id so customer wiki content stays separate from
+-- a user's personal memory.
+CREATE TABLE IF NOT EXISTS doc_chunks (
+    id              TEXT PRIMARY KEY,
+    data_source_id  TEXT NOT NULL REFERENCES data_sources(id) ON DELETE CASCADE,
+    source_ref      TEXT NOT NULL DEFAULT '',   -- file path / URL / page key
+    chunk_index     INTEGER NOT NULL DEFAULT 0,
+    chunk_text      TEXT NOT NULL,
+    content_hash    TEXT,                        -- file-level hash for re-embed avoidance
+    embedding       BLOB,                        -- numpy float32 array
+    token_count     INTEGER,
+    metadata        TEXT NOT NULL DEFAULT '{}',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_doc_chunks_source ON doc_chunks(data_source_id);
+CREATE INDEX IF NOT EXISTS idx_doc_chunks_hash ON doc_chunks(content_hash);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS doc_chunks_fts USING fts5(
+    chunk_text,
+    source_ref UNINDEXED,
+    content='doc_chunks',
+    content_rowid='rowid',
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_doc_chunks_fts_insert
+    AFTER INSERT ON doc_chunks BEGIN
+    INSERT INTO doc_chunks_fts(rowid, chunk_text, source_ref)
+    VALUES (new.rowid, new.chunk_text, new.source_ref);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_doc_chunks_fts_delete
+    AFTER DELETE ON doc_chunks BEGIN
+    INSERT INTO doc_chunks_fts(doc_chunks_fts, rowid, chunk_text, source_ref)
+    VALUES ('delete', old.rowid, old.chunk_text, old.source_ref);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_doc_chunks_fts_update
+    AFTER UPDATE ON doc_chunks BEGIN
+    INSERT INTO doc_chunks_fts(doc_chunks_fts, rowid, chunk_text, source_ref)
+    VALUES ('delete', old.rowid, old.chunk_text, old.source_ref);
+    INSERT INTO doc_chunks_fts(rowid, chunk_text, source_ref)
+    VALUES (new.rowid, new.chunk_text, new.source_ref);
+END;
+
 """
 
 
@@ -4021,6 +4116,420 @@ class LocalBackend(StorageBackend):
         """Return True if user_id is a member or admin of the agent."""
         roles = await self.get_agent_roles(agent_id)
         return user_id in roles["member_users"] or user_id in roles["admin_users"]
+
+    # ────────────────────────────────────────────────────────────────────
+    # Per-Agent External Data Sources
+    # ────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _row_to_data_source(row: sqlite3.Row) -> dict:
+        d = dict(row)
+        for k in ("config", "schema_cache", "safety_policy"):
+            raw = d.get(k) or "{}"
+            try:
+                d[k] = json.loads(raw) if isinstance(raw, str) else raw
+            except Exception:
+                d[k] = {}
+        return d
+
+    async def data_source_create(
+        self,
+        user_id: str,
+        name: str,
+        type: str,
+        config: Optional[dict] = None,
+        auth_element_id: Optional[str] = None,
+        safety_policy: Optional[dict] = None,
+    ) -> dict:
+        ds_id = _uuid()
+        now = _now_iso()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """INSERT INTO data_sources
+                       (id, user_id, name, type, config, auth_element_id,
+                        schema_cache, safety_policy, status, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, '{}', ?, 'unverified', ?, ?)""",
+                    (
+                        ds_id, user_id, name, type,
+                        json.dumps(config or {}),
+                        auth_element_id,
+                        json.dumps(safety_policy or {}),
+                        now, now,
+                    ),
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT * FROM data_sources WHERE id = ?", (ds_id,)
+                ).fetchone()
+                return self._row_to_data_source(row)
+            finally:
+                conn.close()
+
+    async def data_source_update(
+        self,
+        ds_id: str,
+        user_id: str,
+        **fields,
+    ) -> Optional[dict]:
+        allowed = {
+            "name", "config", "auth_element_id", "schema_cache",
+            "safety_policy", "status", "last_test_message",
+            "last_tested_at", "last_introspected_at",
+        }
+        sets = []
+        vals: List[Any] = []
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            if k in ("config", "schema_cache", "safety_policy") and not isinstance(v, str):
+                v = json.dumps(v or {})
+            sets.append(f"{k} = ?")
+            vals.append(v)
+        if not sets:
+            return await self.data_source_get(ds_id, user_id)
+        sets.append("updated_at = ?")
+        vals.append(_now_iso())
+        vals.extend([ds_id, user_id])
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    f"UPDATE data_sources SET {', '.join(sets)} WHERE id = ? AND user_id = ?",
+                    vals,
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return await self.data_source_get(ds_id, user_id)
+
+    async def data_source_get(self, ds_id: str, user_id: Optional[str] = None) -> Optional[dict]:
+        conn = self._get_conn()
+        try:
+            if user_id is not None:
+                row = conn.execute(
+                    "SELECT * FROM data_sources WHERE id = ? AND user_id = ?",
+                    (ds_id, user_id),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM data_sources WHERE id = ?", (ds_id,)
+                ).fetchone()
+            return self._row_to_data_source(row) if row else None
+        finally:
+            conn.close()
+
+    async def data_source_list(self, user_id: str) -> List[dict]:
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM data_sources WHERE user_id = ? ORDER BY created_at DESC",
+                (user_id,),
+            ).fetchall()
+            return [self._row_to_data_source(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def data_source_delete(self, ds_id: str, user_id: str) -> bool:
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "DELETE FROM data_sources WHERE id = ? AND user_id = ?",
+                    (ds_id, user_id),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    async def agent_data_source_list(self, agent_id: str, enabled_only: bool = False) -> List[dict]:
+        """Return data sources attached to the given agent, joined with source rows."""
+        conn = self._get_conn()
+        try:
+            sql = """SELECT ads.id AS attachment_id, ads.agent_id, ads.data_source_id,
+                            ads.tool_alias, ads.enabled, ads.inject_schema_in_prompt,
+                            ads.created_at AS attached_at,
+                            ds.user_id AS owner_user_id, ds.name, ds.type, ds.config,
+                            ds.auth_element_id, ds.schema_cache, ds.safety_policy,
+                            ds.status, ds.last_tested_at, ds.last_introspected_at
+                     FROM agent_data_sources ads
+                     JOIN data_sources ds ON ds.id = ads.data_source_id
+                     WHERE ads.agent_id = ?"""
+            params: List[Any] = [agent_id]
+            if enabled_only:
+                sql += " AND ads.enabled = 1"
+            sql += " ORDER BY ads.created_at"
+            rows = conn.execute(sql, params).fetchall()
+            results = []
+            for r in rows:
+                d = dict(r)
+                for k in ("config", "schema_cache", "safety_policy"):
+                    try:
+                        d[k] = json.loads(d.get(k) or "{}")
+                    except Exception:
+                        d[k] = {}
+                results.append(d)
+            return results
+        finally:
+            conn.close()
+
+    async def agent_data_source_attach(
+        self,
+        agent_id: str,
+        data_source_id: str,
+        tool_alias: Optional[str] = None,
+        inject_schema_in_prompt: bool = True,
+    ) -> dict:
+        attach_id = _uuid()
+        now = _now_iso()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """INSERT OR IGNORE INTO agent_data_sources
+                       (id, agent_id, data_source_id, tool_alias, enabled, inject_schema_in_prompt, created_at)
+                       VALUES (?, ?, ?, ?, 1, ?, ?)""",
+                    (attach_id, agent_id, data_source_id, tool_alias,
+                     1 if inject_schema_in_prompt else 0, now),
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT * FROM agent_data_sources WHERE agent_id = ? AND data_source_id = ?",
+                    (agent_id, data_source_id),
+                ).fetchone()
+                return dict(row) if row else {}
+            finally:
+                conn.close()
+
+    async def agent_data_source_update(
+        self,
+        agent_id: str,
+        data_source_id: str,
+        **fields,
+    ) -> Optional[dict]:
+        allowed = {"tool_alias", "enabled", "inject_schema_in_prompt"}
+        sets = []
+        vals: List[Any] = []
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            if k in ("enabled", "inject_schema_in_prompt"):
+                v = 1 if v else 0
+            sets.append(f"{k} = ?")
+            vals.append(v)
+        if not sets:
+            return None
+        vals.extend([agent_id, data_source_id])
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    f"UPDATE agent_data_sources SET {', '.join(sets)} WHERE agent_id = ? AND data_source_id = ?",
+                    vals,
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT * FROM agent_data_sources WHERE agent_id = ? AND data_source_id = ?",
+                    (agent_id, data_source_id),
+                ).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+
+    async def agent_data_source_detach(self, agent_id: str, data_source_id: str) -> bool:
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "DELETE FROM agent_data_sources WHERE agent_id = ? AND data_source_id = ?",
+                    (agent_id, data_source_id),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    # ────────────────────────────────────────────────────────────────────
+    # doc_chunks: ingestion + hybrid search (FTS5 + vector RRF)
+    # ────────────────────────────────────────────────────────────────────
+
+    async def doc_chunk_upsert(
+        self,
+        data_source_id: str,
+        source_ref: str,
+        chunk_index: int,
+        chunk_text: str,
+        content_hash: Optional[str] = None,
+        embedding: Optional[List[float]] = None,
+        metadata: Optional[dict] = None,
+    ) -> str:
+        chunk_id = _uuid()
+        blob = None
+        if embedding is not None:
+            blob = struct.pack(f"{len(embedding)}f", *embedding)
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                # Replace by (data_source_id, source_ref, chunk_index) tuple
+                conn.execute(
+                    """DELETE FROM doc_chunks
+                       WHERE data_source_id = ? AND source_ref = ? AND chunk_index = ?""",
+                    (data_source_id, source_ref, chunk_index),
+                )
+                conn.execute(
+                    """INSERT INTO doc_chunks
+                       (id, data_source_id, source_ref, chunk_index, chunk_text,
+                        content_hash, embedding, token_count, metadata)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        chunk_id, data_source_id, source_ref, chunk_index,
+                        chunk_text, content_hash, blob,
+                        len(chunk_text.split()) if chunk_text else 0,
+                        json.dumps(metadata or {}),
+                    ),
+                )
+                conn.commit()
+                return chunk_id
+            finally:
+                conn.close()
+
+    async def doc_chunk_delete_by_source_ref(self, data_source_id: str, source_ref: str) -> int:
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "DELETE FROM doc_chunks WHERE data_source_id = ? AND source_ref = ?",
+                    (data_source_id, source_ref),
+                )
+                conn.commit()
+                return cur.rowcount
+            finally:
+                conn.close()
+
+    async def doc_chunk_count(self, data_source_id: str) -> int:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM doc_chunks WHERE data_source_id = ?",
+                (data_source_id,),
+            ).fetchone()
+            return int(row["n"]) if row else 0
+        finally:
+            conn.close()
+
+    async def doc_chunk_search(
+        self, data_source_id: str, query: str, limit: int = 5
+    ) -> List[dict]:
+        """Hybrid FTS5 + vector cosine search scoped to a single data source."""
+        fts_task = asyncio.create_task(self._doc_fts5_search(data_source_id, query, limit * 3))
+        vec_task = asyncio.create_task(self._doc_vector_search(data_source_id, query, limit * 3))
+        fts_results, vec_results = await asyncio.gather(fts_task, vec_task, return_exceptions=True)
+        if isinstance(fts_results, BaseException):
+            logger.warning("doc_chunks FTS5 search failed: %s", fts_results)
+            fts_results = []
+        if isinstance(vec_results, BaseException):
+            logger.warning("doc_chunks vector search failed: %s", vec_results)
+            vec_results = []
+        if not vec_results:
+            return (fts_results or [])[:limit]
+        if not fts_results:
+            return vec_results[:limit]
+        k = 60
+        scores: Dict[str, float] = {}
+        by_id: Dict[str, dict] = {}
+        for rank, h in enumerate(fts_results, start=1):
+            cid = h["id"]
+            scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
+            by_id.setdefault(cid, h)
+        for rank, h in enumerate(vec_results, start=1):
+            cid = h["id"]
+            scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
+            by_id.setdefault(cid, h)
+        merged = []
+        for cid, sc in sorted(scores.items(), key=lambda x: -x[1]):
+            entry = dict(by_id[cid])
+            entry["rank"] = round(sc, 4)
+            merged.append(entry)
+        return merged[:limit]
+
+    async def _doc_fts5_search(
+        self, data_source_id: str, query: str, limit: int
+    ) -> List[dict]:
+        match_expr = _fts5_safe_match_query(query)
+        if not match_expr:
+            return []
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT dc.*, rank FROM doc_chunks_fts fts
+                   JOIN doc_chunks dc ON dc.rowid = fts.rowid
+                   WHERE doc_chunks_fts MATCH ? AND dc.data_source_id = ?
+                   ORDER BY rank LIMIT ?""",
+                (match_expr, data_source_id, limit),
+            ).fetchall()
+            return [
+                {
+                    "id": r["id"],
+                    "source_ref": r["source_ref"],
+                    "chunk_index": r["chunk_index"],
+                    "chunk_text": r["chunk_text"],
+                }
+                for r in rows
+            ]
+        finally:
+            conn.close()
+
+    async def _doc_vector_search(
+        self, data_source_id: str, query_text: str, limit: int
+    ) -> List[dict]:
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT id, source_ref, chunk_index, chunk_text, embedding
+                   FROM doc_chunks
+                   WHERE data_source_id = ? AND embedding IS NOT NULL""",
+                (data_source_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        if not rows:
+            return []
+        try:
+            q_list = await embed_text(query_text)
+        except Exception as e:
+            logger.warning("doc_chunks query embed failed: %s", e)
+            return []
+        q_vec = np.array(q_list, dtype=np.float32)
+        ids = []
+        vecs = []
+        meta = []
+        for r in rows:
+            if r["embedding"]:
+                v = np.frombuffer(r["embedding"], dtype=np.float32)
+                if v.shape[0] == EMBED_DIM:
+                    ids.append(r["id"])
+                    vecs.append(v)
+                    meta.append({
+                        "id": r["id"],
+                        "source_ref": r["source_ref"],
+                        "chunk_index": r["chunk_index"],
+                        "chunk_text": r["chunk_text"],
+                    })
+        if not vecs:
+            return []
+        matrix = np.stack(vecs)
+        norms = np.linalg.norm(matrix, axis=1)
+        qn = np.linalg.norm(q_vec)
+        scores = np.dot(matrix, q_vec) / (norms * qn + 1e-12)
+        ranked = sorted(zip(meta, scores), key=lambda x: -x[1])
+        out = []
+        for m, sc in ranked[:limit]:
+            entry = dict(m)
+            entry["rank"] = round(float(sc), 4)
+            out.append(entry)
+        return out
 
 
 class _LocalTableProxy:

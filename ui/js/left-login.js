@@ -158,8 +158,8 @@ export function showLeftOverlay() {
         Sign in to access your database
       </p>
       <div style="margin-bottom:12px;">
-        <label style="display:block; font-size:12px; font-weight:600; color:#a9b1d6; margin-bottom:4px;">Username</label>
-        <input type="text" id="left-login-user" value="admin" style="
+        <label style="display:block; font-size:12px; font-weight:600; color:#a9b1d6; margin-bottom:4px;">Email</label>
+        <input type="email" id="left-login-user" value="" style="
           width:100%; padding:9px 12px; background:#0d0d1a; border:1px solid #2a2a4a;
           border-radius:6px; color:#c0caf5; font-size:14px; font-family:inherit;
           outline:none; box-sizing:border-box;
@@ -167,7 +167,7 @@ export function showLeftOverlay() {
       </div>
       <div style="margin-bottom:12px;">
         <label style="display:block; font-size:12px; font-weight:600; color:#a9b1d6; margin-bottom:4px;">Password</label>
-        <input type="password" id="left-login-pass" value="admin" style="
+        <input type="password" id="left-login-pass" value="" style="
           width:100%; padding:9px 12px; background:#0d0d1a; border:1px solid #2a2a4a;
           border-radius:6px; color:#c0caf5; font-size:14px; font-family:inherit;
           outline:none; box-sizing:border-box;
@@ -197,8 +197,8 @@ export function showLeftOverlay() {
         Register a new account
       </p>
       <div style="margin-bottom:12px;">
-        <label style="display:block; font-size:12px; font-weight:600; color:#a9b1d6; margin-bottom:4px;">Username</label>
-        <input type="text" id="left-reg-user" value="" style="
+        <label style="display:block; font-size:12px; font-weight:600; color:#a9b1d6; margin-bottom:4px;">Email</label>
+        <input type="email" id="left-reg-user" value="" style="
           width:100%; padding:9px 12px; background:#0d0d1a; border:1px solid #2a2a4a;
           border-radius:6px; color:#c0caf5; font-size:14px; font-family:inherit;
           outline:none; box-sizing:border-box;
@@ -215,6 +215,14 @@ export function showLeftOverlay() {
       <div style="margin-bottom:12px;">
         <label style="display:block; font-size:12px; font-weight:600; color:#a9b1d6; margin-bottom:4px;">Password</label>
         <input type="password" id="left-reg-pass" value="" style="
+          width:100%; padding:9px 12px; background:#0d0d1a; border:1px solid #2a2a4a;
+          border-radius:6px; color:#c0caf5; font-size:14px; font-family:inherit;
+          outline:none; box-sizing:border-box;
+        ">
+      </div>
+      <div style="margin-bottom:12px;">
+        <label style="display:block; font-size:12px; font-weight:600; color:#a9b1d6; margin-bottom:4px;">Confirm Password</label>
+        <input type="password" id="left-reg-pass2" value="" style="
           width:100%; padding:9px 12px; background:#0d0d1a; border:1px solid #2a2a4a;
           border-radius:6px; color:#c0caf5; font-size:14px; font-family:inherit;
           outline:none; box-sizing:border-box;
@@ -261,8 +269,11 @@ export function showLeftOverlay() {
   // Wire up register button
   document.getElementById('left-reg-btn').addEventListener('click', () => doRegister());
 
-  // Enter key on register password field
+  // Enter key on register password fields
   document.getElementById('left-reg-pass')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('left-reg-pass2')?.focus();
+  });
+  document.getElementById('left-reg-pass2')?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') doRegister();
   });
 
@@ -294,7 +305,7 @@ export function hideLeftOverlay() {
 
 /** Attempt login with the overlay form. */
 async function doLogin() {
-  const username = document.getElementById('left-login-user').value.trim();
+  const email = document.getElementById('left-login-user').value.trim();
   const password = document.getElementById('left-login-pass').value;
   const rememberMe = document.getElementById('left-login-remember').checked;
   const btn = document.getElementById('left-login-btn');
@@ -309,7 +320,7 @@ async function doLogin() {
     const res = await fetch('/api/v1/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password, remember_me: rememberMe }),
+      body: JSON.stringify({ email, password, remember_me: rememberMe }),
     });
     if (!res.ok) {
       error.style.display = 'block';
@@ -318,7 +329,7 @@ async function doLogin() {
         try { const d = await res.json(); if (d.detail) msg = d.detail; } catch {}
         error.textContent = msg;
       } else {
-        error.textContent = 'Invalid username or password';
+        error.textContent = 'Invalid email or password';
       }
       btn.disabled = false;
       loading.style.display = 'none';
@@ -348,8 +359,9 @@ async function doLogin() {
 
 /** Attempt registration with the register form. */
 async function doRegister() {
-  const username = document.getElementById('left-reg-user').value.trim();
+  const email = document.getElementById('left-reg-user').value.trim();
   const password = document.getElementById('left-reg-pass').value;
+  const confirmPassword = document.getElementById('left-reg-pass2').value;
   const displayName = document.getElementById('left-reg-display').value.trim();
   const btn = document.getElementById('left-reg-btn');
   const error = document.getElementById('left-reg-error');
@@ -357,13 +369,23 @@ async function doRegister() {
 
   error.style.display = 'none';
 
-  if (!username) {
-    error.textContent = 'Username is required';
+  if (!email) {
+    error.textContent = 'Email is required';
+    error.style.display = 'block';
+    return;
+  }
+  if (!email.includes('@')) {
+    error.textContent = 'Enter a valid email address';
     error.style.display = 'block';
     return;
   }
   if (!password || password.length < 4) {
     error.textContent = 'Password must be at least 4 characters';
+    error.style.display = 'block';
+    return;
+  }
+  if (password !== confirmPassword) {
+    error.textContent = 'Passwords do not match';
     error.style.display = 'block';
     return;
   }
@@ -375,12 +397,12 @@ async function doRegister() {
     const res = await fetch('/api/v1/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password, display_name: displayName }),
+      body: JSON.stringify({ email, password, display_name: displayName }),
     });
     if (!res.ok) {
       let msg = 'Registration failed';
       if (res.status === 403) msg = 'Registration is disabled. This app is private.';
-      else if (res.status === 409) msg = 'Username already exists';
+      else if (res.status === 409) msg = 'Email already registered';
       error.textContent = msg;
       error.style.display = 'block';
       btn.disabled = false;

@@ -142,7 +142,7 @@ body {
     var(--bg-0);
   color: var(--fg-1);
   padding: 14px;
-  gap: 14px;
+  gap: 5px;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -169,22 +169,19 @@ code, pre, .mono, .t-mono {
 
 /* ── 5. Status bar → pill ───────────────────────────────────── */
 #status-bar {
-  border-bottom: none;
-  border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.05);
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0)),
-    var(--bg-elev);
-  box-shadow: var(--shadow-rest);
-  padding: 8px 18px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0 4px;
   position: relative;
   z-index: 1000;
 }
 
 body.light-mode #status-bar {
-  border: 1px solid rgba(180,140,90,0.18);
-  background: linear-gradient(180deg, rgba(255,255,255,0.85), rgba(255,255,255,0.65)), var(--bg-elev);
-  box-shadow: var(--shadow-rest);
+  border: none;
+  background: transparent;
+  box-shadow: none;
 }
 
 

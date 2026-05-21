@@ -65,6 +65,7 @@ except ImportError:
 from app.admin.communications import router as admin_communications_router
 from app.admin.webhooks_admin import router as admin_webhooks_router
 from app.api.agents import router as agents_router
+from app.api.data_sources import router as data_sources_router
 from app.admin.users import router as admin_users_router
 
 # ── Auth ──
@@ -142,6 +143,7 @@ app.include_router(admin_communications_router)
 # Register generic webhook admin router
 app.include_router(admin_webhooks_router)
 app.include_router(agents_router)
+app.include_router(data_sources_router)
 app.include_router(admin_users_router)
 
 # Register auth router

@@ -617,3 +617,97 @@ class StorageBackend(ABC):
     async def is_agent_member(self, agent_id: str, user_id: str) -> bool:
         """Return True if user_id is a member or admin of the agent."""
         ...
+
+    # ---- Per-Agent External Data Sources ----
+
+    @abstractmethod
+    async def data_source_create(
+        self,
+        user_id: str,
+        name: str,
+        type: str,
+        config: Optional[dict] = None,
+        auth_element_id: Optional[str] = None,
+        safety_policy: Optional[dict] = None,
+    ) -> dict:
+        """Create a new external data source. Returns the inserted row."""
+        ...
+
+    @abstractmethod
+    async def data_source_update(self, ds_id: str, user_id: str, **fields) -> Optional[dict]:
+        """Update fields on a data source (owner-scoped). Returns updated row or None."""
+        ...
+
+    @abstractmethod
+    async def data_source_get(self, ds_id: str, user_id: Optional[str] = None) -> Optional[dict]:
+        """Fetch a data source by id; if user_id given, scope by ownership."""
+        ...
+
+    @abstractmethod
+    async def data_source_list(self, user_id: str) -> List[dict]:
+        """List all data sources owned by user_id."""
+        ...
+
+    @abstractmethod
+    async def data_source_delete(self, ds_id: str, user_id: str) -> bool:
+        """Delete a data source (owner-scoped). Cascades to agent_data_sources."""
+        ...
+
+    @abstractmethod
+    async def agent_data_source_list(self, agent_id: str, enabled_only: bool = False) -> List[dict]:
+        """Return attachments for an agent, joined with the source row."""
+        ...
+
+    @abstractmethod
+    async def agent_data_source_attach(
+        self,
+        agent_id: str,
+        data_source_id: str,
+        tool_alias: Optional[str] = None,
+        inject_schema_in_prompt: bool = True,
+    ) -> dict:
+        """Attach a data source to an agent. Idempotent on (agent_id, data_source_id)."""
+        ...
+
+    @abstractmethod
+    async def agent_data_source_update(
+        self, agent_id: str, data_source_id: str, **fields
+    ) -> Optional[dict]:
+        """Update an attachment's settings (tool_alias, enabled, inject_schema_in_prompt)."""
+        ...
+
+    @abstractmethod
+    async def agent_data_source_detach(self, agent_id: str, data_source_id: str) -> bool:
+        """Detach a data source from an agent."""
+        ...
+
+    @abstractmethod
+    async def doc_chunk_upsert(
+        self,
+        data_source_id: str,
+        source_ref: str,
+        chunk_index: int,
+        chunk_text: str,
+        content_hash: Optional[str] = None,
+        embedding: Optional[List[float]] = None,
+        metadata: Optional[dict] = None,
+    ) -> str:
+        """Insert or replace a doc chunk. Returns the chunk id."""
+        ...
+
+    @abstractmethod
+    async def doc_chunk_delete_by_source_ref(self, data_source_id: str, source_ref: str) -> int:
+        """Delete all chunks tied to a (data_source_id, source_ref). Returns count deleted."""
+        ...
+
+    @abstractmethod
+    async def doc_chunk_count(self, data_source_id: str) -> int:
+        """Return the total chunk count for a data source."""
+        ...
+
+    @abstractmethod
+    async def doc_chunk_search(
+        self, data_source_id: str, query: str, limit: int = 5
+    ) -> List[dict]:
+        """Hybrid keyword + vector search within a single data source. Returns ranked chunks."""
+        ...

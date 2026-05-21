@@ -1297,6 +1297,330 @@ class SupabaseBackend(StorageBackend):
             logger.error("auth_element_delete error: %s", e)
             return False
 
+    # ────────────────────────────────────────────────────────────────────
+    # Per-Agent External Data Sources
+    # ────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _coerce_data_source(row: dict) -> dict:
+        d = dict(row)
+        for k in ("config", "schema_cache", "safety_policy"):
+            val = d.get(k)
+            if isinstance(val, str):
+                try:
+                    d[k] = json.loads(val) if val else {}
+                except Exception:
+                    d[k] = {}
+            elif val is None:
+                d[k] = {}
+        return d
+
+    async def data_source_create(
+        self,
+        user_id: str,
+        name: str,
+        type: str,
+        config: Optional[dict] = None,
+        auth_element_id: Optional[str] = None,
+        safety_policy: Optional[dict] = None,
+    ) -> dict:
+        import uuid
+        row = {
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "name": name,
+            "type": type,
+            "config": json.dumps(config or {}),
+            "auth_element_id": auth_element_id,
+            "schema_cache": json.dumps({}),
+            "safety_policy": json.dumps(safety_policy or {}),
+            "status": "unverified",
+        }
+        try:
+            res = self._client.table("data_sources").insert(row).execute()
+            return self._coerce_data_source(res.data[0] if res.data else row)
+        except Exception as e:
+            logger.error("data_source_create error: %s", e)
+            raise
+
+    async def data_source_update(self, ds_id: str, user_id: str, **fields) -> Optional[dict]:
+        allowed = {
+            "name", "config", "auth_element_id", "schema_cache",
+            "safety_policy", "status", "last_test_message",
+            "last_tested_at", "last_introspected_at",
+        }
+        update = {}
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            if k in ("config", "schema_cache", "safety_policy") and not isinstance(v, str):
+                v = json.dumps(v or {})
+            update[k] = v
+        if not update:
+            return await self.data_source_get(ds_id, user_id)
+        update["updated_at"] = "now()"
+        try:
+            res = (
+                self._client.table("data_sources")
+                .update(update)
+                .eq("id", ds_id)
+                .eq("user_id", user_id)
+                .execute()
+            )
+            if res.data:
+                return self._coerce_data_source(res.data[0])
+            return None
+        except Exception as e:
+            logger.error("data_source_update error: %s", e)
+            raise
+
+    async def data_source_get(self, ds_id: str, user_id: Optional[str] = None) -> Optional[dict]:
+        try:
+            q = self._client.table("data_sources").select("*").eq("id", ds_id)
+            if user_id is not None:
+                q = q.eq("user_id", user_id)
+            res = q.limit(1).execute()
+            if res.data:
+                return self._coerce_data_source(res.data[0])
+            return None
+        except Exception as e:
+            logger.error("data_source_get error: %s", e)
+            return None
+
+    async def data_source_list(self, user_id: str) -> List[dict]:
+        try:
+            res = (
+                self._client.table("data_sources")
+                .select("*")
+                .eq("user_id", user_id)
+                .order("created_at", desc=True)
+                .execute()
+            )
+            return [self._coerce_data_source(r) for r in (res.data or [])]
+        except Exception as e:
+            logger.error("data_source_list error: %s", e)
+            return []
+
+    async def data_source_delete(self, ds_id: str, user_id: str) -> bool:
+        try:
+            res = (
+                self._client.table("data_sources")
+                .delete()
+                .eq("id", ds_id)
+                .eq("user_id", user_id)
+                .execute()
+            )
+            return bool(res.data)
+        except Exception as e:
+            logger.error("data_source_delete error: %s", e)
+            return False
+
+    async def agent_data_source_list(self, agent_id: str, enabled_only: bool = False) -> List[dict]:
+        try:
+            q = (
+                self._client.table("agent_data_sources")
+                .select(
+                    "id, agent_id, data_source_id, tool_alias, enabled, "
+                    "inject_schema_in_prompt, created_at, "
+                    "data_sources(user_id, name, type, config, auth_element_id, "
+                    "schema_cache, safety_policy, status, last_tested_at, last_introspected_at)"
+                )
+                .eq("agent_id", agent_id)
+            )
+            if enabled_only:
+                q = q.eq("enabled", True)
+            res = q.execute()
+            results = []
+            for row in (res.data or []):
+                ds = row.pop("data_sources", {}) or {}
+                merged = {
+                    "attachment_id": row.get("id"),
+                    "agent_id": row.get("agent_id"),
+                    "data_source_id": row.get("data_source_id"),
+                    "tool_alias": row.get("tool_alias"),
+                    "enabled": row.get("enabled"),
+                    "inject_schema_in_prompt": row.get("inject_schema_in_prompt"),
+                    "attached_at": row.get("created_at"),
+                    "owner_user_id": ds.get("user_id"),
+                    "name": ds.get("name"),
+                    "type": ds.get("type"),
+                    "config": ds.get("config"),
+                    "auth_element_id": ds.get("auth_element_id"),
+                    "schema_cache": ds.get("schema_cache"),
+                    "safety_policy": ds.get("safety_policy"),
+                    "status": ds.get("status"),
+                    "last_tested_at": ds.get("last_tested_at"),
+                    "last_introspected_at": ds.get("last_introspected_at"),
+                }
+                for k in ("config", "schema_cache", "safety_policy"):
+                    val = merged.get(k)
+                    if isinstance(val, str):
+                        try:
+                            merged[k] = json.loads(val) if val else {}
+                        except Exception:
+                            merged[k] = {}
+                    elif val is None:
+                        merged[k] = {}
+                results.append(merged)
+            return results
+        except Exception as e:
+            logger.error("agent_data_source_list error: %s", e)
+            return []
+
+    async def agent_data_source_attach(
+        self,
+        agent_id: str,
+        data_source_id: str,
+        tool_alias: Optional[str] = None,
+        inject_schema_in_prompt: bool = True,
+    ) -> dict:
+        import uuid
+        row = {
+            "id": str(uuid.uuid4()),
+            "agent_id": agent_id,
+            "data_source_id": data_source_id,
+            "tool_alias": tool_alias,
+            "enabled": True,
+            "inject_schema_in_prompt": bool(inject_schema_in_prompt),
+        }
+        try:
+            res = (
+                self._client.table("agent_data_sources")
+                .upsert(row, on_conflict="agent_id,data_source_id")
+                .execute()
+            )
+            return res.data[0] if res.data else row
+        except Exception as e:
+            logger.error("agent_data_source_attach error: %s", e)
+            raise
+
+    async def agent_data_source_update(
+        self, agent_id: str, data_source_id: str, **fields
+    ) -> Optional[dict]:
+        allowed = {"tool_alias", "enabled", "inject_schema_in_prompt"}
+        update = {k: v for k, v in fields.items() if k in allowed}
+        if not update:
+            return None
+        try:
+            res = (
+                self._client.table("agent_data_sources")
+                .update(update)
+                .eq("agent_id", agent_id)
+                .eq("data_source_id", data_source_id)
+                .execute()
+            )
+            return res.data[0] if res.data else None
+        except Exception as e:
+            logger.error("agent_data_source_update error: %s", e)
+            return None
+
+    async def agent_data_source_detach(self, agent_id: str, data_source_id: str) -> bool:
+        try:
+            res = (
+                self._client.table("agent_data_sources")
+                .delete()
+                .eq("agent_id", agent_id)
+                .eq("data_source_id", data_source_id)
+                .execute()
+            )
+            return bool(res.data)
+        except Exception as e:
+            logger.error("agent_data_source_detach error: %s", e)
+            return False
+
+    # doc_chunks — minimal CRUD; hybrid search uses pgvector in cloud mode.
+    # Phase-1 doc-store ingest writes to the SQLite local backend by default.
+    # When running in cloud mode, the connector should call these directly.
+
+    async def doc_chunk_upsert(
+        self,
+        data_source_id: str,
+        source_ref: str,
+        chunk_index: int,
+        chunk_text: str,
+        content_hash: Optional[str] = None,
+        embedding: Optional[List[float]] = None,
+        metadata: Optional[dict] = None,
+    ) -> str:
+        import uuid
+        chunk_id = str(uuid.uuid4())
+        row = {
+            "id": chunk_id,
+            "data_source_id": data_source_id,
+            "source_ref": source_ref,
+            "chunk_index": chunk_index,
+            "chunk_text": chunk_text,
+            "content_hash": content_hash,
+            "embedding": embedding,
+            "token_count": len(chunk_text.split()) if chunk_text else 0,
+            "metadata": json.dumps(metadata or {}),
+        }
+        try:
+            self._client.table("doc_chunks").delete().eq(
+                "data_source_id", data_source_id
+            ).eq("source_ref", source_ref).eq("chunk_index", chunk_index).execute()
+            self._client.table("doc_chunks").insert(row).execute()
+            return chunk_id
+        except Exception as e:
+            logger.error("doc_chunk_upsert error: %s", e)
+            raise
+
+    async def doc_chunk_delete_by_source_ref(self, data_source_id: str, source_ref: str) -> int:
+        try:
+            res = (
+                self._client.table("doc_chunks")
+                .delete()
+                .eq("data_source_id", data_source_id)
+                .eq("source_ref", source_ref)
+                .execute()
+            )
+            return len(res.data or [])
+        except Exception as e:
+            logger.error("doc_chunk_delete_by_source_ref error: %s", e)
+            return 0
+
+    async def doc_chunk_count(self, data_source_id: str) -> int:
+        try:
+            res = (
+                self._client.table("doc_chunks")
+                .select("id", count="exact")
+                .eq("data_source_id", data_source_id)
+                .execute()
+            )
+            return getattr(res, "count", 0) or 0
+        except Exception as e:
+            logger.error("doc_chunk_count error: %s", e)
+            return 0
+
+    async def doc_chunk_search(
+        self, data_source_id: str, query: str, limit: int = 5
+    ) -> List[dict]:
+        """Postgres hybrid search via RPC `doc_chunks_hybrid_search` if defined,
+        else falls back to a simple ILIKE keyword scan. Define the RPC in
+        migrations/014_data_sources.sql for production-quality results."""
+        try:
+            res = self._client.rpc(
+                "doc_chunks_hybrid_search",
+                {"p_data_source_id": data_source_id, "p_query": query, "p_limit": limit},
+            ).execute()
+            if res.data:
+                return res.data
+        except Exception:
+            pass  # fall through to ILIKE
+        try:
+            res = (
+                self._client.table("doc_chunks")
+                .select("id, source_ref, chunk_index, chunk_text")
+                .eq("data_source_id", data_source_id)
+                .ilike("chunk_text", f"%{query}%")
+                .limit(limit)
+                .execute()
+            )
+            return res.data or []
+        except Exception as e:
+            logger.error("doc_chunk_search ILIKE fallback error: %s", e)
+            return []
+
 
 # ── Backward-compatible alias ────────────────────────────────────────────────
 # The old SupabaseClient used static methods directly.
