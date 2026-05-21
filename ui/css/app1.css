@@ -469,7 +469,7 @@
   .status-dot.red { background: #f7768e; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
   .status-group { display: flex; align-items: center; gap: 6px; }
-  #status-right { margin-left: auto; display: flex; gap: 16px; align-items: center; }
+  #status-right { margin-left: auto; display: flex; gap: 6px; align-items: center; }
   .status-select {
     background: #1a1a2e;
     border: 1px solid #2a2a4a;
@@ -1228,34 +1228,63 @@
     scrollbar-color: #ffd4a8 transparent !important;
   }
 
-  /* ── Session dropdown (custom) ───────────────────────────────── */
-  .session-dropdown {
+  /* ── Chat header label rows: dropdown flex-fills, + button pinned right ── */
+  #agent-label, #session-label { width: 100%; gap: 4px; }
+  #agent-label .agent-dropdown,
+  #session-label .session-dropdown { flex: 1 1 auto; min-width: 0; }
+  .header-plus-btn {
+    background: none;
+    border: none;
+    color: #565f89;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+    vertical-align: middle;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+  .header-plus-btn:hover { color: #7dcfff; }
+
+  /* ── Session / Agent dropdown (custom) ───────────────────────── */
+  .session-dropdown,
+  .agent-dropdown {
     position: relative;
     display: inline-block;
     vertical-align: middle;
   }
-  .session-dropdown-trigger {
+  .session-dropdown-trigger,
+  .agent-dropdown-trigger {
     display: inline-flex;
     align-items: center;
     justify-content: space-between;
     gap: 6px;
-    max-width: 180px;
-    min-width: 100px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
     cursor: pointer;
     font-family: inherit;
     font-size: 11px;
   }
   /* Icons inside the trigger and kebab must not swallow clicks (lucide SVG quirk). */
   .session-dropdown-trigger > *,
-  .session-row-kebab > * {
+  .agent-dropdown-trigger > *,
+  .session-row-kebab > *,
+  .agent-row-kebab > * {
     pointer-events: none;
   }
-  .session-dropdown-trigger #session-dropdown-label {
+  .session-dropdown-trigger #session-dropdown-label,
+  .agent-dropdown-trigger #agent-dropdown-label {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: left;
   }
-  .session-dropdown-menu {
+  .session-dropdown-menu,
+  .agent-dropdown-menu {
     position: absolute;
     top: calc(100% + 4px);
     left: 0;
@@ -1270,12 +1299,14 @@
     z-index: 1000;
     padding: 4px;
   }
-  body.light-mode .session-dropdown-menu {
+  body.light-mode .session-dropdown-menu,
+  body.light-mode .agent-dropdown-menu {
     background: #fffaf5;
     border-color: #ffdec4;
     box-shadow: 0 8px 24px rgba(0,0,0,0.1);
   }
-  .session-row {
+  .session-row,
+  .agent-row-item {
     position: relative;
     display: flex;
     align-items: center;
@@ -1286,20 +1317,32 @@
     color: #c0caf5;
     font-size: 12px;
   }
-  body.light-mode .session-row { color: #5c4a4a; }
-  .session-row:hover { background: rgba(125, 207, 255, 0.1); }
-  .session-row.selected { background: rgba(125, 207, 255, 0.16); }
-  .session-row.pinned .session-row-pin-icon {
+  body.light-mode .session-row,
+  body.light-mode .agent-row-item { color: #5c4a4a; }
+  .session-row:hover,
+  .agent-row-item:hover { background: rgba(125, 207, 255, 0.1); }
+  .session-row.selected,
+  .agent-row-item.selected { background: rgba(125, 207, 255, 0.16); }
+  .session-row.pinned .session-row-pin-icon,
+  .agent-row-item.pinned .agent-row-pin-icon {
     display: inline-flex;
     color: #e0af68;
   }
-  .session-row-pin-icon { display: none; flex-shrink: 0; }
-  .session-row-title {
+  .session-row-pin-icon,
+  .agent-row-pin-icon { display: none; flex-shrink: 0; }
+  .session-row-title,
+  .agent-row-title {
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .agent-row-sep {
+    height: 1px;
+    background: #2a2a4a;
+    margin: 4px 0;
+  }
+  body.light-mode .agent-row-sep { background: #ffdec4; }
   .session-row-title-input {
     flex: 1;
     background: rgba(0,0,0,0.3);
@@ -1314,7 +1357,8 @@
     background: #fff;
     border-color: #ff8c42;
   }
-  .session-row-kebab {
+  .session-row-kebab,
+  .agent-row-kebab {
     background: none;
     border: none;
     color: #565f89;
@@ -1325,25 +1369,28 @@
     align-items: center;
     flex-shrink: 0;
   }
-  .session-row-kebab:hover { background: rgba(255,255,255,0.06); color: #c0caf5; }
-  body.light-mode .session-row-kebab:hover { background: rgba(0,0,0,0.05); color: #5c4a4a; }
-  .session-row-actions {
-    position: absolute;
-    right: 4px;
-    top: calc(100% - 4px);
+  .session-row-kebab:hover,
+  .agent-row-kebab:hover { background: rgba(255,255,255,0.06); color: #c0caf5; }
+  body.light-mode .session-row-kebab:hover,
+  body.light-mode .agent-row-kebab:hover { background: rgba(0,0,0,0.05); color: #5c4a4a; }
+  .session-row-actions,
+  .agent-row-actions {
+    position: fixed;
     background: #1a1a2e;
     border: 1px solid #2a2a4a;
     border-radius: 6px;
     box-shadow: 0 6px 16px rgba(0,0,0,0.4);
-    z-index: 1001;
+    z-index: 2000;
     min-width: 140px;
     padding: 4px;
   }
-  body.light-mode .session-row-actions {
+  body.light-mode .session-row-actions,
+  body.light-mode .agent-row-actions {
     background: #fffaf5;
     border-color: #ffdec4;
   }
-  .session-row-action {
+  .session-row-action,
+  .agent-row-action {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -1357,10 +1404,14 @@
     border-radius: 4px;
     text-align: left;
   }
-  .session-row-action:hover { background: rgba(125, 207, 255, 0.1); }
-  .session-row-action.danger { color: #f7768e; }
-  .session-row-action.danger:hover { background: rgba(247, 118, 142, 0.12); }
-  .session-dropdown-empty {
+  .session-row-action:hover,
+  .agent-row-action:hover { background: rgba(125, 207, 255, 0.1); }
+  .session-row-action.danger,
+  .agent-row-action.danger { color: #f7768e; }
+  .session-row-action.danger:hover,
+  .agent-row-action.danger:hover { background: rgba(247, 118, 142, 0.12); }
+  .session-dropdown-empty,
+  .agent-dropdown-empty {
     padding: 12px;
     text-align: center;
     color: #565f89;
@@ -1380,7 +1431,7 @@
     user-select: none;
     flex-shrink: 0;
   }
-  .user-avatar[data-size="sm"] { width: 22px;  height: 22px; font-size: 11px; }
+  .user-avatar[data-size="sm"] { width: 30px;  height: 30px; font-size: 15px; }
   .user-avatar[data-size="md"] { width: 32px;  height: 32px; font-size: 14px; }
   .user-avatar[data-size="lg"] { width: 44px;  height: 44px; font-size: 18px; }
   .user-avatar[data-size="xl"] { width: 64px;  height: 64px; font-size: 26px; }
@@ -1393,10 +1444,9 @@
   .user-dropdown-trigger {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
     cursor: pointer;
-    padding: 2px 4px;
-    border-radius: 6px;
+    padding: 0;
+    border-radius: 50%;
     transition: background 0.15s;
   }
   .user-dropdown-trigger:hover {

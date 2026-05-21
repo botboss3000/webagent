@@ -170,7 +170,6 @@
     <div class="user-dropdown" id="user-dropdown">
       <span id="top-user-id" class="user-dropdown-trigger" title="Account">
         <span id="top-user-avatar-slot"></span>
-        <i data-lucide="chevron-down" class="lucide-icon user-dropdown-chevron" style="width:12px;height:12px;opacity:0.6;"></i>
       </span>
       <div id="user-dropdown-menu" class="user-dropdown-menu" style="display:none;">
         <!-- Current user row + Manage Account button -->
@@ -1680,7 +1679,14 @@
     <div id="chat-header">
       <span id="header-user-session">
         <span id="agent-label">Agent:
-          <select id="agent-select" class="status-select" style="max-width:150px;"></select>
+          <div id="agent-dropdown" class="agent-dropdown">
+            <button id="agent-dropdown-trigger" type="button" class="status-select agent-dropdown-trigger">
+              <span id="agent-dropdown-label">—</span>
+              <i data-lucide="chevron-down" style="width:12px;height:12px;flex-shrink:0;"></i>
+            </button>
+            <div id="agent-dropdown-menu" class="agent-dropdown-menu" hidden></div>
+          </div>
+          <button id="agent-new" title="New agent" class="header-plus-btn"><i data-lucide="plus" style="width:14px;height:14px;"></i></button>
         </span>
         <span id="session-label">Session:
           <div id="session-dropdown" class="session-dropdown">
@@ -1690,7 +1696,7 @@
             </button>
             <div id="session-dropdown-menu" class="session-dropdown-menu" hidden></div>
           </div>
-          <button id="session-new" title="New session" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:14px;padding:0 4px;vertical-align:middle;display:inline-flex;align-items:center;"><i data-lucide="plus" style="width:14px;height:14px;"></i></button>
+          <button id="session-new" title="New session" class="header-plus-btn"><i data-lucide="plus" style="width:14px;height:14px;"></i></button>
         </span>
       </span>
     </div>
