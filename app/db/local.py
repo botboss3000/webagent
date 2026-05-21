@@ -3789,7 +3789,7 @@ class LocalBackend(StorageBackend):
             "model", "temperature", "max_tokens",
             "allowed_tools", "custom_tool_ids",
             "trigger_type", "trigger_key", "loop_logic",
-            "safety_policy", "user_mode",
+            "safety_policy", "user_mode", "metadata",
         }
         safe = {}
         for k, v in updates.items():
@@ -3798,7 +3798,7 @@ class LocalBackend(StorageBackend):
             # Serialize list/dict fields to JSON strings for storage
             if k in ("allowed_tools", "custom_tool_ids", "loop_logic") and isinstance(v, list):
                 v = json.dumps(v)
-            if k == "safety_policy" and isinstance(v, dict):
+            if k in ("safety_policy", "metadata") and isinstance(v, dict):
                 v = json.dumps(v)
             safe[k] = v
         if not safe:

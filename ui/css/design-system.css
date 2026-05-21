@@ -162,7 +162,7 @@ code, pre, .mono, .t-mono {
 
 /* ── 4. App container gap ───────────────────────────────────── */
 #app-container {
-  gap: 14px;
+  gap: 0;
   min-height: 0;
 }
 

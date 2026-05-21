@@ -384,6 +384,53 @@ body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; co
 .agents-save-msg { font-size: 12px; color: #9ece6a; }
 .agents-save-msg.error { color: #f7768e; }
 
+/* ── Per-agent LLM card ── */
+.agents-llm-card {
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-top: 4px;
+}
+.agents-llm-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.agents-llm-title { font-size: 11px; font-weight: 600; color: #7aa2f7; text-transform: uppercase; letter-spacing: 0.05em; flex: 1; }
+.agents-llm-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #2a2a4a;
+  color: #a9b1d6;
+}
+.agents-llm-badge.custom { background: rgba(122,162,247,0.15); color: #7aa2f7; }
+.agents-llm-chevron { display: flex; align-items: center; color: #565f89; flex-shrink: 0; transition: transform 0.2s; }
+.agents-llm-body { padding-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.agents-llm-mode-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.agents-llm-mode-row label {
+  display: flex; align-items: center; gap: 6px; cursor: pointer;
+  font-size: 12px; padding: 5px 10px; border-radius: 6px;
+  border: 1px solid #2a2a4a; background: transparent; transition: border-color 0.15s, background 0.15s;
+}
+.agents-llm-mode-row label.active { border-color: #7aa2f7; background: rgba(122,162,247,0.08); }
+.agents-llm-fields { display: flex; flex-direction: column; gap: 8px; }
+.agents-llm-field label { display: block; font-size: 11px; font-weight: 600; color: #7aa2f7; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+.agents-llm-field .agents-llm-hint { font-size: 11px; color: #565f89; margin-top: 3px; }
+.agents-llm-model-wrap { position: relative; }
+.agents-llm-model-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 30;
+  background: #1a1a2e; border: 1px solid #2a2a4a; border-top: none;
+  border-radius: 0 0 6px 6px; max-height: 220px; overflow-y: auto;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.agents-llm-model-item { padding: 7px 10px; cursor: pointer; font-size: 12px; color: #c0caf5; }
+.agents-llm-model-item:hover { background: rgba(125,207,255,0.08); }
+
 /* ── Tools tab ── */
 .agents-tools-list { display: flex; flex-direction: column; gap: 6px; }
 .agents-tool-item {

@@ -31,6 +31,7 @@ router = APIRouter(prefix="/admin/settings", tags=["admin"])
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 METADATA_FLAG = PROJECT_ROOT / ".metadata-enabled"
 PROVIDER_FILE = PROJECT_ROOT / "provider.json"
+APP_SETTINGS_FILE = PROJECT_ROOT / "app-settings.json"
 
 ANONYMOUS_KEY = "__anonymous__"
 
@@ -268,6 +269,24 @@ def _apply_config_to_env(config: dict) -> None:
         os.environ.pop("MULTI_PROVIDERS", None)
 
 
+def _load_app_settings() -> dict:
+    try:
+        if APP_SETTINGS_FILE.exists():
+            with open(APP_SETTINGS_FILE) as f:
+                return json.load(f)
+    except Exception as e:
+        logger.warning("Failed to load app-settings.json: %s", e)
+    return {}
+
+
+def _save_app_settings(data: dict) -> None:
+    try:
+        with open(APP_SETTINGS_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logger.warning("Failed to save app-settings.json: %s", e)
+
+
 def _is_metadata_enabled() -> bool:
     return METADATA_FLAG.exists()
 
@@ -303,6 +322,10 @@ class MultiProvidersRequest(BaseModel):
 
 class MetadataSetting(BaseModel):
     enabled: bool
+
+
+class AppSettings(BaseModel):
+    extend_llm_to_agents: bool = True
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────
@@ -682,3 +705,16 @@ async def set_metadata_setting(setting: MetadataSetting):
     else:
         METADATA_FLAG.unlink() if METADATA_FLAG.exists() else None
     return MetadataSetting(enabled=_is_metadata_enabled())
+
+
+@router.get("/app", response_model=AppSettings)
+async def get_app_settings():
+    """Return app-wide feature flags."""
+    return AppSettings(**_load_app_settings())
+
+
+@router.post("/app", response_model=AppSettings)
+async def set_app_settings(settings: AppSettings):
+    """Save app-wide feature flags."""
+    _save_app_settings(settings.model_dump())
+    return settings

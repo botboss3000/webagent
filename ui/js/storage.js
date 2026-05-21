@@ -1,21 +1,14 @@
 'use strict';
 
 /**
- * Storage UI driver.
- *
- * Powers two mount points with the same logic:
- *   1. The legacy modal (#database-modal) with element IDs prefixed "storage-"
- *   2. The App Config → Database tab (#ac-section-database) with IDs prefixed "ac-storage-"
- *
- * Each mount is bound independently. Both call the same /admin/storage/*
- * endpoints. Either can be opened/closed without affecting the other.
+ * Storage UI driver — mounts on App Config → Database tab (#ac-section-database).
+ * Element IDs are prefixed "ac-storage-". Talks to /admin/storage/* endpoints.
  */
 
 import { app } from './state.js';
 import { apiPath } from './config.js';
 import { isAdmin } from './left-login.js';
 
-let MODAL = null;
 let PAGE = null;
 
 function qs(id) { return document.getElementById(id); }
@@ -24,8 +17,8 @@ function uid() { return app.currentUserId || localStorage.getItem('auth_user_id'
 function bindMount(prefix) {
   const m = {
     prefix,
-    root: prefix === 'storage-' ? qs('database-modal') : qs('ac-section-database'),
-    envBanner: qs(prefix === 'storage-' ? 'storage-env-banner' : 'ac-storage-env-banner'),
+    root: qs('ac-section-database'),
+    envBanner: qs(`${prefix}env-banner`),
     activeBadge: qs(`${prefix}active-badge`),
     provider: qs(`${prefix}db-provider`),
     fields: qs(`${prefix}db-fields`),
@@ -293,31 +286,13 @@ function wire(m) {
 // ── Public entry ────────────────────────────────────────────────────────────
 
 export function initStorageUi() {
-  MODAL = bindMount('storage-');
-  PAGE  = bindMount('ac-storage-');
-
-  wire(MODAL);
+  PAGE = bindMount('ac-storage-');
   wire(PAGE);
 
-  // Modal: reload state when display flips to 'block'
-  if (MODAL && MODAL.root) {
-    const obs = new MutationObserver(() => {
-      if (MODAL.root.style.display === 'block' && isAdmin()) {
-        loadConfig(MODAL).then(s => applyState(MODAL, s));
-      }
-    });
-    obs.observe(MODAL.root, { attributes: true, attributeFilter: ['style'] });
-  }
-
-  // Page: load when the section becomes visible (App Config nav switch).
   if (PAGE && PAGE.root) {
-    // App Config toggles the active section via class or style changes.
-    // Safer: load eagerly when the page module asks us to refresh.
-    // Expose a global refresh hook so app-config.js can call it.
     window.__refreshStorageSection = () => {
       if (PAGE && isAdmin()) loadConfig(PAGE).then(s => applyState(PAGE, s));
     };
-    // Also load immediately on init (one-shot; admin-gated).
     setTimeout(() => { try { window.__refreshStorageSection(); } catch {} }, 200);
   }
 }

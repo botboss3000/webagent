@@ -129,14 +129,5 @@ export function initTabs() {
     autoScrollBtn.addEventListener('click', toggleAutoScroll);
   }
 
-  const githubMenuItem = document.getElementById('github-menu-item');
-  if (githubMenuItem) {
-    githubMenuItem.addEventListener('click', () => {
-      const dropdown = document.getElementById('settings-dropdown-menu');
-      if (dropdown) dropdown.style.display = 'none';
-      activateTab('github');
-    });
-  }
-
   activateTab(tabSelect.value);
 }

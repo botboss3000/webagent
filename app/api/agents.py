@@ -62,6 +62,8 @@ class UpdateAgentRequest(BaseModel):
     loop_logic: Optional[List] = None
     safety_policy: Optional[Dict[str, Any]] = None
     user_mode: Optional[str] = None
+    # Per-agent LLM override (stored in metadata['llm_config'])
+    llm_config: Optional[Dict[str, Any]] = None
     # Prompt slots — admin-only. Full slot set when present; reconciled against existing.
     slots: Optional[List[SlotPayload]] = None
     # Per-slot wipe of all user override rows at save time.
@@ -114,10 +116,10 @@ def _safe_agent(agent: dict) -> dict:
     dedicated /agents/{id}/slots and /agents/{id}/my-prompts endpoints, not on
     the agent row itself.
     """
+    import json as _json
     HIDDEN = {"provider", "metadata"}
     result = {k: v for k, v in agent.items() if k not in HIDDEN}
     # Deserialize JSON list fields so the client receives actual arrays
-    import json as _json
     for field in ("allowed_tools", "custom_tool_ids", "loop_logic", "admin_users", "member_users"):
         raw = result.get(field)
         if isinstance(raw, str):
@@ -136,6 +138,15 @@ def _safe_agent(agent: dict) -> dict:
             result["safety_policy"] = {}
     elif sp_raw is None:
         result["safety_policy"] = {}
+    # Expose llm_config from metadata (defaults to use_default=True if absent)
+    meta_raw = agent.get("metadata")
+    meta = {}
+    if isinstance(meta_raw, str):
+        try:
+            meta = _json.loads(meta_raw)
+        except Exception:
+            pass
+    result["llm_config"] = meta.get("llm_config") or {"use_default": True}
     return result
 
 
@@ -260,11 +271,27 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest):
     if not await _is_agent_admin(db, agent_id, req.user_id):
         raise HTTPException(status_code=403, detail="Only agent admins can edit this agent.")
 
+    import json as _json
     payload = req.dict()
     slots_in = payload.pop("slots", None)
     reset_for = payload.pop("reset_overrides_for", None)
+    llm_config_in = payload.pop("llm_config", None)
     updates = {k: v for k, v in payload.items()
                if k not in ("user_id",) and v is not None}
+
+    # Merge llm_config into the agent's metadata blob
+    if llm_config_in is not None:
+        current = await db.get_agent_by_id(agent_id)
+        meta = {}
+        if current:
+            meta_raw = current.get("metadata")
+            if isinstance(meta_raw, str):
+                try:
+                    meta = _json.loads(meta_raw)
+                except Exception:
+                    pass
+        meta["llm_config"] = llm_config_in
+        updates["metadata"] = meta
 
     updated = await db.update_agent_fields(
         agent_id=agent_id,

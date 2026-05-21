@@ -1,7 +1,6 @@
 'use strict';
 
 import { app, bindDom } from './state.js';
-import { initDbModeUi } from './dbMode.js';
 import { initStorageUi } from './storage.js';
 import { initTerminal, connectTerminal } from './terminal.js';
 import { initChat } from './chat.js';
@@ -14,9 +13,6 @@ import { initLoop } from './loop.js';
 import { initLoopVisual } from './loop-logic.js';
 import { initDbViewer } from './db/index.js';
 import { registerSessionApi, initSessions } from './sessions.js';
-import { initSettings } from './settings.js';
-import { initConnections } from './connections.js';
-import { initOptimizer } from './optimizer.js';
 import { initGithub } from './github.js';
 import { initAutoAgent } from './autoagent.js';
 import { initAgents } from './agents.js';
@@ -144,7 +140,6 @@ _anonReady.then(() => {
   if (!isAuthenticated()) {
     showLeftOverlay();
   }
-  initDbModeUi();
   initStorageUi();
   initTerminal();
   initChat();
@@ -168,9 +163,6 @@ _anonReady.then(() => {
   _safeInit('initAutoAgent',   initAutoAgent);
   _safeInit('initAgents',      initAgents);
   _safeInit('initAppConfig',   initAppConfig);
-  _safeInit('initSettings',    initSettings);
-  _safeInit('initConnections', initConnections);
-  _safeInit('initOptimizer',   initOptimizer);
   _safeInit('initSessions',    initSessions);
   _safeInit('initChatResize',  initChatResize);
 });
