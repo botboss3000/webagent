@@ -1164,35 +1164,109 @@
 
           </section>
 
-          <!-- ── Database Management ── -->
+          <!-- ── Storage (DB + Secrets + Migration) ── -->
           <section id="ac-section-database" class="ac-section">
             <div class="ac-section-header">
               <i data-lucide="database" class="lucide-icon ac-section-icon"></i>
               <div>
-                <h2 class="ac-section-title">Database Management</h2>
-                <p class="ac-section-desc">Switch between cloud (Supabase) and local (SQLite) storage.</p>
+                <h2 class="ac-section-title">Storage</h2>
+                <p class="ac-section-desc">Application data backend, secrets vault, and data migration.</p>
               </div>
             </div>
 
+            <div id="ac-storage-env-banner" class="ac-info-banner" style="display:none;margin-bottom:12px;border-left-color:#e0af68;color:#e0af68;">
+              Configuration is locked to environment variables. UI changes are disabled. Edit the deployment to modify storage settings.
+            </div>
+
+            <!-- ── Application Data ── -->
             <div class="ac-card">
-              <div class="ac-card-label">Storage Backend</div>
-              <div style="display:flex;gap:10px;margin-top:10px;">
-                <button type="button" id="ac-db-seg-cloud" class="ac-seg-btn" style="flex:1;">
-                  <i data-lucide="cloud" class="lucide-icon" style="width:18px;height:18px;margin-bottom:4px;"></i><br>
-                  Cloud<br><span class="ac-seg-sub">Supabase</span>
-                </button>
-                <button type="button" id="ac-db-seg-local" class="ac-seg-btn" style="flex:1;">
-                  <i data-lucide="monitor" class="lucide-icon" style="width:18px;height:18px;margin-bottom:4px;"></i><br>
-                  Local<br><span class="ac-seg-sub">SQLite</span>
-                </button>
+              <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
+                <i data-lucide="server" class="lucide-icon" style="width:14px;height:14px;color:var(--accent);"></i>
+                Application Data
+                <span id="ac-storage-active-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
               </div>
-              <div id="ac-db-status" class="ac-hint" style="margin-top:8px;"></div>
-              <div class="ac-info-banner" style="margin-top:12px;">
-                <strong style="color:var(--accent);">Current Mode:</strong> <span id="ac-db-current-mode">Loading…</span><br>
-                <span>Cloud stores data in Supabase (multi-device). Local stores data in <code>app/db/local.db</code> (single-device).</span>
+
+              <label class="ac-label" style="margin-top:10px;">Provider</label>
+              <select id="ac-storage-db-provider" class="ac-input">
+                <option value="sqlite">SQLite (local)</option>
+                <option value="supabase">Supabase</option>
+                <option value="postgres">Postgres (raw)</option>
+                <option value="gcp_cloud_sql">GCP Cloud SQL (Postgres)</option>
+                <option value="neon">Neon (Postgres)</option>
+                <option value="mysql">MySQL</option>
+              </select>
+
+              <div id="ac-storage-db-fields" style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
+
+              <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">
+                <button id="ac-storage-db-test" class="ac-btn">Test Connection</button>
+                <button id="ac-storage-db-show-sql" class="ac-btn">Show Schema SQL</button>
+                <button id="ac-storage-db-bootstrap" class="ac-btn">Auto-Create Tables</button>
+                <button id="ac-storage-db-save" class="ac-btn">Save Config</button>
+                <button id="ac-storage-db-activate" class="ac-btn ac-btn-primary">Activate</button>
               </div>
+
+              <pre id="ac-storage-db-output" style="margin-top:10px;padding:8px;background:var(--panel-2,#0d0d1a);border:1px solid var(--border,#2a2a4a);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;display:none;"></pre>
+
+              <details style="margin-top:10px;">
+                <summary style="cursor:pointer;font-size:11px;color:var(--muted);">Quick legacy toggle (cloud ↔ local)</summary>
+                <div style="display:flex;gap:8px;margin-top:6px;">
+                  <button type="button" id="ac-db-seg-cloud" class="ac-seg-btn" style="flex:1;padding:8px;">Cloud (Supabase)</button>
+                  <button type="button" id="ac-db-seg-local" class="ac-seg-btn" style="flex:1;padding:8px;">Local (SQLite)</button>
+                </div>
+                <div id="ac-db-current-mode" class="ac-hint" style="margin-top:6px;"></div>
+                <div id="ac-db-status" class="ac-hint" style="margin-top:4px;"></div>
+              </details>
             </div>
 
+            <!-- ── Secrets Vault ── -->
+            <div class="ac-card">
+              <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
+                <i data-lucide="key-round" class="lucide-icon" style="width:14px;height:14px;color:#bb9af7;"></i>
+                Secrets Vault
+                <span id="ac-storage-secrets-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+              </div>
+
+              <label class="ac-label" style="margin-top:10px;">Provider</label>
+              <select id="ac-storage-secrets-provider" class="ac-input">
+                <option value="inline_db">App DB (default, plaintext)</option>
+                <option value="env">Environment variables (read-only)</option>
+                <option value="os_keyring">OS Keyring</option>
+                <option value="gcp_secret_manager">GCP Secret Manager</option>
+                <option value="aws_secrets_manager">AWS Secrets Manager</option>
+              </select>
+
+              <div id="ac-storage-secrets-warning" class="ac-info-banner" style="display:none;margin-top:10px;border-left-color:#f7768e;color:#f7768e;font-size:11px;">
+                Secrets stored as plaintext in main DB. Acceptable for local dev; upgrade to a vault for production.
+              </div>
+
+              <div style="display:flex;gap:6px;margin-top:12px;">
+                <button id="ac-storage-secrets-test" class="ac-btn">Test</button>
+                <button id="ac-storage-secrets-save" class="ac-btn ac-btn-primary">Activate</button>
+              </div>
+              <pre id="ac-storage-secrets-output" style="margin-top:10px;padding:8px;background:var(--panel-2,#0d0d1a);border:1px solid var(--border,#2a2a4a);border-radius:6px;font-size:11px;white-space:pre-wrap;display:none;"></pre>
+            </div>
+
+            <!-- ── Data Migration ── -->
+            <details class="ac-card">
+              <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;font-weight:600;">
+                <i data-lucide="arrow-right-left" class="lucide-icon" style="width:14px;height:14px;color:#9ece6a;"></i>
+                Data Migration
+              </summary>
+              <div class="ac-hint" style="margin-top:10px;">
+                Export current backend data to JSON, switch active backend, then import the file. Heavy tables may take a while.
+              </div>
+              <div style="display:flex;gap:6px;margin-top:12px;flex-wrap:wrap;">
+                <button id="ac-storage-export-btn" class="ac-btn ac-btn-primary">Export to JSON</button>
+                <label class="ac-btn" style="cursor:pointer;">
+                  Import JSON
+                  <input id="ac-storage-import-input" type="file" accept="application/json" style="display:none;">
+                </label>
+              </div>
+              <pre id="ac-storage-migrate-output" style="margin-top:10px;padding:8px;background:var(--panel-2,#0d0d1a);border:1px solid var(--border,#2a2a4a);border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:240px;overflow-y:auto;display:none;"></pre>
+            </details>
+
+            <!-- ── Display Settings (preserved) ── -->
             <div class="ac-card">
               <div class="ac-card-label">Display Settings</div>
               <div style="display:flex;align-items:center;gap:10px;margin-top:10px;">
@@ -1515,42 +1589,120 @@
   </div>
 </div>
 
-<!-- Database modal -->
+<!-- Storage modal (formerly Database) -->
 <div id="database-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:1000;">
   <div id="database-backdrop" style="position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);"></div>
-  <div id="database-panel" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:24px;min-width:400px;max-width:480px;color:#c0caf5;font-size:14px;">
+  <div id="database-panel" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:24px;width:640px;max-width:95vw;max-height:90vh;overflow-y:auto;color:#c0caf5;font-size:14px;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
-      <h2 style="margin:0;font-size:18px;font-weight:600;display:inline-flex;align-items:center;gap:6px;"><i data-lucide="database" style="width:18px;height:18px;"></i> Database</h2>
+      <h2 style="margin:0;font-size:18px;font-weight:600;display:inline-flex;align-items:center;gap:6px;"><i data-lucide="database" style="width:18px;height:18px;"></i> Storage</h2>
       <button id="database-close" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:20px;">&times;</button>
     </div>
 
-    <div style="margin-bottom:20px;">
-      <label style="display:block;margin-bottom:8px;color:#a9b1d6;font-size:13px;font-weight:600;">Storage Backend</label>
-      <div style="display:flex;gap:8px;">
-        <button type="button" id="modal-seg-cloud" class="submenu-item" style="flex:1;text-align:center;padding:12px;border:2px solid #2a2a4a;border-radius:8px;background:#0d0d1a;font-size:13px;font-weight:600;cursor:pointer;color:#c0caf5;font-family:inherit;transition:all 0.15s;"><i data-lucide="cloud" style="width:16px;height:16px;margin-bottom:4px;"></i><br>Cloud<br><span style="font-weight:400;font-size:11px;color:#565f89;">Supabase</span></button>
-        <button type="button" id="modal-seg-local" class="submenu-item" style="flex:1;text-align:center;padding:12px;border:2px solid #2a2a4a;border-radius:8px;background:#0d0d1a;font-size:13px;font-weight:600;cursor:pointer;color:#c0caf5;font-family:inherit;transition:all 0.15s;"><i data-lucide="monitor" style="width:16px;height:16px;margin-bottom:4px;"></i><br>Local<br><span style="font-weight:400;font-size:11px;color:#565f89;">SQLite</span></button>
-      </div>
-      <div id="database-modal-status" style="margin-top:8px;font-size:12px;color:#565f89;"></div>
+    <div id="storage-env-banner" style="display:none;margin-bottom:16px;padding:10px 12px;background:#3a2a1a;border-left:3px solid #e0af68;border-radius:6px;font-size:12px;color:#e0af68;">
+      Configuration is locked to environment variables. UI changes are disabled. Edit the deployment to modify storage settings.
     </div>
 
-    <!-- DB UI Settings -->
-    <div style="margin-bottom:20px;padding:16px;background:#0d0d1a;border-radius:8px;border:1px solid #2a2a4a;">
-      <label style="display:block;margin-bottom:12px;color:#a9b1d6;font-size:13px;font-weight:600;">Display Settings</label>
+    <!-- ── Section: Application Data ── -->
+    <div style="margin-bottom:18px;padding:16px;background:#0d0d1a;border-radius:8px;border:1px solid #2a2a4a;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+        <i data-lucide="server" style="width:14px;height:14px;color:#7dcfff;"></i>
+        <strong style="color:#7dcfff;font-size:13px;">Application Data</strong>
+        <span id="storage-active-badge" style="margin-left:auto;font-size:11px;color:#565f89;">loading...</span>
+      </div>
+
+      <label style="display:block;margin:6px 0 4px;color:#a9b1d6;font-size:12px;">Provider</label>
+      <select id="storage-db-provider" style="width:100%;padding:8px;background:#1a1a2e;color:#c0caf5;border:1px solid #2a2a4a;border-radius:6px;font-size:13px;">
+        <option value="sqlite">SQLite (local)</option>
+        <option value="supabase">Supabase</option>
+        <option value="postgres">Postgres (raw)</option>
+        <option value="gcp_cloud_sql">GCP Cloud SQL (Postgres)</option>
+        <option value="neon">Neon (Postgres)</option>
+        <option value="mysql">MySQL</option>
+      </select>
+
+      <div id="storage-db-fields" style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <!-- populated by JS based on provider -->
+      </div>
+
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">
+        <button id="storage-db-test" class="storage-btn" style="padding:7px 12px;background:#1a1a2e;color:#7dcfff;border:1px solid #2a2a4a;border-radius:6px;font-size:12px;cursor:pointer;">Test Connection</button>
+        <button id="storage-db-show-sql" class="storage-btn" style="padding:7px 12px;background:#1a1a2e;color:#9ece6a;border:1px solid #2a2a4a;border-radius:6px;font-size:12px;cursor:pointer;">Show Schema SQL</button>
+        <button id="storage-db-bootstrap" class="storage-btn" style="padding:7px 12px;background:#1a1a2e;color:#e0af68;border:1px solid #2a2a4a;border-radius:6px;font-size:12px;cursor:pointer;">Auto-Create Tables</button>
+        <button id="storage-db-save" class="storage-btn" style="padding:7px 12px;background:#1a1a2e;color:#c0caf5;border:1px solid #2a2a4a;border-radius:6px;font-size:12px;cursor:pointer;">Save Config</button>
+        <button id="storage-db-activate" class="storage-btn" style="padding:7px 12px;background:#7dcfff;color:#0d0d1a;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">Activate</button>
+      </div>
+
+      <pre id="storage-db-output" style="margin-top:10px;padding:8px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:6px;font-size:11px;color:#a9b1d6;white-space:pre-wrap;word-break:break-all;max-height:200px;overflow-y:auto;display:none;"></pre>
+
+      <!-- Legacy quick toggle still present for backward compat -->
+      <details style="margin-top:10px;">
+        <summary style="cursor:pointer;font-size:11px;color:#565f89;">Quick legacy toggle (local ↔ cloud)</summary>
+        <div style="display:flex;gap:8px;margin-top:6px;">
+          <button type="button" id="modal-seg-cloud" style="flex:1;text-align:center;padding:8px;border:1px solid #2a2a4a;border-radius:6px;background:#0d0d1a;font-size:12px;cursor:pointer;color:#c0caf5;font-family:inherit;">Cloud (Supabase)</button>
+          <button type="button" id="modal-seg-local" style="flex:1;text-align:center;padding:8px;border:1px solid #2a2a4a;border-radius:6px;background:#0d0d1a;font-size:12px;cursor:pointer;color:#c0caf5;font-family:inherit;">Local (SQLite)</button>
+        </div>
+        <div id="database-current-mode" style="margin-top:6px;font-size:11px;color:#565f89;"></div>
+        <div id="database-modal-status" style="margin-top:4px;font-size:11px;color:#565f89;"></div>
+      </details>
+    </div>
+
+    <!-- ── Section: Secrets Vault ── -->
+    <div style="margin-bottom:18px;padding:16px;background:#0d0d1a;border-radius:8px;border:1px solid #2a2a4a;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+        <i data-lucide="key-round" style="width:14px;height:14px;color:#bb9af7;"></i>
+        <strong style="color:#bb9af7;font-size:13px;">Secrets Vault</strong>
+        <span id="storage-secrets-badge" style="margin-left:auto;font-size:11px;color:#565f89;">loading...</span>
+      </div>
+
+      <label style="display:block;margin:6px 0 4px;color:#a9b1d6;font-size:12px;">Provider</label>
+      <select id="storage-secrets-provider" style="width:100%;padding:8px;background:#1a1a2e;color:#c0caf5;border:1px solid #2a2a4a;border-radius:6px;font-size:13px;">
+        <option value="inline_db">App DB (default, plaintext)</option>
+        <option value="env">Environment variables (read-only)</option>
+        <option value="os_keyring">OS Keyring</option>
+        <option value="gcp_secret_manager">GCP Secret Manager</option>
+        <option value="aws_secrets_manager">AWS Secrets Manager</option>
+      </select>
+
+      <div id="storage-secrets-warning" style="margin-top:10px;padding:8px;background:#3a1a1a;border-left:3px solid #f7768e;border-radius:4px;font-size:11px;color:#f7768e;display:none;">
+        Secrets stored as plaintext in main DB. Acceptable for local development; upgrade to a vault for production.
+      </div>
+
+      <div style="display:flex;gap:6px;margin-top:12px;">
+        <button id="storage-secrets-test" class="storage-btn" style="padding:7px 12px;background:#1a1a2e;color:#bb9af7;border:1px solid #2a2a4a;border-radius:6px;font-size:12px;cursor:pointer;">Test</button>
+        <button id="storage-secrets-save" class="storage-btn" style="padding:7px 12px;background:#bb9af7;color:#0d0d1a;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">Activate</button>
+      </div>
+      <pre id="storage-secrets-output" style="margin-top:10px;padding:8px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:6px;font-size:11px;color:#a9b1d6;white-space:pre-wrap;display:none;"></pre>
+    </div>
+
+    <!-- ── Section: Data Migration ── -->
+    <details style="margin-bottom:18px;padding:16px;background:#0d0d1a;border-radius:8px;border:1px solid #2a2a4a;">
+      <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;">
+        <i data-lucide="arrow-right-left" style="width:14px;height:14px;color:#9ece6a;"></i>
+        <strong style="color:#9ece6a;font-size:13px;">Data Migration</strong>
+      </summary>
+      <div style="margin-top:12px;font-size:12px;color:#a9b1d6;">
+        Export current backend data to a JSON file, switch the active backend, then import the file. Heavy tables may take a while.
+      </div>
+      <div style="display:flex;gap:6px;margin-top:12px;flex-wrap:wrap;">
+        <button id="storage-export-btn" class="storage-btn" style="padding:7px 12px;background:#9ece6a;color:#0d0d1a;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">Export to JSON</button>
+        <label style="padding:7px 12px;background:#1a1a2e;color:#9ece6a;border:1px solid #2a2a4a;border-radius:6px;font-size:12px;cursor:pointer;">
+          Import JSON
+          <input id="storage-import-input" type="file" accept="application/json" style="display:none;">
+        </label>
+      </div>
+      <pre id="storage-migrate-output" style="margin-top:10px;padding:8px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:6px;font-size:11px;color:#a9b1d6;white-space:pre-wrap;max-height:240px;overflow-y:auto;display:none;"></pre>
+    </details>
+
+    <!-- DB UI display settings (preserved from old modal) -->
+    <div style="margin-bottom:14px;padding:12px;background:#0d0d1a;border-radius:8px;border:1px solid #2a2a4a;">
+      <label style="display:block;margin-bottom:8px;color:#a9b1d6;font-size:12px;font-weight:600;">Data Viewer Display</label>
       <div style="display:flex;align-items:center;gap:10px;">
-        <input type="checkbox" id="db-setting-show-hidden" style="cursor:pointer;width:16px;height:16px;accent-color:#7dcfff;">
-        <label for="db-setting-show-hidden" style="cursor:pointer;color:#c0caf5;font-size:13px;">Show Hidden Columns</label>
-      </div>
-      <div style="margin-top:6px;font-size:11px;color:#565f89;">
-        When enabled, you can toggle visibility of individual columns in the data view using the eye icon.
+        <input type="checkbox" id="db-setting-show-hidden" style="cursor:pointer;width:14px;height:14px;accent-color:#7dcfff;">
+        <label for="db-setting-show-hidden" style="cursor:pointer;color:#c0caf5;font-size:12px;">Show Hidden Columns</label>
       </div>
     </div>
 
-    <div style="padding:12px;background:#0d0d1a;border-radius:8px;border-left:3px solid #7dcfff;font-size:12px;color:#a9b1d6;">
-      <strong style="color:#7dcfff;">Current Mode:</strong> <span id="database-current-mode">Loading...</span><br>
-      <span style="color:#565f89;">Cloud stores data in Supabase (multi-device). Local stores data in <code>app/db/local.db</code> (single-device).</span>
-    </div>
-
-    <div style="text-align:right;margin-top:20px;">
+    <div style="text-align:right;">
       <button id="database-close-btn" style="padding:8px 20px;background:transparent;border:1px solid #565f89;border-radius:6px;color:#565f89;font-size:13px;cursor:pointer;">Close</button>
     </div>
   </div>

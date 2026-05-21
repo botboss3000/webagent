@@ -18,3 +18,7 @@ httpx>=0.27.2
 python-telegram-bot>=21.0.0
 twilio>=9.0.0
 tzdata>=2025.0
+# Pluggable storage backends (test-connection / bootstrap support)
+asyncpg>=0.29.0
+# Secrets-vault providers (optional; runtime check guards import errors)
+keyring>=24.0.0

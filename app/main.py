@@ -45,6 +45,7 @@ from app.api.uploads import router as uploads_router
 from app.api.db_viewer import router as db_viewer_router
 from app.admin.review import router as admin_router
 from app.admin.db_mode import router as admin_db_router
+from app.admin.storage import router as admin_storage_router
 from app.api.webhooks import router as webhooks_router
 from app.api.webhooks_generic import router as webhooks_generic_router
 try:
@@ -128,6 +129,7 @@ app.include_router(uploads_router)
 app.include_router(db_viewer_router)
 app.include_router(admin_router)
 app.include_router(admin_db_router)
+app.include_router(admin_storage_router)
 if _HAS_SOURCE_TOOLS and admin_source_router is not None:
     app.include_router(admin_source_router)
 

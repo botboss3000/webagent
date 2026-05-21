@@ -1,0 +1,136 @@
+"""
+Secrets factory: pick a SecretsBackend based on persisted config.
+
+Mode is stored in `secrets_mode.json` alongside `db_mode.json`.
+
+Bootstrap order:
+  1. Read `secrets_mode.json` (or env override WEBAGENT_SECRETS_PROVIDER)
+  2. Construct the chosen backend lazily — failures fall back to inline_db
+  3. The chosen backend's own config (e.g. GCP project ID) comes from env vars
+     only, never from the app DB. This prevents a chicken-and-egg.
+
+Available providers:
+  - "inline_db"  (default)
+  - "env"
+  - "os_keyring"
+  - "gcp_secret_manager"
+  - "aws_secrets_manager"
+"""
+
+import json
+import logging
+import os
+from typing import Optional
+
+from app.secrets.interface import SecretsBackend
+
+logger = logging.getLogger(__name__)
+
+_AGENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_MODE_FILE = os.path.join(_AGENT_DIR, "secrets_mode.json")
+
+_AVAILABLE = (
+    "inline_db",
+    "env",
+    "os_keyring",
+    "gcp_secret_manager",
+    "aws_secrets_manager",
+)
+
+_backend: Optional[SecretsBackend] = None
+_mode: Optional[str] = None
+
+
+def _load_saved_mode() -> Optional[str]:
+    try:
+        if os.path.exists(_MODE_FILE):
+            with open(_MODE_FILE, "r") as f:
+                return json.load(f).get("provider")
+    except Exception as e:
+        logger.warning("Failed to load secrets_mode.json: %s", e)
+    return None
+
+
+def _save_mode(provider: str) -> None:
+    # Cloud Run / env-locked mode skips file writes.
+    if os.environ.get("WEBAGENT_CONFIG_SOURCE", "").lower() == "env":
+        return
+    try:
+        with open(_MODE_FILE, "w") as f:
+            json.dump({"provider": provider}, f)
+    except Exception as e:
+        logger.warning("Failed to save secrets_mode.json: %s", e)
+
+
+def get_mode() -> str:
+    """Get the current secrets provider name."""
+    global _mode
+    if _mode is None:
+        # Env override wins
+        env_choice = os.environ.get("WEBAGENT_SECRETS_PROVIDER", "").strip()
+        if env_choice in _AVAILABLE:
+            _mode = env_choice
+        else:
+            _mode = _load_saved_mode() or "inline_db"
+    return _mode
+
+
+def set_mode(provider: str) -> None:
+    """Switch the secrets provider. Persists to disk and resets cached backend."""
+    global _backend, _mode
+    if provider not in _AVAILABLE:
+        raise ValueError(f"Invalid provider '{provider}'. Must be one of {_AVAILABLE}")
+    _mode = provider
+    _backend = None
+    _save_mode(provider)
+    logger.info("Secrets provider switched to '%s'", provider)
+
+
+def list_providers() -> list:
+    return list(_AVAILABLE)
+
+
+def _construct(provider: str) -> SecretsBackend:
+    if provider == "inline_db":
+        from app.secrets.inline_db_secrets import InlineDBSecrets
+        return InlineDBSecrets()
+    if provider == "env":
+        from app.secrets.env_secrets import EnvSecrets
+        return EnvSecrets()
+    if provider == "os_keyring":
+        from app.secrets.keyring_secrets import OSKeyringSecrets
+        return OSKeyringSecrets()
+    if provider == "gcp_secret_manager":
+        from app.secrets.gcp_secrets import GCPSecretManager
+        return GCPSecretManager()
+    if provider == "aws_secrets_manager":
+        from app.secrets.aws_secrets import AWSSecretsManager
+        return AWSSecretsManager()
+    raise ValueError(f"Unknown provider: {provider}")
+
+
+def get_secrets() -> SecretsBackend:
+    """Get the active secrets backend instance (lazy)."""
+    global _backend
+    if _backend is None:
+        provider = get_mode()
+        try:
+            _backend = _construct(provider)
+            logger.info("Initialized secrets backend: %s", provider)
+        except Exception as e:
+            logger.warning(
+                "Failed to construct secrets backend '%s' (%s); falling back to inline_db",
+                provider, e,
+            )
+            from app.secrets.inline_db_secrets import InlineDBSecrets
+            _backend = InlineDBSecrets()
+    return _backend
+
+
+def get_secrets_status() -> dict:
+    """For UI: current provider + reachability info."""
+    return {
+        "provider": get_mode(),
+        "available": list(_AVAILABLE),
+        "env_locked": os.environ.get("WEBAGENT_CONFIG_SOURCE", "").lower() == "env",
+    }

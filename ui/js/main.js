@@ -2,6 +2,7 @@
 
 import { app, bindDom } from './state.js';
 import { initDbModeUi } from './dbMode.js';
+import { initStorageUi } from './storage.js';
 import { initTerminal, connectTerminal } from './terminal.js';
 import { initChat } from './chat.js';
 import { initReconnect } from './reconnect.js';
@@ -144,6 +145,7 @@ _anonReady.then(() => {
     showLeftOverlay();
   }
   initDbModeUi();
+  initStorageUi();
   initTerminal();
   initChat();
   ensureAttachmentsInit();
