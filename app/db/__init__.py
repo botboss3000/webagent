@@ -36,7 +36,10 @@ def _load_saved_mode() -> Optional[str]:
 
 
 def _save_mode(mode: str) -> None:
-    """Persist the current mode to disk."""
+    """Persist the current mode to disk (skip when env-locked for Cloud Run)."""
+    if os.environ.get("WEBAGENT_CONFIG_SOURCE", "").lower() == "env":
+        logger.info("Config is env-locked; skipping db_mode.json write")
+        return
     try:
         with open(_MODE_FILE, "w") as f:
             json.dump({"mode": mode}, f)
@@ -47,12 +50,19 @@ def _save_mode(mode: str) -> None:
 def get_mode() -> str:
     """
     Get the current database mode.
-    
+
     Returns:
         "cloud" or "local"
+
+    Env override: WEBAGENT_DB_MODE wins when WEBAGENT_CONFIG_SOURCE=env.
     """
     global _db_mode
     if _db_mode is None:
+        if os.environ.get("WEBAGENT_CONFIG_SOURCE", "").lower() == "env":
+            env_mode = os.environ.get("WEBAGENT_DB_MODE", "").strip().lower()
+            if env_mode in ("cloud", "local"):
+                _db_mode = env_mode
+                return _db_mode
         _db_mode = _load_saved_mode() or "cloud"
     return _db_mode
 

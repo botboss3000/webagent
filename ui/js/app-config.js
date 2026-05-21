@@ -867,6 +867,9 @@ async function _loadDatabase() {
   const origCb = _qs('db-setting-show-hidden');
   const acCb   = _qs('ac-db-show-hidden');
   if (origCb && acCb) acCb.checked = origCb.checked;
+
+  // Refresh the new Storage section (provider dropdown + secrets + migration).
+  try { if (typeof window.__refreshStorageSection === 'function') window.__refreshStorageSection(); } catch {}
 }
 
 async function _setDbMode(mode) {
