@@ -149,7 +149,7 @@ async def _run_registration_agent(
         # Otherwise fall back to looking up (or creating) an agent for this user.
         if agent_id:
             agent = await db.get_agent_by_id(agent_id)
-            agent_with_ctx = await db.fetch_agent_by_id_with_context(agent_id, CONTEXT_SECTION_TYPES)
+            agent_with_ctx = await db.fetch_agent_by_id_with_context(agent_id, CONTEXT_SECTION_TYPES, user_id=user_id)
             if agent_with_ctx:
                 agent = agent_with_ctx
         else:
@@ -164,7 +164,7 @@ async def _run_registration_agent(
             copied = await db.copy_defaults_to_agent(agent["id"])
             if copied > 0:
                 if agent_id:
-                    agent = await db.fetch_agent_by_id_with_context(agent_id, CONTEXT_SECTION_TYPES)
+                    agent = await db.fetch_agent_by_id_with_context(agent_id, CONTEXT_SECTION_TYPES, user_id=user_id)
                 else:
                     agent = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
 
@@ -181,10 +181,10 @@ async def _run_registration_agent(
                 f"To send them a message use `{tool_name}` with chat_id={identity.external_id}.]"
             )
 
+        # Registration prompt is a transient overlay — prepend it to the resolved slots.
+        ctx_with_reg = [{"id": "_registration", "content": registration_prompt}] + context_docs
         system_prompt = await build_system_prompt(
-            context_docs, brain_context=None, user_id=user_id,
-            agent_system_prompt=registration_prompt,
-            bootstrap_tools=agent.get("bootstrap_tools", "") if isinstance(agent, dict) else "",
+            ctx_with_reg, brain_context=None, user_id=user_id,
         )
 
         history = await build_openai_history_from_session(
@@ -229,7 +229,7 @@ async def _run_agent_loop(
         # Otherwise fall back to looking up (or creating) an agent for this user.
         if agent_id:
             agent = await db.get_agent_by_id(agent_id)
-            agent_with_ctx = await db.fetch_agent_by_id_with_context(agent_id, CONTEXT_SECTION_TYPES)
+            agent_with_ctx = await db.fetch_agent_by_id_with_context(agent_id, CONTEXT_SECTION_TYPES, user_id=user_id)
             if agent_with_ctx:
                 agent = agent_with_ctx
         else:
@@ -244,7 +244,7 @@ async def _run_agent_loop(
             copied = await db.copy_defaults_to_agent(agent["id"])
             if copied > 0:
                 if agent_id:
-                    agent = await db.fetch_agent_by_id_with_context(agent_id, CONTEXT_SECTION_TYPES)
+                    agent = await db.fetch_agent_by_id_with_context(agent_id, CONTEXT_SECTION_TYPES, user_id=user_id)
                 else:
                     agent = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
 
@@ -265,25 +265,23 @@ async def _run_agent_loop(
                 lines.append("")
             brain_context = "\n".join(lines)
 
-        agent_system_prompt = agent.get("system_prompt", "")
+        # Channel + anonymity overlay (transient — prepended as a synthetic doc).
+        overlay_parts: list[str] = []
         if identity.user_tier == "anonymous":
-            agent_system_prompt += "\n\n" + get_anonymous_limit_prompt()
-
-        # Tell the agent which channel it's on and how to reach the user proactively.
-        # This lets it call send_telegram_message (or equivalent) with the correct ID.
+            overlay_parts.append(get_anonymous_limit_prompt())
         if channel and identity.external_id:
             tool_name = f"send_{channel}_message"
-            agent_system_prompt += (
-                f"\n\n[Channel context: This conversation is happening over {channel}. "
+            overlay_parts.append(
+                f"[Channel context: This conversation is happening over {channel}. "
                 f"The user's {channel} ID is {identity.external_id}. "
                 f"To proactively send them a message use the `{tool_name}` tool "
                 f"with chat_id={identity.external_id}.]"
             )
+        if overlay_parts:
+            context_docs = [{"id": "_channel_overlay", "content": "\n\n".join(overlay_parts)}] + context_docs
 
         system_prompt = await build_system_prompt(
             context_docs, brain_context, user_id,
-            agent_system_prompt=agent_system_prompt,
-            bootstrap_tools=agent.get("bootstrap_tools", "") if isinstance(agent, dict) else "",
         )
 
         history = await build_openai_history_from_session(

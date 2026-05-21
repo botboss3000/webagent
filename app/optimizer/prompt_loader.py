@@ -1,36 +1,30 @@
 """
 Shared prompt loader for optimizer agents.
-Loads ONLY from DB (context_templates). No hardcoded fallbacks.
-If no prompt found, returns empty string.
+
+Reads markdown files from app/optimizer/prompts/<title>.md.
+Returns "" if no file present — no hardcoded fallbacks.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
+_PROMPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompts")
+
 
 async def load_prompt(title: str) -> str:
-    """Load prompt from DB only. Returns empty string if not found."""
+    """Load an optimizer prompt by `title`. Returns "" if file not found."""
+    safe = title.replace("/", "_").replace("\\", "_")
+    path = os.path.join(_PROMPTS_DIR, f"{safe}.md")
     try:
-        from app.db import get_db
-        db = get_db()
-        raw = getattr(db, '_get_conn', None)
-        if raw:
-            conn = raw()
-            try:
-                cur = conn.execute(
-                    "SELECT content FROM context_templates WHERE context_type='optimizer' AND title=? LIMIT 1",
-                    (title,),
-                )
-                if hasattr(cur, '__await__'):
-                    cur = await cur
-                row = cur.fetchone()
-                return row[0] if row else ""
-            finally:
-                if hasattr(conn, 'close'):
-                    conn.close()
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        logger.debug("Optimizer prompt %s not found at %s", title, path)
+        return ""
     except Exception as e:
-        logger.debug("load_prompt DB failed for %s: %s", title, e)
-    return ""
+        logger.warning("Failed to load optimizer prompt %s: %s", title, e)
+        return ""

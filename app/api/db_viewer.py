@@ -606,7 +606,7 @@ async def update_row(
 @router.delete("/reset")
 async def reset_database(
     db: str = Query("local.db", description="Database filename"),
-    exclude: list[str] = Query(default=["context_templates", "agent_templates", "auth_elements"], description="List of tables to exclude from reset"),
+    exclude: list[str] = Query(default=["agent_templates", "agent_prompts", "auth_elements"], description="List of tables to exclude from reset"),
     _auth: dict = Depends(require_db_auth),
 ):
     """Delete ALL rows from ALL tables. Skips excluded tables."""

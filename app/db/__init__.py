@@ -123,8 +123,8 @@ async def get_db_stats() -> dict:
     raw = db.get_raw_client()
     
     tables = [
-        "sessions", "interactions", "session_summaries", "context_documents",
-        "context_templates", "memories", "memory_chunks", "memory_links", "memory_timeline",
+        "sessions", "interactions", "session_summaries", "agent_prompts",
+        "memories", "memory_chunks", "memory_links", "memory_timeline",
         "tools", "agent_credentials", "skills",
     ]
     

@@ -189,32 +189,29 @@ async def web_search(query: str, max_results: int = 5) -> str:
     return f"Search results for '{query}':\n\n" + "\n\n".join(results)
 
 
-# ── DB query (context documents) ─────────────────────────────────────────────
+# ── DB query (prompt slots on the user's agent) ──────────────────────────────
 
 async def db_query(
     action: str,
-    context_type: Optional[str] = None,
-    context_id: Optional[str] = None,
-    title: Optional[str] = None,
+    slot_name: Optional[str] = None,
     content: Optional[str] = None,
-    tags: Optional[List[str]] = None,
+    lock: Optional[bool] = None,
+    merge_mode: Optional[str] = None,
+    order_index: Optional[int] = None,
     user_id: str = "",
+    **_legacy,
 ) -> str:
     """
-    Read, search, or edit context documents in the database.
-
-    Context documents are sectioned by type: agent, user, skills, tools, tasks,
-    memory, project, jobs.
+    Read and edit the admin-base prompt slots on the user's assigned agent.
 
     Actions:
-      list        → List all context docs, optionally filtered by context_type
-      get         → Get one context doc by context_id
-      insert      → Create a new context doc (requires context_type, title, content)
-      update      → Replace content of a context doc (requires context_id, content)
-      delete      → Delete a context doc by context_id
+      list   → list all admin-base slots
+      get    → get one slot by slot_name
+      insert → create a new slot (slot_name + content required)
+      update → replace a slot's content (slot_name + content required)
+      delete → delete a slot by slot_name
 
-    Use this to read skills guidance, write new skill entries, or manage
-    project context.
+    Lock + merge_mode + order_index are optional on insert/update.
     """
     try:
         from app.db import get_db
@@ -223,40 +220,49 @@ async def db_query(
         if not agent:
             return json.dumps({"status": "error", "message": "No agent assigned for this user."})
         agent_id = agent["id"]
+        # Tolerate legacy param names from older callers.
+        slot_name = slot_name or _legacy.get("context_id") or _legacy.get("context_type") or _legacy.get("title")
 
         if action == "list":
-            types_filter = [context_type] if context_type else None
-            docs = await db.fetch_context_documents(agent_id, types_filter)
-            return json.dumps({"status": "ok", "count": len(docs), "documents": docs})
+            slots = await db.list_slots(agent_id)
+            return json.dumps({"status": "ok", "count": len(slots), "slots": slots}, default=str)
 
         elif action == "get":
-            if not context_id:
-                return json.dumps({"status": "error", "message": "context_id required for get action"})
-            doc = await db.get_context_document(agent_id, context_id)
-            if not doc:
-                return json.dumps({"status": "error", "message": "Document not found."})
-            return json.dumps({"status": "ok", "document": doc})
+            if not slot_name:
+                return json.dumps({"status": "error", "message": "slot_name required for get action"})
+            slots = await db.list_slots(agent_id)
+            slot = next((s for s in slots if s["slot_name"] == slot_name), None)
+            if not slot:
+                return json.dumps({"status": "error", "message": f"Slot '{slot_name}' not found."})
+            return json.dumps({"status": "ok", "slot": slot}, default=str)
 
-        elif action == "insert":
-            if not context_type or not title or content is None:
-                return json.dumps({"status": "error", "message": "context_type, title, and content required for insert"})
-            doc_id = await db.insert_document(
-                agent_id, context_type, title, content, tags=tags,
+        elif action in ("insert", "update"):
+            if not slot_name or content is None:
+                return json.dumps({"status": "error", "message": "slot_name and content required"})
+            existing = await db.list_slots(agent_id)
+            current = next((s for s in existing if s["slot_name"] == slot_name), None)
+            resolved_order = order_index if order_index is not None else (
+                current["order_index"] if current
+                else (max((s["order_index"] or 0) for s in existing), 0)[0] + 10 if existing else 10
             )
-            return json.dumps({"status": "ok", "id": doc_id})
-
-        elif action == "update":
-            if not context_id or content is None:
-                return json.dumps({"status": "error", "message": "context_id and content required for update"})
-            await db.update_context_document_content(agent_id, context_id, content)
-            return json.dumps({"status": "ok", "context_id": context_id})
+            resolved_lock = lock if lock is not None else (current["lock"] if current else False)
+            resolved_mode = merge_mode if merge_mode is not None else (current.get("merge_mode") if current else "replace")
+            await db.upsert_slot(
+                agent_id=agent_id,
+                slot_name=slot_name,
+                order_index=int(resolved_order),
+                lock=bool(resolved_lock),
+                merge_mode=resolved_mode,
+                content=content,
+                updated_by=f"tool:{user_id}",
+            )
+            return json.dumps({"status": "ok", "slot_name": slot_name})
 
         elif action == "delete":
-            if not context_id:
-                return json.dumps({"status": "error", "message": "context_id required for delete"})
-            # Delegate to the existing context doc tools: use update with empty content
-            await db.update_context_document_content(agent_id, context_id, "")
-            return json.dumps({"status": "ok", "context_id": context_id, "cleared": True, "note": "Content cleared. Use source admin tools for full deletion."})
+            if not slot_name:
+                return json.dumps({"status": "error", "message": "slot_name required for delete"})
+            n = await db.delete_slot(agent_id, slot_name)
+            return json.dumps({"status": "ok", "slot_name": slot_name, "deleted_rows": n})
 
         else:
             return json.dumps({"status": "error", "message": f"Unknown action '{action}'. Use: list, get, insert, update, delete."})

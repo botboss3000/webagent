@@ -39,16 +39,19 @@ class CreateAgentRequest(BaseModel):
     template_id: Optional[str] = "default"
 
 
+class SlotPayload(BaseModel):
+    slot_name: str
+    order_index: int = 0
+    lock: bool = False
+    merge_mode: str = "replace"
+    content: str = ""
+
+
 class UpdateAgentRequest(BaseModel):
     user_id: str
     name: Optional[str] = None
     description: Optional[str] = None
     max_turn_count: Optional[int] = None
-    agent_prompt: Optional[str] = None
-    user_prompt: Optional[str] = None
-    skills_prompt: Optional[str] = None
-    tasks_prompt: Optional[str] = None
-    misc_prompt: Optional[str] = None
     model: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
@@ -59,6 +62,20 @@ class UpdateAgentRequest(BaseModel):
     loop_logic: Optional[List] = None
     safety_policy: Optional[Dict[str, Any]] = None
     user_mode: Optional[str] = None
+    # Prompt slots — admin-only. Full slot set when present; reconciled against existing.
+    slots: Optional[List[SlotPayload]] = None
+    # Per-slot wipe of all user override rows at save time.
+    reset_overrides_for: Optional[List[str]] = None
+
+
+class UpdateMyPromptsItem(BaseModel):
+    slot_name: str
+    content: str
+
+
+class UpdateMyPromptsRequest(BaseModel):
+    user_id: str
+    slots: List[UpdateMyPromptsItem]
 
 
 class UpdateTemplateRequest(BaseModel):
@@ -91,8 +108,13 @@ class TestAgentRequest(BaseModel):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _safe_agent(agent: dict) -> dict:
-    """Strip locked/internal fields before returning to client."""
-    HIDDEN = {"system_prompt", "bootstrap_tools", "provider", "metadata"}
+    """Strip locked/internal fields before returning to client.
+
+    Prompt content lives in the agent_prompts table and is exposed via the
+    dedicated /agents/{id}/slots and /agents/{id}/my-prompts endpoints, not on
+    the agent row itself.
+    """
+    HIDDEN = {"provider", "metadata"}
     result = {k: v for k, v in agent.items() if k not in HIDDEN}
     # Deserialize JSON list fields so the client receives actual arrays
     import json as _json
@@ -226,13 +248,24 @@ async def get_agent(agent_id: str, user_id: str = Query(...)):
 @router.put("/agents/{agent_id}")
 async def update_agent(agent_id: str, req: UpdateAgentRequest):
     """
-    Update editable fields on a custom agent.
-    Only name, description, max_turn_count, and the five context prompts
-    may be changed. System prompt and bootstrap_tools are locked.
+    Update editable fields on a custom agent. Caller must be an agent admin.
+
+    Two write lanes coexist on this endpoint:
+      - Agent-row fields (name, model, allowed_tools, etc.) via `updates`.
+      - Admin-base prompt slots via `slots` (full slot set — reconciled).
+        Optional `reset_overrides_for` wipes per-user override rows for the
+        listed slot_names at save time.
     """
     db = get_db()
-    updates = {k: v for k, v in req.dict().items()
+    if not await _is_agent_admin(db, agent_id, req.user_id):
+        raise HTTPException(status_code=403, detail="Only agent admins can edit this agent.")
+
+    payload = req.dict()
+    slots_in = payload.pop("slots", None)
+    reset_for = payload.pop("reset_overrides_for", None)
+    updates = {k: v for k, v in payload.items()
                if k not in ("user_id",) and v is not None}
+
     updated = await db.update_agent_fields(
         agent_id=agent_id,
         user_id=req.user_id,
@@ -240,10 +273,83 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest):
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="Agent not found or not owned by this user.")
+
+    if slots_in is not None:
+        # Reconcile admin-base slot set.
+        await db.replace_slots(
+            agent_id=agent_id,
+            slots=[s if isinstance(s, dict) else s.dict() for s in slots_in],
+            reset_overrides_for=reset_for or [],
+            updated_by=f"admin:{req.user_id}",
+        )
+
     if any(k in updates for k in ("trigger_type", "trigger_key")):
         from app.agent import trigger_index
         trigger_index.build()
     return {"agent": _safe_agent(updated)}
+
+
+@router.get("/agents/{agent_id}/slots")
+async def get_agent_slots(agent_id: str, user_id: str = Query(...)):
+    """Return admin-base slot definitions for an agent or template.
+
+    Custom agents return the rows scoped to their agent_id. System templates
+    return the rows scoped to template_id (agent_prompts.agent_id = template_id).
+    """
+    db = get_db()
+    agent = await db.get_agent_by_id(agent_id)
+    is_template = False
+    if not agent:
+        # Try as a template id (system templates have no agents row).
+        templates = await db.list_agent_templates(include_admin=True)
+        tpl = next((t for t in templates if t.get("id") == agent_id), None)
+        if not tpl:
+            raise HTTPException(status_code=404, detail="Agent not found.")
+        is_template = True
+    slots = await db.list_slots(agent_id, user_id=user_id)
+    if is_template:
+        # Templates have no per-agent admin role — only global admins may edit.
+        is_admin = await db.is_user_admin(user_id)
+    else:
+        is_admin = await _is_agent_admin(db, agent_id, user_id)
+    return {"slots": slots, "user_role": "admin" if is_admin else "member"}
+
+
+@router.put("/agents/{agent_id}/my-prompts")
+async def update_my_prompts(agent_id: str, req: UpdateMyPromptsRequest):
+    """Write the caller's per-user override rows for one or more unlocked slots.
+
+    Locked slots and unknown slot_names are rejected per slot (the rest still
+    write). Returns the resolved slot list for this caller.
+    """
+    db = get_db()
+    agent = await db.get_agent_by_id(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+    rejected: List[Dict[str, str]] = []
+    written: List[str] = []
+    for item in req.slots:
+        res = await db.upsert_override(
+            agent_id=agent_id,
+            slot_name=item.slot_name,
+            user_id=req.user_id,
+            content=item.content or "",
+            updated_by=f"user:{req.user_id}",
+        )
+        if res is None:
+            rejected.append({"slot_name": item.slot_name, "reason": "locked_or_unknown"})
+        else:
+            written.append(item.slot_name)
+    slots = await db.list_slots(agent_id, user_id=req.user_id)
+    return {"written": written, "rejected": rejected, "slots": slots}
+
+
+@router.delete("/agents/{agent_id}/my-prompts/{slot_name}")
+async def delete_my_prompt(agent_id: str, slot_name: str, user_id: str = Query(...)):
+    """Remove the caller's override row for a single slot."""
+    db = get_db()
+    deleted = await db.delete_override(agent_id, slot_name, user_id)
+    return {"deleted": bool(deleted)}
 
 
 @router.delete("/agents/{agent_id}")
@@ -298,21 +404,22 @@ async def test_agent(req: TestAgentRequest):
     if not target:
         raise HTTPException(status_code=404, detail="Agent not found.")
 
-    # Build a minimal system prompt from the agent's context columns
-    from app.db.local import _agent_prompt_to_docs
+    # Build a system prompt by resolving the caller's slots (admin base + overrides).
     from app.agent.prompts import build_system_prompt
 
     test_session_id = req.session_id or f"test-{str(_uuid_mod.uuid4())[:8]}"
 
-    # Assemble context docs from agent columns
-    context_docs = _agent_prompt_to_docs(target)
+    agent_id_for_resolve = target.get("id", req.agent_id)
+    resolved_slots = await db.resolve_prompts(agent_id_for_resolve, user_id=req.user_id)
+    context_docs = [
+        {"id": s["slot_name"], "content": s["content"]}
+        for s in resolved_slots if (s.get("content") or "").strip()
+    ]
 
     system_prompt = await build_system_prompt(
-        agent=target,
-        context_docs=context_docs,
+        context_docs,
+        brain_context=None,
         user_id=req.user_id,
-        session_id=test_session_id,
-        db=db,
     )
 
     # Run a single-turn agent loop (non-streaming)

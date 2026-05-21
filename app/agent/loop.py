@@ -1210,17 +1210,14 @@ async def stream_agent_events(
                                 tools = await _load_tools(user_id, agent_id=agent_id, agent_template_id=_tpl_id,
                                                           is_admin_agent=bool(_deleg_rec.get("is_admin_agent")))
 
-                                # Inject new agent's system prompt as a system message
+                                # Inject new agent's resolved prompts as a system message
                                 try:
-                                    _new_agents = await db.list_agents_for_user(user_id, include_admin=True)
-                                    _new_agent  = next((a for a in _new_agents if a.get("id") == _ag_id), None)
-                                    if _new_agent:
-                                        _new_sp = (_new_agent.get("system_prompt") or "").strip()
-                                        if _new_sp:
-                                            _switch_msg = "[AGENT SWITCH] You are now acting as " + _ag_name + ".\n\n" + _new_sp
-                                            messages.append({"role": "system", "content": _switch_msg})
-                                        if _ctx:
-                                            messages.append({"role": "system", "content": f"Delegation context: {_ctx}"})
+                                    _new_sp = (await db.assemble_prompt(_ag_id, user_id) or "").strip() if hasattr(db, "assemble_prompt") else ""
+                                    if _new_sp:
+                                        _switch_msg = "[AGENT SWITCH] You are now acting as " + _ag_name + ".\n\n" + _new_sp
+                                        messages.append({"role": "system", "content": _switch_msg})
+                                    if _ctx:
+                                        messages.append({"role": "system", "content": f"Delegation context: {_ctx}"})
                                 except Exception as _spe:
                                     logger.warning("Could not inject new agent system prompt: %s", _spe)
                         except (ValueError, KeyError, TypeError):

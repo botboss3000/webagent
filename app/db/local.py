@@ -109,19 +109,12 @@ CREATE INDEX IF NOT EXISTS idx_summaries_user ON session_summaries(user_id);
 
 CREATE TABLE IF NOT EXISTS agent_templates (
     id TEXT PRIMARY KEY DEFAULT 'default',
-    system_prompt TEXT NOT NULL DEFAULT '',
     max_turn_count INTEGER NOT NULL DEFAULT 10,
     model TEXT,
     provider TEXT,
     temperature REAL NOT NULL DEFAULT 0.0,
     max_tokens INTEGER NOT NULL DEFAULT 4096,
     metadata TEXT NOT NULL DEFAULT '{}',
-    agent_prompt TEXT NOT NULL DEFAULT '',
-    user_prompt TEXT NOT NULL DEFAULT '',
-    skills_prompt TEXT NOT NULL DEFAULT '',
-    tasks_prompt TEXT NOT NULL DEFAULT '',
-    misc_prompt TEXT NOT NULL DEFAULT '',
-    bootstrap_tools TEXT NOT NULL DEFAULT '',
     trigger_type TEXT NOT NULL DEFAULT 'user_input',
     trigger_key TEXT,
     loop_logic TEXT NOT NULL DEFAULT '[]',
@@ -137,7 +130,6 @@ CREATE TABLE IF NOT EXISTS agents (
     name TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
     is_user_default INTEGER NOT NULL DEFAULT 0,
-    system_prompt TEXT NOT NULL DEFAULT '',
     max_turn_count INTEGER NOT NULL DEFAULT 10,
     model TEXT,
     provider TEXT,
@@ -145,12 +137,6 @@ CREATE TABLE IF NOT EXISTS agents (
     max_tokens INTEGER NOT NULL DEFAULT 4096,
     status TEXT NOT NULL DEFAULT 'active',
     metadata TEXT NOT NULL DEFAULT '{}',
-    agent_prompt TEXT NOT NULL DEFAULT '',
-    user_prompt TEXT NOT NULL DEFAULT '',
-    skills_prompt TEXT NOT NULL DEFAULT '',
-    tasks_prompt TEXT NOT NULL DEFAULT '',
-    misc_prompt TEXT NOT NULL DEFAULT '',
-    bootstrap_tools TEXT NOT NULL DEFAULT '',
     trigger_type TEXT NOT NULL DEFAULT 'user_input',
     trigger_key TEXT,
     loop_logic TEXT NOT NULL DEFAULT '[]',
@@ -162,6 +148,31 @@ CREATE TABLE IF NOT EXISTS agents (
     member_users TEXT NOT NULL DEFAULT '[]',
     user_mode TEXT NOT NULL DEFAULT 'anonymous'
 );
+
+-- ============================================================
+-- Agent Prompts: per-slot content with optional per-user overrides.
+-- One row per (agent_id, slot_name, user_id). user_id IS NULL = admin base;
+-- non-null user_id = override owned by that user (incl. anon visitors).
+-- Slot policy (order_index, lock, merge_mode) lives only on admin base rows.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS agent_prompts (
+    id              TEXT PRIMARY KEY,
+    agent_id        TEXT NOT NULL,
+    slot_name       TEXT NOT NULL,
+    user_id         TEXT,
+    order_index     INTEGER,
+    lock            INTEGER,
+    merge_mode      TEXT,
+    content         TEXT NOT NULL DEFAULT '',
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_by      TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_prompts_slot_user
+    ON agent_prompts(agent_id, slot_name, IFNULL(user_id, ''));
+CREATE INDEX IF NOT EXISTS idx_agent_prompts_agent ON agent_prompts(agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_prompts_user  ON agent_prompts(user_id);
 
 -- ============================================================
 -- Agent Connections: per-agent channel/integration config
@@ -181,33 +192,6 @@ CREATE TABLE IF NOT EXISTS agent_connections (
 
 CREATE INDEX IF NOT EXISTS idx_agent_conn_agent ON agent_connections(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_conn_type ON agent_connections(connection_type);
-
-CREATE TABLE IF NOT EXISTS context_documents (
-    id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL REFERENCES agents(id),
-    template_id TEXT,
-    context_type TEXT NOT NULL,
-    title TEXT NOT NULL,
-    content TEXT NOT NULL,
-    tags TEXT NOT NULL DEFAULT '[]',
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_context_agent ON context_documents(agent_id);
-CREATE INDEX IF NOT EXISTS idx_context_type ON context_documents(context_type);
-
-CREATE TABLE IF NOT EXISTS context_templates (
-    id TEXT PRIMARY KEY,
-    context_type TEXT NOT NULL,
-    title TEXT NOT NULL,
-    content TEXT NOT NULL,
-    tags TEXT NOT NULL DEFAULT '[]',
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_context_templates_type ON context_templates(context_type, title);
 
 -- ============================================================
 -- Memory System: core knowledge brain
@@ -561,36 +545,39 @@ CREATE TABLE IF NOT EXISTS user_profiles (
 """
 
 
-# ── Context column helpers ────────────────────────────────────────────────────
+# ── Slot helpers ──────────────────────────────────────────────────────────────
+# Prompts are stored as rows in `agent_prompts`, one per (agent, slot_name, user_id).
+# user_id IS NULL = admin base (canonical); non-null = override owned by that user.
 
-# Maps context column name → (context_type, display title)
-_PROMPT_COLS = [
-    ("agent_prompt",  "agent",  "Agent Identity"),
-    ("user_prompt",   "user",   "User"),
-    ("skills_prompt", "skills", "Core Skills"),
-    ("tasks_prompt",  "tasks",  "Common Tasks"),
-    ("misc_prompt",   "misc",   "Misc"),
-]
-
-# Forward and reverse maps for update routing
-_COL_TO_TYPE = {col: ct for col, ct, _ in _PROMPT_COLS}
-_TYPE_TO_COL = {ct: col for col, ct, _ in _PROMPT_COLS}
+VALID_MERGE_MODES = ("replace", "append")
 
 
-def _agent_prompt_to_docs(agent_dict: dict) -> List[dict]:
-    """Convert agent context columns to a context_documents list for prompt assembly."""
-    docs = []
-    for col, ct, title in _PROMPT_COLS:
-        content = agent_dict.get(col, "") or ""
-        if content.strip():
-            docs.append({
-                "id": col,          # stable synthetic id — the column name itself
-                "context_type": ct,
-                "title": title,
-                "content": content,
-                "tags": [],
-            })
-    return docs
+def _legacy_default_slots() -> List[dict]:
+    """Built-in slot defaults used when a template/agent has none defined yet."""
+    return [
+        {"slot_name": "system",      "order_index": 10, "lock": True,  "merge_mode": "replace"},
+        {"slot_name": "agent",       "order_index": 20, "lock": False, "merge_mode": "replace"},
+        {"slot_name": "user",        "order_index": 30, "lock": False, "merge_mode": "replace"},
+        {"slot_name": "skills",      "order_index": 40, "lock": False, "merge_mode": "replace"},
+        {"slot_name": "tasks",       "order_index": 50, "lock": False, "merge_mode": "replace"},
+        {"slot_name": "misc",        "order_index": 60, "lock": False, "merge_mode": "replace"},
+        {"slot_name": "bootstrap_tools", "order_index": 90, "lock": True, "merge_mode": "replace"},
+    ]
+
+
+def _slot_apply(base: str, override: Optional[str], lock: bool, merge_mode: str) -> str:
+    """Resolve a single slot's effective content given admin base + optional user override."""
+    base = base or ""
+    if lock or override is None:
+        return base
+    if merge_mode == "append":
+        if not base.strip():
+            return override or ""
+        if not (override or "").strip():
+            return base
+        return base.rstrip() + "\n\n" + override.lstrip()
+    # default / "replace"
+    return override
 
 
 class LocalBackend(StorageBackend):
@@ -626,9 +613,6 @@ class LocalBackend(StorageBackend):
                 conn.execute("DROP TABLE IF EXISTS agents_v1")
                 conn.execute("ALTER TABLE agents RENAME TO agents_v1")
                 conn.commit()
-
-            # Upgrade legacy context_documents (user_id) before SCHEMA_SQL adds indexes on agent_id
-            self._migrate_context_documents_to_agent_id(conn)
 
             conn.executescript(SCHEMA_SQL)
             conn.commit()
@@ -673,15 +657,6 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Added sessions.metadata column")
 
-            # ── Migration: fix context_templates unique index (allow multiple per type) ──
-            cursor = conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_context_templates_type'")
-            row = cursor.fetchone()
-            if row and '(context_type, title)' not in row[0]:
-                conn.execute("DROP INDEX IF EXISTS idx_context_templates_type")
-                conn.execute("CREATE UNIQUE INDEX idx_context_templates_type ON context_templates(context_type, title)")
-                conn.commit()
-                logger.info("Migrated context_templates unique index to (context_type, title)")
-
             conn.commit()
 
             # ── Post-migration: move data from old agents_v1 ──
@@ -702,19 +677,13 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Agents table migration complete")
 
-            # ── Migration: context_defaults -> context_templates ──
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='context_defaults'"
-            )
-            if cursor.fetchone():
-                logger.info("Migrating context_defaults -> context_templates")
-                conn.executescript("""
-                    INSERT OR IGNORE INTO context_templates (id, context_type, title, content, tags, created_at, updated_at)
-                    SELECT id, context_type, title, content, tags, created_at, updated_at FROM context_defaults;
-                    DROP TABLE context_defaults;
-                """)
+            # Drop stale legacy context_defaults table if it still exists.
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='context_defaults'"
+            ).fetchone():
+                conn.execute("DROP TABLE context_defaults")
                 conn.commit()
-                logger.info("Context templates migration complete")
+                logger.info("Dropped legacy context_defaults table")
 
             # ── Migration: add turn_count column to agents ──
             cursor = conn.execute("PRAGMA table_info(agents)")
@@ -739,14 +708,6 @@ class LocalBackend(StorageBackend):
                 conn.execute("ALTER TABLE sessions ADD COLUMN participants TEXT DEFAULT '[]'")
                 conn.commit()
                 logger.info("Added sessions.participants column")
-
-            # ── Migration: add template_id column to context_documents ──
-            cursor = conn.execute("PRAGMA table_info(context_documents)")
-            cd_cols = {row[1] for row in cursor.fetchall()}
-            if "template_id" not in cd_cols:
-                conn.execute("ALTER TABLE context_documents ADD COLUMN template_id TEXT")
-                conn.commit()
-                logger.info("Added context_documents.template_id column")
 
             # ── Migration: add template_id column to agents ──
             cursor = conn.execute("PRAGMA table_info(agents)")
@@ -1168,6 +1129,64 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Migration 019: agents table repaired with proper PRIMARY KEY")
 
+            # ── Migration 021: drop legacy prompt columns from agents + agent_templates ──
+            # All prompts now live in agent_prompts (one row per slot, with optional
+            # per-user override rows). The old per-table prompt columns are removed.
+            _legacy_prompt_cols = (
+                "system_prompt", "agent_prompt", "user_prompt",
+                "skills_prompt", "tasks_prompt", "misc_prompt", "bootstrap_tools",
+            )
+
+            def _drop_legacy_prompt_cols(table: str) -> None:
+                tbl_cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+                to_drop = [c for c in _legacy_prompt_cols if c in tbl_cols]
+                if not to_drop:
+                    return
+                for col in to_drop:
+                    try:
+                        conn.execute(f"ALTER TABLE {table} DROP COLUMN {col}")
+                    except Exception as drop_err:
+                        logger.warning("Could not drop %s.%s: %s", table, col, drop_err)
+                conn.commit()
+                logger.info("Migration 021: dropped legacy prompt columns from %s: %s", table, to_drop)
+
+            _drop_legacy_prompt_cols("agents")
+            _drop_legacy_prompt_cols("agent_templates")
+
+            # Ensure agent_prompts table exists (SCHEMA_SQL already covers this, but
+            # be defensive in case this migration runs on a DB that pre-dates the schema change).
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS agent_prompts (
+                    id              TEXT PRIMARY KEY,
+                    agent_id        TEXT NOT NULL,
+                    slot_name       TEXT NOT NULL,
+                    user_id         TEXT,
+                    order_index     INTEGER,
+                    lock            INTEGER,
+                    merge_mode      TEXT,
+                    content         TEXT NOT NULL DEFAULT '',
+                    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_by      TEXT
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_prompts_slot_user
+                    ON agent_prompts(agent_id, slot_name, IFNULL(user_id, ''));
+                CREATE INDEX IF NOT EXISTS idx_agent_prompts_agent ON agent_prompts(agent_id);
+                CREATE INDEX IF NOT EXISTS idx_agent_prompts_user  ON agent_prompts(user_id);
+                """
+            )
+            conn.commit()
+
+            # ── Migration 022: drop context_documents + context_templates tables ──
+            # Prompts now live in agent_prompts (per-slot rows). Optimizer prompt
+            # loader reads from app/context/optimizer_prompts/ markdown files.
+            for _tbl in ("context_documents", "context_templates"):
+                try:
+                    conn.execute(f"DROP TABLE IF EXISTS {_tbl}")
+                except Exception as _drop_err:
+                    logger.warning("Migration 022: could not drop %s: %s", _tbl, _drop_err)
+            conn.commit()
+
             # ── Migration 020: fix agent_connections FK if it references stale agents_v1 ──
             # SQLite auto-updates FK refs when a table is renamed with foreign_keys=ON.
             # If agents was renamed → agents_v1 during pre-migration, agent_connections
@@ -1211,9 +1230,6 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Migration 020: dropped stale agents_v1 table")
 
-            # ── Seed: p5js visualizer skill template ──
-            self._seed_visualizer_template(conn)
-
             # ── Seed: agent templates from app/context/agents/*.json (full schema) ──
             self._seed_agent_templates_from_json_files(conn)
 
@@ -1222,93 +1238,6 @@ class LocalBackend(StorageBackend):
             raise
         finally:
             conn.close()
-
-    def _seed_visualizer_template(self, conn: sqlite3.Connection) -> None:
-        """Seed p5js visualizer skill as a context_templates row (one-time)."""
-        import os
-        skill_path = os.path.join(os.path.dirname(__file__), "..", "visualizer", "SKILL.md")
-        try:
-            with open(skill_path, "r", encoding="utf-8") as f:
-                content = f.read()
-        except (FileNotFoundError, OSError):
-            logger.warning("Visualizer SKILL.md not found at %s — skipping seed", skill_path)
-            return
-
-        conn.execute(
-            """INSERT OR IGNORE INTO context_templates (id, context_type, title, content, tags)
-               VALUES (?, ?, ?, ?, ?)""",
-            (_uuid(), "p5js", "p5.js Creative Coding", content, '["p5js","creative-coding","visualizer"]'),
-        )
-        conn.commit()
-        logger.info("Seeded p5js visualizer skill template")
-
-    def _migrate_context_documents_to_agent_id(self, conn: sqlite3.Connection) -> None:
-        """Migrate legacy context_documents.user_id → agent_id (one-time)."""
-        cur = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='context_documents'"
-        )
-        if not cur.fetchone():
-            return
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(context_documents)").fetchall()}
-        if "user_id" not in cols:
-            return
-        if not conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agents'"
-        ).fetchone():
-            logger.warning(
-                "Skipping context_documents migration: agents table not present yet",
-            )
-            return
-        logger.info("Migrating context_documents from user_id to agent_id")
-        try:
-            conn.execute("ALTER TABLE context_documents ADD COLUMN agent_id TEXT")
-        except sqlite3.OperationalError:
-            pass
-        conn.execute(
-            """
-            UPDATE context_documents SET agent_id = (
-                SELECT agents.id FROM agents WHERE agents.user_id = context_documents.user_id LIMIT 1
-            )
-            """
-        )
-        deleted = conn.execute(
-            "DELETE FROM context_documents WHERE agent_id IS NULL"
-        ).rowcount
-        if deleted:
-            logger.warning(
-                "Removed %s context_documents rows with no matching agent", deleted
-            )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS context_documents_new (
-                id TEXT PRIMARY KEY,
-                agent_id TEXT NOT NULL REFERENCES agents(id),
-                template_id TEXT,
-                context_type TEXT NOT NULL,
-                title TEXT NOT NULL,
-                content TEXT NOT NULL,
-                tags TEXT NOT NULL DEFAULT '[]',
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO context_documents_new (id, agent_id, template_id, context_type, title, content, tags, created_at, updated_at)
-            SELECT id, agent_id, NULL, context_type, title, content, tags, created_at, updated_at FROM context_documents
-            """
-        )
-        conn.execute("DROP TABLE context_documents")
-        conn.execute("ALTER TABLE context_documents_new RENAME TO context_documents")
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_context_agent ON context_documents(agent_id)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_context_type ON context_documents(context_type)"
-        )
-        conn.commit()
-        logger.info("context_documents migration to agent_id complete")
 
     # ---- Raw client access ----
 
@@ -1427,40 +1356,10 @@ class LocalBackend(StorageBackend):
             finally:
                 conn.close()
 
-    # ---- Context Defaults ----
-
-    async def fetch_context_defaults(
-        self, context_types: List[str]
-    ) -> List[dict]:
-        conn = self._get_conn()
-        try:
-            placeholders = ",".join("?" for _ in context_types)
-            rows = conn.execute(
-                f"""SELECT id, context_type, title, content, tags, created_at, updated_at
-                    FROM context_templates
-                    WHERE context_type IN ({placeholders})""",
-                context_types,
-            ).fetchall()
-            result = []
-            for r in rows:
-                d = dict(r)
-                try:
-                    d["tags"] = json.loads(d["tags"])
-                except (json.JSONDecodeError, TypeError):
-                    d["tags"] = []
-                result.append(d)
-            logger.debug("Fetched %s context default rows", len(result))
-            return result
-        except Exception as e:
-            logger.error("Error fetching context defaults: %s", e)
-            raise
-        finally:
-            conn.close()
-
     async def copy_defaults_to_agent(self, agent_id: str, template_id: Optional[str] = None) -> int:
         """
-        Copy context columns from agent_templates into this agent's context columns.
-        Only copies if the agent's columns are currently empty.
+        Copy admin-base prompt slots from the 'default' template into this agent.
+        Only copies if the agent has no admin-base slot rows yet.
 
         Isolation gate: non-default templates do NOT inherit webAgent context.
         """
@@ -1473,36 +1372,39 @@ class LocalBackend(StorageBackend):
             return 0
         conn = self._get_conn()
         try:
-            agent = conn.execute(
-                "SELECT agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt FROM agents WHERE id = ?",
+            existing = conn.execute(
+                "SELECT 1 FROM agent_prompts WHERE agent_id = ? AND user_id IS NULL LIMIT 1",
                 (agent_id,),
             ).fetchone()
-            if not agent:
+            if existing:
+                logger.debug("Agent %s already has slot rows — skipping copy", agent_id[:8])
                 return 0
 
-            # Skip if any context column is already populated
-            if any(agent[col] for col in ("agent_prompt", "user_prompt", "skills_prompt", "tasks_prompt", "misc_prompt")):
-                logger.debug("Agent %s already has context columns — skipping copy", agent_id[:8])
+            tpl_rows = conn.execute(
+                """SELECT slot_name, order_index, lock, merge_mode, content
+                   FROM agent_prompts
+                   WHERE agent_id = 'default' AND user_id IS NULL""",
+            ).fetchall()
+            if not tpl_rows:
+                logger.warning("No default template slots found for context copy")
                 return 0
 
-            tpl = conn.execute(
-                "SELECT agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt, bootstrap_tools FROM agent_templates WHERE id = 'default'"
-            ).fetchone()
-            if not tpl:
-                logger.warning("No default agent template found for context copy")
-                return 0
-
-            conn.execute(
-                """UPDATE agents SET
-                    agent_prompt = ?, user_prompt = ?, skills_prompt = ?,
-                    tasks_prompt = ?, misc_prompt = ?, bootstrap_tools = ?, updated_at = ?
-                   WHERE id = ?""",
-                (tpl["agent_prompt"], tpl["user_prompt"], tpl["skills_prompt"],
-                 tpl["tasks_prompt"], tpl["misc_prompt"], tpl["bootstrap_tools"], _now_iso(), agent_id),
-            )
+            now = _now_iso()
+            for row in tpl_rows:
+                conn.execute(
+                    """INSERT INTO agent_prompts
+                       (id, agent_id, slot_name, user_id, order_index, lock, merge_mode, content, updated_at, updated_by)
+                       VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, 'system')""",
+                    (_uuid(), agent_id, row["slot_name"], row["order_index"],
+                     row["lock"], row["merge_mode"], row["content"], now),
+                )
+            conn.execute("UPDATE agents SET updated_at = ? WHERE id = ?", (now, agent_id))
             conn.commit()
-            logger.info("Copied context columns from default template to agent %s", agent_id[:8])
-            return 1
+            logger.info(
+                "Copied %d slots from default template to agent %s",
+                len(tpl_rows), agent_id[:8],
+            )
+            return len(tpl_rows)
         except Exception as e:
             logger.error("Error copying defaults to agent: %s", e)
             raise
@@ -1512,10 +1414,13 @@ class LocalBackend(StorageBackend):
     def _seed_agent_templates_from_json_files(self, conn: sqlite3.Connection) -> None:
         """
         Scan app/context/agents/*.json and upsert each into
-        agent_templates table with full schema (id, system_prompt,
-        max_turn_count, model, provider, temperature, max_tokens,
-        metadata). Uses INSERT ... ON CONFLICT DO UPDATE so JSON
-        files ALWAYS win — changes take effect on restart.
+        agent_templates table (config fields only) plus admin-base slot rows
+        in agent_prompts keyed by agent_id = template_id.
+
+        JSON files may declare slots explicitly via a `slots` array; if absent,
+        legacy keys (agent_prompt/user_prompt/skills_prompt/tasks_prompt/
+        misc_prompt/system_prompt/bootstrap_tools) are converted into slots
+        using a sensible default order.
         """
         from app.context.md_seeder import scan_agent_json_files
         templates = scan_agent_json_files()
@@ -1525,30 +1430,22 @@ class LocalBackend(StorageBackend):
         for tpl in templates:
             conn.execute(
                 """INSERT INTO agent_templates
-                   (id, name, description, icon, system_prompt, max_turn_count, model, provider,
+                   (id, name, description, icon, max_turn_count, model, provider,
                     temperature, max_tokens, metadata,
-                    agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
-                    bootstrap_tools, can_be_default, is_system, is_pipeline, access_level,
+                    can_be_default, is_system, is_pipeline, access_level,
                     is_admin_agent, discoverable, trigger_type, trigger_key, loop_logic,
                     created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name,
                     description = excluded.description,
                     icon = excluded.icon,
-                    system_prompt = excluded.system_prompt,
                     max_turn_count = excluded.max_turn_count,
                     model = excluded.model,
                     provider = excluded.provider,
                     temperature = excluded.temperature,
                     max_tokens = excluded.max_tokens,
                     metadata = excluded.metadata,
-                    agent_prompt = excluded.agent_prompt,
-                    user_prompt = excluded.user_prompt,
-                    skills_prompt = excluded.skills_prompt,
-                    tasks_prompt = excluded.tasks_prompt,
-                    misc_prompt = excluded.misc_prompt,
-                    bootstrap_tools = excluded.bootstrap_tools,
                     can_be_default = excluded.can_be_default,
                     is_system = excluded.is_system,
                     is_pipeline = excluded.is_pipeline,
@@ -1559,12 +1456,9 @@ class LocalBackend(StorageBackend):
                     loop_logic = excluded.loop_logic,
                     updated_at = excluded.updated_at""",
                 (tpl["id"], tpl.get("name", tpl["id"]), tpl.get("description", ""),
-                 tpl.get("icon", ""), tpl["system_prompt"], tpl["max_turn_count"],
+                 tpl.get("icon", ""), tpl["max_turn_count"],
                  tpl["model"], tpl["provider"], tpl["temperature"],
                  tpl["max_tokens"], tpl["metadata"],
-                 tpl.get("agent_prompt", ""), tpl.get("user_prompt", ""),
-                 tpl.get("skills_prompt", ""), tpl.get("tasks_prompt", ""),
-                 tpl.get("misc_prompt", ""), tpl.get("bootstrap_tools", ""),
                  tpl.get("can_be_default", 1), tpl.get("is_system", 0),
                  tpl.get("is_pipeline", 0), tpl.get("access_level", "all"),
                  1 if tpl.get("is_admin_agent") else 0,
@@ -1573,263 +1467,404 @@ class LocalBackend(StorageBackend):
                  tpl.get("loop_logic", "[]"),
                  now, now),
             )
+
+            # Seed slot rows under agent_id = template_id (user_id IS NULL = admin base).
+            slots = self._slots_from_template_data(tpl)
+            # Wipe existing template base slots before re-seeding so the JSON wins.
+            conn.execute(
+                "DELETE FROM agent_prompts WHERE agent_id = ? AND user_id IS NULL",
+                (tpl["id"],),
+            )
+            for s in slots:
+                conn.execute(
+                    """INSERT INTO agent_prompts
+                       (id, agent_id, slot_name, user_id, order_index, lock, merge_mode, content, updated_at, updated_by)
+                       VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, 'system')""",
+                    (_uuid(), tpl["id"], s["slot_name"], s["order_index"],
+                     1 if s.get("lock") else 0,
+                     s.get("merge_mode", "replace"),
+                     s.get("content", ""), now),
+                )
         conn.commit()
         logger.info(
-            "Upserted %d agent template(s) from app/context/agents/*.json",
+            "Upserted %d agent template(s) (with slot rows) from app/context/agents/*.json",
             len(templates),
         )
 
-    def _seed_context_templates_from_md_files(self, conn: sqlite3.Connection) -> None:
-        """
-        Scan app/context/context_templates/*.md and seed them into
-        context_templates table. Uses INSERT OR IGNORE so duplicates
-        are skipped silently.
-        """
-        from app.context.md_seeder import scan_context_files
-        rows = scan_context_files()
-        if not rows:
-            return
-        for row in rows:
-            conn.execute(
-                """INSERT OR IGNORE INTO context_templates (id, context_type, title, content, tags)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (_uuid(), row["context_type"], row["title"], row["content"],
-                 json.dumps(row["tags"], ensure_ascii=False)),
-            )
-        conn.commit()
-        logger.info("Seeded %d context templates from .md files", len(rows))
+    @staticmethod
+    def _slots_from_template_data(tpl: dict) -> List[dict]:
+        """Build a list of slot dicts from a template JSON.
 
-    # ---- Context Documents ----
+        Prefers an explicit `slots` array. Falls back to converting the legacy
+        keys (system_prompt, agent_prompt, user_prompt, skills_prompt,
+        tasks_prompt, misc_prompt, bootstrap_tools) into slots.
+        """
+        raw_slots = tpl.get("slots")
+        if isinstance(raw_slots, list) and raw_slots:
+            out: List[dict] = []
+            for i, s in enumerate(raw_slots):
+                if not isinstance(s, dict):
+                    continue
+                name = (s.get("slot_name") or "").strip()
+                if not name:
+                    continue
+                out.append({
+                    "slot_name": name,
+                    "order_index": int(s.get("order_index", (i + 1) * 10)),
+                    "lock": bool(s.get("lock", False)),
+                    "merge_mode": s.get("merge_mode") if s.get("merge_mode") in VALID_MERGE_MODES else "replace",
+                    "content": s.get("content", "") or "",
+                })
+            return out
 
-    async def fetch_context_documents(
+        # Legacy: derive slots from flat keys.
+        legacy_map = [
+            ("system",          "system_prompt",    10, True),
+            ("agent",           "agent_prompt",     20, False),
+            ("user",            "user_prompt",      30, False),
+            ("skills",          "skills_prompt",    40, False),
+            ("tasks",           "tasks_prompt",     50, False),
+            ("misc",            "misc_prompt",      60, False),
+            ("bootstrap_tools", "bootstrap_tools",  90, True),
+        ]
+        out = []
+        for slot_name, src_key, order, lock in legacy_map:
+            content = tpl.get(src_key, "") or ""
+            out.append({
+                "slot_name": slot_name,
+                "order_index": order,
+                "lock": lock,
+                "merge_mode": "replace",
+                "content": content,
+            })
+        return out
+
+    def _clone_template_slots(
         self,
-        agent_id: str,
-        context_types: Optional[List[str]] = None,
-    ) -> List[dict]:
-        """Return context as a synthesized list from the agent's context columns."""
+        conn: sqlite3.Connection,
+        source_id: str,
+        target_id: str,
+        now: Optional[str] = None,
+    ) -> int:
+        """Copy admin-base slot rows from a template (or another agent) to a new agent.
+
+        Falls back to the 'default' template if no slots exist for source_id.
+        """
+        now = now or _now_iso()
+        rows = conn.execute(
+            """SELECT slot_name, order_index, lock, merge_mode, content
+               FROM agent_prompts WHERE agent_id = ? AND user_id IS NULL
+               ORDER BY order_index""",
+            (source_id,),
+        ).fetchall()
+        if not rows and source_id != "default":
+            rows = conn.execute(
+                """SELECT slot_name, order_index, lock, merge_mode, content
+                   FROM agent_prompts WHERE agent_id = 'default' AND user_id IS NULL
+                   ORDER BY order_index""",
+            ).fetchall()
+        for r in rows:
+            conn.execute(
+                """INSERT INTO agent_prompts
+                   (id, agent_id, slot_name, user_id, order_index, lock, merge_mode, content, updated_at, updated_by)
+                   VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, 'system')""",
+                (_uuid(), target_id, r["slot_name"], r["order_index"],
+                 r["lock"], r["merge_mode"], r["content"], now),
+            )
+        return len(rows)
+
+    # ---- Prompt slots: read / write / resolve ------------------------------
+
+    async def list_slots(self, agent_id: str, user_id: Optional[str] = None) -> List[dict]:
+        """Return admin-base slot rows for an agent, ordered by order_index.
+
+        If user_id is provided, each row gains an `override_content` field
+        (or None) showing the caller's user override, if any.
+        """
         conn = self._get_conn()
         try:
-            row = conn.execute(
-                "SELECT agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt FROM agents WHERE id = ?",
+            rows = conn.execute(
+                """SELECT id, slot_name, order_index, lock, merge_mode, content,
+                          updated_at, updated_by
+                   FROM agent_prompts
+                   WHERE agent_id = ? AND user_id IS NULL
+                   ORDER BY order_index ASC""",
                 (agent_id,),
-            ).fetchone()
-            if not row:
-                return []
-            agent_dict = dict(row)
-            agent_dict["id"] = agent_id
-            docs = _agent_prompt_to_docs(agent_dict)
-            if context_types:
-                docs = [d for d in docs if d["context_type"] in context_types]
-            logger.debug("Synthesized %s context docs for agent %s", len(docs), agent_id)
-            return docs
-        except Exception as e:
-            logger.error("Error fetching context documents: %s", e)
-            raise
-        finally:
-            conn.close()
-
-    async def get_context_document(
-        self, agent_id: str, context_id: str
-    ) -> Optional[dict]:
-        """Return a synthesized context doc by id (the id is the column name, e.g. 'agent_prompt')."""
-        docs = await self.fetch_context_documents(agent_id)
-        for doc in docs:
-            if doc["id"] == context_id:
-                return doc
-        return None
-
-    async def update_context_document_content(
-        self, agent_id: str, context_id: str, content: str
-    ) -> None:
-        """Update a context column by its id (column name) or context_type."""
-        # context_id can be the column name (agent_prompt) or context_type (agent)
-        col = _TYPE_TO_COL.get(context_id) or (context_id if context_id in _COL_TO_TYPE else None)
-        if not col:
-            raise PermissionError(f"Unknown context id '{context_id}' — must be a column name or context_type")
-        conn = self._get_conn()
-        try:
-            conn.execute(
-                f"UPDATE agents SET {col} = ?, updated_at = ? WHERE id = ?",
-                (content, _now_iso(), agent_id),
-            )
-            conn.commit()
-            logger.debug("Updated %s for agent %s", col, agent_id)
-        except Exception as e:
-            logger.error("Error updating context column: %s", e)
-            raise
-        finally:
-            conn.close()
-
-    async def insert_document(
-        self,
-        agent_id: str,
-        context_type: str,
-        title: str,
-        content: str,
-        tags: Optional[List[str]] = None,
-    ) -> str:
-        conn = self._get_conn()
-        try:
-            doc_id = _uuid()
-            conn.execute(
-                """INSERT INTO context_documents (id, agent_id, context_type, title, content, tags)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (doc_id, agent_id, context_type, title, content, json.dumps(tags or [])),
-            )
-            conn.commit()
-            logger.debug(
-                "Inserted context %s type=%s for agent %s",
-                doc_id, context_type, agent_id,
-            )
-            return doc_id
-        except Exception as e:
-            logger.error("Error inserting document: %s", e)
-            raise
-        finally:
-            conn.close()
-
-    async def delete_context_row(self, agent_id: str, context_id: str) -> None:
-        conn = self._get_conn()
-        try:
-            cursor = conn.execute(
-                "DELETE FROM context_documents WHERE id = ? AND agent_id = ?",
-                (context_id, agent_id),
-            )
-            conn.commit()
-            if cursor.rowcount == 0:
-                raise PermissionError(
-                    "Context document not found or not owned by this agent",
-                )
-            logger.debug("Deleted context row %s for agent %s", context_id, agent_id)
-        except PermissionError:
-            raise
-        except Exception as e:
-            logger.error("Error deleting context row: %s", e)
-            raise
-        finally:
-            conn.close()
-
-    async def delete_all_documents_for_agent(self, agent_id: str) -> int:
-        conn = self._get_conn()
-        try:
-            cursor = conn.execute(
-                "DELETE FROM context_documents WHERE agent_id = ?", (agent_id,)
-            )
-            conn.commit()
-            deleted = cursor.rowcount
-            logger.debug(
-                "Deleted %s context rows for agent %s", deleted, agent_id
-            )
-            return deleted
-        except Exception as e:
-            logger.error("Error deleting context: %s", e)
-            raise
-        finally:
-            conn.close()
-
-    async def fetch_context_documents_for_agent(
-        self,
-        agent_id: str,
-        context_types: Optional[List[str]] = None,
-    ) -> List[dict]:
-        conn = self._get_conn()
-        try:
-            if context_types:
-                placeholders = ",".join("?" * len(context_types))
-                sql = (
-                    f"""SELECT id, agent_id, context_type, title, content, tags,
-                               created_at, updated_at
-                        FROM context_documents
-                        WHERE agent_id = ? AND context_type IN ({placeholders})
-                        ORDER BY context_type, title"""
-                )
-                rows = conn.execute(sql, (agent_id, *context_types)).fetchall()
-            else:
-                rows = conn.execute(
-                    """SELECT id, agent_id, context_type, title, content, tags,
-                              created_at, updated_at
-                       FROM context_documents
-                       WHERE agent_id = ?
-                       ORDER BY context_type, title""",
-                    (agent_id,),
-                ).fetchall()
+            ).fetchall()
             result: List[dict] = []
-            keys = [
-                "id", "agent_id", "context_type", "title", "content", "tags",
-                "created_at", "updated_at",
-            ]
-            for row in rows:
-                d = dict(zip(keys, row))
-                try:
-                    d["tags"] = json.loads(d["tags"])
-                except (json.JSONDecodeError, TypeError):
-                    d["tags"] = []
+            override_map: Dict[str, str] = {}
+            if user_id:
+                ov_rows = conn.execute(
+                    """SELECT slot_name, content FROM agent_prompts
+                       WHERE agent_id = ? AND user_id = ?""",
+                    (agent_id, user_id),
+                ).fetchall()
+                override_map = {r["slot_name"]: r["content"] for r in ov_rows}
+            for r in rows:
+                d = dict(r)
+                d["lock"] = bool(d.get("lock"))
+                if user_id:
+                    d["override_content"] = override_map.get(d["slot_name"])
                 result.append(d)
             return result
         finally:
             conn.close()
 
-    async def get_context_document_for_agent(
-        self, agent_id: str, context_id: str
-    ) -> Optional[dict]:
-        conn = self._get_conn()
-        try:
-            row = conn.execute(
-                """SELECT id, agent_id, context_type, title, content, tags,
-                          created_at, updated_at
-                   FROM context_documents WHERE id = ? AND agent_id = ?""",
-                (context_id, agent_id),
-            ).fetchone()
-            if not row:
-                return None
-            keys = [
-                "id", "agent_id", "context_type", "title", "content", "tags",
-                "created_at", "updated_at",
-            ]
-            d = dict(zip(keys, row))
-            try:
-                d["tags"] = json.loads(d["tags"])
-            except (json.JSONDecodeError, TypeError):
-                d["tags"] = []
-            return d
-        finally:
-            conn.close()
+    async def resolve_prompts(self, agent_id: str, user_id: Optional[str] = None) -> List[dict]:
+        """Return resolved per-slot content for an agent + caller.
 
-    async def update_context_document_content_for_agent(
-        self, agent_id: str, context_id: str, content: str
-    ) -> None:
-        conn = self._get_conn()
-        try:
-            cursor = conn.execute(
-                """UPDATE context_documents SET content = ?, updated_at = ?
-                   WHERE id = ? AND agent_id = ?""",
-                (content, _now_iso(), context_id, agent_id),
-            )
-            conn.commit()
-            if cursor.rowcount == 0:
-                raise PermissionError(
-                    "Context document not found or not owned by this agent",
-                )
-            logger.debug("Updated context row %s (agent-scoped)", context_id)
-        except PermissionError:
-            raise
-        except Exception as e:
-            logger.error("Error updating context row (agent-scoped): %s", e)
-            raise
-        finally:
-            conn.close()
+        Each entry: {slot_name, order_index, lock, merge_mode, content, used_override}.
+        Locked slots ignore overrides. Unlocked slots apply replace/append based
+        on the slot's merge_mode.
+        """
+        slots = await self.list_slots(agent_id, user_id=user_id)
+        out: List[dict] = []
+        for s in slots:
+            base = s.get("content", "") or ""
+            override = s.get("override_content") if user_id else None
+            lock = bool(s.get("lock"))
+            mode = s.get("merge_mode") if s.get("merge_mode") in VALID_MERGE_MODES else "replace"
+            resolved = _slot_apply(base, override, lock, mode)
+            out.append({
+                "slot_name": s["slot_name"],
+                "order_index": s["order_index"],
+                "lock": lock,
+                "merge_mode": mode,
+                "content": resolved,
+                "used_override": (not lock and override is not None),
+            })
+        return out
 
-    async def insert_context_document_for_agent(
+    async def assemble_prompt(self, agent_id: str, user_id: Optional[str] = None) -> str:
+        """Return all resolved slot content concatenated in order. Empty slots are skipped."""
+        slots = await self.resolve_prompts(agent_id, user_id=user_id)
+        parts: List[str] = []
+        for s in slots:
+            txt = (s.get("content") or "").strip()
+            if txt:
+                parts.append(txt)
+        return "\n\n".join(parts)
+
+    async def upsert_slot(
         self,
         agent_id: str,
-        context_type: str,
-        title: str,
+        slot_name: str,
+        order_index: int,
+        lock: bool,
+        merge_mode: str,
         content: str,
-        tags: Optional[List[str]] = None,
-    ) -> str:
-        return await self.insert_document(
-            agent_id, context_type, title, content, tags=tags,
-        )
+        updated_by: str = "admin",
+    ) -> dict:
+        """Insert or update an admin-base slot row (user_id IS NULL)."""
+        if merge_mode not in VALID_MERGE_MODES:
+            merge_mode = "replace"
+        slot_name = (slot_name or "").strip()
+        if not slot_name:
+            raise ValueError("slot_name required")
+        now = _now_iso()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                existing = conn.execute(
+                    """SELECT id FROM agent_prompts
+                       WHERE agent_id = ? AND slot_name = ? AND user_id IS NULL""",
+                    (agent_id, slot_name),
+                ).fetchone()
+                if existing:
+                    conn.execute(
+                        """UPDATE agent_prompts SET
+                              order_index = ?, lock = ?, merge_mode = ?,
+                              content = ?, updated_at = ?, updated_by = ?
+                           WHERE id = ?""",
+                        (int(order_index), 1 if lock else 0, merge_mode,
+                         content or "", now, updated_by, existing["id"]),
+                    )
+                    row_id = existing["id"]
+                else:
+                    row_id = _uuid()
+                    conn.execute(
+                        """INSERT INTO agent_prompts
+                           (id, agent_id, slot_name, user_id, order_index, lock, merge_mode,
+                            content, updated_at, updated_by)
+                           VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)""",
+                        (row_id, agent_id, slot_name, int(order_index),
+                         1 if lock else 0, merge_mode, content or "", now, updated_by),
+                    )
+                conn.commit()
+                return {
+                    "id": row_id,
+                    "agent_id": agent_id,
+                    "slot_name": slot_name,
+                    "order_index": int(order_index),
+                    "lock": bool(lock),
+                    "merge_mode": merge_mode,
+                    "content": content or "",
+                    "updated_at": now,
+                    "updated_by": updated_by,
+                }
+            finally:
+                conn.close()
+
+    async def delete_slot(self, agent_id: str, slot_name: str) -> int:
+        """Delete an admin-base slot AND every per-user override for that slot."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "DELETE FROM agent_prompts WHERE agent_id = ? AND slot_name = ?",
+                    (agent_id, slot_name),
+                )
+                conn.commit()
+                return cur.rowcount
+            finally:
+                conn.close()
+
+    async def reset_overrides(self, agent_id: str, slot_name: str) -> int:
+        """Delete all user override rows for a slot. Leaves the admin base intact."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    """DELETE FROM agent_prompts
+                       WHERE agent_id = ? AND slot_name = ? AND user_id IS NOT NULL""",
+                    (agent_id, slot_name),
+                )
+                conn.commit()
+                return cur.rowcount
+            finally:
+                conn.close()
+
+    async def upsert_override(
+        self,
+        agent_id: str,
+        slot_name: str,
+        user_id: str,
+        content: str,
+        updated_by: str = "user",
+    ) -> Optional[dict]:
+        """Insert or update the caller's override row for a slot.
+
+        Refuses (returns None) if the slot is admin-locked or undefined.
+        """
+        if not user_id:
+            raise ValueError("user_id required for override write")
+        now = _now_iso()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                base = conn.execute(
+                    """SELECT lock FROM agent_prompts
+                       WHERE agent_id = ? AND slot_name = ? AND user_id IS NULL""",
+                    (agent_id, slot_name),
+                ).fetchone()
+                if not base:
+                    return None
+                if int(base["lock"] or 0) == 1:
+                    return None
+                existing = conn.execute(
+                    """SELECT id FROM agent_prompts
+                       WHERE agent_id = ? AND slot_name = ? AND user_id = ?""",
+                    (agent_id, slot_name, user_id),
+                ).fetchone()
+                if existing:
+                    conn.execute(
+                        """UPDATE agent_prompts SET content = ?, updated_at = ?, updated_by = ?
+                           WHERE id = ?""",
+                        (content or "", now, updated_by, existing["id"]),
+                    )
+                    row_id = existing["id"]
+                else:
+                    row_id = _uuid()
+                    conn.execute(
+                        """INSERT INTO agent_prompts
+                           (id, agent_id, slot_name, user_id, content, updated_at, updated_by)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (row_id, agent_id, slot_name, user_id, content or "", now, updated_by),
+                    )
+                conn.commit()
+                return {
+                    "id": row_id,
+                    "agent_id": agent_id,
+                    "slot_name": slot_name,
+                    "user_id": user_id,
+                    "content": content or "",
+                    "updated_at": now,
+                    "updated_by": updated_by,
+                }
+            finally:
+                conn.close()
+
+    async def delete_override(self, agent_id: str, slot_name: str, user_id: str) -> bool:
+        """Remove the caller's override row for a slot. Returns True if a row was deleted."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    """DELETE FROM agent_prompts
+                       WHERE agent_id = ? AND slot_name = ? AND user_id = ?""",
+                    (agent_id, slot_name, user_id),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    async def replace_slots(
+        self,
+        agent_id: str,
+        slots: List[dict],
+        reset_overrides_for: Optional[List[str]] = None,
+        updated_by: str = "admin",
+    ) -> List[dict]:
+        """Reconcile an agent's admin-base slot set against a desired list.
+
+        - Slots in `slots` are upserted (matched by slot_name).
+        - Admin-base rows whose slot_name is no longer in the payload are deleted
+          (which cascades — also drops the slot's per-user overrides).
+        - `reset_overrides_for` is a list of slot_names whose user overrides
+          should be wiped at save time.
+        Returns the new resolved admin-base list.
+        """
+        desired_names = {(s.get("slot_name") or "").strip() for s in slots if isinstance(s, dict)}
+        desired_names.discard("")
+
+        # 1. Reconcile: delete slots that no longer exist.
+        conn = self._get_conn()
+        try:
+            existing_names = {r["slot_name"] for r in conn.execute(
+                "SELECT slot_name FROM agent_prompts WHERE agent_id = ? AND user_id IS NULL",
+                (agent_id,),
+            ).fetchall()}
+        finally:
+            conn.close()
+        for stale in existing_names - desired_names:
+            await self.delete_slot(agent_id, stale)
+
+        # 2. Upsert each slot.
+        for s in slots:
+            if not isinstance(s, dict):
+                continue
+            name = (s.get("slot_name") or "").strip()
+            if not name:
+                continue
+            await self.upsert_slot(
+                agent_id=agent_id,
+                slot_name=name,
+                order_index=int(s.get("order_index", 0) or 0),
+                lock=bool(s.get("lock", False)),
+                merge_mode=s.get("merge_mode", "replace"),
+                content=s.get("content", "") or "",
+                updated_by=updated_by,
+            )
+
+        # 3. Reset overrides where requested.
+        if reset_overrides_for:
+            for name in reset_overrides_for:
+                if not name:
+                    continue
+                await self.reset_overrides(agent_id, name)
+
+        return await self.list_slots(agent_id)
 
     # ---- Memory System (knowledge brain) ----
 
@@ -2577,11 +2612,7 @@ class LocalBackend(StorageBackend):
         user_id: str,
         context_types: Optional[List[str]] = None,
     ) -> Optional[dict]:
-        """
-        Fetch agent row and synthesize ``context_documents`` from context columns.
-        Returns agent dict with ``context_documents`` key (list of dicts).
-        Returns None if no agent for user.
-        """
+        """Fetch the user's default agent + its resolved prompt slots."""
         conn = self._get_conn()
         try:
             row = conn.execute(
@@ -2592,10 +2623,9 @@ class LocalBackend(StorageBackend):
             if not row:
                 return None
             agent_dict = dict(row)
-            docs = _agent_prompt_to_docs(agent_dict)
-            if context_types:
-                docs = [d for d in docs if d["context_type"] in context_types]
-            agent_dict["context_documents"] = docs
+            agent_dict["context_documents"] = await self._docs_for_caller(
+                agent_dict["id"], user_id, context_types,
+            )
             return agent_dict
         except Exception as e:
             logger.error("Error fetching agent with context: %s", e)
@@ -2607,11 +2637,11 @@ class LocalBackend(StorageBackend):
         self,
         agent_id: str,
         context_types: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
     ) -> Optional[dict]:
-        """
-        Same as ``fetch_agent_with_context`` but queries by agent ``id`` (PK).
-        Direct FK lookup — no naming convention, no inference chain, no fallback.
-        Returns None if agent_id not found.
+        """Fetch one agent by id plus its resolved prompt slots for `user_id`.
+
+        If user_id is None, returns admin-base content only.
         """
         conn = self._get_conn()
         try:
@@ -2619,16 +2649,39 @@ class LocalBackend(StorageBackend):
             if not row:
                 return None
             agent_dict = dict(row)
-            docs = _agent_prompt_to_docs(agent_dict)
-            if context_types:
-                docs = [d for d in docs if d["context_type"] in context_types]
-            agent_dict["context_documents"] = docs
+            agent_dict["context_documents"] = await self._docs_for_caller(
+                agent_id, user_id, context_types,
+            )
             return agent_dict
         except Exception as e:
             logger.error("Error fetching agent by id with context: %s", e)
             raise
         finally:
             conn.close()
+
+    async def _docs_for_caller(
+        self,
+        agent_id: str,
+        user_id: Optional[str],
+        context_types: Optional[List[str]] = None,
+    ) -> List[dict]:
+        """Resolved per-slot content shaped as legacy context_documents list."""
+        slots = await self.resolve_prompts(agent_id, user_id=user_id)
+        docs: List[dict] = []
+        for s in slots:
+            content = (s.get("content") or "").strip()
+            if not content:
+                continue
+            docs.append({
+                "id": s["slot_name"],
+                "context_type": s["slot_name"],
+                "title": s["slot_name"],
+                "content": s["content"],
+                "tags": [],
+            })
+        if context_types:
+            docs = [d for d in docs if d["context_type"] in context_types]
+        return docs
 
     async def create_agent_for_user(self, user_id: str) -> dict:
         conn = self._get_conn()
@@ -2653,32 +2706,25 @@ class LocalBackend(StorageBackend):
             conn.execute(
                 """INSERT INTO agents
                    (id, name,
-                    system_prompt, max_turn_count, model, provider,
+                    max_turn_count, model, provider,
                     temperature, max_tokens, status, metadata,
-                    agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
-                    bootstrap_tools, trigger_type, trigger_key, loop_logic,
+                    trigger_type, trigger_key, loop_logic,
                     is_user_default, admin_users, assigned_at, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
                 (agent_id, tpl_data.get("name", "autoAgent"),
-                 tpl_data["system_prompt"],
                  tpl_data["max_turn_count"],
                  tpl_data["model"],
                  tpl_data["provider"],
                  tpl_data["temperature"],
                  tpl_data["max_tokens"],
                  tpl_data["metadata"],
-                 tpl_data.get("agent_prompt", ""),
-                 tpl_data.get("user_prompt", ""),
-                 tpl_data.get("skills_prompt", ""),
-                 tpl_data.get("tasks_prompt", ""),
-                 tpl_data.get("misc_prompt", ""),
-                 tpl_data.get("bootstrap_tools", ""),
                  tpl_data.get("trigger_type", "user_input"),
                  tpl_data.get("trigger_key"),
                  tpl_data.get("loop_logic", "[]"),
                  json.dumps([user_id]),
                  now, now, now),
             )
+            self._clone_template_slots(conn, source_id="default", target_id=agent_id, now=now)
             conn.commit()
 
             # Set as user's default agent in user_profiles
@@ -2823,7 +2869,6 @@ class LocalBackend(StorageBackend):
                 "status": "template",
                 "template_id": template_id,
                 "name": tpl_data.get("name", ""),
-                "system_prompt": tpl_data.get("system_prompt", ""),
                 "max_turn_count": tpl_data.get("max_turn_count", 10),
                 "model": tpl_data.get("model"),
                 "provider": tpl_data.get("provider"),
@@ -2967,7 +3012,7 @@ class LocalBackend(StorageBackend):
         # Check existing binding first
         existing_id = await self.get_session_agent_id(session_id)
         if existing_id:
-            agent = await self.fetch_agent_by_id_with_context(existing_id)
+            agent = await self.fetch_agent_by_id_with_context(existing_id, user_id=user_id)
             if agent:
                 return agent
             logger.warning(
@@ -2987,13 +3032,12 @@ class LocalBackend(StorageBackend):
                 _owner = user_id
                 conn.execute(
                     """INSERT INTO agents
-                       (id, template_id, name, system_prompt, max_turn_count, model, provider,
+                       (id, template_id, name, max_turn_count, model, provider,
                         temperature, max_tokens, status, metadata, trigger_type, trigger_key, loop_logic,
                         is_admin_agent, admin_users, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (agent_id, template_id,
                      agent.get("name", ""),
-                     agent.get("system_prompt", ""),
                      agent.get("max_turn_count", 10),
                      agent.get("model"),
                      agent.get("provider"),
@@ -3006,6 +3050,13 @@ class LocalBackend(StorageBackend):
                      1 if agent.get("is_admin_agent") else 0,
                      json.dumps([user_id]),
                      now, now),
+                )
+                # Clone admin-base slots from the source template into the new agent row.
+                self._clone_template_slots(
+                    conn,
+                    source_id=template_id or "default",
+                    target_id=agent_id,
+                    now=now,
                 )
                 conn.commit()
             except Exception as e:
@@ -3026,7 +3077,7 @@ class LocalBackend(StorageBackend):
 
         # Fetch with context (by ID, not user_id)
         if agent.get("id"):
-            return await self.fetch_agent_by_id_with_context(agent["id"])
+            return await self.fetch_agent_by_id_with_context(agent["id"], user_id=user_id)
         return agent
 
     # ---- Interrupt Handling ----
@@ -3637,31 +3688,23 @@ class LocalBackend(StorageBackend):
             conn.execute(
                 """INSERT INTO agents
                    (id, name, description,
-                    system_prompt, max_turn_count, model, provider,
+                    max_turn_count, model, provider,
                     temperature, max_tokens, metadata,
-                    agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
-                    bootstrap_tools, template_id, is_user_default,
+                    template_id, is_user_default,
                     allowed_tools, custom_tool_ids,
                     trigger_type, trigger_key, loop_logic,
                     safety_policy, is_admin_agent,
                     admin_users,
                     created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'[]','[]',?,?,?,'{}',?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,0,'[]','[]',?,?,?,'{}',?,?,?,?)""",
                 (
                     agent_id, name, description,
-                    tpl.get("system_prompt", ""),
                     tpl.get("max_turn_count", 40),
                     tpl.get("model", ""),
                     tpl.get("provider", ""),
                     tpl.get("temperature", 0.7),
                     tpl.get("max_tokens", 8192),
                     tpl.get("metadata", "{}"),
-                    tpl.get("agent_prompt", ""),
-                    tpl.get("user_prompt", ""),
-                    tpl.get("skills_prompt", ""),
-                    tpl.get("tasks_prompt", ""),
-                    tpl.get("misc_prompt", ""),
-                    tpl.get("bootstrap_tools", ""),
                     template_id,
                     tpl.get("trigger_type", "user_input"),
                     tpl.get("trigger_key"),
@@ -3671,6 +3714,7 @@ class LocalBackend(StorageBackend):
                     now, now,
                 ),
             )
+            self._clone_template_slots(conn, source_id=template_id, target_id=agent_id, now=now)
             conn.commit()
             row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
         finally:
@@ -3684,6 +3728,7 @@ class LocalBackend(StorageBackend):
         """
         Delete a custom agent. Caller must be in admin_users.
         System agents (template rows) cannot be deleted via this path.
+        Also drops every agent_prompts row for the agent (admin base + overrides).
         Returns True if a row was deleted, False if not found or not owned.
         """
         conn = self._get_conn()
@@ -3694,6 +3739,8 @@ class LocalBackend(StorageBackend):
                    AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)""",
                 (agent_id, user_id),
             )
+            if cursor.rowcount > 0:
+                conn.execute("DELETE FROM agent_prompts WHERE agent_id = ?", (agent_id,))
             conn.commit()
             return cursor.rowcount > 0
         finally:
@@ -3734,14 +3781,11 @@ class LocalBackend(StorageBackend):
     ) -> Optional[dict]:
         """
         Update editable fields on a custom agent. Caller must be in admin_users.
-        Allowed fields: name, description, max_turn_count,
-                        agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt.
+        Prompt slots are NOT updated here — use upsert_slot / replace_slots instead.
         Returns the updated agent row dict, or None if not found/not owned.
         """
         ALLOWED = {
             "name", "description", "max_turn_count",
-            "agent_prompt", "user_prompt", "skills_prompt",
-            "tasks_prompt", "misc_prompt",
             "model", "temperature", "max_tokens",
             "allowed_tools", "custom_tool_ids",
             "trigger_type", "trigger_key", "loop_logic",

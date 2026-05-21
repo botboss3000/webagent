@@ -80,14 +80,14 @@ Events are routed on the frontend:
 | **`agent/loop.py`** | Unified multi-turn loop (streaming + buffered): tool validation, parallel tool runs, pipeline events. Emits `attachment` event type for frontend file rendering. Reads `LoopConfig` from the agent record to gate optional steps at runtime. Builds the effective destructive-tool set from `DESTRUCTIVE_TOOLS` baseline ∪ `agents.safety_policy.destructive_tools` ∪ per-tool `requires_confirmation` flags; supports `auto_confirm` and `max_concurrent_tools` from safety policy. |
 | **`agent/loop_executor.py`** | **`LoopConfig`** — parses the `loop_logic` JSON column from an agent record and exposes `is_enabled(node_id, context=)`. Supports two formats: flat string array (legacy, all nodes enabled) and object array (`[{"node": "skill_track", "enabled": false, "run_if": "expr"}, ...]`). Defines `LOCKED_NODES` (steps that can never be disabled: `user_input`, `load_tools`, `llm_call`, `execute_tools`, `check_continue`, `final_response`) and `GATED_NODES` (9 steps with runtime gating: `interrupt_chk`, `permission_chk`, `guardrails`, `delegation_chk`, `skill_track`, `memory_search`, `memory_save`, `fire_optimizer`, `copy_defaults`). Pre-loop nodes (`memory_search`, `memory_save`, `copy_defaults`) are gated in `chat.py`; in-loop nodes in `loop.py`. Includes `_evaluate_run_if()` for conditional node execution (supports `==`, `!=`, `>`, `<`, `>=`, `<=`, `!key`, `key in [a,b,c]`). |
 | **`agent/session_history.py`** | Maps **`interactions`** rows → OpenAI-style **`messages`** for the active session (excludes internal memory tools). |
-| **`agent/prompts.py`** | System prompt from context, brain results, tools, attachment context. Includes **`format_attachments_for_prompt()`** helper. |
+| **`agent/prompts.py`** | Assembles the system prompt from the resolved per-caller slot list plus brain context and attachments. Slot resolution (admin base + user overrides, lock + replace/append merge mode) lives in `app/db/local.py`. Includes **`format_attachments_for_prompt()`** helper. |
 | **`agent/error_classifier.py`** | Structured tool errors (**used on the WebSocket / streaming path**). |
-| **`context/agents/`** | **Agent template JSON files** — seed `agent_templates` table with full schema (id, system_prompt, max_turn_count, model, provider, temperature, max_tokens, metadata, plus new fields: `name`, `description`, `icon`, `trigger_description`, `can_be_default`, `is_system`, `is_pipeline`, `access_level`). Each `.json` file defines one agent template. Included: `default.json`, `optimizer-planner.json`, `optimizer-finalizer.json`, `admin-agent.json`. Scanned on first agent creation for a user. |
+| **`context/agents/`** | **Agent template JSON files** — seed `agent_templates` table (model/temperature/etc.) and the template's admin-base prompt slot rows in `agent_prompts`. A JSON file may declare slots explicitly via a `slots` array, or use the legacy flat keys (`system_prompt`, `agent_prompt`, `user_prompt`, `skills_prompt`, `tasks_prompt`, `misc_prompt`, `bootstrap_tools`) which the seeder converts into slots automatically. Included: `default.json`, `optimizer-planner.json`, `optimizer-finalizer.json`, `admin-agent.json`. |
 | **`context/context_templates/`** | **Context template .md files** — seed `context_templates` table per context_type (agent, user, skills, tools, tasks, memory, project, jobs). Copied to user context on first chat. |
 | **`agent/embed.py`** | Embedding utility using same provider config as chat. Returns configurable-dimension vectors (`EMBED_DIM`, default 1536). |
 | **`db/__init__.py`** | **`get_db()`** → **`SupabaseBackend`** or **`LocalBackend`** from persisted mode. |
 | **`db/supabase.py`** | Cloud: **`sessions`**, **`interactions`**, **`context`**, **`context_templates`**, **`attachments`**, memories / tools / skills per shared schema. |
-| **`db/local.py`** | Local SQLite — schema init, FTS5 + vector hybrid search, embed-on-write, knowledge graph, timelines, **`user_profiles`** (tracks `created_at` and `last_login_at`), **`webhook_registrations`** and **`webhook_event_log`** tables. **`agents`** table includes **`user_mode`** (`anonymous` \| `register`) — controls whether channel users stay anonymous or are guided through registration/account-linking across channels. |
+| **`db/local.py`** | Local SQLite — schema init, FTS5 + vector hybrid search, embed-on-write, knowledge graph, timelines, **`user_profiles`** (tracks `created_at` and `last_login_at`), **`webhook_registrations`** and **`webhook_event_log`** tables. **`agents`** table includes **`user_mode`** (`anonymous` \| `register`) — controls whether channel users stay anonymous or are guided through registration/account-linking across channels. **`agent_prompts`** table holds all prompt content: one row per `(agent_id, slot_name, user_id)`, where `user_id IS NULL` means "admin base" and a non-null `user_id` is a per-user override. Each admin-base row also stores its slot policy (`order_index`, `lock`, `merge_mode`). See [Prompt slots and overrides](#prompt-slots-and-overrides). |
 | **`db/attachments/`** | **`file_store.py`** — file byte storage abstraction. Dispatches to local filesystem (`uploads/`) or Supabase Storage based on `db_mode.json`. Exports `store_file()`, `read_file()`, `delete_file()`. See `app/db/SUPABASE_STORAGE.md` for cloud setup. |
 | **`db/interface.py`** | **`StorageBackend`** protocol with session, interaction, context, memory, skills, agent, attachment, interrupt, **webhook (register/get/list/delete/log)** abstract methods. |
 | **`tools/`** | **`loader`** (dynamic tool loading + built-in injection: http_request, register_webhook, list_webhooks, delete_webhook, get_webhook_log, render_visual, plus **`delegate_to_agent` / `list_delegatable_agents`** for non-pipeline agents), **`core_tools`** (bootstrap tools: list_tools, search_tools, get_tool_definition, web_search, http_request, db_query, memory, session_search, get_time, get_date, get_weather, calculate), **`registry`** (create_tool, safety scanner, rating utilities), **`tracker`** (legacy execution tracker), **`browser`** (persistent Chromium), **`read_attachment`** (read uploaded files via `app/db/attachments/`), **`delegation.py`** (builds `delegate_to_agent` + `list_delegatable_agents` handlers; returns delegation sentinel JSON detected by the loop). |
@@ -296,6 +296,24 @@ Response includes **`reply`**, **`response`** (duplicate for different clients),
 - **Local:** insert into **`context_documents`**.
 
 Common types include `agent`, `user`, `skills`, `tools`, `tasks`, and optionally `memory`, `project`, `jobs` (see **`app/api/chat.py`**).
+
+## Prompt slots and overrides
+
+Every prompt that shapes an agent — its identity, the skills/tasks/misc guidance, even the "bootstrap_tools" preamble — is stored as a row in **`agent_prompts`**. Each row is one slot.
+
+- **Admin base** rows are the canonical content for a slot. They have `user_id IS NULL` and carry the slot's policy: `order_index` (where the slot sits in the assembled system message), `lock` (admin-only when true), and `merge_mode` (`replace` or `append`).
+- **User override** rows have a non-null `user_id`. Each user (including anonymous browser-scoped visitors) can have at most one override per slot. When the agent loop assembles the system prompt for a caller, locked slots ignore overrides; unlocked slots either `replace` the admin base with the user override or `append` it below, per the slot's `merge_mode`.
+
+### Endpoints
+
+- **`GET /api/v1/agents/{agent_id}/slots?user_id=...`** — returns the admin-base slot list plus the caller's overrides per slot, and a `user_role` of `"admin"` or `"member"`.
+- **`PUT /api/v1/agents/{agent_id}`** (admin only) — agent-row fields plus an optional `slots` array that fully reconciles the admin-base slot set. May include `reset_overrides_for` (list of slot_names) to wipe all per-user overrides for those slots at save time.
+- **`PUT /api/v1/agents/{agent_id}/my-prompts`** — any caller writes their own override rows for unlocked slots; locked or unknown slot_names are rejected per item.
+- **`DELETE /api/v1/agents/{agent_id}/my-prompts/{slot_name}?user_id=...`** — clears one user's override for a slot.
+
+### In-chat self-modification
+
+The agent's in-chat prompt-refinement flow uses the same admin/user split: admin callers may write to admin-base rows, members and anonymous visitors can only write to their own override rows. Locked slots are refused with a user-visible message.
 
 ## Quick test
 
