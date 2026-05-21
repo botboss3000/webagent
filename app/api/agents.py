@@ -15,6 +15,7 @@ DELETE /api/v1/agents/{agent_id}        — delete a custom agent
 POST /api/v1/agents/{agent_id}/set-default — set as the user's default agent
 GET  /api/v1/agents/templates           — list agent templates (for tool breakdown display)
 POST /api/v1/agents/test                — run a test message through an agent config
+GET  /api/v1/agents/{agent_id}/members  — list agent admins + members with stats (agent admin only)
 """
 
 import logging
@@ -120,7 +121,7 @@ def _safe_agent(agent: dict) -> dict:
     HIDDEN = {"provider", "metadata"}
     result = {k: v for k, v in agent.items() if k not in HIDDEN}
     # Deserialize JSON list fields so the client receives actual arrays
-    for field in ("allowed_tools", "custom_tool_ids", "loop_logic", "admin_users", "member_users"):
+    for field in ("allowed_tools", "custom_tool_ids", "loop_logic", "admin_users", "member_users", "authorized_users"):
         raw = result.get(field)
         if isinstance(raw, str):
             try:
@@ -972,6 +973,153 @@ async def add_agent_admin(agent_id: str, req: ManageAdminRequest):
     return {"admin_users": roles["admin_users"], "added": added}
 
 
+@router.get("/agents/{agent_id}/members")
+async def list_agent_members(agent_id: str, user_id: str = Query(...)):
+    """
+    List the agent's admin_users and member_users joined with profile + activity stats.
+    Caller must be a global admin OR in the agent's admin_users list.
+    Returns {"admins": [...], "members": [...]} where each entry has
+    user_id, username, display_name, is_admin, is_approved, channel,
+    last_login_at, created_at, session_count, interaction_count.
+    """
+    from app.auth.users import get_user_by_id as _auth_get_user_by_id
+
+    db = get_db()
+    if not await _is_agent_admin(db, agent_id, user_id):
+        raise HTTPException(status_code=403, detail="Admin access required.")
+
+    agent_row = await db.get_agent_by_id(agent_id)
+    if not agent_row:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+    user_mode = agent_row.get("user_mode") or "anonymous"
+
+    roles = await db.get_agent_roles(agent_id)
+    admin_ids: list[str] = list(roles.get("admin_users") or [])
+    member_ids: list[str] = list(roles.get("member_users") or [])
+    authorized_set = set(roles.get("authorized_users") or [])
+    all_ids = list(dict.fromkeys(admin_ids + member_ids))
+
+    if not all_ids:
+        return {"admins": [], "members": [], "user_mode": user_mode}
+
+    conn = db._get_conn()
+    profile_map: dict[str, dict] = {}
+    identity_map: dict[str, dict] = {}
+    session_counts: dict[str, int] = {}
+    interaction_counts: dict[str, int] = {}
+    try:
+        placeholders = ",".join("?" * len(all_ids))
+        for r in conn.execute(
+            f"SELECT user_id, is_admin, created_at, last_login_at "
+            f"FROM user_profiles WHERE user_id IN ({placeholders})",
+            all_ids,
+        ).fetchall():
+            profile_map[r["user_id"]] = dict(r)
+        for r in conn.execute(
+            f"SELECT user_id, display_name, channel FROM channel_identities "
+            f"WHERE user_id IN ({placeholders})",
+            all_ids,
+        ).fetchall():
+            # Keep first/most-recent-ish; if multiple, last wins (fine for display)
+            identity_map[r["user_id"]] = dict(r)
+        for r in conn.execute(
+            f"SELECT user_id, COUNT(*) AS n FROM sessions "
+            f"WHERE agent_id = ? AND user_id IN ({placeholders}) GROUP BY user_id",
+            [agent_id, *all_ids],
+        ).fetchall():
+            session_counts[r["user_id"]] = r["n"]
+        for r in conn.execute(
+            f"SELECT s.user_id AS user_id, COUNT(*) AS n FROM interactions i "
+            f"JOIN sessions s ON s.id = i.session_id "
+            f"WHERE s.agent_id = ? AND s.user_id IN ({placeholders}) "
+            f"GROUP BY s.user_id",
+            [agent_id, *all_ids],
+        ).fetchall():
+            interaction_counts[r["user_id"]] = r["n"]
+    finally:
+        conn.close()
+
+    def _build(uid: str) -> dict:
+        prof = profile_map.get(uid, {})
+        ident = identity_map.get(uid, {})
+        auth_user = _auth_get_user_by_id(uid)
+        username = auth_user.username if auth_user else None
+        display_name = (
+            (auth_user.display_name if auth_user else None)
+            or ident.get("display_name")
+            or username
+            or uid
+        )
+        return {
+            "user_id": uid,
+            "username": username,
+            "display_name": display_name,
+            "channel": ident.get("channel"),
+            "is_admin": bool(prof.get("is_admin", 0)),
+            "is_approved": bool(auth_user.is_approved) if auth_user else None,
+            "created_at": prof.get("created_at"),
+            "last_login_at": prof.get("last_login_at"),
+            "session_count": session_counts.get(uid, 0),
+            "interaction_count": interaction_counts.get(uid, 0),
+            "is_authorized": uid in authorized_set,
+        }
+
+    admins = [_build(uid) for uid in admin_ids]
+    members = [_build(uid) for uid in member_ids if uid not in set(admin_ids)]
+    return {"admins": admins, "members": members, "user_mode": user_mode}
+
+
+class _AuthorizeRequest(BaseModel):
+    user_id: str   # caller (must be agent admin)
+
+
+@router.post("/agents/{agent_id}/members/{target_user_id}/authorize")
+async def authorize_agent_member(agent_id: str, target_user_id: str, req: _AuthorizeRequest):
+    """Mark a user as authorized for this agent. Caller must be agent admin."""
+    db = get_db()
+    if not await _is_agent_admin(db, agent_id, req.user_id):
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    authorized_users = await db.set_agent_authorized(agent_id, target_user_id, True)
+    return {"authorized_users": authorized_users, "is_authorized": True}
+
+
+@router.post("/agents/{agent_id}/members/{target_user_id}/restrict")
+async def restrict_agent_member(agent_id: str, target_user_id: str, req: _AuthorizeRequest):
+    """Remove a user from the authorized list for this agent. Caller must be agent admin."""
+    db = get_db()
+    if not await _is_agent_admin(db, agent_id, req.user_id):
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    authorized_users = await db.set_agent_authorized(agent_id, target_user_id, False)
+    return {"authorized_users": authorized_users, "is_authorized": False}
+
+
+class _SetUserModeRequest(BaseModel):
+    user_id: str   # caller (must be agent admin)
+    user_mode: str # 'anonymous' | 'register' | 'authorized'
+
+
+@router.post("/agents/{agent_id}/user-mode")
+async def set_agent_user_mode(agent_id: str, req: _SetUserModeRequest):
+    """Set the agent's user_mode policy. Caller must be agent admin."""
+    if req.user_mode not in ("anonymous", "register", "authorized"):
+        raise HTTPException(status_code=400, detail="Invalid user_mode.")
+    db = get_db()
+    if not await _is_agent_admin(db, agent_id, req.user_id):
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    conn = db._get_conn()
+    try:
+        cursor = conn.execute(
+            "UPDATE agents SET user_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (req.user_mode, agent_id),
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Agent not found.")
+    finally:
+        conn.close()
+    return {"agent_id": agent_id, "user_mode": req.user_mode}
+
+
 @router.post("/agents/{agent_id}/anon-session")
 async def create_anon_session(agent_id: str, req: AnonSessionRequest):
     """
@@ -984,6 +1132,15 @@ async def create_anon_session(agent_id: str, req: AnonSessionRequest):
     agent = await db.get_agent_by_id(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found.")
+
+    mode = (agent.get("user_mode") or "anonymous")
+    if mode in ("register", "authorized"):
+        raise HTTPException(
+            status_code=403,
+            detail=("This agent requires a registered account."
+                    if mode == "register"
+                    else "This agent requires admin authorization. Sign in with an authorized account."),
+        )
 
     browser_id = req.browser_id or _uuid_mod.uuid4().hex
     from app.communications.auth import get_or_create_identity

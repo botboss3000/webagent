@@ -4,13 +4,15 @@
     "password_hash": "$2b$12$ImGHfQSCq/AXUZ.Qf110R.gl5T0Hc0ko26qSlIMgO5ASlpPqfsp0i",
     "user_id": "admin_default",
     "display_name": "Admin",
-    "remember_token": "6ed203ed042219b5e124e590d59570c52fb371f99dae879d9ae9daf0b447ff85"
+    "remember_token": "cc1cd80692b2127a924adbd85b21d3ab9e94d9780f76735e15eec24dd658cf8e",
+    "is_approved": true
   },
   {
     "username": "newuser",
     "password_hash": "$2b$12$qAgmYl6ySGaiOIRoQdFUlONFDSGIKDsuP5GnTw17X32U51CYMgZ..",
     "user_id": "newuser",
     "display_name": "newuser",
-    "remember_token": "f628a8ea96f9036c5acac4fe912d7ff29e96e4e37ab0a0299707089cb95c1512"
+    "remember_token": "f628a8ea96f9036c5acac4fe912d7ff29e96e4e37ab0a0299707089cb95c1512",
+    "is_approved": true
   }
 ]

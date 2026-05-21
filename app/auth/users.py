@@ -20,15 +20,17 @@ _USER_FILE = Path(__file__).resolve().parent / "users.json"
 # ── Data ────────────────────────────────────────────────────────────────────
 
 class User:
-    __slots__ = ("username", "password_hash", "user_id", "display_name", "remember_token")
+    __slots__ = ("username", "password_hash", "user_id", "display_name", "remember_token", "is_approved")
 
     def __init__(self, username: str, password_hash: str, user_id: str,
-                 display_name: str = "", remember_token: str = ""):
+                 display_name: str = "", remember_token: str = "",
+                 is_approved: bool = True):
         self.username = username
         self.password_hash = password_hash
         self.user_id = user_id
         self.display_name = display_name or username
         self.remember_token = remember_token
+        self.is_approved = is_approved
 
     def to_dict(self) -> dict:
         return {
@@ -37,6 +39,7 @@ class User:
             "user_id": self.user_id,
             "display_name": self.display_name,
             "remember_token": self.remember_token,
+            "is_approved": self.is_approved,
         }
 
     @classmethod
@@ -47,6 +50,7 @@ class User:
             user_id=d["user_id"],
             display_name=d.get("display_name", d["username"]),
             remember_token=d.get("remember_token", ""),
+            is_approved=d.get("is_approved", True),
         )
 
 
@@ -153,8 +157,11 @@ def resolve_remember_token(token: str) -> Optional[User]:
     return None
 
 
-def register_user(username: str, password: str, display_name: str = "") -> Optional[User]:
-    """Register a new user. Returns User on success, None if username taken."""
+def register_user(username: str, password: str, display_name: str = "",
+                  is_approved: bool = True) -> Optional[User]:
+    """Register a new user. Returns User on success, None if username taken.
+    Set is_approved=False when admin approval is required.
+    """
     if username in _users:
         return None
     user = User(
@@ -162,10 +169,45 @@ def register_user(username: str, password: str, display_name: str = "") -> Optio
         password_hash=_hash_password(password),
         user_id=username,
         display_name=display_name or username,
+        is_approved=is_approved,
     )
     _users[username] = user
     _persist()
     return user
+
+
+def list_users() -> list[User]:
+    """Return all registered users."""
+    return list(_users.values())
+
+
+def set_user_approval(username: str, is_approved: bool) -> Optional[User]:
+    """Set the is_approved flag on a user. Returns updated User or None."""
+    user = _users.get(username)
+    if user is None:
+        return None
+    user.is_approved = is_approved
+    _persist()
+    return user
+
+
+def delete_user(username: str) -> bool:
+    """Remove a user from the store. Returns True if deleted."""
+    if username == "admin":
+        return False
+    if username not in _users:
+        return False
+    del _users[username]
+    _persist()
+    return True
+
+
+def get_user_by_id(user_id: str) -> Optional[User]:
+    """Look up a user by user_id (vs username)."""
+    for u in _users.values():
+        if u.user_id == user_id:
+            return u
+    return None
 
 
 def clear_remember_token(username: str) -> bool:

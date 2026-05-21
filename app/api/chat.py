@@ -46,6 +46,40 @@ def _should_skip_memory(message: str) -> bool:
     return bool(not stripped or _SKIP_MEMORY_PATTERN.match(stripped))
 
 
+async def _enforce_agent_access_policy(db, agent: dict, user_id: str) -> None:
+    """Raise 403 if user is not allowed to chat with this agent under its user_mode policy."""
+    mode = (agent or {}).get("user_mode") or "anonymous"
+    if mode == "anonymous":
+        return
+    # Global admin always allowed
+    try:
+        if await db.is_user_admin(user_id):
+            return
+    except Exception:
+        pass
+    roles = await db.get_agent_roles(agent["id"])
+    if user_id in (roles.get("admin_users") or []):
+        return
+    if mode == "register":
+        # Look up the channel identity for this user_id. If anonymous tier, refuse.
+        conn = db._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT user_tier FROM channel_identities WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        tier = (row["user_tier"] if row else None) or "anonymous"
+        if tier == "anonymous":
+            raise HTTPException(status_code=403, detail="This agent requires a registered account.")
+        return
+    if mode == "authorized":
+        if user_id not in (roles.get("authorized_users") or []):
+            raise HTTPException(status_code=403, detail="This agent requires admin authorization for new users.")
+        return
+
+
 async def _ensure_session(db, user_id: str, session_id: str, title: str = None) -> None:
     """Create the session row if it doesn't exist yet, and update its title on first real message."""
     conn = db._get_conn()
@@ -296,6 +330,9 @@ async def chat(request: ChatRequest):
                 "agent_id": agent["id"],
                 "max_turn_count": agent["max_turn_count"],
             })
+
+        # ── Agent access policy enforcement ──
+        await _enforce_agent_access_policy(db, agent, request.user_id)
 
         # ── Participants enforcement ──
         # Ensure the user and agent are registered as participants
@@ -664,6 +701,9 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             agent = await db.get_agent_for_user(request.user_id)
         if agent is None:
             agent = await db.create_agent_for_user(request.user_id)
+
+    # ── Agent access policy enforcement ──
+    await _enforce_agent_access_policy(db, agent, request.user_id)
 
     # -- Bind session to agent --
     existing_agent_id = await db.get_session_agent_id(request.session_id)

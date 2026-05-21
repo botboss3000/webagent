@@ -1,3 +1,4 @@
 {
-  "extend_llm_to_agents": true
+  "extend_llm_to_agents": true,
+  "access_mode": "public_anonymous"
 }
