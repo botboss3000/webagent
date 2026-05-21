@@ -3,6 +3,37 @@
 import { app } from './state.js';
 import { apiPath } from './config.js';
 import { addAttachmentsToMessage, renderAttachmentElement } from './attachments.js';
+import { getAccessMode, fetchAccessMode } from './left-login.js';
+
+/** Returns true when the current visitor may use chat under the active access mode. */
+function _canChat() {
+  const mode = getAccessMode();
+  if (mode === 'public_anonymous') return true;
+  // public_registered, admin_approval, private — all require sign-in
+  return !!localStorage.getItem('auth_token');
+}
+
+const _CHAT_LOCK_PLACEHOLDER = 'Sign in to chat — this app does not allow anonymous use.';
+let _origChatPlaceholder = '';
+
+function applyChatGate() {
+  if (!app.chatInput || !app.chatSend) return;
+  const allowed = _canChat();
+  if (!_origChatPlaceholder) _origChatPlaceholder = app.chatInput.placeholder || '';
+  if (allowed) {
+    app.chatInput.disabled = false;
+    app.chatInput.placeholder = _origChatPlaceholder;
+    app.chatSend.disabled = !app.chatInput.value.trim();
+  } else {
+    app.chatInput.disabled = true;
+    app.chatInput.value = '';
+    app.chatInput.placeholder = _CHAT_LOCK_PLACEHOLDER;
+    app.chatSend.disabled = true;
+  }
+}
+
+window.addEventListener('access-mode-loaded',  applyChatGate);
+window.addEventListener('access-mode-changed', applyChatGate);
 
 function escapeHtml(str) {
   return str
@@ -124,6 +155,7 @@ function updateLastBubble(text, extraClass, imageUrl) {
 }
 
 async function sendMessage() {
+  if (!_canChat()) { applyChatGate(); return; }
   const text = app.chatInput.value.trim();
   if (!text) return;
   app.chatInput.value = '';
@@ -281,8 +313,13 @@ export function initChat() {
     }
   });
   app.chatInput.addEventListener('input', () => {
+    if (!_canChat()) { app.chatSend.disabled = true; return; }
     app.chatSend.disabled = !app.chatInput.value.trim();
   });
+
+  // Apply gating immediately with cached value, then re-apply once mode is loaded
+  applyChatGate();
+  fetchAccessMode().then(applyChatGate);
 
   // ── Expand button ──
   document.getElementById('chat-expand-btn').addEventListener('click', openChatExpand);

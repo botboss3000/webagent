@@ -10,6 +10,41 @@ import { icon } from './icons.js';
 let overlayEl = null;
 let restrictedOverlayEl = null;
 
+let _accessMode = 'public_anonymous';
+let _accessModeFetched = false;
+
+/** Read the app's current access_mode (cached). */
+export function getAccessMode() {
+  return _accessMode;
+}
+
+/** Fetch access_mode from the public auth endpoint and cache it. */
+export async function fetchAccessMode() {
+  try {
+    const res = await fetch('/api/v1/auth/access-mode');
+    if (res.ok) {
+      const data = await res.json();
+      _accessMode = data.access_mode || 'public_anonymous';
+    }
+  } catch (e) { /* keep default */ }
+  _accessModeFetched = true;
+  try {
+    window.dispatchEvent(new CustomEvent('access-mode-loaded', { detail: { access_mode: _accessMode } }));
+  } catch {}
+  return _accessMode;
+}
+
+function _applyRegistrationVisibility() {
+  const link = document.getElementById('left-login-register-link');
+  if (link) link.style.display = (_accessMode === 'private') ? 'none' : '';
+}
+
+// Re-apply visibility whenever the mode changes from the User Management tab
+window.addEventListener('access-mode-changed', e => {
+  _accessMode = (e.detail && e.detail.access_mode) || _accessMode;
+  _applyRegistrationVisibility();
+});
+
 /** Read auth token. */
 export function getAuthToken() {
   return localStorage.getItem('auth_token');
@@ -231,6 +266,9 @@ export function showLeftOverlay() {
     if (e.key === 'Enter') doRegister();
   });
 
+  _applyRegistrationVisibility();
+  if (!_accessModeFetched) fetchAccessMode().then(_applyRegistrationVisibility);
+
   setTimeout(() => document.getElementById('left-login-pass')?.focus(), 100);
 }
 
@@ -275,7 +313,13 @@ async function doLogin() {
     });
     if (!res.ok) {
       error.style.display = 'block';
-      error.textContent = 'Invalid username or password';
+      if (res.status === 403) {
+        let msg = 'Account pending admin approval';
+        try { const d = await res.json(); if (d.detail) msg = d.detail; } catch {}
+        error.textContent = msg;
+      } else {
+        error.textContent = 'Invalid username or password';
+      }
       btn.disabled = false;
       loading.style.display = 'none';
       return;
@@ -335,7 +379,8 @@ async function doRegister() {
     });
     if (!res.ok) {
       let msg = 'Registration failed';
-      if (res.status === 409) msg = 'Username already exists';
+      if (res.status === 403) msg = 'Registration is disabled. This app is private.';
+      else if (res.status === 409) msg = 'Username already exists';
       error.textContent = msg;
       error.style.display = 'block';
       btn.disabled = false;
@@ -343,6 +388,15 @@ async function doRegister() {
       return;
     }
     const data = await res.json();
+
+    if (data.pending_approval) {
+      loading.style.display = 'none';
+      error.textContent = 'Account created. An administrator must approve your account before you can sign in.';
+      error.style.color = '#b8bb26';
+      error.style.display = 'block';
+      btn.disabled = false;
+      return;
+    }
 
     localStorage.setItem('auth_token', data.access_token);
     localStorage.setItem('auth_username', data.username);

@@ -35,11 +35,12 @@ class RegisterRequest(BaseModel):
 
 
 class RegisterResponse(BaseModel):
-    access_token: str
+    access_token: str = ""
     token_type: str = "bearer"
     username: str
     user_id: str
     display_name: str
+    pending_approval: bool = False
 
 
 class RecallRequest(BaseModel):
@@ -64,6 +65,8 @@ async def login(req: LoginRequest):
     user = authenticate(req.username, req.password)
     if user is None:
         raise HTTPException(status_code=401, detail="Invalid username or password")
+    if not user.is_approved:
+        raise HTTPException(status_code=403, detail="Account pending admin approval")
 
     token = create_access_token(user.username, user.user_id)
     resp = LoginResponse(
@@ -96,6 +99,8 @@ async def recall(req: RecallRequest):
     user = resolve_remember_token(req.remember_token)
     if user is None:
         raise HTTPException(status_code=401, detail="Invalid or expired remember token")
+    if not user.is_approved:
+        raise HTTPException(status_code=403, detail="Account pending admin approval")
 
     token = create_access_token(user.username, user.user_id)
     resp = RecallResponse(
@@ -118,10 +123,30 @@ async def register(req: RegisterRequest):
     """Register a new user account.
 
     Username must be unique. On success, returns a JWT (auto-login).
+    Honors the app's access_mode:
+      - private:         registration blocked (403)
+      - admin_approval:  account created but unapproved; login blocked until admin approves
+      - public_*:        account created and auto-approved
     """
-    user = register_user(req.username, req.password, req.display_name)
+    from app.admin.settings import get_access_mode as _gam
+    mode = _gam()
+    if mode == "private":
+        raise HTTPException(status_code=403, detail="Registration is disabled. This app is private.")
+
+    auto_approve = (mode != "admin_approval")
+    user = register_user(req.username, req.password, req.display_name, is_approved=auto_approve)
     if user is None:
         raise HTTPException(status_code=409, detail="Username already exists")
+
+    if not auto_approve:
+        # Created but unapproved — no token issued, client must wait for admin
+        return RegisterResponse(
+            access_token="",
+            username=user.username,
+            user_id=user.user_id,
+            display_name=user.display_name,
+            pending_approval=True,
+        )
 
     token = create_access_token(user.username, user.user_id)
     resp = RegisterResponse(
@@ -129,6 +154,7 @@ async def register(req: RegisterRequest):
         username=user.username,
         user_id=user.user_id,
         display_name=user.display_name,
+        pending_approval=False,
     )
 
     # Track new user registration (first login)
@@ -137,6 +163,19 @@ async def register(req: RegisterRequest):
     await db.upsert_user_profile(user.user_id, last_login_at=now_iso)
 
     return resp
+
+
+class AccessModeResponse(BaseModel):
+    access_mode: str  # public_anonymous | public_registered | admin_approval | private
+
+
+@router.get("/access-mode", response_model=AccessModeResponse)
+async def access_mode():
+    """Public endpoint: returns the current registration/access policy.
+    Used by the sign-in modal and chat UI to gate registration and anonymous use.
+    """
+    from app.admin.settings import get_access_mode as _gam
+    return AccessModeResponse(access_mode=_gam())
 
 
 @router.post("/logout")

@@ -326,6 +326,19 @@ class MetadataSetting(BaseModel):
 
 class AppSettings(BaseModel):
     extend_llm_to_agents: bool = True
+    access_mode: str = "public_anonymous"  # public_anonymous | public_registered | admin_approval | private
+
+
+VALID_ACCESS_MODES = {"public_anonymous", "public_registered", "admin_approval", "private"}
+
+
+def get_access_mode() -> str:
+    """Read just the access_mode flag from app-settings.json."""
+    data = _load_app_settings()
+    mode = data.get("access_mode") or "public_anonymous"
+    if mode not in VALID_ACCESS_MODES:
+        mode = "public_anonymous"
+    return mode
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────
@@ -716,5 +729,7 @@ async def get_app_settings():
 @router.post("/app", response_model=AppSettings)
 async def set_app_settings(settings: AppSettings):
     """Save app-wide feature flags."""
+    if settings.access_mode not in VALID_ACCESS_MODES:
+        settings.access_mode = "public_anonymous"
     _save_app_settings(settings.model_dump())
     return settings

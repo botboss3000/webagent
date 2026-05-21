@@ -141,6 +141,7 @@ TABLES: List[Table] = [
         Column("turn_count", "INTEGER", nullable=False, default="0"),
         Column("admin_users", "TEXT", nullable=False, default="'[]'"),
         Column("member_users", "TEXT", nullable=False, default="'[]'"),
+        Column("authorized_users", "TEXT", nullable=False, default="'[]'"),
         Column("user_mode", "TEXT", nullable=False, default="'anonymous'"),
     ]),
 

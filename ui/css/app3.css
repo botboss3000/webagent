@@ -1215,7 +1215,6 @@ body.light-mode .th-funnel {
   display: none;
   flex-direction: column;
   gap: 16px;
-  max-width: 680px;
 }
 .ac-section.active {
   display: flex;
@@ -1422,6 +1421,73 @@ body.light-mode .th-funnel {
   color: var(--fg-muted, #565f89);
   padding: 20px !important;
 }
+
+/* User Management — access mode radios */
+.ac-um-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #2a2a4a);
+  border-radius: 6px;
+  cursor: pointer;
+  background: var(--bg-elev, #1a1a2e);
+  transition: border-color 0.15s, background 0.15s;
+}
+.ac-um-radio:hover {
+  border-color: var(--accent, #7dcfff);
+}
+.ac-um-radio input[type=radio] {
+  margin-top: 3px;
+  accent-color: var(--accent, #7dcfff);
+  flex-shrink: 0;
+}
+.ac-um-radio:has(input[type=radio]:checked) {
+  border-color: var(--accent, #7dcfff);
+  background: rgba(125, 207, 255, 0.06);
+}
+.ac-um-radio-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-1, #c0caf5);
+}
+.ac-um-radio-desc {
+  font-size: 12px;
+  color: var(--fg-muted, #565f89);
+  margin-top: 2px;
+  line-height: 1.4;
+}
+
+/* User Management — pill badges in the table */
+.ac-um-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+}
+.ac-um-badge-admin   { background: rgba(187,154,247,0.18); color: #bb9af7; }
+.ac-um-badge-member  { background: rgba(125,207,255,0.14); color: #7dcfff; }
+.ac-um-badge-approved{ background: rgba(158,206,106,0.16); color: #9ece6a; }
+.ac-um-badge-pending { background: rgba(224,175,104,0.18); color: #e0af68; }
+.ac-um-badge-locked  { background: rgba(247,118,142,0.18); color: #f7768e; }
+
+.ac-um-action-btn {
+  background: transparent;
+  border: 1px solid var(--border, #2a2a4a);
+  color: var(--fg-1, #c0caf5);
+  padding: 3px 9px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 10px;
+  font-family: inherit;
+  margin: 0 2px;
+}
+.ac-um-action-btn:hover { border-color: var(--accent, #7dcfff); color: var(--accent, #7dcfff); }
+.ac-um-action-btn.danger:hover { border-color: #f7768e; color: #f7768e; }
 
 /* GitHub status grid */
 .ac-gh-status-grid {

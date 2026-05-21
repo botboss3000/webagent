@@ -1230,6 +1230,13 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Migration 020: dropped stale agents_v1 table")
 
+            # ── Migration 023: add authorized_users to agents ──
+            ag_cols_023 = {row[1] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
+            if "authorized_users" not in ag_cols_023:
+                conn.execute("ALTER TABLE agents ADD COLUMN authorized_users TEXT NOT NULL DEFAULT '[]'")
+                conn.commit()
+                logger.info("Migration 023: added agents.authorized_users column")
+
             # ── Seed: agent templates from app/context/agents/*.json (full schema) ──
             self._seed_agent_templates_from_json_files(conn)
 
@@ -3901,20 +3908,44 @@ class LocalBackend(StorageBackend):
     # ── Agent membership (admin_users / member_users) ───────────────────────
 
     async def get_agent_roles(self, agent_id: str) -> dict:
-        """Return {'admin_users': [...], 'member_users': [...]} for an agent."""
+        """Return {'admin_users': [...], 'member_users': [...], 'authorized_users': [...]} for an agent."""
         conn = self._get_conn()
         try:
             row = conn.execute(
-                "SELECT admin_users, member_users FROM agents WHERE id = ?", (agent_id,)
+                "SELECT admin_users, member_users, authorized_users FROM agents WHERE id = ?", (agent_id,)
             ).fetchone()
             if not row:
-                return {"admin_users": [], "member_users": []}
+                return {"admin_users": [], "member_users": [], "authorized_users": []}
             return {
                 "admin_users": json.loads(row["admin_users"] or "[]"),
                 "member_users": json.loads(row["member_users"] or "[]"),
+                "authorized_users": json.loads(row["authorized_users"] or "[]"),
             }
         finally:
             conn.close()
+
+    async def set_agent_authorized(self, agent_id: str, user_id: str, authorized: bool) -> list:
+        """Add or remove user_id from authorized_users. Returns updated list."""
+        roles = await self.get_agent_roles(agent_id)
+        current = roles.get("authorized_users") or []
+        if authorized and user_id not in current:
+            current = current + [user_id]
+        elif not authorized and user_id in current:
+            current = [u for u in current if u != user_id]
+        else:
+            return current
+        now = _now_iso()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE agents SET authorized_users = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(current), now, agent_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return current
 
     async def add_agent_member(self, agent_id: str, user_id: str) -> bool:
         """
