@@ -24,9 +24,92 @@ export function generateUUID() {
 
 // ── Agent selector ───────────────────────────────────────────────────────────
 
+// Cache of last-fetched agents (templates + customs, in display order)
+let _agentsCache = [];
+
+function _pinnedAgentsKey() {
+  return `pinnedAgents:${app.currentUserId || 'anon'}`;
+}
+
+function _getPinnedAgents() {
+  try {
+    const raw = localStorage.getItem(_pinnedAgentsKey());
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch (_) { return new Set(); }
+}
+
+function _setPinnedAgents(set) {
+  try {
+    localStorage.setItem(_pinnedAgentsKey(), JSON.stringify(Array.from(set)));
+  } catch (_) {}
+}
+
+function _toggleAgentPin(agentId) {
+  const pinned = _getPinnedAgents();
+  if (pinned.has(agentId)) pinned.delete(agentId);
+  else pinned.add(agentId);
+  _setPinnedAgents(pinned);
+  // Refresh agents cache (pinned flag) and re-render
+  const pinnedNow = _getPinnedAgents();
+  _agentsCache = _agentsCache.map(a => ({ ...a, pinned: pinnedNow.has(a.id) }));
+  _agentsCache.sort(_agentSortFn);
+  _renderAgentRows();
+  _setAgentTriggerLabel();
+}
+
+function _agentSortFn(a, b) {
+  if (!!b.pinned - !!a.pinned !== 0) return (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
+  // Within pinned/unpinned groups: templates first, then customs; keep server order
+  if (a.type !== b.type) return a.type === 'template' ? -1 : 1;
+  return 0;
+}
+
+function _setAgentTriggerLabel() {
+  const labelEl = document.getElementById('agent-dropdown-label');
+  if (!labelEl) return;
+  const aid = app.currentAgentId;
+  const found = _agentsCache.find(a => a.id === aid);
+  const title = (found && found.name) || (window.__agentName) || aid || '—';
+  labelEl.textContent = _truncate(title, 20);
+  labelEl.title = (found && found.name) || title || '';
+}
+
+function _renderAgentRows() {
+  const menu = document.getElementById('agent-dropdown-menu');
+  if (!menu) return;
+  menu.innerHTML = '';
+  if (!_agentsCache.length) {
+    const empty = document.createElement('div');
+    empty.className = 'agent-dropdown-empty';
+    empty.textContent = 'No agents yet';
+    menu.appendChild(empty);
+    return;
+  }
+  // Insert visual separator between templates and customs (unpinned only)
+  let lastType = null;
+  for (const a of _agentsCache) {
+    if (lastType !== null && lastType !== a.type && !a.pinned) {
+      const sep = document.createElement('div');
+      sep.className = 'agent-row-sep';
+      menu.appendChild(sep);
+    }
+    lastType = a.type;
+    const row = document.createElement('div');
+    row.className = 'agent-row-item' + (a.pinned ? ' pinned' : '') + (a.id === app.currentAgentId ? ' selected' : '');
+    row.dataset.id = a.id;
+    row.dataset.type = a.type;
+    const label = a.name || a.id.slice(0, 12);
+    row.innerHTML = `
+      <span class="agent-row-pin-icon">${icon('pin', { size: '12px' })}</span>
+      <span class="agent-row-title" title="${a.id}">${_truncate(label, 28).replace(/</g, '&lt;')}</span>
+      <button class="agent-row-kebab" title="Agent actions" data-id="${a.id}">${icon('more-vertical', { size: '14px' })}</button>
+    `;
+    menu.appendChild(row);
+  }
+}
+
 export async function populateAgentSelect(userId) {
-  const sel = document.getElementById('agent-select');
-  if (!sel || !userId) return;
+  if (!userId) return;
 
   try {
     const [agentsRes, templatesRes, profileRes] = await Promise.all([
@@ -40,65 +123,44 @@ export async function populateAgentSelect(userId) {
 
     const defaultAgentId = profileData.default_agent_id || 'default';
     const saved = localStorage.getItem('selectedAgentId');
-
-    sel.innerHTML = '';
+    const pinned = _getPinnedAgents();
 
     const templates = (templatesData.templates || []).filter(t => t.id !== 'admin-agent');
-    for (const t of templates) {
-      const opt = document.createElement('option');
-      opt.value = t.id;
-      opt.dataset.type = 'template';
-      const label = t.name || t.id;
-      opt.textContent = label.length > 22 ? label.slice(0, 22) + '...' : label;
-      opt.title = t.name || t.id;
-      sel.appendChild(opt);
-    }
-
     const customs = agentsData.agents || [];
-    if (customs.length && templates.length) {
-      const sep = document.createElement('option');
-      sep.disabled = true;
-      sep.textContent = '───────────';
-      sel.appendChild(sep);
-    }
-    for (const a of customs) {
-      const opt = document.createElement('option');
-      opt.value = a.id;
-      opt.dataset.type = 'custom';
-      const label = a.name || a.id.slice(0, 12);
-      opt.textContent = label.length > 22 ? label.slice(0, 22) + '...' : label;
-      opt.title = a.name || a.id;
-      sel.appendChild(opt);
-    }
 
-    // Pre-select: __agentId (public URL) > saved > default > first option
+    _agentsCache = [
+      ...templates.map(t => ({ id: t.id, name: t.name || t.id, type: 'template', pinned: pinned.has(t.id) })),
+      ...customs.map(a => ({ id: a.id, name: a.name || a.id.slice(0, 12), type: 'custom', pinned: pinned.has(a.id) })),
+    ];
+    _agentsCache.sort(_agentSortFn);
+
+    // Pre-select: __agentId (public URL) > saved > default > first
     let target = window.__agentId || saved || defaultAgentId;
-    let found = false;
-    for (const o of sel.options) {
-      if (o.value === target) { o.selected = true; found = true; break; }
-    }
-
-    // For public agent URLs: if the specific agent isn't in the list (anon user
-    // doesn't own it), add a synthetic option so the correct UUID is sent to chat.
+    let found = _agentsCache.find(a => a.id === target);
     if (!found && window.__agentId) {
-      sel.innerHTML = '';
-      const opt = document.createElement('option');
-      opt.value = window.__agentId;
-      const label = window.__agentName || window.__agentId.slice(0, 12);
-      opt.textContent = label.length > 22 ? label.slice(0, 22) + '...' : label;
-      opt.title = window.__agentName || window.__agentId;
-      opt.selected = true;
-      sel.appendChild(opt);
-    } else if (!found && sel.options.length) {
-      sel.options[0].selected = true;
+      // Public agent URL — synthetic entry so chat sends correct UUID
+      _agentsCache = [{
+        id: window.__agentId,
+        name: window.__agentName || window.__agentId.slice(0, 12),
+        type: 'custom',
+        pinned: false,
+      }];
+      found = _agentsCache[0];
+    } else if (!found && _agentsCache.length) {
+      found = _agentsCache[0];
+    }
+    app.currentAgentId = (found && found.id) || '';
+
+    // Lock the trigger when visiting a public agent URL
+    const trigger = document.getElementById('agent-dropdown-trigger');
+    if (trigger) {
+      trigger.disabled = !!window.__agentId;
+      trigger.style.pointerEvents = window.__agentId ? 'none' : '';
+      trigger.style.opacity = window.__agentId ? '0.6' : '';
     }
 
-    app.currentAgentId = sel.value || '';
-
-    // Lock the selector when visiting a public agent URL
-    if (window.__agentId) {
-      sel.disabled = true;
-    }
+    _renderAgentRows();
+    _setAgentTriggerLabel();
   } catch (e) {
     console.warn('Failed to load agents for selector:', e);
   }
@@ -483,7 +545,7 @@ export function initSessions() {
   const menu = document.getElementById('session-dropdown-menu');
 
   function closeActionsPopup() {
-    const open = menu && menu.querySelector('.session-row-actions');
+    const open = document.querySelector('.session-row-actions');
     if (open) open.remove();
   }
 
@@ -521,12 +583,37 @@ export function initSessions() {
     if (!sess) return;
     const popup = document.createElement('div');
     popup.className = 'session-row-actions';
+    popup.dataset.id = sid;
     popup.innerHTML = `
       <button class="session-row-action" data-action="pin">${icon('pin', { size: '14px' })} ${sess.pinned ? 'Unpin' : 'Pin'}</button>
       <button class="session-row-action" data-action="rename">${icon('pencil', { size: '14px' })} Rename</button>
       <button class="session-row-action danger" data-action="delete">${icon('trash-2', { size: '14px' })} Delete</button>
     `;
-    row.appendChild(popup);
+    document.body.appendChild(popup);
+    // Position next to kebab, right-aligned, clamped to viewport
+    const kebab = row.querySelector('.session-row-kebab');
+    const kb = kebab.getBoundingClientRect();
+    const pw = popup.offsetWidth;
+    const ph = popup.offsetHeight;
+    let left = kb.right - pw;
+    let top  = kb.bottom + 4;
+    if (left < 4) left = 4;
+    if (left + pw > window.innerWidth - 4) left = window.innerWidth - pw - 4;
+    if (top + ph > window.innerHeight - 4) top = kb.top - ph - 4;
+    popup.style.left = left + 'px';
+    popup.style.top  = top + 'px';
+    // Actions routed here since popup is no longer inside the menu
+    popup.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const actionBtn = e.target.closest('.session-row-action');
+      if (!actionBtn) return;
+      const action = actionBtn.dataset.action;
+      closeActionsPopup();
+      if (!action) return;
+      if (action === 'pin') togglePin(sid);
+      else if (action === 'rename') startRename(sid, row);
+      else if (action === 'delete') deleteSession(sid);
+    });
   }
 
   async function patchSession(sid, body) {
@@ -614,27 +701,13 @@ export function initSessions() {
   if (menu) {
     menu.addEventListener('click', (e) => {
       e.stopPropagation();
-      // Action button inside popup?
-      const actionBtn = e.target.closest('.session-row-action');
-      if (actionBtn) {
-        const popup = actionBtn.closest('.session-row-actions');
-        const row = popup && popup.closest('.session-row');
-        const sid = row && row.dataset.id;
-        const action = actionBtn.dataset.action;
-        closeActionsPopup();
-        if (!sid || !action) return;
-        if (action === 'pin') togglePin(sid);
-        else if (action === 'rename') startRename(sid, row);
-        else if (action === 'delete') deleteSession(sid);
-        return;
-      }
       // Kebab button?
       const kebab = e.target.closest('.session-row-kebab');
       if (kebab) {
         const row = kebab.closest('.session-row');
         const sid = row && row.dataset.id;
-        // Toggle: if popup already open in this row, close it
-        const existing = row && row.querySelector('.session-row-actions');
+        // Toggle: if popup already open for this row, close it
+        const existing = document.querySelector(`.session-row-actions[data-id="${sid}"]`);
         if (existing) { closeActionsPopup(); return; }
         if (sid) openRowActions(sid, row);
         return;
@@ -671,25 +744,151 @@ export function initSessions() {
     });
   }
 
-  // ── Agent selector change handler ──
-  const agentSelect = document.getElementById('agent-select');
-  if (agentSelect) {
-    agentSelect.addEventListener('change', () => {
-      const newAgentId = agentSelect.value;
-      if (!newAgentId || newAgentId === app.currentAgentId) return;
-      abortChatStream();
-      app.currentAgentId = newAgentId;
-      localStorage.setItem('selectedAgentId', newAgentId);
-      // Sessions are bound to agents — start a fresh session
-      app.currentSessionId = generateUUID();
-      localStorage.setItem('terminalSessionId', app.currentSessionId);
-      app.chatMessages.innerHTML = '';
-      app.addChatBubble('agent', 'Switched agent. New session started.');
-      populateSessionSelect(app.currentUserId);
-      streamSessionChanged();
-      loopSessionChanged();
-      loopVisualSessionChanged();
-      autoAgentSessionChanged();
+  // ── Custom agent dropdown ──
+  const agentDropdown = document.getElementById('agent-dropdown');
+  const agentTrigger  = document.getElementById('agent-dropdown-trigger');
+  const agentMenu     = document.getElementById('agent-dropdown-menu');
+
+  function closeAgentActionsPopup() {
+    const open = document.querySelector('.agent-row-actions');
+    if (open) open.remove();
+  }
+
+  function openAgentMenu() {
+    if (!agentMenu) return;
+    agentMenu.hidden = false;
+    agentDropdown.classList.add('open');
+  }
+
+  function closeAgentMenu() {
+    if (!agentMenu) return;
+    agentMenu.hidden = true;
+    agentDropdown.classList.remove('open');
+    closeAgentActionsPopup();
+  }
+
+  function switchToAgent(aid) {
+    if (!aid || aid === app.currentAgentId) { closeAgentMenu(); return; }
+    abortChatStream();
+    app.currentAgentId = aid;
+    localStorage.setItem('selectedAgentId', aid);
+    // Sessions are bound to agents — start a fresh session
+    app.currentSessionId = generateUUID();
+    localStorage.setItem('terminalSessionId', app.currentSessionId);
+    app.chatMessages.innerHTML = '';
+    app.addChatBubble('agent', 'Switched agent. New session started.');
+    populateSessionSelect(app.currentUserId);
+    streamSessionChanged();
+    loopSessionChanged();
+    loopVisualSessionChanged();
+    autoAgentSessionChanged();
+    _renderAgentRows();
+    _setAgentTriggerLabel();
+    closeAgentMenu();
+  }
+
+  function openAgentRowActions(aid, row) {
+    closeAgentActionsPopup();
+    const agent = _agentsCache.find(a => a.id === aid);
+    if (!agent) return;
+    const popup = document.createElement('div');
+    popup.className = 'agent-row-actions';
+    popup.dataset.id = aid;
+    // Templates can't be opened in Agents page (which lists custom agents only)
+    const configBtn = agent.type === 'custom'
+      ? `<button class="agent-row-action" data-action="config">${icon('settings', { size: '14px' })} Config</button>`
+      : '';
+    popup.innerHTML = `
+      <button class="agent-row-action" data-action="pin">${icon('pin', { size: '14px' })} ${agent.pinned ? 'Unpin' : 'Pin'}</button>
+      ${configBtn}
+    `;
+    document.body.appendChild(popup);
+    // Position next to the kebab, right-aligned, below it. Clamp inside viewport.
+    const kebab = row.querySelector('.agent-row-kebab');
+    const kb = kebab.getBoundingClientRect();
+    const pw = popup.offsetWidth;
+    const ph = popup.offsetHeight;
+    let left = kb.right - pw;
+    let top  = kb.bottom + 4;
+    if (left < 4) left = 4;
+    if (left + pw > window.innerWidth - 4) left = window.innerWidth - pw - 4;
+    if (top + ph > window.innerHeight - 4) top = kb.top - ph - 4;
+    popup.style.left = left + 'px';
+    popup.style.top  = top + 'px';
+    // Action clicks routed here (popup is no longer inside agentMenu)
+    popup.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const actionBtn = e.target.closest('.agent-row-action');
+      if (!actionBtn) return;
+      const action = actionBtn.dataset.action;
+      closeAgentActionsPopup();
+      if (!action) return;
+      if (action === 'pin') _toggleAgentPin(aid);
+      else if (action === 'config') { closeAgentMenu(); openAgentConfig(aid); }
+    });
+  }
+
+  function openAgentConfig(aid) {
+    const sel = document.getElementById('main-tab-select');
+    if (sel) {
+      sel.value = 'agents';
+      sel.dispatchEvent(new Event('change'));
+    }
+    // Defer to allow startAgents() to populate the grid before expanding
+    setTimeout(() => {
+      if (window.expandAgent) window.expandAgent(aid);
+    }, 50);
+  }
+
+  if (agentTrigger) {
+    agentTrigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (agentMenu.hidden) openAgentMenu(); else closeAgentMenu();
+    });
+  }
+
+  if (agentMenu) {
+    agentMenu.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Kebab?
+      const kebab = e.target.closest('.agent-row-kebab');
+      if (kebab) {
+        const row = kebab.closest('.agent-row-item');
+        const aid = row && row.dataset.id;
+        const existing = document.querySelector(`.agent-row-actions[data-id="${aid}"]`);
+        if (existing) { closeAgentActionsPopup(); return; }
+        if (aid) openAgentRowActions(aid, row);
+        return;
+      }
+      // Row body click → switch agent
+      const row = e.target.closest('.agent-row-item');
+      if (row) switchToAgent(row.dataset.id);
+    });
+  }
+
+  document.addEventListener('click', (e) => {
+    if (agentDropdown && !agentDropdown.contains(e.target)) closeAgentMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && agentMenu && !agentMenu.hidden) closeAgentMenu();
+  });
+
+  // ── + new agent button ──
+  const agentNewBtn = document.getElementById('agent-new');
+  if (agentNewBtn) {
+    agentNewBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeAgentMenu();
+      const sel = document.getElementById('main-tab-select');
+      if (sel) {
+        sel.value = 'agents';
+        sel.dispatchEvent(new Event('change'));
+      }
+      // Defer to let startAgents() bind the create modal button before clicking
+      setTimeout(() => {
+        const btn = document.getElementById('btn-new-agent');
+        if (btn) btn.click();
+      }, 50);
     });
   }
 

@@ -172,6 +172,30 @@ export async function initAgents() {
   _restoreViewState();
 }
 
+// Expand a specific agent's card and scroll it into view. Called from the
+// chat-header agent dropdown's "Config" action. Retries until grid is rendered
+// (initAgents may still be loading when the user clicks Config from chat).
+window.expandAgent = function expandAgent(agentId) {
+  if (!agentId) return;
+  _expandedAgents.set(agentId, { tab: 'config' });
+  _saveViewState();
+  let attempts = 0;
+  const tryRender = () => {
+    attempts += 1;
+    const grid = document.getElementById('agents-grid');
+    if (_agents.find(a => a.id === agentId)) {
+      _renderList();
+      requestAnimationFrame(() => {
+        const row = document.querySelector(`.agent-row[data-agent-id="${CSS.escape(agentId)}"]`);
+        if (row && row.scrollIntoView) row.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+      return;
+    }
+    if (attempts < 40) setTimeout(tryRender, 50);
+  };
+  tryRender();
+};
+
 export function startAgents() {
   if (!app.currentUserId) return;
   initAgents();
@@ -304,7 +328,7 @@ function _renderList() {
       ${agent.description ? `<div class="agent-card-desc">${_esc(agent.description)}</div>` : ''}
       <div class="agent-card-url">
         <span class="agent-url-text">${location.origin}/${agent.id}</span>
-        <button class="agent-url-copy" title="Copy URL">📋</button>
+        <button class="agent-url-copy" title="Copy URL">${icon('copy', { size: '13px' })}</button>
       </div>
       <div class="agent-card-stats">
         <span class="agent-stat"><span class="agent-stat-icon">↻</span>${turns} turns</span>
@@ -329,8 +353,8 @@ function _renderList() {
         e.stopPropagation();
         const url = `${location.origin}/${agent.id}`;
         navigator.clipboard.writeText(url).then(() => {
-          copyUrlBtn.textContent = '✓';
-          setTimeout(() => { copyUrlBtn.textContent = '📋'; }, 1500);
+          copyUrlBtn.innerHTML = icon('check', { size: '13px' });
+          setTimeout(() => { copyUrlBtn.innerHTML = icon('copy', { size: '13px' }); }, 1500);
         });
       });
     }
