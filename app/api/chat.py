@@ -319,7 +319,7 @@ async def chat(request: ChatRequest):
         if not context_docs and not is_opt and loop_config.is_enabled("copy_defaults"):
             copied = await db.copy_defaults_to_agent(agent["id"], template_id='default')
             if copied > 0:
-                agent = await db.fetch_agent_by_id_with_context(agent["id"], CONTEXT_SECTION_TYPES)
+                agent = await db.fetch_agent_by_id_with_context(agent["id"], CONTEXT_SECTION_TYPES, user_id=request.user_id)
                 context_docs = agent.get("context_documents", [])
 
         # ── Pipeline: context loaded ──
@@ -448,10 +448,9 @@ async def chat(request: ChatRequest):
                 })
 
         # Build system prompt with brain context + dynamic tools
+        # context_docs is already the resolved per-caller slot list.
         system_prompt = await build_system_prompt(
             context_docs, brain_context, request.user_id,
-            agent_system_prompt=agent.get("system_prompt"),
-            bootstrap_tools=agent.get("bootstrap_tools", ""),
         )
         if attachment_context:
             system_prompt = system_prompt + "\n\n" + attachment_context
@@ -683,7 +682,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         # went through get_agent_for_user rather than get_or_resolve_session_agent).
         # For optimizer agents, get_or_resolve_session_agent already includes them.
         if not agent.get("context_documents"):
-            _fetched = await db.fetch_agent_by_id_with_context(agent["id"], CONTEXT_SECTION_TYPES)
+            _fetched = await db.fetch_agent_by_id_with_context(agent["id"], CONTEXT_SECTION_TYPES, user_id=request.user_id)
             if _fetched is not None:
                 agent = _fetched
 
@@ -695,7 +694,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         if not agent.get("context_documents") and loop_config.is_enabled("copy_defaults"):
             copied = await db.copy_defaults_to_agent(agent["id"], template_id='default')
             if copied > 0:
-                agent = await db.fetch_agent_by_id_with_context(agent["id"], CONTEXT_SECTION_TYPES)
+                agent = await db.fetch_agent_by_id_with_context(agent["id"], CONTEXT_SECTION_TYPES, user_id=request.user_id)
 
         context_docs = agent.get("context_documents", [])
 
@@ -785,8 +784,6 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
 
         system_prompt = await build_system_prompt(
             context_docs, brain_context, request.user_id,
-            agent_system_prompt=agent.get("system_prompt"),
-            bootstrap_tools=agent.get("bootstrap_tools", ""),
         )
         if attachment_context:
             system_prompt = system_prompt + "\n\n" + attachment_context

@@ -62,107 +62,16 @@ class StorageBackend(ABC):
         """Insert an interaction row. Returns the interaction id."""
         ...
 
-    # ---- Context Defaults ----
-
-    @abstractmethod
-    async def fetch_context_defaults(
-        self, context_types: List[str]
-    ) -> List[dict]:
-        """Load default context rows where context_type is in the list."""
-        ...
+    # ---- Default-template seeding ----
 
     @abstractmethod
     async def copy_defaults_to_agent(
         self, agent_id: str, template_id: Optional[str] = None
     ) -> int:
         """
-        Copy template rows into context storage for this agent.
-        Only copies types not already present for this agent.
-        Returns the number of rows copied.
+        Copy admin-base prompt slots from the default template into this agent.
+        Returns the number of slot rows copied.
         """
-        ...
-
-    # ---- Context Documents ----
-
-    @abstractmethod
-    async def fetch_context_documents(
-        self, agent_id: str, context_types: Optional[List[str]] = None,
-    ) -> List[dict]:
-        """Load context rows for this agent; if context_types is None or empty, load all types."""
-        ...
-
-    @abstractmethod
-    async def get_context_document(
-        self, agent_id: str, context_id: str,
-    ) -> Optional[dict]:
-        """Return one context row by id if it belongs to this agent."""
-        ...
-
-    @abstractmethod
-    async def update_context_document_content(
-        self, agent_id: str, context_id: str, content: str,
-    ) -> None:
-        """Update the ``content`` column for a row owned by this agent."""
-        ...
-
-    @abstractmethod
-    async def insert_document(
-        self,
-        agent_id: str,
-        context_type: str,
-        title: str,
-        content: str,
-        tags: Optional[List[str]] = None,
-    ) -> str:
-        """Insert a context document. Returns the id."""
-        ...
-
-    @abstractmethod
-    async def delete_context_row(self, agent_id: str, context_id: str) -> None:
-        """Delete a context row by id (scoped to agent)."""
-        ...
-
-    @abstractmethod
-    async def delete_all_documents_for_agent(self, agent_id: str) -> int:
-        """Delete all context rows for an agent. Returns count of deleted rows."""
-        ...
-
-    @abstractmethod
-    async def fetch_context_documents_for_agent(
-        self,
-        agent_id: str,
-        context_types: Optional[List[str]] = None,
-    ) -> List[dict]:
-        """
-        Load context documents for the user assigned to this agent.
-        If ``context_types`` is None or empty, load all types for that user.
-        """
-        ...
-
-    @abstractmethod
-    async def get_context_document_for_agent(
-        self, agent_id: str, context_id: str
-    ) -> Optional[dict]:
-        """Return one context row by id if it belongs to this agent's user."""
-        ...
-
-    @abstractmethod
-    async def update_context_document_content_for_agent(
-        self, agent_id: str, context_id: str, content: str
-    ) -> None:
-        """Update the ``content`` column for a row owned by this agent's user."""
-        ...
-
-    @abstractmethod
-    async def insert_context_document_for_agent(
-        self,
-        agent_id: str,
-        context_type: str,
-        title: str,
-        content: str,
-        tags: Optional[List[str]] = None,
-    ) -> str:
-        """Insert a context document for this agent's user. Returns the new id."""
         ...
 
     # ---- Memory System (knowledge brain) ----
@@ -408,10 +317,11 @@ class StorageBackend(ABC):
         self,
         agent_id: str,
         context_types: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
     ) -> Optional[dict]:
         """
         Same as ``fetch_agent_with_context`` but queries by agent ``id`` (PK) instead of ``user_id``.
-        Direct FK lookup — no naming convention, no inference chain, no fallback.
+        ``user_id`` is used to resolve per-caller prompt slot overrides; when omitted, returns admin-base content.
         Returns None if agent_id not found.
         """
         ...

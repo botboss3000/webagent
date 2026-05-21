@@ -7,107 +7,57 @@ from app.db.system_prompt_fragments import (
     format_tool_subheadings_markdown,
     get_prompt_fragments,
 )
-import json
-
-# Section titles for public.context.context_type (Web Portal schema)
-CONTEXT_TYPE_TO_TITLE = {
-    "agent": "AGENT IDENTITY",
-    "user": "USER",
-    "optimizer": "OPTIMIZER INSTRUCTIONS",
-    "skills": "SKILLS",
-    "tools": "TOOLS",
-    "tasks": "TASKS",
-    "memory": "MEMORY",
-    "project": "PROJECT",
-    "jobs": "JOBS",
-}
-
-CONTEXT_SECTION_TYPES = list(CONTEXT_TYPE_TO_TITLE.keys())
 
 
-def _row_context_type(doc: Dict) -> str:
-    return (doc.get("context_type") or doc.get("doc_type") or "").strip()
+# Legacy slot names — kept as a public list so the prompt-build pipeline (and
+# any external scripts that gate on context types) can still ask "what slots
+# might exist". With free-form admin slots this is just a hint, not a filter.
+CONTEXT_SECTION_TYPES = [
+    "system", "agent", "user", "skills", "tasks", "misc",
+    "bootstrap_tools", "optimizer", "memory", "project", "jobs", "tools",
+]
+
+
+def _row_content(doc: Dict) -> str:
+    return (doc.get("content") or "").strip()
 
 
 async def build_system_prompt(
     docs: List[Dict],
     brain_context: Optional[str] = None,
     user_id: Optional[str] = None,
-    agent_system_prompt: Optional[str] = None,
-    bootstrap_tools: Optional[str] = None,
 ) -> str:
-    """
-    Assemble a system prompt from context rows, brain context, and tool descriptions.
+    """Assemble the final system prompt from resolved slot docs + brain context.
 
-    Args:
-        docs: List of context documents from the context table
-        brain_context: Optional formatted brain search results to inject
-        user_id: User ID for loading personal tools (optional)
-        agent_system_prompt: Non-editable system prompt from the agent record (injected first)
-        bootstrap_tools: Non-editable tool list from the agent record (not optimizer-modifiable)
+    `docs` is the resolved slot list returned by `_docs_for_caller()` —
+    each entry is already a fully merged admin-base + user-override slot,
+    in the admin's chosen order. We concatenate the contents as-is so admins
+    keep full control over headings and formatting.
     """
     sections: List[str] = []
-
-    # ---- Agent system prompt (non-editable, from agents table) ----
-    if agent_system_prompt:
-        sections.append("# [AGENT DIRECTIVE]")
-        sections.append(agent_system_prompt)
-        sections.append("")
-
-    # ---- Context documents ----
-    grouped: Dict[str, List[Dict]] = {}
     for doc in docs:
-        ct = _row_context_type(doc)
-        if not ct:
-            continue
-        grouped.setdefault(ct, []).append(doc)
-
-    order = ["agent", "user", "optimizer", "skills", "tools", "tasks", "memory", "project", "jobs"]
-    for context_type in order:
-        if context_type not in grouped:
-            continue
-        title = CONTEXT_TYPE_TO_TITLE.get(context_type, context_type.upper())
-        sections.append(f"# [{title}]")
-        for doc in grouped[context_type]:
-            content = doc.get("content", "").strip()
-            if content:
-                sections.append(content)
-        sections.append("")
-
-    for context_type, doc_list in grouped.items():
-        if context_type in order:
-            continue
-        title = context_type.upper()
-        sections.append(f"# [{title}]")
-        for doc in doc_list:
-            content = doc.get("content", "").strip()
-            if content:
-                sections.append(content)
-        sections.append("")
+        content = _row_content(doc)
+        if content:
+            sections.append(content)
 
     fr = get_prompt_fragments()
 
-    # ---- Bootstrap tools (non-editable, from agent record) ----
-    if bootstrap_tools and bootstrap_tools.strip():
-        sections.append(bootstrap_tools.strip())
-        sections.append("")
-    elif not user_id:
-        # Fallback tool list for unauthenticated paths
+    # If no docs supplied a tools list and we have no caller, inject the
+    # fallback tool list so anonymous endpoints still see something useful.
+    has_any_content = any(s.strip() for s in sections)
+    if not has_any_content and not user_id:
         fallback = format_tool_subheadings_markdown(fr.get("fallback_tools") or "")
         if fallback:
             sections.append(fallback)
-            sections.append("")
 
-    # ---- Brain context injection ----
     if brain_context:
         sections.append("# [BRAIN CONTEXT]")
         intro = (fr.get("brain_context_intro") or "").strip()
         if intro:
             sections.append(intro + "\n")
         sections.append(brain_context)
-        sections.append("")
 
-    return "\n".join(sections).strip()
+    return "\n\n".join(s for s in sections if s.strip()).strip()
 
 
 def format_attachments_for_prompt(attachments: List[Dict]) -> str:

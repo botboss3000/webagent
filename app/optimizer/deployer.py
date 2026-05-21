@@ -1,14 +1,16 @@
 """
-Deployer phase — writes improved skill versions to the database.
+Deployer phase — writes improved skill versions into the agent's prompt slots.
+
+Behavioral skills land in the 'skills' slot on the user's default agent
+(admin-base row). The Optimizer's improvement log is a separate table.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from app.db import get_db
 
@@ -21,13 +23,29 @@ async def deploy_improvements(
     proposals: List[Dict[str, Any]],
     optimizer_session_id: str,
 ) -> int:
-    """
-    Write approved proposals to the skills table and log improvements.
-
-    Returns number of skills deployed.
-    """
+    """Apply approved proposals to the user's agent prompt slots."""
     db = get_db()
     deployed = 0
+
+    # Resolve the user's default agent.
+    raw = getattr(db, "_get_conn", None)
+    if not raw:
+        return 0
+    conn = raw()
+    try:
+        agent_row = conn.execute(
+            """SELECT id FROM agents
+               WHERE EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)
+               ORDER BY is_user_default DESC, created_at ASC
+               LIMIT 1""",
+            (user_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not agent_row:
+        logger.warning("Deployer: no agent found for user %s", user_id)
+        return 0
+    agent_id = agent_row[0]
 
     for proposal in proposals:
         if not proposal.get("improved"):
@@ -41,67 +59,33 @@ async def deploy_improvements(
             continue
 
         try:
-            # ── Update skill in context_documents (behavioral) ──
-            # For behavioral skills, we update context_documents with context_type="skills"
-            conn = None
+            # Behavioral skill writes go into the 'skills' slot (admin base).
+            slots = await db.list_slots(agent_id)
+            skills_slot = next((s for s in slots if s["slot_name"] == "skills"), None)
+            if skills_slot is None:
+                logger.warning("Deployer: agent %s has no 'skills' slot — skipping", agent_id[:8])
+                continue
+            await db.upsert_slot(
+                agent_id=agent_id,
+                slot_name="skills",
+                order_index=int(skills_slot.get("order_index") or 40),
+                lock=bool(skills_slot.get("lock")),
+                merge_mode=skills_slot.get("merge_mode") or "replace",
+                content=new_content,
+                updated_by="optimizer",
+            )
+            deployed += 1
+
+            conn = raw()
             try:
-                raw = getattr(db, '_get_conn', None)
-                if raw:
-                    conn = raw()
-                    # Check if skill exists as a context document
-                    existing = conn.execute(
-                        """SELECT id, content FROM context_documents
-                           WHERE context_type = 'skills' AND title = ?""",
-                        (skill_name,),
-                    ).fetchone()
-
-                    # Get agent_id from user_id
-                    agent_id = None
-                    agent_row = conn.execute(
-                        "SELECT id FROM agents WHERE user_id = ? LIMIT 1",
-                        (user_id,),
-                    ).fetchone()
-                    if agent_row:
-                        agent_id = agent_row[0]
-
-                    if existing:
-                        old_content = existing[1]
-                        doc_id = existing[0]
-                        conn.execute(
-                            """UPDATE context_documents
-                               SET content = ?, updated_at = ?
-                               WHERE id = ?""",
-                            (new_content, datetime.now(timezone.utc).isoformat(), doc_id),
-                        )
-                        conn.commit()
-                        deployed += 1
-                        logger.info("Deployer: updated behavioral skill '%s' (%s)", skill_name, doc_id)
-                    else:
-                        # Insert as new behavioral skill
-                        doc_id = str(uuid.uuid4())
-                        now = datetime.now(timezone.utc).isoformat()
-                        conn.execute(
-                            """INSERT INTO context_documents
-                               (id, agent_id, context_type, title, content, tags, created_at, updated_at)
-                               VALUES (?, ?, 'skills', ?, ?, '[]', ?, ?)""",
-                            (doc_id, agent_id or user_id, skill_name, new_content, now, now),
-                        )
-                        conn.commit()
-                        deployed += 1
-                        logger.info("Deployer: created behavioral skill '%s' (%s)", skill_name, doc_id)
-
-                    # ── Log the improvement ──
-                    _log_improvement(conn, skill_name, "1", "2",
-                                     "behavioral", reasoning, optimizer_session_id)
-
-            except Exception as e:
-                logger.error("Deployer: failed to deploy %s: %s", skill_name, e)
+                _log_improvement(conn, skill_name, "1", "2",
+                                 "behavioral", reasoning, optimizer_session_id)
             finally:
-                if conn and hasattr(conn, 'close'):
-                    conn.close()
-
+                conn.close()
+            logger.info("Deployer: updated 'skills' slot for agent %s (proposal '%s')",
+                        agent_id[:8], skill_name)
         except Exception as e:
-            logger.error("Deployer: unexpected error for %s: %s", skill_name, e)
+            logger.error("Deployer: failed to deploy %s: %s", skill_name, e)
 
     return deployed
 

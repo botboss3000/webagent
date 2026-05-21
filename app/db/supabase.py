@@ -780,9 +780,11 @@ class SupabaseBackend(StorageBackend):
         self,
         agent_id: str,
         context_types: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
     ) -> Optional[dict]:
         """
         Same as ``fetch_agent_with_context`` but queries by agent ``id`` (PK) instead of ``user_id``.
+        ``user_id`` is accepted for API parity with the local backend's per-caller slot resolution.
         """
         try:
             q = (
@@ -1555,9 +1557,10 @@ class SupabaseClient:
     async def fetch_agent_by_id_with_context(
         agent_id: str,
         context_types: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
     ) -> Optional[dict]:
         return await SupabaseClient._get_backend().fetch_agent_by_id_with_context(
-            agent_id, context_types,
+            agent_id, context_types, user_id=user_id,
         )
 
     @staticmethod

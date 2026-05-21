@@ -532,18 +532,24 @@ function _renderConfigTab(body, agent, panelEl) {
   }
   body.appendChild(umGroup);
 
-  // Five prompt sections
-  const FIELDS = [
-    { key: 'agent_prompt',  label: 'Identity & Personality',  hint: "Defines this agent's character, tone, and core operating style." },
-    { key: 'user_prompt',   label: 'User Preferences',        hint: 'What this agent knows about the user — their preferences and context.' },
-    { key: 'skills_prompt', label: 'Skills & Tools Guidance', hint: 'Which capabilities this agent should focus on and how to use them.' },
-    { key: 'tasks_prompt',  label: 'Task Workflows',          hint: 'How this agent handles common task types step-by-step.' },
-    { key: 'misc_prompt',   label: 'Miscellaneous Context',   hint: 'Any additional guidance or context for this agent.' },
-  ];
-  for (const f of FIELDS) {
-    _addField(body, f.label, 'agents-textarea', f.key,
-      agent[f.key] || '', !isEditable, 6, f.hint);
-  }
+  // ── Prompt slots ────────────────────────────────────────────────────────
+  // Admin (isEditable) sees the full slot editor; everyone else sees the
+  // override view for unlocked slots + read-only base for locked ones.
+  const slotsHost = document.createElement('div');
+  slotsHost.className = 'agents-field-group';
+  slotsHost.dataset.role = 'slots-host';
+  slotsHost.innerHTML = `
+    <label class="agents-field-label">Prompt Slots</label>
+    <span class="agents-field-hint">${isEditable
+      ? 'Slots are concatenated in order into the system message. Lock a slot to keep it admin-only; otherwise users may write overrides.'
+      : 'You can override unlocked slots for yourself without affecting other users.'}</span>
+    <div class="agents-slots-list" data-role="slots-list" style="margin-top:8px;"></div>
+    ${isEditable ? '<button type="button" class="agents-btn" data-role="slots-add" style="margin-top:8px;">+ Add slot</button>' : ''}
+  `;
+  body.appendChild(slotsHost);
+  // Track slot edit state on the panel for save handlers.
+  panelEl._slotState = { slots: [], overrides: {}, resetOverridesFor: new Set(), userRole: 'member', loaded: false };
+  _loadAndRenderSlots(panelEl, agent, isEditable);
 
 
   // Admin-only: Discoverable toggle for system templates
@@ -610,6 +616,226 @@ function _renderConfigTab(body, agent, panelEl) {
     bar.appendChild(msg);
     if (content) content.appendChild(bar);
   }
+}
+
+async function _loadAndRenderSlots(panelEl, agent, _isEditable) {
+  const listEl = panelEl.querySelector('[data-role="slots-list"]');
+  if (!listEl) return;
+  listEl.innerHTML = '<div style="font-size:12px;color:var(--fg-muted,#565f89);">Loading slots…</div>';
+  let data = null;
+  try {
+    const res = await fetch(
+      `/api/v1/agents/${encodeURIComponent(agent.id)}/slots?user_id=${encodeURIComponent(app.currentUserId)}`
+    );
+    if (res.ok) data = await res.json();
+  } catch (e) { /* ignore — fall back to empty list */ }
+
+  const state = panelEl._slotState || { slots: [], overrides: {}, resetOverridesFor: new Set(), userRole: 'member', loaded: false };
+  state.userRole = data?.user_role || 'member';
+  state.slots = (data?.slots || []).map(s => ({
+    slot_name: s.slot_name,
+    order_index: s.order_index || 0,
+    lock: !!s.lock,
+    merge_mode: s.merge_mode || 'replace',
+    content: s.content || '',
+  }));
+  state.overrides = {};
+  for (const s of (data?.slots || [])) {
+    if (s.override_content !== undefined && s.override_content !== null) {
+      state.overrides[s.slot_name] = s.override_content;
+    }
+  }
+  state.resetOverridesFor = new Set();
+  state.loaded = true;
+  panelEl._slotState = state;
+  const adminEditor = state.userRole === 'admin';
+  // Hide the "Add slot" button for non-admins (server would reject it anyway).
+  const addBtn = panelEl.querySelector('[data-role="slots-add"]');
+  if (addBtn && !adminEditor) addBtn.style.display = 'none';
+  _renderSlotsList(panelEl, agent, adminEditor);
+
+  if (adminEditor && addBtn) {
+    addBtn.addEventListener('click', () => {
+      const nextOrder = (state.slots.reduce((m, s) => Math.max(m, s.order_index || 0), 0) || 0) + 10;
+      let n = 1;
+      let nm = 'new_slot';
+      while (state.slots.some(s => s.slot_name === nm)) { n += 1; nm = `new_slot_${n}`; }
+      state.slots.push({ slot_name: nm, order_index: nextOrder, lock: false, merge_mode: 'replace', content: '' });
+      _renderSlotsList(panelEl, agent, adminEditor);
+    });
+  }
+}
+
+function _renderSlotsList(panelEl, agent, adminEditor) {
+  const listEl = panelEl.querySelector('[data-role="slots-list"]');
+  if (!listEl) return;
+  const state = panelEl._slotState;
+  listEl.innerHTML = '';
+  if (!state.slots.length) {
+    listEl.innerHTML = '<div style="font-size:12px;color:var(--fg-muted,#565f89);">No prompt slots defined yet.</div>';
+    return;
+  }
+  // Keep slot list sorted by order_index for consistent rendering.
+  state.slots.sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
+  for (let i = 0; i < state.slots.length; i++) {
+    listEl.appendChild(_renderSlotCard(panelEl, agent, adminEditor, i));
+  }
+}
+
+function _renderSlotCard(panelEl, agent, adminEditor, idx) {
+  const state = panelEl._slotState;
+  const slot = state.slots[idx];
+  const card = document.createElement('div');
+  card.className = 'agents-slot-card';
+  card.style.cssText = 'border:1px solid var(--border,#2a2a3a);border-radius:6px;padding:10px;margin-bottom:8px;background:var(--bg-1,#1a1b26);';
+
+  // Header row: name + lock + merge + order + delete
+  const head = document.createElement('div');
+  head.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;';
+  if (adminEditor) {
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'agents-input';
+    nameInput.value = slot.slot_name;
+    nameInput.style.cssText = 'flex:1;min-width:140px;';
+    nameInput.addEventListener('input', () => { slot.slot_name = nameInput.value.trim(); });
+    head.appendChild(nameInput);
+
+    const orderInput = document.createElement('input');
+    orderInput.type = 'number';
+    orderInput.className = 'agents-input';
+    orderInput.value = slot.order_index;
+    orderInput.style.cssText = 'width:70px;';
+    orderInput.title = 'Order (lower = earlier in system prompt)';
+    orderInput.addEventListener('input', () => {
+      slot.order_index = parseInt(orderInput.value, 10) || 0;
+    });
+    head.appendChild(orderInput);
+
+    const lockLabel = document.createElement('label');
+    lockLabel.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;';
+    const lockCb = document.createElement('input');
+    lockCb.type = 'checkbox';
+    lockCb.checked = !!slot.lock;
+    lockCb.addEventListener('change', () => {
+      slot.lock = lockCb.checked;
+      // Locking disables merge_mode in the UI.
+      _renderSlotsList(panelEl, agent, adminEditor);
+    });
+    const lockTxt = document.createElement('span'); lockTxt.textContent = 'admin only';
+    lockLabel.appendChild(lockCb); lockLabel.appendChild(lockTxt);
+    head.appendChild(lockLabel);
+
+    const modeSel = document.createElement('select');
+    modeSel.className = 'agents-input';
+    modeSel.style.cssText = 'width:110px;';
+    for (const mode of ['replace', 'append']) {
+      const opt = document.createElement('option');
+      opt.value = mode; opt.textContent = mode;
+      if (slot.merge_mode === mode) opt.selected = true;
+      modeSel.appendChild(opt);
+    }
+    modeSel.disabled = slot.lock;
+    modeSel.title = slot.lock ? 'Locked slots have no overrides — merge mode does not apply.' : 'How a user override combines with the admin base.';
+    modeSel.addEventListener('change', () => { slot.merge_mode = modeSel.value; });
+    head.appendChild(modeSel);
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'agents-btn';
+    delBtn.textContent = '🗑';
+    delBtn.title = 'Delete this slot (also drops all user overrides for it)';
+    delBtn.addEventListener('click', () => {
+      if (!confirm(`Delete slot "${slot.slot_name}"? This also drops all user overrides for it.`)) return;
+      state.slots.splice(idx, 1);
+      _renderSlotsList(panelEl, agent, adminEditor);
+    });
+    head.appendChild(delBtn);
+  } else {
+    const label = document.createElement('div');
+    label.style.cssText = 'flex:1;font-size:13px;font-weight:600;color:var(--fg-1);';
+    label.textContent = slot.slot_name;
+    head.appendChild(label);
+    const badge = document.createElement('span');
+    badge.style.cssText = 'font-size:11px;padding:2px 6px;border-radius:4px;background:var(--bg-2,#24253a);color:var(--fg-muted,#565f89);';
+    badge.textContent = slot.lock ? 'locked' : `unlocked · ${slot.merge_mode}`;
+    head.appendChild(badge);
+  }
+  card.appendChild(head);
+
+  // Body: admin sees content textarea. Non-admin sees read-only base + override editor when unlocked.
+  if (adminEditor) {
+    const ta = document.createElement('textarea');
+    ta.className = 'agents-textarea';
+    ta.rows = 6;
+    ta.value = slot.content || '';
+    ta.placeholder = 'Slot content (admin base)';
+    ta.addEventListener('input', () => { slot.content = ta.value; });
+    card.appendChild(ta);
+
+    // Reset-overrides checkbox shown only for unlocked slots (locked → nothing to reset).
+    if (!slot.lock) {
+      const resetWrap = document.createElement('label');
+      resetWrap.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-muted,#565f89);margin-top:6px;cursor:pointer;';
+      const resetCb = document.createElement('input');
+      resetCb.type = 'checkbox';
+      resetCb.checked = state.resetOverridesFor.has(slot.slot_name);
+      resetCb.addEventListener('change', () => {
+        if (resetCb.checked) state.resetOverridesFor.add(slot.slot_name);
+        else state.resetOverridesFor.delete(slot.slot_name);
+      });
+      const resetTxt = document.createElement('span');
+      resetTxt.textContent = 'On save: reset existing user overrides for this slot';
+      resetWrap.appendChild(resetCb); resetWrap.appendChild(resetTxt);
+      card.appendChild(resetWrap);
+    }
+  } else {
+    const base = document.createElement('div');
+    base.style.cssText = 'font-size:12px;background:var(--bg-2,#24253a);border-radius:4px;padding:8px;white-space:pre-wrap;color:var(--fg-muted,#a9b1d6);max-height:200px;overflow:auto;';
+    base.textContent = slot.content || '(empty)';
+    card.appendChild(base);
+
+    if (slot.lock) {
+      const note = document.createElement('div');
+      note.style.cssText = 'font-size:11px;color:var(--fg-muted,#565f89);margin-top:6px;';
+      note.textContent = '🔒 Locked by admin — cannot be overridden.';
+      card.appendChild(note);
+    } else {
+      const ovLabel = document.createElement('div');
+      ovLabel.style.cssText = 'font-size:11px;color:var(--fg-muted,#565f89);margin-top:10px;';
+      ovLabel.textContent = slot.merge_mode === 'append'
+        ? 'Your override is APPENDED below the admin base.'
+        : 'Your override REPLACES the admin base for you.';
+      card.appendChild(ovLabel);
+
+      const ovTa = document.createElement('textarea');
+      ovTa.className = 'agents-textarea';
+      ovTa.rows = 4;
+      ovTa.value = state.overrides[slot.slot_name] || '';
+      ovTa.placeholder = 'Your override (leave empty to inherit admin base)';
+      ovTa.addEventListener('input', () => { state.overrides[slot.slot_name] = ovTa.value; });
+      card.appendChild(ovTa);
+
+      const clearBtn = document.createElement('button');
+      clearBtn.type = 'button';
+      clearBtn.className = 'agents-btn';
+      clearBtn.style.marginTop = '4px';
+      clearBtn.textContent = 'Clear my override';
+      clearBtn.addEventListener('click', async () => {
+        try {
+          await fetch(
+            `/api/v1/agents/${encodeURIComponent(agent.id)}/my-prompts/${encodeURIComponent(slot.slot_name)}?user_id=${encodeURIComponent(app.currentUserId)}`,
+            { method: 'DELETE' }
+          );
+          state.overrides[slot.slot_name] = '';
+          ovTa.value = '';
+        } catch (e) { /* noop */ }
+      });
+      card.appendChild(clearBtn);
+    }
+  }
+
+  return card;
 }
 
 function _addField(container, label, tag, fieldKey, value, readonly, rows = 4, hint = '') {
@@ -3155,11 +3381,38 @@ async function _saveChanges(agent, barEl, panelEl) {
   const tcVal   = fv('max_turn_count'); if (tcVal !== undefined) updates.max_turn_count = parseInt(tcVal, 10) || 10;
   const ttVal   = fv('trigger_type');   if (ttVal !== undefined) updates.trigger_type   = ttVal;
   const tkVal   = fv('trigger_key');    if (tkVal !== undefined) updates.trigger_key    = tkVal || null;
-  for (const k of ['agent_prompt','user_prompt','skills_prompt','tasks_prompt','misc_prompt']) {
-    const v = fv(k); if (v !== undefined) updates[k] = v;
-  }
   const umChecked = panelEl.querySelector('[data-field="user_mode"]:checked');
   if (umChecked) updates.user_mode = umChecked.value;
+
+  // Slot writes: split into admin (slots payload) and member (overrides payload).
+  const sstate = panelEl._slotState || {};
+  const role = sstate.userRole || 'member';
+  let slotsPayload = null;
+  let overridesPayload = null;
+  if (sstate.loaded) {
+    if (role === 'admin') {
+      slotsPayload = (sstate.slots || []).map(s => ({
+        slot_name: s.slot_name,
+        order_index: s.order_index || 0,
+        lock: !!s.lock,
+        merge_mode: s.merge_mode || 'replace',
+        content: s.content || '',
+      }));
+      updates.slots = slotsPayload;
+      if (sstate.resetOverridesFor && sstate.resetOverridesFor.size > 0) {
+        updates.reset_overrides_for = Array.from(sstate.resetOverridesFor);
+      }
+    } else {
+      const items = [];
+      for (const s of (sstate.slots || [])) {
+        if (s.lock) continue;
+        const v = sstate.overrides && sstate.overrides[s.slot_name];
+        if (v === undefined || v === null) continue;
+        items.push({ slot_name: s.slot_name, content: v });
+      }
+      if (items.length > 0) overridesPayload = items;
+    }
+  }
 
   try {
     const res = await fetch(`/api/v1/agents/${agent.id}`, {
@@ -3173,6 +3426,19 @@ async function _saveChanges(agent, barEl, panelEl) {
       const idx = _agents.findIndex(a => a.id === agent.id);
       if (idx !== -1) Object.assign(_agents[idx], data.agent);
       Object.assign(agent, data.agent); // also update the closure reference
+
+      // Member-only: send override writes via the my-prompts endpoint.
+      if (overridesPayload) {
+        try {
+          await fetch(`/api/v1/agents/${agent.id}/my-prompts`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_id: app.currentUserId, slots: overridesPayload }),
+          });
+        } catch (_) { /* surface only main save status */ }
+      }
+      // Reset the reset-overrides marks so saving again doesn't repeat.
+      if (sstate.resetOverridesFor) sstate.resetOverridesFor.clear();
       if (msg) { msg.textContent = '✓ Saved'; msg.className = 'agents-save-msg'; }
     } else {
       if (msg) { msg.textContent = data.detail || 'Save failed'; msg.className = 'agents-save-msg error'; }

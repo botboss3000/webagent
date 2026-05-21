@@ -125,25 +125,36 @@ async def run_trials(user_id, changes, transcript, trials_per_change=2):
                     (new_content, test_uid),
                 ))
 
-            # Copy real user's context documents for realistic simulation
+            # Copy real user's admin-base prompt slots for realistic simulation
             real_agent = _worker_retry(lambda: c.execute(
-                "SELECT id FROM agents WHERE user_id=? LIMIT 1", (user_id,)
+                """SELECT id FROM agents
+                   WHERE EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)
+                   ORDER BY is_user_default DESC, created_at ASC LIMIT 1""",
+                (user_id,),
             ).fetchone())
             test_agent_row = _worker_retry(lambda: c.execute(
-                "SELECT id FROM agents WHERE user_id=? LIMIT 1", (test_uid,)
+                """SELECT id FROM agents
+                   WHERE EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)
+                   ORDER BY created_at DESC LIMIT 1""",
+                (test_uid,),
             ).fetchone())
             if real_agent and test_agent_row:
-                docs = _worker_retry(lambda: c.execute(
-                    "SELECT context_type, title, content, tags FROM context_documents WHERE agent_id=?", (real_agent[0],)
+                slot_rows = _worker_retry(lambda: c.execute(
+                    """SELECT slot_name, order_index, lock, merge_mode, content
+                       FROM agent_prompts WHERE agent_id=? AND user_id IS NULL""",
+                    (real_agent[0],),
                 ).fetchall())
-                for ct, title, content, tags in docs:
+                for sn, oi, lk, mm, content in slot_rows:
                     existing = _worker_retry(lambda: c.execute(
-                        "SELECT id FROM context_documents WHERE agent_id=? AND title=?", (test_agent_row[0], title)
+                        "SELECT id FROM agent_prompts WHERE agent_id=? AND slot_name=? AND user_id IS NULL",
+                        (test_agent_row[0], sn),
                     ).fetchone())
                     if not existing:
                         _worker_retry(lambda: c.execute(
-                            "INSERT INTO context_documents (id,agent_id,context_type,title,content,tags,created_at,updated_at) VALUES (?,?,?,?,?,?,datetime('now'),datetime('now'))",
-                            (str(uuid.uuid4()), test_agent_row[0], ct, title, content, tags),
+                            """INSERT INTO agent_prompts
+                               (id, agent_id, slot_name, user_id, order_index, lock, merge_mode, content, updated_at, updated_by)
+                               VALUES (?,?,?,NULL,?,?,?,?,datetime('now'),'worker')""",
+                            (str(uuid.uuid4()), test_agent_row[0], sn, oi, lk, mm, content),
                         ))
 
             _worker_retry(lambda: (c.execute("INSERT OR IGNORE INTO sessions (id,user_id,title,created_at,updated_at) VALUES (?,?,?,datetime('now'),datetime('now'))", (f"worker-{trial_id}", test_uid, f"Worker test {trial_id}")), db.commit()))

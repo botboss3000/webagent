@@ -352,44 +352,39 @@ async def run_worker_trials(changes_json: str, user_id: str, session_id: str) ->
                 original_message = user_msgs[0].strip()
         logging.warning(f"run_worker_trials: original_message={original_message}")
 
-        # Read real agent (read-only — no write lock)
-        real_agent = _local_conn.execute(
-            "SELECT id, system_prompt, agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt FROM agents WHERE user_id=? LIMIT 1",
-            (real_user_id,)
+        # Locate the user's default agent by admin_users membership.
+        real_agent_row = _local_conn.execute(
+            """SELECT id FROM agents
+               WHERE EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)
+               ORDER BY is_user_default DESC, created_at ASC
+               LIMIT 1""",
+            (real_user_id,),
         ).fetchone()
-        if not real_agent:
+        if not real_agent_row:
             return json.dumps({"status": "error", "message": "No real agent found for user"})
 
-        real_agent_id = real_agent[0]
-        base_prompt = real_agent[1] or ""
-        base_ctx = {
-            "agent_prompt":  real_agent[2] or "",
-            "user_prompt":   real_agent[3] or "",
-            "skills_prompt": real_agent[4] or "",
-            "tasks_prompt":  real_agent[5] or "",
-            "misc_prompt":   real_agent[6] or "",
-        }
+        real_agent_id = real_agent_row[0]
+
+        # Read admin-base slot rows for the real agent.
+        base_slot_rows = _local_conn.execute(
+            """SELECT slot_name, order_index, lock, merge_mode, content
+               FROM agent_prompts
+               WHERE agent_id = ? AND user_id IS NULL
+               ORDER BY order_index ASC""",
+            (real_agent_id,),
+        ).fetchall()
+        base_slots = [
+            {
+                "slot_name":   r[0],
+                "order_index": r[1] or 0,
+                "lock":        bool(r[2] or 0),
+                "merge_mode":  r[3] or "replace",
+                "content":     r[4] or "",
+            }
+            for r in base_slot_rows
+        ]
     finally:
         _local_conn.close()
-
-    # Build context docs list for prompt builder from context columns
-    _PROMPT_COLS_LOCAL = [
-        ("agent_prompt",  "agent",  "Agent Identity"),
-        ("user_prompt",   "user",   "User"),
-        ("skills_prompt", "skills", "Core Skills"),
-        ("tasks_prompt",  "tasks",  "Common Tasks"),
-        ("misc_prompt",   "misc",   "Misc"),
-    ]
-    base_context_docs = []
-    for col, ct, title in _PROMPT_COLS_LOCAL:
-        content = base_ctx.get(col, "") or ""
-        if content.strip():
-            base_context_docs.append({
-                "context_type": ct,
-                "title": title,
-                "content": content,
-                "tags": [],
-            })
 
     # ── LLM client setup (same pattern as loop.py _get_client) ──
     try:
@@ -411,9 +406,10 @@ async def run_worker_trials(changes_json: str, user_id: str, session_id: str) ->
     _now_iso = lambda: datetime.now(timezone.utc).isoformat()
 
     for ci, change in enumerate(changes):
+        # element here refers to a slot_name now (with legacy 'agent'/'user'/etc. aliases mapped below).
         element = change.get("element", "unknown")
         new_content = change.get("new_content", "")
-        element_type = change.get("element_type", "system_prompt")
+        element_type = change.get("element_type", "slot")  # 'slot' (default) or legacy 'system_prompt'
         trial_id = str(uuid.uuid4())[:8]
         test_uid = f"worker-test-{trial_id}"
         test_agent_id = str(uuid.uuid4())
@@ -432,34 +428,51 @@ async def run_worker_trials(changes_json: str, user_id: str, session_id: str) ->
             temp_conn.executescript(SCHEMA_SQL)
             now = _now_iso()
 
-            # 2. Build trial context: start from real agent's context, apply proposed change
-            trial_ctx = dict(base_ctx)  # copy all 5 columns
-            trial_prompt = base_prompt
-
-            _TYPE_TO_COL_LOCAL = {
-                "agent": "agent_prompt", "user": "user_prompt", "skills": "skills_prompt",
-                "tasks": "tasks_prompt", "misc": "misc_prompt",
+            # 2. Build trial slot set: clone base slots, apply proposed change.
+            _LEGACY_SLOT_ALIASES = {
+                "agent_prompt": "agent", "user_prompt": "user", "skills_prompt": "skills",
+                "tasks_prompt": "tasks", "misc_prompt": "misc", "system_prompt": "system",
+                "bootstrap_tools": "bootstrap_tools",
             }
-            if element_type == "system_prompt" and new_content:
-                trial_prompt += "\n\n" + new_content
-            elif element_type in ("context_column", "context_document") and new_content:
-                # element is the column name (agent_prompt) or context_type (agent)
-                col = element if element in trial_ctx else _TYPE_TO_COL_LOCAL.get(element)
-                if col and col in trial_ctx:
-                    trial_ctx[col] = new_content
+            target_slot = _LEGACY_SLOT_ALIASES.get(element, element)
+            trial_slots = [dict(s) for s in base_slots]
+            applied = False
+            if new_content:
+                if element_type == "system_prompt":
+                    # Treat legacy "system_prompt" element_type as a write to the 'system' slot.
+                    target_slot = "system"
+                for s in trial_slots:
+                    if s["slot_name"] == target_slot:
+                        s["content"] = new_content
+                        applied = True
+                        break
+                if not applied:
+                    # New slot — append it at the end.
+                    trial_slots.append({
+                        "slot_name": target_slot,
+                        "order_index": (max((s["order_index"] for s in trial_slots), default=0) or 0) + 10,
+                        "lock": False,
+                        "merge_mode": "replace",
+                        "content": new_content,
+                    })
 
-            # 3. Insert trial agent into temp db with updated context columns
+            # 3. Insert trial agent row (no prompt cols in the new schema).
             temp_conn.execute(
                 """INSERT INTO agents
-                   (id, user_id, system_prompt, status, metadata,
-                    agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt,
-                    created_at, updated_at)
-                   VALUES (?, ?, ?, 'active', '{}', ?, ?, ?, ?, ?, ?, ?)""",
-                (test_agent_id, test_uid, trial_prompt,
-                 trial_ctx["agent_prompt"], trial_ctx["user_prompt"],
-                 trial_ctx["skills_prompt"], trial_ctx["tasks_prompt"], trial_ctx["misc_prompt"],
-                 now, now)
+                   (id, status, metadata, created_at, updated_at)
+                   VALUES (?, 'active', '{}', ?, ?)""",
+                (test_agent_id, now, now)
             )
+            # And seed its slot rows.
+            for s in trial_slots:
+                temp_conn.execute(
+                    """INSERT INTO agent_prompts
+                       (id, agent_id, slot_name, user_id, order_index, lock, merge_mode, content, updated_at, updated_by)
+                       VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, 'trial')""",
+                    (str(uuid.uuid4()), test_agent_id, s["slot_name"],
+                     s["order_index"], 1 if s["lock"] else 0,
+                     s.get("merge_mode") or "replace", s["content"] or "", now),
+                )
 
             # 5. Create session in temp db
             test_session_id = f"trial-{trial_id}"
@@ -470,13 +483,15 @@ async def run_worker_trials(changes_json: str, user_id: str, session_id: str) ->
 
             temp_conn.commit()
 
-            # 6. Build system prompt using the app's prompt builder
+            # 6. Build system prompt from the trial slot set.
+            trial_context_docs = [
+                {"id": s["slot_name"], "content": s["content"]}
+                for s in trial_slots if (s.get("content") or "").strip()
+            ]
             system_prompt = await build_system_prompt(
-                base_context_docs,
+                trial_context_docs,
                 brain_context=None,
                 user_id=test_uid,
-                bootstrap_tools=trial_ctx.get("bootstrap_tools", ""),
-                agent_system_prompt=trial_prompt,
             )
 
             # 7. Parse simulation parameters from the change
@@ -688,17 +703,14 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
     #     The agent row is then copied into the temp DB (same ID) so chat.py can find
     #     it after switching the db pointer to the temp DB for this session.
     _agent_cols = (
-        "id", "template_id", "system_prompt",
+        "id", "template_id",
         "max_turn_count", "model", "provider", "temperature", "max_tokens",
-        "status", "metadata", "agent_prompt", "user_prompt",
-        "skills_prompt", "tasks_prompt", "misc_prompt", "created_at", "updated_at",
+        "status", "metadata", "admin_users",
+        "created_at", "updated_at",
     )
     _agent_vals_new = (
         str(_uuid_mod.uuid4()),          # id — placeholder, overwritten below
-        agent_user_id,
-        real_user_id,
         "opt_closer",
-        template_data.get("system_prompt", ""),
         template_data.get("max_turn_count", 10),
         template_data.get("model"),
         template_data.get("provider"),
@@ -706,11 +718,7 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
         template_data.get("max_tokens", 4096),
         "active",
         template_data.get("metadata", "{}"),
-        template_data.get("agent_prompt", ""),
-        template_data.get("user_prompt", ""),
-        template_data.get("skills_prompt", ""),
-        template_data.get("tasks_prompt", ""),
-        template_data.get("misc_prompt", ""),
+        json.dumps([agent_user_id]),
         now_sql, now_sql,
     )
 
@@ -718,7 +726,10 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
     _lc_agent.row_factory = sqlite3.Row
     try:
         existing_agent = _lc_agent.execute(
-            "SELECT * FROM agents WHERE user_id = ? AND template_id = 'opt_closer' LIMIT 1",
+            """SELECT * FROM agents
+               WHERE template_id = 'opt_closer'
+                 AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)
+               LIMIT 1""",
             (agent_user_id,),
         ).fetchone()
         if existing_agent:
@@ -893,33 +904,86 @@ async def _kickstart_closer(user_id: str, closer_sid: str, summary: str) -> None
 
 
 async def deploy_optimization(changes_json: str, user_id: str, session_id: str) -> str:
-    """Deploy approved optimization changes to the target user's agent."""
-    import uuid
+    """Deploy approved optimization changes to the target user's agent.
 
-    # Resolve real user_id from optimizer agent user_id (opt_role_realuser -> realuser)
+    Writes to the admin-base slot rows (agent_prompts) for the user's default
+    agent. Legacy element names like 'agent_prompt' or 'agent' are mapped to
+    the canonical slot_names ('agent', 'user', 'skills', 'tasks', 'misc',
+    'system', 'bootstrap_tools'). Unknown slot_names are added as new slots.
+    """
+    import uuid as _uuid_dep
+
     real_user_id = user_id
     if user_id.startswith('opt_'):
         parts = user_id.split('_', 2)
         if len(parts) == 3:
             real_user_id = parts[2]
 
-    changes = json.loads(changes_json)
-    deployed = []
+    try:
+        changes = json.loads(changes_json) if isinstance(changes_json, str) else changes_json
+    except Exception as e:
+        return json.dumps({"status": "error", "message": f"JSON parse: {e}"})
+    if not isinstance(changes, list):
+        changes = [changes]
 
     from app.db import get_db
     backend = get_db()
-    async with backend._write_lock:
-        raw = backend._get_conn()
-        c = raw.cursor()
 
-        _TYPE_TO_COL_DEPLOY = {
-            "agent": "agent_prompt", "user": "user_prompt", "skills": "skills_prompt",
-            "tasks": "tasks_prompt", "misc": "misc_prompt",
-            "agent_prompt": "agent_prompt", "user_prompt": "user_prompt", "skills_prompt": "skills_prompt",
-            "tasks_prompt": "tasks_prompt", "misc_prompt": "misc_prompt",
-        }
+    # Find the user's default agent by admin_users membership.
+    conn = backend._get_conn()
+    try:
+        row = conn.execute(
+            """SELECT id FROM agents
+               WHERE EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)
+               ORDER BY is_user_default DESC, created_at ASC
+               LIMIT 1""",
+            (real_user_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return json.dumps({"status": "error", "message": "No real agent found for user"})
+    agent_id = row[0]
 
-        for ch in changes:
-            element = ch.get("element", "")
-            new_content = ch.get("new_content", "")
+    _ALIAS = {
+        "agent_prompt": "agent", "user_prompt": "user", "skills_prompt": "skills",
+        "tasks_prompt": "tasks", "misc_prompt": "misc", "system_prompt": "system",
+        "bootstrap_tools": "bootstrap_tools",
+    }
+
+    existing_slots = await backend.list_slots(agent_id)
+    by_name = {s["slot_name"]: s for s in existing_slots}
+
+    deployed = []
+    for ch in changes:
+        element = ch.get("element", "")
+        new_content = ch.get("new_content", "")
+        if not element or not new_content:
+            continue
+        slot_name = _ALIAS.get(element, element)
+        if slot_name in by_name:
+            base = by_name[slot_name]
+            await backend.upsert_slot(
+                agent_id=agent_id,
+                slot_name=slot_name,
+                order_index=int(base.get("order_index") or 0),
+                lock=bool(base.get("lock")),
+                merge_mode=base.get("merge_mode") or "replace",
+                content=new_content,
+                updated_by="optimizer",
+            )
+        else:
+            next_order = (max((s.get("order_index") or 0) for s in existing_slots), 0)[0] + 10 if existing_slots else 10
+            await backend.upsert_slot(
+                agent_id=agent_id,
+                slot_name=slot_name,
+                order_index=next_order,
+                lock=False,
+                merge_mode="replace",
+                content=new_content,
+                updated_by="optimizer",
+            )
+        deployed.append(slot_name)
+
+    return json.dumps({"status": "ok", "deployed": deployed, "agent_id": agent_id})
  
