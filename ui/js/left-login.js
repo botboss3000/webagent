@@ -6,6 +6,7 @@
  */
 
 import { icon } from './icons.js';
+import { upsertAccount } from './accounts.js';
 
 let overlayEl = null;
 let restrictedOverlayEl = null;
@@ -337,13 +338,16 @@ async function doLogin() {
     }
     const data = await res.json();
 
-    localStorage.setItem('auth_token', data.access_token);
-    localStorage.setItem('auth_username', data.username);
-    localStorage.setItem('auth_user_id', data.user_id);
-    localStorage.setItem('auth_display_name', data.display_name);
-    if (data.remember_token) {
-      localStorage.setItem('remember_token', data.remember_token);
-    }
+    // Register the account in the multi-account store and make it active.
+    // upsertAccount() also mirrors the legacy auth_* keys so existing code
+    // that reads them keeps working.
+    upsertAccount({
+      user_id: data.user_id,
+      username: data.username,
+      display_name: data.display_name,
+      access_token: data.access_token,
+      remember_token: data.remember_token || '',
+    });
 
     hideLeftOverlay();
 
@@ -420,10 +424,13 @@ async function doRegister() {
       return;
     }
 
-    localStorage.setItem('auth_token', data.access_token);
-    localStorage.setItem('auth_username', data.username);
-    localStorage.setItem('auth_user_id', data.user_id);
-    localStorage.setItem('auth_display_name', data.display_name);
+    upsertAccount({
+      user_id: data.user_id,
+      username: data.username,
+      display_name: data.display_name,
+      access_token: data.access_token,
+      remember_token: '',
+    });
 
     hideLeftOverlay();
     window.location.reload();

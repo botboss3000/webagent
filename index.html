@@ -41,6 +41,59 @@
     } catch (_) {}
   })();
 </script>
+<script>
+  // Chat toggle — global function + event delegation. Works regardless of
+  // module load timing, browser cache state, or DOM mutation observers.
+  window.__applyChatVisible = function (visible) {
+    var chatSide = document.getElementById('chat-side');
+    var handle = document.getElementById('chat-resize-handle');
+    var btn = document.getElementById('chat-toggle-btn');
+    if (chatSide) chatSide.style.display = visible ? '' : 'none';
+    if (handle)   handle.style.display   = visible ? '' : 'none';
+    if (btn)      btn.classList.toggle('active', visible);
+    try { localStorage.setItem('chatPanelVisible', String(visible)); } catch (_) {}
+  };
+  window.__toggleChat = function () {
+    var current = localStorage.getItem('chatPanelVisible') !== 'false';
+    window.__applyChatVisible(!current);
+  };
+  // Delegated capture-phase listener on document. Survives DOM rebuilds.
+  // Triple-fallback to handle Lucide's MutationObserver swapping SVGs mid-click:
+  //   1) closest() on e.target
+  //   2) walk composedPath() (immutable snapshot from dispatch time)
+  //   3) hit-test via elementFromPoint at click coords
+  document.addEventListener('click', function (e) {
+    var btn = null;
+    if (e.target && e.target.closest) {
+      btn = e.target.closest('#chat-toggle-btn');
+    }
+    if (!btn && typeof e.composedPath === 'function') {
+      var path = e.composedPath();
+      for (var i = 0; i < path.length; i++) {
+        if (path[i] && path[i].id === 'chat-toggle-btn') { btn = path[i]; break; }
+      }
+    }
+    if (!btn) {
+      var hit = document.elementFromPoint(e.clientX, e.clientY);
+      if (hit && hit.closest) btn = hit.closest('#chat-toggle-btn');
+    }
+    if (btn) {
+      e.stopPropagation();
+      e.preventDefault();
+      window.__toggleChat();
+    }
+  }, true);
+  // Apply visibility once DOM is ready
+  function _initChatVisibility() {
+    var v = localStorage.getItem('chatPanelVisible') !== 'false';
+    window.__applyChatVisible(v);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _initChatVisibility);
+  } else {
+    _initChatVisibility();
+  }
+</script>
 
 <div id="status-bar">
 
@@ -56,6 +109,7 @@
       <option value="autoagent">AutoAgent</option>
       <option value="agents">Agents</option>
       <option value="app-config">App Config</option>
+      <option value="account">Manage Account</option>
     </select>
     <button id="tab-select-btn" class="tab-select-pill" aria-haspopup="listbox">
       <i id="tab-btn-icon" data-lucide="radio-tower" class="lucide-icon" style="width:14px;height:14px;"></i>
@@ -90,6 +144,9 @@
       <div class="tab-option" data-value="app-config" data-icon="sliders-horizontal" role="option">
         <i data-lucide="sliders-horizontal" class="lucide-icon menu-icon"></i>App Config
       </div>
+      <div class="tab-option" data-value="account" data-icon="user-cog" role="option">
+        <i data-lucide="user-cog" class="lucide-icon menu-icon"></i>Manage Account
+      </div>
     </div>
   </div>
 
@@ -111,14 +168,30 @@
       <i data-lucide="message-square" class="lucide-icon" style="width:14px;height:14px;"></i>
     </button>
     <div class="user-dropdown" id="user-dropdown">
-      <span id="top-user-id" class="user-dropdown-trigger" style="color:var(--accent);font-weight:600;display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;">
-        <span id="top-user-id-val">None</span>
-        <i data-lucide="chevron-down" class="lucide-icon" style="width:12px;height:12px;opacity:0.6;"></i>
+      <span id="top-user-id" class="user-dropdown-trigger" title="Account">
+        <span id="top-user-avatar-slot"></span>
+        <i data-lucide="chevron-down" class="lucide-icon user-dropdown-chevron" style="width:12px;height:12px;opacity:0.6;"></i>
       </span>
       <div id="user-dropdown-menu" class="user-dropdown-menu" style="display:none;">
-        <div class="user-dropdown-header">
-          <span id="dropdown-user-label">User</span>
-        </div>
+        <!-- Current user row + Manage Account button -->
+        <div class="user-dropdown-current-row" id="dropdown-current-row"></div>
+        <button id="btn-manage-account" class="user-dropdown-manage-btn">
+          <i data-lucide="user-cog" class="lucide-icon" style="width:14px;height:14px;"></i>
+          Manage Account
+        </button>
+
+        <div class="user-dropdown-divider"></div>
+
+        <!-- Other signed-in accounts (rendered by JS) -->
+        <div id="dropdown-other-accounts" class="user-dropdown-accounts-list"></div>
+
+        <button id="btn-add-account" class="user-dropdown-action user-dropdown-add-account">
+          <i data-lucide="user-plus" class="lucide-icon" style="width:15px;height:15px;"></i>
+          Add account
+        </button>
+
+        <div class="user-dropdown-divider"></div>
+
         <div class="theme-toggle-section">
           <span class="theme-toggle-label">Theme</span>
           <div class="theme-toggle-group">
@@ -133,7 +206,9 @@
             </button>
           </div>
         </div>
+
         <div class="user-dropdown-divider"></div>
+
         <button id="btn-signout-header" class="user-dropdown-action">
           <i data-lucide="log-out" class="lucide-icon" style="width:15px;height:15px;"></i>
           Sign Out
@@ -1543,6 +1618,8 @@
       </div><!-- /app-config-container -->
     </div><!-- /tab-app-config -->
 
+    <div id="tab-account" class="tab-content"></div>
+
     <div id="tab-database" class="tab-content">
       <div id="db-viewer">
         <div id="db-toolbar" style="display:none;">
@@ -1606,8 +1683,14 @@
           <select id="agent-select" class="status-select" style="max-width:150px;"></select>
         </span>
         <span id="session-label">Session:
-          <select id="session-select" class="status-select" style="max-width:180px;"></select>
-          <button id="session-delete" title="Delete this session" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:14px;padding:0 4px;vertical-align:middle;display:inline-flex;align-items:center;"><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>
+          <div id="session-dropdown" class="session-dropdown">
+            <button id="session-dropdown-trigger" type="button" class="status-select session-dropdown-trigger">
+              <span id="session-dropdown-label">—</span>
+              <i data-lucide="chevron-down" style="width:12px;height:12px;flex-shrink:0;"></i>
+            </button>
+            <div id="session-dropdown-menu" class="session-dropdown-menu" hidden></div>
+          </div>
+          <button id="session-new" title="New session" style="background:none;border:none;color:#565f89;cursor:pointer;font-size:14px;padding:0 4px;vertical-align:middle;display:inline-flex;align-items:center;"><i data-lucide="plus" style="width:14px;height:14px;"></i></button>
         </span>
       </span>
     </div>
@@ -2100,6 +2183,7 @@
     { id: 'autoagent',   icon: 'palette',     label: 'AutoAgent'  },
     { id: 'agents',      icon: 'bot',              label: 'Agents'     },
     { id: 'app-config',  icon: 'sliders-horizontal', label: 'App Config' },
+    { id: 'account',     icon: 'user-cog',         label: 'Manage Account' },
   ];
 
   var nativeSelect = document.getElementById('main-tab-select');

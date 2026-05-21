@@ -7,7 +7,7 @@ import { initChat } from './chat.js';
 import { initReconnect } from './reconnect.js';
 import { ensureAttachmentsInit } from './attachments.js';
 import { connectAgent } from './agentWs.js';
-import { initTabs, initChatToggle } from './tabs.js';
+import { initTabs } from './tabs.js';
 import { initStream } from './stream.js';
 import { initLoop } from './loop.js';
 import { initLoopVisual } from './loop-logic.js';
@@ -17,6 +17,7 @@ import { initGithub } from './github.js';
 import { initAutoAgent } from './autoagent.js';
 import { initAgents } from './agents.js';
 import { initAppConfig } from './app-config.js';
+import { initAccount } from './account.js';
 import { initChatResize } from './chatResize.js';
 import { isAuthenticated, showLeftOverlay, hideLeftOverlay } from './left-login.js';
 import './icons.js'; // auto-renders Lucide icons on DOM mutations
@@ -155,7 +156,6 @@ _anonReady.then(() => {
   }
 
   _safeInit('initTabs',        initTabs);
-  _safeInit('initChatToggle',  initChatToggle);
   _safeInit('initStream',      initStream);
   _safeInit('initLoop',        initLoop);
   _safeInit('initLoopVisual',  initLoopVisual);
@@ -164,6 +164,7 @@ _anonReady.then(() => {
   _safeInit('initAutoAgent',   initAutoAgent);
   _safeInit('initAgents',      initAgents);
   _safeInit('initAppConfig',   initAppConfig);
+  _safeInit('initAccount',     initAccount);
   _safeInit('initSessions',    initSessions);
   _safeInit('initChatResize',  initChatResize);
 });

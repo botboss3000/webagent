@@ -4,7 +4,7 @@
     "password_hash": "$2b$12$ImGHfQSCq/AXUZ.Qf110R.gl5T0Hc0ko26qSlIMgO5ASlpPqfsp0i",
     "user_id": "admin_default",
     "display_name": "Admin",
-    "remember_token": "cc1cd80692b2127a924adbd85b21d3ab9e94d9780f76735e15eec24dd658cf8e",
+    "remember_token": "955f73e78eb1bdcd5d72f74547ca0506ba7b85875e253173bf66407900583e71",
     "is_approved": true
   },
   {
@@ -13,6 +13,14 @@
     "user_id": "newuser",
     "display_name": "newuser",
     "remember_token": "f628a8ea96f9036c5acac4fe912d7ff29e96e4e37ab0a0299707089cb95c1512",
+    "is_approved": true
+  },
+  {
+    "username": "switchtest@x.com",
+    "password_hash": "$2b$12$q.huhf4skh9LyfZlhBy85.Wj84Y.u2S1i2lhO5rFbiBIlnjNCDUVW",
+    "user_id": "switchtest@x.com",
+    "display_name": "Switch Tester",
+    "remember_token": "",
     "is_approved": true
   }
 ]

@@ -3,33 +3,52 @@ title Kill webAgent
 cd /d "%~dp0"
 
 echo ============================================================
-echo  PROCESSES ON PORT 8080
+echo  PROCESSES ON PORT 8080 (before kill)
 echo ============================================================
 netstat -ano | findstr ":8080"
 echo.
 
 echo ============================================================
-echo  PYTHON PROCESSES
+echo  PYTHON PROCESSES (before kill)
 echo ============================================================
 tasklist | findstr /I "python"
 echo.
 
 echo ============================================================
-echo  KILLING PORT 8080 PROCESSES
+echo  KILLING ALL UNIQUE PIDs ON PORT 8080
 echo ============================================================
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8080 "') do (
-    if not "%%a"=="" (
-        echo Killing PID %%a (port 8080)...
-        taskkill /F /PID %%a 2>nul
+setlocal enabledelayedexpansion
+set killed=
+
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8080"') do (
+    set pid=%%a
+    if not "!pid!"=="0" (
+        if not "!pid!"=="" (
+            echo !killed! | findstr /C:" !pid! " >nul 2>&1
+            if errorlevel 1 (
+                set killed=!killed! !pid!
+                echo Killing PID !pid!...
+                taskkill /F /PID !pid!
+            )
+        )
     )
 )
+endlocal
 
 echo.
 echo ============================================================
-echo  KILLING PYTHON PROCESSES
+echo  KILLING PYTHON PROCESSES BY NAME
 echo ============================================================
-taskkill /F /IM python.exe 2>nul && echo Killed python.exe || echo No python.exe found.
-taskkill /F /IM python3.exe 2>nul && echo Killed python3.exe || echo No python3.exe found.
+taskkill /F /IM python.exe
+taskkill /F /IM python3.exe
+
+echo.
+ping -n 2 127.0.0.1 >nul
+
+echo ============================================================
+echo  PORT 8080 CHECK (should be empty)
+echo ============================================================
+netstat -ano | findstr ":8080" || echo Port 8080 is clear.
 
 echo.
 echo ============================================================

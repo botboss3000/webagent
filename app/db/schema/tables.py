@@ -71,6 +71,7 @@ TABLES: List[Table] = [
         Column("metadata", "TEXT"),
         Column("agent_id", "TEXT"),
         Column("participants", "TEXT", default="'[]'"),
+        Column("pinned", "INTEGER", nullable=False, default="0"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),

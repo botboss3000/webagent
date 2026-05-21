@@ -8,6 +8,15 @@ import { streamSessionChanged } from './stream.js';
 import { abortChatStream } from './chat.js';
 import { apiPath } from './config.js';
 import { icon } from './icons.js';
+import { renderAvatar } from './user-avatar.js';
+import {
+  listAccounts,
+  getActive,
+  removeAccount,
+  switchTo,
+  onChange as onAccountsChange,
+} from './accounts.js';
+import { showLeftOverlay } from './left-login.js';
 
 export function generateUUID() {
   return crypto.randomUUID();
@@ -96,33 +105,152 @@ export async function populateAgentSelect(userId) {
 }
 
 export async function populateUserSelect() {
-  // Update user ID display in header
-  const topUserIdVal = document.getElementById('top-user-id-val');
-  if (topUserIdVal) {
-    topUserIdVal.textContent = app.currentUserId ? (app.currentUserId.length > 15 ? app.currentUserId.slice(0, 15) + '...' : app.currentUserId) : 'None';
-    topUserIdVal.title = app.currentUserId || '';
+  // Header avatar (letter icon) + tooltip with full username
+  const slot = document.getElementById('top-user-avatar-slot');
+  if (slot) {
+    slot.innerHTML = '';
+    const active = getActive();
+    const acct = active || {
+      display_name: app.currentUserId || 'None',
+      username: app.currentUserId || '',
+    };
+    slot.appendChild(renderAvatar(acct, 'sm'));
+    const trigger = document.getElementById('top-user-id');
+    if (trigger) trigger.title = acct.username || acct.display_name || '';
   }
-  // Update dropdown header label
-  const dropdownUserLabel = document.getElementById('dropdown-user-label');
-  if (dropdownUserLabel) {
-    const uid = app.currentUserId || 'Unknown';
-    dropdownUserLabel.textContent = uid;
-    dropdownUserLabel.title = uid;
-  }
+  // Re-render the dropdown contents so the current-row + other accounts stay fresh
+  renderUserDropdown();
   // Populate session select for current user
   if (app.currentUserId) {
-    // Preserve current dropdown state (open/focused)
-    const activeElement = document.activeElement;
-    const isSelectActive = activeElement && activeElement.id === 'session-select';
-    if (!isSelectActive) {
+    // Skip refresh while dropdown is open so user doesn't lose place
+    const menu = document.getElementById('session-dropdown-menu');
+    const isOpen = menu && !menu.hidden;
+    if (!isOpen) {
       populateSessionSelect(app.currentUserId);
     }
   }
 }
 
+/** Render the contents of #user-dropdown-menu's dynamic sections. */
+export function renderUserDropdown() {
+  const active = getActive();
+  const all = listAccounts();
+
+  // Current user row (large avatar + name + email)
+  const cur = document.getElementById('dropdown-current-row');
+  if (cur) {
+    cur.innerHTML = '';
+    if (active) {
+      cur.appendChild(renderAvatar(active, 'lg'));
+      const info = document.createElement('div');
+      info.className = 'user-dropdown-current-info';
+      const nameEl = document.createElement('div');
+      nameEl.className = 'user-dropdown-current-name';
+      nameEl.textContent = active.display_name || active.username || 'User';
+      const emailEl = document.createElement('div');
+      emailEl.className = 'user-dropdown-current-email';
+      emailEl.textContent = active.username || '';
+      info.appendChild(nameEl);
+      info.appendChild(emailEl);
+      cur.appendChild(info);
+    } else {
+      const info = document.createElement('div');
+      info.className = 'user-dropdown-current-info';
+      info.innerHTML = '<div class="user-dropdown-current-name">Signed out</div>';
+      cur.appendChild(info);
+    }
+  }
+
+  // Other accounts (non-active)
+  const list = document.getElementById('dropdown-other-accounts');
+  if (list) {
+    list.innerHTML = '';
+    const others = all.filter((a) => !active || a.user_id !== active.user_id);
+    for (const acct of others) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'user-dropdown-account-row';
+      row.dataset.userId = acct.user_id;
+      row.appendChild(renderAvatar(acct, 'md'));
+      const text = document.createElement('div');
+      text.className = 'user-dropdown-account-info';
+      text.innerHTML = `
+        <div class="user-dropdown-account-name"></div>
+        <div class="user-dropdown-account-email"></div>
+      `;
+      text.querySelector('.user-dropdown-account-name').textContent = acct.display_name || acct.username || acct.user_id;
+      text.querySelector('.user-dropdown-account-email').textContent = acct.username || '';
+      row.appendChild(text);
+      row.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const ok = await switchTo(acct.user_id);
+        if (ok) {
+          window.location.reload();
+        } else {
+          // recall failed — fall back to login overlay
+          showLeftOverlay();
+        }
+      });
+      list.appendChild(row);
+    }
+  }
+
+  // Refresh Lucide icons for any newly-inserted SVG containers
+  try {
+    if (window.lucide && typeof window.lucide.createIcons === 'function') {
+      window.lucide.createIcons();
+    }
+  } catch (_) {}
+}
+
+// Cache of last-fetched sessions (used when rendering rows without refetch)
+let _sessionsCache = [];
+
+function _truncate(s, n) {
+  return (s && s.length > n) ? s.slice(0, n) + '…' : (s || '');
+}
+
+function _setTriggerLabel() {
+  const labelEl = document.getElementById('session-dropdown-label');
+  if (!labelEl) return;
+  const sid = app.currentSessionId;
+  const found = _sessionsCache.find(s => s.id === sid);
+  const title = (found && found.title) || 'New Session';
+  labelEl.textContent = _truncate(title, 20);
+  labelEl.title = (found && found.id) || sid || '';
+}
+
+function _renderSessionRows() {
+  const menu = document.getElementById('session-dropdown-menu');
+  if (!menu) return;
+  menu.innerHTML = '';
+  if (!_sessionsCache.length) {
+    const empty = document.createElement('div');
+    empty.className = 'session-dropdown-empty';
+    empty.textContent = 'No sessions yet';
+    menu.appendChild(empty);
+    return;
+  }
+  for (const s of _sessionsCache) {
+    const row = document.createElement('div');
+    row.className = 'session-row' + (s.pinned ? ' pinned' : '') + (s.id === app.currentSessionId ? ' selected' : '');
+    row.dataset.id = s.id;
+    const label = s.title || 'New Session';
+    row.innerHTML = `
+      <span class="session-row-pin-icon">${icon('pin', { size: '12px' })}</span>
+      <span class="session-row-title" title="${s.id}">${_truncate(label, 28).replace(/</g, '&lt;')}</span>
+      <button class="session-row-kebab" title="Session actions" data-id="${s.id}">${icon('more-vertical', { size: '14px' })}</button>
+    `;
+    menu.appendChild(row);
+  }
+}
+
 export async function populateSessionSelect(userId) {
+  const menu = document.getElementById('session-dropdown-menu');
   if (!userId) {
-    document.getElementById('session-select').innerHTML = '<option value="">—</option>';
+    _sessionsCache = [];
+    if (menu) menu.innerHTML = '';
+    _setTriggerLabel();
     return;
   }
   try {
@@ -131,34 +259,24 @@ export async function populateSessionSelect(userId) {
       apiPath(`/api/v1/db/sessions?db=local.db&user_id=${encodeURIComponent(userId)}${token ? '&token=' + encodeURIComponent(token) : ''}`),
     );
     const data = await res.json();
-    const sel = document.getElementById('session-select');
-    sel.innerHTML = '';
-    let found = false;
-    for (const s of data.sessions || []) {
-      const opt = document.createElement('option');
-      opt.value = s.id;
-      const label = s.title || 'New Session';
-      opt.textContent = label.length > 20 ? label.slice(0, 20) + '...' : label;
-      opt.title = s.id;
-      if (s.id === app.currentSessionId) {
-        opt.selected = true;
-        found = true;
-      }
-      sel.appendChild(opt);
+    _sessionsCache = (data.sessions || []).map(s => ({
+      id: s.id,
+      title: s.title || 'New Session',
+      created_at: s.created_at,
+      pinned: !!s.pinned,
+    }));
+    // If current session not yet in DB (fresh session before first msg),
+    // synthesize a row so trigger label shows "New Session" and it appears
+    if (app.currentSessionId && !_sessionsCache.some(s => s.id === app.currentSessionId)) {
+      _sessionsCache.unshift({
+        id: app.currentSessionId,
+        title: 'New Session',
+        created_at: null,
+        pinned: false,
+      });
     }
-    // If current session isn't in DB yet (new session before first msg),
-    // add it as a temporary selected option so dropdown doesn't jump to old session
-    if (!found && app.currentSessionId) {
-      const opt = document.createElement('option');
-      opt.value = app.currentSessionId;
-      opt.textContent = 'New Session';
-      opt.selected = true;
-      sel.appendChild(opt);
-    }
-    const newSessOpt = document.createElement('option');
-    newSessOpt.value = '__new_session__';
-    newSessOpt.textContent = '+ New Session...';
-    sel.appendChild(newSessOpt);
+    _renderSessionRows();
+    _setTriggerLabel();
   } catch (e) {
     console.warn('Failed to load sessions:', e);
   }
@@ -294,70 +412,264 @@ export function initSessions() {
     });
   }
 
-  // ── Update dropdown header with user id ──
-  const dropdownUserLabel = document.getElementById('dropdown-user-label');
-  if (dropdownUserLabel) {
-    const uid = app.currentUserId || 'Unknown';
-    dropdownUserLabel.textContent = uid;
-    dropdownUserLabel.title = uid;
+  // ── Render dropdown contents (current row + other accounts) ──
+  renderUserDropdown();
+
+  // Re-render whenever the accounts list/active user changes
+  onAccountsChange(() => renderUserDropdown());
+
+  // ── Manage Account button (in dropdown) → switch to account tab ──
+  const manageBtn = document.getElementById('btn-manage-account');
+  if (manageBtn) {
+    manageBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const sel = document.getElementById('main-tab-select');
+      if (sel) {
+        sel.value = 'account';
+        sel.dispatchEvent(new Event('change'));
+      }
+      const menu = document.getElementById('user-dropdown-menu');
+      if (menu) menu.style.display = 'none';
+      const dd = document.getElementById('user-dropdown');
+      if (dd) dd.classList.remove('open');
+    });
   }
 
-  // ── Sign-out button in header ──
+  // ── Add account button → show login overlay for a fresh sign-in ──
+  const addBtn = document.getElementById('btn-add-account');
+  if (addBtn) {
+    addBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const menu = document.getElementById('user-dropdown-menu');
+      if (menu) menu.style.display = 'none';
+      const dd = document.getElementById('user-dropdown');
+      if (dd) dd.classList.remove('open');
+      showLeftOverlay();
+    });
+  }
+
+  // ── Sign-out button: remove active account; switch to another if possible ──
   const signoutBtn = document.getElementById('btn-signout-header');
   if (signoutBtn) {
-    signoutBtn.addEventListener('click', (e) => {
+    signoutBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      localStorage.removeItem('auth_token');
-      localStorage.removeItem('auth_username');
-      localStorage.removeItem('auth_user_id');
-      localStorage.removeItem('auth_display_name');
-      localStorage.removeItem('remember_token');
+      const active = getActive();
+      if (active) {
+        removeAccount(active.user_id);
+        const remaining = listAccounts();
+        if (remaining.length > 0) {
+          const next = remaining[0];
+          const ok = await switchTo(next.user_id);
+          if (!ok) {
+            // recall failed for next — fall through to full logout reload
+          }
+        }
+      } else {
+        // No tracked accounts — clear legacy keys directly
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('auth_username');
+        localStorage.removeItem('auth_user_id');
+        localStorage.removeItem('auth_display_name');
+        localStorage.removeItem('remember_token');
+      }
       localStorage.removeItem('terminalUserId');
       window.location.reload();
     });
   }
 
-  const sessionSelect = document.getElementById('session-select');
+  // ── Custom session dropdown ──
+  const dropdown = document.getElementById('session-dropdown');
+  const sessionTrigger = document.getElementById('session-dropdown-trigger');
+  const menu = document.getElementById('session-dropdown-menu');
 
-  // Reset delete confirm mode when user changes selection
-  let deletePending = null;
-  const deleteBtn = document.getElementById('session-delete');
-  function resetDeleteConfirm() {
-    if (deletePending !== null) {
-      deletePending = null;
-      deleteBtn.innerHTML = icon('trash-2', { size: '14px' });
-      deleteBtn.style.color = '#565f89';
-      const opt = sessionSelect.querySelector('option[value="__confirm_delete__"]');
-      if (opt) opt.remove();
-    }
+  function closeActionsPopup() {
+    const open = menu && menu.querySelector('.session-row-actions');
+    if (open) open.remove();
   }
 
-  sessionSelect.addEventListener('change', (e) => {
-    resetDeleteConfirm();
+  function openMenu() {
+    if (!menu) return;
+    menu.hidden = false;
+    dropdown.classList.add('open');
+  }
+
+  function closeMenu() {
+    if (!menu) return;
+    menu.hidden = true;
+    dropdown.classList.remove('open');
+    closeActionsPopup();
+  }
+
+  function switchToSession(sid) {
+    if (!sid || sid === app.currentSessionId) { closeMenu(); return; }
     abortChatStream();
-    const sid = e.target.value;
-    if (!sid || sid === '__new_session__') {
-      app.currentSessionId = generateUUID();
-      localStorage.setItem('terminalSessionId', app.currentSessionId);
-      // Add temp option so dropdown shows the new session
-      const opt = document.createElement('option');
-      opt.value = app.currentSessionId;
-      opt.textContent = 'New Session';
-      opt.selected = true;
-      sessionSelect.appendChild(opt);
-      app.chatMessages.innerHTML = '';
-      app.addChatBubble('agent', 'New session. Start typing below.');
-    } else {
-      app.currentSessionId = sid;
-      localStorage.setItem('terminalSessionId', app.currentSessionId);
-      loadSessionChat(sid);
-    }
+    app.currentSessionId = sid;
+    localStorage.setItem('terminalSessionId', app.currentSessionId);
+    loadSessionChat(sid);
     streamSessionChanged();
     loopSessionChanged();
     loopVisualSessionChanged();
     autoAgentSessionChanged();
-    // WS is per-user — no reconnect needed on session switch
+    _renderSessionRows();
+    _setTriggerLabel();
+    closeMenu();
+  }
+
+  function openRowActions(sid, row) {
+    closeActionsPopup();
+    const sess = _sessionsCache.find(s => s.id === sid);
+    if (!sess) return;
+    const popup = document.createElement('div');
+    popup.className = 'session-row-actions';
+    popup.innerHTML = `
+      <button class="session-row-action" data-action="pin">${icon('pin', { size: '14px' })} ${sess.pinned ? 'Unpin' : 'Pin'}</button>
+      <button class="session-row-action" data-action="rename">${icon('pencil', { size: '14px' })} Rename</button>
+      <button class="session-row-action danger" data-action="delete">${icon('trash-2', { size: '14px' })} Delete</button>
+    `;
+    row.appendChild(popup);
+  }
+
+  async function patchSession(sid, body) {
+    try {
+      const res = await fetch(apiPath('/api/v1/db/sessions/' + encodeURIComponent(sid) + '?db=local.db'), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return res.ok;
+    } catch (e) {
+      console.warn('Failed to patch session:', e);
+      return false;
+    }
+  }
+
+  async function togglePin(sid) {
+    const sess = _sessionsCache.find(s => s.id === sid);
+    if (!sess) return;
+    const newPinned = !sess.pinned;
+    const ok = await patchSession(sid, { pinned: newPinned });
+    if (ok) {
+      sess.pinned = newPinned;
+      await populateSessionSelect(app.currentUserId);
+    }
+  }
+
+  function startRename(sid, row) {
+    const titleEl = row.querySelector('.session-row-title');
+    if (!titleEl) return;
+    const sess = _sessionsCache.find(s => s.id === sid);
+    const current = (sess && sess.title) || '';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'session-row-title-input';
+    input.value = current;
+    titleEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let done = false;
+    const finish = async (commit) => {
+      if (done) return;
+      done = true;
+      const newTitle = input.value.trim();
+      if (commit && newTitle && newTitle !== current) {
+        const ok = await patchSession(sid, { title: newTitle });
+        if (ok) {
+          if (sess) sess.title = newTitle;
+        }
+      }
+      await populateSessionSelect(app.currentUserId);
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    });
+    input.addEventListener('blur', () => finish(true));
+  }
+
+  async function deleteSession(sid) {
+    try {
+      const res = await fetch(apiPath('/api/v1/db/sessions/' + encodeURIComponent(sid) + '?db=local.db'), { method: 'DELETE' });
+      if (res.ok) {
+        if (sid === app.currentSessionId) {
+          app.currentSessionId = generateUUID();
+          localStorage.setItem('terminalSessionId', app.currentSessionId);
+          app.chatMessages.innerHTML = '';
+          app.addChatBubble('agent', 'Session deleted. New session created.');
+        }
+        await populateSessionSelect(app.currentUserId);
+      }
+    } catch (e) {
+      console.warn('Failed to delete session:', e);
+    }
+  }
+
+  if (sessionTrigger) {
+    sessionTrigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (menu.hidden) openMenu(); else closeMenu();
+    });
+  }
+
+  if (menu) {
+    menu.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Action button inside popup?
+      const actionBtn = e.target.closest('.session-row-action');
+      if (actionBtn) {
+        const popup = actionBtn.closest('.session-row-actions');
+        const row = popup && popup.closest('.session-row');
+        const sid = row && row.dataset.id;
+        const action = actionBtn.dataset.action;
+        closeActionsPopup();
+        if (!sid || !action) return;
+        if (action === 'pin') togglePin(sid);
+        else if (action === 'rename') startRename(sid, row);
+        else if (action === 'delete') deleteSession(sid);
+        return;
+      }
+      // Kebab button?
+      const kebab = e.target.closest('.session-row-kebab');
+      if (kebab) {
+        const row = kebab.closest('.session-row');
+        const sid = row && row.dataset.id;
+        // Toggle: if popup already open in this row, close it
+        const existing = row && row.querySelector('.session-row-actions');
+        if (existing) { closeActionsPopup(); return; }
+        if (sid) openRowActions(sid, row);
+        return;
+      }
+      // Row body click → switch session (ignore clicks inside rename input)
+      if (e.target.closest('.session-row-title-input')) return;
+      const row = e.target.closest('.session-row');
+      if (row) switchToSession(row.dataset.id);
+    });
+  }
+
+  // Outside click closes menu + popups
+  document.addEventListener('click', (e) => {
+    if (dropdown && !dropdown.contains(e.target)) closeMenu();
   });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && menu && !menu.hidden) closeMenu();
+  });
+
+  const sessionNewBtn = document.getElementById('session-new');
+  if (sessionNewBtn) {
+    sessionNewBtn.addEventListener('click', () => {
+      closeMenu();
+      abortChatStream();
+      app.currentSessionId = generateUUID();
+      localStorage.setItem('terminalSessionId', app.currentSessionId);
+      app.chatMessages.innerHTML = '';
+      app.addChatBubble('agent', 'New session. Start typing below.');
+      populateSessionSelect(app.currentUserId);
+      streamSessionChanged();
+      loopSessionChanged();
+      loopVisualSessionChanged();
+      autoAgentSessionChanged();
+    });
+  }
 
   // ── Agent selector change handler ──
   const agentSelect = document.getElementById('agent-select');
@@ -385,65 +697,6 @@ export function initSessions() {
     if (app.currentUserId) populateAgentSelect(app.currentUserId);
     if (app.currentSessionId) {
       loadSessionChat(app.currentSessionId);
-    }
-  });
-
-  // Session delete button — two-step: first click warns, second confirms
-  deleteBtn.addEventListener('click', async () => {
-    let sid = sessionSelect.value;
-    // If confirm option is selected, use the pending session ID
-    if (sid === '__confirm_delete__') sid = deletePending;
-    if (!sid || sid === '__new_session__') return;
-
-    if (deletePending !== sid) {
-      // First click: enter confirm mode
-      deletePending = sid;
-      deleteBtn.innerHTML = icon('ban', { size: '14px' });
-      deleteBtn.style.color = '#f7768e';
-      // Temporarily add "delete msgs?" option selected in dropdown
-      const confirmOpt = document.createElement('option');
-      confirmOpt.value = '__confirm_delete__';
-      confirmOpt.textContent = 'delete msgs?';
-      confirmOpt.selected = true;
-      confirmOpt.style.color = '#f7768e';
-      sessionSelect.appendChild(confirmOpt);
-      setTimeout(() => {
-        if (deletePending === sid) {
-          // Reset if user doesn't click within 5s
-          deletePending = null;
-          deleteBtn.innerHTML = icon('trash-2', { size: '14px' });
-          deleteBtn.style.color = '#565f89';
-          const opt = sessionSelect.querySelector('option[value="__confirm_delete__"]');
-          if (opt) opt.remove();
-          // Re-select the original session
-          for (const o of sessionSelect.options) {
-            if (o.value === sid) { o.selected = true; break; }
-          }
-        }
-      }, 5000);
-      return;
-    }
-
-    // Second click: actually delete
-    deletePending = null;
-    deleteBtn.innerHTML = icon('trash-2', { size: '14px' });
-    deleteBtn.style.color = '#565f89';
-    const confirmOpt = sessionSelect.querySelector('option[value="__confirm_delete__"]');
-    if (confirmOpt) confirmOpt.remove();
-
-    try {
-      const res = await fetch(apiPath('/api/v1/db/sessions/' + encodeURIComponent(sid) + '?db=local.db'), { method: 'DELETE' });
-      if (res.ok) {
-        if (sid === app.currentSessionId) {
-          app.currentSessionId = generateUUID();
-          localStorage.setItem('terminalSessionId', app.currentSessionId);
-          app.chatMessages.innerHTML = '';
-          app.addChatBubble('agent', 'Session deleted. New session created.');
-        }
-        populateSessionSelect(app.currentUserId);
-      }
-    } catch (e) {
-      console.warn('Failed to delete session:', e);
     }
   });
 }
