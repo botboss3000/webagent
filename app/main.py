@@ -64,6 +64,7 @@ except ImportError:
 
 from app.admin.communications import router as admin_communications_router
 from app.admin.webhooks_admin import router as admin_webhooks_router
+from app.admin.scheduler_config import router as scheduler_admin_router
 from app.api.agents import router as agents_router
 from app.api.data_sources import router as data_sources_router
 from app.admin.users import router as admin_users_router
@@ -142,6 +143,7 @@ app.include_router(admin_communications_router)
 
 # Register generic webhook admin router
 app.include_router(admin_webhooks_router)
+app.include_router(scheduler_admin_router)
 app.include_router(agents_router)
 app.include_router(data_sources_router)
 app.include_router(admin_users_router)
@@ -237,6 +239,12 @@ async def shutdown():
         tg = pm.get_plugin("telegram")
         if tg and tg.enabled:
             await tg.delete_webhook_url()
+    except Exception:
+        pass
+    # Stop the automation scheduler.
+    try:
+        from app.scheduler import stop_scheduler
+        await stop_scheduler()
     except Exception:
         pass
 
@@ -349,6 +357,13 @@ async def startup():
             logger.info("Backfilled admin_users for %d agents", _n)
     except Exception as _bf_err:
         logger.warning("admin_users backfill failed: %s", _bf_err)
+
+    # ── Start agent automation scheduler ──
+    try:
+        from app.scheduler import start_scheduler
+        await start_scheduler()
+    except Exception as _sch_err:
+        logger.warning("Failed to start automation scheduler: %s", _sch_err)
 
     # ── Seed LLM config from env vars into auth_elements (cloud-first deploy) ──
     api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")

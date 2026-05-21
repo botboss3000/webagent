@@ -316,6 +316,7 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
             "skills_prompt": data.get("skills_prompt", ""),
             "tasks_prompt": data.get("tasks_prompt", ""),
             "misc_prompt": data.get("misc_prompt", ""),
+            "automation_prompt": data.get("automation_prompt", ""),
             "bootstrap_tools": data.get("bootstrap_tools", ""),
             "can_be_default": 1 if data.get("can_be_default", True) else 0,
             "is_system": 1 if data.get("is_system", False) else 0,

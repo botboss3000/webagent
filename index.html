@@ -513,6 +513,9 @@
           <a class="ac-nav-item" data-section="git" href="#ac-section-git">
             <i data-lucide="git-branch" class="lucide-icon ac-nav-icon"></i>Git Providers
           </a>
+          <a class="ac-nav-item" data-section="automation" href="#ac-section-automation">
+            <i data-lucide="clock" class="lucide-icon ac-nav-icon"></i>Automation
+          </a>
         </nav>
 
         <!-- Scrollable content -->
@@ -1496,6 +1499,53 @@
 
             <div class="ac-info-banner">
               For full commit/push/pull controls, switch to the <a class="ac-tab-link" data-tab="github">GitHub tab</a>.
+            </div>
+          </section>
+
+          <!-- ── Automation ── -->
+          <section id="ac-section-automation" class="ac-section">
+            <div class="ac-section-header">
+              <i data-lucide="clock" class="lucide-icon ac-section-icon"></i>
+              <div>
+                <h2 class="ac-section-title">Automation</h2>
+                <p class="ac-section-desc">Backend that runs each agent's scheduled tasks.</p>
+              </div>
+            </div>
+
+            <div class="ac-card">
+              <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
+                <i data-lucide="cpu" class="lucide-icon" style="width:14px;height:14px;color:var(--accent);"></i>
+                Scheduler Backend
+                <span id="ac-sched-active-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+              </div>
+
+              <label class="ac-label" style="margin-top:10px;">Provider</label>
+              <select id="ac-sched-provider" class="ac-input">
+                <option value="local">Local (in-process)</option>
+                <option value="google">Google Cloud Scheduler (coming soon)</option>
+              </select>
+
+              <div id="ac-sched-google-fields" style="display:none;margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                <div>
+                  <label class="ac-label">Project ID</label>
+                  <input id="ac-sched-google-project" class="ac-input" type="text" placeholder="my-gcp-project" />
+                </div>
+                <div>
+                  <label class="ac-label">Region</label>
+                  <input id="ac-sched-google-region" class="ac-input" type="text" placeholder="us-central1" />
+                </div>
+              </div>
+
+              <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">
+                <button id="ac-sched-save" class="ac-btn ac-btn-primary">Save</button>
+                <button id="ac-sched-refresh" class="ac-btn">Refresh Status</button>
+              </div>
+
+              <pre id="ac-sched-status" style="margin-top:10px;padding:8px;background:var(--panel-2,#0d0d1a);border:1px solid var(--border,#2a2a4a);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;color:var(--muted);"></pre>
+
+              <div class="ac-info-banner" style="margin-top:10px;font-size:11px;">
+                Local scheduler runs jobs inside this process. It needs the server to stay up — fine for local mode, not suitable for stateless cloud deployments. Google Cloud Scheduler integration is stubbed and not yet wired.
+              </div>
             </div>
           </section>
 

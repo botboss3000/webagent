@@ -25,3 +25,5 @@ keyring>=24.0.0
 # External data-source connectors (per-agent)
 aiomysql>=0.2.0
 sqlglot>=23.0.0
+# Cron parsing for per-agent automation scheduler
+croniter>=2.0.0

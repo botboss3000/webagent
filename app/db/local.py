@@ -194,6 +194,41 @@ CREATE INDEX IF NOT EXISTS idx_agent_conn_agent ON agent_connections(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_conn_type ON agent_connections(connection_type);
 
 -- ============================================================
+-- Agent Automations: scheduled background prompts per-agent.
+-- Parsed from the `automation` prompt slot by the LLM, stored as
+-- structured rows. The local scheduler polls this table for due rows.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS agent_automations (
+    id                  TEXT PRIMARY KEY,
+    agent_id            TEXT NOT NULL,
+    owner_user_id       TEXT NOT NULL,
+    task_label          TEXT NOT NULL DEFAULT '',
+    prompt              TEXT NOT NULL DEFAULT '',
+    schedule_cron       TEXT NOT NULL DEFAULT '',
+    schedule_natural    TEXT NOT NULL DEFAULT '',
+    timezone            TEXT NOT NULL DEFAULT 'UTC',
+    channel             TEXT,
+    channel_recipient   TEXT,
+    silent              INTEGER NOT NULL DEFAULT 0,
+    enabled             INTEGER NOT NULL DEFAULT 1,
+    next_run_at         TEXT,
+    last_run_at         TEXT,
+    last_status         TEXT,
+    last_error          TEXT,
+    last_session_id     TEXT,
+    source_hash         TEXT NOT NULL DEFAULT '',
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_automations_agent ON agent_automations(agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_automations_owner ON agent_automations(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_agent_automations_next  ON agent_automations(next_run_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_automations_hash
+    ON agent_automations(agent_id, owner_user_id, source_hash);
+
+-- ============================================================
 -- Memory System: core knowledge brain
 -- ============================================================
 
@@ -759,6 +794,36 @@ class LocalBackend(StorageBackend):
                 conn.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
                 conn.commit()
                 logger.info("Added sessions.pinned column")
+
+            # ── Migration: backfill 'automation' admin-base slot for every agent ──
+            try:
+                agent_ids = [
+                    r[0] for r in conn.execute(
+                        "SELECT DISTINCT agent_id FROM agent_prompts WHERE user_id IS NULL"
+                    ).fetchall()
+                ]
+                _auto_now = _now_iso()
+                _backfilled = 0
+                for aid in agent_ids:
+                    existing = conn.execute(
+                        """SELECT 1 FROM agent_prompts
+                           WHERE agent_id = ? AND slot_name = 'automation' AND user_id IS NULL""",
+                        (aid,),
+                    ).fetchone()
+                    if not existing:
+                        conn.execute(
+                            """INSERT INTO agent_prompts
+                               (id, agent_id, slot_name, user_id, order_index,
+                                lock, merge_mode, content, updated_at, updated_by)
+                               VALUES (?, ?, 'automation', NULL, 70, 0, 'replace', '', ?, 'migration')""",
+                            (_uuid(), aid, _auto_now),
+                        )
+                        _backfilled += 1
+                if _backfilled:
+                    conn.commit()
+                    logger.info("Backfilled 'automation' slot on %d agent(s)", _backfilled)
+            except Exception as _bf_e:
+                logger.warning("Automation slot backfill failed: %s", _bf_e)
 
             conn.commit()
 
@@ -1635,6 +1700,7 @@ class LocalBackend(StorageBackend):
             ("skills",          "skills_prompt",    40, False),
             ("tasks",           "tasks_prompt",     50, False),
             ("misc",            "misc_prompt",      60, False),
+            ("automation",      "automation_prompt", 70, False),
             ("bootstrap_tools", "bootstrap_tools",  90, True),
         ]
         out = []
@@ -4538,6 +4604,214 @@ class LocalBackend(StorageBackend):
             entry["rank"] = round(float(sc), 4)
             out.append(entry)
         return out
+
+    # ─── Agent automations ──────────────────────────────────────────────
+
+    @staticmethod
+    def _automation_row_to_dict(row: sqlite3.Row) -> dict:
+        d = dict(row)
+        d["silent"] = bool(d.get("silent"))
+        d["enabled"] = bool(d.get("enabled"))
+        return d
+
+    async def list_automations(
+        self,
+        agent_id: Optional[str] = None,
+        owner_user_id: Optional[str] = None,
+    ) -> List[dict]:
+        conn = self._get_conn()
+        try:
+            clauses = []
+            params: List[Any] = []
+            if agent_id:
+                clauses.append("agent_id = ?")
+                params.append(agent_id)
+            if owner_user_id:
+                clauses.append("owner_user_id = ?")
+                params.append(owner_user_id)
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            rows = conn.execute(
+                f"SELECT * FROM agent_automations {where} ORDER BY created_at ASC",
+                params,
+            ).fetchall()
+            return [self._automation_row_to_dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def get_automation(self, automation_id: str) -> Optional[dict]:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM agent_automations WHERE id = ?",
+                (automation_id,),
+            ).fetchone()
+            return self._automation_row_to_dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def upsert_automation(
+        self,
+        *,
+        agent_id: str,
+        owner_user_id: str,
+        source_hash: str,
+        task_label: str,
+        prompt: str,
+        schedule_cron: str,
+        schedule_natural: str = "",
+        timezone: str = "UTC",
+        channel: Optional[str] = None,
+        channel_recipient: Optional[str] = None,
+        silent: bool = False,
+        enabled: bool = True,
+        next_run_at: Optional[str] = None,
+    ) -> dict:
+        now = _now_iso()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                existing = conn.execute(
+                    """SELECT id FROM agent_automations
+                       WHERE agent_id = ? AND owner_user_id = ? AND source_hash = ?""",
+                    (agent_id, owner_user_id, source_hash),
+                ).fetchone()
+                if existing:
+                    row_id = existing["id"]
+                    conn.execute(
+                        """UPDATE agent_automations SET
+                              task_label = ?, prompt = ?, schedule_cron = ?,
+                              schedule_natural = ?, timezone = ?,
+                              channel = ?, channel_recipient = ?,
+                              silent = ?, enabled = ?,
+                              next_run_at = COALESCE(?, next_run_at),
+                              updated_at = ?
+                           WHERE id = ?""",
+                        (task_label, prompt, schedule_cron, schedule_natural,
+                         timezone, channel, channel_recipient,
+                         1 if silent else 0, 1 if enabled else 0,
+                         next_run_at, now, row_id),
+                    )
+                else:
+                    row_id = _uuid()
+                    conn.execute(
+                        """INSERT INTO agent_automations
+                           (id, agent_id, owner_user_id, task_label, prompt,
+                            schedule_cron, schedule_natural, timezone,
+                            channel, channel_recipient, silent, enabled,
+                            next_run_at, source_hash, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (row_id, agent_id, owner_user_id, task_label, prompt,
+                         schedule_cron, schedule_natural, timezone,
+                         channel, channel_recipient,
+                         1 if silent else 0, 1 if enabled else 0,
+                         next_run_at, source_hash, now, now),
+                    )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT * FROM agent_automations WHERE id = ?",
+                    (row_id,),
+                ).fetchone()
+                return self._automation_row_to_dict(row)
+            finally:
+                conn.close()
+
+    async def update_automation(
+        self,
+        automation_id: str,
+        **fields,
+    ) -> Optional[dict]:
+        if not fields:
+            return await self.get_automation(automation_id)
+        allowed = {
+            "task_label", "prompt", "schedule_cron", "schedule_natural",
+            "timezone", "channel", "channel_recipient", "silent",
+            "enabled", "next_run_at", "last_run_at", "last_status",
+            "last_error", "last_session_id",
+        }
+        sets = []
+        params: List[Any] = []
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            if k in ("silent", "enabled"):
+                v = 1 if v else 0
+            sets.append(f"{k} = ?")
+            params.append(v)
+        if not sets:
+            return await self.get_automation(automation_id)
+        sets.append("updated_at = ?")
+        params.append(_now_iso())
+        params.append(automation_id)
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    f"UPDATE agent_automations SET {', '.join(sets)} WHERE id = ?",
+                    params,
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return await self.get_automation(automation_id)
+
+    async def delete_automation(self, automation_id: str) -> bool:
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "DELETE FROM agent_automations WHERE id = ?",
+                    (automation_id,),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    async def delete_automations_not_in(
+        self,
+        agent_id: str,
+        owner_user_id: str,
+        keep_hashes: List[str],
+    ) -> int:
+        """Remove rows whose source_hash is not in keep_hashes for this owner/agent."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                if keep_hashes:
+                    placeholders = ",".join(["?"] * len(keep_hashes))
+                    cur = conn.execute(
+                        f"""DELETE FROM agent_automations
+                            WHERE agent_id = ? AND owner_user_id = ?
+                              AND source_hash NOT IN ({placeholders})""",
+                        [agent_id, owner_user_id, *keep_hashes],
+                    )
+                else:
+                    cur = conn.execute(
+                        """DELETE FROM agent_automations
+                           WHERE agent_id = ? AND owner_user_id = ?""",
+                        (agent_id, owner_user_id),
+                    )
+                conn.commit()
+                return cur.rowcount
+            finally:
+                conn.close()
+
+    async def claim_due_automations(self, now_iso: Optional[str] = None) -> List[dict]:
+        """Return enabled automation rows whose next_run_at has elapsed."""
+        ts = now_iso or _now_iso()
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT * FROM agent_automations
+                   WHERE enabled = 1
+                     AND next_run_at IS NOT NULL
+                     AND next_run_at <= ?
+                   ORDER BY next_run_at ASC""",
+                (ts,),
+            ).fetchall()
+            return [self._automation_row_to_dict(r) for r in rows]
+        finally:
+            conn.close()
 
 
 class _LocalTableProxy:
