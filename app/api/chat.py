@@ -47,22 +47,33 @@ def _should_skip_memory(message: str) -> bool:
 
 
 async def _ensure_session(db, user_id: str, session_id: str, title: str = None) -> None:
-    """Create the session row if it doesn't exist yet."""
+    """Create the session row if it doesn't exist yet, and update its title on first real message."""
+    conn = db._get_conn()
     try:
-        await db.assert_session_owned(user_id, session_id)
-    except (PermissionError, Exception):
+        row = conn.execute("SELECT title FROM sessions WHERE id=?", (session_id,)).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        # Session doesn't exist — create it
         try:
             raw = db.get_raw_client()
-            _final_title = title or session_id[:12]
-            print(f"[DEBUG _ensure_session] title param={title!r}, final_title={_final_title!r}", flush=True)
             raw.table("sessions").insert({
                 "id": session_id,
                 "user_id": user_id,
-                "title": _final_title,
+                "title": title or "New Session",
             }).execute()
             logger.info(f"Created session {session_id[:12]} for user {user_id[:12]}")
         except Exception as create_err:
             logger.warning(f"Session creation failed (may already exist): {create_err}")
+    elif title and row[0] in (None, "New Session", session_id[:12]):
+        # Session exists with placeholder title — update to first real message
+        conn = db._get_conn()
+        try:
+            conn.execute("UPDATE sessions SET title=? WHERE id=?", (title, session_id))
+            conn.commit()
+        finally:
+            conn.close()
 
 class InterruptRequest(BaseModel):
     session_id: str

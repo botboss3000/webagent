@@ -137,7 +137,7 @@ export async function populateSessionSelect(userId) {
     for (const s of data.sessions || []) {
       const opt = document.createElement('option');
       opt.value = s.id;
-      const label = s.title || s.id.slice(0, 12);
+      const label = s.title || 'New Session';
       opt.textContent = label.length > 20 ? label.slice(0, 20) + '...' : label;
       opt.title = s.id;
       if (s.id === app.currentSessionId) {
@@ -151,7 +151,7 @@ export async function populateSessionSelect(userId) {
     if (!found && app.currentSessionId) {
       const opt = document.createElement('option');
       opt.value = app.currentSessionId;
-      opt.textContent = app.currentSessionId.slice(0, 12);
+      opt.textContent = 'New Session';
       opt.selected = true;
       sel.appendChild(opt);
     }
@@ -339,10 +339,10 @@ export function initSessions() {
     if (!sid || sid === '__new_session__') {
       app.currentSessionId = generateUUID();
       localStorage.setItem('terminalSessionId', app.currentSessionId);
-      // Add temp option so dropdown shows the new session ID
+      // Add temp option so dropdown shows the new session
       const opt = document.createElement('option');
       opt.value = app.currentSessionId;
-      opt.textContent = app.currentSessionId.slice(0, 12);
+      opt.textContent = 'New Session';
       opt.selected = true;
       sessionSelect.appendChild(opt);
       app.chatMessages.innerHTML = '';
