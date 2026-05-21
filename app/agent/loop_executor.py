@@ -38,14 +38,14 @@ DEFAULT_NODE_ORDER: List[str] = [
     "load_context", "copy_defaults", "skip_gate", "memory_search", "resolve_attach",
     "build_prompt", "build_history",
     # LOOP INIT (stream_agent_events, before while-loop)
-    "load_provider", "load_tools", "integration_status", "assemble_msgs",
+    "load_provider", "load_tools", "data_src_load", "integration_status", "assemble_msgs",
     # INFERENCE (per-turn while-loop)
     "interrupt_chk", "turn_counter", "permission_chk", "build_tool_defs",
     "parallel_mode", "llm_call",
     # ROUTING (validate + guard, per tool call)
     "db_persist_asst", "validate_tools", "destructive_chk", "guardrails", "post_val_chk",
     # EXECUTION (per tool result)
-    "execute_tools", "db_persist_tool", "delegation_chk", "skill_track",
+    "execute_tools", "data_src_exec", "db_persist_tool", "delegation_chk", "skill_track",
     # CONTINUE?
     "check_continue",
     # OUTPUT
@@ -75,6 +75,7 @@ GATED_NODES: frozenset = frozenset({
     "memory_save",     # Skip post-chat memory upsert (ephemeral agents)
     "fire_optimizer",  # Skip optimizer trigger after completion
     "copy_defaults",   # Skip copying default context docs on first use
+    "data_src_load",   # Skip per-agent external data-source tool injection
 })
 
 

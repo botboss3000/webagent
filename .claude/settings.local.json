@@ -8,7 +8,8 @@
       "Bash(taskkill /F /IM python.exe)",
       "Bash(powershell -Command \"Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force; 'done'\")",
       "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Alex R\\\\Projects\\\\webagent\" -Recurse -Directory)",
-      "Bash(Select-Object -ExpandProperty FullName)"
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "PowerShell(@\\(19388, 16548, 17908, 20080\\) | ForEach-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue | Select-Object Id, ProcessName, MainWindowTitle })"
     ]
   }
 }

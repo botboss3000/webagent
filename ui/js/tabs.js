@@ -9,6 +9,30 @@ import { startAutoAgent, stopAutoAgent } from './autoagent.js';
 import { startAgents, stopAgents } from './agents.js';
 import { startAppConfig, stopAppConfig } from './app-config.js';
 
+let chatVisible = localStorage.getItem('chatPanelVisible') !== 'false';
+
+function setChatSideVisible(visible) {
+  const chatSide = document.getElementById('chat-side');
+  const resizeHandle = document.getElementById('chat-resize-handle');
+  if (chatSide) chatSide.style.display = visible ? '' : 'none';
+  if (resizeHandle) resizeHandle.style.display = visible ? '' : 'none';
+}
+
+export function initChatToggle() {
+  const btn = document.getElementById('chat-toggle-btn');
+  if (!btn) return;
+
+  setChatSideVisible(chatVisible);
+  btn.classList.toggle('active', chatVisible);
+
+  btn.addEventListener('click', () => {
+    chatVisible = !chatVisible;
+    localStorage.setItem('chatPanelVisible', String(chatVisible));
+    setChatSideVisible(chatVisible);
+    btn.classList.toggle('active', chatVisible);
+  });
+}
+
 export function initTabs() {
   const tabSelect = document.getElementById('main-tab-select');
   if (!tabSelect) return;
@@ -16,13 +40,6 @@ export function initTabs() {
   const savedTab = localStorage.getItem('lastActiveTab');
   if (savedTab && tabSelect.querySelector(`option[value="${savedTab}"]`)) {
     tabSelect.value = savedTab;
-  }
-
-  function setChatSideVisible(visible) {
-    const chatSide = document.getElementById('chat-side');
-    if (chatSide) {
-      chatSide.style.display = visible ? '' : 'none';
-    }
   }
 
   function activateTab(tabValue) {
@@ -34,8 +51,8 @@ export function initTabs() {
 
     localStorage.setItem('lastActiveTab', tabValue);
 
-    // Default: show chat side
-    setChatSideVisible(true);
+    // Respect user's chat toggle preference
+    setChatSideVisible(chatVisible);
 
     if (tabValue === 'terminal') {
       stopStream();

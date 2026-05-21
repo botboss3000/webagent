@@ -135,7 +135,84 @@ class ToolLoader:
         # ── Inject built-in tools (override any DB versions) ──
         self._inject_builtin_tools(tools, user_id, agent_id=agent_id, agent_template_id=agent_template_id, is_admin_agent=is_admin_agent)
 
+        # ── Inject synthetic tools from per-agent attached data sources ──
+        if agent_id:
+            try:
+                await self._inject_data_source_tools(tools, agent_id)
+            except Exception as e:
+                logger.warning("data source tool injection failed for agent %s: %s", agent_id, e)
+
         return tools
+
+    async def _inject_data_source_tools(self, tools: Dict[str, ToolInfo], agent_id: str) -> None:
+        """Merge synthetic tools from all enabled data sources attached to this agent.
+
+        Synthetic tools are rebuilt fresh on every load() so config edits take
+        effect immediately. They are NOT persisted in the `tools` table.
+        """
+        from app.db import get_db
+        from app.connectors import get_connector
+
+        db = get_db()
+        attachments = await db.agent_data_source_list(agent_id, enabled_only=True)
+        if not attachments:
+            return
+
+        # Build the auth resolver once — caches lookups for the duration of load.
+        auth_cache: Dict[str, Optional[dict]] = {}
+
+        async def _lookup(aid: Optional[str]) -> Optional[dict]:
+            if not aid:
+                return None
+            if aid in auth_cache:
+                return auth_cache[aid]
+            try:
+                client = db.get_raw_client()
+                res = client.table("auth_elements").select("*").eq("id", aid).limit(1).execute()
+                row = res.data[0] if res.data else None
+            except Exception:
+                row = None
+            auth_cache[aid] = row
+            return row
+
+        for att in attachments:
+            ds = {
+                "id": att.get("data_source_id"),
+                "user_id": att.get("owner_user_id"),
+                "name": att.get("name"),
+                "type": att.get("type"),
+                "config": att.get("config") or {},
+                "auth_element_id": att.get("auth_element_id"),
+                "schema_cache": att.get("schema_cache") or {},
+                "safety_policy": att.get("safety_policy") or {},
+                "status": att.get("status"),
+            }
+            try:
+                connector = get_connector(ds["type"])
+            except Exception as e:
+                logger.warning("connector missing for type %s: %s", ds.get("type"), e)
+                continue
+            # Pre-resolve credential into the closure to avoid event-loop juggling.
+            auth_row = await _lookup(ds.get("auth_element_id"))
+
+            def _resolver(_aid, _cached=auth_row):
+                return _cached
+
+            try:
+                generated = connector.generated_tools(ds, att, _resolver)
+            except Exception as e:
+                logger.warning("generated_tools failed for %s: %s", ds.get("name"), e)
+                continue
+            for gt in generated:
+                if gt.name in tools:
+                    logger.debug("data source tool %s overrides existing entry", gt.name)
+                tools[gt.name] = ToolInfo(
+                    name=gt.name,
+                    handler=gt.handler,
+                    parameters=gt.parameters,
+                    tool_id=f"ds:{ds.get('id','')}:{gt.name}",
+                    requires_confirmation=bool(gt.destructive),
+                )
 
     def _inject_builtin_tools(self, tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "", agent_template_id: Optional[str] = None, is_admin_agent: bool = False) -> None:
         """Inject built-in tools that are always available regardless of DB state."""

@@ -395,6 +395,50 @@ TABLES: List[Table] = [
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("last_login_at", "TEXT"),
     ]),
+
+    Table("data_sources", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("user_id", "TEXT", nullable=False),
+        Column("name", "TEXT", nullable=False),
+        Column("type", "TEXT", nullable=False),
+        Column("config", "TEXT", nullable=False, default="'{}'"),
+        Column("auth_element_id", "TEXT"),
+        Column("schema_cache", "TEXT", nullable=False, default="'{}'"),
+        Column("safety_policy", "TEXT", nullable=False, default="'{}'"),
+        Column("status", "TEXT", nullable=False, default="'unverified'"),
+        Column("last_test_message", "TEXT"),
+        Column("last_tested_at", "TIMESTAMP"),
+        Column("last_introspected_at", "TIMESTAMP"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ], constraints=[
+        "UNIQUE(user_id, name)",
+        "CHECK (type IN ('sql_postgres','sql_mysql','rest_api','doc_store','web_search_domain','notion','confluence','shopify','airtable','google_sheets'))",
+        "CHECK (status IN ('unverified','active','error','disabled'))",
+    ]),
+
+    Table("agent_data_sources", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("agent_id", "TEXT", nullable=False, references="agents(id)", on_delete="CASCADE"),
+        Column("data_source_id", "TEXT", nullable=False, references="data_sources(id)", on_delete="CASCADE"),
+        Column("tool_alias", "TEXT"),
+        Column("enabled", "INTEGER", nullable=False, default="1"),
+        Column("inject_schema_in_prompt", "INTEGER", nullable=False, default="1"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ], constraints=["UNIQUE(agent_id, data_source_id)"]),
+
+    Table("doc_chunks", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("data_source_id", "TEXT", nullable=False, references="data_sources(id)", on_delete="CASCADE"),
+        Column("source_ref", "TEXT", nullable=False, default="''"),
+        Column("chunk_index", "INTEGER", nullable=False, default="0"),
+        Column("chunk_text", "TEXT", nullable=False),
+        Column("content_hash", "TEXT"),
+        Column("embedding", "BLOB"),
+        Column("token_count", "INTEGER"),
+        Column("metadata", "TEXT", nullable=False, default="'{}'"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ]),
 ]
 
 
@@ -442,6 +486,13 @@ INDEXES: List[Index] = [
     # Unique
     Index("idx_tools_name", "tools", "name", unique=True),
     Index("idx_auth_elements_user_service_label", "auth_elements", "user_id, service, label", unique=True),
+    # data sources
+    Index("idx_data_sources_user", "data_sources", "user_id"),
+    Index("idx_data_sources_type", "data_sources", "type"),
+    Index("idx_agent_data_sources_agent", "agent_data_sources", "agent_id"),
+    Index("idx_agent_data_sources_source", "agent_data_sources", "data_source_id"),
+    Index("idx_doc_chunks_source", "doc_chunks", "data_source_id"),
+    Index("idx_doc_chunks_hash", "doc_chunks", "content_hash"),
 ]
 
 
@@ -453,6 +504,12 @@ FTS_TABLES: List[FtsTable] = [
         content_table="memories",
         indexed_columns=["title", "compiled_truth", "timeline"],
         unindexed_columns=["slug"],
+    ),
+    FtsTable(
+        name="doc_chunks_fts",
+        content_table="doc_chunks",
+        indexed_columns=["chunk_text"],
+        unindexed_columns=["source_ref"],
     ),
 ]
 
@@ -478,6 +535,26 @@ TRIGGERS: List[Trigger] = [
         VALUES ('delete', old.rowid, old.slug, old.title, old.compiled_truth, old.timeline);
         INSERT INTO memories_fts(rowid, slug, title, compiled_truth, timeline)
         VALUES (new.rowid, new.slug, new.title, new.compiled_truth, new.timeline);
+        END
+    """),
+    Trigger("trg_doc_chunks_fts_insert", """
+        AFTER INSERT ON doc_chunks BEGIN
+        INSERT INTO doc_chunks_fts(rowid, chunk_text, source_ref)
+        VALUES (new.rowid, new.chunk_text, new.source_ref);
+        END
+    """),
+    Trigger("trg_doc_chunks_fts_delete", """
+        AFTER DELETE ON doc_chunks BEGIN
+        INSERT INTO doc_chunks_fts(doc_chunks_fts, rowid, chunk_text, source_ref)
+        VALUES ('delete', old.rowid, old.chunk_text, old.source_ref);
+        END
+    """),
+    Trigger("trg_doc_chunks_fts_update", """
+        AFTER UPDATE ON doc_chunks BEGIN
+        INSERT INTO doc_chunks_fts(doc_chunks_fts, rowid, chunk_text, source_ref)
+        VALUES ('delete', old.rowid, old.chunk_text, old.source_ref);
+        INSERT INTO doc_chunks_fts(rowid, chunk_text, source_ref)
+        VALUES (new.rowid, new.chunk_text, new.source_ref);
         END
     """),
 ]

@@ -454,9 +454,9 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 5px 16px;
-    background: #1a1a2e;
-    border-bottom: 1px solid #2a2a4a;
+    padding: 0 4px;
+    background: transparent;
+    border-bottom: none;
     font-size: 11px;
     color: #565f89;
     flex-shrink: 0;
@@ -581,6 +581,35 @@
   }
   #llm-submenu label {
     display: block; margin-bottom: 6px; color: #a9b1d6; font-size: 12px; font-weight: 600;
+  }
+
+  /* ── Chat toggle button (status-right) ── */
+  #chat-toggle-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    color: #565f89;
+    padding: 0;
+    transition: color 0.15s;
+    user-select: none;
+  }
+  #chat-toggle-btn.active {
+    color: var(--accent, #7dcfff);
+  }
+  #chat-toggle-btn:hover {
+    opacity: 0.8;
+  }
+  .header-divider {
+    color: #2a2a4a;
+    margin: 0 8px;
+    user-select: none;
+    font-size: 13px;
   }
 
   /* ── User Dropdown (status-right) ── */
@@ -721,8 +750,8 @@
   }
 
   body.light-mode #status-bar {
-    background: #fff2e6;
-    border-bottom: 1px solid #ffdec4;
+    background: transparent;
+    border-bottom: none;
   }
   body.light-mode .status-select {
     background: #fffaf5;

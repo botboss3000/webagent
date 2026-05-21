@@ -500,15 +500,19 @@ async def chat(request: ChatRequest):
 
         # Build system prompt with brain context + dynamic tools
         # context_docs is already the resolved per-caller slot list.
+        _agent_id_for_prompt = agent.get("id") if agent else None
         system_prompt = await build_system_prompt(
             context_docs, brain_context, request.user_id,
+            agent_id=_agent_id_for_prompt,
         )
         if attachment_context:
             system_prompt = system_prompt + "\n\n" + attachment_context
 
         # ── Pipeline: prompt built ──
         from app.tools.loader import load_tools
-        tools = await load_tools(request.user_id, agent_template_id=agent.get("template_id") if agent else None,
+        tools = await load_tools(request.user_id,
+                                 agent_id=_agent_id_for_prompt or "",
+                                 agent_template_id=agent.get("template_id") if agent else None,
                                  is_admin_agent=bool(agent.get("is_admin_agent")) if agent else False)
         tool_count_for_prompt = len(tools)
         section_names = ["SYSTEM"]  # Simplified section count — actual sections are dynamic
@@ -518,6 +522,24 @@ async def chat(request: ChatRequest):
             "step": "build_prompt", "sections": section_names,
             "brain_injected": bool(brain_context),
             "tool_count_in_prompt": tool_count_for_prompt,
+        })
+
+        # Emit data_src_load telemetry so the loop node lights up.
+        try:
+            if _agent_id_for_prompt:
+                _ds_attached = await db.agent_data_source_list(_agent_id_for_prompt, enabled_only=True)
+            else:
+                _ds_attached = []
+        except Exception:
+            _ds_attached = []
+        await _emit_to_visualizers(request.session_id, {
+            "type": "pipeline", "level": "pipeline",
+            "step": "data_src_loaded",
+            "attached_count": len(_ds_attached),
+            "sources": [
+                {"name": a.get("name"), "type": a.get("type"), "tool_alias": a.get("tool_alias")}
+                for a in _ds_attached
+            ],
         })
 
         # DB-backed conversation history (same session survives browser refresh)
@@ -837,16 +859,20 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                 attachment_context = format_attachments_for_prompt(attachment_docs)
                 yield f"data: {json.dumps({'type': 'attachment', 'level': 'agent', 'attachments': [{'id': a['id'], 'original_name': a['original_name'], 'mime_type': a['mime_type'], 'size_bytes': a['size_bytes'], 'storage_path': a.get('storage_path', '')} for a in attachment_docs]})}\n\n"
 
+        _agent_id_for_prompt_sse = agent.get("id") if agent else None
         system_prompt = await build_system_prompt(
             context_docs, brain_context, request.user_id,
+            agent_id=_agent_id_for_prompt_sse,
         )
         if attachment_context:
             system_prompt = system_prompt + "\n\n" + attachment_context
 
         from app.tools.loader import load_tools
-        tools = await load_tools(request.user_id, agent_template_id=agent.get("template_id") if agent else None,
+        tools = await load_tools(request.user_id,
+                                 agent_id=_agent_id_for_prompt_sse or "",
+                                 agent_template_id=agent.get("template_id") if agent else None,
                                  is_admin_agent=bool(agent.get("is_admin_agent")) if agent else False)
-        
+
         yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'build_prompt', 'sections': ['SYSTEM'], 'brain_injected': bool(brain_context), 'tool_count_in_prompt': len(tools), 'system_prompt': system_prompt[:8000]})}\n\n"
 
         exclude_ids = {user_interaction_id} if user_interaction_id else set()

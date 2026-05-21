@@ -22,3 +22,6 @@ tzdata>=2025.0
 asyncpg>=0.29.0
 # Secrets-vault providers (optional; runtime check guards import errors)
 keyring>=24.0.0
+# External data-source connectors (per-agent)
+aiomysql>=0.2.0
+sqlglot>=23.0.0

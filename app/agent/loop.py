@@ -1109,6 +1109,13 @@ async def stream_agent_events(
                     for _, _, tool_name, _ in valid_calls:
                         yield {"type": "pipeline", "level": "pipeline",
                                "step": "execute_start", "tool": tool_name}
+                        # data_src_exec light-up: detect connector-generated tools.
+                        _ti = tools.get(tool_name)
+                        _tid = getattr(_ti, "tool_id", "") or ""
+                        if _tid.startswith("ds:"):
+                            yield {"type": "pipeline", "level": "pipeline",
+                                   "step": "data_src_query_started",
+                                   "tool": tool_name, "tool_id": _tid}
 
                     if concurrent_limit and len(valid_calls) > 1:
                         # Throttle parallel execution to safety_policy.max_concurrent_tools
@@ -1141,6 +1148,14 @@ async def stream_agent_events(
                                "step": "execute_end", "tool": tool_name,
                                "duration_ms": result["duration_ms"],
                                "success": success}
+                        _ti2 = tools.get(tool_name)
+                        _tid2 = getattr(_ti2, "tool_id", "") or ""
+                        if _tid2.startswith("ds:"):
+                            yield {"type": "pipeline", "level": "pipeline",
+                                   "step": "data_src_query_finished",
+                                   "tool": tool_name, "tool_id": _tid2,
+                                   "duration_ms": result["duration_ms"],
+                                   "success": success}
 
                         tool_exec_meta = json.dumps({
                             "success": success,

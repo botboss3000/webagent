@@ -107,6 +107,9 @@
 
   <!-- User menu -->
   <span id="status-right">
+    <button id="chat-toggle-btn" class="chat-toggle-btn active" title="Toggle chat panel">
+      <i data-lucide="message-square" class="lucide-icon" style="width:14px;height:14px;"></i>
+    </button>
     <div class="user-dropdown" id="user-dropdown">
       <span id="top-user-id" class="user-dropdown-trigger" style="color:var(--accent);font-weight:600;display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;">
         <span id="top-user-id-val">None</span>
@@ -2076,6 +2079,7 @@
 <script type="module" src="./ui/js/main.js"></script>
 <script type="module" src="./ui/js/attachments.js"></script>
 <script type="module" src="./ui/js/optimizer.js"></script>
+<script type="module" src="./ui/js/data-sources.js"></script>
 <!-- ── Lucide icons + custom tab-select popup ───────────────── -->
 <script>
 (function () {

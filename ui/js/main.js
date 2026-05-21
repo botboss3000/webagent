@@ -7,7 +7,7 @@ import { initChat } from './chat.js';
 import { initReconnect } from './reconnect.js';
 import { ensureAttachmentsInit } from './attachments.js';
 import { connectAgent } from './agentWs.js';
-import { initTabs } from './tabs.js';
+import { initTabs, initChatToggle } from './tabs.js';
 import { initStream } from './stream.js';
 import { initLoop } from './loop.js';
 import { initLoopVisual } from './loop-logic.js';
@@ -155,6 +155,7 @@ _anonReady.then(() => {
   }
 
   _safeInit('initTabs',        initTabs);
+  _safeInit('initChatToggle',  initChatToggle);
   _safeInit('initStream',      initStream);
   _safeInit('initLoop',        initLoop);
   _safeInit('initLoopVisual',  initLoopVisual);

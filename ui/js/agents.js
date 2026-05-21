@@ -947,6 +947,28 @@ function _renderConfigTab(body, agent, panelEl) {
     if (content) content.appendChild(bar);
   }
 
+  // ── External Data Sources (per-agent) ───────────────────────────────────────
+  if (isEditable) {
+    const dsHost = document.createElement('div');
+    dsHost.className = 'agents-field-group';
+    dsHost.dataset.role = 'agent-data-sources';
+    body.appendChild(dsHost);
+    try {
+      if (window.AgentDataSourcesUI && typeof window.AgentDataSourcesUI.mount === 'function') {
+        window.AgentDataSourcesUI.mount(dsHost, agent, app.currentUserId);
+      } else {
+        // Lazy-load if the module loaded after this tab opened.
+        import('./data-sources.js').then(mod => {
+          if (mod && mod.mount) mod.mount(dsHost, agent, app.currentUserId);
+        }).catch(() => {
+          dsHost.innerHTML = '<div class="agents-field-hint">Data sources editor module not loaded.</div>';
+        });
+      }
+    } catch (e) {
+      dsHost.innerHTML = `<div class="agents-field-hint">Error mounting data sources: ${e.message}</div>`;
+    }
+  }
+
   // Save bar (sticky at bottom of content — outside the scrollable body)
   if (isEditable) {
     const content = panelEl.querySelector('.agent-detail-content');
@@ -3093,7 +3115,7 @@ function _lvShowEditPanel(nd, nodeEl, container, agent) {
     }
   }
 
-  const _INFO_NODES = new Set(['load_context', 'build_prompt', 'build_history', 'load_tools', 'integration_status', 'assemble_msgs']);
+  const _INFO_NODES = new Set(['load_context', 'build_prompt', 'build_history', 'load_tools', 'data_src_load', 'integration_status', 'assemble_msgs', 'data_src_exec']);
   if (!_INFO_NODES.has(nd.id)) {
   const saveBar = document.createElement('div');
   saveBar.className = 'lv-edit-save-bar';
