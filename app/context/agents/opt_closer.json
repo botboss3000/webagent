@@ -28,6 +28,7 @@
   "skills_prompt": "",
   "tasks_prompt": "",
   "misc_prompt": "",
+  "automation_prompt": "",
   "bootstrap_tools": "",
   "trigger_type": "tool_call",
   "trigger_key": "handoff_to_closer",

@@ -404,7 +404,7 @@ function _buildDetailPanel(agent) {
   // Tab bar
   const tabBar = document.createElement('div');
   tabBar.className = 'agent-detail-tabs';
-  const tabs = [['config','Config'],['tools','Tools'],['test','Agent Loop'],['connections','Connections']];
+  const tabs = [['config','Config'],['tools','Tools'],['test','Agent Loop'],['connections','Connections'],['automation','Automation']];
   if (_userIsAdmin) tabs.push(['members','Members']);
   for (const [key, label] of tabs) {
     const btn = document.createElement('button');
@@ -454,7 +454,296 @@ function _renderPanelBody(agent, panelEl) {
   else if (tab === 'tools')        _renderToolsTab(body, agent, panelEl);
   else if (tab === 'test')         _renderTestTab(body, agent);
   else if (tab === 'connections')  _renderConnectionsTab(body, agent);
+  else if (tab === 'automation')   _renderAutomationTab(body, agent, panelEl);
   else if (tab === 'members')      _renderMembersTab(body, agent);
+}
+
+// ── Automation tab ────────────────────────────────────────────────────────────
+
+async function _renderAutomationTab(body, agent, panelEl) {
+  body.innerHTML = '<div style="font-size:12px;color:#565f89;padding:8px;">Loading automation…</div>';
+
+  let slotContent = '';
+  try {
+    const r = await fetch(`/api/v1/agents/${encodeURIComponent(agent.id)}/slots?user_id=${encodeURIComponent(app.currentUserId)}`);
+    if (r.ok) {
+      const d = await r.json();
+      const s = (d.slots || []).find(x => x.slot_name === 'automation');
+      if (s) slotContent = (s.override_content != null ? s.override_content : s.content) || '';
+    }
+  } catch (_) {}
+
+  let availableChannels = ['webchat'];
+  try {
+    const r = await fetch(`/api/v1/agents/${encodeURIComponent(agent.id)}/connections?user_id=${encodeURIComponent(app.currentUserId)}`);
+    if (r.ok) {
+      const d = await r.json();
+      for (const c of (d.connections || [])) {
+        if (c.section === 'channel' && c.enabled && c.connection_type) {
+          if (!availableChannels.includes(c.connection_type)) {
+            availableChannels.push(c.connection_type);
+          }
+        }
+      }
+    }
+  } catch (_) {}
+
+  body.innerHTML = '';
+
+  const intro = document.createElement('div');
+  intro.style.cssText = 'font-size:12px;color:#a9b1d6;padding:8px 10px;background:rgba(125,207,255,0.05);border:1px solid #2a2a4a;border-radius:6px;margin-bottom:10px;line-height:1.5;';
+  intro.textContent = 'Describe scheduled work in plain English (one task per paragraph). Saving re-parses the file into structured tasks shown below.';
+  body.appendChild(intro);
+
+  const textWrap = document.createElement('div');
+  textWrap.className = 'agents-field-group';
+  const lbl = document.createElement('label');
+  lbl.className = 'agents-field-label';
+  lbl.textContent = 'Automation file';
+  const ta = document.createElement('textarea');
+  ta.className = 'agents-textarea agents-automation-textarea';
+  ta.style.cssText = 'width:100%;min-height:220px;font-family:monospace;font-size:12px;line-height:1.45;';
+  ta.value = slotContent;
+  textWrap.appendChild(lbl);
+  textWrap.appendChild(ta);
+  body.appendChild(textWrap);
+
+  const saveBar = document.createElement('div');
+  saveBar.style.cssText = 'display:flex;align-items:center;gap:10px;margin-top:6px;';
+  const saveBtn = _btn('Save & Parse', 'agents-btn primary');
+  const saveMsg = document.createElement('span');
+  saveMsg.style.cssText = 'font-size:12px;color:#565f89;';
+  saveBar.appendChild(saveBtn);
+  saveBar.appendChild(saveMsg);
+  body.appendChild(saveBar);
+
+  const parseErr = document.createElement('div');
+  parseErr.style.cssText = 'display:none;font-size:11px;color:#f7768e;margin-top:8px;padding:6px 10px;background:rgba(247,118,142,0.07);border:1px solid #f7768e;border-radius:4px;';
+  body.appendChild(parseErr);
+
+  const tasksHeader = document.createElement('div');
+  tasksHeader.style.cssText = 'margin-top:18px;font-size:12px;font-weight:600;color:#a9b1d6;text-transform:uppercase;letter-spacing:0.5px;';
+  tasksHeader.textContent = 'Scheduled tasks';
+  body.appendChild(tasksHeader);
+
+  const tasksList = document.createElement('div');
+  tasksList.className = 'agents-automation-tasks';
+  tasksList.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin-top:8px;';
+  body.appendChild(tasksList);
+
+  function renderTasks(tasks) {
+    tasksList.innerHTML = '';
+    if (!tasks || !tasks.length) {
+      const empty = document.createElement('div');
+      empty.style.cssText = 'font-size:12px;color:#565f89;padding:8px;';
+      empty.textContent = 'No scheduled tasks yet.';
+      tasksList.appendChild(empty);
+      return;
+    }
+    for (const t of tasks) {
+      tasksList.appendChild(_renderAutomationTaskRow(agent, t, availableChannels, () => loadTasks()));
+    }
+  }
+
+  async function loadTasks() {
+    try {
+      const r = await fetch(`/api/v1/agents/${encodeURIComponent(agent.id)}/automations?user_id=${encodeURIComponent(app.currentUserId)}`);
+      if (r.ok) {
+        const d = await r.json();
+        renderTasks(d.tasks || []);
+      }
+    } catch (_) {}
+  }
+
+  saveBtn.addEventListener('click', async () => {
+    saveMsg.textContent = 'Saving…';
+    saveMsg.style.color = '#565f89';
+    parseErr.style.display = 'none';
+    parseErr.textContent = '';
+    try {
+      const r = await fetch(`/api/v1/agents/${encodeURIComponent(agent.id)}/my-prompts`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: app.currentUserId,
+          slots: [{ slot_name: 'automation', content: ta.value }],
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok) {
+        saveMsg.textContent = d.detail || 'Save failed';
+        saveMsg.style.color = '#f7768e';
+        return;
+      }
+      saveMsg.textContent = '✓ Saved';
+      saveMsg.style.color = '#9ece6a';
+      if (d.automation_error) {
+        parseErr.style.display = 'block';
+        parseErr.textContent = `Parse warning: ${d.automation_error}`;
+      }
+      if (Array.isArray(d.automation_tasks)) {
+        renderTasks(d.automation_tasks);
+      } else {
+        await loadTasks();
+      }
+    } catch (e) {
+      saveMsg.textContent = `Error: ${e.message}`;
+      saveMsg.style.color = '#f7768e';
+    }
+  });
+
+  await loadTasks();
+}
+
+function _renderAutomationTaskRow(agent, task, channels, onRefresh) {
+  const row = document.createElement('div');
+  row.className = 'agents-automation-row';
+  row.style.cssText = 'border:1px solid #2a2a4a;border-radius:6px;padding:10px 12px;background:#16161f;display:grid;grid-template-columns:1fr auto;gap:8px;';
+
+  const left = document.createElement('div');
+  left.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
+
+  const title = document.createElement('div');
+  title.style.cssText = 'font-size:13px;font-weight:600;color:#c0caf5;';
+  title.textContent = task.task_label || '(unlabeled)';
+  left.appendChild(title);
+
+  const sched = document.createElement('div');
+  sched.style.cssText = 'font-size:11px;color:#7dcfff;font-family:monospace;';
+  sched.textContent = `${task.schedule_cron || ''}  ${task.schedule_natural ? '· ' + task.schedule_natural : ''}`;
+  left.appendChild(sched);
+
+  const meta = document.createElement('div');
+  meta.style.cssText = 'font-size:11px;color:#565f89;';
+  const next = task.next_run_at ? `next: ${new Date(task.next_run_at).toLocaleString()}` : 'next: —';
+  const last = task.last_run_at ? `last: ${new Date(task.last_run_at).toLocaleString()} (${task.last_status || 'ok'})` : 'last: —';
+  meta.textContent = `${next} · ${last}`;
+  left.appendChild(meta);
+
+  if (task.last_error) {
+    const err = document.createElement('div');
+    err.style.cssText = 'font-size:11px;color:#f7768e;';
+    err.textContent = `Error: ${task.last_error}`;
+    left.appendChild(err);
+  }
+
+  const promptPreview = document.createElement('div');
+  promptPreview.style.cssText = 'font-size:11px;color:#a9b1d6;font-style:italic;margin-top:4px;white-space:pre-wrap;';
+  promptPreview.textContent = task.prompt ? `> ${task.prompt}` : '';
+  left.appendChild(promptPreview);
+
+  row.appendChild(left);
+
+  const right = document.createElement('div');
+  right.style.cssText = 'display:flex;flex-direction:column;gap:6px;align-items:flex-end;min-width:170px;';
+
+  const enableLbl = document.createElement('label');
+  enableLbl.style.cssText = 'display:flex;align-items:center;gap:5px;font-size:11px;color:#a9b1d6;cursor:pointer;';
+  const enableCb = document.createElement('input');
+  enableCb.type = 'checkbox';
+  enableCb.checked = !!task.enabled;
+  enableLbl.appendChild(enableCb);
+  enableLbl.appendChild(document.createTextNode('Enabled'));
+  right.appendChild(enableLbl);
+
+  const silentLbl = document.createElement('label');
+  silentLbl.style.cssText = 'display:flex;align-items:center;gap:5px;font-size:11px;color:#a9b1d6;cursor:pointer;';
+  const silentCb = document.createElement('input');
+  silentCb.type = 'checkbox';
+  silentCb.checked = !!task.silent;
+  silentLbl.appendChild(silentCb);
+  silentLbl.appendChild(document.createTextNode('Silent'));
+  right.appendChild(silentLbl);
+
+  const chanWrap = document.createElement('div');
+  chanWrap.style.cssText = 'display:flex;flex-direction:column;gap:2px;align-items:flex-end;';
+  const chanSel = document.createElement('select');
+  chanSel.className = 'agents-input';
+  chanSel.style.cssText = 'font-size:11px;padding:3px 6px;min-width:140px;';
+  const blank = document.createElement('option');
+  blank.value = '';
+  blank.textContent = '— none —';
+  chanSel.appendChild(blank);
+  for (const c of channels) {
+    const opt = document.createElement('option');
+    opt.value = c;
+    opt.textContent = c;
+    if (task.channel === c) opt.selected = true;
+    chanSel.appendChild(opt);
+  }
+  chanWrap.appendChild(chanSel);
+
+  const recipInput = document.createElement('input');
+  recipInput.type = 'text';
+  recipInput.className = 'agents-input';
+  recipInput.placeholder = 'recipient (id, phone, email)';
+  recipInput.style.cssText = 'font-size:11px;padding:3px 6px;min-width:140px;';
+  recipInput.value = task.channel_recipient || '';
+  chanWrap.appendChild(recipInput);
+  right.appendChild(chanWrap);
+
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:5px;margin-top:4px;';
+
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'agents-btn';
+  saveBtn.textContent = 'Save';
+  saveBtn.style.cssText = 'font-size:11px;padding:3px 10px;';
+
+  const runBtn = document.createElement('button');
+  runBtn.className = 'agents-btn';
+  runBtn.textContent = 'Run now';
+  runBtn.style.cssText = 'font-size:11px;padding:3px 10px;';
+
+  btnRow.appendChild(saveBtn);
+  btnRow.appendChild(runBtn);
+  right.appendChild(btnRow);
+
+  saveBtn.addEventListener('click', async () => {
+    saveBtn.textContent = '…';
+    try {
+      await fetch(`/api/v1/agents/${encodeURIComponent(agent.id)}/automations/${encodeURIComponent(task.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: app.currentUserId,
+          enabled: enableCb.checked,
+          silent: silentCb.checked,
+          channel: chanSel.value || null,
+          channel_recipient: recipInput.value || null,
+        }),
+      });
+      saveBtn.textContent = '✓';
+      setTimeout(() => { saveBtn.textContent = 'Save'; }, 1200);
+      onRefresh && onRefresh();
+    } catch (e) {
+      saveBtn.textContent = 'Err';
+    }
+  });
+
+  runBtn.addEventListener('click', async () => {
+    runBtn.textContent = 'Running…';
+    runBtn.disabled = true;
+    try {
+      const r = await fetch(`/api/v1/agents/${encodeURIComponent(agent.id)}/automations/${encodeURIComponent(task.id)}/run-now?user_id=${encodeURIComponent(app.currentUserId)}`, {
+        method: 'POST',
+      });
+      const d = await r.json();
+      if (d?.result?.ok === false) {
+        runBtn.textContent = 'Error';
+      } else {
+        runBtn.textContent = 'Done';
+      }
+      setTimeout(() => { runBtn.textContent = 'Run now'; runBtn.disabled = false; }, 1500);
+      onRefresh && onRefresh();
+    } catch (e) {
+      runBtn.textContent = 'Err';
+      runBtn.disabled = false;
+    }
+  });
+
+  row.appendChild(right);
+  return row;
 }
 
 // ── Config tab ────────────────────────────────────────────────────────────────

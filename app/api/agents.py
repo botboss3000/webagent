@@ -349,6 +349,10 @@ async def update_my_prompts(agent_id: str, req: UpdateMyPromptsRequest):
 
     Locked slots and unknown slot_names are rejected per slot (the rest still
     write). Returns the resolved slot list for this caller.
+
+    If the ``automation`` slot is among the writes, also re-parse it into
+    structured ``agent_automations`` rows and return them under
+    ``automation_tasks``.
     """
     db = get_db()
     agent = await db.get_agent_by_id(agent_id)
@@ -356,6 +360,7 @@ async def update_my_prompts(agent_id: str, req: UpdateMyPromptsRequest):
         raise HTTPException(status_code=404, detail="Agent not found.")
     rejected: List[Dict[str, str]] = []
     written: List[str] = []
+    automation_content: Optional[str] = None
     for item in req.slots:
         res = await db.upsert_override(
             agent_id=agent_id,
@@ -368,8 +373,142 @@ async def update_my_prompts(agent_id: str, req: UpdateMyPromptsRequest):
             rejected.append({"slot_name": item.slot_name, "reason": "locked_or_unknown"})
         else:
             written.append(item.slot_name)
+            if item.slot_name == "automation":
+                automation_content = item.content or ""
+
     slots = await db.list_slots(agent_id, user_id=req.user_id)
-    return {"written": written, "rejected": rejected, "slots": slots}
+
+    automation_payload: Optional[Dict[str, Any]] = None
+    if automation_content is not None:
+        try:
+            from app.automation.sync import sync_automations
+            automation_payload = await sync_automations(
+                db=db,
+                agent_id=agent_id,
+                owner_user_id=req.user_id,
+                slot_content=automation_content,
+                agent_context={
+                    "name": agent.get("name"),
+                    "description": agent.get("description"),
+                },
+            )
+        except Exception as e:
+            logger.warning("Automation sync failed: %s", e)
+            automation_payload = {"tasks": [], "removed": 0, "error": str(e)}
+
+    response = {"written": written, "rejected": rejected, "slots": slots}
+    if automation_payload is not None:
+        response["automation_tasks"] = automation_payload.get("tasks", [])
+        response["automation_error"] = automation_payload.get("error")
+    return response
+
+
+@router.get("/agents/{agent_id}/automations")
+async def list_agent_automations(agent_id: str, user_id: str = Query(...)):
+    """List parsed scheduled task rows for this user/agent."""
+    db = get_db()
+    agent = await db.get_agent_by_id(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+    rows = await db.list_automations(agent_id=agent_id, owner_user_id=user_id)
+    return {"tasks": rows}
+
+
+@router.post("/agents/{agent_id}/automations/parse")
+async def reparse_agent_automations(agent_id: str, user_id: str = Query(...)):
+    """Re-run the LLM parser against the caller's resolved ``automation`` slot."""
+    db = get_db()
+    agent = await db.get_agent_by_id(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+
+    slots = await db.list_slots(agent_id, user_id=user_id)
+    content = ""
+    for s in slots:
+        if s.get("slot_name") == "automation":
+            content = s.get("override_content") or s.get("content") or ""
+            break
+
+    from app.automation.sync import sync_automations
+    try:
+        result = await sync_automations(
+            db=db, agent_id=agent_id, owner_user_id=user_id,
+            slot_content=content,
+            agent_context={
+                "name": agent.get("name"),
+                "description": agent.get("description"),
+            },
+        )
+    except Exception as e:
+        logger.warning("Re-parse failed: %s", e)
+        result = {"tasks": [], "removed": 0, "error": str(e)}
+    return {
+        "tasks": result.get("tasks", []),
+        "removed": result.get("removed", 0),
+        "error": result.get("error"),
+    }
+
+
+class UpdateAutomationBody(BaseModel):
+    user_id: str
+    enabled: Optional[bool] = None
+    silent: Optional[bool] = None
+    channel: Optional[str] = None
+    channel_recipient: Optional[str] = None
+
+
+@router.patch("/agents/{agent_id}/automations/{automation_id}")
+async def patch_agent_automation(agent_id: str, automation_id: str, body: UpdateAutomationBody):
+    """Toggle enabled / channel / silent for a single task without re-parsing."""
+    db = get_db()
+    row = await db.get_automation(automation_id)
+    if not row or row.get("agent_id") != agent_id:
+        raise HTTPException(status_code=404, detail="Automation not found.")
+    if row.get("owner_user_id") != body.user_id and not await db.is_user_admin(body.user_id):
+        raise HTTPException(status_code=403, detail="Not the owner of this automation.")
+    fields: Dict[str, Any] = {}
+    if body.enabled is not None:
+        fields["enabled"] = body.enabled
+    if body.silent is not None:
+        fields["silent"] = body.silent
+    if body.channel is not None:
+        fields["channel"] = body.channel or None
+    if body.channel_recipient is not None:
+        fields["channel_recipient"] = body.channel_recipient or None
+    updated = await db.update_automation(automation_id, **fields)
+    return {"task": updated}
+
+
+@router.post("/agents/{agent_id}/automations/{automation_id}/run-now")
+async def run_agent_automation_now(agent_id: str, automation_id: str, user_id: str = Query(...)):
+    """Fire an automation immediately. Does not affect ``next_run_at``."""
+    db = get_db()
+    row = await db.get_automation(automation_id)
+    if not row or row.get("agent_id") != agent_id:
+        raise HTTPException(status_code=404, detail="Automation not found.")
+    if row.get("owner_user_id") != user_id and not await db.is_user_admin(user_id):
+        raise HTTPException(status_code=403, detail="Not the owner of this automation.")
+    from app.scheduler import get_scheduler
+    try:
+        result = await get_scheduler().run_now(automation_id)
+    except Exception as e:
+        logger.warning("run_now failed: %s", e)
+        result = {"ok": False, "error": str(e)}
+    fresh = await db.get_automation(automation_id)
+    return {"result": result, "task": fresh}
+
+
+@router.delete("/agents/{agent_id}/automations/{automation_id}")
+async def delete_agent_automation(agent_id: str, automation_id: str, user_id: str = Query(...)):
+    """Delete one automation row (the file is left untouched)."""
+    db = get_db()
+    row = await db.get_automation(automation_id)
+    if not row or row.get("agent_id") != agent_id:
+        raise HTTPException(status_code=404, detail="Automation not found.")
+    if row.get("owner_user_id") != user_id and not await db.is_user_admin(user_id):
+        raise HTTPException(status_code=403, detail="Not the owner of this automation.")
+    deleted = await db.delete_automation(automation_id)
+    return {"deleted": bool(deleted)}
 
 
 @router.delete("/agents/{agent_id}/my-prompts/{slot_name}")

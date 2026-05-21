@@ -27,6 +27,7 @@
   "skills_prompt": "",
   "tasks_prompt": "",
   "misc_prompt": "",
+  "automation_prompt": "",
   "bootstrap_tools": "",
   "trigger_type": "slash_command",
   "trigger_key": "/optimize",

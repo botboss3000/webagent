@@ -58,7 +58,7 @@ let _parallelUidCounter = 0;
 // ── Sidebar nav + scroll highlighting ────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────
 const _SECTION_KEY = 'appConfig_activeSection';
-const _VALID_SECTIONS = ['llm', 'integrations', 'database', 'optimizer', 'git', 'app-settings', 'user-management'];
+const _VALID_SECTIONS = ['llm', 'integrations', 'database', 'optimizer', 'git', 'automation', 'app-settings', 'user-management'];
 let _activeSection = localStorage.getItem(_SECTION_KEY) || 'llm';
 
 function _showSection(section) {
@@ -1374,6 +1374,7 @@ export function initAppConfig() {
   _initDatabase();
   _initOptimizer();
   _initGit();
+  _initAutomation();
   _initAppSettings();
   _initUserManagement();
   _initialized = true;
@@ -1391,8 +1392,83 @@ export async function startAppConfig() {
   _loadDatabase();
   _loadOptimizer();
   _loadGit();
+  _loadAutomation();
   _loadAppSettings();
   _loadUserManagement();
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// ── SECTION 6b: Automation (scheduler provider) ──────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
+function _initAutomation() {
+  _qs('ac-sched-save')?.addEventListener('click', _saveAutomation);
+  _qs('ac-sched-refresh')?.addEventListener('click', _loadAutomation);
+  _qs('ac-sched-provider')?.addEventListener('change', _autoToggleSchedFields);
+}
+
+function _autoToggleSchedFields() {
+  const prov = _qs('ac-sched-provider')?.value || 'local';
+  const g = _qs('ac-sched-google-fields');
+  if (g) g.style.display = prov === 'google' ? 'grid' : 'none';
+}
+
+async function _loadAutomation() {
+  const badge = _qs('ac-sched-active-badge');
+  const statusEl = _qs('ac-sched-status');
+  const provSel = _qs('ac-sched-provider');
+  try {
+    const r = await _fetch(apiPath('/admin/settings/scheduler'));
+    if (r.ok) {
+      const d = await r.json();
+      if (provSel) provSel.value = d.provider || 'local';
+      const s = d.settings || {};
+      const gp = _qs('ac-sched-google-project'); if (gp) gp.value = s.project_id || '';
+      const gr = _qs('ac-sched-google-region');  if (gr) gr.value = s.region || '';
+      _autoToggleSchedFields();
+    }
+  } catch (_) {}
+
+  try {
+    const r = await _fetch(apiPath('/admin/scheduler/status'));
+    if (r.ok) {
+      const d = await r.json();
+      const running = !!d.running;
+      if (badge) {
+        badge.textContent = running ? `${d.provider} · running` : `${d.provider || 'unknown'} · stopped`;
+        badge.style.color = running ? '#9ece6a' : '#f7768e';
+      }
+      if (statusEl) {
+        statusEl.textContent = JSON.stringify(d, null, 2);
+      }
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = `Error fetching status: ${e.message}`;
+  }
+}
+
+async function _saveAutomation() {
+  if (!isAdmin()) { showRestrictedModal(); return; }
+  const provider = _qs('ac-sched-provider')?.value || 'local';
+  const settings = {};
+  if (provider === 'google') {
+    const gp = _qs('ac-sched-google-project')?.value || '';
+    const gr = _qs('ac-sched-google-region')?.value || '';
+    if (gp) settings.project_id = gp;
+    if (gr) settings.region = gr;
+  }
+  const statusEl = _qs('ac-sched-status');
+  try {
+    const r = await _fetch(apiPath('/admin/settings/scheduler'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, settings }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    if (statusEl) statusEl.textContent = 'Saved. Reloading status…';
+    setTimeout(_loadAutomation, 400);
+  } catch (e) {
+    if (statusEl) statusEl.textContent = `Save failed: ${e.message}`;
+  }
 }
 
 /** Called when leaving the App Config tab. */

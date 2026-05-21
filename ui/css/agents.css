@@ -1582,3 +1582,27 @@ body.light-mode .members-policy-opt-label { color: #2a1f17; }
 }
 .members-btn.restrict:hover { background: rgba(247,118,142,0.12); }
 
+
+/* ── Automation tab ────────────────────────────────────────────────────── */
+.agents-automation-textarea {
+  background: #16161f;
+  color: #c0caf5;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  padding: 10px 12px;
+  resize: vertical;
+}
+.agents-automation-textarea:focus {
+  outline: none;
+  border-color: #7dcfff;
+  box-shadow: 0 0 0 1px rgba(125,207,255,0.25);
+}
+.agents-automation-tasks {
+  width: 100%;
+}
+.agents-automation-row {
+  transition: border-color 0.12s;
+}
+.agents-automation-row:hover {
+  border-color: #3a3a5a;
+}
