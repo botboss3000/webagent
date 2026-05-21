@@ -498,6 +498,23 @@ async def run_agent_automation_now(agent_id: str, automation_id: str, user_id: s
     return {"result": result, "task": fresh}
 
 
+@router.post("/automations/fire/{automation_id}")
+async def fire_remote_automation(automation_id: str, token: str = Query(...)):
+    """Webhook entry point used by remote scheduler providers (Google Cloud
+    Scheduler, cron-job.org, generic webhooks). Validates the per-automation
+    ``fire_token`` and runs the executor.
+    """
+    db = get_db()
+    row = await db.get_automation_by_fire_token(automation_id, token)
+    if not row:
+        raise HTTPException(status_code=404, detail="Unknown automation or bad token.")
+    if not row.get("enabled"):
+        return {"ok": False, "skipped": "disabled"}
+    from app.scheduler.executor import execute_automation
+    result = await execute_automation(row)
+    return {"ok": bool(result.get("ok")), "session_id": result.get("session_id"), "error": result.get("error")}
+
+
 @router.delete("/agents/{agent_id}/automations/{automation_id}")
 async def delete_agent_automation(agent_id: str, automation_id: str, user_id: str = Query(...)):
     """Delete one automation row (the file is left untouched)."""

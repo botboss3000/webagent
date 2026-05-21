@@ -23,6 +23,7 @@ MANIFEST
 # Environments
 .env
 provider.json
+scheduler_config.json
 .venv
 env/
 venv/
