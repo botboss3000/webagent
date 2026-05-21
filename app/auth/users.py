@@ -218,3 +218,69 @@ def clear_remember_token(username: str) -> bool:
     user.remember_token = ""
     _persist()
     return True
+
+
+# ── Self-service profile/password/delete ────────────────────────────────────
+
+class UpdateConflict(Exception):
+    """Raised when a username/email change collides with an existing user."""
+
+
+def update_user(current_username: str,
+                new_username: Optional[str] = None,
+                new_display_name: Optional[str] = None) -> Optional[User]:
+    """Update a user's username (email) and/or display name.
+
+    Keeps user_id stable so existing DB references stay valid.
+    Raises UpdateConflict if new_username collides with another user.
+    Returns the updated User, or None if current_username not found.
+    """
+    user = _users.get(current_username)
+    if user is None:
+        return None
+
+    if new_username is not None and new_username != current_username:
+        if new_username in _users:
+            raise UpdateConflict(new_username)
+        # Rekey the dict entry
+        del _users[current_username]
+        user.username = new_username
+        _users[new_username] = user
+
+    if new_display_name is not None:
+        user.display_name = new_display_name or user.username
+
+    _persist()
+    return user
+
+
+def change_password(username: str, new_password: str) -> bool:
+    """Set a new password hash for the user.
+
+    Caller must verify the current password first (e.g. via authenticate()).
+    Returns True on success, False if user not found.
+    """
+    user = _users.get(username)
+    if user is None:
+        return False
+    user.password_hash = _hash_password(new_password)
+    _persist()
+    return True
+
+
+def delete_user_self(username: str) -> tuple[bool, str]:
+    """Delete the user identified by `username` (self-service).
+
+    Blocks deletion of the bootstrap admin (user_id == "admin_default").
+    Returns (ok, reason). reason is "" on success, otherwise a short code:
+      - "not_found"  — username not in store
+      - "protected"  — the admin_default seed cannot be deleted
+    """
+    user = _users.get(username)
+    if user is None:
+        return False, "not_found"
+    if user.user_id == "admin_default":
+        return False, "protected"
+    del _users[username]
+    _persist()
+    return True, ""

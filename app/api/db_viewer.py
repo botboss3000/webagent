@@ -203,6 +203,55 @@ async def delete_session(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class SessionPatchRequest(BaseModel):
+    """Body for PATCH /sessions/{id} — rename and/or pin."""
+    title: Optional[str] = None
+    pinned: Optional[bool] = None
+
+
+@router.patch("/sessions/{session_id}")
+async def patch_session(
+    session_id: str,
+    req: SessionPatchRequest,
+    db: str = Query("local.db", description="Database filename"),
+):
+    """Update a session's title and/or pinned state."""
+    if req.title is None and req.pinned is None:
+        raise HTTPException(status_code=400, detail="Provide title and/or pinned")
+
+    db_path = _get_db_path(db)
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+
+        sets = []
+        params: list[object] = []
+        if req.title is not None:
+            sets.append("title = ?")
+            params.append(req.title)
+        if req.pinned is not None:
+            # Confirm column exists before writing
+            cur.execute("PRAGMA table_info(sessions)")
+            cols = {row[1] for row in cur.fetchall()}
+            if "pinned" not in cols:
+                cur.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+            sets.append("pinned = ?")
+            params.append(1 if req.pinned else 0)
+        sets.append("updated_at = CURRENT_TIMESTAMP")
+
+        params.append(session_id)
+        cur.execute(f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?", params)
+        affected = cur.rowcount
+        conn.commit()
+        conn.close()
+
+        if affected == 0:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return {"success": True, "session_id": session_id, "affected": affected}
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/sessions")
 async def list_sessions(
     request: Request,
@@ -231,7 +280,20 @@ async def list_sessions(
 
         sessions = []
         try:
-            cur.execute('SELECT id, title, created_at, user_id, participants FROM sessions ORDER BY created_at DESC')
+            # Detect if pinned column exists (older DBs may not have it yet)
+            cur.execute("PRAGMA table_info(sessions)")
+            sess_cols = {row[1] for row in cur.fetchall()}
+            has_pinned = "pinned" in sess_cols
+            if has_pinned:
+                cur.execute(
+                    'SELECT id, title, created_at, user_id, participants, pinned '
+                    'FROM sessions ORDER BY pinned DESC, created_at DESC'
+                )
+            else:
+                cur.execute(
+                    'SELECT id, title, created_at, user_id, participants '
+                    'FROM sessions ORDER BY created_at DESC'
+                )
             for row in cur.fetchall():
                 owner_id = row[3]
                 participants_raw = row[4] or "[]"
@@ -242,7 +304,13 @@ async def list_sessions(
                 participant_ids = {p.get("id") for p in participants if isinstance(p, dict)}
                 all_ids = ({owner_id} | participant_ids) - {None}
                 if requester_identities & all_ids:
-                    sessions.append({"id": row[0], "title": row[1] or row[0][:12], "created_at": row[2]})
+                    pinned_val = bool(row[5]) if has_pinned else False
+                    sessions.append({
+                        "id": row[0],
+                        "title": row[1] or row[0][:12],
+                        "created_at": row[2],
+                        "pinned": pinned_val,
+                    })
         except sqlite3.OperationalError:
             pass
 

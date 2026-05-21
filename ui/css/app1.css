@@ -595,15 +595,20 @@
     font-weight: 600;
     font-family: inherit;
     color: #565f89;
-    padding: 0;
-    transition: color 0.15s;
+    padding: 4px 6px;
+    margin: 0;
+    border-radius: 6px;
+    transition: color 0.15s, background 0.15s;
     user-select: none;
   }
+  /* Lucide SVG inside button must not swallow clicks. */
+  #chat-toggle-btn > * { pointer-events: none; }
   #chat-toggle-btn.active {
     color: var(--accent, #7dcfff);
   }
   #chat-toggle-btn:hover {
-    opacity: 0.8;
+    background: rgba(125,207,255,0.08);
+    color: var(--accent, #7dcfff);
   }
   .header-divider {
     color: #2a2a4a;
@@ -1222,4 +1227,504 @@
   body.light-mode .xterm-viewport {
     scrollbar-color: #ffd4a8 transparent !important;
   }
+
+  /* ── Session dropdown (custom) ───────────────────────────────── */
+  .session-dropdown {
+    position: relative;
+    display: inline-block;
+    vertical-align: middle;
+  }
+  .session-dropdown-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    max-width: 180px;
+    min-width: 100px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+  }
+  /* Icons inside the trigger and kebab must not swallow clicks (lucide SVG quirk). */
+  .session-dropdown-trigger > *,
+  .session-row-kebab > * {
+    pointer-events: none;
+  }
+  .session-dropdown-trigger #session-dropdown-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .session-dropdown-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: 240px;
+    max-width: 320px;
+    max-height: 360px;
+    overflow-y: auto;
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    z-index: 1000;
+    padding: 4px;
+  }
+  body.light-mode .session-dropdown-menu {
+    background: #fffaf5;
+    border-color: #ffdec4;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+  }
+  .session-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    color: #c0caf5;
+    font-size: 12px;
+  }
+  body.light-mode .session-row { color: #5c4a4a; }
+  .session-row:hover { background: rgba(125, 207, 255, 0.1); }
+  .session-row.selected { background: rgba(125, 207, 255, 0.16); }
+  .session-row.pinned .session-row-pin-icon {
+    display: inline-flex;
+    color: #e0af68;
+  }
+  .session-row-pin-icon { display: none; flex-shrink: 0; }
+  .session-row-title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .session-row-title-input {
+    flex: 1;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid #7dcfff;
+    border-radius: 4px;
+    color: inherit;
+    font: inherit;
+    padding: 2px 6px;
+    outline: none;
+  }
+  body.light-mode .session-row-title-input {
+    background: #fff;
+    border-color: #ff8c42;
+  }
+  .session-row-kebab {
+    background: none;
+    border: none;
+    color: #565f89;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .session-row-kebab:hover { background: rgba(255,255,255,0.06); color: #c0caf5; }
+  body.light-mode .session-row-kebab:hover { background: rgba(0,0,0,0.05); color: #5c4a4a; }
+  .session-row-actions {
+    position: absolute;
+    right: 4px;
+    top: calc(100% - 4px);
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    border-radius: 6px;
+    box-shadow: 0 6px 16px rgba(0,0,0,0.4);
+    z-index: 1001;
+    min-width: 140px;
+    padding: 4px;
+  }
+  body.light-mode .session-row-actions {
+    background: #fffaf5;
+    border-color: #ffdec4;
+  }
+  .session-row-action {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    padding: 6px 8px;
+    border-radius: 4px;
+    text-align: left;
+  }
+  .session-row-action:hover { background: rgba(125, 207, 255, 0.1); }
+  .session-row-action.danger { color: #f7768e; }
+  .session-row-action.danger:hover { background: rgba(247, 118, 142, 0.12); }
+  .session-dropdown-empty {
+    padding: 12px;
+    text-align: center;
+    color: #565f89;
+    font-size: 12px;
+  }
+
+  /* ── Circular letter avatar ── */
+  .user-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: #2f3b5c;
+    color: #c0caf5;
+    font-weight: 600;
+    line-height: 1;
+    user-select: none;
+    flex-shrink: 0;
+  }
+  .user-avatar[data-size="sm"] { width: 22px;  height: 22px; font-size: 11px; }
+  .user-avatar[data-size="md"] { width: 32px;  height: 32px; font-size: 14px; }
+  .user-avatar[data-size="lg"] { width: 44px;  height: 44px; font-size: 18px; }
+  .user-avatar[data-size="xl"] { width: 64px;  height: 64px; font-size: 26px; }
+  body.light-mode .user-avatar {
+    background: #ffe4cc;
+    color: #cc6a28;
+  }
+
+  /* ── User-dropdown redesign ── */
+  .user-dropdown-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 6px;
+    transition: background 0.15s;
+  }
+  .user-dropdown-trigger:hover {
+    background: rgba(125, 207, 255, 0.1);
+  }
+  .user-dropdown-chevron {
+    transition: transform 0.2s;
+  }
+  .user-dropdown.open .user-dropdown-chevron {
+    transform: rotate(180deg);
+  }
+
+  /* Widen menu to fit large current-user row */
+  #user-dropdown-menu.user-dropdown-menu {
+    min-width: 280px;
+    padding: 8px 0 6px;
+  }
+
+  /* Current user row */
+  .user-dropdown-current-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px 6px;
+  }
+  .user-dropdown-current-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+  }
+  .user-dropdown-current-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: #c0caf5;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .user-dropdown-current-email {
+    font-size: 12px;
+    color: #565f89;
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Manage Account button */
+  .user-dropdown-manage-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: calc(100% - 24px);
+    margin: 6px 12px 4px;
+    padding: 8px 12px;
+    background: #2a2a4a;
+    border: 1px solid #2f3b5c;
+    border-radius: 6px;
+    color: #c0caf5;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .user-dropdown-manage-btn:hover {
+    background: #2f3b5c;
+    border-color: #7dcfff;
+  }
+
+  /* Other accounts list */
+  .user-dropdown-accounts-list {
+    display: flex;
+    flex-direction: column;
+  }
+  .user-dropdown-accounts-list:empty {
+    display: none;
+  }
+  .user-dropdown-account-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 14px;
+    background: none;
+    border: none;
+    color: inherit;
+    font-family: inherit;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.15s;
+  }
+  .user-dropdown-account-row:hover {
+    background: rgba(125, 207, 255, 0.08);
+  }
+  .user-dropdown-account-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+  }
+  .user-dropdown-account-name {
+    font-size: 13px;
+    color: #c0caf5;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .user-dropdown-account-email {
+    font-size: 11px;
+    color: #565f89;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .user-dropdown-add-account {
+    color: #7dcfff;
+  }
+  .user-dropdown-add-account:hover {
+    background: rgba(125, 207, 255, 0.1);
+    color: #7dcfff;
+  }
+
+  /* Light-mode overrides for new dropdown elements */
+  body.light-mode .user-dropdown-current-name { color: #3d2c2e; }
+  body.light-mode .user-dropdown-current-email,
+  body.light-mode .user-dropdown-account-email { color: #a07955; }
+  body.light-mode .user-dropdown-account-name { color: #3d2c2e; }
+  body.light-mode .user-dropdown-manage-btn {
+    background: #fff2e6;
+    border-color: #ffdec4;
+    color: #3d2c2e;
+  }
+  body.light-mode .user-dropdown-manage-btn:hover {
+    background: #ffe4cc;
+    border-color: #ff8c42;
+  }
+  body.light-mode .user-dropdown-account-row:hover {
+    background: #fff5eb;
+  }
+  body.light-mode .user-dropdown-add-account { color: #cc6a28; }
+
+  /* ── Manage Account tab ── */
+  #tab-account {
+    overflow-y: auto;
+    padding: 24px 32px 48px;
+  }
+  .account-tab-wrap {
+    max-width: 560px;
+    margin: 0 auto;
+  }
+  .account-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid #2a2a4a;
+  }
+  .account-header-id {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .account-header-name {
+    font-size: 18px;
+    font-weight: 600;
+    color: #c0caf5;
+  }
+  .account-header-email {
+    font-size: 13px;
+    color: #565f89;
+    margin-top: 4px;
+  }
+  .account-section {
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    border-radius: 8px;
+    padding: 18px 20px;
+    margin-bottom: 16px;
+  }
+  .account-section-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #7dcfff;
+    margin: 0 0 12px;
+  }
+  .account-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 12px;
+  }
+  .account-field label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #a9b1d6;
+  }
+  .account-field input {
+    padding: 8px 10px;
+    background: #0d0d1a;
+    border: 1px solid #2a2a4a;
+    border-radius: 6px;
+    color: #c0caf5;
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+  }
+  .account-field input:focus {
+    border-color: #7dcfff;
+  }
+  .account-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 4px;
+    flex-wrap: wrap;
+  }
+  .account-btn {
+    padding: 8px 16px;
+    border-radius: 6px;
+    border: 1px solid #2a2a4a;
+    background: #2a2a4a;
+    color: #c0caf5;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .account-btn:hover {
+    background: #2f3b5c;
+    border-color: #7dcfff;
+  }
+  .account-btn-primary {
+    background: #7dcfff;
+    border-color: #7dcfff;
+    color: #0d0d1a;
+    font-weight: 700;
+  }
+  .account-btn-primary:hover {
+    background: #6cbfee;
+    border-color: #6cbfee;
+  }
+  .account-btn-danger {
+    background: #cc241d;
+    border-color: #fb4934;
+    color: #fbf1c7;
+  }
+  .account-btn-danger:hover {
+    background: #a01914;
+    border-color: #fb4934;
+  }
+  .account-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .account-status {
+    font-size: 12px;
+    color: #a9b1d6;
+  }
+  .account-danger-zone {
+    border-color: #fb493440;
+  }
+  .account-danger-desc {
+    font-size: 12px;
+    color: #a9b1d6;
+    margin: 0 0 12px;
+  }
+  .account-delete-confirm {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #2a2a4a;
+  }
+  .account-delete-ack {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #a9b1d6;
+    margin: 8px 0;
+    cursor: pointer;
+  }
+  .account-empty {
+    color: #565f89;
+    font-size: 13px;
+    padding: 24px;
+    text-align: center;
+  }
+
+  /* Light-mode for Manage Account tab */
+  body.light-mode .account-header { border-bottom-color: #ffdec4; }
+  body.light-mode .account-header-name { color: #3d2c2e; }
+  body.light-mode .account-header-email { color: #a07955; }
+  body.light-mode .account-section {
+    background: #fff5eb;
+    border-color: #ffdec4;
+  }
+  body.light-mode .account-section-title { color: #cc6a28; }
+  body.light-mode .account-field label { color: #5c4a4a; }
+  body.light-mode .account-field input {
+    background: #fffaf5;
+    border-color: #ffdec4;
+    color: #3d2c2e;
+  }
+  body.light-mode .account-field input:focus { border-color: #ff8c42; }
+  body.light-mode .account-btn {
+    background: #fff2e6;
+    border-color: #ffdec4;
+    color: #3d2c2e;
+  }
+  body.light-mode .account-btn:hover {
+    background: #ffe4cc;
+    border-color: #ff8c42;
+  }
+  body.light-mode .account-btn-primary {
+    background: #ff8c42;
+    border-color: #ff8c42;
+    color: #fffaf5;
+  }
+  body.light-mode .account-btn-primary:hover {
+    background: #e67c39;
+    border-color: #e67c39;
+  }
+  body.light-mode .account-status { color: #5c4a4a; }
+  body.light-mode .account-danger-desc { color: #5c4a4a; }
+  body.light-mode .account-delete-confirm { border-top-color: #ffdec4; }
+  body.light-mode .account-delete-ack { color: #5c4a4a; }
 

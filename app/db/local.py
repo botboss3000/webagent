@@ -752,6 +752,14 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Added sessions.metadata column")
 
+            # ── Migration: add pinned column to sessions ──
+            cursor = conn.execute("PRAGMA table_info(sessions)")
+            sess_cols_p = {row[1] for row in cursor.fetchall()}
+            if "pinned" not in sess_cols_p:
+                conn.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+                conn.commit()
+                logger.info("Added sessions.pinned column")
+
             conn.commit()
 
             # ── Post-migration: move data from old agents_v1 ──
