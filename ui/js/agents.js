@@ -31,6 +31,7 @@ let _agents         = [];   // full list from server
 let _expandedAgents = new Map(); // Map<agentId, { tab: string }>
 let _userIsAdmin    = false;
 let _defaultAgentId = null;
+let _extendLlmToAgents = true; // mirrors app-settings.json extend_llm_to_agents
 
 // Tool descriptions for the Tools tab (matches BUILTIN_TOOL_METADATA keys)
 const TOOL_DESCRIPTIONS = {
@@ -165,8 +166,7 @@ function _toolsForAgent(agent) {
 
 export async function initAgents() {
   if (!app.currentUserId) return;
-  await _loadProfile();
-  await _loadAgents();
+  await Promise.all([_loadProfile(), _loadAgents(), _loadAppSettings()]);
   _renderList();
   _bindCreateModal();
   _restoreViewState();
@@ -206,6 +206,20 @@ async function _loadAgents() {
 
   } catch (e) {
     console.warn('agents: could not load agent list', e);
+  }
+}
+
+async function _loadAppSettings() {
+  try {
+    const token = localStorage.getItem('auth_token');
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    const res = await fetch('/admin/settings/app', { headers });
+    if (res.ok) {
+      const data = await res.json();
+      _extendLlmToAgents = data.extend_llm_to_agents !== false;
+    }
+  } catch (e) {
+    // non-fatal — keep default true
   }
 }
 
@@ -551,6 +565,290 @@ function _renderConfigTab(body, agent, panelEl) {
   panelEl._slotState = { slots: [], overrides: {}, resetOverridesFor: new Set(), userRole: 'member', loaded: false };
   _loadAndRenderSlots(panelEl, agent, isEditable);
 
+  // ── Per-agent LLM card ───────────────────────────────────────────────────
+  if (isEditable) {
+    const llmCfg = agent.llm_config || { use_default: true };
+    panelEl._llmState = { ...llmCfg };
+
+    const llmGroup = document.createElement('div');
+    llmGroup.className = 'agents-field-group';
+
+    const llmCard = document.createElement('div');
+    llmCard.className = 'agents-llm-card';
+
+    // Header
+    const llmHeader = document.createElement('div');
+    llmHeader.className = 'agents-llm-header';
+    const llmTitle = document.createElement('span');
+    llmTitle.className = 'agents-llm-title';
+    llmTitle.textContent = 'LLM';
+    const llmBadge = document.createElement('span');
+    llmBadge.className = 'agents-llm-badge';
+    const llmChevron = document.createElement('span');
+    llmChevron.className = 'agents-llm-chevron';
+    llmChevron.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>`;
+    llmHeader.appendChild(llmTitle);
+    llmHeader.appendChild(llmBadge);
+    llmHeader.appendChild(llmChevron);
+
+    // Body (collapsed by default)
+    const llmBody = document.createElement('div');
+    llmBody.className = 'agents-llm-body';
+    llmBody.style.display = 'none';
+
+    llmHeader.addEventListener('click', () => {
+      const open = llmBody.style.display === 'none';
+      llmBody.style.display = open ? 'flex' : 'none';
+      llmChevron.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)';
+    });
+
+    function _llmUpdateBadge() {
+      const s = panelEl._llmState;
+      if (s.use_default !== false) {
+        llmBadge.textContent = 'Default';
+        llmBadge.className = 'agents-llm-badge';
+      } else {
+        const p = s.provider && s.provider !== 'custom' ? s.provider : 'custom';
+        const label = s.model ? `${p} · ${s.model}` : p;
+        llmBadge.textContent = label;
+        llmBadge.className = 'agents-llm-badge custom';
+      }
+    }
+    _llmUpdateBadge();
+
+    // Mode radios
+    const modeRow = document.createElement('div');
+    modeRow.className = 'agents-llm-mode-row';
+    const _llmModeLabels = {};
+    const _modeOptions = _extendLlmToAgents
+      ? [['default', 'Use app default'], ['custom', 'Custom']]
+      : [['custom', 'Custom']];
+    for (const [val, txt] of _modeOptions) {
+      const lbl = document.createElement('label');
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = `agent-llm-mode-${_esc(agent.id)}`;
+      radio.value = val;
+      radio.style.accentColor = '#7aa2f7';
+      lbl.appendChild(radio);
+      lbl.appendChild(document.createTextNode(' ' + txt));
+      modeRow.appendChild(lbl);
+      _llmModeLabels[val] = { lbl, radio };
+    }
+    llmBody.appendChild(modeRow);
+
+    // Custom fields
+    const customFields = document.createElement('div');
+    customFields.className = 'agents-llm-fields';
+
+    // Provider
+    const provField = document.createElement('div');
+    provField.className = 'agents-llm-field';
+    const provLbl = document.createElement('label');
+    provLbl.textContent = 'Provider';
+    const provSel = document.createElement('select');
+    provSel.className = 'agents-input';
+    provSel.style.width = '100%';
+    provField.appendChild(provLbl);
+    provField.appendChild(provSel);
+    customFields.appendChild(provField);
+
+    // Base URL
+    const urlField = document.createElement('div');
+    urlField.className = 'agents-llm-field';
+    const urlLbl = document.createElement('label');
+    urlLbl.textContent = 'Base URL';
+    const urlInput = document.createElement('input');
+    urlInput.type = 'text';
+    urlInput.className = 'agents-input';
+    urlInput.style.width = '100%';
+    urlInput.placeholder = 'https://openrouter.ai/api/v1';
+    urlField.appendChild(urlLbl);
+    urlField.appendChild(urlInput);
+    customFields.appendChild(urlField);
+
+    // API Key
+    const keyField = document.createElement('div');
+    keyField.className = 'agents-llm-field';
+    const keyLbl = document.createElement('label');
+    keyLbl.textContent = 'API Key';
+    const keyInput = document.createElement('input');
+    keyInput.type = 'password';
+    keyInput.className = 'agents-input';
+    keyInput.style.width = '100%';
+    keyInput.placeholder = 'sk-...';
+    keyField.appendChild(keyLbl);
+    keyField.appendChild(keyInput);
+    customFields.appendChild(keyField);
+
+    // Model search + dropdown
+    const modelField = document.createElement('div');
+    modelField.className = 'agents-llm-field';
+    const modelLbl = document.createElement('label');
+    modelLbl.textContent = 'Model';
+    const modelWrap = document.createElement('div');
+    modelWrap.className = 'agents-llm-model-wrap';
+    const modelSearch = document.createElement('input');
+    modelSearch.type = 'text';
+    modelSearch.className = 'agents-input';
+    modelSearch.style.width = '100%';
+    modelSearch.placeholder = 'Search models…';
+    const modelDd = document.createElement('div');
+    modelDd.className = 'agents-llm-model-dropdown';
+    modelDd.style.display = 'none';
+    modelWrap.appendChild(modelSearch);
+    modelWrap.appendChild(modelDd);
+    const modelStatus = document.createElement('div');
+    modelStatus.style.cssText = 'font-size:11px;color:#565f89;margin-top:3px;';
+    modelField.appendChild(modelLbl);
+    modelField.appendChild(modelWrap);
+    modelField.appendChild(modelStatus);
+    customFields.appendChild(modelField);
+
+    llmBody.appendChild(customFields);
+    llmCard.appendChild(llmHeader);
+    llmCard.appendChild(llmBody);
+    llmGroup.appendChild(llmCard);
+    body.appendChild(llmGroup);
+
+    // ── Agent-scoped model state ──
+    let _agentAllModels = [];
+    let _agentSelectedModel = llmCfg.model || '';
+    let _agentProviderPresets = {};
+
+    function _renderAgentModelDd(filter) {
+      if (!_agentAllModels.length) { modelDd.style.display = 'none'; return; }
+      const filtered = filter
+        ? _agentAllModels.filter(m => m.id.toLowerCase().includes(filter) || m.name.toLowerCase().includes(filter))
+        : _agentAllModels;
+      if (!filtered.length) { modelDd.style.display = 'none'; return; }
+      modelDd.innerHTML = '';
+      modelDd.style.display = 'block';
+      filtered.slice(0, 200).forEach(m => {
+        const item = document.createElement('div');
+        item.className = 'agents-llm-model-item';
+        if (m.id === _agentSelectedModel) item.style.background = 'rgba(125,207,255,0.12)';
+        item.innerHTML = `<span style="font-weight:500;">${_esc(m.id)}</span> <span style="color:#565f89;font-size:11px;margin-left:6px;">${_esc(m.name)}</span>`;
+        item.addEventListener('click', () => {
+          _agentSelectedModel = m.id;
+          modelSearch.value = m.id;
+          modelDd.style.display = 'none';
+          modelStatus.textContent = `Selected: ${m.id}`;
+          modelStatus.style.color = '#9ece6a';
+          panelEl._llmState.model = m.id;
+          _llmUpdateBadge();
+        });
+        modelDd.appendChild(item);
+      });
+    }
+
+    async function _fetchAgentModels() {
+      const provider = provSel.value === '_custom' ? '' : provSel.value;
+      modelStatus.textContent = 'Loading models…';
+      modelStatus.style.color = '#565f89';
+      _agentAllModels = [];
+      modelDd.style.display = 'none';
+      try {
+        let url = `/admin/settings/models?provider=${encodeURIComponent(provider)}`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (data.error) {
+          modelStatus.textContent = data.error === 'No API key configured'
+            ? 'Enter an API key to see available models.'
+            : `Error: ${data.error}`;
+          return;
+        }
+        _agentAllModels = data.models || [];
+        modelStatus.textContent = _agentAllModels.length
+          ? `${_agentAllModels.length} models available. Type to filter.`
+          : 'No models available.';
+      } catch (e) {
+        modelStatus.textContent = 'Failed to load models.';
+        modelStatus.style.color = '#f7768e';
+      }
+    }
+
+    provSel.addEventListener('change', () => {
+      const preset = _agentProviderPresets[provSel.value];
+      if (preset && preset.base_url) urlInput.value = preset.base_url;
+      panelEl._llmState.provider = provSel.value === '_custom' ? 'custom' : provSel.value;
+      panelEl._llmState.base_url = urlInput.value;
+      _agentSelectedModel = '';
+      modelSearch.value = '';
+      modelStatus.textContent = '';
+      panelEl._llmState.model = '';
+      _fetchAgentModels();
+      _llmUpdateBadge();
+    });
+
+    urlInput.addEventListener('change', () => { panelEl._llmState.base_url = urlInput.value.trim(); });
+    keyInput.addEventListener('change', () => {
+      panelEl._llmState.api_key = keyInput.value.trim();
+    });
+
+    modelSearch.addEventListener('focus', () => _renderAgentModelDd(modelSearch.value.toLowerCase()));
+    modelSearch.addEventListener('input', () => _renderAgentModelDd(modelSearch.value.toLowerCase()));
+
+    document.addEventListener('click', e => {
+      if (!e.target.closest('.agents-llm-model-wrap')) modelDd.style.display = 'none';
+    });
+
+    // Mode switching
+    function _applyLlmMode(mode) {
+      const isCustom = mode === 'custom';
+      customFields.style.display = isCustom ? 'flex' : 'none';
+      panelEl._llmState.use_default = !isCustom;
+      Object.entries(_llmModeLabels).forEach(([val, { lbl, radio }]) => {
+        radio.checked = val === mode;
+        lbl.classList.toggle('active', val === mode);
+      });
+      _llmUpdateBadge();
+    }
+
+    Object.entries(_llmModeLabels).forEach(([val, { radio }]) => {
+      radio.addEventListener('change', () => { if (radio.checked) _applyLlmMode(val); });
+    });
+
+    const initialMode = (llmCfg.use_default === false || !_extendLlmToAgents) ? 'custom' : 'default';
+    _applyLlmMode(initialMode);
+
+    // Populate saved values into fields
+    if (llmCfg.use_default === false) {
+      urlInput.value = llmCfg.base_url || '';
+      keyInput.value = llmCfg.api_key || '';
+      modelSearch.value = llmCfg.model || '';
+      _agentSelectedModel = llmCfg.model || '';
+      if (_agentSelectedModel) {
+        modelStatus.textContent = `Selected: ${_agentSelectedModel}`;
+        modelStatus.style.color = '#9ece6a';
+      }
+    }
+
+    // Load provider presets and set saved provider
+    (async () => {
+      try {
+        const res = await fetch('/admin/settings/providers');
+        if (!res.ok) return;
+        _agentProviderPresets = await res.json();
+        provSel.innerHTML = '';
+        for (const [key, preset] of Object.entries(_agentProviderPresets)) {
+          const opt = document.createElement('option');
+          opt.value = key;
+          opt.textContent = preset.name;
+          provSel.appendChild(opt);
+        }
+        const customOpt = document.createElement('option');
+        customOpt.value = '_custom';
+        customOpt.textContent = 'Custom';
+        provSel.appendChild(customOpt);
+
+        const savedProv = llmCfg.provider && llmCfg.provider !== 'custom' ? llmCfg.provider : null;
+        provSel.value = savedProv && _agentProviderPresets[savedProv] ? savedProv : '_custom';
+        if (llmCfg.use_default === false) _fetchAgentModels();
+      } catch (e) { /* silent */ }
+    })();
+  }
 
   // Admin-only: Discoverable toggle for system templates
   if (!isEditable && _userIsAdmin && agent.source === 'template') {
@@ -3383,6 +3681,9 @@ async function _saveChanges(agent, barEl, panelEl) {
   const tkVal   = fv('trigger_key');    if (tkVal !== undefined) updates.trigger_key    = tkVal || null;
   const umChecked = panelEl.querySelector('[data-field="user_mode"]:checked');
   if (umChecked) updates.user_mode = umChecked.value;
+
+  // Per-agent LLM override
+  if (panelEl._llmState) updates.llm_config = { ...panelEl._llmState };
 
   // Slot writes: split into admin (slots payload) and member (overrides payload).
   const sstate = panelEl._slotState || {};

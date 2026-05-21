@@ -9,6 +9,7 @@
  *   3. Database          — cloud / local toggle, display settings
  *   4. Optimizer Stats   — session stats table, run mode, schedule
  *   5. Git Providers     — GitHub token, repo status quick-view
+ *   6. App Settings      — global feature toggles (extend LLM to agents, etc.)
  *
  * Note: App Connections (webhooks, Telegram bot config) was removed — managed
  *       via each agent's Connections tab instead.
@@ -57,7 +58,7 @@ let _parallelUidCounter = 0;
 // ── Sidebar nav + scroll highlighting ────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────
 const _SECTION_KEY = 'appConfig_activeSection';
-const _VALID_SECTIONS = ['llm', 'integrations', 'database', 'optimizer', 'git'];
+const _VALID_SECTIONS = ['llm', 'integrations', 'database', 'optimizer', 'git', 'app-settings'];
 let _activeSection = localStorage.getItem(_SECTION_KEY) || 'llm';
 
 function _showSection(section) {
@@ -827,20 +828,6 @@ async function _unconfigureGoogle()   { return _unconfigureProvider('google'); }
 function _initDatabase() {
   _qs('ac-db-seg-cloud')?.addEventListener('click', () => _setDbMode('cloud'));
   _qs('ac-db-seg-local')?.addEventListener('click', () => _setDbMode('local'));
-
-  // Mirror the show-hidden checkbox to the existing DB viewer checkbox
-  const acCb = _qs('ac-db-show-hidden');
-  const origCb = _qs('db-setting-show-hidden');
-  if (acCb && origCb) {
-    // Sync initial state
-    acCb.checked = origCb.checked;
-    acCb.addEventListener('change', () => {
-      origCb.checked = acCb.checked;
-      origCb.dispatchEvent(new Event('change', { bubbles: true }));
-    });
-    // Keep in sync if original changes
-    origCb.addEventListener('change', () => { acCb.checked = origCb.checked; });
-  }
 }
 
 async function _loadDatabase() {
@@ -863,11 +850,6 @@ async function _loadDatabase() {
     if (statusEl) { statusEl.textContent = 'Could not fetch mode'; statusEl.style.color = '#f7768e'; }
   }
 
-  // Sync show-hidden checkbox
-  const origCb = _qs('db-setting-show-hidden');
-  const acCb   = _qs('ac-db-show-hidden');
-  if (origCb && acCb) acCb.checked = origCb.checked;
-
   // Refresh the new Storage section (provider dropdown + secrets + migration).
   try { if (typeof window.__refreshStorageSection === 'function') window.__refreshStorageSection(); } catch {}
 }
@@ -889,11 +871,6 @@ async function _setDbMode(mode) {
       statusEl.style.color = '#9ece6a';
       setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 3000);
     }
-    // Also update the original modal's buttons so they stay in sync
-    const origCloud = _qs('modal-seg-cloud');
-    const origLocal = _qs('modal-seg-local');
-    if (origCloud) origCloud.classList.toggle('active', mode === 'cloud');
-    if (origLocal) origLocal.classList.toggle('active', mode === 'local');
     await _loadDatabase();
   } catch (e) {
     if (statusEl) { statusEl.textContent = `Error: ${e.message}`; statusEl.style.color = '#f7768e'; }
@@ -1144,6 +1121,52 @@ async function _saveGitHubToken() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// ── App Settings ─────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────
+
+function _initAppSettings() {
+  const saveBtn = _qs('ac-app-settings-save');
+  if (saveBtn) saveBtn.addEventListener('click', _saveAppSettings);
+}
+
+async function _loadAppSettings() {
+  try {
+    const res = await _fetch(apiPath('/admin/settings/app'));
+    if (!res.ok) return;
+    const data = await res.json();
+    const cb = _qs('ac-extend-llm-to-agents');
+    if (cb) cb.checked = data.extend_llm_to_agents !== false;
+  } catch (e) {
+    console.warn('app-config: could not load app settings', e);
+  }
+}
+
+async function _saveAppSettings() {
+  const cb = _qs('ac-extend-llm-to-agents');
+  const statusEl = _qs('ac-app-settings-status');
+  try {
+    const res = await _fetch(apiPath('/admin/settings/app'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ extend_llm_to_agents: cb ? cb.checked : true }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (statusEl) {
+      statusEl.textContent = 'Saved';
+      statusEl.style.color = '#9ece6a';
+      statusEl.style.display = 'block';
+      setTimeout(() => { statusEl.style.display = 'none'; }, 3000);
+    }
+  } catch (e) {
+    if (statusEl) {
+      statusEl.textContent = `Error: ${e.message}`;
+      statusEl.style.color = '#f7768e';
+      statusEl.style.display = 'block';
+    }
+  }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // ── Public API ───────────────────────────────────────────────────────────────────
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -1155,6 +1178,7 @@ export function initAppConfig() {
   _initDatabase();
   _initOptimizer();
   _initGit();
+  _initAppSettings();
   _initialized = true;
 }
 
@@ -1170,6 +1194,7 @@ export async function startAppConfig() {
   _loadDatabase();
   _loadOptimizer();
   _loadGit();
+  _loadAppSettings();
 }
 
 /** Called when leaving the App Config tab. */
