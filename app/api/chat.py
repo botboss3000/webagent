@@ -46,17 +46,19 @@ def _should_skip_memory(message: str) -> bool:
     return bool(not stripped or _SKIP_MEMORY_PATTERN.match(stripped))
 
 
-async def _ensure_session(db, user_id: str, session_id: str) -> None:
+async def _ensure_session(db, user_id: str, session_id: str, title: str = None) -> None:
     """Create the session row if it doesn't exist yet."""
     try:
         await db.assert_session_owned(user_id, session_id)
     except (PermissionError, Exception):
         try:
             raw = db.get_raw_client()
+            _final_title = title or session_id[:12]
+            print(f"[DEBUG _ensure_session] title param={title!r}, final_title={_final_title!r}", flush=True)
             raw.table("sessions").insert({
                 "id": session_id,
                 "user_id": user_id,
-                "title": session_id[:12],
+                "title": _final_title,
             }).execute()
             logger.info(f"Created session {session_id[:12]} for user {user_id[:12]}")
         except Exception as create_err:
@@ -223,7 +225,8 @@ async def chat(request: ChatRequest):
             return ChatResponse(reply=result, response=result, session_id=request.session_id)
 
         # Ensure the session exists before inserting interactions
-        await _ensure_session(db, request.user_id, request.session_id)
+        _session_title = (request.message or "").strip()[:60] or None
+        await _ensure_session(db, request.user_id, request.session_id, title=_session_title)
 
         # ── Optimizer / Finalizer session: route to dedicated agent ──
         agent = None
@@ -579,7 +582,8 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         return StreamingResponse(_slash_events(), media_type="text/event-stream")
 
     # Ensure the session exists before inserting interactions
-    await _ensure_session(db, request.user_id, request.session_id)
+    _session_title = (request.message or "").strip()[:60] or None
+    await _ensure_session(db, request.user_id, request.session_id, title=_session_title)
 
     # ── Optimizer / Finalizer session: route to dedicated agent ──
     opt_template_id = None

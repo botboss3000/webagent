@@ -302,17 +302,6 @@ export function initSessions() {
     dropdownUserLabel.title = uid;
   }
 
-  // Auto-poll sessions dropdown every 1s
-  setInterval(() => {
-    if (app.currentUserId) {
-      // Don't auto-refresh while the select is focused/open to avoid layout thrashing
-      const activeElement = document.activeElement;
-      if (!activeElement || activeElement.id !== 'session-select') {
-        populateSessionSelect(app.currentUserId);
-      }
-    }
-  }, 1000);
-
   // ── Sign-out button in header ──
   const signoutBtn = document.getElementById('btn-signout-header');
   if (signoutBtn) {
