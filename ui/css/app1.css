@@ -63,6 +63,7 @@
     border-left: 1px solid #2a2a4a;
     background: #13132a;
     flex-shrink: 0;
+    position: relative;
   }
 
   #chat-header {
@@ -89,10 +90,15 @@
     display: flex;
     flex-direction: column;
     padding: 8px 12px;
-    border-top: 1px solid #2a2a4a;
+    border-top: none;
+    background: linear-gradient(to bottom, transparent 0%, transparent 50%, #13132a 50%, #13132a 100%);
     gap: 6px;
     flex-shrink: 0;
-    position: relative;
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 5;
     min-height: 0;
   }
 
@@ -108,7 +114,7 @@
   #chat-messages-inner {
     flex: 1;
     overflow-y: auto;
-    padding: 16px;
+    padding: 16px 16px 40px 16px;
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -210,23 +216,37 @@
 
   #chat-input-row {
     display: flex;
-    gap: 8px;
+    gap: 4px;
     align-items: flex-end;
-  }
-  #chat-input {
-    flex: 1;
+    width: 100%;
     background: #0d0d1a;
     border: 1px solid #2a2a4a;
-    border-radius: 8px;
-    padding: 10px 14px;
+    border-radius: 18px;
+    padding: 4px;
+    transition: border-color 0.15s;
+  }
+  #chat-input-row:focus-within { border-color: #7dcfff; }
+  #chat-input {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 8px 6px;
     color: #c0caf5;
     font-size: 13px;
     outline: none;
     font-family: inherit;
     resize: none;
   }
-  #chat-input:focus { border-color: #7dcfff; }
+  #chat-input:focus { border: none; }
   #chat-input::placeholder { color: #3b4261; }
+  /* Toggle send vs mic by row state */
+  #chat-input-row #chat-send { display: none; }
+  #chat-input-row.has-text #chat-send { display: inline-flex; }
+  #chat-input-row.has-text #chat-voice-btn { display: none; }
+  #chat-input-row.no-voice #chat-voice-btn { display: none !important; }
+  #chat-input-row.no-voice #chat-send { display: inline-flex; }
   .chat-expand-btn {
     position: absolute;
     top: 4px;
@@ -256,58 +276,70 @@
   #chat-send {
     background: #7dcfff;
     border: none;
-    border-radius: 8px;
-    padding: 10px 20px;
+    border-radius: 50%;
+    width: 34px;
+    height: 34px;
+    padding: 0;
     color: #0d0d1a;
-    font-weight: 600;
     cursor: pointer;
-    font-size: 13px;
     transition: 0.15s;
+    align-self: flex-end;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
   }
   #chat-send:hover { background: #89ddff; }
   #chat-send:disabled { opacity: 0.4; cursor: default; }
+  #chat-send i { pointer-events: none; }
 
   /* Attach button in input row */
   #chat-attach-btn {
     background: none;
-    border: 1px solid #2a2a4a;
+    border: none;
     color: #565f89;
     cursor: pointer;
-    font-size: 16px;
-    line-height: 1;
-    padding: 8px 10px;
-    border-radius: 8px;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border-radius: 50%;
     transition: 0.15s;
     align-self: flex-end;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
   }
   #chat-attach-btn:hover {
     color: #7dcfff;
-    border-color: #7dcfff;
-    background: #7dcfff10;
+    background: #7dcfff15;
   }
+  #chat-attach-btn i { pointer-events: none; }
 
   /* Voice button in input row */
   #chat-voice-btn {
     background: none;
-    border: 1px solid #2a2a4a;
+    border: none;
     color: #565f89;
     cursor: pointer;
-    font-size: 16px;
-    line-height: 1;
-    padding: 8px 10px;
-    border-radius: 8px;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border-radius: 50%;
     transition: 0.15s;
-    margin-bottom: 0;
     align-self: flex-end;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
   }
   #chat-voice-btn:hover {
     color: #7dcfff;
-    border-color: #7dcfff;
-    background: #7dcfff10;
+    background: #7dcfff15;
   }
+  #chat-voice-btn i { pointer-events: none; }
   #chat-voice-btn.recording {
     color: #f7768e;
-    border-color: #f7768e;
     background: #f7768e15;
     animation: pulse 1s infinite;
   }
@@ -825,13 +857,20 @@
   }
   body.light-mode .chat-bubble .label { color: #b09580; }
 
-  body.light-mode #chat-input-area { border-top-color: #ffdec4; }
-  body.light-mode #chat-input {
+  body.light-mode #chat-input-area {
+    border-top: none;
+    background: linear-gradient(to bottom, transparent 0%, transparent 50%, #fff7f0 50%, #fff7f0 100%);
+  }
+  body.light-mode #chat-input-row {
     background: #ffffff;
     border-color: #ffdec4;
+  }
+  body.light-mode #chat-input-row:focus-within { border-color: #ff8c42; }
+  body.light-mode #chat-input {
+    background: transparent;
+    border: none;
     color: #3d2c2e;
   }
-  body.light-mode #chat-input:focus { border-color: #ff8c42; }
   body.light-mode #chat-input::placeholder { color: #cca08a; }
   body.light-mode #chat-send {
     background: #ff8c42;
@@ -840,13 +879,11 @@
   body.light-mode #chat-send:hover { background: #ff7a2e; }
   body.light-mode #chat-attach-btn,
   body.light-mode #chat-voice-btn {
-    border-color: #ffdec4;
     color: #b09580;
   }
   body.light-mode #chat-attach-btn:hover,
   body.light-mode #chat-voice-btn:hover {
     color: #ff8c42;
-    border-color: #ff8c42;
     background: #fff5eb;
   }
   body.light-mode .chat-expand-btn {
@@ -1221,8 +1258,16 @@
   }
   body.light-mode #stream-list::-webkit-scrollbar-thumb,
   body.light-mode #db-table-data::-webkit-scrollbar-thumb,
-  body.light-mode #db-table-list::-webkit-scrollbar-thumb {
+  body.light-mode #db-table-list::-webkit-scrollbar-thumb,
+  body.light-mode #agents-grid::-webkit-scrollbar-thumb,
+  body.light-mode #chat-messages-inner::-webkit-scrollbar-thumb,
+  body.light-mode .agent-detail-body::-webkit-scrollbar-thumb {
     background: #ffd4a8 !important;
+  }
+  body.light-mode #agents-grid,
+  body.light-mode #chat-messages-inner,
+  body.light-mode .agent-detail-body {
+    scrollbar-color: #ffd4a8 transparent !important;
   }
   body.light-mode .xterm-viewport {
     scrollbar-color: #ffd4a8 transparent !important;

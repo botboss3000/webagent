@@ -297,12 +297,22 @@ body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; co
 .agents-btn.danger:hover { background: #2a1a1a; }
 .agents-btn.default-active { border-color: #7dcfff; color: #7dcfff; background: #1a2a2a; }
 
-.agent-detail-tabs {
-  display: flex;
+.agent-detail-tabs-wrap {
+  position: relative;
+  display: block;
   border-bottom: 1px solid #2a2a4a;
-  padding: 0 18px;
   flex-shrink: 0;
 }
+.agent-detail-tabs {
+  display: flex;
+  min-width: 0;
+  padding: 0 18px;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.agent-detail-tabs::-webkit-scrollbar { display: none; }
 .agents-detail-tab {
   background: none;
   border: none;
@@ -315,9 +325,52 @@ body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; co
   font-family: inherit;
   transition: color 0.15s, border-color 0.15s;
   margin-bottom: -1px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .agents-detail-tab:hover { color: #c0caf5; }
 .agents-detail-tab.active { color: #7aa2f7; border-bottom-color: #7aa2f7; }
+
+.agent-detail-tabs-chev {
+  display: none;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  color: #7aa2f7;
+  cursor: pointer;
+  font-size: 14px;
+  width: 36px;
+  padding: 0;
+  font-family: inherit;
+  z-index: 2;
+}
+.agent-detail-tabs-chev.left {
+  left: 0;
+  justify-content: flex-start;
+  padding-left: 4px;
+  background: linear-gradient(to right, #0f0f22 50%, rgba(15, 15, 34, 0) 100%);
+}
+.agent-detail-tabs-chev.right {
+  right: 0;
+  justify-content: flex-end;
+  padding-right: 4px;
+  background: linear-gradient(to left, #0f0f22 50%, rgba(15, 15, 34, 0) 100%);
+}
+.agent-detail-tabs-chev.visible { display: flex; }
+.agent-detail-tabs-chev:hover { color: #c0caf5; }
+
+body.light-mode .agent-detail-tabs-wrap { border-bottom-color: #ffdec4; }
+body.light-mode .agent-detail-tabs-chev { color: #ff8c42; }
+body.light-mode .agent-detail-tabs-chev:hover { color: #cc6a28; }
+body.light-mode .agent-detail-tabs-chev.left {
+  background: linear-gradient(to right, #fff7f0 55%, rgba(255, 247, 240, 0) 100%);
+}
+body.light-mode .agent-detail-tabs-chev.right {
+  background: linear-gradient(to left, #fff7f0 55%, rgba(255, 247, 240, 0) 100%);
+}
 
 .agent-detail-body {
   flex: 1;
@@ -1585,17 +1638,17 @@ body.light-mode .members-policy-opt-label { color: #2a1f17; }
 
 /* ── Automation tab ────────────────────────────────────────────────────── */
 .agents-automation-textarea {
-  background: #16161f;
-  color: #c0caf5;
-  border: 1px solid #2a2a4a;
+  background: var(--bg-elev);
+  color: var(--fg-1);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 10px 12px;
   resize: vertical;
 }
 .agents-automation-textarea:focus {
   outline: none;
-  border-color: #7dcfff;
-  box-shadow: 0 0 0 1px rgba(125,207,255,0.25);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-mid);
 }
 .agents-automation-tasks {
   width: 100%;
@@ -1604,5 +1657,5 @@ body.light-mode .members-policy-opt-label { color: #2a1f17; }
   transition: border-color 0.12s;
 }
 .agents-automation-row:hover {
-  border-color: #3a3a5a;
+  border-color: var(--border-strong);
 }

@@ -401,7 +401,22 @@ function _buildDetailPanel(agent) {
   content.className = 'agent-detail-content';
   panel.appendChild(content);
 
-  // Tab bar
+  // Tab bar (wrapped in chevron-scroll carousel for narrow screens)
+  const tabWrap = document.createElement('div');
+  tabWrap.className = 'agent-detail-tabs-wrap';
+
+  const chevLeft = document.createElement('button');
+  chevLeft.type = 'button';
+  chevLeft.className = 'agent-detail-tabs-chev left';
+  chevLeft.setAttribute('aria-label', 'Scroll tabs left');
+  chevLeft.innerHTML = '&#10094;';
+
+  const chevRight = document.createElement('button');
+  chevRight.type = 'button';
+  chevRight.className = 'agent-detail-tabs-chev right';
+  chevRight.setAttribute('aria-label', 'Scroll tabs right');
+  chevRight.innerHTML = '&#10095;';
+
   const tabBar = document.createElement('div');
   tabBar.className = 'agent-detail-tabs';
   const tabs = [['config','Config'],['tools','Tools'],['test','Agent Loop'],['connections','Connections'],['automation','Automation']];
@@ -416,10 +431,44 @@ function _buildDetailPanel(agent) {
       if (entry) entry.tab = key;
       _renderPanelBody(agent, panel);
       _saveViewState();
+      btn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
     });
     tabBar.appendChild(btn);
   }
-  content.appendChild(tabBar);
+
+  const updateChevrons = () => {
+    const overflow = tabBar.scrollWidth - tabBar.clientWidth > 1;
+    tabWrap.classList.toggle('has-overflow', overflow);
+    chevLeft.classList.toggle('visible', overflow && tabBar.scrollLeft > 1);
+    chevRight.classList.toggle('visible', overflow && tabBar.scrollLeft < tabBar.scrollWidth - tabBar.clientWidth - 1);
+  };
+  const scrollStep = () => Math.max(80, Math.floor(tabBar.clientWidth * 0.6));
+  chevLeft.addEventListener('click', () => tabBar.scrollBy({ left: -scrollStep(), behavior: 'smooth' }));
+  chevRight.addEventListener('click', () => tabBar.scrollBy({ left: scrollStep(), behavior: 'smooth' }));
+  tabBar.addEventListener('scroll', updateChevrons, { passive: true });
+
+  tabWrap.appendChild(chevLeft);
+  tabWrap.appendChild(tabBar);
+  tabWrap.appendChild(chevRight);
+  content.appendChild(tabWrap);
+
+  // Recompute on mount and on resize. ResizeObserver catches container width changes.
+  requestAnimationFrame(() => {
+    updateChevrons();
+    const active = tabBar.querySelector('.agents-detail-tab.active');
+    if (active) active.scrollIntoView({ inline: 'center', block: 'nearest' });
+  });
+  if (typeof ResizeObserver !== 'undefined') {
+    let roPending = false;
+    const ro = new ResizeObserver(() => {
+      if (roPending) return;
+      roPending = true;
+      requestAnimationFrame(() => { roPending = false; updateChevrons(); });
+    });
+    ro.observe(tabBar);
+    ro.observe(tabWrap);
+  }
+  window.addEventListener('resize', updateChevrons);
 
   // Scrollable body
   const body = document.createElement('div');
@@ -461,7 +510,7 @@ function _renderPanelBody(agent, panelEl) {
 // ── Automation tab ────────────────────────────────────────────────────────────
 
 async function _renderAutomationTab(body, agent, panelEl) {
-  body.innerHTML = '<div style="font-size:12px;color:#565f89;padding:8px;">Loading automation…</div>';
+  body.innerHTML = '<div style="font-size:12px;color:var(--fg-3);padding:8px;">Loading automation…</div>';
 
   let slotContent = '';
   try {
@@ -491,7 +540,7 @@ async function _renderAutomationTab(body, agent, panelEl) {
   body.innerHTML = '';
 
   const intro = document.createElement('div');
-  intro.style.cssText = 'font-size:12px;color:#a9b1d6;padding:8px 10px;background:rgba(125,207,255,0.05);border:1px solid #2a2a4a;border-radius:6px;margin-bottom:10px;line-height:1.5;';
+  intro.style.cssText = 'font-size:12px;color:var(--fg-2);padding:8px 10px;background:var(--accent-soft);border:1px solid var(--border);border-radius:6px;margin-bottom:10px;line-height:1.5;';
   intro.textContent = 'Describe scheduled work in plain English (one task per paragraph). Saving re-parses the file into structured tasks shown below.';
   body.appendChild(intro);
 
@@ -512,17 +561,17 @@ async function _renderAutomationTab(body, agent, panelEl) {
   saveBar.style.cssText = 'display:flex;align-items:center;gap:10px;margin-top:6px;';
   const saveBtn = _btn('Save & Parse', 'agents-btn primary');
   const saveMsg = document.createElement('span');
-  saveMsg.style.cssText = 'font-size:12px;color:#565f89;';
+  saveMsg.style.cssText = 'font-size:12px;color:var(--fg-3);';
   saveBar.appendChild(saveBtn);
   saveBar.appendChild(saveMsg);
   body.appendChild(saveBar);
 
   const parseErr = document.createElement('div');
-  parseErr.style.cssText = 'display:none;font-size:11px;color:#f7768e;margin-top:8px;padding:6px 10px;background:rgba(247,118,142,0.07);border:1px solid #f7768e;border-radius:4px;';
+  parseErr.style.cssText = 'display:none;font-size:11px;color:var(--danger);margin-top:8px;padding:6px 10px;background:var(--danger-soft);border:1px solid var(--danger);border-radius:4px;';
   body.appendChild(parseErr);
 
   const tasksHeader = document.createElement('div');
-  tasksHeader.style.cssText = 'margin-top:18px;font-size:12px;font-weight:600;color:#a9b1d6;text-transform:uppercase;letter-spacing:0.5px;';
+  tasksHeader.style.cssText = 'margin-top:18px;font-size:12px;font-weight:600;color:var(--fg-2);text-transform:uppercase;letter-spacing:0.5px;';
   tasksHeader.textContent = 'Scheduled tasks';
   body.appendChild(tasksHeader);
 
@@ -535,7 +584,7 @@ async function _renderAutomationTab(body, agent, panelEl) {
     tasksList.innerHTML = '';
     if (!tasks || !tasks.length) {
       const empty = document.createElement('div');
-      empty.style.cssText = 'font-size:12px;color:#565f89;padding:8px;';
+      empty.style.cssText = 'font-size:12px;color:var(--fg-3);padding:8px;';
       empty.textContent = 'No scheduled tasks yet.';
       tasksList.appendChild(empty);
       return;
@@ -572,11 +621,11 @@ async function _renderAutomationTab(body, agent, panelEl) {
       const d = await r.json();
       if (!r.ok) {
         saveMsg.textContent = d.detail || 'Save failed';
-        saveMsg.style.color = '#f7768e';
+        saveMsg.style.color = 'var(--danger)';
         return;
       }
       saveMsg.textContent = '✓ Saved';
-      saveMsg.style.color = '#9ece6a';
+      saveMsg.style.color = 'var(--success)';
       if (d.automation_error) {
         parseErr.style.display = 'block';
         parseErr.textContent = `Parse warning: ${d.automation_error}`;
@@ -588,7 +637,7 @@ async function _renderAutomationTab(body, agent, panelEl) {
       }
     } catch (e) {
       saveMsg.textContent = `Error: ${e.message}`;
-      saveMsg.style.color = '#f7768e';
+      saveMsg.style.color = 'var(--danger)';
     }
   });
 
@@ -598,23 +647,23 @@ async function _renderAutomationTab(body, agent, panelEl) {
 function _renderAutomationTaskRow(agent, task, channels, onRefresh) {
   const row = document.createElement('div');
   row.className = 'agents-automation-row';
-  row.style.cssText = 'border:1px solid #2a2a4a;border-radius:6px;padding:10px 12px;background:#16161f;display:grid;grid-template-columns:1fr auto;gap:8px;';
+  row.style.cssText = 'border:1px solid var(--border);border-radius:6px;padding:10px 12px;background:var(--bg-elev);display:grid;grid-template-columns:1fr auto;gap:8px;';
 
   const left = document.createElement('div');
   left.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
 
   const title = document.createElement('div');
-  title.style.cssText = 'font-size:13px;font-weight:600;color:#c0caf5;';
+  title.style.cssText = 'font-size:13px;font-weight:600;color:var(--fg-1);';
   title.textContent = task.task_label || '(unlabeled)';
   left.appendChild(title);
 
   const sched = document.createElement('div');
-  sched.style.cssText = 'font-size:11px;color:#7dcfff;font-family:monospace;';
+  sched.style.cssText = 'font-size:11px;color:var(--accent);font-family:monospace;';
   sched.textContent = `${task.schedule_cron || ''}  ${task.schedule_natural ? '· ' + task.schedule_natural : ''}`;
   left.appendChild(sched);
 
   const meta = document.createElement('div');
-  meta.style.cssText = 'font-size:11px;color:#565f89;';
+  meta.style.cssText = 'font-size:11px;color:var(--fg-3);';
   const next = task.next_run_at ? `next: ${new Date(task.next_run_at).toLocaleString()}` : 'next: —';
   const last = task.last_run_at ? `last: ${new Date(task.last_run_at).toLocaleString()} (${task.last_status || 'ok'})` : 'last: —';
   meta.textContent = `${next} · ${last}`;
@@ -622,13 +671,13 @@ function _renderAutomationTaskRow(agent, task, channels, onRefresh) {
 
   if (task.last_error) {
     const err = document.createElement('div');
-    err.style.cssText = 'font-size:11px;color:#f7768e;';
+    err.style.cssText = 'font-size:11px;color:var(--danger);';
     err.textContent = `Error: ${task.last_error}`;
     left.appendChild(err);
   }
 
   const promptPreview = document.createElement('div');
-  promptPreview.style.cssText = 'font-size:11px;color:#a9b1d6;font-style:italic;margin-top:4px;white-space:pre-wrap;';
+  promptPreview.style.cssText = 'font-size:11px;color:var(--fg-2);font-style:italic;margin-top:4px;white-space:pre-wrap;';
   promptPreview.textContent = task.prompt ? `> ${task.prompt}` : '';
   left.appendChild(promptPreview);
 
@@ -638,7 +687,7 @@ function _renderAutomationTaskRow(agent, task, channels, onRefresh) {
   right.style.cssText = 'display:flex;flex-direction:column;gap:6px;align-items:flex-end;min-width:170px;';
 
   const enableLbl = document.createElement('label');
-  enableLbl.style.cssText = 'display:flex;align-items:center;gap:5px;font-size:11px;color:#a9b1d6;cursor:pointer;';
+  enableLbl.style.cssText = 'display:flex;align-items:center;gap:5px;font-size:11px;color:var(--fg-2);cursor:pointer;';
   const enableCb = document.createElement('input');
   enableCb.type = 'checkbox';
   enableCb.checked = !!task.enabled;
@@ -647,7 +696,7 @@ function _renderAutomationTaskRow(agent, task, channels, onRefresh) {
   right.appendChild(enableLbl);
 
   const silentLbl = document.createElement('label');
-  silentLbl.style.cssText = 'display:flex;align-items:center;gap:5px;font-size:11px;color:#a9b1d6;cursor:pointer;';
+  silentLbl.style.cssText = 'display:flex;align-items:center;gap:5px;font-size:11px;color:var(--fg-2);cursor:pointer;';
   const silentCb = document.createElement('input');
   silentCb.type = 'checkbox';
   silentCb.checked = !!task.silent;

@@ -1562,6 +1562,9 @@ body.light-mode .ac-btn-ghost { border-color: #9a7c65; color: #9a7c65; }
 body.light-mode .ac-seg-btn { background: #faf7f4; border-color: #d4c4b4; color: #2d1f14; }
 body.light-mode .ac-seg-btn.active { border-color: #cc6a28; background: rgba(204,107,40,0.06); color: #cc6a28; }
 body.light-mode .ac-info-banner { background: #faf7f4; border-left-color: #cc6a28; }
+body.light-mode .ac-stats-table th { background: #faf7f4; color: #6b5240; border-bottom-color: #e8ddd0; }
+body.light-mode .ac-stats-table td { color: #2d1f14; border-bottom-color: rgba(212,196,180,0.5); }
+body.light-mode .ac-table-empty { color: #9a7c65; }
 
 /* ── Integrations ── */
 .ac-int-badge {
@@ -1738,3 +1741,29 @@ body.light-mode .ac-comm-webhook-url { background: #faf7f4; border-color: #d4c4b
 body.light-mode .ac-comm-badge-active { background: rgba(40,167,69,0.12); color: #1a7c31; }
 body.light-mode .ac-comm-badge-inactive { background: rgba(220,53,69,0.1); color: #dc3545; }
 body.light-mode .ac-comm-badge-unconfigured { background: rgba(107,82,64,0.1); color: #9a7c65; }
+
+/* ── Login / Register / Restricted overlays (light mode) ── */
+body.light-mode #left-login-overlay { background: rgba(250, 247, 244, 0.92) !important; }
+body.light-mode #left-login-overlay > div { background: #ffffff !important; border-color: #e8ddd0 !important; box-shadow: 0 12px 32px rgba(0,0,0,0.10) !important; }
+body.light-mode #left-login-overlay h2 { color: #cc6a28 !important; }
+body.light-mode #left-login-overlay p,
+body.light-mode #left-login-overlay label { color: #6b5240 !important; }
+body.light-mode #left-login-overlay input[type="email"],
+body.light-mode #left-login-overlay input[type="password"],
+body.light-mode #left-login-overlay input[type="text"] { background: #faf7f4 !important; border-color: #d4c4b4 !important; color: #2d1f14 !important; }
+body.light-mode #left-login-overlay input[type="email"]:focus,
+body.light-mode #left-login-overlay input[type="password"]:focus,
+body.light-mode #left-login-overlay input[type="text"]:focus { border-color: #cc6a28 !important; }
+body.light-mode #left-login-overlay input[type="checkbox"] { accent-color: #cc6a28 !important; }
+body.light-mode #left-login-btn { background: #cc6a28 !important; color: #ffffff !important; }
+body.light-mode #left-reg-btn { background: #1a7c31 !important; color: #ffffff !important; }
+body.light-mode #left-login-register-link,
+body.light-mode #left-login-overlay #left-register-form > div:last-child { color: #9a7c65 !important; }
+body.light-mode #left-login-overlay a { color: #cc6a28 !important; }
+body.light-mode #left-login-loading,
+body.light-mode #left-reg-loading { color: #9a7c65 !important; }
+
+body.light-mode #restricted-overlay { background: rgba(250, 247, 244, 0.92) !important; }
+body.light-mode #restricted-overlay > div { background: #ffffff !important; border-color: #dc3545 !important; box-shadow: 0 12px 32px rgba(0,0,0,0.10) !important; }
+body.light-mode #restricted-overlay p { color: #6b5240 !important; }
+body.light-mode #restricted-close-btn { background: #faf7f4 !important; color: #2d1f14 !important; border: 1px solid #d4c4b4 !important; }
