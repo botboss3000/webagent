@@ -116,6 +116,34 @@ The app runs on a **Google Cloud Compute Engine VM** (project `webagent-495517`,
 
 **Status dots in the chat header:** green = WS subscribed (`agentWs.js` got the `subscribed` event); yellow = WS opening or no subscribe reply yet; red = WS closed or `currentUserId` missing. Yellow that never goes green almost always means a JS exception during init prevented `currentUserId` from being set, or the WS handshake never completed — check the browser console first.
 
+## Runtime state files — must stay gitignored
+
+Any file the **running app writes to** is per-machine runtime data and must never be tracked by git. Tracking them causes `error: Your local changes to the following files would be overwritten by merge` on `git pull` on the production VM, blocking deploys.
+
+**Rule:** before introducing a new file the backend writes during normal operation (auth blobs, caches, per-machine config, runtime backups, user-generated artifacts), add it to `.gitignore` in the same commit. If you discover one already tracked, untrack it: `git rm --cached <path>` + add to `.gitignore` + commit.
+
+**Currently gitignored runtime files (do not re-add to repo):**
+
+| Path | What it is |
+|------|-----------|
+| `app/db/local.db` (+ `-journal`, `-wal`, `-shm`, `.preprompt-bak`) | Local SQLite DB |
+| `local.db` (root) | Stray runtime SQLite |
+| `app/auth/users.json` (+ `.bak`) | Password hashes, remember tokens |
+| `app/db_mode.json` | Per-machine DB target switch |
+| `app/db/.fuse_hidden*`, `**/.fuse_hidden*` | FUSE/SSHFS temp leftovers |
+| `visuals/users/` | Per-user generated pages and artifacts |
+| `provider.json` | LLM + GitHub tokens (already gitignored, shared cred store) |
+| `scheduler_config.json` | Scheduler runtime state |
+| `.env` | Local env vars |
+
+**Checklist when adding a new backend write target:**
+
+1. Is the file written by the app at runtime (not committed by a human)? → must be gitignored.
+2. Does it contain secrets, hashes, tokens, or per-user state? → must be gitignored.
+3. Does the test fixture or seed flow need a default? → ship a `*.example` or `*.template` variant that IS tracked, and have the app copy/derive from it on first boot.
+
+If you skip this and the file gets committed, the VM's edited copy will collide on every `git pull` and someone has to do the backup/restore dance documented above in **Production deployment**.
+
 ## Misc Directions
 
 - **Console logs:** If adding console logs to investigate issue, remove the logging after the issue is resolved
