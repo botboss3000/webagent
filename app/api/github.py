@@ -148,6 +148,13 @@ async def get_status(request: Request):
     # Cache token before running git commands
     _cache_token(_get_token())
 
+    # 0. Refresh remote refs so ahead/behind reflects what's actually on origin.
+    # Without this, the cached refs are whatever was last fetched/pulled on this
+    # machine, so the page reports "in sync" even when origin has new commits.
+    # `--quiet` suppresses transcript noise; failures (offline, auth issue) are
+    # tolerated — we fall through to whatever cached state we have.
+    _run_git(["fetch", "--quiet", "origin"], timeout=20)
+
     # 1. Branch name
     branch_out, _, rc = _run_git(["rev-parse", "--abbrev-ref", "HEAD"])
     if rc != 0:
