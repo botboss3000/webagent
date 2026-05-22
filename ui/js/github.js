@@ -265,7 +265,6 @@ function renderLog(commits) {
 // ── Actions ──
 
 async function doRefresh() {
-  console.log('[github] doRefresh start');
   clearResult(GH.commitResult);
   clearResult(GH.pushResult);
   clearResult(GH.pullResult);
@@ -273,11 +272,8 @@ async function doRefresh() {
   if (GH.refreshBtn) GH.refreshBtn.disabled = true;
   try {
     const data = await fetchStatus();
-    console.log('[github] fetchStatus ok', data);
     renderStatus(data);
-    console.log('[github] renderStatus done');
   } catch (e) {
-    console.error('[github] doRefresh error', e);
     if (GH.statusArea) {
       GH.statusArea.innerHTML = `
         <div class="gh-error-box">
@@ -289,7 +285,6 @@ async function doRefresh() {
   } finally {
     if (GH.refreshSpinner) GH.refreshSpinner.style.display = 'none';
     if (GH.refreshBtn) GH.refreshBtn.disabled = false;
-    console.log('[github] doRefresh end');
   }
 }
 
@@ -350,27 +345,19 @@ async function doPull() {
 }
 
 async function doPullAndRestart() {
-  console.log('[github] doPullAndRestart start');
   if (!confirm('Pull latest from remote then restart the server?\n\nWebSocket and in-flight requests will be dropped. The server should come back within a few seconds (requires systemd or another supervisor with Restart=always).')) {
-    console.log('[github] doPullAndRestart cancelled by user');
     return;
   }
-  if (!GH.pullRestartBtn) {
-    console.error('[github] pullRestartBtn missing at click time');
-    return;
-  }
+  if (!GH.pullRestartBtn) return;
   GH.pullRestartBtn.disabled = true;
   if (GH.pullRestartSpinner) GH.pullRestartSpinner.style.display = 'inline-block';
   clearResult(GH.pullRestartResult);
 
   // Step 1: pull
-  console.log('[github] step 1: pull');
   showResult(GH.pullRestartResult, 'Pulling...', 'info');
   try {
-    const pullData = await pullRemote();
-    console.log('[github] pull ok', pullData);
+    await pullRemote();
   } catch (e) {
-    console.error('[github] pull failed', e);
     showResult(GH.pullRestartResult, `Pull failed: ${e.message}`, 'error');
     GH.pullRestartBtn.disabled = false;
     if (GH.pullRestartSpinner) GH.pullRestartSpinner.style.display = 'none';
@@ -378,42 +365,32 @@ async function doPullAndRestart() {
   }
 
   // Step 2: restart
-  console.log('[github] step 2: restart');
   showResult(GH.pullRestartResult, 'Pull OK. Restarting server...', 'info');
   const token = localStorage.getItem('auth_token');
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
   try {
-    const r = await fetch(apiPath('/api/v1/restart'), { method: 'POST', headers });
-    console.log('[github] restart response status', r.status);
-  } catch (e) {
-    console.log('[github] restart fetch threw (expected — process killed):', e.message);
+    await fetch(apiPath('/api/v1/restart'), { method: 'POST', headers });
+  } catch (_e) {
+    // Server killed the connection mid-response — expected
   }
 
   // Step 3: poll /health until back
-  console.log('[github] step 3: polling /health');
   showResult(GH.pullRestartResult, 'Server down. Waiting for relaunch...', 'info');
   const start = Date.now();
   const maxWait = 60000;
-  let attempt = 0;
   while (Date.now() - start < maxWait) {
     await new Promise(r => setTimeout(r, 1000));
-    attempt++;
     try {
       const r = await fetch(apiPath('/health'), { method: 'GET' });
-      console.log(`[github] /health attempt ${attempt} status`, r.status);
       if (r.ok) {
-        console.log('[github] server back up');
         showResult(GH.pullRestartResult, 'Server back up. Refreshing...', 'success');
         await doRefresh();
         GH.pullRestartBtn.disabled = false;
         if (GH.pullRestartSpinner) GH.pullRestartSpinner.style.display = 'none';
         return;
       }
-    } catch (e) {
-      console.log(`[github] /health attempt ${attempt} threw`, e.message);
-    }
+    } catch (_e) { /* still down */ }
   }
-  console.error('[github] /health poll timed out');
   showResult(GH.pullRestartResult, 'Timed out waiting for server. Check the VM supervisor (systemd).', 'error');
   GH.pullRestartBtn.disabled = false;
   if (GH.pullRestartSpinner) GH.pullRestartSpinner.style.display = 'none';
@@ -463,31 +440,22 @@ function showViewer() {
 }
 
 export function initGithub() {
-  console.log('[github] initGithub called, _initialized=', _initialized);
   if (_initialized) return;
 
   bindGHDom();
-  console.log('[github] bindGHDom complete. Keys:', Object.keys(GH).filter(k => !!GH[k]).join(','));
-  console.log('[github] missing:', Object.keys(GH).filter(k => !GH[k]).join(',') || '(none)');
   if (!GH.refreshBtn) {
-    console.warn('[github] refreshBtn missing — DOM not ready, will retry');
-    return; // do NOT set _initialized — let next startGithub retry
+    // DOM not ready yet — let the next startGithub call retry
+    return;
   }
   _initialized = true;
 
   // Wire events (only fires if DOM elements exist)
-  if (GH.refreshBtn) GH.refreshBtn.addEventListener('click', () => { console.log('[github] refresh click'); doRefresh(); });
-  else console.warn('[github] refreshBtn missing');
+  if (GH.refreshBtn) GH.refreshBtn.addEventListener('click', doRefresh);
   if (GH.commitBtn) GH.commitBtn.addEventListener('click', doCommit);
   if (GH.pushBtn) GH.pushBtn.addEventListener('click', doPush);
   if (GH.pullBtn) GH.pullBtn.addEventListener('click', doPull);
   if (GH.tokenSaveBtn) GH.tokenSaveBtn.addEventListener('click', doSaveToken);
-  if (GH.pullRestartBtn) {
-    GH.pullRestartBtn.addEventListener('click', () => { console.log('[github] pull-restart click'); doPullAndRestart(); });
-    console.log('[github] pullRestartBtn wired');
-  } else {
-    console.warn('[github] pullRestartBtn missing in DOM');
-  }
+  if (GH.pullRestartBtn) GH.pullRestartBtn.addEventListener('click', doPullAndRestart);
 
   GH.commitMsg.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -505,26 +473,21 @@ export function initGithub() {
 }
 
 export async function startGithub() {
-  console.log('[github] startGithub called');
   // Check admin access via API (server-authoritative)
   try {
     const res = await _ghFetch(apiPath('/api/v1/github/check-access'));
-    console.log('[github] check-access status', res.status);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
-    console.log('[github] check-access data', data);
     if (data.is_admin) {
       showViewer();
-      // Ensure listeners are wired (initGithub may not have run yet for this tab)
+      // Ensure listeners are wired (initGithub may have bailed before DOM was ready)
       initGithub();
       doRefresh();
       refreshTokenStatus();
     } else {
-      console.log('[github] not admin — showing restricted');
       showRestricted();
     }
   } catch (e) {
-    console.warn('[github] check-access failed, falling back to localStorage', e);
     // Fallback: client-side check from localStorage
     const authUserId = localStorage.getItem('auth_user_id');
     const hasToken = !!localStorage.getItem('auth_token');
