@@ -1965,6 +1965,7 @@ body.light-mode .ac-table-empty { color: #9a7c65; }
 body.light-mode .ac-int-badge-on { background: rgba(40, 167, 69, 0.12); color: #1a7c31; }
 body.light-mode .ac-int-badge-off { background: rgba(107, 82, 64, 0.12); color: #9a7c65; }
 body.light-mode .ac-int-account-info { background: #faf7f4; border-color: #d4c4b4; }
+body.light-mode .ac-provider-row { background: #faf7f4; border-color: #d4c4b4; }
 
 /* ── Communications channel grid ── */
 .ac-comm-grid {
