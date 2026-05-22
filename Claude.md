@@ -94,6 +94,28 @@ Neither layout is derived from the other. A node missing from one view simply wo
 10. All agent JSON templates in `app/context/agents/` — add node ID to each `loop_logic` array
 11. Any existing agents' `loop_logic` DB field — update via migration or seed script
 
+## Production deployment
+
+The app runs on a **Google Cloud Compute Engine VM** (project `webagent-495517`, instance `webagent-development`, zone `us-central1-a`, static external IP `34.69.22.204`). It is **not** on Cloud Run, despite the codebase being Cloud-Run-compatible.
+
+**Public URL:** `https://webagent.live` (also `www.webagent.live`). Domain registered at Namecheap. DNS: two A records (`@` and `www`) → `34.69.22.204` via Namecheap BasicDNS.
+
+**Stack on the VM:**
+
+| Layer | What | Where |
+|-------|------|-------|
+| TLS / reverse proxy | **Caddy 2.x** with automatic Let's Encrypt | `/etc/caddy/Caddyfile` — `webagent.live, www.webagent.live { reverse_proxy localhost:8080 }` |
+| App server | **uvicorn** running `app.main:app` bound to `127.0.0.1:8080` (loopback only — Caddy is the only public ingress) | systemd unit `/etc/systemd/system/webagent.service` |
+| GCE firewall | `allow-http-https` rule opens tcp 80, 443 to `0.0.0.0/0`. Port 8080 is **not** exposed publicly. | Created from Cloud Shell, not from VM SSH (VM SA lacks compute scope) |
+
+**Repo on VM:** `~/webagent` (user `botboss3000`). Python venv inside. Deploy via `git pull` on `main`. If `app/db/local.db` blocks pull, `git stash push -- app/db/local.db` then pull.
+
+**Google OAuth:** redirect URI must match the public HTTPS URL → `https://webagent.live/api/v1/oauth/callback/google`. JS origin `https://webagent.live`. OAuth never works against `http://<vm-ip>:8080`.
+
+**Secure-context APIs (`crypto.randomUUID`, `crypto.subtle`, clipboard, etc.)** require HTTPS or `localhost`. Plain `http://<ip>:8080` will throw `crypto.randomUUID is not a function` and break `bindDom()` in `ui/js/state.js`, leaving the agent WebSocket dot stuck on yellow (`Connecting...`). The polyfill in `ui/js/uuid.js` handles non-secure contexts — use `randomUUID()` from there, not `crypto.randomUUID()` directly. Any new secure-context API added to the UI needs a similar fallback or must be guarded behind a feature check.
+
+**Status dots in the chat header:** green = WS subscribed (`agentWs.js` got the `subscribed` event); yellow = WS opening or no subscribe reply yet; red = WS closed or `currentUserId` missing. Yellow that never goes green almost always means a JS exception during init prevented `currentUserId` from being set, or the WS handshake never completed — check the browser console first.
+
 ## Misc Directions
 
 - **Console logs:** If adding console logs to investigate issue, remove the logging after the issue is resolved

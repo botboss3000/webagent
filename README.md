@@ -384,4 +384,38 @@ gcloud run deploy webagent \
   --allow-unauthenticated
 ```
 
+### Google Compute Engine VM (persistent disk)
+
+Unlike Cloud Run, a GCE VM has a real, persistent filesystem — so you can keep code under version control on the box itself and pull updates in place from the GitHub tab inside the app.
+
+**One-time VM setup:**
+
+1. **Clone the repo** to a stable path, e.g. `/opt/webagent`, and create the `.venv` + `.env` next to it (same layout as local dev).
+2. **Create a dedicated user** for the service (e.g. `webagent`) and `chown -R webagent:webagent /opt/webagent`. The user needs read/write on the repo so the in-app **Pull & Restart** button can run `git pull` and rewrite files.
+3. **Install the systemd unit** shipped at **`scripts/webagent.service`**:
+   ```bash
+   sudo cp /opt/webagent/scripts/webagent.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now webagent
+   ```
+   Edit `User`, `WorkingDirectory`, `EnvironmentFile`, and the `ExecStart` venv path inside the unit before enabling it if your layout differs.
+
+**Why systemd matters for the GitHub tab’s Pull & Restart button:**
+
+- **`POST /api/v1/restart`** (`app/main.py`) terminates the uvicorn process with `os._exit(0)`.
+- The unit file has `Restart=always` / `RestartSec=1`, so systemd immediately relaunches uvicorn from the just-updated source tree.
+- Without a supervisor (or with a plain `nohup ./scripts/start_webAgent.sh &`) the server stays dead after restart and the app becomes unreachable.
+
+**How updates flow (GCE):**
+
+1. You push code from a dev machine to GitHub.
+2. On the VM, in the running app, open the **GitHub** tab as admin.
+3. Click **Pull & Restart** — the UI calls `/api/v1/github/pull`, then `/api/v1/restart`, then polls `/health` until the new process is up.
+4. Static assets (`ui/`, `index.html`) refresh on the next page reload; Python backend code is now the freshly-pulled version because systemd relaunched uvicorn.
+
+**Troubleshooting:**
+- `journalctl -u webagent -f` — live logs from the unit.
+- If Pull & Restart hangs at "Waiting for relaunch…": systemd isn’t restarting the process. Check `systemctl status webagent` and verify `Restart=always` is set.
+- If `git pull` fails with auth errors: set a GitHub Personal Access Token via the GitHub tab → Settings (stored in `provider.json` under the service user’s home / repo dir).
+
 **D

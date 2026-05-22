@@ -33,6 +33,9 @@ function bindGHDom() {
     pullBtn: qs('gh-pull-btn'),
     pullSpinner: qs('gh-pull-spinner'),
     pullResult: qs('gh-pull-result'),
+    pullRestartBtn: qs('gh-pull-restart-btn'),
+    pullRestartSpinner: qs('gh-pull-restart-spinner'),
+    pullRestartResult: qs('gh-pull-restart-result'),
     logList: qs('gh-log-list'),
     refreshBtn: qs('gh-refresh-btn'),
     refreshSpinner: qs('gh-refresh-spinner'),
@@ -338,6 +341,57 @@ async function doPull() {
   }
 }
 
+async function doPullAndRestart() {
+  if (!confirm('Pull latest from remote then restart the server?\n\nWebSocket and in-flight requests will be dropped. The server should come back within a few seconds (requires systemd or another supervisor with Restart=always).')) {
+    return;
+  }
+  GH.pullRestartBtn.disabled = true;
+  GH.pullRestartSpinner.style.display = 'inline-block';
+  clearResult(GH.pullRestartResult);
+
+  // Step 1: pull
+  showResult(GH.pullRestartResult, 'Pulling...', 'info');
+  try {
+    await pullRemote();
+  } catch (e) {
+    showResult(GH.pullRestartResult, `Pull failed: ${e.message}`, 'error');
+    GH.pullRestartBtn.disabled = false;
+    GH.pullRestartSpinner.style.display = 'none';
+    return;
+  }
+
+  // Step 2: restart
+  showResult(GH.pullRestartResult, 'Pull OK. Restarting server...', 'info');
+  const token = localStorage.getItem('auth_token');
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  try {
+    await fetch(apiPath('/api/v1/restart'), { method: 'POST', headers });
+  } catch (_e) {
+    // Server killed the connection mid-response — expected
+  }
+
+  // Step 3: poll /health until back
+  showResult(GH.pullRestartResult, 'Server down. Waiting for relaunch...', 'info');
+  const start = Date.now();
+  const maxWait = 60000;
+  while (Date.now() - start < maxWait) {
+    await new Promise(r => setTimeout(r, 1000));
+    try {
+      const r = await fetch(apiPath('/health'), { method: 'GET' });
+      if (r.ok) {
+        showResult(GH.pullRestartResult, 'Server back up. Refreshing...', 'success');
+        await doRefresh();
+        GH.pullRestartBtn.disabled = false;
+        GH.pullRestartSpinner.style.display = 'none';
+        return;
+      }
+    } catch (_e) { /* still down */ }
+  }
+  showResult(GH.pullRestartResult, 'Timed out waiting for server. Check the VM supervisor (systemd).', 'error');
+  GH.pullRestartBtn.disabled = false;
+  GH.pullRestartSpinner.style.display = 'none';
+}
+
 async function doSaveToken() {
   const token = GH.tokenInput.value.trim();
   if (!token) {
@@ -394,6 +448,7 @@ export function initGithub() {
   GH.pushBtn.addEventListener('click', doPush);
   GH.pullBtn.addEventListener('click', doPull);
   GH.tokenSaveBtn.addEventListener('click', doSaveToken);
+  if (GH.pullRestartBtn) GH.pullRestartBtn.addEventListener('click', doPullAndRestart);
 
   GH.commitMsg.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
