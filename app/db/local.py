@@ -675,6 +675,25 @@ CREATE TRIGGER IF NOT EXISTS trg_doc_chunks_fts_update
     VALUES (new.rowid, new.chunk_text, new.source_ref);
 END;
 
+-- ============================================================
+-- Tenant Key Metadata (encryption support)
+-- Tracks which DEK versions exist per tenant. NO key material here —
+-- wrapped DEKs live in the configured SecretsBackend at
+-- wa:dek:<user_id>:v<key_version>.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS tenant_key_meta (
+    user_id      TEXT    NOT NULL,
+    key_version  INTEGER NOT NULL,
+    algo         TEXT    NOT NULL DEFAULT 'fernet',
+    status       TEXT    NOT NULL DEFAULT 'active' CHECK (status IN ('active','retired')),
+    created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    retired_at   TEXT,
+    PRIMARY KEY (user_id, key_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tenant_key_meta_active
+    ON tenant_key_meta(user_id, status);
+
 """
 
 

@@ -34,6 +34,17 @@ function bindMount(prefix) {
     secretsTest: qs(`${prefix}secrets-test`),
     secretsSave: qs(`${prefix}secrets-save`),
     secretsOutput: qs(`${prefix}secrets-output`),
+    encBadge: qs(`${prefix}enc-badge`),
+    encVaultWarn: qs(`${prefix}enc-vault-warning`),
+    encLevel: qs(`${prefix}enc-level`),
+    encSave: qs(`${prefix}enc-save`),
+    encTest: qs(`${prefix}enc-test`),
+    encKekGen: qs(`${prefix}enc-kek-generate`),
+    encKekRotate: qs(`${prefix}enc-kek-rotate`),
+    encMigrate: qs(`${prefix}enc-migrate`),
+    encDecryptAll: qs(`${prefix}enc-decrypt-all`),
+    encTenants: qs(`${prefix}enc-tenants`),
+    encOutput: qs(`${prefix}enc-output`),
     exportBtn: qs(`${prefix}export-btn`),
     importInput: qs(`${prefix}import-input`),
     migrateOutput: qs(`${prefix}migrate-output`),
@@ -162,8 +173,69 @@ function applyState(m, state) {
   m.secretsBadge.textContent = `active: ${sec.provider || 'inline_db'}`;
   m.secretsWarn.style.display = (sec.provider === 'inline_db') ? 'block' : 'none';
   const lock = !!state.env_locked;
-  for (const btn of [m.btnSave, m.btnActivate, m.secretsSave]) {
+  for (const btn of [m.btnSave, m.btnActivate, m.secretsSave, m.encSave, m.encKekGen, m.encKekRotate, m.encMigrate, m.encDecryptAll]) {
     if (btn) { btn.disabled = lock; btn.style.opacity = lock ? '0.45' : '1'; }
+  }
+}
+
+async function loadEncryption(m) {
+  if (!m || !m.encLevel) return;
+  const u = uid();
+  const res = await fetch(apiPath(`/admin/storage/encryption/config?requesting_user_id=${encodeURIComponent(u)}`));
+  if (!res.ok) {
+    if (m.encBadge) m.encBadge.textContent = `error ${res.status}`;
+    return;
+  }
+  const s = await res.json();
+  m.encLevel.value = s.level || 'none';
+  m.encBadge.textContent = `active: ${s.level || 'none'}`;
+  m.encVaultWarn.style.display = s.warning ? 'block' : 'none';
+  if (s.warning) m.encVaultWarn.textContent = s.warning;
+  // Disable full_db when DB provider isn't sqlite
+  const fullDbOpt = m.encLevel.querySelector('option[value="full_db"]');
+  if (fullDbOpt) {
+    const dbProv = (s.db_provider || 'sqlite').toLowerCase();
+    fullDbOpt.disabled = (dbProv !== 'sqlite');
+  }
+}
+
+async function loadTenants(m) {
+  if (!m || !m.encTenants) return;
+  const u = uid();
+  const res = await fetch(apiPath(`/admin/storage/encryption/tenants?requesting_user_id=${encodeURIComponent(u)}`));
+  if (!res.ok) return;
+  const body = await res.json();
+  const tenants = body.tenants || [];
+  if (!tenants.length) {
+    m.encTenants.style.display = 'block';
+    m.encTenants.innerHTML = '<div style="opacity:0.6;">No tenants with key material yet. Run "Encrypt Existing Rows" to provision DEKs.</div>';
+    return;
+  }
+  m.encTenants.style.display = 'block';
+  m.encTenants.innerHTML = '';
+  for (const t of tenants) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border,#2a2a4a);';
+    const label = document.createElement('span');
+    label.style.cssText = 'flex:1;font-family:monospace;';
+    label.textContent = `${t.user_id} — active v${t.active_version ?? '–'} (${t.total_versions} versions)`;
+    const btn = document.createElement('button');
+    btn.className = 'ac-btn';
+    btn.style.cssText = 'padding:2px 8px;font-size:10px;';
+    btn.textContent = 'Rotate DEK';
+    btn.onclick = async () => {
+      if (!confirm(`Rotate DEK for user "${t.user_id}"? This re-encrypts all of their rows.`)) return;
+      out(m.encOutput, `Rotating DEK for ${t.user_id}...`, null);
+      const r = await call('/admin/storage/encryption/dek/rotate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requesting_user_id: uid(), user_id: t.user_id }),
+      });
+      out(m.encOutput, r.body || { error: 'no response' }, !!(r.body && r.body.ok));
+      loadTenants(m);
+    };
+    row.appendChild(label);
+    row.appendChild(btn);
+    m.encTenants.appendChild(row);
   }
 }
 
@@ -263,6 +335,71 @@ function wire(m) {
     out(m.migrateOutput, 'Exported. File downloaded.', true);
   });
 
+  m.encSave && m.encSave.addEventListener('click', async () => {
+    const level = m.encLevel.value;
+    let confirmFlag = false;
+    if (level === 'none') {
+      if (!confirm('Switch to "none"? You must first run "Decrypt Back to Plaintext" or rows will become unreadable through the decorator path.')) return;
+      confirmFlag = true;
+    } else {
+      if (!confirm(`Activate encryption level "${level}"? Existing plaintext rows stay plaintext until you click "Encrypt Existing Rows".`)) return;
+    }
+    out(m.encOutput, 'Activating level...', null);
+    const r = await call('/admin/storage/encryption/level', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requesting_user_id: uid(), level, confirm: confirmFlag }),
+    });
+    out(m.encOutput, r.body || { error: 'no response' }, !!(r.body && r.body.ok));
+    loadEncryption(m);
+  });
+
+  m.encTest && m.encTest.addEventListener('click', async () => {
+    out(m.encOutput, 'Running round-trip probe...', null);
+    const r = await call(`/admin/storage/encryption/test?requesting_user_id=${encodeURIComponent(uid())}`);
+    out(m.encOutput, r.body || { error: 'no response' }, !!(r.body && r.body.ok));
+  });
+
+  m.encKekGen && m.encKekGen.addEventListener('click', async () => {
+    if (!confirm('Generate a new KEK and store it in the active secrets vault? Fails if one already exists — use Rotate KEK for replacements.')) return;
+    out(m.encOutput, 'Generating KEK...', null);
+    const r = await call('/admin/storage/encryption/kek/generate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requesting_user_id: uid() }),
+    });
+    out(m.encOutput, r.body || { error: 'no response' }, !!(r.body && r.body.ok));
+  });
+
+  m.encKekRotate && m.encKekRotate.addEventListener('click', async () => {
+    if (!confirm('Rotate KEK? Re-wraps every per-tenant DEK in the vault. Row data is not touched.')) return;
+    out(m.encOutput, 'Rotating KEK...', null);
+    const r = await call('/admin/storage/encryption/kek/rotate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requesting_user_id: uid() }),
+    });
+    out(m.encOutput, r.body || { error: 'no response' }, !!(r.body && r.body.ok));
+  });
+
+  m.encMigrate && m.encMigrate.addEventListener('click', async () => {
+    if (!confirm('Encrypt all plaintext sensitive rows under the active encryption level? Idempotent.')) return;
+    out(m.encOutput, 'Encrypting existing rows...', null);
+    const r = await call('/admin/storage/encryption/migrate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requesting_user_id: uid() }),
+    });
+    out(m.encOutput, r.body || { error: 'no response' }, !!(r.body && r.body.ok));
+    loadTenants(m);
+  });
+
+  m.encDecryptAll && m.encDecryptAll.addEventListener('click', async () => {
+    if (!confirm('Decrypt every encrypted row back to plaintext? Required before switching the level to "none" or exporting.')) return;
+    out(m.encOutput, 'Decrypting all rows...', null);
+    const r = await call('/admin/storage/encryption/decrypt-all', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requesting_user_id: uid() }),
+    });
+    out(m.encOutput, r.body || { error: 'no response' }, !!(r.body && r.body.ok));
+  });
+
   m.importInput && m.importInput.addEventListener('change', async (ev) => {
     const file = ev.target.files && ev.target.files[0];
     if (!file) return;
@@ -291,7 +428,11 @@ export function initStorageUi() {
 
   if (PAGE && PAGE.root) {
     window.__refreshStorageSection = () => {
-      if (PAGE && isAdmin()) loadConfig(PAGE).then(s => applyState(PAGE, s));
+      if (PAGE && isAdmin()) {
+        loadConfig(PAGE).then(s => applyState(PAGE, s));
+        loadEncryption(PAGE);
+        loadTenants(PAGE);
+      }
     };
     setTimeout(() => { try { window.__refreshStorageSection(); } catch {} }, 200);
   }

@@ -1,0 +1,163 @@
+"""
+Encryption factory: pick an EncryptionBackend based on persisted config.
+
+Mirrors the layout of `app/secrets/`. Mode is stored in `encryption_mode.json`
+alongside `db_mode.json` / `secrets_mode.json`.
+
+Available levels:
+  - "none"     (default — pass-through)
+  - "field"    (per-tenant Fernet on auth_elements.secret_ref)
+  - "full_db"  (SQLCipher; SQLite-only; stubbed until pysqlcipher3 is installed)
+  - "kms"      (per-tenant Fernet with KEK held in cloud KMS; stubbed)
+
+Multi-tenant key hierarchy:
+  - One KEK per install, stored in the configured SecretsBackend at
+    "wa:kek:active" (retired versions at "wa:kek:v<n>").
+  - One DEK per user_id, KEK-wrapped, stored in the same SecretsBackend at
+    "wa:dek:<user_id>:v<n>".
+  - The application DB holds metadata only (tenant_key_meta), never key bytes.
+"""
+
+import json
+import logging
+import os
+from typing import Optional
+
+from app.encryption.interface import EncryptionBackend
+
+logger = logging.getLogger(__name__)
+
+_AGENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_MODE_FILE = os.path.join(_AGENT_DIR, "encryption_mode.json")
+
+_AVAILABLE = ("none", "field", "full_db", "kms")
+
+_backend: Optional[EncryptionBackend] = None
+_level: Optional[str] = None
+_settings: Optional[dict] = None
+
+
+def _env_locked() -> bool:
+    return os.environ.get("WEBAGENT_CONFIG_SOURCE", "").lower() == "env"
+
+
+def _load_saved() -> dict:
+    try:
+        if os.path.exists(_MODE_FILE):
+            with open(_MODE_FILE, "r") as f:
+                return json.load(f) or {}
+    except Exception as e:
+        logger.warning("Failed to load encryption_mode.json: %s", e)
+    return {}
+
+
+def _save(level: str, settings: Optional[dict]) -> None:
+    if _env_locked():
+        return
+    payload = {"level": level, "settings": settings or {}}
+    try:
+        with open(_MODE_FILE, "w") as f:
+            json.dump(payload, f, indent=2)
+    except Exception as e:
+        logger.warning("Failed to save encryption_mode.json: %s", e)
+
+
+def _load_state() -> None:
+    """Populate _level + _settings from env or disk (idempotent)."""
+    global _level, _settings
+    if _level is not None:
+        return
+    env_choice = os.environ.get("WEBAGENT_ENCRYPTION_LEVEL", "").strip()
+    if env_choice in _AVAILABLE:
+        _level = env_choice
+        _settings = {}
+        return
+    saved = _load_saved()
+    _level = saved.get("level") if saved.get("level") in _AVAILABLE else "none"
+    _settings = saved.get("settings") or {}
+
+
+def get_level() -> str:
+    """Current encryption level. Always one of _AVAILABLE."""
+    _load_state()
+    return _level or "none"
+
+
+def get_settings() -> dict:
+    """Current encryption settings (e.g. KMS resource name)."""
+    _load_state()
+    return dict(_settings or {})
+
+
+def list_levels() -> list:
+    return list(_AVAILABLE)
+
+
+def set_level(level: str, settings: Optional[dict] = None) -> None:
+    """Switch encryption level. Resets the cached backend. Persists to disk."""
+    global _backend, _level, _settings
+    if level not in _AVAILABLE:
+        raise ValueError(f"Invalid level '{level}'. Must be one of {_AVAILABLE}")
+    _level = level
+    _settings = settings or {}
+    _backend = None
+    _save(level, _settings)
+    logger.info("Encryption level switched to '%s'", level)
+
+
+def _construct(level: str, settings: dict) -> EncryptionBackend:
+    if level == "none":
+        from app.encryption.none import NoEncryption
+        return NoEncryption()
+    if level == "field":
+        from app.encryption.field_fernet import FieldFernet
+        return FieldFernet(settings)
+    if level == "full_db":
+        from app.encryption.sqlcipher import SQLCipherEncryption
+        return SQLCipherEncryption(settings)
+    if level == "kms":
+        from app.encryption.kms_wrapped import KMSWrappedFernet
+        return KMSWrappedFernet(settings)
+    raise ValueError(f"Unknown level: {level}")
+
+
+def get_encryption() -> EncryptionBackend:
+    """Get the active encryption backend instance (lazy)."""
+    global _backend
+    _load_state()
+    if _backend is None:
+        try:
+            _backend = _construct(_level or "none", _settings or {})
+            logger.info("Initialized encryption backend: %s", _level)
+        except Exception as e:
+            logger.warning(
+                "Failed to construct encryption backend '%s' (%s); falling back to none",
+                _level, e,
+            )
+            from app.encryption.none import NoEncryption
+            _backend = NoEncryption()
+    return _backend
+
+
+def get_status() -> dict:
+    """For UI: current level + settings + env-lock state."""
+    _load_state()
+    return {
+        "level": _level or "none",
+        "settings": dict(_settings or {}),
+        "available": list(_AVAILABLE),
+        "env_locked": _env_locked(),
+    }
+
+
+def reset_for_tests() -> None:
+    """Drop cached state and remove the persisted file. Test-only helper."""
+    global _backend, _level, _settings
+    _backend = None
+    _level = None
+    _settings = None
+    try:
+        if os.path.exists(_MODE_FILE):
+            os.remove(_MODE_FILE)
+    except Exception:
+        pass

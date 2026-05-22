@@ -3,11 +3,19 @@ Abstract storage backend interface for webAgent.
 
 Defines the contract that both Supabase and Local backends must implement.
 All methods match the current SupabaseClient API surface.
+
+Also defines `EncryptedStorageBackend` — a decorator that wraps any concrete
+backend and transparently encrypts/decrypts sensitive fields on the way in
+and out. The app/db factory applies this wrapper when the active encryption
+level is non-trivial.
 """
 
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 from app.models.schemas import InteractionRecord
+
+logger = logging.getLogger(__name__)
 
 
 class StorageBackend(ABC):
@@ -711,3 +719,109 @@ class StorageBackend(ABC):
     ) -> List[dict]:
         """Hybrid keyword + vector search within a single data source. Returns ranked chunks."""
         ...
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# EncryptedStorageBackend
+# ──────────────────────────────────────────────────────────────────────────
+
+
+# Sentinel identifiers used by InlineDBSecrets (app/secrets/inline_db_secrets.py).
+# Rows with this (user_id, service) pair store wrapped DEKs and MUST bypass the
+# encryption shim — otherwise we'd try to fetch a DEK to encrypt the DEK itself.
+_VAULT_SENTINEL_USER = "_vault"
+_VAULT_SENTINEL_SERVICE = "_secrets_vault"
+
+
+class EncryptedStorageBackend:
+    """
+    Decorator over any StorageBackend that transparently encrypts/decrypts
+    sensitive fields (currently `auth_elements.secret_ref`) using an
+    EncryptionBackend.
+
+    Intentionally does NOT inherit from StorageBackend (the ABC would
+    require us to override every abstract method). It duck-types: callers
+    typed as ``StorageBackend`` are unaffected because every method that
+    isn't overridden here is delegated to the inner backend via
+    ``__getattr__``.
+
+    Rows whose (user_id, service) match the inline-DB vault sentinel are
+    passed through untouched. The vault itself must never be encrypted by
+    the shim that depends on it.
+    """
+
+    def __init__(self, inner: StorageBackend, enc) -> None:
+        # `enc` is an app.encryption.interface.EncryptionBackend instance.
+        # Imported in the factory, not here, to avoid a circular import.
+        self._inner = inner
+        self._enc = enc
+
+    # ── Sensitive field interceptors ──────────────────────────────────────
+
+    @staticmethod
+    def _is_vault_call(user_id: str, service: str) -> bool:
+        return user_id == _VAULT_SENTINEL_USER and service == _VAULT_SENTINEL_SERVICE
+
+    async def auth_element_get(
+        self, user_id: str, service: str, label: str = "default"
+    ) -> Optional[dict]:
+        row = await self._inner.auth_element_get(user_id, service, label)
+        if not row:
+            return row
+        if self._is_vault_call(user_id, service):
+            return row
+        ref = row.get("secret_ref")
+        if ref:
+            try:
+                row["secret_ref"] = await self._enc.decrypt(user_id, ref)
+            except Exception as e:
+                logger.warning(
+                    "decrypt failed for user=%s service=%s label=%s: %s",
+                    user_id, service, label, e,
+                )
+        return row
+
+    async def auth_element_set(
+        self,
+        user_id: str,
+        service: str,
+        config: dict,
+        secret_ref: str = "",
+        label: str = "default",
+    ) -> dict:
+        wrapped_secret = secret_ref
+        if secret_ref and not self._is_vault_call(user_id, service):
+            try:
+                wrapped_secret = await self._enc.encrypt(user_id, secret_ref)
+            except Exception as e:
+                logger.error(
+                    "encrypt failed for user=%s service=%s label=%s: %s — storing plaintext",
+                    user_id, service, label, e,
+                )
+        return await self._inner.auth_element_set(
+            user_id, service, config, wrapped_secret, label,
+        )
+
+    async def auth_element_list(
+        self, user_id: str, service: Optional[str] = None
+    ) -> List[dict]:
+        rows = await self._inner.auth_element_list(user_id, service)
+        out: List[dict] = []
+        for row in rows or []:
+            r = dict(row)
+            if not self._is_vault_call(r.get("user_id", ""), r.get("service", "")):
+                ref = r.get("secret_ref")
+                if ref:
+                    try:
+                        r["secret_ref"] = await self._enc.decrypt(r.get("user_id", ""), ref)
+                    except Exception as e:
+                        logger.warning("decrypt failed in list: %s", e)
+            out.append(r)
+        return out
+
+    # ── Pass-through ──────────────────────────────────────────────────────
+
+    def __getattr__(self, name):
+        # Only invoked for attrs not found on self (so the overridden methods
+        # above shadow this). Delegates everything else to the inner backend.
+        return getattr(self._inner, name)

@@ -1423,6 +1423,47 @@
               <pre id="ac-storage-secrets-output" style="margin-top:10px;padding:8px;background:var(--panel-2,#0d0d1a);border:1px solid var(--border,#2a2a4a);border-radius:6px;font-size:11px;white-space:pre-wrap;display:none;"></pre>
             </div>
 
+            <!-- ── Encryption ── -->
+            <div class="ac-card">
+              <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
+                <i data-lucide="lock" class="lucide-icon" style="width:14px;height:14px;color:#7dcfff;"></i>
+                Encryption
+                <span id="ac-storage-enc-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+              </div>
+
+              <div id="ac-storage-enc-vault-warning" class="ac-info-banner" style="display:none;margin-top:10px;border-left-color:#f7768e;color:#f7768e;font-size:11px;">
+                Secrets vault is set to <strong>inline_db</strong> while the database backend is remote. Encryption keys would live in the same DB they protect. Switch the Secrets Vault provider above before enabling per-tenant encryption.
+              </div>
+
+              <label class="ac-label" style="margin-top:10px;">Level</label>
+              <select id="ac-storage-enc-level" class="ac-input">
+                <option value="none">None (plaintext)</option>
+                <option value="field">Field-level, per-tenant (Fernet via vault)</option>
+                <option value="full_db">Full DB (SQLCipher — SQLite only, requires pysqlcipher3)</option>
+                <option value="kms">KMS-wrapped (cloud KEK — coming soon)</option>
+              </select>
+
+              <div class="ac-hint" style="margin-top:6px;font-size:11px;">
+                Field-level encrypts <code>auth_elements.secret_ref</code> with a per-tenant data key. Wrapped DEKs live in the configured Secrets Vault — never in the application DB. Rotation of one tenant's key never touches others.
+              </div>
+
+              <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">
+                <button id="ac-storage-enc-kek-generate" class="ac-btn">Generate KEK</button>
+                <button id="ac-storage-enc-test" class="ac-btn">Test Round-Trip</button>
+                <button id="ac-storage-enc-migrate" class="ac-btn">Encrypt Existing Rows</button>
+                <button id="ac-storage-enc-decrypt-all" class="ac-btn">Decrypt Back to Plaintext</button>
+                <button id="ac-storage-enc-kek-rotate" class="ac-btn">Rotate KEK</button>
+                <button id="ac-storage-enc-save" class="ac-btn ac-btn-primary">Activate Level</button>
+              </div>
+
+              <div style="margin-top:14px;">
+                <div style="font-size:11px;font-weight:600;color:var(--muted);">Per-tenant keys</div>
+                <div id="ac-storage-enc-tenants" style="margin-top:6px;font-size:11px;max-height:200px;overflow-y:auto;border:1px solid var(--border,#2a2a4a);border-radius:6px;padding:6px;display:none;"></div>
+              </div>
+
+              <pre id="ac-storage-enc-output" style="margin-top:10px;padding:8px;background:var(--panel-2,#0d0d1a);border:1px solid var(--border,#2a2a4a);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;display:none;"></pre>
+            </div>
+
             <!-- ── Data Migration ── -->
             <details class="ac-card">
               <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;font-weight:600;">
