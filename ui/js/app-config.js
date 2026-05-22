@@ -331,9 +331,28 @@ async function _saveLLM() {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
+
+    const dupe = _parallelProviders.find(p =>
+      p.provider === provider && p.model === _selectedModel && p.base_url === baseUrl
+    );
+    if (!dupe) {
+      _parallelProviders.push({
+        provider,
+        base_url: baseUrl,
+        api_key:  apiKey,
+        model:    _selectedModel,
+        enabled:  true,
+        rating:   0,
+        _uid: ++_parallelUidCounter,
+      });
+    } else if (apiKey && dupe.api_key !== apiKey) {
+      dupe.api_key = apiKey;
+    }
+
     await _saveParallelProviders();
     _showLLMStatus(data.message || 'Saved', 'success');
     await _loadLLM();
+    _renderParallelRows();
   } catch (e) {
     _showLLMStatus(`Error: ${e.message}`, 'error');
   }
