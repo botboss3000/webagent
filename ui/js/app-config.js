@@ -73,15 +73,49 @@ function _showSection(section) {
 }
 
 function _initNav() {
-  const sidebar = _qs('app-config-sidebar');
-  if (!sidebar) return;
+  const tabBar   = _qs('app-config-tabs');
+  const tabWrap  = _qs('app-config-tabs-wrap');
+  const chevLeft = _qs('app-config-tabs-chev-left');
+  const chevRight= _qs('app-config-tabs-chev-right');
+  if (!tabBar || !tabWrap) return;
 
-  sidebar.querySelectorAll('.ac-nav-item').forEach(link => {
-    link.addEventListener('click', e => {
+  tabBar.querySelectorAll('.ac-tab').forEach(btn => {
+    btn.addEventListener('click', e => {
       e.preventDefault();
-      _showSection(link.dataset.section);
+      _showSection(btn.dataset.section);
+      btn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
     });
   });
+
+  if (chevLeft && chevRight) {
+    const updateChevrons = () => {
+      const overflow = tabBar.scrollWidth - tabBar.clientWidth > 1;
+      tabWrap.classList.toggle('has-overflow', overflow);
+      chevLeft.classList.toggle('visible', overflow && tabBar.scrollLeft > 1);
+      chevRight.classList.toggle('visible', overflow && tabBar.scrollLeft < tabBar.scrollWidth - tabBar.clientWidth - 1);
+    };
+    const scrollStep = () => Math.max(80, Math.floor(tabBar.clientWidth * 0.6));
+    chevLeft.addEventListener('click', () => tabBar.scrollBy({ left: -scrollStep(), behavior: 'smooth' }));
+    chevRight.addEventListener('click', () => tabBar.scrollBy({ left: scrollStep(), behavior: 'smooth' }));
+    tabBar.addEventListener('scroll', updateChevrons, { passive: true });
+
+    requestAnimationFrame(() => {
+      updateChevrons();
+      const active = tabBar.querySelector('.ac-tab.active');
+      if (active) active.scrollIntoView({ inline: 'center', block: 'nearest' });
+    });
+    if (typeof ResizeObserver !== 'undefined') {
+      let roPending = false;
+      const ro = new ResizeObserver(() => {
+        if (roPending) return;
+        roPending = true;
+        requestAnimationFrame(() => { roPending = false; updateChevrons(); });
+      });
+      ro.observe(tabBar);
+      ro.observe(tabWrap);
+    }
+    window.addEventListener('resize', updateChevrons);
+  }
 
   // "GitHub tab" links inside the page
   document.querySelectorAll('.ac-tab-link[data-tab]').forEach(el => {
@@ -96,9 +130,15 @@ function _initNav() {
 }
 
 function _setNavActive(section) {
-  document.querySelectorAll('#app-config-sidebar .ac-nav-item').forEach(n => {
-    n.classList.toggle('active', n.dataset.section === section);
+  const tabBar = _qs('app-config-tabs');
+  if (!tabBar) return;
+  let active = null;
+  tabBar.querySelectorAll('.ac-tab').forEach(t => {
+    const isActive = t.dataset.section === section;
+    t.classList.toggle('active', isActive);
+    if (isActive) active = t;
   });
+  if (active) active.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
 }
 
 // ─────────────────────────────────────────────────────────────────────────
