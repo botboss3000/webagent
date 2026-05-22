@@ -9,7 +9,11 @@
       "Bash(powershell -Command \"Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force; 'done'\")",
       "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Alex R\\\\Projects\\\\webagent\" -Recurse -Directory)",
       "Bash(Select-Object -ExpandProperty FullName)",
-      "PowerShell(@\\(19388, 16548, 17908, 20080\\) | ForEach-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue | Select-Object Id, ProcessName, MainWindowTitle })"
+      "PowerShell(@\\(19388, 16548, 17908, 20080\\) | ForEach-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue | Select-Object Id, ProcessName, MainWindowTitle })",
+      "mcp__Claude_in_Chrome__list_connected_browsers",
+      "mcp__Claude_in_Chrome__select_browser",
+      "mcp__Claude_in_Chrome__tabs_context_mcp",
+      "mcp__Claude_in_Chrome__browser_batch"
     ]
   }
 }

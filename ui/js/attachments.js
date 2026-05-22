@@ -47,7 +47,8 @@ export function initAttachments() {
   if (voiceBtn && navigator.mediaDevices) {
     voiceBtn.addEventListener('click', () => startVoiceRecording(voiceBtn));
   } else if (voiceBtn) {
-    voiceBtn.style.display = 'none';
+    const row = document.getElementById('chat-input-row');
+    if (row) row.classList.add('no-voice');
   }
 
   // Drag & drop — set up a drop zone on a container
@@ -209,7 +210,8 @@ async function startVoiceRecording(btn) {
     mediaRecorder.onstop = async () => {
       stream.getTracks().forEach(t => t.stop());
       const blob = new Blob(audioChunks, { type: 'audio/webm' });
-      btn.innerHTML = icon('mic', { size: '16px' });
+      btn.innerHTML = icon('mic', { size: '18px' });
+      btn.title = 'Record voice';
       btn.classList.remove('recording');
       isRecording = false;
 
@@ -219,7 +221,8 @@ async function startVoiceRecording(btn) {
     };
 
     mediaRecorder.start();
-    btn.innerHTML = `${icon('circle-stop', { size: '14px' })} Stop`;
+    btn.innerHTML = icon('circle-stop', { size: '18px' });
+    btn.title = 'Stop recording';
     btn.classList.add('recording');
     isRecording = true;
   } catch (err) {

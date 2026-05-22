@@ -16,6 +16,14 @@ function _canChat() {
 const _CHAT_LOCK_PLACEHOLDER = 'Sign in to chat — this app does not allow anonymous use.';
 let _origChatPlaceholder = '';
 
+function _updateInputRowState() {
+  if (!app.chatInput) return;
+  const row = document.getElementById('chat-input-row');
+  if (!row) return;
+  const hasText = !!app.chatInput.value.trim();
+  row.classList.toggle('has-text', hasText);
+}
+
 function applyChatGate() {
   if (!app.chatInput || !app.chatSend) return;
   const allowed = _canChat();
@@ -30,6 +38,7 @@ function applyChatGate() {
     app.chatInput.placeholder = _CHAT_LOCK_PLACEHOLDER;
     app.chatSend.disabled = true;
   }
+  _updateInputRowState();
 }
 
 window.addEventListener('access-mode-loaded',  applyChatGate);
@@ -160,6 +169,7 @@ async function sendMessage() {
   if (!text) return;
   app.chatInput.value = '';
   app.chatSend.disabled = true;
+  _updateInputRowState();
 
   // Advance the poll cursor so auto-poll doesn't re-render this message
   if (window.__chatPollLastAt !== undefined) {
@@ -313,8 +323,9 @@ export function initChat() {
     }
   });
   app.chatInput.addEventListener('input', () => {
-    if (!_canChat()) { app.chatSend.disabled = true; return; }
+    if (!_canChat()) { app.chatSend.disabled = true; _updateInputRowState(); return; }
     app.chatSend.disabled = !app.chatInput.value.trim();
+    _updateInputRowState();
   });
 
   // Apply gating immediately with cached value, then re-apply once mode is loaded

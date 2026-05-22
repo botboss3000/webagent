@@ -8,11 +8,20 @@ export function initChatResize() {
   const chatSide = document.getElementById('chat-side');
   if (!handle || !chatSide) return;
 
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved) {
+  const MOBILE_BP = 800;
+  const applySavedWidth = () => {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) return;
     const w = parseInt(saved, 10);
-    if (!isNaN(w)) chatSide.style.width = w + 'px';
-  }
+    if (isNaN(w)) return;
+    if (window.innerWidth <= MOBILE_BP) {
+      chatSide.style.width = '';
+    } else {
+      chatSide.style.width = w + 'px';
+    }
+  };
+  applySavedWidth();
+  window.addEventListener('resize', applySavedWidth);
 
   let dragging = false;
   let startX = 0;

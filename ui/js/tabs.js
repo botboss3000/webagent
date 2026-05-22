@@ -26,7 +26,7 @@ export function initTabs() {
     tabSelect.value = savedTab;
   }
 
-  function activateTab(tabValue) {
+  function activateTab(tabValue, userInitiated) {
     document.querySelectorAll('.tab-content').forEach((c) => c.classList.remove('active'));
     const targetContent = document.getElementById('tab-' + tabValue);
     if (targetContent) {
@@ -35,8 +35,24 @@ export function initTabs() {
 
     localStorage.setItem('lastActiveTab', tabValue);
 
-    // Respect user's chat toggle preference
-    setChatSideVisible(localStorage.getItem('chatPanelVisible') !== 'false');
+    // Mobile: explicit page pick from dropdown hides chat (reveals page).
+    // Initial load on mobile must respect saved chat-visibility — don't override.
+    // Desktop: always reflect saved chat toggle preference.
+    const isMobile = typeof window.__isMobileChatLayout === 'function'
+      ? window.__isMobileChatLayout() : (window.innerWidth <= 800);
+    if (isMobile) {
+      if (userInitiated) {
+        if (typeof window.__applyChatVisible === 'function') {
+          window.__applyChatVisible(false);
+        } else {
+          setChatSideVisible(false);
+        }
+      }
+    } else {
+      const stored = localStorage.getItem('chatPanelVisible');
+      const visible = stored === null ? true : stored !== 'false';
+      setChatSideVisible(visible);
+    }
 
     if (tabValue === 'terminal') {
       stopStream();
@@ -123,7 +139,7 @@ export function initTabs() {
   }
 
   tabSelect.addEventListener('change', (e) => {
-    activateTab(e.target.value);
+    activateTab(e.target.value, true);
   });
 
   document.querySelectorAll('.loop-filter-btn').forEach(btn => {

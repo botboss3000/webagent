@@ -417,17 +417,17 @@ export function initSessions() {
     });
   }
 
-  // Load saved theme on init
-  let savedTheme = 'dark';
-  try { savedTheme = localStorage.getItem(STORAGE_KEY) || 'dark'; } catch (_) {}
+  // Load saved theme on init (default 'system' on first load)
+  let savedTheme = 'system';
+  try { savedTheme = localStorage.getItem(STORAGE_KEY) || 'system'; } catch (_) {}
   applyTheme(savedTheme);
   highlightThemeOption(savedTheme);
 
   // Listen to system preference changes when in 'system' mode
   const mq = window.matchMedia('(prefers-color-scheme: light)');
   mq.addEventListener('change', () => {
-    let current = 'dark';
-    try { current = localStorage.getItem(STORAGE_KEY) || 'dark'; } catch (_) {}
+    let current = 'system';
+    try { current = localStorage.getItem(STORAGE_KEY) || 'system'; } catch (_) {}
     if (current === 'system') applyTheme('system');
   });
 

@@ -35,27 +35,66 @@
       var w = parseInt(localStorage.getItem('chatPanelWidth'), 10);
       if (!isNaN(w) && w > 0) {
         var s = document.createElement('style');
-        s.textContent = '#chat-side{width:' + w + 'px;}';
+        s.textContent = '@media (min-width: 801px) { #chat-side{width:' + w + 'px;} }';
         document.head.appendChild(s);
       }
+    } catch (_) {}
+    // Pre-paint: set body class for mobile chat/terminal visibility so the wrong
+    // panel never flashes during initial render.
+    try {
+      var isMobile = window.innerWidth <= 800;
+      var key = isMobile ? 'chatPanelVisibleMobile' : 'chatPanelVisible';
+      var stored = localStorage.getItem(key);
+      var visible = stored === null ? !isMobile : stored !== 'false';
+      document.body.classList.toggle('chat-visible', visible);
+      document.body.classList.toggle('chat-hidden', !visible);
     } catch (_) {}
   })();
 </script>
 <script>
   // Chat toggle — global function + event delegation. Works regardless of
   // module load timing, browser cache state, or DOM mutation observers.
+  window.__isMobileChatLayout = function () { return window.innerWidth <= 800; };
+  window.__chatVisibilityKey = function () {
+    return window.__isMobileChatLayout() ? 'chatPanelVisibleMobile' : 'chatPanelVisible';
+  };
+  window.__chatVisibilityDefault = function () {
+    return window.__isMobileChatLayout() ? false : true;
+  };
+  window.__getChatVisible = function () {
+    try {
+      var v = localStorage.getItem(window.__chatVisibilityKey());
+      if (v === null) return window.__chatVisibilityDefault();
+      return v !== 'false';
+    } catch (_) { return window.__chatVisibilityDefault(); }
+  };
   window.__applyChatVisible = function (visible) {
     var chatSide = document.getElementById('chat-side');
     var handle = document.getElementById('chat-resize-handle');
     var btn = document.getElementById('chat-toggle-btn');
-    if (chatSide) chatSide.style.display = visible ? '' : 'none';
-    if (handle)   handle.style.display   = visible ? '' : 'none';
-    if (btn)      btn.classList.toggle('active', visible);
-    try { localStorage.setItem('chatPanelVisible', String(visible)); } catch (_) {}
+    var terminalSide = document.getElementById('terminal-side');
+    var isMobile = window.__isMobileChatLayout();
+    // Body class drives mobile show/hide via CSS — keep inline display untouched on mobile.
+    if (document.body) {
+      document.body.classList.toggle('chat-visible', visible);
+      document.body.classList.toggle('chat-hidden', !visible);
+    }
+    if (isMobile) {
+      // Clear any inline display from prior desktop toggles; CSS owns visibility now.
+      if (chatSide) chatSide.style.display = '';
+      if (handle)   handle.style.display   = '';
+      if (terminalSide) terminalSide.style.display = '';
+    } else {
+      // Desktop: chat side-by-side; toggle hides chat only.
+      if (chatSide) chatSide.style.display = visible ? '' : 'none';
+      if (handle)   handle.style.display   = visible ? '' : 'none';
+      if (terminalSide) terminalSide.style.display = '';
+    }
+    if (btn) btn.classList.toggle('active', visible);
+    try { localStorage.setItem(window.__chatVisibilityKey(), String(visible)); } catch (_) {}
   };
   window.__toggleChat = function () {
-    var current = localStorage.getItem('chatPanelVisible') !== 'false';
-    window.__applyChatVisible(!current);
+    window.__applyChatVisible(!window.__getChatVisible());
   };
   // Delegated capture-phase listener on document. Survives DOM rebuilds.
   // Triple-fallback to handle Lucide's MutationObserver swapping SVGs mid-click:
@@ -85,14 +124,24 @@
   }, true);
   // Apply visibility once DOM is ready
   function _initChatVisibility() {
-    var v = localStorage.getItem('chatPanelVisible') !== 'false';
-    window.__applyChatVisible(v);
+    window.__applyChatVisible(window.__getChatVisible());
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', _initChatVisibility);
   } else {
     _initChatVisibility();
   }
+  // Re-apply per-layout visibility on viewport crossings
+  (function () {
+    var lastMobile = window.__isMobileChatLayout();
+    window.addEventListener('resize', function () {
+      var nowMobile = window.__isMobileChatLayout();
+      if (nowMobile !== lastMobile) {
+        lastMobile = nowMobile;
+        window.__applyChatVisible(window.__getChatVisible());
+      }
+    });
+  })();
 </script>
 
 <div id="status-bar">
@@ -1537,7 +1586,7 @@
 
               <div id="ac-sched-test-result" style="margin-top:8px;font-size:11px;color:var(--muted);"></div>
 
-              <pre id="ac-sched-status" style="margin-top:10px;padding:8px;background:var(--panel-2,#0d0d1a);border:1px solid var(--border,#2a2a4a);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;color:var(--muted);"></pre>
+              <pre id="ac-sched-status" style="margin-top:10px;padding:8px;background:var(--bg-0);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;color:var(--fg-3);"></pre>
 
               <div class="ac-info-banner" style="margin-top:10px;font-size:11px;">
                 The fire webhook (<code>POST /api/v1/automations/fire/&lt;id&gt;?token=&lt;...&gt;</code>) must be reachable from the chosen provider. Set <code>WEBHOOK_BASE_URL</code> to your public server URL, or fill in the per-provider <code>fire_base_url</code> field below.
@@ -1761,10 +1810,10 @@
       <button id="chat-expand-btn" title="Expand input" class="chat-expand-btn">↗</button>
       <div id="chat-preview-bar" style="display:none;"></div>
       <div id="chat-input-row">
-        <button id="chat-attach-btn" title="Attach files (or drag & drop onto chat)"><i data-lucide="paperclip" style="width:16px;height:16px;"></i></button>
-        <button id="chat-voice-btn" title="Record voice"><i data-lucide="mic" style="width:16px;height:16px;"></i></button>
+        <button id="chat-attach-btn" title="Attach files (or drag & drop onto chat)"><i data-lucide="paperclip" style="width:18px;height:18px;"></i></button>
         <textarea id="chat-input" rows="2" placeholder="Ask the agent... (Enter to send, Shift+Enter for newline)" autocomplete="off"></textarea>
-        <button id="chat-send" disabled>Send</button>
+        <button id="chat-voice-btn" title="Record voice"><i data-lucide="mic" style="width:18px;height:18px;"></i></button>
+        <button id="chat-send" title="Send message" disabled><i data-lucide="send" style="width:18px;height:18px;"></i></button>
         <input type="file" id="chat-file-input" multiple accept="image/*,audio/*,video/*,.pdf,.txt,.md,.csv,.json" hidden>
       </div>
       <div id="chat-footer-drop-overlay">

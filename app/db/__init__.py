@@ -108,16 +108,26 @@ def get_db() -> StorageBackend:
             _db_instance = LocalBackend()
             logger.info("Initialized LocalBackend (SQLite)")
         else:
-            try:
-                from app.db.supabase import SupabaseBackend
-                _db_instance = SupabaseBackend()
-                logger.info("Initialized SupabaseBackend (Cloud)")
-            except Exception as e:
-                logger.warning("Supabase init failed (%s), falling back to local", e)
+            _supa_url = os.environ.get("SUPABASE_URL", "")
+            _supa_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+            if not _supa_url or not _supa_key:
+                logger.info(
+                    "Database mode is 'cloud' but Supabase credentials are not configured "
+                    "— using local backend until credentials are set in the Database tab"
+                )
                 from app.db.local import LocalBackend
                 _db_instance = LocalBackend()
-                _db_mode = "local"
-                logger.info("Fell back to LocalBackend (SQLite)")
+            else:
+                try:
+                    from app.db.supabase import SupabaseBackend
+                    _db_instance = SupabaseBackend()
+                    logger.info("Initialized SupabaseBackend (Cloud)")
+                except Exception as e:
+                    logger.warning("Supabase init failed (%s), falling back to local", e)
+                    from app.db.local import LocalBackend
+                    _db_instance = LocalBackend()
+                    _db_mode = "local"
+                    logger.info("Fell back to LocalBackend (SQLite)")
     
     return _db_instance
 
