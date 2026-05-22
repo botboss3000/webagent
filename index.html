@@ -1372,7 +1372,7 @@
                 <option value="mysql">MySQL</option>
               </select>
 
-              <div id="ac-storage-db-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--panel-2,#0d0d1a);border:1px solid var(--border,#2a2a4a);border-left:3px solid #7aa2f7;border-radius:4px;font-size:11px;line-height:1.55;"></div>
+              <div id="ac-storage-db-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--bg-elev);border:1px solid var(--border);border-left:3px solid #7aa2f7;border-radius:4px;font-size:11px;line-height:1.55;"></div>
 
               <div id="ac-storage-db-fields" style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
 
@@ -1384,7 +1384,7 @@
                 <button id="ac-storage-db-activate" class="ac-btn ac-btn-primary">Activate</button>
               </div>
 
-              <pre id="ac-storage-db-output" style="margin-top:10px;padding:8px;background:var(--panel-2,#0d0d1a);border:1px solid var(--border,#2a2a4a);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;display:none;"></pre>
+              <pre id="ac-storage-db-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;display:none;"></pre>
 
               <details style="margin-top:10px;">
                 <summary style="cursor:pointer;font-size:11px;color:var(--muted);">Quick legacy toggle (cloud ↔ local)</summary>
@@ -1414,7 +1414,7 @@
                 <option value="aws_secrets_manager">AWS Secrets Manager</option>
               </select>
 
-              <div id="ac-storage-secrets-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--panel-2,#0d0d1a);border:1px solid var(--border,#2a2a4a);border-left:3px solid #bb9af7;border-radius:4px;font-size:11px;line-height:1.55;"></div>
+              <div id="ac-storage-secrets-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--bg-elev);border:1px solid var(--border);border-left:3px solid #bb9af7;border-radius:4px;font-size:11px;line-height:1.55;"></div>
 
               <div id="ac-storage-secrets-warning" class="ac-info-banner" style="display:none;margin-top:10px;border-left-color:#f7768e;color:#f7768e;font-size:11px;">
                 Secrets stored as plaintext in main DB. Acceptable for local dev; upgrade to a vault for production.
@@ -1424,7 +1424,7 @@
                 <button id="ac-storage-secrets-test" class="ac-btn">Test</button>
                 <button id="ac-storage-secrets-save" class="ac-btn ac-btn-primary">Activate</button>
               </div>
-              <pre id="ac-storage-secrets-output" style="margin-top:10px;padding:8px;background:var(--panel-2,#0d0d1a);border:1px solid var(--border,#2a2a4a);border-radius:6px;font-size:11px;white-space:pre-wrap;display:none;"></pre>
+              <pre id="ac-storage-secrets-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;display:none;"></pre>
             </div>
 
             <!-- ── Encryption ── -->
@@ -1447,7 +1447,7 @@
                 <option value="kms">KMS-wrapped (cloud KEK — coming soon)</option>
               </select>
 
-              <div id="ac-storage-enc-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--panel-2,#0d0d1a);border:1px solid var(--border,#2a2a4a);border-left:3px solid #7dcfff;border-radius:4px;font-size:11px;line-height:1.55;"></div>
+              <div id="ac-storage-enc-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--bg-elev);border:1px solid var(--border);border-left:3px solid #7dcfff;border-radius:4px;font-size:11px;line-height:1.55;"></div>
 
               <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">
                 <button id="ac-storage-enc-kek-generate" class="ac-btn">Generate KEK</button>
@@ -1460,10 +1460,10 @@
 
               <div style="margin-top:14px;">
                 <div style="font-size:11px;font-weight:600;color:var(--muted);">Per-tenant keys</div>
-                <div id="ac-storage-enc-tenants" style="margin-top:6px;font-size:11px;max-height:200px;overflow-y:auto;border:1px solid var(--border,#2a2a4a);border-radius:6px;padding:6px;display:none;"></div>
+                <div id="ac-storage-enc-tenants" style="margin-top:6px;font-size:11px;max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:6px;display:none;"></div>
               </div>
 
-              <pre id="ac-storage-enc-output" style="margin-top:10px;padding:8px;background:var(--panel-2,#0d0d1a);border:1px solid var(--border,#2a2a4a);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;display:none;"></pre>
+              <pre id="ac-storage-enc-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;display:none;"></pre>
             </div>
 
             <!-- ── Data Migration ── -->
@@ -1482,7 +1482,7 @@
                   <input id="ac-storage-import-input" type="file" accept="application/json" style="display:none;">
                 </label>
               </div>
-              <pre id="ac-storage-migrate-output" style="margin-top:10px;padding:8px;background:var(--panel-2,#0d0d1a);border:1px solid var(--border,#2a2a4a);border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:240px;overflow-y:auto;display:none;"></pre>
+              <pre id="ac-storage-migrate-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:240px;overflow-y:auto;display:none;"></pre>
             </details>
 
           </section>
