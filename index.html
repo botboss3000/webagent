@@ -9,6 +9,19 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<!-- crypto.randomUUID polyfill for insecure contexts (plain HTTP / IP access) -->
+<script>
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID !== 'function') {
+    crypto.randomUUID = function () {
+      // RFC4122 v4 using getRandomValues (works in insecure contexts)
+      const b = crypto.getRandomValues(new Uint8Array(16));
+      b[6] = (b[6] & 0x0f) | 0x40;
+      b[8] = (b[8] & 0x3f) | 0x80;
+      const h = Array.from(b, x => x.toString(16).padStart(2, '0'));
+      return `${h[0]}${h[1]}${h[2]}${h[3]}-${h[4]}${h[5]}-${h[6]}${h[7]}-${h[8]}${h[9]}-${h[10]}${h[11]}${h[12]}${h[13]}${h[14]}${h[15]}`;
+    };
+  }
+</script>
 <!-- Lucide icons (UMD — same version as UI kit) -->
 <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm/css/xterm.css">
@@ -2262,7 +2275,6 @@
 </script>
 <script type="module" src="./ui/js/main.js"></script>
 <script type="module" src="./ui/js/attachments.js"></script>
-<script type="module" src="./ui/js/optimizer.js"></script>
 <script type="module" src="./ui/js/data-sources.js"></script>
 <!-- ── Lucide icons + custom tab-select popup ───────────────── -->
 <script>
