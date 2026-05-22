@@ -1,5 +1,6 @@
 # Code Context
 
+
 ## Files Retrieved
 
 1. `app/db/local.py` (lines 755-840) — `fetch_interactions` and `insert_interaction` for local SQLite backend
