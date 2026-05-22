@@ -631,24 +631,19 @@
 #gh-body {
   flex: 1;
   display: flex;
+  flex-direction: column;
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #2a2a4a transparent;
 }
 #gh-left {
-  width: 55%;
-  min-width: 340px;
-  overflow-y: auto;
   padding: 12px;
-  border-right: 1px solid #2a2a4a;
-  scrollbar-width: thin;
-  scrollbar-color: #2a2a4a transparent;
+  border-bottom: 1px solid #2a2a4a;
 }
 #gh-right {
-  flex: 1;
-  overflow-y: auto;
   padding: 12px;
-  scrollbar-width: thin;
-  scrollbar-color: #2a2a4a transparent;
 }
 .gh-card {
   background: #1a1a2e;
@@ -801,6 +796,17 @@
   border-color: #89ddff;
   color: #0d0d1a;
 }
+.gh-btn-deploy {
+  background: #9ece6a;
+  border-color: #9ece6a;
+  color: #0d0d1a;
+  font-weight: 600;
+}
+.gh-btn-deploy:hover {
+  background: #b9e08c;
+  border-color: #b9e08c;
+  color: #0d0d1a;
+}
 
 /* Inputs */
 .gh-input {
@@ -934,7 +940,7 @@
 
 /* Commit log */
 .gh-log-list {
-  max-height: calc(100vh - 200px);
+  max-height: 400px;
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: #2a2a4a transparent;
@@ -1117,6 +1123,124 @@ body.light-mode .gh-log-list {
 }
 body.light-mode .gh-spinner {
   color: #ff8c42;
+}
+/* GitHub tab — full light mode */
+body.light-mode #gh-viewer {
+  background: #fffaf5;
+}
+body.light-mode #gh-toolbar {
+  background: #ffffff;
+  border-bottom-color: #ffdec4;
+  color: #5c4a4a;
+}
+body.light-mode #gh-branch {
+  color: #cc6a28;
+}
+body.light-mode #gh-branch-display::before {
+  color: #cc6a28;
+}
+body.light-mode #gh-body {
+  scrollbar-color: #ffd4a8 transparent;
+}
+body.light-mode #gh-left {
+  border-bottom-color: #ffdec4;
+}
+body.light-mode .gh-card {
+  background: #ffffff;
+  border-color: #ffdec4;
+}
+body.light-mode .gh-card-title {
+  color: #cc6a28;
+}
+body.light-mode .gh-label {
+  color: #b09580;
+}
+body.light-mode .gh-value {
+  color: #3d2c2e;
+}
+body.light-mode #gh-remote-url {
+  color: #5c4a4a;
+}
+body.light-mode .gh-meta {
+  color: #b09580;
+}
+body.light-mode .gh-hash {
+  color: #cca08a;
+}
+body.light-mode .gh-file-item {
+  border-bottom-color: #ffdec4;
+}
+body.light-mode .gh-file-path {
+  color: #3d2c2e;
+}
+body.light-mode .gh-file-area {
+  color: #b09580;
+}
+body.light-mode .gh-flag-m { background: #e0af6820; color: #b07820; }
+body.light-mode .gh-flag-a { background: #9ece6a20; color: #5a9030; }
+body.light-mode .gh-flag-d { background: #f7768e20; color: #cc4444; }
+body.light-mode .gh-flag-r { background: #7dcfff20; color: #3080c0; }
+body.light-mode .gh-flag-u { background: #b0958020; color: #b09580; }
+body.light-mode .gh-clean-msg {
+  color: #5a9030;
+}
+body.light-mode .gh-btn {
+  background: #fff5eb;
+  border-color: #ffdec4;
+  color: #5c4a4a;
+}
+body.light-mode .gh-btn:hover {
+  background: #ffdec4;
+  border-color: #cc6a28;
+  color: #3d2c2e;
+}
+body.light-mode .gh-btn-primary {
+  background: #ff8c42;
+  border-color: #ff8c42;
+  color: #ffffff;
+}
+body.light-mode .gh-btn-primary:hover {
+  background: #cc6a28;
+  border-color: #cc6a28;
+}
+body.light-mode .gh-btn-deploy {
+  background: #5a9030;
+  border-color: #5a9030;
+  color: #ffffff;
+}
+body.light-mode .gh-btn-deploy:hover {
+  background: #4a7826;
+  border-color: #4a7826;
+  color: #ffffff;
+}
+body.light-mode .gh-input {
+  background: #fffaf5;
+  border-color: #ffdec4;
+  color: #3d2c2e;
+}
+body.light-mode .gh-input:focus {
+  border-color: #ff8c42;
+}
+body.light-mode .gh-input::placeholder {
+  color: #cca08a;
+}
+body.light-mode .gh-log-item {
+  border-bottom-color: #ffdec4;
+}
+body.light-mode .gh-log-msg {
+  color: #5c4a4a;
+}
+body.light-mode .gh-refs {
+  background: #ff8c4215;
+  color: #cc6a28;
+}
+body.light-mode .gh-hint-steps {
+  background: #fffaf5;
+  border-color: #ffdec4;
+  color: #5c4a4a;
+}
+body.light-mode #gh-restricted-overlay {
+  background: #fffaf5;
 }
 body.light-mode .db-th.filtered .th-name {
   color: #cc6a28;
