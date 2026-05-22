@@ -21,6 +21,7 @@ import { initAccount } from './account.js';
 import { initChatResize } from './chatResize.js';
 import { isAuthenticated, showLeftOverlay, hideLeftOverlay } from './left-login.js';
 import './icons.js'; // auto-renders Lucide icons on DOM mutations
+import { randomUUID } from './uuid.js';
 
 bindDom();
 
@@ -33,7 +34,7 @@ async function _initAnonSession() {
 
   let browserId = localStorage.getItem('anon_browser_id');
   if (!browserId) {
-    browserId = crypto.randomUUID();
+    browserId = randomUUID();
     localStorage.setItem('anon_browser_id', browserId);
   }
 
