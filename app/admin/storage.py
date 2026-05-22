@@ -33,6 +33,14 @@ from app.secrets import (
     list_providers as list_secret_providers,
     get_secrets_status,
 )
+from app.encryption import (
+    get_encryption,
+    get_level as get_enc_level,
+    set_level as set_enc_level,
+    get_status as get_enc_status,
+    list_levels as list_enc_levels,
+)
+from app.encryption.vault_keys import get_vault_keys
 from app.db.schema import render_sqlite, render_postgres, render_mysql, DIALECTS
 from app.db.schema.tables import TABLE_ORDER
 
@@ -362,3 +370,175 @@ async def migrate_info(requesting_user_id: str = Query(...)):
         except Exception:
             counts[tbl] = None
     return {"tables": TABLE_ORDER, "counts": counts}
+
+
+# ── Routes: encryption ──────────────────────────────────────────────────────
+
+
+class EncLevelBody(BaseModel):
+    requesting_user_id: str
+    level: str
+    settings: Optional[Dict[str, Any]] = None
+    confirm: bool = False  # required when level == "none" (decrypts data)
+
+
+class EncRotateDekBody(BaseModel):
+    requesting_user_id: str
+    user_id: str
+
+
+class EncSimpleBody(BaseModel):
+    requesting_user_id: str
+
+
+def _enc_safety_check(level: str) -> Optional[str]:
+    """
+    Refuse to enable per-tenant encryption when wrapped DEKs would land in
+    the very DB we're trying to protect (inline_db secrets + remote DB).
+    Returns an error string if unsafe, else None.
+    """
+    if level not in ("field", "kms"):
+        return None
+    secrets_provider = get_secrets_mode()
+    if secrets_provider != "inline_db":
+        return None
+    try:
+        db_cfg = load_config()
+        db_provider = (db_cfg.provider or "sqlite").lower()
+    except Exception:
+        db_provider = "sqlite"
+    if db_provider == "sqlite":
+        return None
+    return (
+        f"Refusing to enable '{level}' encryption: secrets vault is 'inline_db' while "
+        f"the database backend is '{db_provider}'. Wrapped encryption keys would live "
+        f"in the same remote DB they're protecting. Switch the secrets vault to "
+        f"'os_keyring', 'gcp_secret_manager', or 'aws_secrets_manager' first."
+    )
+
+
+@router.get("/encryption/config")
+async def encryption_config(requesting_user_id: str = Query(...)):
+    """Return current encryption level + status + safety warnings."""
+    await _require_admin(requesting_user_id)
+    status = get_enc_status()
+    secrets_provider = get_secrets_mode()
+    try:
+        db_cfg = load_config()
+        db_provider = db_cfg.provider
+    except Exception:
+        db_provider = "sqlite"
+    warn = None
+    if secrets_provider == "inline_db" and db_provider != "sqlite":
+        warn = (
+            "Secrets vault is 'inline_db' but the database backend is remote. "
+            "Per-tenant encryption keys would live in the same DB they protect. "
+            "Switch the secrets vault before enabling encryption."
+        )
+    return {
+        **status,
+        "secrets_provider": secrets_provider,
+        "db_provider": db_provider,
+        "warning": warn,
+    }
+
+
+@router.post("/encryption/level")
+async def encryption_set_level(body: EncLevelBody):
+    """Switch encryption level and reset the cached DB wrapper."""
+    await _require_admin(body.requesting_user_id)
+    if _env_locked():
+        raise HTTPException(status_code=403, detail="Config is env-locked.")
+    if body.level not in list_enc_levels():
+        raise HTTPException(status_code=400, detail=f"Unknown level {body.level}")
+
+    err = _enc_safety_check(body.level)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+
+    if body.level == "none" and not body.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Switching to 'none' leaves existing encrypted rows undecryptable through the "
+                "decorator path. Re-confirm with confirm=true after running "
+                "/admin/storage/encryption/decrypt-all (which restores plaintext)."
+            ),
+        )
+
+    try:
+        set_enc_level(body.level, body.settings or {})
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Force the DB factory to re-evaluate the wrapper.
+    from app.db import reset_db_instance
+    reset_db_instance()
+    return {"ok": True, "level": body.level, "settings": body.settings or {}}
+
+
+@router.post("/encryption/kek/generate")
+async def encryption_generate_kek(body: EncSimpleBody):
+    """Generate (or replace) the active KEK in the vault. Use only when none exists."""
+    await _require_admin(body.requesting_user_id)
+    vkm = get_vault_keys()
+    existing = await vkm.get_kek("active")
+    if existing is not None:
+        return {
+            "ok": False,
+            "error": "An active KEK already exists. Use /encryption/kek/rotate to replace it.",
+        }
+    await vkm.generate_kek()
+    return {"ok": True, "message": "Active KEK generated and stored in vault."}
+
+
+@router.post("/encryption/kek/rotate")
+async def encryption_rotate_kek(body: EncSimpleBody):
+    """Rotate the KEK; re-wraps every DEK in the vault. Row data untouched."""
+    await _require_admin(body.requesting_user_id)
+    vkm = get_vault_keys()
+    try:
+        result = await vkm.rotate_kek()
+        return {"ok": True, **result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/encryption/dek/rotate")
+async def encryption_rotate_dek(body: EncRotateDekBody):
+    """Rotate one tenant's DEK and re-encrypt all of their rows."""
+    await _require_admin(body.requesting_user_id)
+    from app.encryption.migration import rotate_dek
+    return await rotate_dek(body.user_id)
+
+
+@router.post("/encryption/migrate")
+async def encryption_migrate(body: EncSimpleBody):
+    """Walk all tenants and encrypt any plaintext sensitive values. Idempotent."""
+    await _require_admin(body.requesting_user_id)
+    from app.encryption.migration import encrypt_all
+    return await encrypt_all()
+
+
+@router.post("/encryption/decrypt-all")
+async def encryption_decrypt_all(body: EncSimpleBody):
+    """Decrypt every encrypted row back to plaintext. Required before level='none'."""
+    await _require_admin(body.requesting_user_id)
+    from app.encryption.migration import decrypt_all
+    return await decrypt_all()
+
+
+@router.get("/encryption/test")
+async def encryption_test(requesting_user_id: str = Query(...)):
+    """End-to-end health check: encrypt + decrypt a probe value for a synthetic tenant."""
+    await _require_admin(requesting_user_id)
+    enc = get_encryption()
+    return await enc.health()
+
+
+@router.get("/encryption/tenants")
+async def encryption_tenants(requesting_user_id: str = Query(...)):
+    """List every tenant that has key material, with their active + total DEK versions."""
+    await _require_admin(requesting_user_id)
+    vkm = get_vault_keys()
+    return {"tenants": await vkm.list_tenants()}

@@ -440,6 +440,21 @@ TABLES: List[Table] = [
         Column("metadata", "TEXT", nullable=False, default="'{}'"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
+
+    # Tenant key metadata. NO key material lives here — wrapped DEKs live in
+    # the configured SecretsBackend at "wa:dek:<user_id>:v<key_version>".
+    # This table only tracks which versions exist and which is active per tenant.
+    Table("tenant_key_meta", [
+        Column("user_id", "TEXT", nullable=False),
+        Column("key_version", "INTEGER", nullable=False),
+        Column("algo", "TEXT", nullable=False, default="'fernet'"),
+        Column("status", "TEXT", nullable=False, default="'active'"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("retired_at", "TIMESTAMP"),
+    ], constraints=[
+        "PRIMARY KEY (user_id, key_version)",
+        "CHECK (status IN ('active','retired'))",
+    ]),
 ]
 
 
@@ -492,6 +507,7 @@ INDEXES: List[Index] = [
     Index("idx_data_sources_type", "data_sources", "type"),
     Index("idx_agent_data_sources_agent", "agent_data_sources", "agent_id"),
     Index("idx_agent_data_sources_source", "agent_data_sources", "data_source_id"),
+    Index("idx_tenant_key_meta_active", "tenant_key_meta", "user_id, status"),
     Index("idx_doc_chunks_source", "doc_chunks", "data_source_id"),
     Index("idx_doc_chunks_hash", "doc_chunks", "content_hash"),
 ]

@@ -90,22 +90,53 @@ def set_db_mode(mode: str) -> None:
     logger.info("Database mode switched to '%s'", mode)
 
 
+def _maybe_wrap_encryption(backend: StorageBackend) -> StorageBackend:
+    """
+    If the active encryption level is non-trivial, wrap the backend in an
+    EncryptedStorageBackend so sensitive fields are transparently encrypted
+    on write and decrypted on read.
+    """
+    try:
+        from app.encryption import get_level, get_encryption
+        level = get_level()
+        if level == "none":
+            return backend
+        from app.db.interface import EncryptedStorageBackend
+        enc = get_encryption()
+        wrapped = EncryptedStorageBackend(backend, enc)
+        logger.info("Wrapped backend with EncryptedStorageBackend (level=%s)", level)
+        return wrapped
+    except Exception as e:
+        logger.warning("Encryption wrap failed (%s); using backend unwrapped", e)
+        return backend
+
+
+def reset_db_instance() -> None:
+    """Drop the cached backend so the next get_db() rebuilds it.
+
+    Used after changing the encryption level so the wrapper is re-evaluated.
+    """
+    global _db_instance
+    _db_instance = None
+
+
 def get_db() -> StorageBackend:
     """
     Get the current storage backend instance.
-    
+
     Lazily creates the backend based on the current mode.
-    
+
     Returns:
-        StorageBackend implementation (SupabaseBackend or LocalBackend)
+        StorageBackend implementation (SupabaseBackend or LocalBackend), possibly
+        wrapped by EncryptedStorageBackend when encryption is enabled.
     """
     global _db_instance, _db_mode
-    
+
     if _db_instance is None:
         mode = get_mode()
         if mode == "local":
             from app.db.local import LocalBackend
-            _db_instance = LocalBackend()
+            base = LocalBackend()
             logger.info("Initialized LocalBackend (SQLite)")
         else:
             _supa_url = os.environ.get("SUPABASE_URL", "")
@@ -116,19 +147,20 @@ def get_db() -> StorageBackend:
                     "— using local backend until credentials are set in the Database tab"
                 )
                 from app.db.local import LocalBackend
-                _db_instance = LocalBackend()
+                base = LocalBackend()
             else:
                 try:
                     from app.db.supabase import SupabaseBackend
-                    _db_instance = SupabaseBackend()
+                    base = SupabaseBackend()
                     logger.info("Initialized SupabaseBackend (Cloud)")
                 except Exception as e:
                     logger.warning("Supabase init failed (%s), falling back to local", e)
                     from app.db.local import LocalBackend
-                    _db_instance = LocalBackend()
+                    base = LocalBackend()
                     _db_mode = "local"
                     logger.info("Fell back to LocalBackend (SQLite)")
-    
+        _db_instance = _maybe_wrap_encryption(base)
+
     return _db_instance
 
 
