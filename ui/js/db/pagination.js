@@ -5,6 +5,7 @@ import { queryTable, updatePageInfo, cancelEditing, loadPersistedDbState, getSor
 import { fetchTables, renderTableList } from './tables.js';
 import { apiPath } from '../config.js';
 import { authUrl } from '../left-login.js';
+import { randomUUID } from '../uuid.js';
 
 const AUTO_REFRESH_MS = 1000;
 
@@ -183,7 +184,7 @@ export function initDbPaginationAndToolbar() {
         const chatEl = document.getElementById('chat-messages-inner');
         if (chatEl) chatEl.innerHTML = '';
         // Start a fresh session so next chat doesn't load stale history
-        app.currentSessionId = crypto.randomUUID();
+        app.currentSessionId = randomUUID();
         localStorage.setItem('terminalSessionId', app.currentSessionId);
         if (typeof app.populateSessionSelect === 'function') {
           app.populateSessionSelect(app.currentUserId);

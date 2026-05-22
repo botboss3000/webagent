@@ -17,9 +17,10 @@ import {
   onChange as onAccountsChange,
 } from './accounts.js';
 import { showLeftOverlay } from './left-login.js';
+import { randomUUID } from './uuid.js';
 
 export function generateUUID() {
-  return crypto.randomUUID();
+  return randomUUID();
 }
 
 // ── Agent selector ───────────────────────────────────────────────────────────

@@ -1,5 +1,7 @@
 'use strict';
 
+import { randomUUID } from './uuid.js';
+
 export const app = {
   container: null,
   tDot: null,
@@ -104,7 +106,7 @@ export function bindDom() {
   } catch (e) { /* ignore */ }
 
   const storedSessionId = localStorage.getItem('terminalSessionId');
-  app.currentSessionId = storedSessionId || crypto.randomUUID();
+  app.currentSessionId = storedSessionId || randomUUID();
   if (!storedSessionId) {
     localStorage.setItem('terminalSessionId', app.currentSessionId);
   }
