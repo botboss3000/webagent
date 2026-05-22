@@ -147,3 +147,4 @@ If you skip this and the file gets committed, the VM's edited copy will collide 
 ## Misc Directions
 
 - **Console logs:** If adding console logs to investigate issue, remove the logging after the issue is resolved
+- **Git pushes:** Always push to `main` (fast-forward from the working branch via `git push origin HEAD:main`). Do not stop at pushing only to the feature branch — promote to `main` as part of the same step, without asking.
