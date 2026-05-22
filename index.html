@@ -553,35 +553,42 @@
     <div id="tab-app-config" class="tab-content">
       <div id="app-config-container">
 
-        <!-- Sidebar nav -->
-        <nav id="app-config-sidebar">
-          <div class="ac-nav-title">App Config</div>
-          <a class="ac-nav-item" data-section="app-settings" href="#ac-section-app-settings">
-            <i data-lucide="settings-2" class="lucide-icon ac-nav-icon"></i>App Settings
-          </a>
-          <a class="ac-nav-item" data-section="user-management" href="#ac-section-user-management">
-            <i data-lucide="users" class="lucide-icon ac-nav-icon"></i>User Management
-          </a>
-          <a class="ac-nav-item active" data-section="llm" href="#ac-section-llm">
-            <i data-lucide="bot" class="lucide-icon ac-nav-icon"></i>Default LLM
-          </a>
+        <!-- Header -->
+        <header id="app-config-header">
+          <div class="ac-page-title">App Config</div>
+        </header>
 
-          <a class="ac-nav-item" data-section="integrations" href="#ac-section-integrations">
-            <i data-lucide="puzzle" class="lucide-icon ac-nav-icon"></i>Integrations
-          </a>
-          <a class="ac-nav-item" data-section="database" href="#ac-section-database">
-            <i data-lucide="database" class="lucide-icon ac-nav-icon"></i>Database
-          </a>
-          <a class="ac-nav-item" data-section="optimizer" href="#ac-section-optimizer">
-            <i data-lucide="zap" class="lucide-icon ac-nav-icon"></i>Optimizer Stats
-          </a>
-          <a class="ac-nav-item" data-section="git" href="#ac-section-git">
-            <i data-lucide="git-branch" class="lucide-icon ac-nav-icon"></i>Git Providers
-          </a>
-          <a class="ac-nav-item" data-section="automation" href="#ac-section-automation">
-            <i data-lucide="clock" class="lucide-icon ac-nav-icon"></i>Automation
-          </a>
-        </nav>
+        <!-- Tab strip with chevron-scroll carousel -->
+        <div id="app-config-tabs-wrap">
+          <button type="button" id="app-config-tabs-chev-left" class="ac-tabs-chev left" aria-label="Scroll tabs left">&#10094;</button>
+          <div id="app-config-tabs" role="tablist">
+            <button type="button" class="ac-tab" data-section="app-settings" role="tab">
+              <i data-lucide="settings-2" class="lucide-icon ac-tab-icon"></i>App Settings
+            </button>
+            <button type="button" class="ac-tab" data-section="user-management" role="tab">
+              <i data-lucide="users" class="lucide-icon ac-tab-icon"></i>User Management
+            </button>
+            <button type="button" class="ac-tab active" data-section="llm" role="tab">
+              <i data-lucide="bot" class="lucide-icon ac-tab-icon"></i>Default LLM
+            </button>
+            <button type="button" class="ac-tab" data-section="integrations" role="tab">
+              <i data-lucide="puzzle" class="lucide-icon ac-tab-icon"></i>Integrations
+            </button>
+            <button type="button" class="ac-tab" data-section="database" role="tab">
+              <i data-lucide="database" class="lucide-icon ac-tab-icon"></i>Database
+            </button>
+            <button type="button" class="ac-tab" data-section="optimizer" role="tab">
+              <i data-lucide="zap" class="lucide-icon ac-tab-icon"></i>Optimizer Stats
+            </button>
+            <button type="button" class="ac-tab" data-section="git" role="tab">
+              <i data-lucide="git-branch" class="lucide-icon ac-tab-icon"></i>Git Providers
+            </button>
+            <button type="button" class="ac-tab" data-section="automation" role="tab">
+              <i data-lucide="clock" class="lucide-icon ac-tab-icon"></i>Automation
+            </button>
+          </div>
+          <button type="button" id="app-config-tabs-chev-right" class="ac-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
+        </div>
 
         <!-- Scrollable content -->
         <div id="app-config-content">
