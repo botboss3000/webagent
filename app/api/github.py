@@ -184,21 +184,57 @@ async def get_status(request: Request):
         if index_flag == "?" and worktree_flag == "?":
             untracked.append({"path": path})
 
-    # 5. Recent commits
+    # 5. Recent commits — pull from origin/<branch> if remote exists, else HEAD.
+    # Format: full-hash | short-hash | author-name | author-email | relative-date
+    #         | iso-date | refs (decorations) | subject
+    # Separator chosen to be unlikely in any field.
+    _SEP = "\x1f"
+    _log_format = _SEP.join(["%H", "%h", "%an", "%ae", "%ar", "%aI", "%D", "%s"])
+    log_ref = f"origin/{branch}" if remote_url else "HEAD"
+    # Show commits from remote tip back; also include local-only commits ahead of
+    # remote by walking HEAD too (use --branches with explicit range fallback).
+    # Simplest: get unique commits from both HEAD and origin/<branch>, newest first.
+    log_revs = ["HEAD", log_ref] if remote_url else ["HEAD"]
     log_out, _, rc_log = _run_git(
-        ["log", "--oneline", "-20", "--decorate=short"],
+        ["log", f"--format={_log_format}", "-30"] + log_revs,
         timeout=10,
     )
+
+    # 5a. Build set of commits reachable from HEAD (= already pulled to this VM).
+    head_hash = ""
+    head_out, _, _ = _run_git(["rev-parse", "HEAD"], timeout=5)
+    if head_out.strip():
+        head_hash = head_out.strip()
+    pulled_set: set[str] = set()
+    rev_out, _, _ = _run_git(["rev-list", "-100", "HEAD"], timeout=10)
+    if rev_out.strip():
+        pulled_set = {h.strip() for h in rev_out.strip().split("\n") if h.strip()}
+
     commits = []
+    seen_hashes: set[str] = set()
     if rc_log == 0:
-        for line in log_out.strip().split("\n"):
-            line = line.strip()
+        for line in log_out.split("\n"):
+            line = line.rstrip("\n")
             if not line:
                 continue
-            parts = line.split(" ", 1)
+            parts = line.split(_SEP)
+            if len(parts) < 8:
+                continue
+            full_hash, short_hash, author, email, date_rel, date_iso, refs, subject = parts[:8]
+            if full_hash in seen_hashes:
+                continue
+            seen_hashes.add(full_hash)
             commits.append({
-                "hash": parts[0] if parts else "",
-                "message": parts[1] if len(parts) > 1 else "",
+                "hash": short_hash,
+                "full_hash": full_hash,
+                "author": author,
+                "author_email": email,
+                "date_relative": date_rel,
+                "date_iso": date_iso,
+                "refs": refs,
+                "message": subject,
+                "is_pulled": full_hash in pulled_set,
+                "is_head": full_hash == head_hash,
             })
 
     # 6. Ahead/behind
@@ -247,6 +283,67 @@ async def get_status(request: Request):
         "untracked": untracked,
         "commits": commits,
         "last_commit": last_commit,
+    }
+
+
+@router.get("/commit/{commit_hash}")
+async def get_commit_detail(commit_hash: str, request: Request):
+    """Return full info about a single commit (body, files, diff stat)."""
+    # Sanity-check hash format to avoid passing arbitrary args to git
+    if not commit_hash or len(commit_hash) > 64 or not all(c in "0123456789abcdefABCDEF" for c in commit_hash):
+        raise HTTPException(status_code=400, detail="Invalid commit hash")
+
+    _cache_token(_get_token())
+
+    # Metadata + full body
+    _SEP = "\x1f"
+    fmt = _SEP.join(["%H", "%h", "%an", "%ae", "%ai", "%cn", "%ce", "%ci", "%P", "%s", "%b"])
+    meta_out, meta_err, rc_meta = _run_git(
+        ["show", "-s", f"--format={fmt}", commit_hash],
+        timeout=10,
+    )
+    if rc_meta != 0:
+        raise HTTPException(status_code=404, detail=meta_err.strip() or "Commit not found")
+    parts = meta_out.rstrip("\n").split(_SEP)
+    if len(parts) < 11:
+        raise HTTPException(status_code=500, detail="Unexpected git show output")
+    full_hash, short_hash, an, ae, ad, cn, ce, cd, parents, subject, body = parts[:11]
+
+    # File-level diff stat (numstat: added, removed, path per line)
+    stat_out, _, _ = _run_git(
+        ["show", "--numstat", "--format=", commit_hash],
+        timeout=15,
+    )
+    files = []
+    for line in stat_out.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        cols = line.split("\t")
+        if len(cols) >= 3:
+            added = cols[0]
+            removed = cols[1]
+            path = cols[2]
+            files.append({
+                "path": path,
+                "added": 0 if added == "-" else int(added),
+                "removed": 0 if removed == "-" else int(removed),
+                "binary": (added == "-" and removed == "-"),
+            })
+
+    return {
+        "hash": short_hash,
+        "full_hash": full_hash,
+        "author": an,
+        "author_email": ae,
+        "author_date": ad,
+        "committer": cn,
+        "committer_email": ce,
+        "commit_date": cd,
+        "parents": [p for p in parents.split(" ") if p],
+        "subject": subject,
+        "body": body,
+        "files": files,
     }
 
 

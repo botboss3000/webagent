@@ -243,23 +243,109 @@ function renderLog(commits) {
   }
 
   GH.logList.innerHTML = commits.map(c => {
-    // Check for decorated refs like (HEAD -> main, origin/main)
-    let msg = escapeHtml(c.message);
-    let refs = '';
-    const refMatch = msg.match(/^\((.+?)\)\s*/);
-    if (refMatch) {
-      refs = refMatch[1];
-      msg = msg.slice(refMatch[0].length);
-    }
+    const msg = escapeHtml(c.message || '');
+    const refs = (c.refs || '').trim();
+    const author = escapeHtml(c.author || '');
+    const dateRel = escapeHtml(c.date_relative || '');
+    const dateIso = escapeHtml(c.date_iso || '');
+    const stateClass = c.is_head ? 'gh-log-head' : (c.is_pulled ? 'gh-log-pulled' : 'gh-log-unpulled');
+    const stateBadge = c.is_head
+      ? '<span class="gh-log-badge gh-log-badge-head" title="Currently checked out on this VM">HEAD</span>'
+      : (c.is_pulled
+          ? '<span class="gh-log-badge gh-log-badge-pulled" title="Already pulled to this VM">✓ pulled</span>'
+          : '<span class="gh-log-badge gh-log-badge-unpulled" title="On origin but not yet pulled to this VM">↓ not pulled</span>');
 
     return `
-      <div class="gh-log-item">
-        <code class="gh-hash">${escapeHtml(c.hash)}</code>
-        ${refs ? `<span class="gh-refs">${escapeHtml(refs)}</span>` : ''}
-        <span class="gh-log-msg">${msg}</span>
+      <div class="gh-log-item ${stateClass}" data-hash="${escapeHtml(c.full_hash || c.hash)}" data-short="${escapeHtml(c.hash)}" tabindex="0" role="button">
+        <div class="gh-log-row">
+          <code class="gh-hash">${escapeHtml(c.hash)}</code>
+          ${stateBadge}
+          ${refs ? `<span class="gh-refs">${escapeHtml(refs)}</span>` : ''}
+          <span class="gh-log-msg">${msg}</span>
+        </div>
+        <div class="gh-log-meta">
+          <span class="gh-log-author">${author}</span>
+          <span class="gh-log-date" title="${dateIso}">${dateRel}</span>
+        </div>
+        <div class="gh-log-detail" style="display:none;"></div>
       </div>
     `;
   }).join('');
+
+  // Wire row click to toggle detail panel
+  GH.logList.querySelectorAll('.gh-log-item').forEach(row => {
+    row.addEventListener('click', () => toggleCommitDetail(row));
+    row.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        toggleCommitDetail(row);
+      }
+    });
+  });
+}
+
+async function toggleCommitDetail(row) {
+  const panel = row.querySelector('.gh-log-detail');
+  if (!panel) return;
+  const isOpen = panel.style.display !== 'none';
+  if (isOpen) {
+    panel.style.display = 'none';
+    row.classList.remove('gh-log-item-open');
+    return;
+  }
+  row.classList.add('gh-log-item-open');
+  panel.style.display = 'block';
+  // Only fetch once per row
+  if (panel.dataset.loaded === '1') return;
+  panel.innerHTML = '<div class="gh-meta">Loading commit details...</div>';
+  const hash = row.dataset.hash || row.dataset.short;
+  try {
+    const res = await _ghFetch(apiPath(`/api/v1/github/commit/${encodeURIComponent(hash)}`));
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(txt || `HTTP ${res.status}`);
+    }
+    const d = await res.json();
+    panel.innerHTML = renderCommitDetail(d);
+    panel.dataset.loaded = '1';
+  } catch (e) {
+    panel.innerHTML = `<div class="gh-meta" style="color:#f7768e;">Error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderCommitDetail(d) {
+  const filesHtml = (d.files || []).map(f => {
+    const added = f.binary ? '—' : `+${f.added}`;
+    const removed = f.binary ? '—' : `-${f.removed}`;
+    return `
+      <div class="gh-cd-file">
+        <span class="gh-cd-added">${added}</span>
+        <span class="gh-cd-removed">${removed}</span>
+        <span class="gh-cd-path">${escapeHtml(f.path)}</span>
+      </div>
+    `;
+  }).join('') || '<div class="gh-meta">No file changes</div>';
+
+  const bodyHtml = (d.body || '').trim()
+    ? `<pre class="gh-cd-body">${escapeHtml(d.body.trim())}</pre>`
+    : '';
+
+  return `
+    <div class="gh-cd">
+      <div class="gh-cd-meta">
+        <div><span class="gh-cd-label">Full hash</span><code>${escapeHtml(d.full_hash)}</code></div>
+        <div><span class="gh-cd-label">Author</span>${escapeHtml(d.author)} &lt;${escapeHtml(d.author_email)}&gt;</div>
+        <div><span class="gh-cd-label">Authored</span>${escapeHtml(d.author_date)}</div>
+        <div><span class="gh-cd-label">Committer</span>${escapeHtml(d.committer)} &lt;${escapeHtml(d.committer_email)}&gt;</div>
+        <div><span class="gh-cd-label">Committed</span>${escapeHtml(d.commit_date)}</div>
+        <div><span class="gh-cd-label">Parents</span><code>${(d.parents || []).map(p => escapeHtml(p.slice(0,7))).join(', ') || '(none)'}</code></div>
+      </div>
+      <div class="gh-cd-subject">${escapeHtml(d.subject)}</div>
+      ${bodyHtml}
+      <div class="gh-cd-files-title">Files (${(d.files || []).length})</div>
+      <div class="gh-cd-files">${filesHtml}</div>
+    </div>
+  `;
 }
 
 // ── Actions ──

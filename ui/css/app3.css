@@ -946,18 +946,69 @@
   scrollbar-color: #2a2a4a transparent;
 }
 .gh-log-item {
-  padding: 4px 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  padding: 6px 8px;
   font-family: 'Fira Code', Menlo, monospace;
   font-size: 11px;
   border-bottom: 1px solid #0d0d1a;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  transition: background 0.1s;
+}
+.gh-log-item:hover {
+  background: #2a2a4a40;
 }
 .gh-log-item:last-child { border-bottom: none; }
 .gh-log-item .gh-hash {
   color: #3b4261;
   flex-shrink: 0;
+}
+.gh-log-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.gh-log-meta {
+  display: flex;
+  gap: 12px;
+  margin-top: 2px;
+  margin-left: 64px;
+  font-size: 10px;
+  color: #565f89;
+}
+.gh-log-author { font-weight: 600; }
+.gh-log-date { font-style: italic; }
+.gh-log-badge {
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+.gh-log-badge-head {
+  background: #7dcfff;
+  color: #0d0d1a;
+}
+.gh-log-badge-pulled {
+  background: #9ece6a25;
+  color: #9ece6a;
+}
+.gh-log-badge-unpulled {
+  background: #e0af6830;
+  color: #e0af68;
+}
+.gh-log-head {
+  border-left-color: #7dcfff;
+  background: #7dcfff08;
+}
+.gh-log-unpulled {
+  border-left-color: #e0af68;
+}
+.gh-log-pulled {
+  border-left-color: #2a2a4a;
+}
+.gh-log-item-open {
+  background: #2a2a4a30;
 }
 .gh-refs {
   font-size: 9px;
@@ -976,7 +1027,77 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+  min-width: 0;
 }
+
+/* Commit detail expand panel */
+.gh-log-detail {
+  margin-top: 8px;
+  padding: 10px;
+  background: #0d0d1a;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  font-family: 'Fira Code', Menlo, monospace;
+  font-size: 11px;
+  cursor: default;
+}
+.gh-cd-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 16px;
+  margin-bottom: 8px;
+  color: #a9b1d6;
+}
+.gh-cd-meta code {
+  color: #c0caf5;
+  font-size: 10px;
+}
+.gh-cd-label {
+  display: inline-block;
+  width: 90px;
+  color: #565f89;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.gh-cd-subject {
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: #1a1a2e;
+  border-radius: 4px;
+  color: #c0caf5;
+  font-weight: 600;
+  white-space: pre-wrap;
+}
+.gh-cd-body {
+  margin: 6px 0;
+  padding: 6px 8px;
+  background: #1a1a2e;
+  border-radius: 4px;
+  color: #a9b1d6;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+.gh-cd-files-title {
+  margin-top: 10px;
+  margin-bottom: 4px;
+  color: #565f89;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.gh-cd-file {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 11px;
+}
+.gh-cd-added { color: #9ece6a; width: 40px; text-align: right; }
+.gh-cd-removed { color: #f7768e; width: 40px; text-align: right; }
+.gh-cd-path { color: #a9b1d6; word-break: break-all; }
 
 /* ═══════════════════════════════════════════════
    LIGHT MODE OVERRIDES
@@ -1121,6 +1242,79 @@ body.light-mode .gh-restricted-desc {
 body.light-mode .gh-log-list {
   scrollbar-color: #ffd4a8 transparent;
 }
+body.light-mode .gh-log-item {
+  border-bottom-color: #ffe4cf;
+}
+body.light-mode .gh-log-item:hover {
+  background: #fff5eb;
+}
+body.light-mode .gh-log-item .gh-hash {
+  color: #b09580;
+}
+body.light-mode .gh-log-msg {
+  color: #4a3a30;
+}
+body.light-mode .gh-log-meta {
+  color: #b09580;
+}
+body.light-mode .gh-log-head {
+  border-left-color: #cc6a28;
+  background: #ff8c4210;
+}
+body.light-mode .gh-log-unpulled {
+  border-left-color: #d4873a;
+}
+body.light-mode .gh-log-pulled {
+  border-left-color: #ffe4cf;
+}
+body.light-mode .gh-log-item-open {
+  background: #fff0e0;
+}
+body.light-mode .gh-log-badge-head {
+  background: #cc6a28;
+  color: #ffffff;
+}
+body.light-mode .gh-log-badge-pulled {
+  background: #d3eccb;
+  color: #4a7826;
+}
+body.light-mode .gh-log-badge-unpulled {
+  background: #ffe0b8;
+  color: #b06010;
+}
+body.light-mode .gh-refs {
+  background: #cc6a2820;
+  color: #cc6a28;
+}
+body.light-mode .gh-log-detail {
+  background: #fffaf5;
+  border-color: #ffdec4;
+}
+body.light-mode .gh-cd-meta {
+  color: #4a3a30;
+}
+body.light-mode .gh-cd-meta code {
+  color: #3d2c2e;
+}
+body.light-mode .gh-cd-label {
+  color: #b09580;
+}
+body.light-mode .gh-cd-subject {
+  background: #ffffff;
+  color: #3d2c2e;
+  border: 1px solid #ffdec4;
+}
+body.light-mode .gh-cd-body {
+  background: #ffffff;
+  color: #4a3a30;
+  border: 1px solid #ffdec4;
+}
+body.light-mode .gh-cd-files-title {
+  color: #b09580;
+}
+body.light-mode .gh-cd-added { color: #4a7826; }
+body.light-mode .gh-cd-removed { color: #c83a3a; }
+body.light-mode .gh-cd-path { color: #4a3a30; }
 body.light-mode .gh-spinner {
   color: #ff8c42;
 }
