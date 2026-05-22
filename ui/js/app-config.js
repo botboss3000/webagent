@@ -53,6 +53,7 @@ let _providerConfigs = {};
 let _currentProvider = 'openrouter';
 let _parallelProviders = [];
 let _parallelUidCounter = 0;
+let _modelFetchDebounce = null;
 
 // ─────────────────────────────────────────────────────────────────────────
 // ── Sidebar nav + scroll highlighting ────────────────────────────────────
@@ -114,6 +115,14 @@ function _initLLM() {
 
   saveBtn.addEventListener('click', _saveLLM);
   clearBtn?.addEventListener('click', _clearLLM);
+
+  const baseUrlEl = _qs('ac-settings-base-url');
+  const scheduleFetch = () => {
+    if (_modelFetchDebounce) clearTimeout(_modelFetchDebounce);
+    _modelFetchDebounce = setTimeout(() => { _fetchModels(); }, 500);
+  };
+  apiKeyEl?.addEventListener('input', scheduleFetch);
+  baseUrlEl?.addEventListener('input', scheduleFetch);
 
   provEl?.addEventListener('change', () => {
     _saveCurrentProviderToMap(_currentProvider);
@@ -226,16 +235,37 @@ async function _fetchProviderPresets() {
 
 async function _fetchModels() {
   const statusEl = _qs('ac-settings-model-status');
-  if (statusEl) { statusEl.textContent = 'Loading models…'; statusEl.style.color = '#565f89'; }
   const provider = (_currentProvider === '_custom') ? '' : _currentProvider;
+  const typedKey = _qs('ac-settings-api-key')?.value?.trim() || '';
+  const typedBase = _qs('ac-settings-base-url')?.value?.trim()
+    || _providerPresets[_currentProvider]?.base_url
+    || '';
+
+  if (!typedKey) {
+    if (statusEl) {
+      statusEl.textContent = 'Enter an API key to see available models.';
+      statusEl.style.color = '#565f89';
+    }
+    _allModels = [];
+    const dd = _qs('ac-settings-model-dropdown');
+    if (dd) dd.style.display = 'none';
+    return;
+  }
+
+  if (statusEl) { statusEl.textContent = 'Loading models…'; statusEl.style.color = '#565f89'; }
+  const params = new URLSearchParams({ provider });
+  if (typedKey && typedBase) {
+    params.set('api_key', typedKey);
+    params.set('base_url', typedBase);
+  }
   try {
-    const res = await _fetch(apiPath(`/admin/settings/models?provider=${encodeURIComponent(provider)}`));
+    const res = await _fetch(apiPath(`/admin/settings/models?${params.toString()}`));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (data.error) {
       if (statusEl) {
         statusEl.textContent = data.error === 'No API key configured'
-          ? 'Save an API key first to see available models.'
+          ? 'Enter an API key to see available models.'
           : `Error: ${data.error}`;
         statusEl.style.color = '#565f89';
       }
