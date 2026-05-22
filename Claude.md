@@ -148,3 +148,20 @@ If you skip this and the file gets committed, the VM's edited copy will collide 
 
 - **Console logs:** If adding console logs to investigate issue, remove the logging after the issue is resolved
 - **Git pushes:** Always push to `main` (fast-forward from the working branch via `git push origin HEAD:main`). Do not stop at pushing only to the feature branch — promote to `main` as part of the same step, without asking.
+
+## UI features must work in dark AND light mode
+
+Every new UI feature in `ui/` (and any markup in `index.html`) **must be tested and visually correct in both dark mode and light mode** before it is considered done. The app toggles between themes via `body.light-mode`; all theme-sensitive colors are exposed as CSS variables in `ui/css/design-system.css`.
+
+**Rules:**
+
+1. **Never hard-code hex colors for backgrounds, borders, or text** in inline styles, HTML attributes, or JS string templates. Use the design-system variables instead:
+   - Backgrounds: `var(--bg-0)`, `var(--bg-1)`, `var(--bg-2)`, `var(--bg-elev)`, `var(--bg-elev-2)`, `var(--bg-tint)`
+   - Borders: `var(--border)`, `var(--border-soft)`, `var(--border-strong)`
+   - Text: `var(--fg-1)`, `var(--fg-2)`, `var(--fg-3)`, `var(--fg-4)`
+   - Semantic: `var(--success)`, `var(--warning)`, `var(--danger)`, `var(--accent)`
+2. **Never write `var(--foo, #darkhex)` fallbacks.** Either the variable exists in `design-system.css` (no fallback needed) or it doesn't (don't invent one — add it to the design system). A literal dark hex as a fallback silently breaks light mode.
+3. **If a literal hex is unavoidable** (e.g. a brand-coloured icon stripe), pick a hue with adequate contrast against **both** `--bg-0: #0d0d1a` (dark) and `--bg-0: #fffaf5` (light). Test by toggling `body.light-mode` in DevTools.
+4. **Verify before pushing:** open the new feature, toggle `body.light-mode`, confirm every panel/text/border is still legible and visually consistent with neighbouring controls.
+
+If you introduce a new theme-sensitive surface that isn't covered by the existing variables, **add a new variable to both the default and `body.light-mode` blocks of `design-system.css`** in the same change — don't sprinkle hex codes through feature code.

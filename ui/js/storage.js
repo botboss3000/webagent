@@ -65,15 +65,15 @@ function out(elt, text, ok) {
 
 // ── Trade-off notes shown beneath each selector ────────────────────────────
 
-const GOOD = '#9ece6a';
-const BAD = '#f7768e';
+const GOOD = 'var(--success)';
+const BAD = 'var(--danger)';
 
 function notesHtml(pros, cons, extra) {
-  const li = (items, color) => items.map(t =>
-    `<li style="margin:1px 0;"><span style="color:${color};font-weight:600;">${color === GOOD ? '+' : '−'}</span> ${t}</li>`
+  const li = (items, color, sign) => items.map(t =>
+    `<li style="margin:1px 0;"><span style="color:${color};font-weight:600;">${sign}</span> ${t}</li>`
   ).join('');
   const extraLine = extra ? `<div style="margin-top:6px;opacity:0.75;font-style:italic;">${extra}</div>` : '';
-  return `<ul style="margin:0;padding-left:14px;list-style:none;">${li(pros, GOOD)}${li(cons, BAD)}</ul>${extraLine}`;
+  return `<ul style="margin:0;padding-left:14px;list-style:none;">${li(pros, GOOD, '+')}${li(cons, BAD, '−')}</ul>${extraLine}`;
 }
 
 const DB_NOTES = {
@@ -234,7 +234,7 @@ function renderFields(m, provider, existing) {
       if (spec.placeholder) input.placeholder = spec.placeholder;
     }
     input.dataset.fieldKey = spec.key;
-    input.style.cssText = 'width:100%;padding:6px 8px;border:1px solid var(--border,#2a2a4a);border-radius:4px;font-size:12px;background:transparent;color:inherit;';
+    input.style.cssText = 'width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;font-size:12px;background:transparent;color:inherit;';
     if (existing && existing[spec.key] != null) input.value = existing[spec.key];
     wrap.appendChild(input);
     m.fields.appendChild(wrap);
@@ -326,7 +326,7 @@ async function loadTenants(m) {
   m.encTenants.innerHTML = '';
   for (const t of tenants) {
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border,#2a2a4a);';
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border);';
     const label = document.createElement('span');
     label.style.cssText = 'flex:1;font-family:monospace;';
     label.textContent = `${t.user_id} — active v${t.active_version ?? '–'} (${t.total_versions} versions)`;
