@@ -32,7 +32,7 @@ A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional *
 - **Agent selector** — Dropdown in the chat header (next to session selector) lets users pick which agent to chat with. Shows system templates and custom agents. Switching agent auto-creates a new session (sessions are bound to a single agent). Selection persists in `localStorage`.
 - **Session selector** — Custom dropdown in the chat header. Each row has a 3-dot kebab menu with **Pin** (sticks the session to the top of the list, persisted in `sessions.pinned`), **Rename** (inline edit), and **Delete**. A `+` button next to the dropdown starts a new session. Pinned sessions sort above the rest, then by `created_at DESC`.
 - **Agent automations (scheduled tasks)** — Each agent card has an **Automation** tab where the user writes free-form English describing scheduled work (e.g. *"every weekday at 9am, summarize my unread Telegram messages and send the summary via Telegram"*). On save, the LLM parses the file into structured task rows stored in the **`agent_automations`** table (label, cron expression, prompt, channel, recipient, silent flag, next_run_at). A scheduler backend (default: **`LocalScheduler`** — in-process asyncio poll loop, every 30s) fires due rows by creating a fresh session under the agent owner and calling **`run_agent_loop_buffered()`**, then dispatches the reply via the chosen channel plugin (`telegram`, `sms`, `whatsapp`, `slack`, `discord`, `email`) or runs silently. **Remote backends** push each automation to an external cron service whose target is the public webhook **`POST /api/v1/automations/fire/{automation_id}?token=<fire_token>`**; supported providers: **`google_cloud`** (Cloud Scheduler via service-account JSON + JWT auth), **`cronjob_org`** (cron-job.org REST API), **`generic_webhook`** (POSTs job specs to an admin-supplied URL — wire it to AWS EventBridge, n8n, self-hosted cron, etc.). Backend choice is configured in **App Config → Automation**, persisted to **`scheduler_config.json`** under a per-provider settings map. Endpoints: **`GET/POST /api/v1/agents/{id}/automations`**, **`POST /api/v1/agents/{id}/automations/parse`**, **`PATCH /api/v1/agents/{id}/automations/{task_id}`**, **`POST /api/v1/agents/{id}/automations/{task_id}/run-now`**, **`POST /api/v1/automations/fire/{id}?token=...`** (remote webhook target), **`GET/POST /admin/settings/scheduler`**, **`GET /admin/settings/scheduler/providers`** (field schema for the dynamic config form), **`POST /admin/settings/scheduler/test`** (provider Test Connection), **`POST /admin/settings/scheduler/sync`** (re-push all jobs), **`GET /admin/scheduler/status`**. Cron expressions require **`croniter`**; Google Cloud Scheduler integration uses **`httpx`** + the standard-library + the existing **`cryptography`** dep for RS256 JWTs (no extra `google-cloud-*` packages). Local scheduler keeps state in the DB so it resumes after restart; for stateless Cloud Run deployments switch to a remote provider so jobs survive container recycles.
-- **Web UI** — Main page at **`/index.html`** (chat, DB viewer, terminal, stream/loop, agents). **`/terminal`** redirects to **`/index.html`**.
+- **Web UI** — Main page at **`/`** (also reachable at **`/index.html`**): chat, DB viewer, terminal, stream/loop, agents.
 - **Minimal tester** — **`GET /test`** serves **`ui/test_interface.html`** (same origin as the API).
 
 ## Architecture and module map
@@ -81,7 +81,7 @@ Events are routed on the frontend:
 
 | Module | Role |
 |--------|------|
-| **`main.py`** | FastAPI app: routers, CORS, no-cache for `/ui/` and `/index.html`, **`StaticFiles`** for `/ui/` and `/screenshots`, **`GET /` → redirect to `/index.html`**, **`GET /index.html`**, **`GET /test`**, **`GET /health`**, favicon from `ui/favicon.svg`, **`POST /api/v1/restart`**, shutdown (browser + terminal). |
+| **`main.py`** | FastAPI app: routers, CORS, no-cache for `/`, `/ui/`, and `/index.html`, **`StaticFiles`** for `/ui/` and `/screenshots`, **`GET /`** serves the main UI (`index.html`), **`GET /index.html`** (alias for legacy bookmarks), **`GET /test`**, **`GET /health`**, favicon from `ui/favicon.svg`, **`POST /api/v1/restart`**, shutdown (browser + terminal). |
 | **`api/chat.py`** | **`POST /api/v1/chat`** (buffered), **`POST /api/v1/chat/stream`** (SSE), **`POST /api/v1/chat/interrupt`** — context load, memory search, prompt build, attachment resolution, history rebuild, agent loop execution. Also: **listener registries** — `register_user_listener()` / `register_visualizer_listener()` for per-user and per-session WebSocket broadcasting. |
 | **`api/agent.py`** | **`WebSocket /api/v1/agent/ws`** — **receive-only per-user subscriber**. Client sends `{"mode": "user_subscriber", "user_id": "..."}` to register. Server streams all agent events (stream, response, tool_call, tool_result, pipeline, db) for all of that user's sessions. No message processing — all sends go through HTTP POST. |
 | **`api/uploads.py`** | **`POST /api/v1/upload`** — multipart file upload (images, audio, video, PDF, text). **`GET /api/v1/upload/{id}`** — metadata lookup. **`DELETE /api/v1/upload/{id}`** — delete. File bytes stored via `app/db/attachments/`. |
@@ -274,9 +274,9 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 
 | URL | Purpose |
 |-----|---------|
-| `http://localhost:8080/` | Redirects to **`/index.html`** (main UI) |
+| `http://localhost:8080/` | Main UI |
 | `http://localhost:8080/docs` | Swagger |
-| `http://localhost:8080/index.html` | Full UI |
+| `http://localhost:8080/index.html` | Main UI (legacy alias) |
 | `http://localhost:8080/test` | Minimal HTML chat (`ui/test_interface.html`) |
 | `http://localhost:8080/uploads/` | Served uploaded files directory |
 | `http://localhost:8080/visuals/users/<uid>/<slug>.html` | Served AutoAgent page output (ephemeral) |

@@ -24,7 +24,7 @@ apply_provider_config()
 import traceback
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -32,7 +32,7 @@ class NoCacheMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
         p = request.url.path
-        if p.startswith("/ui/") or p == "/index.html":
+        if p.startswith("/ui/") or p == "/index.html" or p == "/":
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
@@ -249,10 +249,12 @@ async def shutdown():
         pass
 
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    """Open the main web UI in a browser. API: `/docs`, `/health`."""
-    return RedirectResponse(url="/index.html", status_code=307)
+    """Serve the main web UI at the root. API: `/docs`, `/health`."""
+    if not _ROOT_INDEX_HTML.is_file():
+        return HTMLResponse("<p>Missing index.html</p>", status_code=404)
+    return HTMLResponse(content=_ROOT_INDEX_HTML.read_text(encoding="utf-8"))
 
 
 @app.get("/index.html", response_class=HTMLResponse, include_in_schema=False)
@@ -306,11 +308,6 @@ async def test_interface():
     test_html = _APP_DIR.parent / "ui" / "test_interface.html"
     return HTMLResponse(content=test_html.read_text(encoding="utf-8"))
 
-
-@app.get("/terminal")
-async def terminal_legacy_redirect():
-    """Old bookmark path; redirect to the main UI."""
-    return RedirectResponse(url="/index.html", status_code=307)
 
 # ── Start-up: register Telegram webhook ──
 @app.on_event("startup")

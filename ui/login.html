@@ -161,7 +161,7 @@ body {
   </form>
 
   <div class="skip-link">
-    <a href="/index.html">Skip — use chat anonymously</a>
+    <a href="/">Skip — use chat anonymously</a>
   </div>
 </div>
 
@@ -189,7 +189,7 @@ body {
       localStorage.setItem('auth_username', data.username);
       localStorage.setItem('auth_user_id', data.user_id);
       localStorage.setItem('auth_display_name', data.display_name);
-      window.location.href = '/index.html';
+      window.location.href = '/';
       return;
     }
     localStorage.removeItem('remember_token');
@@ -240,7 +240,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
       localStorage.removeItem('remember_token');
     }
 
-    window.location.href = '/index.html';
+    window.location.href = '/';
   } catch (err) {
     error.textContent = 'Connection error. Is the server running?';
     error.style.display = 'block';
