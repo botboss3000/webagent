@@ -1372,6 +1372,8 @@
                 <option value="mysql">MySQL</option>
               </select>
 
+              <div id="ac-storage-db-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--panel-2,#0d0d1a);border:1px solid var(--border,#2a2a4a);border-left:3px solid #7aa2f7;border-radius:4px;font-size:11px;line-height:1.55;"></div>
+
               <div id="ac-storage-db-fields" style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
 
               <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">
@@ -1412,6 +1414,8 @@
                 <option value="aws_secrets_manager">AWS Secrets Manager</option>
               </select>
 
+              <div id="ac-storage-secrets-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--panel-2,#0d0d1a);border:1px solid var(--border,#2a2a4a);border-left:3px solid #bb9af7;border-radius:4px;font-size:11px;line-height:1.55;"></div>
+
               <div id="ac-storage-secrets-warning" class="ac-info-banner" style="display:none;margin-top:10px;border-left-color:#f7768e;color:#f7768e;font-size:11px;">
                 Secrets stored as plaintext in main DB. Acceptable for local dev; upgrade to a vault for production.
               </div>
@@ -1443,9 +1447,7 @@
                 <option value="kms">KMS-wrapped (cloud KEK — coming soon)</option>
               </select>
 
-              <div class="ac-hint" style="margin-top:6px;font-size:11px;">
-                Field-level encrypts <code>auth_elements.secret_ref</code> with a per-tenant data key. Wrapped DEKs live in the configured Secrets Vault — never in the application DB. Rotation of one tenant's key never touches others.
-              </div>
+              <div id="ac-storage-enc-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--panel-2,#0d0d1a);border:1px solid var(--border,#2a2a4a);border-left:3px solid #7dcfff;border-radius:4px;font-size:11px;line-height:1.55;"></div>
 
               <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">
                 <button id="ac-storage-enc-kek-generate" class="ac-btn">Generate KEK</button>

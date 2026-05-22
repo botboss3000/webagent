@@ -45,6 +45,9 @@ function bindMount(prefix) {
     encDecryptAll: qs(`${prefix}enc-decrypt-all`),
     encTenants: qs(`${prefix}enc-tenants`),
     encOutput: qs(`${prefix}enc-output`),
+    dbNotes: qs(`${prefix}db-notes`),
+    secretsNotes: qs(`${prefix}secrets-notes`),
+    encNotes: qs(`${prefix}enc-notes`),
     exportBtn: qs(`${prefix}export-btn`),
     importInput: qs(`${prefix}import-input`),
     migrateOutput: qs(`${prefix}migrate-output`),
@@ -58,6 +61,111 @@ function out(elt, text, ok) {
   elt.style.display = 'block';
   elt.style.color = ok === true ? '#9ece6a' : ok === false ? '#f7768e' : '';
   elt.textContent = typeof text === 'string' ? text : JSON.stringify(text, null, 2);
+}
+
+// ── Trade-off notes shown beneath each selector ────────────────────────────
+
+const GOOD = '#9ece6a';
+const BAD = '#f7768e';
+
+function notesHtml(pros, cons, extra) {
+  const li = (items, color) => items.map(t =>
+    `<li style="margin:1px 0;"><span style="color:${color};font-weight:600;">${color === GOOD ? '+' : '−'}</span> ${t}</li>`
+  ).join('');
+  const extraLine = extra ? `<div style="margin-top:6px;opacity:0.75;font-style:italic;">${extra}</div>` : '';
+  return `<ul style="margin:0;padding-left:14px;list-style:none;">${li(pros, GOOD)}${li(cons, BAD)}</ul>${extraLine}`;
+}
+
+const DB_NOTES = {
+  sqlite: notesHtml(
+    ['Zero ops, zero latency, zero cost, works offline.', 'Single-file backup (just copy <code>local.db</code>).', 'Only backend that supports the full-DB SQLCipher encryption option.'],
+    ['Single host — no horizontal scale or multi-instance deploys.', 'Weak concurrent-write story (one writer at a time).', 'You own backups, retention, and at-rest disk encryption.'],
+    'Best for: personal use, dev, embedded/edge deployments.'
+  ),
+  supabase: notesHtml(
+    ['Managed Postgres with backups, PITR, encryption at rest, generous free tier.', 'Survives app-host death; multi-instance deploys share the same DB.', 'Auth/Storage/Realtime available if you adopt more of the Supabase stack later.'],
+    ['Network latency on every query (cheap from same region).', 'Egress costs if your app runs outside Supabase.', 'Adds an external dependency and credentials to manage.'],
+    'Best for: hosted multi-user deployments where you want batteries-included Postgres.'
+  ),
+  postgres: notesHtml(
+    ['Connect to any Postgres you own — self-hosted, RDS, Azure, on-prem.', 'Strongest write/concurrency story and full SQL feature set.', 'Extensions, replication, logical decoding all available.'],
+    ['You operate it: provisioning, backups, upgrades, monitoring.', 'Needs reachable network and credentials.', 'No managed PITR or HA unless you build it.'],
+    'Best for: teams with existing Postgres infrastructure and DBA capacity.'
+  ),
+  gcp_cloud_sql: notesHtml(
+    ['Fully managed Postgres with HA, automated backups, PITR, IAM auth.', 'Tight integration if your app runs on Cloud Run or GKE.', 'Private IP / IAM auth removes password-handling burden.'],
+    ['Always-on billing — no scale-to-zero, smallest tier still costs monthly.', 'Needs Cloud SQL Proxy or private IP for safe connectivity.', 'Vendor lock-in to GCP networking & IAM.'],
+    'Best for: GCP-native deployments where uptime matters more than idle cost.'
+  ),
+  neon: notesHtml(
+    ['Serverless Postgres with scale-to-zero — cheap when idle, autoscales under load.', 'Database branching for preview/test environments.', 'Pure Postgres wire protocol — trivial to migrate to or from.'],
+    ['Cold-start latency on the first query after idling.', 'Connection pooling is mandatory for serverless app deployments.', 'Newer vendor — smaller ecosystem and tooling than RDS/Cloud SQL.'],
+    'Best for: bursty workloads, preview environments, indie projects watching cost.'
+  ),
+  mysql: notesHtml(
+    ['Familiar engine, hosted everywhere (PlanetScale, RDS, DigitalOcean, etc.).', 'Excellent read scaling with replicas.', 'Mature tooling and operator experience.'],
+    ['No JSONB or Postgres-specific FTS features used elsewhere in webAgent.', 'Schema migrations here are tested primarily against SQLite + Postgres — expect minor friction.', 'Some advanced indexing patterns differ from Postgres.'],
+    'Best for: orgs already standardised on MySQL.'
+  ),
+};
+
+const SECRETS_NOTES = {
+  inline_db: notesHtml(
+    ['Zero setup — works out of the box on any DB backend.'],
+    ['Secrets stored as plaintext in <code>auth_elements.secret_ref</code>.', 'Anyone with DB read access sees every OAuth token and API key.', 'Combining this with field-level encryption defeats the purpose: keys and ciphertext live in the same DB.'],
+    'Acceptable for local dev only. Upgrade to a real vault before enabling encryption or going to production.'
+  ),
+  env: notesHtml(
+    ['Read-only and inert — secrets injected by your deployment environment.', 'Excellent fit for Docker / Cloud Run / Kubernetes with sealed secrets.', 'Survives container restarts; no app-side write path to compromise.'],
+    ['Read-only: the app cannot store new secrets (OAuth callbacks will fail to persist tokens).', 'You manage rotation outside the app.', 'Not suitable as the keystore for the encryption feature, which needs to write per-tenant DEKs.'],
+    'Best for: read-only secret injection in immutable deployments.'
+  ),
+  os_keyring: notesHtml(
+    ['Uses the OS credential store: Windows Credential Manager, macOS Keychain, freedesktop Secret Service.', 'Strong single-host security at zero cost.', 'Recommended pairing with SQLite + field-level encryption on a workstation.'],
+    ['Tied to one machine — multi-instance deploys cannot share secrets.', 'Requires a logged-in user session on Linux (Secret Service / D-Bus).', 'No audit log, no programmatic rotation.'],
+    'Best for: single-host installations on a laptop, workstation, or dedicated server.'
+  ),
+  gcp_secret_manager: notesHtml(
+    ['Managed, audit-logged, IAM-controlled, versioned secrets in GCP.', 'Pairs naturally with Cloud Run / GKE workloads via workload identity.', 'Supports automatic version pinning and rotation policies.'],
+    ['Per-secret-version pricing plus per-access cost.', 'Requires GCP credentials wherever the app runs (even if not deployed on GCP).', 'Cross-region latency if your app is outside GCP.'],
+    'Best for: GCP-hosted production deployments.'
+  ),
+  aws_secrets_manager: notesHtml(
+    ['Managed, audit-logged, IAM-controlled secrets with built-in rotation Lambdas.', 'Best fit for ECS / Lambda / EC2 deployments via IAM roles.', 'Integrates with CloudTrail for full access auditing.'],
+    ['Per-secret monthly cost plus per-API-call cost.', 'Requires AWS credentials wherever the app runs.', 'Rotation Lambdas need to be written per provider.'],
+    'Best for: AWS-hosted production deployments.'
+  ),
+};
+
+const ENC_NOTES = {
+  none: notesHtml(
+    ['No setup, no key management, full performance.'],
+    ['OAuth tokens and API keys are plaintext in the DB.', 'Anyone with DB read access can immediately use your tenants\' credentials.', 'A leaked database backup leaks every secret with it.'],
+    'Acceptable only for ephemeral dev. Switch to <strong>field</strong> before going to production.'
+  ),
+  field: notesHtml(
+    ['Per-tenant Fernet encryption on <code>auth_elements.secret_ref</code>.', 'Wrapped DEKs live in the Secrets Vault — never in the application DB.', 'One tenant\'s key compromise affects only that tenant\'s rows.', 'Works on every database backend.'],
+    ['Adds ~1ms vault round-trip on the first read per tenant (cached after).', 'Requires a real vault provider (not <strong>inline_db</strong>) — otherwise keys and ciphertext live in the same DB.', 'Schema migration adds a <code>tenant_key_meta</code> table.'],
+    'Recommended default for any deployment with real users.'
+  ),
+  full_db: notesHtml(
+    ['Encrypts the entire SQLite file with SQLCipher — every column, every index, every page.', 'Strong defense if the laptop or server disk is lost or stolen.', 'Stack with field-level for both whole-file and per-tenant protection.'],
+    ['SQLite only — disabled when the active DB backend is anything else.', 'Requires the optional <code>pysqlcipher3</code> package.', 'Single passphrase — not tenant-isolated on its own.', 'You manage the passphrase storage outside the app.'],
+    'Best for: single-host SQLite deployments where physical device loss is in the threat model.'
+  ),
+  kms: notesHtml(
+    ['KEK lives in cloud KMS (GCP / AWS) and never leaves the HSM boundary.', 'Per-tenant DEKs wrapped by KMS; full audit log of every unwrap.', 'Best-practice key management for regulated environments.'],
+    ['Not yet implemented — UI placeholder for the next release.', 'Will require KMS API credentials at app startup.', 'Adds per-unwrap KMS cost (small, but non-zero).'],
+    'Coming soon. Use <strong>field</strong> with a cloud secret manager today for similar guarantees.'
+  ),
+};
+
+function renderNotes(elt, map, key) {
+  if (!elt) return;
+  const html = map[key];
+  if (!html) { elt.style.display = 'none'; return; }
+  elt.style.display = 'block';
+  elt.innerHTML = html;
 }
 
 // ── Provider field templates ───────────────────────────────────────────────
@@ -167,9 +275,11 @@ function applyState(m, state) {
   const dbCfg = state.db.active || {};
   m.provider.value = dbCfg.provider || 'sqlite';
   renderFields(m, m.provider.value, dbCfg);
+  renderNotes(m.dbNotes, DB_NOTES, m.provider.value);
   m.activeBadge.textContent = `active: ${dbCfg.provider || 'sqlite'}`;
   const sec = state.secrets || {};
   m.secretsProv.value = sec.provider || 'inline_db';
+  renderNotes(m.secretsNotes, SECRETS_NOTES, m.secretsProv.value);
   m.secretsBadge.textContent = `active: ${sec.provider || 'inline_db'}`;
   m.secretsWarn.style.display = (sec.provider === 'inline_db') ? 'block' : 'none';
   const lock = !!state.env_locked;
@@ -188,6 +298,7 @@ async function loadEncryption(m) {
   }
   const s = await res.json();
   m.encLevel.value = s.level || 'none';
+  renderNotes(m.encNotes, ENC_NOTES, m.encLevel.value);
   m.encBadge.textContent = `active: ${s.level || 'none'}`;
   m.encVaultWarn.style.display = s.warning ? 'block' : 'none';
   if (s.warning) m.encVaultWarn.textContent = s.warning;
@@ -255,7 +366,22 @@ function buildBody(m, extra) {
 function wire(m) {
   if (!m) return;
 
-  m.provider.addEventListener('change', () => renderFields(m, m.provider.value, null));
+  m.provider.addEventListener('change', () => {
+    renderFields(m, m.provider.value, null);
+    renderNotes(m.dbNotes, DB_NOTES, m.provider.value);
+  });
+
+  if (m.secretsProv) {
+    m.secretsProv.addEventListener('change', () => {
+      renderNotes(m.secretsNotes, SECRETS_NOTES, m.secretsProv.value);
+    });
+  }
+
+  if (m.encLevel) {
+    m.encLevel.addEventListener('change', () => {
+      renderNotes(m.encNotes, ENC_NOTES, m.encLevel.value);
+    });
+  }
 
   m.btnTest && m.btnTest.addEventListener('click', async () => {
     out(m.output, 'Testing connection...', null);
@@ -425,6 +551,12 @@ function wire(m) {
 export function initStorageUi() {
   PAGE = bindMount('ac-storage-');
   wire(PAGE);
+
+  if (PAGE) {
+    renderNotes(PAGE.dbNotes, DB_NOTES, PAGE.provider && PAGE.provider.value);
+    renderNotes(PAGE.secretsNotes, SECRETS_NOTES, PAGE.secretsProv && PAGE.secretsProv.value);
+    renderNotes(PAGE.encNotes, ENC_NOTES, PAGE.encLevel && PAGE.encLevel.value);
+  }
 
   if (PAGE && PAGE.root) {
     window.__refreshStorageSection = () => {
