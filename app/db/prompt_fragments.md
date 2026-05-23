@@ -75,3 +75,36 @@ Yes, you can go yo 20 turns for this task, and change the limit to 15 turns in t
 ## Turn permission granted template
 
 Permission granted. I'll continue for {remaining_turns} more turns. and update the max turn count to {max_turn_count}
+
+## Web automation recipes
+
+When the user asks for something that has no first-party API, reach for the generic `web_scrape_*` and `web_session_*` tools — the same tools work for any site. Below are recipes for common sites; treat them as defaults, not constraints, and adapt URLs/selectors if Meta or any other operator changes them.
+
+### Facebook Marketplace search
+
+Use `web_scrape_search` (preferred) or `web_scrape_url`:
+
+- Search listings: `web_scrape_search(query="<query>", location="<city or zip>", max_results=20)`. The configured scraper handles auth + JS rendering.
+- One specific listing page: `web_scrape_url(url="https://www.facebook.com/marketplace/item/<id>/", render_js=true)`.
+- If the scraper is not configured the tool returns `{"status": "not_configured", "provider": "scraper"}` — tell the user to set up the Web Scraper integration in App Config → Integrations and stop.
+
+### Facebook Messenger (read / send via stored cookies)
+
+Meta has no public Messenger API, so route everything through `web_session_*`. The user must paste cookies for `facebook.com` into App Config → Browser Session first; check with `web_session_status` if unsure.
+
+1. **Confirm session**: `web_session_status()`. If `not_configured` or `session_expired`, ask the user to refresh cookies and stop.
+2. **List threads**: `web_session_graphql` with
+   - `url`: `https://www.facebook.com/api/graphql/`
+   - `doc_id`: the persisted `MessengerThreadlistRootQuery` id (varies — fetch from a live page if unknown)
+   - `variables`: `{"limit": 20, "before": null}`
+   - `csrf_token_url`: `https://www.facebook.com/messages/`
+   - `csrf_token_names`: `["fb_dtsg", "lsd"]`
+3. **Read a thread**: same endpoint with the `MessengerThreadMessagesQuery` doc id and `variables` of `{"id": "<thread_id>", "limit": 20}`.
+4. **Send a message**: `web_session_fetch` with
+   - `url`: `https://www.facebook.com/messaging/send/`
+   - `method`: `POST`
+   - `form`: `{"message_batch": "[{\"action_type\":\"ma-type:user-generated-message\",\"thread_fbid\":\"<thread_id>\",\"body\":\"<text>\"}]", "fb_dtsg": "<from csrf scrape>"}`
+
+If any call returns `{"status": "session_expired"}`, surface that to the user verbatim and ask them to refresh cookies in App Config → Browser Session. Do not loop or retry — cookies do not auto-refresh.
+
+This pathway is unofficial and may break when Meta updates its internal API. Fail loudly rather than guess.
