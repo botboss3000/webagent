@@ -82,7 +82,7 @@ Events are routed on the frontend:
 
 | Module | Role |
 |--------|------|
-| **`main.py`** | FastAPI app: routers, CORS, no-cache for `/`, `/ui/`, and `/index.html`, **`StaticFiles`** for `/ui/` and `/screenshots`, **`GET /`** serves the main UI (`index.html`), **`GET /index.html`** (alias for legacy bookmarks), **`GET /test`**, **`GET /health`**, favicon from `ui/favicon.svg`, **`POST /api/v1/restart`**, shutdown (browser + terminal). |
+| **`main.py`** | FastAPI app: routers, CORS, no-cache for `/`, `/ui/`, and `/index.html`, **`StaticFiles`** for `/ui/` and `/screenshots`, **`GET /`** serves the main UI (`index.html`), **`GET /index.html`** (alias for legacy bookmarks), **`GET /test`**, **`GET /privacy`** (serves `ui/privacy.html`), **`GET /tos`** (serves `ui/tos.html`), **`GET /health`**, favicon from `ui/favicon.svg`, **`POST /api/v1/restart`**, shutdown (browser + terminal). |
 | **`api/chat.py`** | **`POST /api/v1/chat`** (buffered), **`POST /api/v1/chat/stream`** (SSE), **`POST /api/v1/chat/interrupt`** — context load, memory search, prompt build, attachment resolution, history rebuild, agent loop execution. Also: **listener registries** — `register_user_listener()` / `register_visualizer_listener()` for per-user and per-session WebSocket broadcasting. |
 | **`api/agent.py`** | **`WebSocket /api/v1/agent/ws`** — **receive-only per-user subscriber**. Client sends `{"mode": "user_subscriber", "user_id": "..."}` to register. Server streams all agent events (stream, response, tool_call, tool_result, pipeline, db) for all of that user's sessions. No message processing — all sends go through HTTP POST. |
 | **`api/uploads.py`** | **`POST /api/v1/upload`** — multipart file upload (images, audio, video, PDF, text). **`GET /api/v1/upload/{id}`** — metadata lookup. **`DELETE /api/v1/upload/{id}`** — delete. File bytes stored via `app/db/attachments/`. |
@@ -280,6 +280,8 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 | `http://localhost:8080/docs` | Swagger |
 | `http://localhost:8080/index.html` | Main UI (legacy alias) |
 | `http://localhost:8080/test` | Minimal HTML chat (`ui/test_interface.html`) |
+| `http://localhost:8080/privacy` | Privacy Policy page (`ui/privacy.html`, public, no auth) |
+| `http://localhost:8080/tos` | Terms of Service page (`ui/tos.html`, public, no auth) |
 | `http://localhost:8080/uploads/` | Served uploaded files directory |
 | `http://localhost:8080/visuals/users/<uid>/<slug>.html` | Served AutoAgent page output (ephemeral) |
 | `http://localhost:8080/api/v1/pages?user_id=...` | AutoAgent pages REST API |

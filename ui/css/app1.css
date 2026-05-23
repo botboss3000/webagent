@@ -738,6 +738,30 @@
     font-size: 14px;
   }
 
+  .user-dropdown-legal {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 8px 14px 6px;
+    margin-top: 2px;
+    font-size: 11px;
+    color: #565f89;
+  }
+  .user-dropdown-legal a {
+    color: #565f89;
+    text-decoration: none;
+    transition: color 0.15s;
+  }
+  .user-dropdown-legal a:hover {
+    color: #a9b1d6;
+    text-decoration: underline;
+  }
+  .user-dropdown-legal span {
+    color: #3b4261;
+    user-select: none;
+  }
+
   /* ── Theme toggle in user dropdown ── */
   .theme-toggle-section {
     padding: 4px 14px 8px;
@@ -974,6 +998,10 @@
     color: #d44848;
   }
   body.light-mode .user-dropdown-divider { background: #ffdec4; }
+  body.light-mode .user-dropdown-legal { color: #b09580; }
+  body.light-mode .user-dropdown-legal a { color: #b09580; }
+  body.light-mode .user-dropdown-legal a:hover { color: #5c4a4a; }
+  body.light-mode .user-dropdown-legal span { color: #cca08a; }
   body.light-mode .theme-toggle-label { color: #b09580; }
   body.light-mode .theme-toggle-group {
     background: #fff5eb;
