@@ -881,7 +881,7 @@ function _intAdminSetBusy(busy) {
   const input = _qs('ac-int-admin-chat-input');
   const send = _qs('ac-int-admin-chat-send');
   if (input) input.disabled = busy;
-  if (send) send.disabled = busy;
+  if (send) send.disabled = busy || !(input && input.value.trim());
 }
 
 async function _intAdminSend() {
@@ -971,13 +971,16 @@ function _initIntegrationAdminChat() {
   const input = _qs('ac-int-admin-chat-input');
   const send = _qs('ac-int-admin-chat-send');
   if (!input || !send) return;
+  const sync = () => { send.disabled = !input.value.trim(); };
   send.addEventListener('click', () => { _intAdminSend(); });
+  input.addEventListener('input', sync);
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       _intAdminSend();
     }
   });
+  sync();
   _intAdminWired = true;
 }
 
