@@ -1939,7 +1939,7 @@ async def enable_channel(
 ):
     """Enable a communication channel (admin). Per-agent credentials still
     live in the agent's Connections tab — this just makes the channel
-    available to agent admins."""
+    available to agent admins and starts pollers for existing connections."""
     if channel not in _CHANNEL_CONFIG_KEY:
         return {"status": "error", "message": f"Unknown channel: {channel}"}
     from app.db import get_db
@@ -1952,6 +1952,16 @@ async def enable_channel(
         label="default",
     )
     logger.info("Channel %s enabled by admin", channel)
+    # Spin up pollers for any existing per-agent connections so the channel
+    # works immediately without waiting for a restart.
+    try:
+        from app.communications.manager import get_plugin_manager
+        pm = get_plugin_manager()
+        if hasattr(pm, "reload_agent_connections"):
+            import asyncio
+            asyncio.create_task(pm.reload_agent_connections())
+    except Exception as e:
+        logger.debug("reload_agent_connections after enable failed: %s", e)
     return {"status": "ok", "channel": channel, "enabled": True}
 
 
@@ -1961,13 +1971,22 @@ async def disable_channel(
     authorization: Optional[str] = Header(None),
     token: Optional[str] = Query(None),
 ):
-    """Disable a communication channel (admin). Existing per-agent rows for
-    this channel stay in the DB but are filtered out of the agent page and
-    cannot be re-enabled until the channel is turned back on."""
+    """Disable a communication channel (admin). Stops all active pollers for
+    the channel and hides it from the agent page. Existing per-agent rows
+    stay in the DB so they reactivate if the channel is re-enabled."""
     if channel not in _CHANNEL_CONFIG_KEY:
         return {"status": "error", "message": f"Unknown channel: {channel}"}
     from app.db import get_db
     db = get_db()
     deleted = await db.auth_element_delete(_ADMIN_USER, _CHANNEL_CONFIG_KEY[channel], "default")
     logger.info("Channel %s disabled by admin (deleted=%s)", channel, deleted)
-    return {"status": "ok", "channel": channel, "enabled": False}
+    # Tear down any running pollers for this channel so messages stop arriving.
+    stopped = 0
+    try:
+        from app.communications.manager import get_plugin_manager
+        pm = get_plugin_manager()
+        if hasattr(pm, "stop_channel_pollers"):
+            stopped = await pm.stop_channel_pollers(channel)
+    except Exception as e:
+        logger.warning("stop_channel_pollers(%s) failed: %s", channel, e)
+    return {"status": "ok", "channel": channel, "enabled": False, "pollers_stopped": stopped}

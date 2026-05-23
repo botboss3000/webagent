@@ -34,6 +34,16 @@ async def webhook_handler(plugin_name: str, request: Request):
         logger.warning("Webhook for disabled plugin: %s", plugin_name)
         return Response(content='{"error":"plugin disabled"}', status_code=503)
 
+    # Channel must also be enabled at the admin level (App Config → Agent Abilities).
+    try:
+        from app.admin.integrations import get_channel_enabled_map
+        channel_map = await get_channel_enabled_map()
+    except Exception:
+        channel_map = {}
+    if plugin_name in channel_map and not channel_map.get(plugin_name, False):
+        logger.warning("Webhook for admin-disabled channel: %s", plugin_name)
+        return Response(content='{"error":"channel disabled by admin"}', status_code=503)
+
     # 1. Verify request authenticity
     if not await plugin.verify_request(request):
         return Response(content='{"error":"invalid request"}', status_code=403)
