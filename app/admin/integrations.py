@@ -1323,10 +1323,9 @@ async def get_browser_session_creds(user_id: str) -> Optional[dict]:
 # ── Connection → admin-config mapping ─────────────────────────────────────
 #
 # Each agent-page connection_type maps to the auth_elements service key the
-# admin uses to store OAuth credentials. Providers in `_NO_ADMIN_CONFIG_NEEDED`
-# require no admin OAuth setup — their configuration lives per-agent (telegram
-# bot token) or per-user (browser_session cookies) and they are always treated
-# as "configured" so the agent page can surface them.
+# admin uses to store OAuth credentials. `_ALWAYS_AVAILABLE` providers need
+# no upfront setup — their configuration happens inside the agent's own
+# Connections tab (e.g. telegram bot token) — so they are always surfaced.
 _CONNECTION_ADMIN_CONFIG_KEY: dict[str, str] = {
     "google":    "google_oauth_config",
     "microsoft": "microsoft_oauth_config",
@@ -1348,21 +1347,21 @@ _CONNECTION_ADMIN_CONFIG_KEY: dict[str, str] = {
     "scraper":   "scraper_config",
 }
 
-_NO_ADMIN_CONFIG_NEEDED: set[str] = {"telegram", "browser_session"}
+# Always surfaced — configured per-agent from the Connections tab itself.
+_ALWAYS_AVAILABLE: set[str] = {"telegram"}
 
 
-async def get_admin_configured_providers() -> set[str]:
-    """Return the set of connection_types the admin has configured (or that need no admin config).
+async def get_admin_configured_providers(user_id: Optional[str] = None) -> set[str]:
+    """Return the set of connection_types that are set up and toggleable.
 
     A provider counts as configured when:
-    - It is in `_NO_ADMIN_CONFIG_NEEDED` (per-agent or per-user setup), OR
-    - Its `auth_elements` row exists with a non-empty `secret_ref` (the
-      client secret / API key).
-
-    This is the source of truth for which integrations the agent page may
-    show as toggleable and which provider tools may be exposed to the LLM.
+    - It is in `_ALWAYS_AVAILABLE` (per-agent setup happens in the toggle), OR
+    - Its admin `auth_elements` row exists with a non-empty `secret_ref`
+      (the client secret / API key), OR
+    - For `browser_session`: the given `user_id` has uploaded cookies. Without
+      a `user_id` we cannot answer this — `browser_session` is omitted.
     """
-    configured: set[str] = set(_NO_ADMIN_CONFIG_NEEDED)
+    configured: set[str] = set(_ALWAYS_AVAILABLE)
     try:
         from app.db import get_db
         db = get_db()
@@ -1387,6 +1386,16 @@ async def get_admin_configured_providers() -> set[str]:
         seen[service_key] = ok
         if ok:
             configured.add(ct)
+
+    # browser_session is per-user — only surface when the active user has cookies.
+    if user_id:
+        try:
+            elem = await db.auth_element_get(user_id, "browser_session", "default")
+            if elem and elem.get("secret_ref"):
+                configured.add("browser_session")
+        except Exception as e:
+            logger.debug("auth_element_get failed for browser_session (%s): %s", user_id, e)
+
     return configured
 
 

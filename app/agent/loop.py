@@ -548,7 +548,7 @@ async def stream_agent_events(
     if agent_id:
         try:
             from app.admin.integrations import get_admin_configured_providers as _gcp
-            _configured = await _gcp()
+            _configured = await _gcp(user_id)
             _int_rows = await db.get_agent_connections(agent_id)
             _enabled_oauth = [r for r in _int_rows
                               if r.get("enabled")
