@@ -684,15 +684,21 @@ _CONNECTION_CATALOG = [
 @router.get("/agents/{agent_id}/connections")
 async def get_agent_connections(agent_id: str, user_id: str = Query(...)):
     """
-    Return all connections for an agent, merged with the full catalog.
-    Available connection types include stubs for coming-soon entries.
+    Return connections for an agent, filtered to those the admin has configured.
+    Unconfigured providers are hidden so they can't be toggled on from the UI.
     Bot tokens in config are masked to last 4 chars.
     For Google: merges user's auth_elements status (email, name, picture).
     """
     import json as _json
+    from app.admin.integrations import get_admin_configured_providers
     db = get_db()
     rows = await db.get_agent_connections(agent_id)
     saved = {r["connection_type"]: r for r in rows}
+
+    # Only surface integrations the admin has configured (plus the per-agent/
+    # per-user ones that need no admin OAuth setup). Unconfigured providers
+    # are hidden from the agent page entirely so they cannot be toggled on.
+    configured_providers = await get_admin_configured_providers()
 
     # Fetch auth_elements for all OAuth-backed providers.
     # Maps connection_type → service key stored in auth_elements.
@@ -739,6 +745,8 @@ async def get_agent_connections(agent_id: str, user_id: str = Query(...)):
     result = []
     for entry in _CONNECTION_CATALOG:
         ct = entry["connection_type"]
+        if ct not in configured_providers:
+            continue
         row = saved.get(ct)
         config = {}
         if row:
@@ -799,6 +807,19 @@ async def upsert_agent_connection(
         raise HTTPException(status_code=400, detail=f"Unknown connection type: {connection_type}")
     if catalog_entry["status"] == "coming_soon":
         raise HTTPException(status_code=400, detail=f"{catalog_entry['display_name']} is not yet available.")
+
+    # Refuse to enable a provider the admin hasn't configured. (Disable is
+    # always allowed so the UI can clean up stale rows if creds were removed.)
+    if req.enabled:
+        from app.admin.integrations import get_admin_configured_providers
+        if connection_type not in await get_admin_configured_providers():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{catalog_entry['display_name']} has not been configured in "
+                    f"App Config → Integrations. Ask an admin to set it up first."
+                ),
+            )
 
     new_config = dict(req.config or {})
 

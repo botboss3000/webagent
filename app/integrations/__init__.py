@@ -99,20 +99,32 @@ def integration_tool_metadata() -> Dict[str, Dict]:
 
 
 async def gather_enabled_providers(agent_id: str) -> set:
-    """Return the set of connection_type values enabled for this agent."""
+    """Return connection_types that are both enabled on this agent AND admin-configured.
+
+    Intersecting with admin config prevents stale agent_connections rows from
+    leaking integration awareness to the LLM after an admin removes the
+    underlying OAuth credentials.
+    """
     if not agent_id:
         return set()
     try:
         from app.db import get_db
+        from app.admin.integrations import get_admin_configured_providers
         rows = await get_db().get_agent_connections(agent_id)
-        return {r["connection_type"] for r in rows if r.get("enabled")}
+        enabled = {r["connection_type"] for r in rows if r.get("enabled")}
+        return enabled & await get_admin_configured_providers()
     except Exception as e:
         logger.warning("Could not read agent_connections for %s: %s", agent_id, e)
         return set()
 
 
-def _build_generic_oauth_tool(user_id: str) -> "tuple[Callable, dict]":
-    """Generic OAuth call tool — handler + JSON Schema."""
+def _build_generic_oauth_tool(user_id: str, allowed_providers: List[str]) -> "tuple[Callable, dict]":
+    """Generic OAuth call tool — handler + JSON Schema.
+
+    `allowed_providers` is the sorted list of OAuth providers enabled for the
+    active agent. It is embedded in the schema so the LLM only ever sees the
+    providers it is permitted to call.
+    """
     from app.integrations.oauth_helper import oauth_api_call, normalize_provider
 
     async def _handler(
@@ -125,8 +137,14 @@ def _build_generic_oauth_tool(user_id: str) -> "tuple[Callable, dict]":
     ) -> str:
         if not url:
             return json.dumps({"status": "error", "message": "url is required"})
+        normalized = normalize_provider(provider)
+        if normalized not in allowed_providers:
+            return json.dumps({
+                "status": "not_enabled",
+                "message": f"Provider '{provider}' is not enabled for this agent.",
+            })
         result = await oauth_api_call(
-            user_id, normalize_provider(provider), method or "GET", url,
+            user_id, normalized, method or "GET", url,
             params=params, json_body=json_body, headers=headers,
         )
         return json.dumps(result)
@@ -134,7 +152,8 @@ def _build_generic_oauth_tool(user_id: str) -> "tuple[Callable, dict]":
     schema = {
         "type": "object",
         "properties": {
-            "provider":  {"type": "string", "description": "Connected OAuth provider (google, microsoft, dropbox, etc.). Aliases like gmail/drive/calendar resolve to google; outlook/onedrive to microsoft."},
+            "provider":  {"type": "string", "enum": allowed_providers,
+                          "description": "Connected OAuth provider enabled for this agent."},
             "method":    {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"], "default": "GET"},
             "url":       {"type": "string", "description": "Full HTTPS URL of the provider's API endpoint."},
             "params":    {"type": "object", "description": "Optional query-string parameters."},
@@ -163,17 +182,25 @@ def inject_integration_tools(
     if tool_info_cls is None:
         from app.tools.loader import ToolInfo as tool_info_cls
 
-    # ── Generic OAuth call — always available ───────────────────────────
-    handler, schema = _build_generic_oauth_tool(user_id)
-    tools["oauth_api_call"] = tool_info_cls(
-        name="oauth_api_call",
-        handler=handler,
-        parameters=schema,
-        requires_confirmation=True,
-    )
-
     if enabled_providers is None:
         enabled_providers = set()  # Without async context we cannot fetch; skip gating.
+
+    # ── Generic OAuth call — only registered if at least one OAuth provider
+    # is enabled. Its provider enum is restricted to those providers so the
+    # LLM cannot discover capabilities it isn't supposed to have.
+    # Non-OAuth providers (telegram, scraper, browser_session) don't apply here.
+    _OAUTH_ENABLED = sorted(
+        p for p in enabled_providers
+        if p not in {"telegram", "scraper", "browser_session"}
+    )
+    if _OAUTH_ENABLED:
+        handler, schema = _build_generic_oauth_tool(user_id, _OAUTH_ENABLED)
+        tools["oauth_api_call"] = tool_info_cls(
+            name="oauth_api_call",
+            handler=handler,
+            parameters=schema,
+            requires_confirmation=True,
+        )
 
     for spec in _discover_tool_specs():
         provider = spec.get("provider", "")
