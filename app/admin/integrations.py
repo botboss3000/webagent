@@ -1263,12 +1263,83 @@ async def revoke_and_delete_amazon(user_id: str) -> bool:
     return await db.auth_element_delete(user_id, "amazon", "oauth")
 
 
+# ── Generic Web Scraper (admin-global) ───────────────────────────────────
+
+async def get_scraper_creds() -> Optional[dict]:
+    """Return the admin-configured scraper provider config, or None."""
+    try:
+        from app.db import get_db
+        db = get_db()
+        elem = await db.auth_element_get(_ADMIN_USER, "scraper_config", "default")
+        if not elem:
+            return None
+        config = elem.get("config", {})
+        if isinstance(config, str):
+            config = json.loads(config)
+        api_key = elem.get("secret_ref", "") or config.get("api_key", "")
+        if not api_key:
+            return None
+        return {
+            "provider": (config.get("provider") or "apify").lower(),
+            "api_key": api_key,
+            "endpoint": config.get("endpoint", ""),
+            "extra": {
+                "actor_id": config.get("actor_id", ""),
+                "host": config.get("host", ""),
+            },
+        }
+    except Exception as e:
+        logger.debug("Failed to read scraper creds from DB: %s", e)
+        return None
+
+
+# ── Browser Session (per-user) ───────────────────────────────────────────
+
+async def get_browser_session_creds(user_id: str) -> Optional[dict]:
+    """Return the per-user browser-session blob, or None."""
+    try:
+        from app.db import get_db
+        db = get_db()
+        elem = await db.auth_element_get(user_id, "browser_session", "default")
+        if not elem:
+            return None
+        config = elem.get("config", {})
+        if isinstance(config, str):
+            config = json.loads(config)
+        cookies = elem.get("secret_ref", "")
+        if not cookies:
+            return None
+        return {
+            "domain": config.get("domain", ""),
+            "user_agent": config.get("user_agent", ""),
+            "saved_at": config.get("saved_at", ""),
+            "cookies": cookies,
+        }
+    except Exception as e:
+        logger.debug("Failed to read browser session for %s: %s", user_id, e)
+        return None
+
+
 # ── Admin endpoints ──────────────────────────────────────────────────────
 
 class OAuthConfigRequest(BaseModel):
     client_id: str
     client_secret: str
     scopes: Optional[list[str]] = None
+
+
+class ScraperConfigRequest(BaseModel):
+    provider: str = "apify"   # apify | rapidapi | custom_http
+    api_key: str
+    endpoint: Optional[str] = ""
+    actor_id: Optional[str] = ""
+    host: Optional[str] = ""
+
+
+class BrowserSessionRequest(BaseModel):
+    domain: Optional[str] = ""
+    user_agent: Optional[str] = ""
+    cookies: str
 
 # Keep old name for backward compat
 GoogleOAuthConfigRequest = OAuthConfigRequest
@@ -1300,6 +1371,7 @@ async def get_integration_config(
     etsy_cid, etsy_csec       = await get_etsy_creds()
     shop_cid, shop_csec       = await get_shopify_creds()
     amz_cid, amz_csec         = await get_amazon_creds()
+    scraper_cfg               = await get_scraper_creds()
 
     # Fetch enabled scopes for all providers (returns defaults when unconfigured)
     g_scopes    = await _get_enabled_scopes("google_oauth_config",    GOOGLE_SCOPES)
@@ -1387,6 +1459,12 @@ async def get_integration_config(
         "amazon_client_id":     _mask(amz_cid),
         "amazon_scopes":        amz_scopes,
         "amazon_redirect_uri":  get_amazon_redirect_uri(request),
+        # Generic, non-OAuth providers (no client_id/secret pair)
+        "scraper_configured":   bool(scraper_cfg),
+        "scraper_provider":     (scraper_cfg or {}).get("provider", ""),
+        "scraper_endpoint":     (scraper_cfg or {}).get("endpoint", ""),
+        "scraper_actor_id":     (scraper_cfg or {}).get("extra", {}).get("actor_id", ""),
+        "scraper_host":         (scraper_cfg or {}).get("extra", {}).get("host", ""),
     }
 
 
@@ -1609,3 +1687,127 @@ router.post("/shopify",   response_model=None)(_shop_save)
 router.delete("/shopify", response_model=None)(_shop_delete)
 router.post("/amazon",    response_model=None)(_amz_save)
 router.delete("/amazon",  response_model=None)(_amz_delete)
+
+
+# ── Generic Web Scraper config (admin) ─────────────────────────────────────
+
+@router.post("/scraper")
+async def save_scraper_config(
+    req: ScraperConfigRequest,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Save the global third-party scraper credentials (admin)."""
+    from app.db import get_db
+    db = get_db()
+    provider = (req.provider or "apify").lower()
+    if provider not in {"apify", "rapidapi", "custom_http"}:
+        return {"status": "error", "message": "provider must be apify, rapidapi, or custom_http"}
+    api_key = (req.api_key or "").strip()
+    if not api_key:
+        return {"status": "error", "message": "api_key is required"}
+    cfg: dict = {
+        "provider": provider,
+        "endpoint": (req.endpoint or "").strip(),
+        "actor_id": (req.actor_id or "").strip(),
+        "host": (req.host or "").strip(),
+    }
+    await db.auth_element_set(
+        user_id=_ADMIN_USER,
+        service="scraper_config",
+        config=cfg,
+        secret_ref=api_key,
+        label="default",
+    )
+    logger.info("Scraper config saved by admin (provider=%s)", provider)
+    return {"status": "ok", "message": "Scraper configured."}
+
+
+@router.delete("/scraper")
+async def delete_scraper_config(
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Remove the scraper credentials (admin)."""
+    from app.db import get_db
+    db = get_db()
+    deleted = await db.auth_element_delete(_ADMIN_USER, "scraper_config", "default")
+    logger.info("Scraper config removed by admin (deleted=%s)", deleted)
+    return {"status": "ok", "deleted": deleted}
+
+
+# ── Browser Session config (per-user) ──────────────────────────────────────
+
+@router.get("/browser-session")
+async def get_browser_session_status(
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Report the caller's stored browser session (no cookies returned)."""
+    user_id = resolve_user_id(authorization or "", token or "")
+    if not user_id or user_id == ANONYMOUS_KEY:
+        return {"status": "error", "message": "auth required"}
+    sess = await get_browser_session_creds(user_id)
+    if not sess:
+        return {"configured": False}
+    # Never echo cookies back — only summary metadata.
+    cookie_count = 0
+    try:
+        from app.integrations.web_tools import _parse_cookies
+        cookie_count = len(_parse_cookies(sess.get("cookies", "")))
+    except Exception:
+        pass
+    return {
+        "configured": True,
+        "domain": sess.get("domain", ""),
+        "user_agent": sess.get("user_agent", ""),
+        "saved_at": sess.get("saved_at", ""),
+        "cookie_count": cookie_count,
+    }
+
+
+@router.post("/browser-session")
+async def save_browser_session(
+    req: BrowserSessionRequest,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Save the caller's browser cookies for authenticated scraping."""
+    user_id = resolve_user_id(authorization or "", token or "")
+    if not user_id or user_id == ANONYMOUS_KEY:
+        return {"status": "error", "message": "auth required"}
+    cookies = (req.cookies or "").strip()
+    if not cookies:
+        return {"status": "error", "message": "cookies are required"}
+    from app.db import get_db
+    db = get_db()
+    cfg = {
+        "domain": (req.domain or "").strip(),
+        "user_agent": (req.user_agent or "").strip(),
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.auth_element_set(
+        user_id=user_id,
+        service="browser_session",
+        config=cfg,
+        secret_ref=cookies,
+        label="default",
+    )
+    logger.info("Browser session saved for user %s (domain=%s)", user_id, cfg["domain"])
+    return {"status": "ok", "message": "Browser session saved."}
+
+
+@router.delete("/browser-session")
+async def delete_browser_session(
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Remove the caller's stored browser session."""
+    user_id = resolve_user_id(authorization or "", token or "")
+    if not user_id or user_id == ANONYMOUS_KEY:
+        return {"status": "error", "message": "auth required"}
+    from app.db import get_db
+    db = get_db()
+    deleted = await db.auth_element_delete(user_id, "browser_session", "default")
+    logger.info("Browser session removed for user %s (deleted=%s)", user_id, deleted)
+    return {"status": "ok", "deleted": deleted}
