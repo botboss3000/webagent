@@ -6,9 +6,13 @@
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     /* Use dynamic viewport height so mobile browser chrome (address bar,
        bottom toolbar) doesn't cause the top or bottom of the app to be
-       clipped. Fall back to 100vh on browsers without dvh support. */
+       clipped. --app-height is set from JS via window.visualViewport so
+       the app also shrinks when the mobile on-screen keyboard appears
+       (dvh alone does not shrink for keyboards on Android Chrome).
+       Fallback chain: 100vh → 100dvh → JS-driven --app-height. */
     height: 100vh;
     height: 100dvh;
+    height: var(--app-height, 100dvh);
     display: flex;
     flex-direction: column;
     overflow: hidden;

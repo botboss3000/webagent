@@ -65,6 +65,30 @@
   })();
 </script>
 <script>
+  // Track the visible viewport height so the app shrinks when the mobile
+  // on-screen keyboard appears. dvh handles browser chrome but on Android
+  // Chrome does not shrink for keyboards, so we drive --app-height from
+  // window.visualViewport.height (falls back to innerHeight).
+  (function () {
+    var root = document.documentElement;
+    var vv = window.visualViewport;
+    function apply() {
+      var h = (vv ? vv.height : window.innerHeight);
+      root.style.setProperty('--app-height', h + 'px');
+    }
+    window.__appHeightApply = apply;
+    apply();
+    if (vv) {
+      vv.addEventListener('resize', apply);
+      vv.addEventListener('scroll', apply);
+    }
+    window.addEventListener('resize', apply);
+    window.addEventListener('orientationchange', function () {
+      setTimeout(apply, 120);
+    });
+  })();
+</script>
+<script>
   // Chat toggle — global function + event delegation. Works regardless of
   // module load timing, browser cache state, or DOM mutation observers.
   window.__isMobileChatLayout = function () { return window.innerWidth <= 800; };

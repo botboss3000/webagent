@@ -13,7 +13,9 @@
       "mcp__Claude_in_Chrome__list_connected_browsers",
       "mcp__Claude_in_Chrome__select_browser",
       "mcp__Claude_in_Chrome__tabs_context_mcp",
-      "mcp__Claude_in_Chrome__browser_batch"
+      "mcp__Claude_in_Chrome__browser_batch",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Alex R\\\\Projects\\\\webagent\" -Directory)",
+      "Bash(Select-Object Name)"
     ]
   }
 }
