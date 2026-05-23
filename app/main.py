@@ -126,17 +126,27 @@ app.add_middleware(NoCacheMiddleware)
 
 @app.middleware("http")
 async def _capture_public_base_url(request, call_next):
-    """Cache the public base URL of every incoming request so background code
-    paths (agent tools, scheduler) that have no Request object can still build
-    correct OAuth redirect URIs instead of falling back to http://localhost:8000."""
+    """Cache the base URL of every incoming request so background code paths
+    (agent tools, scheduler) that have no Request object can still build
+    correct OAuth redirect URIs instead of falling back to a hardcoded port.
+
+    Localhost requests update the cache only when nothing public has been seen
+    yet — that way local dev works on whatever port uvicorn is bound to, but
+    production internal pings on 127.0.0.1 don't poison the cached domain."""
     try:
         from app.admin import integrations as _integ
         derived = str(request.base_url).rstrip("/")
         forwarded_proto = request.headers.get("x-forwarded-proto", "")
         if forwarded_proto and derived.startswith("http://"):
             derived = "https://" + derived[len("http://"):]
-        if derived and not derived.startswith("http://localhost") and not derived.startswith("http://127."):
-            _integ._LAST_SEEN_BASE_URL = derived
+        if derived:
+            is_local = derived.startswith("http://localhost") or derived.startswith("http://127.")
+            cached = _integ._LAST_SEEN_BASE_URL
+            cache_is_public = bool(cached) and not (
+                cached.startswith("http://localhost") or cached.startswith("http://127.")
+            )
+            if not (is_local and cache_is_public):
+                _integ._LAST_SEEN_BASE_URL = derived
     except Exception:
         pass
     return await call_next(request)

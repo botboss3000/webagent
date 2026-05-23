@@ -577,12 +577,30 @@ async def stream_agent_events(
         except Exception:
             pass
 
+    # Curated tool hints — surface to the LLM what it can DO once an integration is connected.
+    _PROVIDER_TOOL_HINTS = {
+        "google":    "gmail_list_messages, gmail_get_message, gmail_send, gcal_list_events, gcal_create_event, drive_list_files, drive_get_file",
+        "microsoft": "outlook_list_messages, outlook_get_message, outlook_send, outlook_calendar_list_events, outlook_calendar_create_event, onedrive_list_files, onedrive_search, onedrive_get_file",
+        "yahoo":     "yahoo_userinfo (REST Mail API not available — mail requires IMAP/SMTP)",
+        "dropbox":   "dropbox_list_files, dropbox_search, dropbox_download",
+        "twitter":   "twitter_me, twitter_post_tweet, twitter_list_my_tweets",
+        "linkedin":  "linkedin_me, linkedin_post",
+        "meta":      "facebook_me, facebook_list_pages, facebook_post_to_page, instagram_list_accounts, instagram_recent_media",
+        "reddit":    "reddit_me, reddit_listing, reddit_submit, reddit_comment",
+        "pinterest": "pinterest_list_boards, pinterest_list_pins, pinterest_create_pin",
+        "snapchat":  "snapchat_userinfo (Snap Kit limited to identity)",
+        "tiktok":    "tiktok_userinfo, tiktok_list_videos",
+        "twitch":    "twitch_me, twitch_get_streams, twitch_followed_channels",
+    }
     if _int_summary:
         _int_lines = []
         for _s in _int_summary:
             if _s["connected"]:
                 _acc = f' as {_s["account"]}' if _s.get("account") else ""
-                _int_lines.append(f'- {_s["provider"].title()}: connected{_acc}')
+                _hint = _PROVIDER_TOOL_HINTS.get(_s["provider"])
+                _tools_str = f' Use: {_hint}.' if _hint else \
+                             f' Use oauth_api_call(provider="{_s["provider"]}", ...) for arbitrary endpoints.'
+                _int_lines.append(f'- {_s["provider"].title()}: connected{_acc}.{_tools_str}')
             else:
                 _int_lines.append(
                     f'- {_s["provider"].title()}: not connected'
@@ -623,10 +641,7 @@ async def stream_agent_events(
         concurrent_limit = _max_concurrent_tools(_agent_rec)
 
         def prefix_content(content: str) -> str:
-            """Prefix agent name to content."""
-            if not content:
-                return content
-            return f"{agent_name}: {content}"
+            return content
 
         # Use list to track state across function boundaries
         first_stream_chunk_state = [True]  # [is_first_chunk]

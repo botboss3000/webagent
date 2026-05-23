@@ -68,6 +68,22 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
 }
 
 
+def _merge_integration_metadata() -> None:
+    """Pull tool metadata from `app/integrations/*` subpackages into BUILTIN_TOOL_METADATA.
+
+    Runs at import time so /admin/tools and the loop diagram see Gmail / Calendar /
+    Drive tools alongside the rest. Deleting `app/integrations/` makes this no-op.
+    """
+    try:
+        from app.integrations import integration_tool_metadata
+        BUILTIN_TOOL_METADATA.update(integration_tool_metadata())
+    except Exception as e:
+        logger.warning("could not merge integration tool metadata: %s", e)
+
+
+_merge_integration_metadata()
+
+
 def _get_webhook_base_url() -> str:
     """Get the configured public webhook base URL from the plugin registry."""
     try:
@@ -141,6 +157,16 @@ class ToolLoader:
                 await self._inject_data_source_tools(tools, agent_id)
             except Exception as e:
                 logger.warning("data source tool injection failed for agent %s: %s", agent_id, e)
+
+        # ── Inject OAuth-integration tools (Gmail, Calendar, Drive, …) ──
+        try:
+            from app.integrations import inject_integration_tools, gather_enabled_providers
+            enabled = await gather_enabled_providers(agent_id) if agent_id else set()
+            inject_integration_tools(tools, user_id, agent_id, enabled_providers=enabled, tool_info_cls=ToolInfo)
+        except ImportError:
+            pass  # app/integrations/ deleted — feature off.
+        except Exception as e:
+            logger.warning("integration tool injection failed for agent %s: %s", agent_id, e)
 
         return tools
 
