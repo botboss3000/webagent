@@ -832,7 +832,15 @@ function _initIntegrations() {
   _qs('ac-int-browser_session-edit')?.addEventListener('click', () => _editGenericProvider('browser_session'));
   _qs('ac-int-browser_session-unconfigure')?.addEventListener('click', _unconfigureBrowserSession);
 
-  _initIntegrationsSearch([...providers, ...genericProviders]);
+  // Channels (admin enable/disable; per-agent creds live in the agent's Connections tab)
+  const channels = ['telegram'];
+  for (const c of channels) {
+    _initCollapsible(c);
+    _qs(`ac-int-${c}-save`)?.addEventListener('click', () => _enableChannel(c));
+    _qs(`ac-int-${c}-unconfigure`)?.addEventListener('click', () => _disableChannel(c));
+  }
+
+  _initIntegrationsSearch([...providers, ...genericProviders, ...channels]);
   _initIntegrationAdminChat();
 }
 
@@ -1033,10 +1041,11 @@ async function _loadIntegrations() {
     _applyProviderStatus('shopify',   data.shopify_configured,   data.shopify_client_id,   data.shopify_redirect_uri,      data.shopify_scopes);
     _applyProviderStatus('amazon',    data.amazon_configured,    data.amazon_client_id,    data.amazon_redirect_uri,       data.amazon_scopes);
     _applyScraperStatus(data);
+    _applyChannelStatus('telegram', data.telegram_configured);
     // Browser session is per-user — fetched from a separate endpoint.
     _loadBrowserSessionStatus();
   } catch (e) {
-    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session']) {
+    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram']) {
       const s = _qs(`ac-int-${p}-status`);
       if (s) { s.textContent = `Failed to load: ${e.message}`; s.style.color = '#f7768e'; s.style.display = 'block'; }
     }
@@ -1062,6 +1071,47 @@ function _applyScraperStatus(data) {
     if (badge) { badge.textContent = 'Not configured'; badge.className = 'ac-int-badge ac-int-badge-off'; }
     if (configuredEl) configuredEl.style.display = 'none';
     if (form) form.style.display = 'block';
+  }
+}
+
+function _applyChannelStatus(channel, enabled) {
+  const badge        = _qs(`ac-int-${channel}-badge`);
+  const configuredEl = _qs(`ac-int-${channel}-configured`);
+  const form         = _qs(`ac-int-${channel}-form`);
+  if (enabled) {
+    if (badge) { badge.textContent = 'Enabled'; badge.className = 'ac-int-badge ac-int-badge-on'; }
+    if (configuredEl) configuredEl.style.display = 'block';
+    if (form) form.style.display = 'none';
+  } else {
+    if (badge) { badge.textContent = 'Disabled'; badge.className = 'ac-int-badge ac-int-badge-off'; }
+    if (configuredEl) configuredEl.style.display = 'none';
+    if (form) form.style.display = 'block';
+  }
+}
+
+async function _enableChannel(channel) {
+  const statusEl = _qs(`ac-int-${channel}-status`);
+  if (statusEl) statusEl.style.display = 'none';
+  try {
+    const res = await _fetch(apiPath(`/admin/integrations/channels/${channel}`), { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _applyChannelStatus(channel, true);
+    if (statusEl) { statusEl.textContent = 'Enabled.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; }
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = `Failed: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
+  }
+}
+
+async function _disableChannel(channel) {
+  const statusEl = _qs(`ac-int-${channel}-status`);
+  if (statusEl) statusEl.style.display = 'none';
+  try {
+    const res = await _fetch(apiPath(`/admin/integrations/channels/${channel}`), { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _applyChannelStatus(channel, false);
+    if (statusEl) { statusEl.textContent = 'Disabled.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; }
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = `Failed: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
   }
 }
 

@@ -1347,27 +1347,42 @@ _CONNECTION_ADMIN_CONFIG_KEY: dict[str, str] = {
     "scraper":   "scraper_config",
 }
 
-# Always surfaced — configured per-agent from the Connections tab itself.
-_ALWAYS_AVAILABLE: set[str] = {"telegram"}
+# Communication channels — gated by an admin enable flag stored in
+# auth_elements under `channel_{name}`. They have no upfront credentials at
+# the platform level (the actual bot token / API key is supplied per-agent),
+# so "configured" simply means the admin has enabled the channel.
+_CHANNEL_CONFIG_KEY: dict[str, str] = {
+    "telegram": "channel_telegram",
+}
 
 
 async def get_admin_configured_providers(user_id: Optional[str] = None) -> set[str]:
     """Return the set of connection_types that are set up and toggleable.
 
     A provider counts as configured when:
-    - It is in `_ALWAYS_AVAILABLE` (per-agent setup happens in the toggle), OR
+    - For channels (`telegram`, ...): the admin has enabled it in App Config
+      → Agent Abilities (auth_elements row exists with secret_ref="enabled"), OR
     - Its admin `auth_elements` row exists with a non-empty `secret_ref`
       (the client secret / API key), OR
     - For `browser_session`: the given `user_id` has uploaded cookies. Without
       a `user_id` we cannot answer this — `browser_session` is omitted.
     """
-    configured: set[str] = set(_ALWAYS_AVAILABLE)
+    configured: set[str] = set()
     try:
         from app.db import get_db
         db = get_db()
     except Exception as e:
         logger.debug("Failed to import db while checking configured providers: %s", e)
         return configured
+
+    # Channels: admin-enabled if their channel auth_element exists.
+    for ct, service_key in _CHANNEL_CONFIG_KEY.items():
+        try:
+            elem = await db.auth_element_get(_ADMIN_USER, service_key, "default")
+            if elem and elem.get("secret_ref"):
+                configured.add(ct)
+        except Exception as e:
+            logger.debug("auth_element_get failed for channel %s: %s", service_key, e)
 
     # Cache per service_key — facebook & instagram share `meta_oauth_config`.
     seen: dict[str, bool] = {}
@@ -1451,6 +1466,7 @@ async def get_integration_config(
     shop_cid, shop_csec       = await get_shopify_creds()
     amz_cid, amz_csec         = await get_amazon_creds()
     scraper_cfg               = await get_scraper_creds()
+    channel_enabled           = await get_channel_enabled_map()
 
     # Fetch enabled scopes for all providers (returns defaults when unconfigured)
     g_scopes    = await _get_enabled_scopes("google_oauth_config",    GOOGLE_SCOPES)
@@ -1544,6 +1560,8 @@ async def get_integration_config(
         "scraper_endpoint":     (scraper_cfg or {}).get("endpoint", ""),
         "scraper_actor_id":     (scraper_cfg or {}).get("extra", {}).get("actor_id", ""),
         "scraper_host":         (scraper_cfg or {}).get("extra", {}).get("host", ""),
+        # Channels (admin enable/disable; per-agent creds live in Connections)
+        "telegram_configured":  channel_enabled.get("telegram", False),
     }
 
 
@@ -1890,3 +1908,66 @@ async def delete_browser_session(
     deleted = await db.auth_element_delete(user_id, "browser_session", "default")
     logger.info("Browser session removed for user %s (deleted=%s)", user_id, deleted)
     return {"status": "ok", "deleted": deleted}
+
+
+# ── Channels (admin enable/disable) ───────────────────────────────────────
+
+async def get_channel_enabled_map() -> dict[str, bool]:
+    """Return {channel_name: enabled} for every channel in `_CHANNEL_CONFIG_KEY`."""
+    try:
+        from app.db import get_db
+        db = get_db()
+    except Exception as e:
+        logger.debug("Failed to import db while reading channel states: %s", e)
+        return {ct: False for ct in _CHANNEL_CONFIG_KEY}
+    out: dict[str, bool] = {}
+    for ct, service_key in _CHANNEL_CONFIG_KEY.items():
+        try:
+            elem = await db.auth_element_get(_ADMIN_USER, service_key, "default")
+            out[ct] = bool(elem and elem.get("secret_ref"))
+        except Exception as e:
+            logger.debug("auth_element_get failed for channel %s: %s", service_key, e)
+            out[ct] = False
+    return out
+
+
+@router.post("/channels/{channel}")
+async def enable_channel(
+    channel: str,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Enable a communication channel (admin). Per-agent credentials still
+    live in the agent's Connections tab — this just makes the channel
+    available to agent admins."""
+    if channel not in _CHANNEL_CONFIG_KEY:
+        return {"status": "error", "message": f"Unknown channel: {channel}"}
+    from app.db import get_db
+    db = get_db()
+    await db.auth_element_set(
+        user_id=_ADMIN_USER,
+        service=_CHANNEL_CONFIG_KEY[channel],
+        config={"enabled": True},
+        secret_ref="enabled",
+        label="default",
+    )
+    logger.info("Channel %s enabled by admin", channel)
+    return {"status": "ok", "channel": channel, "enabled": True}
+
+
+@router.delete("/channels/{channel}")
+async def disable_channel(
+    channel: str,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Disable a communication channel (admin). Existing per-agent rows for
+    this channel stay in the DB but are filtered out of the agent page and
+    cannot be re-enabled until the channel is turned back on."""
+    if channel not in _CHANNEL_CONFIG_KEY:
+        return {"status": "error", "message": f"Unknown channel: {channel}"}
+    from app.db import get_db
+    db = get_db()
+    deleted = await db.auth_element_delete(_ADMIN_USER, _CHANNEL_CONFIG_KEY[channel], "default")
+    logger.info("Channel %s disabled by admin (deleted=%s)", channel, deleted)
+    return {"status": "ok", "channel": channel, "enabled": False}
