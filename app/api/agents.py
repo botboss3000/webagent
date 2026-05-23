@@ -400,6 +400,15 @@ async def update_my_prompts(agent_id: str, req: UpdateMyPromptsRequest):
     if automation_payload is not None:
         response["automation_tasks"] = automation_payload.get("tasks", [])
         response["automation_error"] = automation_payload.get("error")
+        # Surface the event-trigger half of the parse result too, with
+        # the same health badge the UI's event-subscriptions panel uses.
+        evt_subs = automation_payload.get("event_subscriptions") or []
+        response["automation_event_subscriptions"] = [
+            _decorate_subscription_health(s) for s in evt_subs
+        ]
+        response["automation_removed_event_subscriptions"] = (
+            automation_payload.get("removed_event_subscriptions") or []
+        )
     return response
 
 
@@ -441,10 +450,17 @@ async def reparse_agent_automations(agent_id: str, user_id: str = Query(...)):
         )
     except Exception as e:
         logger.warning("Re-parse failed: %s", e)
-        result = {"tasks": [], "removed": 0, "error": str(e)}
+        result = {
+            "tasks": [], "removed": 0,
+            "event_subscriptions": [], "removed_event_subscriptions": [],
+            "error": str(e),
+        }
+    evt_subs = result.get("event_subscriptions") or []
     return {
         "tasks": result.get("tasks", []),
         "removed": result.get("removed", 0),
+        "event_subscriptions": [_decorate_subscription_health(s) for s in evt_subs],
+        "removed_event_subscriptions": result.get("removed_event_subscriptions") or [],
         "error": result.get("error"),
     }
 
@@ -526,6 +542,291 @@ async def delete_agent_automation(agent_id: str, automation_id: str, user_id: st
         raise HTTPException(status_code=403, detail="Not the owner of this automation.")
     deleted = await db.delete_automation(automation_id)
     return {"deleted": bool(deleted)}
+
+
+# ============================================================
+# Per-agent event subscriptions (push + poll triggers)
+#
+# The Automation slot can produce both cron rows (agent_automations) and
+# event-trigger rows (agent_event_subscriptions). These endpoints expose
+# the event-trigger rows to the Automation tab UI so the user can see
+# provider health, toggle, edit, test-fire, re-register, or delete them
+# directly instead of editing the English file.
+#
+# Source-of-truth model (option 3): the English file is the user's
+# **intent**; the DB rows are the **active** state. UI edits write the DB
+# only, leaving the file alone. Re-parsing the file always merges new
+# triggers in (existing rows with matching source_hash are no-ops).
+# ============================================================
+
+
+@router.get("/agents/{agent_id}/event-subscriptions")
+async def list_agent_event_subscriptions(agent_id: str, user_id: str = Query(...)):
+    """List the caller's event-trigger rows for this agent.
+
+    Each row carries the same observability fields the renewer/poller write:
+    last_status, last_error, last_event_at, fire_count, external_expiration_at.
+    """
+    db = get_db()
+    agent = await db.get_agent_by_id(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+    rows = await db.list_event_subscriptions(agent_id=agent_id, owner_user_id=user_id)
+    # Decorate each row with a "health" badge derived from its state.
+    decorated = [_decorate_subscription_health(r) for r in rows]
+    return {"subscriptions": decorated}
+
+
+def _decorate_subscription_health(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Compute a health string the UI can render directly."""
+    from datetime import datetime, timezone, timedelta
+    out = dict(row)
+    if not row.get("enabled"):
+        out["health"] = "disabled"
+        return out
+    last_status = row.get("last_status") or ""
+    if last_status == "error":
+        out["health"] = "error"
+        return out
+    exp = row.get("external_expiration_at")
+    if exp:
+        try:
+            t = datetime.fromisoformat(exp.replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            if t <= now:
+                out["health"] = "expired"
+            elif (t - now) < timedelta(hours=24):
+                out["health"] = "expiring_soon"
+            else:
+                out["health"] = "ok"
+        except Exception:
+            out["health"] = "ok"
+    else:
+        # No TTL (poll source, or comms bridge). OK as long as no error.
+        out["health"] = "ok"
+    return out
+
+
+class UpdateEventSubscriptionBody(BaseModel):
+    user_id: str
+    enabled: Optional[bool] = None
+    silent: Optional[bool] = None
+    channel: Optional[str] = None
+    channel_recipient: Optional[str] = None
+    prompt: Optional[str] = None
+    task_label: Optional[str] = None
+    filter: Optional[Dict[str, Any]] = None
+
+
+@router.patch("/agents/{agent_id}/event-subscriptions/{sub_id}")
+async def patch_agent_event_subscription(
+    agent_id: str, sub_id: str, body: UpdateEventSubscriptionBody,
+):
+    """Edit a single event subscription without re-parsing the English file.
+
+    Per option 3: the row is the active state; the Automation slot is the
+    user's original intent. A subsequent re-parse will *re-enable* anything
+    whose English line still exists, so disabling via this endpoint is a
+    soft-state change rather than a permanent erase. To permanently remove
+    a trigger, either delete the row (DELETE) AND edit the English file, or
+    just edit the English file and re-save.
+    """
+    db = get_db()
+    row = await db.get_event_subscription(sub_id)
+    if not row or row.get("agent_id") != agent_id:
+        raise HTTPException(status_code=404, detail="Event subscription not found.")
+    if row.get("owner_user_id") != body.user_id and not await db.is_user_admin(body.user_id):
+        raise HTTPException(status_code=403, detail="Not the owner of this subscription.")
+
+    fields: Dict[str, Any] = {}
+    if body.enabled is not None:
+        fields["enabled"] = body.enabled
+    if body.silent is not None:
+        fields["silent"] = body.silent
+    if body.channel is not None:
+        fields["channel"] = body.channel or None
+    if body.channel_recipient is not None:
+        fields["channel_recipient"] = body.channel_recipient or None
+    if body.prompt is not None:
+        fields["prompt"] = body.prompt
+    if body.task_label is not None:
+        fields["task_label"] = body.task_label
+    if body.filter is not None:
+        import json as _json
+        fields["filter_json"] = _json.dumps(body.filter or {}, sort_keys=True)
+
+    updated = await db.update_event_subscription(sub_id, **fields)
+
+    # If the filter changed and this is a push source, the provider-side
+    # watch may no longer reflect the new filter (e.g. Gmail label filter).
+    # Re-register so the watch matches.
+    needs_rereg = (body.filter is not None) and bool(row.get("external_subscription_id"))
+    if needs_rereg:
+        try:
+            await _rereg_subscription(updated)
+            updated = await db.get_event_subscription(sub_id)
+        except Exception as e:
+            logger.warning("Auto re-register after PATCH failed for %s: %s", sub_id, e)
+    return {"subscription": _decorate_subscription_health(updated)}
+
+
+@router.post("/agents/{agent_id}/event-subscriptions/{sub_id}/re-register")
+async def reregister_agent_event_subscription(
+    agent_id: str, sub_id: str, user_id: str = Query(...),
+):
+    """Re-run the source plugin's ``register_subscription`` for this row.
+
+    Used after Pub/Sub topic recreation, OAuth reconnect, or to clear a
+    ``last_status=error`` state. Updates external_subscription_id,
+    external_expiration_at, and external_metadata to the new values.
+    """
+    db = get_db()
+    row = await db.get_event_subscription(sub_id)
+    if not row or row.get("agent_id") != agent_id:
+        raise HTTPException(status_code=404, detail="Event subscription not found.")
+    if row.get("owner_user_id") != user_id and not await db.is_user_admin(user_id):
+        raise HTTPException(status_code=403, detail="Not the owner of this subscription.")
+    try:
+        await _rereg_subscription(row)
+    except Exception as e:
+        logger.warning("re-register failed for %s: %s", sub_id, e)
+        await db.update_event_subscription(sub_id, last_status="error", last_error=str(e)[:400])
+        raise HTTPException(status_code=400, detail=f"register failed: {e}")
+    fresh = await db.get_event_subscription(sub_id)
+    return {"subscription": _decorate_subscription_health(fresh)}
+
+
+@router.post("/agents/{agent_id}/event-subscriptions/{sub_id}/test-fire")
+async def test_fire_event_subscription(
+    agent_id: str, sub_id: str, user_id: str = Query(...),
+):
+    """Synthesize a fake event and run it through the router for this sub.
+
+    Bypasses the source's filter (we manufacture a NormalizedEvent that
+    already matches) so you can verify the agent's behavior end-to-end
+    without waiting for a real event from the provider. Logs a delivery
+    row marked status='test' for audit clarity.
+    """
+    db = get_db()
+    row = await db.get_event_subscription(sub_id)
+    if not row or row.get("agent_id") != agent_id:
+        raise HTTPException(status_code=404, detail="Event subscription not found.")
+    if row.get("owner_user_id") != user_id and not await db.is_user_admin(user_id):
+        raise HTTPException(status_code=403, detail="Not the owner of this subscription.")
+
+    from app.events.types import NormalizedEvent
+    from app.events.executor import execute_event_subscription
+    from datetime import datetime, timezone
+    import uuid as _uuid
+
+    fake = NormalizedEvent(
+        source=row["source"],
+        event_type=row["event_type"],
+        owner_user_id=row["owner_user_id"],
+        external_id=f"test-{_uuid.uuid4().hex[:12]}",
+        occurred_at=datetime.now(timezone.utc).isoformat(),
+        payload={
+            "_test_fire": True,
+            "label": row.get("task_label"),
+            "filter": row.get("filter") or {},
+            "note": "Synthesized by /test-fire — not from a real provider event.",
+        },
+        raw_ref={},
+    )
+
+    delivery_id = await db.insert_event_delivery(
+        subscription_id=sub_id,
+        source=row["source"],
+        event_type=row["event_type"],
+        event_external_id=fake.external_id,
+        owner_user_id=row["owner_user_id"],
+        agent_id=agent_id,
+        status="pending",
+        payload_excerpt=fake.payload_excerpt(),
+    )
+    try:
+        result = await execute_event_subscription(row, fake)
+        await db.update_event_delivery(
+            delivery_id,
+            status="test" if result.get("ok") else "error",
+            error=result.get("error"),
+            session_id=result.get("session_id"),
+        )
+        await db.update_event_subscription(
+            sub_id,
+            last_status="ok" if result.get("ok") else "error",
+            last_error=result.get("error"),
+            last_event_at=fake.occurred_at,
+        )
+        return {"result": result, "delivery_id": delivery_id}
+    except Exception as e:
+        logger.exception("test-fire failed: %s", e)
+        await db.update_event_delivery(delivery_id, status="error", error=str(e)[:400])
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/agents/{agent_id}/event-subscriptions/{sub_id}")
+async def delete_agent_event_subscription(
+    agent_id: str, sub_id: str, user_id: str = Query(...),
+):
+    """Delete the row AND unregister the provider-side watch.
+
+    Per option 3, the English file is left alone — a future re-parse with
+    the same line in the file will re-create the row + register a new
+    provider watch.
+    """
+    db = get_db()
+    row = await db.get_event_subscription(sub_id)
+    if not row or row.get("agent_id") != agent_id:
+        raise HTTPException(status_code=404, detail="Event subscription not found.")
+    if row.get("owner_user_id") != user_id and not await db.is_user_admin(user_id):
+        raise HTTPException(status_code=403, detail="Not the owner of this subscription.")
+
+    # Best-effort unregister at provider; deletion proceeds either way.
+    try:
+        from app.events import get_manager
+        src = get_manager().get(row["source"])
+        if src is not None:
+            await src.unregister_subscription(row)
+    except Exception as e:
+        logger.warning("Provider unregister failed for %s (ignored): %s", sub_id, e)
+
+    deleted = await db.delete_event_subscription(sub_id)
+    return {"deleted": bool(deleted)}
+
+
+async def _rereg_subscription(row: Dict[str, Any]) -> None:
+    """Re-run ``register_subscription`` for a row and persist the new IDs.
+
+    Shared by the PATCH (filter changed) and POST re-register endpoints.
+    Tries to unregister the old watch first so providers don't keep firing
+    against a stale subscription id.
+    """
+    from app.events import get_manager
+    db = get_db()
+    src = get_manager().get(row["source"])
+    if src is None:
+        raise RuntimeError(f"Source {row['source']!r} not registered")
+    if row.get("external_subscription_id"):
+        try:
+            await src.unregister_subscription(row)
+        except Exception as e:
+            logger.debug("unregister-before-rereg failed: %s", e)
+    reg = await src.register_subscription(
+        owner_user_id=row["owner_user_id"],
+        event_type=row["event_type"],
+        filter_dict=row.get("filter") or {},
+    )
+    await db.update_event_subscription(
+        row["id"],
+        external_subscription_id=reg.external_subscription_id,
+        external_resource_id=reg.external_resource_id,
+        external_expiration_at=reg.external_expiration_at,
+        external_metadata=reg.external_metadata or {},
+        poll_cursor=reg.poll_cursor,
+        last_status="ok",
+        last_error=None,
+    )
 
 
 @router.delete("/agents/{agent_id}/my-prompts/{slot_name}")
