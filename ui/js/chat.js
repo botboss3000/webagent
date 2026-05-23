@@ -132,7 +132,7 @@ function updateLastBubble(text, extraClass, imageUrl) {
   const bubbles = app.chatMessages.querySelectorAll('.chat-bubble.agent');
   const last = bubbles[bubbles.length - 1];
   if (!last) return;
-  while (last.childNodes.length > 1) last.removeChild(last.lastChild);
+  while (last.firstChild) last.removeChild(last.firstChild);
   last.appendChild(linkifyText(text));
   if (imageUrl) {
     const img = document.createElement('img');
