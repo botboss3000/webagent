@@ -265,11 +265,11 @@ body.light-mode #chat-header {
 }
 
 #chat-input-area {
-  border-top: 1px solid rgba(255,255,255,0.05);
+  border-top: none;
 }
 
 body.light-mode #chat-input-area {
-  border-top-color: rgba(180,140,90,0.12);
+  border-top: none;
 }
 
 
