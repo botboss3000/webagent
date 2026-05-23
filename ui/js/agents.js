@@ -389,6 +389,58 @@ function _selectAgent(agent) {
 
 // ── Per-row detail panel ──────────────────────────────────────────────────────
 
+function _populateAgentTabBar(tabBar, agent, panel) {
+  const state = _expandedAgents.get(agent.id);
+  const activeTab = state?.tab || 'config';
+  tabBar.innerHTML = '';
+  const tabs = [['config','Config'],['tools','Tools'],['test','Agent Loop'],['connections','Abilities']];
+  if (state?.automationEnabled) tabs.push(['automation','Automation']);
+  if (_userIsAdmin) tabs.push(['members','Members']);
+  for (const [key, label] of tabs) {
+    const btn = document.createElement('button');
+    btn.className = 'agents-detail-tab' + (activeTab === key ? ' active' : '');
+    btn.dataset.tab = key;
+    btn.textContent = label;
+    btn.addEventListener('click', () => {
+      const entry = _expandedAgents.get(agent.id);
+      if (entry) entry.tab = key;
+      _renderPanelBody(agent, panel);
+      _saveViewState();
+      btn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    });
+    tabBar.appendChild(btn);
+  }
+}
+
+function _refreshAgentTabBar(agent) {
+  const panel = document.querySelector(`.agent-detail-panel[data-agent-id="${agent.id}"]`);
+  if (!panel) return;
+  const tabBar = panel.querySelector('.agent-detail-tabs');
+  if (tabBar) _populateAgentTabBar(tabBar, agent, panel);
+}
+
+async function _detectAgentAbilities(agent, panel) {
+  // Decide whether the Automation tab should appear by inspecting the agent's
+  // connections. The `automation` ability surfaces only if (a) the app admin
+  // configured it AND (b) the agent admin toggled it on for this agent.
+  const state = _expandedAgents.get(agent.id);
+  if (!state) return;
+  try {
+    const res = await fetch(`/api/v1/agents/${agent.id}/connections?user_id=${encodeURIComponent(app.currentUserId)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const conns = data.connections || [];
+    const automation = conns.find(c => c.connection_type === 'automation' && c.section === 'ability');
+    const enabled = !!(automation && automation.enabled);
+    if (state.automationEnabled !== enabled) {
+      state.automationEnabled = enabled;
+      if (!enabled && state.tab === 'automation') state.tab = 'config';
+      _refreshAgentTabBar(agent);
+      _renderPanelBody(agent, panel);
+    }
+  } catch (_e) { /* leave tab hidden on error */ }
+}
+
 function _buildDetailPanel(agent) {
   const state = _expandedAgents.get(agent.id);
   const activeTab = state?.tab || 'config';
@@ -419,22 +471,7 @@ function _buildDetailPanel(agent) {
 
   const tabBar = document.createElement('div');
   tabBar.className = 'agent-detail-tabs';
-  const tabs = [['config','Config'],['tools','Tools'],['test','Agent Loop'],['connections','Abilities'],['automation','Automation']];
-  if (_userIsAdmin) tabs.push(['members','Members']);
-  for (const [key, label] of tabs) {
-    const btn = document.createElement('button');
-    btn.className = 'agents-detail-tab' + (activeTab === key ? ' active' : '');
-    btn.dataset.tab = key;
-    btn.textContent = label;
-    btn.addEventListener('click', () => {
-      const entry = _expandedAgents.get(agent.id);
-      if (entry) entry.tab = key;
-      _renderPanelBody(agent, panel);
-      _saveViewState();
-      btn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
-    });
-    tabBar.appendChild(btn);
-  }
+  _populateAgentTabBar(tabBar, agent, panel);
 
   const updateChevrons = () => {
     const overflow = tabBar.scrollWidth - tabBar.clientWidth > 1;
@@ -478,12 +515,16 @@ function _buildDetailPanel(agent) {
   // Render initial tab content
   _renderPanelBody(agent, panel);
 
+  // Asynchronously discover whether the Automation tab should be visible.
+  _detectAgentAbilities(agent, panel);
+
   return panel;
 }
 
 function _renderPanelBody(agent, panelEl) {
   const state = _expandedAgents.get(agent.id);
-  const tab   = state?.tab || 'config';
+  let tab = state?.tab || 'config';
+  if (tab === 'automation' && !state?.automationEnabled) tab = 'config';
 
   // Sync tab-button active states
   panelEl.querySelectorAll('.agents-detail-tab').forEach(t => {
@@ -2353,6 +2394,7 @@ const _CONN_ICONS = {
   // Agent Tools
   codebase_admin: 'folder-cog',
   create_tools:   'wrench',
+  automation:     'clock',
 };
 
 async function _renderConnectionsTab(body, agent) {
@@ -2842,6 +2884,14 @@ async function _saveConnection(agent, conn, cardEl, enabled) {
       // Restore cached value so Chrome autofill can't replace it with bullets
       if (tokenInput && tokenInput.dataset.realValue) {
         tokenInput.value = tokenInput.dataset.realValue;
+      }
+      // Toggling the per-agent Automation ability shows/hides the Automation tab.
+      if (conn.connection_type === 'automation' && conn.section === 'ability') {
+        const state = _expandedAgents.get(agent.id);
+        if (state) {
+          state.automationEnabled = enabled;
+          _refreshAgentTabBar(agent);
+        }
       }
       if (msgEl) { msgEl.textContent = '✓ Saved'; }
     } else {

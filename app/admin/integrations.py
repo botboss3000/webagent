@@ -1362,6 +1362,7 @@ _CHANNEL_CONFIG_KEY: dict[str, str] = {
 _ABILITY_CONFIG_KEY: dict[str, str] = {
     "codebase_admin": "ability_codebase_admin",
     "create_tools":   "ability_create_tools",
+    "automation":     "ability_automation",
 }
 
 
@@ -1584,6 +1585,7 @@ async def get_integration_config(
         # Agent Tools (host-side privileged capabilities)
         "codebase_admin_configured": ability_enabled.get("codebase_admin", False),
         "create_tools_configured":   ability_enabled.get("create_tools", False),
+        "automation_configured":     ability_enabled.get("automation", False),
     }
 
 
@@ -1972,6 +1974,29 @@ async def get_ability_enabled_map() -> dict[str, bool]:
     return out
 
 
+async def is_ability_enabled_for_agent(agent_id: str, ability: str) -> bool:
+    """True iff the ability is enabled both at app level AND for this specific agent."""
+    service_key = _ABILITY_CONFIG_KEY.get(ability)
+    if not service_key:
+        return False
+    try:
+        from app.db import get_db
+        db = get_db()
+        elem = await db.auth_element_get(_ADMIN_USER, service_key, "default")
+        if not (elem and elem.get("secret_ref")):
+            return False
+        rows = await db.get_agent_connections(agent_id)
+        match = next(
+            (r for r in rows
+             if r.get("connection_type") == ability and r.get("section") == "ability"),
+            None,
+        )
+        return bool(match and match.get("enabled"))
+    except Exception as e:
+        logger.debug("is_ability_enabled_for_agent(%s, %s) failed: %s", agent_id, ability, e)
+        return False
+
+
 @router.post("/abilities/{ability}")
 async def enable_ability(
     ability: str,
@@ -2003,12 +2028,22 @@ async def disable_ability(
 ):
     """Disable an agent ability (admin). Hides it from the agent Abilities
     tab. Existing per-agent `agent_connections` rows stay so they reactivate
-    if the ability is re-enabled."""
+    if the ability is re-enabled — except for `automation`, which purges all
+    per-agent automation tasks, event subscriptions, and ability toggles."""
     if ability not in _ABILITY_CONFIG_KEY:
         return {"status": "error", "message": f"Unknown ability: {ability}"}
     from app.db import get_db
     db = get_db()
     deleted = await db.auth_element_delete(_ADMIN_USER, _ABILITY_CONFIG_KEY[ability], "default")
+    if ability == "automation":
+        # Wipe every agent's automation data so the feature truly resets.
+        tasks_removed = await db.delete_all_automations()
+        subs_removed = await db.delete_all_event_subscriptions()
+        toggles_removed = await db.delete_all_ability_connections("automation")
+        logger.info(
+            "Automation ability disabled: purged %s tasks, %s subscriptions, %s per-agent toggles",
+            tasks_removed, subs_removed, toggles_removed,
+        )
     logger.info("Ability %s disabled by admin (deleted=%s)", ability, deleted)
     return {"status": "ok", "ability": ability, "enabled": False}
 

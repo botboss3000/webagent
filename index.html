@@ -1924,6 +1924,32 @@
               <span id="ac-int-create_tools-status" class="ac-status" style="display:none;margin-top:8px;"></span>
             </div>
 
+            <!-- Automation -->
+            <div class="ac-card" id="ac-int-automation-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <i data-lucide="clock" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#e0af68;"></i>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Automation</div>
+                  <div class="ac-hint" style="margin:0;">Exposes the per-agent <strong>Automation</strong> tab — scheduled tasks and event-triggered jobs that can call integrations.</div>
+                </div>
+                <span id="ac-int-automation-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
+              </div>
+
+              <div id="ac-int-automation-configured" style="display:none;font-size:12px;">
+                <div class="ac-hint" style="margin:0;">Automation is available on each agent's <strong>Abilities</strong> tab. Agent admins must toggle it on per agent before the Automation tab appears.</div>
+                <div class="ac-hint" style="margin:8px 0 0;color:#f7768e;"><strong>Warning:</strong> Disabling will permanently delete every agent's scheduled tasks and event subscriptions.</div>
+                <div style="margin-top:12px;display:flex;gap:8px;">
+                  <button id="ac-int-automation-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                </div>
+              </div>
+
+              <div id="ac-int-automation-form" style="display:block;">
+                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Automation as a per-agent toggle. Agents with the toggle off see no Automation tab.</div>
+                <button id="ac-int-automation-save" class="ac-btn ac-btn-primary">Enable Automation</button>
+              </div>
+              <span id="ac-int-automation-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+            </div>
+
           </section>
 
           <!-- ── Storage (DB + Secrets + Migration) ── -->
