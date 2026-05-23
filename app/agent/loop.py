@@ -547,9 +547,13 @@ async def stream_agent_events(
     _int_summary: list = []
     if agent_id:
         try:
+            from app.admin.integrations import get_admin_configured_providers as _gcp
+            _configured = await _gcp()
             _int_rows = await db.get_agent_connections(agent_id)
             _enabled_oauth = [r for r in _int_rows
-                              if r.get("enabled") and r.get("connection_type") in _OAUTH_PROVIDER_TYPES]
+                              if r.get("enabled")
+                              and r.get("connection_type") in _OAUTH_PROVIDER_TYPES
+                              and r.get("connection_type") in _configured]
             for _r in _enabled_oauth:
                 _ct = _r["connection_type"]
                 # Generic, non-OAuth providers live in different auth_elements rows.

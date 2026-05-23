@@ -1320,6 +1320,76 @@ async def get_browser_session_creds(user_id: str) -> Optional[dict]:
         return None
 
 
+# ── Connection → admin-config mapping ─────────────────────────────────────
+#
+# Each agent-page connection_type maps to the auth_elements service key the
+# admin uses to store OAuth credentials. Providers in `_NO_ADMIN_CONFIG_NEEDED`
+# require no admin OAuth setup — their configuration lives per-agent (telegram
+# bot token) or per-user (browser_session cookies) and they are always treated
+# as "configured" so the agent page can surface them.
+_CONNECTION_ADMIN_CONFIG_KEY: dict[str, str] = {
+    "google":    "google_oauth_config",
+    "microsoft": "microsoft_oauth_config",
+    "yahoo":     "yahoo_oauth_config",
+    "dropbox":   "dropbox_oauth_config",
+    "facebook":  "meta_oauth_config",
+    "instagram": "meta_oauth_config",
+    "twitter":   "twitter_oauth_config",
+    "linkedin":  "linkedin_oauth_config",
+    "tiktok":    "tiktok_oauth_config",
+    "pinterest": "pinterest_oauth_config",
+    "reddit":    "reddit_oauth_config",
+    "snapchat":  "snapchat_oauth_config",
+    "twitch":    "twitch_oauth_config",
+    "ebay":      "ebay_oauth_config",
+    "etsy":      "etsy_oauth_config",
+    "shopify":   "shopify_oauth_config",
+    "amazon":    "amazon_oauth_config",
+    "scraper":   "scraper_config",
+}
+
+_NO_ADMIN_CONFIG_NEEDED: set[str] = {"telegram", "browser_session"}
+
+
+async def get_admin_configured_providers() -> set[str]:
+    """Return the set of connection_types the admin has configured (or that need no admin config).
+
+    A provider counts as configured when:
+    - It is in `_NO_ADMIN_CONFIG_NEEDED` (per-agent or per-user setup), OR
+    - Its `auth_elements` row exists with a non-empty `secret_ref` (the
+      client secret / API key).
+
+    This is the source of truth for which integrations the agent page may
+    show as toggleable and which provider tools may be exposed to the LLM.
+    """
+    configured: set[str] = set(_NO_ADMIN_CONFIG_NEEDED)
+    try:
+        from app.db import get_db
+        db = get_db()
+    except Exception as e:
+        logger.debug("Failed to import db while checking configured providers: %s", e)
+        return configured
+
+    # Cache per service_key — facebook & instagram share `meta_oauth_config`.
+    seen: dict[str, bool] = {}
+    for ct, service_key in _CONNECTION_ADMIN_CONFIG_KEY.items():
+        if service_key in seen:
+            if seen[service_key]:
+                configured.add(ct)
+            continue
+        ok = False
+        try:
+            elem = await db.auth_element_get(_ADMIN_USER, service_key, "default")
+            if elem and elem.get("secret_ref"):
+                ok = True
+        except Exception as e:
+            logger.debug("auth_element_get failed for %s: %s", service_key, e)
+        seen[service_key] = ok
+        if ok:
+            configured.add(ct)
+    return configured
+
+
 # ── Admin endpoints ──────────────────────────────────────────────────────
 
 class OAuthConfigRequest(BaseModel):

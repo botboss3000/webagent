@@ -148,8 +148,26 @@ class ToolLoader:
             )
             logger.debug(f"Loaded tool {name} for user {user_id}")
 
+        # ── Resolve enabled+admin-configured integrations for this agent ──
+        # Computed once so the same set gates both the integration tools and
+        # the built-in OAuth helpers (check_oauth_connection).
+        enabled_providers: set = set()
+        try:
+            from app.integrations import gather_enabled_providers
+            enabled_providers = await gather_enabled_providers(agent_id) if agent_id else set()
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning("Could not gather enabled providers for %s: %s", agent_id, e)
+
         # ── Inject built-in tools (override any DB versions) ──
-        self._inject_builtin_tools(tools, user_id, agent_id=agent_id, agent_template_id=agent_template_id, is_admin_agent=is_admin_agent)
+        self._inject_builtin_tools(
+            tools, user_id,
+            agent_id=agent_id,
+            agent_template_id=agent_template_id,
+            is_admin_agent=is_admin_agent,
+            enabled_providers=enabled_providers,
+        )
 
         # ── Inject synthetic tools from per-agent attached data sources ──
         if agent_id:
@@ -160,9 +178,8 @@ class ToolLoader:
 
         # ── Inject OAuth-integration tools (Gmail, Calendar, Drive, …) ──
         try:
-            from app.integrations import inject_integration_tools, gather_enabled_providers
-            enabled = await gather_enabled_providers(agent_id) if agent_id else set()
-            inject_integration_tools(tools, user_id, agent_id, enabled_providers=enabled, tool_info_cls=ToolInfo)
+            from app.integrations import inject_integration_tools
+            inject_integration_tools(tools, user_id, agent_id, enabled_providers=enabled_providers, tool_info_cls=ToolInfo)
         except ImportError:
             pass  # app/integrations/ deleted — feature off.
         except Exception as e:
@@ -240,8 +257,16 @@ class ToolLoader:
                     requires_confirmation=bool(gt.destructive),
                 )
 
-    def _inject_builtin_tools(self, tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "", agent_template_id: Optional[str] = None, is_admin_agent: bool = False) -> None:
-        """Inject built-in tools that are always available regardless of DB state."""
+    def _inject_builtin_tools(self, tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "", agent_template_id: Optional[str] = None, is_admin_agent: bool = False, enabled_providers: Optional[set] = None) -> None:
+        """Inject built-in tools that are always available regardless of DB state.
+
+        `enabled_providers` is the set of integration connection_types enabled
+        for this agent AND admin-configured. It gates the OAuth helper tools
+        (check_oauth_connection) so the LLM never sees provider names it has
+        no permission to use.
+        """
+        if enabled_providers is None:
+            enabled_providers = set()
 
         # ── create_tool (always available) ──
         from app.tools.registry import create_tool as _builtin_create_tool, VALID_NODE_IDS as _VALID_NODE_IDS
@@ -1092,6 +1117,21 @@ class ToolLoader:
         )
 
         # ── check_oauth_connection ──────────────────────────────────────────────
+        # Only registered when at least one OAuth provider is enabled AND
+        # admin-configured for this agent. Its provider enum is restricted
+        # to those providers so the LLM never learns about capabilities the
+        # agent isn't supposed to have.
+        _CT_TO_OAUTH = {
+            "google": "google", "microsoft": "microsoft", "yahoo": "yahoo",
+            "dropbox": "dropbox", "facebook": "meta", "instagram": "meta",
+            "twitter": "twitter", "linkedin": "linkedin", "tiktok": "tiktok",
+            "pinterest": "pinterest", "reddit": "reddit", "snapchat": "snapchat",
+            "twitch": "twitch",
+        }
+        _oauth_enabled = sorted({_CT_TO_OAUTH[ct] for ct in enabled_providers if ct in _CT_TO_OAUTH})
+        if not _oauth_enabled:
+            return
+
         _captured_agent_id = agent_id
 
         async def _check_oauth_connection_wrapper(provider: str) -> str:
@@ -1207,15 +1247,12 @@ class ToolLoader:
                 "properties": {
                     "provider": {
                         "type": "string",
+                        "enum": _oauth_enabled,
                         "description": (
-                            "The OAuth provider to check. Call this whenever the user wants to do something "
-                            "that requires a connected account and you are not sure if they have connected it. "
-                            "Examples: 'check my email' or 'read my Gmail' → google; 'post to Twitter' → twitter; "
-                            "'access my Drive' or 'check my calendar' → google; 'read Outlook' → microsoft; "
-                            "'upload to Dropbox' → dropbox; 'post to LinkedIn' → linkedin; "
-                            "'post to Facebook/Instagram' → meta. "
-                            "Supported values: google, microsoft, yahoo, dropbox, meta, twitter, linkedin, "
-                            "tiktok, pinterest, reddit, snapchat, twitch."
+                            "The OAuth provider to check. Call this when the user wants to do "
+                            "something that requires a connected account and you are not sure if "
+                            "they have connected it. Allowed values for this agent: "
+                            + ", ".join(_oauth_enabled) + "."
                         ),
                     },
                 },
