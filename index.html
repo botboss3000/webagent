@@ -602,7 +602,7 @@
               <i data-lucide="bot" class="lucide-icon ac-tab-icon"></i>Default LLM
             </button>
             <button type="button" class="ac-tab" data-section="integrations" role="tab">
-              <i data-lucide="puzzle" class="lucide-icon ac-tab-icon"></i>Integrations
+              <i data-lucide="puzzle" class="lucide-icon ac-tab-icon"></i>Agent Abilities
             </button>
             <button type="button" class="ac-tab" data-section="database" role="tab">
               <i data-lucide="database" class="lucide-icon ac-tab-icon"></i>Database
@@ -677,8 +677,8 @@
             <div class="ac-section-header">
               <i data-lucide="puzzle" class="lucide-icon ac-section-icon"></i>
               <div>
-                <h2 class="ac-section-title">Integrations</h2>
-                <p class="ac-section-desc">Configure third-party service credentials. Users connect their accounts via each agent's Connections tab.</p>
+                <h2 class="ac-section-title">Agent Abilities</h2>
+                <p class="ac-section-desc">Channels and third-party services your agents can use. Only abilities enabled here can be turned on in an agent's Connections tab.</p>
               </div>
             </div>
 
@@ -696,6 +696,51 @@
                 <button id="ac-int-admin-chat-send" title="Send message" disabled><i data-lucide="send" style="width:18px;height:18px;"></i></button>
               </div>
               <div id="ac-int-admin-chat-error" class="ac-hint" style="display:none;margin-top:6px;color:#f7768e;"></div>
+            </div>
+
+            <!-- ── Channels ── -->
+            <div class="ac-section-header" style="margin-top:24px;">
+              <i data-lucide="message-square" class="lucide-icon ac-section-icon"></i>
+              <div>
+                <h3 class="ac-section-title" style="font-size:14px;">Channels</h3>
+                <p class="ac-section-desc">How agents send and receive messages. Enable a channel here to make it available to your agents.</p>
+              </div>
+            </div>
+
+            <!-- Telegram Channel -->
+            <div class="ac-card" id="ac-int-telegram-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#26A5E4" d="M12 0a12 12 0 1 0 0 24 12 12 0 0 0 0-24zm5.57 8.16-1.86 8.76c-.14.62-.51.77-1.03.48l-2.85-2.1-1.37 1.32a.71.71 0 0 1-.57.28l.2-2.9 5.27-4.76c.23-.2-.05-.32-.36-.12l-6.5 4.1-2.8-.88c-.61-.19-.62-.61.13-.9l10.94-4.22c.5-.18.95.12.79.9z"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Telegram</div>
+                  <div class="ac-hint" style="margin:0;">Let agents accept messages from their own Telegram bots. Each agent supplies its own bot token.</div>
+                </div>
+                <span id="ac-int-telegram-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
+              </div>
+
+              <div id="ac-int-telegram-configured" style="display:none;font-size:12px;">
+                <div class="ac-hint" style="margin:0;">Telegram is available on the agent's <strong>Connections</strong> tab. Each agent enters its own bot token there.</div>
+                <div style="margin-top:12px;display:flex;gap:8px;">
+                  <button id="ac-int-telegram-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                </div>
+              </div>
+
+              <div id="ac-int-telegram-form" style="display:block;">
+                <div class="ac-hint" style="margin:0 0 10px;">No app-level credentials needed. Enabling Telegram exposes it as a channel option to agent admins.</div>
+                <button id="ac-int-telegram-save" class="ac-btn ac-btn-primary">Enable Telegram</button>
+              </div>
+              <span id="ac-int-telegram-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+            </div>
+
+            <!-- ── Productivity ── -->
+            <div class="ac-section-header" style="margin-top:24px;">
+              <i data-lucide="briefcase" class="lucide-icon ac-section-icon"></i>
+              <div>
+                <h3 class="ac-section-title" style="font-size:14px;">Productivity</h3>
+                <p class="ac-section-desc">App-level credentials for mail, calendar and file providers. Users connect their personal accounts from the agent's Connections tab.</p>
+              </div>
             </div>
 
             <!-- Google OAuth Config -->
