@@ -2350,6 +2350,9 @@ const _CONN_ICONS = {
   reddit:    'message-square',
   snapchat:  'zap',
   twitch:    'tv',
+  // Agent Tools
+  codebase_admin: 'folder-cog',
+  create_tools:   'wrench',
 };
 
 async function _renderConnectionsTab(body, agent) {
@@ -2385,6 +2388,7 @@ async function _renderConnectionsTab(body, agent) {
     { key: 'integration', label: 'Integrations', hint: 'Services and data sources this agent can access.' },
     { key: 'social',      label: 'Social Media', hint: 'Social platforms this agent can post and interact on.' },
     { key: 'marketplace', label: 'Marketplaces', hint: 'E-commerce platforms this agent can list, browse, and manage items on.' },
+    { key: 'ability',     label: 'Agent Tools',  hint: 'Privileged capabilities — codebase edits and tool creation.' },
   ];
 
   for (const sec of sections) {

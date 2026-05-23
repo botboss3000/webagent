@@ -979,6 +979,10 @@ _CONNECTION_CATALOG = [
     {"connection_type": "etsy",      "section": "marketplace", "display_name": "Etsy",             "status": "available"},
     {"connection_type": "shopify",   "section": "marketplace", "display_name": "Shopify",          "status": "available"},
     {"connection_type": "amazon",    "section": "marketplace", "display_name": "Amazon Seller",    "status": "available"},
+
+    # ── Agent Tools (host-side privileged capabilities) ──
+    {"connection_type": "codebase_admin", "section": "ability", "display_name": "Codebase Admin", "status": "available"},
+    {"connection_type": "create_tools",   "section": "ability", "display_name": "Create Tools",   "status": "available"},
 ]
 
 

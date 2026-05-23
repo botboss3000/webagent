@@ -111,14 +111,14 @@ class ToolLoader:
     def __init__(self):
         self._client = get_db().get_raw_client()
 
-    async def load_tools(self, user_id: str, agent_id: str = "", agent_template_id: Optional[str] = None, is_admin_agent: bool = False) -> Dict[str, 'ToolInfo']:
+    async def load_tools(self, user_id: str, agent_id: str = "", agent_template_id: Optional[str] = None) -> Dict[str, 'ToolInfo']:
         """
         Load all active tools for a user from the tools table.
         Each tool's `code` field contains the full async function to execute.
 
         Args:
             user_id: The user ID to load tools for
-            agent_template_id: Active agent template id — gates admin-only tools.
+            agent_template_id: Active agent template id.
 
         Returns:
             Dictionary mapping tool names to ToolInfo objects
@@ -165,7 +165,6 @@ class ToolLoader:
             tools, user_id,
             agent_id=agent_id,
             agent_template_id=agent_template_id,
-            is_admin_agent=is_admin_agent,
             enabled_providers=enabled_providers,
         )
 
@@ -257,7 +256,7 @@ class ToolLoader:
                     requires_confirmation=bool(gt.destructive),
                 )
 
-    def _inject_builtin_tools(self, tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "", agent_template_id: Optional[str] = None, is_admin_agent: bool = False, enabled_providers: Optional[set] = None) -> None:
+    def _inject_builtin_tools(self, tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "", agent_template_id: Optional[str] = None, enabled_providers: Optional[set] = None) -> None:
         """Inject built-in tools that are always available regardless of DB state.
 
         `enabled_providers` is the set of integration connection_types enabled
@@ -268,55 +267,56 @@ class ToolLoader:
         if enabled_providers is None:
             enabled_providers = set()
 
-        # ── create_tool (always available) ──
-        from app.tools.registry import create_tool as _builtin_create_tool, VALID_NODE_IDS as _VALID_NODE_IDS
+        # ── create_tool (gated by the "create_tools" ability) ──
+        if "create_tools" in enabled_providers:
+            from app.tools.registry import create_tool as _builtin_create_tool, VALID_NODE_IDS as _VALID_NODE_IDS
 
-        async def _create_tool_wrapper(name, description, parameters, code, stages, destructive=False, agent_types=None):
-            return await _builtin_create_tool(
-                name=name,
-                description=description,
-                parameters=parameters,
-                code=code,
-                stages=stages,
-                destructive=destructive,
-                agent_types=agent_types,
-                user_id=user_id,
-            )
+            async def _create_tool_wrapper(name, description, parameters, code, stages, destructive=False, agent_types=None):
+                return await _builtin_create_tool(
+                    name=name,
+                    description=description,
+                    parameters=parameters,
+                    code=code,
+                    stages=stages,
+                    destructive=destructive,
+                    agent_types=agent_types,
+                    user_id=user_id,
+                )
 
-        tools["create_tool"] = ToolInfo(
-            name="create_tool",
-            handler=_create_tool_wrapper,
-            parameters={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Tool identifier (e.g. 'check_email')"},
-                    "description": {"type": "string", "description": "What the tool does (shown to model)"},
-                    "parameters": {"type": "object", "description": "JSON Schema describing tool inputs"},
-                    "code": {"type": "string", "description": "Full Python async function code. Must contain an async function with the same name as the tool."},
-                    "stages": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": (
-                            "REQUIRED. List of loop node IDs where this tool operates. "
-                            "Most tools: ['execute_tools']. Memory tools: ['memory_search', 'memory_save']. "
-                            f"Valid values: {', '.join(sorted(_VALID_NODE_IDS))}."
-                        ),
+            tools["create_tool"] = ToolInfo(
+                name="create_tool",
+                handler=_create_tool_wrapper,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Tool identifier (e.g. 'check_email')"},
+                        "description": {"type": "string", "description": "What the tool does (shown to model)"},
+                        "parameters": {"type": "object", "description": "JSON Schema describing tool inputs"},
+                        "code": {"type": "string", "description": "Full Python async function code. Must contain an async function with the same name as the tool."},
+                        "stages": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "REQUIRED. List of loop node IDs where this tool operates. "
+                                "Most tools: ['execute_tools']. Memory tools: ['memory_search', 'memory_save']. "
+                                f"Valid values: {', '.join(sorted(_VALID_NODE_IDS))}."
+                            ),
+                        },
+                        "destructive": {
+                            "type": "boolean",
+                            "description": "True if this tool writes, deletes, or has irreversible side-effects.",
+                            "default": False,
+                        },
+                        "agent_types": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Agent type names that may use this tool. Empty = all agent types.",
+                            "default": [],
+                        },
                     },
-                    "destructive": {
-                        "type": "boolean",
-                        "description": "True if this tool writes, deletes, or has irreversible side-effects.",
-                        "default": False,
-                    },
-                    "agent_types": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Agent type names that may use this tool. Empty = all agent types.",
-                        "default": [],
-                    },
+                    "required": ["name", "description", "parameters", "code", "stages"],
                 },
-                "required": ["name", "description", "parameters", "code", "stages"],
-            },
-        )
+            )
 
         # ── rate_skill (record user feedback on tool executions) ──
         async def _rate_skill_wrapper(skill_name: str, feedback_type: str, message: Optional[str] = None):
@@ -527,10 +527,11 @@ class ToolLoader:
             },
         )
 
-        # ── Source management tools — only injected for admin-agent sessions ──
-        # These are privileged tools (read/write/edit/delete files, run commands).
-        # They are scoped exclusively to sessions running the 'admin-agent' template.
-        if is_admin_agent or agent_template_id == "admin-agent":  # is_admin_agent is preferred; string fallback for legacy
+        # ── Source management tools — gated by the "codebase_admin" ability ──
+        # Privileged tools (read/write/edit/delete files, run commands). The
+        # app admin enables the ability in App Config → Agent Abilities, and
+        # the agent admin turns it on per-agent in the Abilities tab.
+        if "codebase_admin" in enabled_providers:
             try:
                 from app.admin.source_tools import inject_source_tools
                 inject_source_tools(tools, user_id)
@@ -1342,7 +1343,6 @@ async def load_tools(
     user_id: str,
     agent_id: str = "",
     agent_template_id: Optional[str] = None,
-    is_admin_agent: bool = False,
     allowed_tools: Optional[List[str]] = None,
     custom_tool_ids: Optional[List[str]] = None,
 ) -> Dict[str, ToolInfo]:
@@ -1351,8 +1351,8 @@ async def load_tools(
 
     Args:
         user_id: The user ID to load tools for.
-        agent_template_id: Active agent template id - gates admin-only and
-            delegation tools; pipeline agents skip delegation tools.
+        agent_template_id: Active agent template id - gates delegation tools;
+            pipeline agents skip delegation tools.
         allowed_tools: List of Tier-2 tool names that are DISABLED for this
             agent. Empty list means all Tier-2 tools are enabled.
             Tier-0 (admin) and Tier-1 (always-on) tools are never filtered.
@@ -1361,7 +1361,7 @@ async def load_tools(
     Returns:
         Dictionary mapping tool names to ToolInfo objects.
     """
-    tools = await _tool_loader.load_tools(user_id, agent_id=agent_id, agent_template_id=agent_template_id, is_admin_agent=is_admin_agent)
+    tools = await _tool_loader.load_tools(user_id, agent_id=agent_id, agent_template_id=agent_template_id)
 
     # Propagate requires_confirmation from BUILTIN_TOOL_METADATA to built-in ToolInfo entries.
     # DB tools already have this set from their row; built-ins need it applied from metadata.

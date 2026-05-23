@@ -529,7 +529,6 @@ async def stream_agent_events(
 
     load_start = time.time()
     tools = await load_tools(user_id, agent_id=agent_id, agent_template_id=agent_template_id,
-                              is_admin_agent=bool(_agent_rec.get("is_admin_agent")) if _agent_rec else False,
                               allowed_tools=allowed_tools)
     load_duration = int((time.time() - load_start) * 1000)
 
@@ -1283,10 +1282,7 @@ async def stream_agent_events(
 
                                 # Reload tools for the new template
                                 from app.tools.loader import load_tools as _load_tools
-                                # Fetch delegated agent record for is_admin_agent flag
-                                _deleg_rec = await db.resolve_agent(user_id, _tpl_id) if hasattr(db, "resolve_agent") else {}
-                                tools = await _load_tools(user_id, agent_id=agent_id, agent_template_id=_tpl_id,
-                                                          is_admin_agent=bool(_deleg_rec.get("is_admin_agent")))
+                                tools = await _load_tools(user_id, agent_id=agent_id, agent_template_id=_tpl_id)
 
                                 # Inject new agent's resolved prompts as a system message
                                 try:

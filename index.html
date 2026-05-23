@@ -1865,6 +1865,65 @@
               </details>
             </div>
 
+            <!-- ── Agent Tools (host-side privileged capabilities) ── -->
+            <div class="ac-section-header" style="margin-top:24px;">
+              <i data-lucide="wrench" class="lucide-icon ac-section-icon"></i>
+              <div>
+                <h3 class="ac-section-title" style="font-size:14px;">Agent Tools</h3>
+                <p class="ac-section-desc">Privileged capabilities for editing the running app. Enable here, then turn on per agent from the agent's <strong>Abilities</strong> tab.</p>
+              </div>
+            </div>
+
+            <!-- Codebase Admin -->
+            <div class="ac-card" id="ac-int-codebase_admin-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <i data-lucide="folder-cog" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#bb9af7;"></i>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Codebase Admin</div>
+                  <div class="ac-hint" style="margin:0;">Lets the agent read, write, edit, delete files, and run shell commands on the host.</div>
+                </div>
+                <span id="ac-int-codebase_admin-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
+              </div>
+
+              <div id="ac-int-codebase_admin-configured" style="display:none;font-size:12px;">
+                <div class="ac-hint" style="margin:0;">Codebase Admin is available on the agent's <strong>Abilities</strong> tab. Only agents that turn it on receive the source tools.</div>
+                <div style="margin-top:12px;display:flex;gap:8px;">
+                  <button id="ac-int-codebase_admin-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                </div>
+              </div>
+
+              <div id="ac-int-codebase_admin-form" style="display:block;">
+                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Codebase Admin as a toggle to agent admins. Destructive operations still require the user to confirm at chat time.</div>
+                <button id="ac-int-codebase_admin-save" class="ac-btn ac-btn-primary">Enable Codebase Admin</button>
+              </div>
+              <span id="ac-int-codebase_admin-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+            </div>
+
+            <!-- Create Tools -->
+            <div class="ac-card" id="ac-int-create_tools-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <i data-lucide="wrench" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#7dcfff;"></i>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Create Tools</div>
+                  <div class="ac-hint" style="margin:0;">Lets the agent define new tools in the database. Useful for cloud / ephemeral deployments where the codebase resets but the tools table persists.</div>
+                </div>
+                <span id="ac-int-create_tools-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
+              </div>
+
+              <div id="ac-int-create_tools-configured" style="display:none;font-size:12px;">
+                <div class="ac-hint" style="margin:0;">Create Tools is available on the agent's <strong>Abilities</strong> tab. The agent's <code>create_tool</code> handler writes to the <code>tools</code> table.</div>
+                <div style="margin-top:12px;display:flex;gap:8px;">
+                  <button id="ac-int-create_tools-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                </div>
+              </div>
+
+              <div id="ac-int-create_tools-form" style="display:block;">
+                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Create Tools as a toggle to agent admins. Tool code is sandboxed by a safety scanner that blocks filesystem and shell imports.</div>
+                <button id="ac-int-create_tools-save" class="ac-btn ac-btn-primary">Enable Create Tools</button>
+              </div>
+              <span id="ac-int-create_tools-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+            </div>
+
           </section>
 
           <!-- ── Storage (DB + Secrets + Migration) ── -->
