@@ -2418,6 +2418,11 @@ async function _renderConnectionsTab(body, agent) {
 
   body.innerHTML = '';
 
+  // Slot for transient banners (e.g. "Automation tab is now available").
+  const noticeSlot = document.createElement('div');
+  noticeSlot.className = 'conn-notice-slot';
+  body.appendChild(noticeSlot);
+
   if (!canEdit) {
     const notice = document.createElement('div');
     notice.style.cssText = 'font-size:11px;color:#565f89;padding:8px 12px;background:#1a1b26;border:1px solid #2a2a4a;border-radius:6px;margin-bottom:12px;line-height:1.5;';
@@ -2425,25 +2430,45 @@ async function _renderConnectionsTab(body, agent) {
     body.appendChild(notice);
   }
 
+  // Search field — filters cards by display name / connection type / section label.
+  const searchWrap = document.createElement('div');
+  searchWrap.className = 'conn-search-wrap';
+  const searchInput = document.createElement('input');
+  searchInput.type = 'search';
+  searchInput.className = 'conn-search-input agents-input';
+  searchInput.placeholder = 'Search abilities…';
+  searchInput.autocomplete = 'off';
+  const searchEmpty = document.createElement('div');
+  searchEmpty.className = 'conn-search-empty';
+  searchEmpty.textContent = 'No abilities match your search.';
+  searchEmpty.style.display = 'none';
+  searchWrap.appendChild(searchInput);
+  body.appendChild(searchWrap);
+  body.appendChild(searchEmpty);
+
   const sections = [
     { key: 'channel',     label: 'Channels',     hint: 'How this agent sends and receives messages.' },
     { key: 'integration', label: 'Integrations', hint: 'Services and data sources this agent can access.' },
     { key: 'social',      label: 'Social Media', hint: 'Social platforms this agent can post and interact on.' },
     { key: 'marketplace', label: 'Marketplaces', hint: 'E-commerce platforms this agent can list, browse, and manage items on.' },
-    { key: 'ability',     label: 'Agent Tools',  hint: 'Privileged capabilities — codebase edits and tool creation.' },
+    { key: 'ability',     label: 'Agent Tools',  hint: 'Privileged capabilities — codebase edits, tool creation, automation.' },
   ];
+
+  // Track cards + their haystack for search filtering, plus their section
+  // element so we can hide section headers when every card inside is filtered out.
+  const indexed = [];
+  const sectionEls = [];
 
   for (const sec of sections) {
     const items = connections.filter(c => c.section === sec.key);
     if (!items.length) continue;
 
     const secEl = document.createElement('div');
-    secEl.className = 'conn-section collapsed';
+    secEl.className = 'conn-section';
 
     const header = document.createElement('div');
-    header.className = 'conn-section-header';
+    header.className = 'conn-section-header conn-section-header-static';
     header.innerHTML = `
-      <span class="conn-section-chevron">${icon('chevron-right', { size: '12px' })}</span>
       <span class="conn-section-label">${_esc(sec.label)}</span>
       <span class="conn-section-hint">${_esc(sec.hint)}</span>
     `;
@@ -2452,21 +2477,57 @@ async function _renderConnectionsTab(body, agent) {
     grid.className = 'conn-grid';
 
     for (const conn of items) {
-      grid.appendChild(_buildConnectionCard(agent, conn, canEdit));
+      const card = _buildConnectionCard(agent, conn, canEdit);
+      const haystack = (
+        (conn.display_name || '') + ' ' +
+        (conn.connection_type || '') + ' ' +
+        sec.label
+      ).toLowerCase();
+      indexed.push({ card, haystack });
+      grid.appendChild(card);
     }
-
-    header.addEventListener('click', () => {
-      const isCollapsed = secEl.classList.toggle('collapsed');
-      header.querySelector('.conn-section-chevron').innerHTML = icon(isCollapsed ? 'chevron-right' : 'chevron-down', { size: '12px' });
-    });
 
     secEl.appendChild(header);
     secEl.appendChild(grid);
     body.appendChild(secEl);
+    sectionEls.push({ secEl, grid });
   }
+
+  const applySearch = () => {
+    const q = searchInput.value.trim().toLowerCase();
+    let visible = 0;
+    for (const { card, haystack } of indexed) {
+      const match = !q || haystack.includes(q);
+      card.style.display = match ? '' : 'none';
+      if (match) visible++;
+    }
+    // Hide section wrappers whose grids have no visible cards left.
+    for (const { secEl, grid } of sectionEls) {
+      const anyVisible = Array.from(grid.children).some(c => c.style.display !== 'none');
+      secEl.style.display = anyVisible ? '' : 'none';
+    }
+    searchEmpty.style.display = (q && visible === 0) ? 'block' : 'none';
+  };
+  searchInput.addEventListener('input', applySearch);
 
   // Populate Telegram mode badge and wire Test button
   _loadTelegramCardStatus(body);
+}
+
+function _showAbilitiesNotice(agent, text) {
+  const panel = document.querySelector(`.agent-detail-panel[data-agent-id="${agent.id}"]`);
+  if (!panel) return;
+  const slot = panel.querySelector('.conn-notice-slot');
+  if (!slot) return;
+  slot.innerHTML = '';
+  const banner = document.createElement('div');
+  banner.className = 'conn-banner-notice';
+  banner.textContent = text;
+  slot.appendChild(banner);
+  setTimeout(() => {
+    banner.classList.add('fade-out');
+    setTimeout(() => { if (banner.parentNode) banner.remove(); }, 400);
+  }, 4000);
 }
 
 async function _loadTelegramCardStatus(body) {
@@ -2891,6 +2952,9 @@ async function _saveConnection(agent, conn, cardEl, enabled) {
         if (state) {
           state.automationEnabled = enabled;
           _refreshAgentTabBar(agent);
+        }
+        if (enabled) {
+          _showAbilitiesNotice(agent, '✓ Automation tab is now available above.');
         }
       }
       if (msgEl) { msgEl.textContent = '✓ Saved'; }
