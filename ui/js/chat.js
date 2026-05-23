@@ -355,6 +355,18 @@ export function initChat() {
   document.getElementById('chat-expand-close').addEventListener('click', closeChatExpand);
   document.getElementById('chat-expand-backdrop').addEventListener('click', closeChatExpand);
 
+  // Reserve space at the bottom of the scrollable message list equal to the floating
+  // input area's height so the last message clears the absolutely-positioned input.
+  // Tracks the textarea as it grows with multi-line input.
+  const inputArea = document.getElementById('chat-input-area');
+  const messagesInner = document.getElementById('chat-messages-inner');
+  if (inputArea && messagesInner && typeof ResizeObserver !== 'undefined') {
+    const syncPad = () => {
+      messagesInner.style.paddingBottom = inputArea.offsetHeight + 'px';
+    };
+    new ResizeObserver(syncPad).observe(inputArea);
+    syncPad();
+  }
 }
 
 export { escapeHtml };

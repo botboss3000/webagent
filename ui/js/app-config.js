@@ -812,24 +812,53 @@ async function _loadIntegrations() {
 
 function _makeCopyBtn() {
   const btn = document.createElement('button');
+  btn.type = 'button'; // prevent any accidental form submission
   btn.className = 'ac-uri-copy-btn';
   btn.title = 'Copy';
+  // pointer-events:none on inner icon so clicks always land on the button
   btn.style.cssText = 'background:none;border:none;cursor:pointer;padding:2px;color:var(--fg-3);display:inline-flex;align-items:center;flex-shrink:0;line-height:0;';
-  btn.innerHTML = icon('copy', { size: '13px' });
+  btn.innerHTML = `<span style="pointer-events:none;display:inline-flex;">${icon('copy', { size: '13px' })}</span>`;
   return btn;
 }
 
+function _copyToClipboard(text) {
+  // Try modern API first
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text);
+  }
+  // Fallback for non-secure contexts (http://<ip>:8080 etc.)
+  return new Promise((resolve, reject) => {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      ok ? resolve() : reject(new Error('execCommand copy failed'));
+    } catch (e) { reject(e); }
+  });
+}
+
 function _bindUri(btn, getText) {
-  btn.onclick = () => {
-    navigator.clipboard.writeText(getText()).then(() => {
-      btn.innerHTML = icon('check', { size: '13px' });
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const text = getText();
+    _copyToClipboard(text).then(() => {
+      btn.innerHTML = `<span style="pointer-events:none;display:inline-flex;">${icon('check', { size: '13px' })}</span>`;
       btn.style.color = 'var(--success)';
       setTimeout(() => {
-        btn.innerHTML = icon('copy', { size: '13px' });
+        btn.innerHTML = `<span style="pointer-events:none;display:inline-flex;">${icon('copy', { size: '13px' })}</span>`;
         btn.style.color = 'var(--fg-3)';
       }, 1500);
+    }).catch((err) => {
+      console.error('[app-config] copy failed:', err);
+      btn.title = 'Copy failed: ' + (err?.message || err);
     });
-  };
+  });
 }
 
 // Attaches (or updates) a Lucide copy button next to a redirect-URI <code> element.
