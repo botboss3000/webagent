@@ -541,7 +541,10 @@ async function _renderAutomationTab(body, agent, panelEl) {
 
   const intro = document.createElement('div');
   intro.style.cssText = 'font-size:12px;color:var(--fg-2);padding:8px 10px;background:var(--accent-soft);border:1px solid var(--border);border-radius:6px;margin-bottom:10px;line-height:1.5;';
-  intro.textContent = 'Describe scheduled work in plain English (one task per paragraph). Saving re-parses the file into structured tasks shown below.';
+  intro.innerHTML = 'Describe scheduled work AND event triggers in plain English (one trigger per paragraph). Examples: ' +
+    '<em>"every weekday at 9am, send me a Telegram summary"</em> · ' +
+    '<em>"when an email arrives from any airline, summarize it"</em>. ' +
+    'Saving re-parses the file; both lists below update.';
   body.appendChild(intro);
 
   const textWrap = document.createElement('div');
@@ -580,6 +583,23 @@ async function _renderAutomationTab(body, agent, panelEl) {
   tasksList.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin-top:8px;';
   body.appendChild(tasksList);
 
+  // ── Event triggers section ───────────────────────────────────────────
+  const eventsHeader = document.createElement('div');
+  eventsHeader.style.cssText = 'margin-top:22px;font-size:12px;font-weight:600;color:var(--fg-2);text-transform:uppercase;letter-spacing:0.5px;display:flex;align-items:center;justify-content:space-between;';
+  const eventsHeaderLabel = document.createElement('span');
+  eventsHeaderLabel.textContent = 'Event triggers';
+  const eventsHeaderHint = document.createElement('span');
+  eventsHeaderHint.style.cssText = 'font-size:10px;font-weight:400;text-transform:none;letter-spacing:0;color:var(--fg-3);';
+  eventsHeaderHint.textContent = 'Push / poll triggers (Gmail, Slack, Calendar, …)';
+  eventsHeader.appendChild(eventsHeaderLabel);
+  eventsHeader.appendChild(eventsHeaderHint);
+  body.appendChild(eventsHeader);
+
+  const eventsList = document.createElement('div');
+  eventsList.className = 'agents-automation-events';
+  eventsList.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin-top:8px;';
+  body.appendChild(eventsList);
+
   function renderTasks(tasks) {
     tasksList.innerHTML = '';
     if (!tasks || !tasks.length) {
@@ -594,12 +614,36 @@ async function _renderAutomationTab(body, agent, panelEl) {
     }
   }
 
+  function renderEvents(subs) {
+    eventsList.innerHTML = '';
+    if (!subs || !subs.length) {
+      const empty = document.createElement('div');
+      empty.style.cssText = 'font-size:12px;color:var(--fg-3);padding:8px;';
+      empty.textContent = 'No event triggers yet. Try a line like "when an email arrives from any airline, summarize it".';
+      eventsList.appendChild(empty);
+      return;
+    }
+    for (const s of subs) {
+      eventsList.appendChild(_renderEventTriggerRow(agent, s, availableChannels, () => loadEvents()));
+    }
+  }
+
   async function loadTasks() {
     try {
       const r = await fetch(`/api/v1/agents/${encodeURIComponent(agent.id)}/automations?user_id=${encodeURIComponent(app.currentUserId)}`);
       if (r.ok) {
         const d = await r.json();
         renderTasks(d.tasks || []);
+      }
+    } catch (_) {}
+  }
+
+  async function loadEvents() {
+    try {
+      const r = await fetch(`/api/v1/agents/${encodeURIComponent(agent.id)}/event-subscriptions?user_id=${encodeURIComponent(app.currentUserId)}`);
+      if (r.ok) {
+        const d = await r.json();
+        renderEvents(d.subscriptions || []);
       }
     } catch (_) {}
   }
@@ -635,13 +679,18 @@ async function _renderAutomationTab(body, agent, panelEl) {
       } else {
         await loadTasks();
       }
+      if (Array.isArray(d.automation_event_subscriptions)) {
+        renderEvents(d.automation_event_subscriptions);
+      } else {
+        await loadEvents();
+      }
     } catch (e) {
       saveMsg.textContent = `Error: ${e.message}`;
       saveMsg.style.color = 'var(--danger)';
     }
   });
 
-  await loadTasks();
+  await Promise.all([loadTasks(), loadEvents()]);
 }
 
 function _renderAutomationTaskRow(agent, task, channels, onRefresh) {
@@ -788,6 +837,258 @@ function _renderAutomationTaskRow(agent, task, channels, onRefresh) {
     } catch (e) {
       runBtn.textContent = 'Err';
       runBtn.disabled = false;
+    }
+  });
+
+  row.appendChild(right);
+  return row;
+}
+
+// ── Event trigger row (push / poll subscriptions) ─────────────────────────────
+
+const _EVENT_HEALTH_STYLE = {
+  ok:             { color: 'var(--success)', label: 'Active' },
+  expiring_soon:  { color: '#d97706',        label: 'Expiring soon' },
+  expired:        { color: 'var(--danger)',  label: 'Expired' },
+  error:          { color: 'var(--danger)',  label: 'Error' },
+  disabled:       { color: 'var(--fg-3)',    label: 'Disabled' },
+};
+
+function _renderEventTriggerRow(agent, sub, channels, onRefresh) {
+  const row = document.createElement('div');
+  row.className = 'agents-automation-row';
+  row.style.cssText = 'border:1px solid var(--border);border-radius:6px;padding:10px 12px;background:var(--bg-elev);display:grid;grid-template-columns:1fr auto;gap:8px;';
+
+  const left = document.createElement('div');
+  left.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
+
+  // Title + health badge
+  const titleRow = document.createElement('div');
+  titleRow.style.cssText = 'display:flex;align-items:center;gap:8px;';
+  const title = document.createElement('div');
+  title.style.cssText = 'font-size:13px;font-weight:600;color:var(--fg-1);';
+  title.textContent = sub.task_label || '(unlabeled)';
+  titleRow.appendChild(title);
+
+  const health = _EVENT_HEALTH_STYLE[sub.health] || _EVENT_HEALTH_STYLE.ok;
+  const healthBadge = document.createElement('span');
+  healthBadge.style.cssText = `font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:${health.color};border:1px solid ${health.color};border-radius:3px;padding:1px 6px;background:transparent;`;
+  healthBadge.textContent = health.label;
+  titleRow.appendChild(healthBadge);
+  left.appendChild(titleRow);
+
+  // Source + event_type
+  const trigger = document.createElement('div');
+  trigger.style.cssText = 'font-size:11px;color:var(--accent);font-family:monospace;';
+  trigger.textContent = `${sub.source}.${sub.event_type}`;
+  left.appendChild(trigger);
+
+  // Filter summary (compact)
+  const filterDict = sub.filter || {};
+  const filterKeys = Object.keys(filterDict);
+  if (filterKeys.length) {
+    const filt = document.createElement('div');
+    filt.style.cssText = 'font-size:11px;color:var(--fg-3);font-family:monospace;';
+    filt.textContent = 'filter: ' + filterKeys.map(k => `${k}=${JSON.stringify(filterDict[k])}`).join(', ');
+    left.appendChild(filt);
+  }
+
+  // Meta line: last event, fire count, expiration
+  const meta = document.createElement('div');
+  meta.style.cssText = 'font-size:11px;color:var(--fg-3);';
+  const parts = [];
+  parts.push(sub.last_event_at ? `last fired: ${new Date(sub.last_event_at).toLocaleString()}` : 'never fired');
+  if (sub.fire_count) parts.push(`${sub.fire_count} fires`);
+  if (sub.external_expiration_at) {
+    parts.push(`watch expires: ${new Date(sub.external_expiration_at).toLocaleString()}`);
+  } else if (sub.last_polled_at) {
+    parts.push(`polled: ${new Date(sub.last_polled_at).toLocaleString()}`);
+  }
+  meta.textContent = parts.join(' · ');
+  left.appendChild(meta);
+
+  if (sub.last_error) {
+    const err = document.createElement('div');
+    err.style.cssText = 'font-size:11px;color:var(--danger);';
+    err.textContent = `Error: ${sub.last_error}`;
+    left.appendChild(err);
+  }
+
+  // Original English phrase (if available)
+  if (sub.trigger_natural) {
+    const tn = document.createElement('div');
+    tn.style.cssText = 'font-size:11px;color:var(--fg-2);font-style:italic;margin-top:2px;white-space:pre-wrap;';
+    tn.textContent = `> ${sub.trigger_natural}`;
+    left.appendChild(tn);
+  }
+
+  // Prompt preview (collapsed)
+  const promptPreview = document.createElement('div');
+  promptPreview.style.cssText = 'font-size:11px;color:var(--fg-2);margin-top:4px;white-space:pre-wrap;';
+  promptPreview.textContent = sub.prompt ? `prompt: ${sub.prompt}` : '';
+  left.appendChild(promptPreview);
+
+  row.appendChild(left);
+
+  // ── Right column: controls ───────────────────────────────────────────
+  const right = document.createElement('div');
+  right.style.cssText = 'display:flex;flex-direction:column;gap:6px;align-items:flex-end;min-width:180px;';
+
+  const enableLbl = document.createElement('label');
+  enableLbl.style.cssText = 'display:flex;align-items:center;gap:5px;font-size:11px;color:var(--fg-2);cursor:pointer;';
+  const enableCb = document.createElement('input');
+  enableCb.type = 'checkbox';
+  enableCb.checked = !!sub.enabled;
+  enableLbl.appendChild(enableCb);
+  enableLbl.appendChild(document.createTextNode('Enabled'));
+  right.appendChild(enableLbl);
+
+  const silentLbl = document.createElement('label');
+  silentLbl.style.cssText = 'display:flex;align-items:center;gap:5px;font-size:11px;color:var(--fg-2);cursor:pointer;';
+  const silentCb = document.createElement('input');
+  silentCb.type = 'checkbox';
+  silentCb.checked = !!sub.silent;
+  silentLbl.appendChild(silentCb);
+  silentLbl.appendChild(document.createTextNode('Silent'));
+  right.appendChild(silentLbl);
+
+  // Channel: a blank entry meaning "ask the user at fire time" (per design)
+  const chanWrap = document.createElement('div');
+  chanWrap.style.cssText = 'display:flex;flex-direction:column;gap:2px;align-items:flex-end;';
+  const chanSel = document.createElement('select');
+  chanSel.className = 'agents-input';
+  chanSel.style.cssText = 'font-size:11px;padding:3px 6px;min-width:150px;';
+  const blank = document.createElement('option');
+  blank.value = '';
+  blank.textContent = '— ask the user —';
+  chanSel.appendChild(blank);
+  for (const c of channels) {
+    const opt = document.createElement('option');
+    opt.value = c;
+    opt.textContent = c;
+    if (sub.channel === c) opt.selected = true;
+    chanSel.appendChild(opt);
+  }
+  chanWrap.appendChild(chanSel);
+
+  const recipInput = document.createElement('input');
+  recipInput.type = 'text';
+  recipInput.className = 'agents-input';
+  recipInput.placeholder = 'recipient (optional)';
+  recipInput.style.cssText = 'font-size:11px;padding:3px 6px;min-width:150px;';
+  recipInput.value = sub.channel_recipient || '';
+  chanWrap.appendChild(recipInput);
+  right.appendChild(chanWrap);
+
+  const btnRow1 = document.createElement('div');
+  btnRow1.style.cssText = 'display:flex;gap:5px;margin-top:4px;';
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'agents-btn';
+  saveBtn.textContent = 'Save';
+  saveBtn.style.cssText = 'font-size:11px;padding:3px 10px;';
+  const testBtn = document.createElement('button');
+  testBtn.className = 'agents-btn';
+  testBtn.textContent = 'Test fire';
+  testBtn.style.cssText = 'font-size:11px;padding:3px 10px;';
+  btnRow1.appendChild(saveBtn);
+  btnRow1.appendChild(testBtn);
+  right.appendChild(btnRow1);
+
+  const btnRow2 = document.createElement('div');
+  btnRow2.style.cssText = 'display:flex;gap:5px;';
+  const reRegBtn = document.createElement('button');
+  reRegBtn.className = 'agents-btn';
+  reRegBtn.textContent = 'Re-register';
+  reRegBtn.style.cssText = 'font-size:11px;padding:3px 10px;';
+  reRegBtn.title = 'Re-run register_subscription at the provider (use after a Pub/Sub topic recreate, OAuth reconnect, or to clear an error state)';
+  const delBtn = document.createElement('button');
+  delBtn.className = 'agents-btn';
+  delBtn.textContent = 'Delete';
+  delBtn.style.cssText = 'font-size:11px;padding:3px 10px;color:var(--danger);';
+  btnRow2.appendChild(reRegBtn);
+  btnRow2.appendChild(delBtn);
+  right.appendChild(btnRow2);
+
+  // ── Wire actions ─────────────────────────────────────────────────────
+  saveBtn.addEventListener('click', async () => {
+    saveBtn.textContent = '…';
+    try {
+      await fetch(`/api/v1/agents/${encodeURIComponent(agent.id)}/event-subscriptions/${encodeURIComponent(sub.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: app.currentUserId,
+          enabled: enableCb.checked,
+          silent: silentCb.checked,
+          channel: chanSel.value || null,
+          channel_recipient: recipInput.value || null,
+        }),
+      });
+      saveBtn.textContent = '✓';
+      setTimeout(() => { saveBtn.textContent = 'Save'; }, 1200);
+      onRefresh && onRefresh();
+    } catch (e) {
+      saveBtn.textContent = 'Err';
+    }
+  });
+
+  testBtn.addEventListener('click', async () => {
+    testBtn.textContent = 'Firing…';
+    testBtn.disabled = true;
+    try {
+      const r = await fetch(`/api/v1/agents/${encodeURIComponent(agent.id)}/event-subscriptions/${encodeURIComponent(sub.id)}/test-fire?user_id=${encodeURIComponent(app.currentUserId)}`, {
+        method: 'POST',
+      });
+      const d = await r.json();
+      testBtn.textContent = (d?.result?.ok === false) ? 'Error' : 'Done';
+      setTimeout(() => { testBtn.textContent = 'Test fire'; testBtn.disabled = false; }, 1500);
+      onRefresh && onRefresh();
+    } catch (e) {
+      testBtn.textContent = 'Err';
+      testBtn.disabled = false;
+    }
+  });
+
+  reRegBtn.addEventListener('click', async () => {
+    reRegBtn.textContent = '…';
+    reRegBtn.disabled = true;
+    try {
+      const r = await fetch(`/api/v1/agents/${encodeURIComponent(agent.id)}/event-subscriptions/${encodeURIComponent(sub.id)}/re-register?user_id=${encodeURIComponent(app.currentUserId)}`, {
+        method: 'POST',
+      });
+      if (r.ok) {
+        reRegBtn.textContent = '✓';
+      } else {
+        const d = await r.json().catch(() => ({}));
+        reRegBtn.textContent = 'Err';
+        reRegBtn.title = d.detail || 'register failed';
+      }
+      setTimeout(() => { reRegBtn.textContent = 'Re-register'; reRegBtn.disabled = false; }, 1800);
+      onRefresh && onRefresh();
+    } catch (e) {
+      reRegBtn.textContent = 'Err';
+      reRegBtn.disabled = false;
+    }
+  });
+
+  delBtn.addEventListener('click', async () => {
+    if (!confirm(`Delete event trigger "${sub.task_label || sub.source}"?\n\nThe provider-side watch will be stopped. The English line in your Automation file is left in place — a future save will re-create the trigger unless you remove the line.`)) return;
+    delBtn.textContent = '…';
+    delBtn.disabled = true;
+    try {
+      const r = await fetch(`/api/v1/agents/${encodeURIComponent(agent.id)}/event-subscriptions/${encodeURIComponent(sub.id)}?user_id=${encodeURIComponent(app.currentUserId)}`, {
+        method: 'DELETE',
+      });
+      if (r.ok) {
+        row.remove();
+        onRefresh && onRefresh();
+      } else {
+        delBtn.textContent = 'Err';
+        delBtn.disabled = false;
+      }
+    } catch (e) {
+      delBtn.textContent = 'Err';
+      delBtn.disabled = false;
     }
   });
 

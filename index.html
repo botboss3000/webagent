@@ -616,6 +616,9 @@
             <button type="button" class="ac-tab" data-section="automation" role="tab">
               <i data-lucide="clock" class="lucide-icon ac-tab-icon"></i>Automation
             </button>
+            <button type="button" class="ac-tab" data-section="events" role="tab">
+              <i data-lucide="radio" class="lucide-icon ac-tab-icon"></i>Event Sources
+            </button>
           </div>
           <button type="button" id="app-config-tabs-chev-right" class="ac-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
         </div>
@@ -2180,6 +2183,51 @@
 
               <div class="ac-info-banner" style="margin-top:10px;font-size:11px;">
                 The fire webhook (<code>POST /api/v1/automations/fire/&lt;id&gt;?token=&lt;...&gt;</code>) must be reachable from the chosen provider. Set <code>WEBHOOK_BASE_URL</code> to your public server URL, or fill in the per-provider <code>fire_base_url</code> field below.
+              </div>
+            </div>
+          </section>
+
+          <!-- ── Event Sources ── -->
+          <section id="ac-section-events" class="ac-section">
+            <div class="ac-section-header">
+              <i data-lucide="radio" class="lucide-icon ac-section-icon"></i>
+              <div>
+                <h2 class="ac-section-title">Event Sources</h2>
+                <p class="ac-section-desc">Push &amp; poll triggers that fire agents when something happens at a connected service (Gmail, Slack, Calendar, Drive, …).</p>
+              </div>
+            </div>
+
+            <div class="ac-card">
+              <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
+                <i data-lucide="activity" class="lucide-icon" style="width:14px;height:14px;color:var(--accent);"></i>
+                Runtime
+                <span id="ac-events-runtime-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+              </div>
+              <div id="ac-events-runtime-info" class="ac-hint" style="margin-top:8px;font-size:11px;"></div>
+              <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;">
+                <button id="ac-events-refresh" class="ac-btn">Refresh</button>
+              </div>
+            </div>
+
+            <div class="ac-card" style="margin-top:14px;">
+              <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
+                <i data-lucide="list" class="lucide-icon" style="width:14px;height:14px;color:var(--accent);"></i>
+                Sources
+              </div>
+              <div class="ac-card-sublabel">Each row is one source plugin. Use <em>Re-register all</em> after recreating provider infrastructure (e.g. a new Pub/Sub topic). Use <em>Stop all</em> before deleting it.</div>
+              <div id="ac-events-sources" style="margin-top:12px;display:flex;flex-direction:column;gap:10px;">
+                <div style="font-size:12px;color:var(--muted);padding:8px;">Loading sources…</div>
+              </div>
+            </div>
+
+            <div class="ac-card" style="margin-top:14px;">
+              <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
+                <i data-lucide="scroll-text" class="lucide-icon" style="width:14px;height:14px;color:var(--accent);"></i>
+                Recent deliveries
+              </div>
+              <div class="ac-card-sublabel">Last 50 fired events across all agents. <code>status=test</code> means a manual test-fire from the agent UI.</div>
+              <div id="ac-events-deliveries" style="margin-top:10px;font-size:11px;font-family:monospace;max-height:280px;overflow-y:auto;background:var(--bg-0);border:1px solid var(--border);border-radius:6px;padding:8px;color:var(--fg-3);">
+                <div>(no deliveries yet)</div>
               </div>
             </div>
           </section>
