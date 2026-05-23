@@ -70,13 +70,13 @@ class DropboxSource(EventSource):
         return base
 
     async def register_subscription(
-        self, *, owner_user_id: str, event_type: str, filter_dict: Dict[str, Any]
+        self, *, owner_user_id: str, agent_id: str, event_type: str, filter_dict: Dict[str, Any]
     ) -> SubscriptionRegistration:
         # Establish baseline cursor for this user's root (or a path_prefix).
         path = filter_dict.get("path_prefix") or ""
         body = {"path": path, "recursive": True, "include_deleted": True}
         resp = await oauth_api_call(
-            owner_user_id, "dropbox", "POST",
+            owner_user_id, agent_id, "dropbox", "POST",
             "https://api.dropboxapi.com/2/files/list_folder/get_latest_cursor",
             json_body=body,
         )
@@ -88,7 +88,7 @@ class DropboxSource(EventSource):
         account_id = ""
         try:
             me = await oauth_api_call(
-                owner_user_id, "dropbox", "POST",
+                owner_user_id, agent_id, "dropbox", "POST",
                 "https://api.dropboxapi.com/2/users/get_current_account",
                 json_body=None,
             )
@@ -154,7 +154,7 @@ class DropboxSource(EventSource):
                     except Exception:
                         meta = {}
                 cursor = meta.get("cursor") or ""
-                entries, new_cursor = await self._list_continue(row["owner_user_id"], cursor)
+                entries, new_cursor = await self._list_continue(row["owner_user_id"], row.get("agent_id", ""), cursor)
                 if new_cursor and new_cursor != cursor:
                     meta["cursor"] = new_cursor
                     try:
@@ -168,14 +168,14 @@ class DropboxSource(EventSource):
                     out.append(self._build_event(row["owner_user_id"], e))
         return out
 
-    async def _list_continue(self, user_id: str, cursor: str) -> tuple[List[dict], Optional[str]]:
+    async def _list_continue(self, user_id: str, agent_id: str, cursor: str) -> tuple[List[dict], Optional[str]]:
         if not cursor:
             return [], cursor
         entries: List[dict] = []
         new_cursor = cursor
         for _ in range(20):
             resp = await oauth_api_call(
-                user_id, "dropbox", "POST",
+                user_id, agent_id, "dropbox", "POST",
                 "https://api.dropboxapi.com/2/files/list_folder/continue",
                 json_body={"cursor": new_cursor},
             )

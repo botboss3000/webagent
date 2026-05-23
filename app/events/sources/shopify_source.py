@@ -24,7 +24,7 @@ from fastapi import Request
 
 from app.events.base import EventSource
 from app.events.types import NormalizedEvent, SubscriptionRegistration
-from app.integrations.oauth_helper import oauth_api_call
+from app.integrations.oauth_helper import oauth_api_call, oauth_label
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ class ShopifySource(EventSource):
         return base
 
     async def register_subscription(
-        self, *, owner_user_id: str, event_type: str, filter_dict: Dict[str, Any]
+        self, *, owner_user_id: str, agent_id: str, event_type: str, filter_dict: Dict[str, Any]
     ) -> SubscriptionRegistration:
         webhook_url = _webhook_url()
         if not webhook_url:
@@ -79,7 +79,7 @@ class ShopifySource(EventSource):
         # Read shop domain from the user's stored shopify auth_element config.
         from app.db import get_db
         db = get_db()
-        elem = await db.auth_element_get(owner_user_id, "shopify", "oauth")
+        elem = await db.auth_element_get(owner_user_id, "shopify", oauth_label(agent_id))
         cfg = {}
         if elem:
             try:
@@ -92,7 +92,7 @@ class ShopifySource(EventSource):
 
         body = {"webhook": {"topic": topic, "address": webhook_url, "format": "json"}}
         resp = await oauth_api_call(
-            owner_user_id, "shopify", "POST",
+            owner_user_id, agent_id, "shopify", "POST",
             f"https://{shop}/admin/api/2023-10/webhooks.json",
             json_body=body,
         )
@@ -118,7 +118,7 @@ class ShopifySource(EventSource):
             return
         try:
             await oauth_api_call(
-                subscription_row["owner_user_id"], "shopify", "DELETE",
+                subscription_row["owner_user_id"], subscription_row.get("agent_id", ""), "shopify", "DELETE",
                 f"https://{shop}/admin/api/2023-10/webhooks/{wh_id}.json",
             )
         except Exception as e:

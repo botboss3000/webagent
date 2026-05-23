@@ -82,6 +82,7 @@ async def _register_event_sub(db, sub_row: dict, parsed: ParsedEventSubscription
             return
         reg = await source.register_subscription(
             owner_user_id=sub_row["owner_user_id"],
+            agent_id=sub_row.get("agent_id", ""),
             event_type=parsed.event_type,
             filter_dict=parsed.filter_dict,
         )

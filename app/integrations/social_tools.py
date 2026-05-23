@@ -29,28 +29,28 @@ from app.integrations.oauth_helper import (
 _TW = "https://api.twitter.com/2"
 
 
-async def twitter_me(user_id: str) -> str:
-    result = await oauth_api_call(user_id, "twitter", "GET", f"{_TW}/users/me")
+async def twitter_me(user_id: str, agent_id: str) -> str:
+    result = await oauth_api_call(user_id, agent_id, "twitter", "GET", f"{_TW}/users/me")
     if result.get("status") == "not_connected":
         return not_connected_payload("twitter")
     return json.dumps(result)
 
 
-async def twitter_post_tweet(user_id: str, text: str, reply_to_tweet_id: str = "") -> str:
+async def twitter_post_tweet(user_id: str, agent_id: str, text: str, reply_to_tweet_id: str = "") -> str:
     if not text:
         return json.dumps({"status": "error", "message": "text required"})
     body: dict = {"text": text}
     if reply_to_tweet_id:
         body["reply"] = {"in_reply_to_tweet_id": reply_to_tweet_id}
-    result = await oauth_api_call(user_id, "twitter", "POST", f"{_TW}/tweets", json_body=body)
+    result = await oauth_api_call(user_id, agent_id, "twitter", "POST", f"{_TW}/tweets", json_body=body)
     if result.get("status") == "not_connected":
         return not_connected_payload("twitter")
     return json.dumps(result)
 
 
-async def twitter_list_my_tweets(user_id: str, max_results: int = 10) -> str:
+async def twitter_list_my_tweets(user_id: str, agent_id: str, max_results: int = 10) -> str:
     # Need our user id first (Twitter v2 requires :id path).
-    me = await oauth_api_call(user_id, "twitter", "GET", f"{_TW}/users/me")
+    me = await oauth_api_call(user_id, agent_id, "twitter", "GET", f"{_TW}/users/me")
     if me.get("status") == "not_connected":
         return not_connected_payload("twitter")
     if me.get("status") != "ok":
@@ -59,7 +59,7 @@ async def twitter_list_my_tweets(user_id: str, max_results: int = 10) -> str:
     if not me_id:
         return json.dumps({"status": "error", "message": "could not resolve Twitter user id", "body": me.get("body")})
     result = await oauth_api_call(
-        user_id, "twitter", "GET",
+        user_id, agent_id, "twitter", "GET",
         f"{_TW}/users/{me_id}/tweets",
         params={
             "max_results": max(5, min(int(max_results or 10), 100)),
@@ -74,14 +74,14 @@ async def twitter_list_my_tweets(user_id: str, max_results: int = 10) -> str:
 _LI = "https://api.linkedin.com"
 
 
-async def linkedin_me(user_id: str) -> str:
-    result = await oauth_api_call(user_id, "linkedin", "GET", f"{_LI}/v2/userinfo")
+async def linkedin_me(user_id: str, agent_id: str) -> str:
+    result = await oauth_api_call(user_id, agent_id, "linkedin", "GET", f"{_LI}/v2/userinfo")
     if result.get("status") == "not_connected":
         return not_connected_payload("linkedin")
     return json.dumps(result)
 
 
-async def linkedin_post(user_id: str, text: str, visibility: str = "PUBLIC") -> str:
+async def linkedin_post(user_id: str, agent_id: str, text: str, visibility: str = "PUBLIC") -> str:
     """Share a text post to the connected user's LinkedIn feed.
 
     visibility: PUBLIC | CONNECTIONS.
@@ -89,7 +89,7 @@ async def linkedin_post(user_id: str, text: str, visibility: str = "PUBLIC") -> 
     if not text:
         return json.dumps({"status": "error", "message": "text required"})
 
-    me = await oauth_api_call(user_id, "linkedin", "GET", f"{_LI}/v2/userinfo")
+    me = await oauth_api_call(user_id, agent_id, "linkedin", "GET", f"{_LI}/v2/userinfo")
     if me.get("status") == "not_connected":
         return not_connected_payload("linkedin")
     if me.get("status") != "ok":
@@ -112,7 +112,7 @@ async def linkedin_post(user_id: str, text: str, visibility: str = "PUBLIC") -> 
         "X-Restli-Protocol-Version": "2.0.0",
     }
     result = await oauth_api_call(
-        user_id, "linkedin", "POST",
+        user_id, agent_id, "linkedin", "POST",
         f"{_LI}/rest/posts",
         json_body=body,
         headers=headers,
@@ -125,9 +125,9 @@ async def linkedin_post(user_id: str, text: str, visibility: str = "PUBLIC") -> 
 _META = "https://graph.facebook.com/v19.0"
 
 
-async def facebook_me(user_id: str) -> str:
+async def facebook_me(user_id: str, agent_id: str) -> str:
     result = await oauth_api_call(
-        user_id, "meta", "GET",
+        user_id, agent_id, "meta", "GET",
         f"{_META}/me",
         params={"fields": "id,name,email"},
     )
@@ -136,11 +136,11 @@ async def facebook_me(user_id: str) -> str:
     return json.dumps(result)
 
 
-async def facebook_list_pages(user_id: str) -> str:
+async def facebook_list_pages(user_id: str, agent_id: str) -> str:
     """List Facebook pages the connected user manages. Each page comes with
     its own page-level access token (use `access_token` field for posting)."""
     result = await oauth_api_call(
-        user_id, "meta", "GET",
+        user_id, agent_id, "meta", "GET",
         f"{_META}/me/accounts",
         params={"fields": "id,name,access_token,category,tasks"},
     )
@@ -149,7 +149,7 @@ async def facebook_list_pages(user_id: str) -> str:
     return json.dumps(result)
 
 
-async def facebook_post_to_page(user_id: str, page_id: str, message: str, page_access_token: str) -> str:
+async def facebook_post_to_page(user_id: str, agent_id: str, page_id: str, message: str, page_access_token: str) -> str:
     """Post text to a Facebook page. page_access_token comes from facebook_list_pages."""
     if not page_id or not message or not page_access_token:
         return json.dumps({"status": "error", "message": "page_id, message, page_access_token required"})
@@ -174,10 +174,10 @@ async def facebook_post_to_page(user_id: str, page_id: str, message: str, page_a
     })
 
 
-async def instagram_list_accounts(user_id: str) -> str:
+async def instagram_list_accounts(user_id: str, agent_id: str) -> str:
     """List Instagram Business / Creator accounts linked to the user's FB pages."""
     result = await oauth_api_call(
-        user_id, "meta", "GET",
+        user_id, agent_id, "meta", "GET",
         f"{_META}/me/accounts",
         params={"fields": "id,name,instagram_business_account{id,username}"},
     )
@@ -186,11 +186,11 @@ async def instagram_list_accounts(user_id: str) -> str:
     return json.dumps(result)
 
 
-async def instagram_recent_media(user_id: str, ig_user_id: str, max_results: int = 12) -> str:
+async def instagram_recent_media(user_id: str, agent_id: str, ig_user_id: str, max_results: int = 12) -> str:
     if not ig_user_id:
         return json.dumps({"status": "error", "message": "ig_user_id required (from instagram_list_accounts)"})
     result = await oauth_api_call(
-        user_id, "meta", "GET",
+        user_id, agent_id, "meta", "GET",
         f"{_META}/{ig_user_id}/media",
         params={
             "fields": "id,caption,media_type,media_url,permalink,timestamp",
@@ -206,9 +206,9 @@ _REDDIT = "https://oauth.reddit.com"
 _REDDIT_UA = {"User-Agent": "webAgent/1.0"}
 
 
-async def reddit_me(user_id: str) -> str:
+async def reddit_me(user_id: str, agent_id: str) -> str:
     result = await oauth_api_call(
-        user_id, "reddit", "GET",
+        user_id, agent_id, "reddit", "GET",
         f"{_REDDIT}/api/v1/me",
         headers=_REDDIT_UA,
     )
@@ -217,14 +217,14 @@ async def reddit_me(user_id: str) -> str:
     return json.dumps(result)
 
 
-async def reddit_listing(user_id: str, subreddit: str = "", listing: str = "hot", limit: int = 10) -> str:
+async def reddit_listing(user_id: str, agent_id: str, subreddit: str = "", listing: str = "hot", limit: int = 10) -> str:
     """Fetch a Reddit listing. subreddit empty = front page; listing = hot|new|top|rising."""
     listing = (listing or "hot").lower()
     if listing not in {"hot", "new", "top", "rising", "controversial", "best"}:
         listing = "hot"
     url = f"{_REDDIT}/r/{subreddit}/{listing}" if subreddit else f"{_REDDIT}/{listing}"
     result = await oauth_api_call(
-        user_id, "reddit", "GET", url,
+        user_id, agent_id, "reddit", "GET", url,
         params={"limit": max(1, min(int(limit or 10), 100))},
         headers=_REDDIT_UA,
     )
@@ -233,7 +233,7 @@ async def reddit_listing(user_id: str, subreddit: str = "", listing: str = "hot"
     return json.dumps(result)
 
 
-async def reddit_submit(user_id: str, subreddit: str, title: str, text: str = "", url: str = "") -> str:
+async def reddit_submit(user_id: str, agent_id: str, subreddit: str, title: str, text: str = "", url: str = "") -> str:
     """Submit a post to a subreddit. Provide text (self post) OR url (link post)."""
     if not subreddit or not title:
         return json.dumps({"status": "error", "message": "subreddit and title required"})
@@ -253,7 +253,7 @@ async def reddit_submit(user_id: str, subreddit: str, title: str, text: str = ""
 
     # Reddit submit endpoint expects form-encoded body.
     result = await oauth_api_call(
-        user_id, "reddit", "POST",
+        user_id, agent_id, "reddit", "POST",
         f"{_REDDIT}/api/submit",
         data=data,
         headers={**_REDDIT_UA, "Content-Type": "application/x-www-form-urlencoded"},
@@ -261,12 +261,12 @@ async def reddit_submit(user_id: str, subreddit: str, title: str, text: str = ""
     return json.dumps(result)
 
 
-async def reddit_comment(user_id: str, parent_fullname: str, text: str) -> str:
+async def reddit_comment(user_id: str, agent_id: str, parent_fullname: str, text: str) -> str:
     """Comment on a post or reply to a comment. parent_fullname = 't3_<id>' for posts, 't1_<id>' for comments."""
     if not parent_fullname or not text:
         return json.dumps({"status": "error", "message": "parent_fullname and text required"})
     result = await oauth_api_call(
-        user_id, "reddit", "POST",
+        user_id, agent_id, "reddit", "POST",
         f"{_REDDIT}/api/comment",
         data={"thing_id": parent_fullname, "text": text, "api_type": "json"},
         headers={**_REDDIT_UA, "Content-Type": "application/x-www-form-urlencoded"},
@@ -279,9 +279,9 @@ async def reddit_comment(user_id: str, parent_fullname: str, text: str) -> str:
 _PIN = "https://api.pinterest.com/v5"
 
 
-async def pinterest_list_boards(user_id: str, page_size: int = 25) -> str:
+async def pinterest_list_boards(user_id: str, agent_id: str, page_size: int = 25) -> str:
     result = await oauth_api_call(
-        user_id, "pinterest", "GET",
+        user_id, agent_id, "pinterest", "GET",
         f"{_PIN}/boards",
         params={"page_size": max(1, min(int(page_size or 25), 250))},
     )
@@ -290,13 +290,13 @@ async def pinterest_list_boards(user_id: str, page_size: int = 25) -> str:
     return json.dumps(result)
 
 
-async def pinterest_list_pins(user_id: str, board_id: str = "", page_size: int = 25) -> str:
+async def pinterest_list_pins(user_id: str, agent_id: str, board_id: str = "", page_size: int = 25) -> str:
     if board_id:
         url = f"{_PIN}/boards/{board_id}/pins"
     else:
         url = f"{_PIN}/pins"
     result = await oauth_api_call(
-        user_id, "pinterest", "GET", url,
+        user_id, agent_id, "pinterest", "GET", url,
         params={"page_size": max(1, min(int(page_size or 25), 250))},
     )
     if result.get("status") == "not_connected":
@@ -306,6 +306,7 @@ async def pinterest_list_pins(user_id: str, board_id: str = "", page_size: int =
 
 async def pinterest_create_pin(
     user_id: str,
+    agent_id: str,
     board_id: str,
     image_url: str,
     title: str = "",
@@ -325,7 +326,7 @@ async def pinterest_create_pin(
     if link:
         body["link"] = link
     result = await oauth_api_call(
-        user_id, "pinterest", "POST",
+        user_id, agent_id, "pinterest", "POST",
         f"{_PIN}/pins",
         json_body=body,
     )
@@ -334,10 +335,10 @@ async def pinterest_create_pin(
 
 # ── Snapchat (identity only) ──────────────────────────────────────────────
 
-async def snapchat_userinfo(user_id: str) -> str:
+async def snapchat_userinfo(user_id: str, agent_id: str) -> str:
     """Snap Kit only exposes display name / Bitmoji / external id — no posting API exists."""
     result = await oauth_api_call(
-        user_id, "snapchat", "GET",
+        user_id, agent_id, "snapchat", "GET",
         "https://kit.snapchat.com/v1/me",
     )
     if result.get("status") == "not_connected":

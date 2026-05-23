@@ -24,15 +24,16 @@ from typing import Optional
 
 from app.integrations.oauth_helper import (
     oauth_api_call,
+    oauth_label,
     not_connected_payload,
 )
 
 
-async def _get_auth_config(user_id: str, provider: str) -> dict:
-    """Read auth_elements.config for a user+provider. Returns {} if missing."""
+async def _get_auth_config(user_id: str, agent_id: str, provider: str) -> dict:
+    """Read auth_elements.config for a (user, agent, provider). Returns {} if missing."""
     from app.db import get_db
     db = get_db()
-    elem = await db.auth_element_get(user_id, provider, "oauth")
+    elem = await db.auth_element_get(user_id, provider, oauth_label(agent_id))
     if not elem:
         return {}
     cfg = elem.get("config") or {}
@@ -49,12 +50,12 @@ async def _get_auth_config(user_id: str, provider: str) -> dict:
 _EBAY_API = "https://api.ebay.com"
 
 
-async def ebay_search_items(user_id: str, query: str, limit: int = 10) -> str:
+async def ebay_search_items(user_id: str, agent_id: str, query: str, limit: int = 10) -> str:
     """Search the eBay marketplace by keyword (Browse API)."""
     if not query:
         return json.dumps({"status": "error", "message": "query required"})
     result = await oauth_api_call(
-        user_id, "ebay", "GET",
+        user_id, agent_id, "ebay", "GET",
         f"{_EBAY_API}/buy/browse/v1/item_summary/search",
         params={"q": query, "limit": max(1, min(int(limit or 10), 50))},
     )
@@ -63,12 +64,12 @@ async def ebay_search_items(user_id: str, query: str, limit: int = 10) -> str:
     return json.dumps(result)
 
 
-async def ebay_get_item(user_id: str, item_id: str) -> str:
+async def ebay_get_item(user_id: str, agent_id: str, item_id: str) -> str:
     """Fetch details for a single eBay listing by item id (Browse API)."""
     if not item_id:
         return json.dumps({"status": "error", "message": "item_id required"})
     result = await oauth_api_call(
-        user_id, "ebay", "GET",
+        user_id, agent_id, "ebay", "GET",
         f"{_EBAY_API}/buy/browse/v1/item/{item_id}",
     )
     if result.get("status") == "not_connected":
@@ -76,10 +77,10 @@ async def ebay_get_item(user_id: str, item_id: str) -> str:
     return json.dumps(result)
 
 
-async def ebay_list_my_active_listings(user_id: str, limit: int = 25, offset: int = 0) -> str:
+async def ebay_list_my_active_listings(user_id: str, agent_id: str, limit: int = 25, offset: int = 0) -> str:
     """List the connected seller's active inventory items (Sell Inventory API)."""
     result = await oauth_api_call(
-        user_id, "ebay", "GET",
+        user_id, agent_id, "ebay", "GET",
         f"{_EBAY_API}/sell/inventory/v1/inventory_item",
         params={
             "limit": max(1, min(int(limit or 25), 200)),
@@ -93,6 +94,7 @@ async def ebay_list_my_active_listings(user_id: str, limit: int = 25, offset: in
 
 async def ebay_create_inventory_item(
     user_id: str,
+    agent_id: str,
     sku: str,
     title: str,
     description: str = "",
@@ -113,7 +115,7 @@ async def ebay_create_inventory_item(
     if image_url:
         body["product"]["imageUrls"] = [image_url]
     result = await oauth_api_call(
-        user_id, "ebay", "PUT",
+        user_id, agent_id, "ebay", "PUT",
         f"{_EBAY_API}/sell/inventory/v1/inventory_item/{sku}",
         json_body=body,
         headers={"Content-Language": "en-US"},
@@ -125,6 +127,7 @@ async def ebay_create_inventory_item(
 
 async def ebay_create_offer(
     user_id: str,
+    agent_id: str,
     sku: str,
     price: float,
     currency: str = "USD",
@@ -151,7 +154,7 @@ async def ebay_create_offer(
     if merchant_location_key:
         body["merchantLocationKey"] = merchant_location_key
     result = await oauth_api_call(
-        user_id, "ebay", "POST",
+        user_id, agent_id, "ebay", "POST",
         f"{_EBAY_API}/sell/inventory/v1/offer",
         json_body=body,
         headers={"Content-Language": "en-US"},
@@ -161,12 +164,12 @@ async def ebay_create_offer(
     return json.dumps(result)
 
 
-async def ebay_end_offer(user_id: str, offer_id: str, reason: str = "NOT_AVAILABLE") -> str:
+async def ebay_end_offer(user_id: str, agent_id: str, offer_id: str, reason: str = "NOT_AVAILABLE") -> str:
     """Withdraw a published eBay offer (ends the listing)."""
     if not offer_id:
         return json.dumps({"status": "error", "message": "offer_id required"})
     result = await oauth_api_call(
-        user_id, "ebay", "POST",
+        user_id, agent_id, "ebay", "POST",
         f"{_EBAY_API}/sell/inventory/v1/offer/{offer_id}/withdraw",
         json_body={"reasonForWithdrawal": reason or "NOT_AVAILABLE"},
     )
@@ -180,7 +183,7 @@ async def ebay_end_offer(user_id: str, offer_id: str, reason: str = "NOT_AVAILAB
 _ETSY_API = "https://openapi.etsy.com/v3"
 
 
-async def _etsy_headers(user_id: str) -> dict:
+async def _etsy_headers() -> dict:
     """Etsy requires the x-api-key (== client_id) header on every call."""
     try:
         from app.admin.integrations import get_etsy_creds
@@ -190,11 +193,11 @@ async def _etsy_headers(user_id: str) -> dict:
         return {}
 
 
-async def etsy_me(user_id: str) -> str:
+async def etsy_me(user_id: str, agent_id: str) -> str:
     """Fetch the connected Etsy user (resolves the user_id internally)."""
-    headers = await _etsy_headers(user_id)
+    headers = await _etsy_headers()
     result = await oauth_api_call(
-        user_id, "etsy", "GET",
+        user_id, agent_id, "etsy", "GET",
         f"{_ETSY_API}/application/users/me",
         headers=headers,
     )
@@ -203,13 +206,13 @@ async def etsy_me(user_id: str) -> str:
     return json.dumps(result)
 
 
-async def etsy_search_listings(user_id: str, keywords: str, limit: int = 25) -> str:
+async def etsy_search_listings(user_id: str, agent_id: str, keywords: str, limit: int = 25) -> str:
     """Search active Etsy listings by keyword."""
     if not keywords:
         return json.dumps({"status": "error", "message": "keywords required"})
-    headers = await _etsy_headers(user_id)
+    headers = await _etsy_headers()
     result = await oauth_api_call(
-        user_id, "etsy", "GET",
+        user_id, agent_id, "etsy", "GET",
         f"{_ETSY_API}/application/listings/active",
         params={"keywords": keywords, "limit": max(1, min(int(limit or 25), 100))},
         headers=headers,
@@ -219,20 +222,20 @@ async def etsy_search_listings(user_id: str, keywords: str, limit: int = 25) -> 
     return json.dumps(result)
 
 
-async def etsy_list_my_shop_listings(user_id: str, state: str = "active", limit: int = 25) -> str:
+async def etsy_list_my_shop_listings(user_id: str, agent_id: str, state: str = "active", limit: int = 25) -> str:
     """List listings for the connected Etsy seller's shop.
 
     state: active | inactive | draft | expired | sold_out
     """
-    cfg = await _get_auth_config(user_id, "etsy")
+    cfg = await _get_auth_config(user_id, agent_id, "etsy")
     shop_id = cfg.get("shop_id")
     if not shop_id:
         return json.dumps({"status": "error", "message": "no Etsy shop on this account"})
-    headers = await _etsy_headers(user_id)
+    headers = await _etsy_headers()
     valid_states = {"active", "inactive", "draft", "expired", "sold_out"}
     state = state if state in valid_states else "active"
     result = await oauth_api_call(
-        user_id, "etsy", "GET",
+        user_id, agent_id, "etsy", "GET",
         f"{_ETSY_API}/application/shops/{shop_id}/listings",
         params={"state": state, "limit": max(1, min(int(limit or 25), 100))},
         headers=headers,
@@ -244,6 +247,7 @@ async def etsy_list_my_shop_listings(user_id: str, state: str = "active", limit:
 
 async def etsy_create_draft_listing(
     user_id: str,
+    agent_id: str,
     title: str,
     description: str,
     price: float,
@@ -258,11 +262,11 @@ async def etsy_create_draft_listing(
     """
     if not title or not description or not price or float(price) <= 0:
         return json.dumps({"status": "error", "message": "title, description, positive price required"})
-    cfg = await _get_auth_config(user_id, "etsy")
+    cfg = await _get_auth_config(user_id, agent_id, "etsy")
     shop_id = cfg.get("shop_id")
     if not shop_id:
         return json.dumps({"status": "error", "message": "no Etsy shop on this account"})
-    headers = {**(await _etsy_headers(user_id)), "Content-Type": "application/x-www-form-urlencoded"}
+    headers = {**(await _etsy_headers()), "Content-Type": "application/x-www-form-urlencoded"}
     data = {
         "quantity": str(max(1, int(quantity or 1))),
         "title": title,
@@ -274,7 +278,7 @@ async def etsy_create_draft_listing(
         "state": "draft",
     }
     result = await oauth_api_call(
-        user_id, "etsy", "POST",
+        user_id, agent_id, "etsy", "POST",
         f"{_ETSY_API}/application/shops/{shop_id}/listings",
         data=data,
         headers=headers,
@@ -289,9 +293,9 @@ async def etsy_create_draft_listing(
 _SHOPIFY_API_VERSION = "2024-10"
 
 
-async def _shopify_base(user_id: str) -> Optional[str]:
+async def _shopify_base(user_id: str, agent_id: str) -> Optional[str]:
     """Return the per-shop admin API base URL, or None if no shop on file."""
-    cfg = await _get_auth_config(user_id, "shopify")
+    cfg = await _get_auth_config(user_id, agent_id, "shopify")
     shop = (cfg.get("shop") or "").strip().lower()
     if not shop:
         return None
@@ -300,13 +304,13 @@ async def _shopify_base(user_id: str) -> Optional[str]:
     return f"https://{shop}/admin/api/{_SHOPIFY_API_VERSION}"
 
 
-async def shopify_list_products(user_id: str, limit: int = 50) -> str:
+async def shopify_list_products(user_id: str, agent_id: str, limit: int = 50) -> str:
     """List products in the connected Shopify store."""
-    base = await _shopify_base(user_id)
+    base = await _shopify_base(user_id, agent_id)
     if not base:
         return json.dumps({"status": "error", "message": "no Shopify shop on this account"})
     result = await oauth_api_call(
-        user_id, "shopify", "GET",
+        user_id, agent_id, "shopify", "GET",
         f"{base}/products.json",
         params={"limit": max(1, min(int(limit or 50), 250))},
     )
@@ -315,15 +319,15 @@ async def shopify_list_products(user_id: str, limit: int = 50) -> str:
     return json.dumps(result)
 
 
-async def shopify_get_product(user_id: str, product_id: str) -> str:
+async def shopify_get_product(user_id: str, agent_id: str, product_id: str) -> str:
     """Fetch a single Shopify product by id."""
     if not product_id:
         return json.dumps({"status": "error", "message": "product_id required"})
-    base = await _shopify_base(user_id)
+    base = await _shopify_base(user_id, agent_id)
     if not base:
         return json.dumps({"status": "error", "message": "no Shopify shop on this account"})
     result = await oauth_api_call(
-        user_id, "shopify", "GET",
+        user_id, agent_id, "shopify", "GET",
         f"{base}/products/{product_id}.json",
     )
     if result.get("status") == "not_connected":
@@ -333,6 +337,7 @@ async def shopify_get_product(user_id: str, product_id: str) -> str:
 
 async def shopify_create_product(
     user_id: str,
+    agent_id: str,
     title: str,
     body_html: str = "",
     vendor: str = "",
@@ -347,7 +352,7 @@ async def shopify_create_product(
     """
     if not title:
         return json.dumps({"status": "error", "message": "title required"})
-    base = await _shopify_base(user_id)
+    base = await _shopify_base(user_id, agent_id)
     if not base:
         return json.dumps({"status": "error", "message": "no Shopify shop on this account"})
     variant: dict = {}
@@ -368,7 +373,7 @@ async def shopify_create_product(
     if variant:
         product["variants"] = [variant]
     result = await oauth_api_call(
-        user_id, "shopify", "POST",
+        user_id, agent_id, "shopify", "POST",
         f"{base}/products.json",
         json_body={"product": product},
     )
@@ -379,6 +384,7 @@ async def shopify_create_product(
 
 async def shopify_update_variant_inventory(
     user_id: str,
+    agent_id: str,
     inventory_item_id: str,
     location_id: str,
     available: int,
@@ -386,11 +392,11 @@ async def shopify_update_variant_inventory(
     """Set the available inventory for a variant at a specific location."""
     if not inventory_item_id or not location_id:
         return json.dumps({"status": "error", "message": "inventory_item_id and location_id required"})
-    base = await _shopify_base(user_id)
+    base = await _shopify_base(user_id, agent_id)
     if not base:
         return json.dumps({"status": "error", "message": "no Shopify shop on this account"})
     result = await oauth_api_call(
-        user_id, "shopify", "POST",
+        user_id, agent_id, "shopify", "POST",
         f"{base}/inventory_levels/set.json",
         json_body={
             "location_id": int(location_id),
@@ -413,15 +419,16 @@ _AMAZON_REGION_HOSTS = {
 }
 
 
-async def _amazon_base(user_id: str) -> Optional[str]:
+async def _amazon_base(user_id: str, agent_id: str) -> Optional[str]:
     """Return the region-specific SP-API base URL, or None if not configured."""
-    cfg = await _get_auth_config(user_id, "amazon")
+    cfg = await _get_auth_config(user_id, agent_id, "amazon")
     region = (cfg.get("region") or "NA").upper()
     return _AMAZON_REGION_HOSTS.get(region)
 
 
 async def amazon_list_orders(
     user_id: str,
+    agent_id: str,
     created_after: str,
     marketplace_ids: str = "",
     max_results: int = 50,
@@ -434,15 +441,15 @@ async def amazon_list_orders(
     """
     if not created_after:
         return json.dumps({"status": "error", "message": "created_after (ISO-8601) required"})
-    base = await _amazon_base(user_id)
+    base = await _amazon_base(user_id, agent_id)
     if not base:
         return json.dumps({"status": "error", "message": "Amazon region not configured on this account"})
-    cfg = await _get_auth_config(user_id, "amazon")
+    cfg = await _get_auth_config(user_id, agent_id, "amazon")
     mids = marketplace_ids or cfg.get("marketplace_id", "")
     if not mids:
         return json.dumps({"status": "error", "message": "marketplace_ids required (no default on file)"})
     result = await oauth_api_call(
-        user_id, "amazon", "GET",
+        user_id, agent_id, "amazon", "GET",
         f"{base}/orders/v0/orders",
         params={
             "CreatedAfter": created_after,
@@ -455,15 +462,15 @@ async def amazon_list_orders(
     return json.dumps(result)
 
 
-async def amazon_get_order(user_id: str, order_id: str) -> str:
+async def amazon_get_order(user_id: str, agent_id: str, order_id: str) -> str:
     """Fetch an Amazon order by AmazonOrderId."""
     if not order_id:
         return json.dumps({"status": "error", "message": "order_id required"})
-    base = await _amazon_base(user_id)
+    base = await _amazon_base(user_id, agent_id)
     if not base:
         return json.dumps({"status": "error", "message": "Amazon region not configured on this account"})
     result = await oauth_api_call(
-        user_id, "amazon", "GET",
+        user_id, agent_id, "amazon", "GET",
         f"{base}/orders/v0/orders/{order_id}",
     )
     if result.get("status") == "not_connected":
@@ -471,17 +478,17 @@ async def amazon_get_order(user_id: str, order_id: str) -> str:
     return json.dumps(result)
 
 
-async def amazon_list_inventory(user_id: str, marketplace_ids: str = "", max_results: int = 50) -> str:
+async def amazon_list_inventory(user_id: str, agent_id: str, marketplace_ids: str = "", max_results: int = 50) -> str:
     """List FBA inventory summaries for the connected seller."""
-    base = await _amazon_base(user_id)
+    base = await _amazon_base(user_id, agent_id)
     if not base:
         return json.dumps({"status": "error", "message": "Amazon region not configured on this account"})
-    cfg = await _get_auth_config(user_id, "amazon")
+    cfg = await _get_auth_config(user_id, agent_id, "amazon")
     mids = marketplace_ids or cfg.get("marketplace_id", "")
     if not mids:
         return json.dumps({"status": "error", "message": "marketplace_ids required (no default on file)"})
     result = await oauth_api_call(
-        user_id, "amazon", "GET",
+        user_id, agent_id, "amazon", "GET",
         f"{base}/fba/inventory/v1/summaries",
         params={
             "granularityType": "Marketplace",
@@ -498,6 +505,7 @@ async def amazon_list_inventory(user_id: str, marketplace_ids: str = "", max_res
 
 async def amazon_update_listing_price(
     user_id: str,
+    agent_id: str,
     seller_id: str,
     sku: str,
     price: float,
@@ -506,10 +514,10 @@ async def amazon_update_listing_price(
     """Patch the price on an existing Amazon listing (Listings Items API)."""
     if not seller_id or not sku or not price or float(price) <= 0:
         return json.dumps({"status": "error", "message": "seller_id, sku, positive price required"})
-    base = await _amazon_base(user_id)
+    base = await _amazon_base(user_id, agent_id)
     if not base:
         return json.dumps({"status": "error", "message": "Amazon region not configured on this account"})
-    cfg = await _get_auth_config(user_id, "amazon")
+    cfg = await _get_auth_config(user_id, agent_id, "amazon")
     mid = marketplace_id or cfg.get("marketplace_id", "")
     if not mid:
         return json.dumps({"status": "error", "message": "marketplace_id required (no default on file)"})
@@ -526,7 +534,7 @@ async def amazon_update_listing_price(
         }],
     }
     result = await oauth_api_call(
-        user_id, "amazon", "PATCH",
+        user_id, agent_id, "amazon", "PATCH",
         f"{base}/listings/2021-08-01/items/{seller_id}/{sku}",
         params={"marketplaceIds": mid},
         json_body=body,

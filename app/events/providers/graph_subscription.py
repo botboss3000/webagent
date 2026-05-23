@@ -47,13 +47,14 @@ def expiration_iso(ttl: timedelta = DEFAULT_TTL) -> str:
 async def create_subscription(
     *,
     user_id: str,
+    agent_id: str,
     change_type: str,
     resource: str,
     notification_url: str,
     client_state: str,
     expiration: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """POST /subscriptions for one user. Caller chooses the resource path."""
+    """POST /subscriptions for one (user, agent). Caller chooses the resource path."""
     body = {
         "changeType": change_type,
         "notificationUrl": notification_url,
@@ -62,7 +63,7 @@ async def create_subscription(
         "clientState": client_state,
     }
     result = await oauth_api_call(
-        user_id, "microsoft", "POST",
+        user_id, agent_id, "microsoft", "POST",
         f"{GRAPH_BASE}/subscriptions",
         json_body=body,
     )
@@ -72,20 +73,21 @@ async def create_subscription(
 async def renew_subscription(
     *,
     user_id: str,
+    agent_id: str,
     subscription_id: str,
     expiration: Optional[str] = None,
 ) -> Dict[str, Any]:
     body = {"expirationDateTime": expiration or expiration_iso()}
     return await oauth_api_call(
-        user_id, "microsoft", "PATCH",
+        user_id, agent_id, "microsoft", "PATCH",
         f"{GRAPH_BASE}/subscriptions/{subscription_id}",
         json_body=body,
     )
 
 
-async def delete_subscription(*, user_id: str, subscription_id: str) -> Dict[str, Any]:
+async def delete_subscription(*, user_id: str, agent_id: str, subscription_id: str) -> Dict[str, Any]:
     return await oauth_api_call(
-        user_id, "microsoft", "DELETE",
+        user_id, agent_id, "microsoft", "DELETE",
         f"{GRAPH_BASE}/subscriptions/{subscription_id}",
     )
 

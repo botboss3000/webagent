@@ -119,12 +119,13 @@ async def gather_enabled_providers(agent_id: str, user_id: Optional[str] = None)
         return set()
 
 
-def _build_generic_oauth_tool(user_id: str, allowed_providers: List[str]) -> "tuple[Callable, dict]":
+def _build_generic_oauth_tool(user_id: str, agent_id: str, allowed_providers: List[str]) -> "tuple[Callable, dict]":
     """Generic OAuth call tool — handler + JSON Schema.
 
     `allowed_providers` is the sorted list of OAuth providers enabled for the
     active agent. It is embedded in the schema so the LLM only ever sees the
-    providers it is permitted to call.
+    providers it is permitted to call. The (user_id, agent_id) pair is baked
+    into the closure so this tool always uses per-agent OAuth tokens.
     """
     from app.integrations.oauth_helper import oauth_api_call, normalize_provider
 
@@ -145,7 +146,7 @@ def _build_generic_oauth_tool(user_id: str, allowed_providers: List[str]) -> "tu
                 "message": f"Provider '{provider}' is not enabled for this agent.",
             })
         result = await oauth_api_call(
-            user_id, normalized, method or "GET", url,
+            user_id, agent_id, normalized, method or "GET", url,
             params=params, json_body=json_body, headers=headers,
         )
         return json.dumps(result)
@@ -195,7 +196,7 @@ def inject_integration_tools(
         if p not in {"telegram", "scraper", "browser_session"}
     )
     if _OAUTH_ENABLED:
-        handler, schema = _build_generic_oauth_tool(user_id, _OAUTH_ENABLED)
+        handler, schema = _build_generic_oauth_tool(user_id, agent_id, _OAUTH_ENABLED)
         tools["oauth_api_call"] = tool_info_cls(
             name="oauth_api_call",
             handler=handler,
@@ -214,7 +215,7 @@ def inject_integration_tools(
 
         def _wrap(_h):
             async def _bound(**kwargs):
-                return await _h(user_id=user_id, **kwargs)
+                return await _h(user_id=user_id, agent_id=agent_id, **kwargs)
             return _bound
 
         tools[name] = tool_info_cls(

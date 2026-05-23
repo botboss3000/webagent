@@ -1204,9 +1204,10 @@ class ToolLoader:
                     "message": f"{display_name} integration has not been configured. An admin must set up the OAuth credentials in App Config → Integrations.",
                 })
 
-            # Check if user already has a connected token
+            # Check if user already has a connected token (per-agent scope)
             try:
-                elem = await _db.auth_element_get(user_id, provider, "oauth")
+                from app.integrations.oauth_helper import oauth_label as _oauth_label
+                elem = await _db.auth_element_get(user_id, provider, _oauth_label(_captured_agent_id))
                 if elem and elem.get("secret_ref"):
                     config = elem.get("config") or {}
                     if isinstance(config, str):

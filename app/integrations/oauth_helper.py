@@ -79,6 +79,18 @@ def normalize_provider(provider: str) -> str:
     return PROVIDER_ALIASES.get(p, p)
 
 
+def oauth_label(agent_id: str) -> str:
+    """Build the auth_elements.label for OAuth tokens scoped to a single agent.
+
+    Tokens are stored per (user_id, service, agent_id). Each agent must start
+    fresh — a user signed in via Agent A is NOT signed in via Agent B until
+    they re-authorize through Agent B's connect flow.
+    """
+    if not agent_id:
+        raise ValueError("OAuth tokens are per-agent; agent_id is required")
+    return f"oauth:{agent_id}"
+
+
 async def _get_creds(provider: str) -> Tuple[str, str]:
     """Look up admin-configured (client_id, client_secret) for a provider."""
     fn_name = _PROVIDER_CRED_FNS.get(provider)
@@ -150,16 +162,17 @@ async def _refresh_token(user_id: str, provider: str, refresh_token: str) -> Opt
         return None
 
 
-async def get_oauth_token(user_id: str, provider: str, allow_refresh: bool = True) -> Optional[dict]:
-    """Return current token dict for (user_id, provider). Refreshes if needed.
+async def get_oauth_token(user_id: str, agent_id: str, provider: str, allow_refresh: bool = True) -> Optional[dict]:
+    """Return current token dict for (user_id, agent_id, provider). Refreshes if needed.
 
     Result shape: {"access_token": str, "provider": str, "account": str}
                   or None if no connection exists / refresh impossible.
     """
     provider = normalize_provider(provider)
+    label = oauth_label(agent_id)
     from app.db import get_db
     db = get_db()
-    elem = await db.auth_element_get(user_id, provider, "oauth")
+    elem = await db.auth_element_get(user_id, provider, label)
     if not elem or not elem.get("secret_ref"):
         return None
 
@@ -192,7 +205,7 @@ async def get_oauth_token(user_id: str, provider: str, allow_refresh: bool = Tru
                 service=provider,
                 config=new_config,
                 secret_ref=json.dumps(fresh),
-                label="oauth",
+                label=label,
             )
 
     if not access_token:
@@ -221,6 +234,7 @@ def not_connected_payload(provider: str) -> str:
 
 async def oauth_api_call(
     user_id: str,
+    agent_id: str,
     provider: str,
     method: str,
     url: str,
@@ -232,14 +246,14 @@ async def oauth_api_call(
     timeout: float = 30.0,
     retry_on_401: bool = True,
 ) -> dict:
-    """Generic OAuth-authenticated HTTP call.
+    """Generic OAuth-authenticated HTTP call scoped to (user, agent).
 
     Returns a dict: {"status": "ok"|"error"|"not_connected", "http_status": int,
                      "body": parsed_json_or_text, "url": url}
     Bearer token is injected automatically. On 401 a single token refresh +
     retry is attempted.
     """
-    tok = await get_oauth_token(user_id, provider)
+    tok = await get_oauth_token(user_id, agent_id, provider)
     if not tok:
         return {"status": "not_connected", "provider": normalize_provider(provider)}
 
@@ -264,7 +278,7 @@ async def oauth_api_call(
 
     if resp.status_code == 401 and retry_on_401:
         # Force a refresh + one retry.
-        tok2 = await get_oauth_token(user_id, provider, allow_refresh=True)
+        tok2 = await get_oauth_token(user_id, agent_id, provider, allow_refresh=True)
         if tok2 and tok2["access_token"] != tok["access_token"]:
             hdrs["Authorization"] = f"Bearer {tok2['access_token']}"
             try:

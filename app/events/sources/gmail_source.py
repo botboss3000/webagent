@@ -42,7 +42,7 @@ from app.events.providers.google_pubsub import (
     verify_pubsub_jwt,
 )
 from app.events.types import NormalizedEvent, SubscriptionRegistration
-from app.integrations.oauth_helper import oauth_api_call
+from app.integrations.oauth_helper import oauth_api_call, oauth_label
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ class GmailSource(EventSource):
     # ── Subscribe / renew / unsubscribe ──────────────────────────────────
 
     async def register_subscription(
-        self, *, owner_user_id: str, event_type: str, filter_dict: Dict[str, Any]
+        self, *, owner_user_id: str, agent_id: str, event_type: str, filter_dict: Dict[str, Any]
     ) -> SubscriptionRegistration:
         topic = _topic_name()
         if not topic:
@@ -126,7 +126,7 @@ class GmailSource(EventSource):
             "labelFilterAction": "include",
         }
         resp = await oauth_api_call(
-            owner_user_id, "google", "POST",
+            owner_user_id, agent_id, "google", "POST",
             f"{_GMAIL_BASE}/watch", json_body=body,
         )
         if resp.get("status") != "ok":
@@ -140,7 +140,7 @@ class GmailSource(EventSource):
         try:
             from app.db import get_db
             db = get_db()
-            elem = await db.auth_element_get(owner_user_id, "google", "oauth")
+            elem = await db.auth_element_get(owner_user_id, "google", oauth_label(agent_id))
             cfg = json.loads(elem.get("config") or "{}") if elem else {}
             connected_email = (cfg.get("email") or "").lower()
         except Exception:
@@ -160,9 +160,10 @@ class GmailSource(EventSource):
 
     async def unregister_subscription(self, subscription_row: Dict[str, Any]) -> None:
         owner_user_id = subscription_row["owner_user_id"]
+        agent_id = subscription_row.get("agent_id", "")
         try:
             await oauth_api_call(
-                owner_user_id, "google", "POST",
+                owner_user_id, agent_id, "google", "POST",
                 f"{_GMAIL_BASE}/stop",
             )
         except Exception as e:
@@ -205,6 +206,7 @@ class GmailSource(EventSource):
         per_sub_meta_updates: List[tuple] = []  # (sub_id, new_history_id)
 
         for sub in subs:
+            agent_id = sub.get("agent_id", "")
             meta = sub.get("external_metadata") or {}
             if isinstance(meta, str):
                 try:
@@ -219,7 +221,7 @@ class GmailSource(EventSource):
                 per_sub_meta_updates.append((sub["id"], meta))
                 continue
 
-            new_msgs = await self._list_new_message_ids(user_id, since)
+            new_msgs = await self._list_new_message_ids(user_id, agent_id, since)
             if not new_msgs:
                 meta["history_id"] = new_history_id
                 per_sub_meta_updates.append((sub["id"], meta))
@@ -231,10 +233,10 @@ class GmailSource(EventSource):
             for msg_id in new_msgs:
                 # Apply Gmail query at fetch time if specified.
                 if query:
-                    matched = await self._message_matches_query(user_id, msg_id, query)
+                    matched = await self._message_matches_query(user_id, agent_id, msg_id, query)
                     if not matched:
                         continue
-                msg = await self._fetch_message_metadata(user_id, msg_id)
+                msg = await self._fetch_message_metadata(user_id, agent_id, msg_id)
                 if msg is None:
                     continue
                 evt = self._build_event(user_id, email, msg)
@@ -253,7 +255,7 @@ class GmailSource(EventSource):
 
     # ── History list / message fetch ─────────────────────────────────────
 
-    async def _list_new_message_ids(self, user_id: str, since_history_id: str) -> List[str]:
+    async def _list_new_message_ids(self, user_id: str, agent_id: str, since_history_id: str) -> List[str]:
         params = {
             "startHistoryId": since_history_id,
             "historyTypes": "messageAdded",
@@ -264,7 +266,7 @@ class GmailSource(EventSource):
             if page_token:
                 params["pageToken"] = page_token
             resp = await oauth_api_call(
-                user_id, "google", "GET",
+                user_id, agent_id, "google", "GET",
                 f"{_GMAIL_BASE}/history", params=params,
             )
             if resp.get("status") != "ok":
@@ -287,14 +289,14 @@ class GmailSource(EventSource):
                 seen.add(m); out.append(m)
         return out
 
-    async def _message_matches_query(self, user_id: str, message_id: str, query: str) -> bool:
+    async def _message_matches_query(self, user_id: str, agent_id: str, message_id: str, query: str) -> bool:
         # Cheapest match check: use list with q + ids parameter limited to this id.
         params = {"q": f"{query} rfc822msgid:* ", "maxResults": 1}
         # Simpler: get the message with format=minimal and let query filter via list
         # — we use list with q AND filter by id manually.
         params = {"q": query, "maxResults": 50}
         resp = await oauth_api_call(
-            user_id, "google", "GET",
+            user_id, agent_id, "google", "GET",
             f"{_GMAIL_BASE}/messages", params=params,
         )
         if resp.get("status") != "ok":
@@ -305,13 +307,13 @@ class GmailSource(EventSource):
                 return True
         return False
 
-    async def _fetch_message_metadata(self, user_id: str, message_id: str) -> Optional[dict]:
+    async def _fetch_message_metadata(self, user_id: str, agent_id: str, message_id: str) -> Optional[dict]:
         params = {
             "format": "metadata",
             "metadataHeaders": ["From", "To", "Subject", "Date", "Message-ID"],
         }
         resp = await oauth_api_call(
-            user_id, "google", "GET",
+            user_id, agent_id, "google", "GET",
             f"{_GMAIL_BASE}/messages/{message_id}", params=params,
         )
         if resp.get("status") != "ok":

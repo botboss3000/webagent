@@ -70,7 +70,7 @@ class OutlookCalendarSource(EventSource):
         return base
 
     async def register_subscription(
-        self, *, owner_user_id: str, event_type: str, filter_dict: Dict[str, Any]
+        self, *, owner_user_id: str, agent_id: str, event_type: str, filter_dict: Dict[str, Any]
     ) -> SubscriptionRegistration:
         notif_url = _notification_url()
         if not notif_url:
@@ -79,6 +79,7 @@ class OutlookCalendarSource(EventSource):
         exp = expiration_iso()
         resp = await create_subscription(
             user_id=owner_user_id,
+            agent_id=agent_id,
             change_type="created,updated,deleted",
             resource="me/events",
             notification_url=notif_url,
@@ -99,21 +100,25 @@ class OutlookCalendarSource(EventSource):
 
     async def renew_subscription(self, subscription_row: Dict[str, Any]) -> SubscriptionRegistration:
         sub_id = subscription_row.get("external_subscription_id")
+        agent_id = subscription_row.get("agent_id", "")
         if not sub_id:
             return await self.register_subscription(
                 owner_user_id=subscription_row["owner_user_id"],
+                agent_id=agent_id,
                 event_type=subscription_row["event_type"],
                 filter_dict=subscription_row.get("filter") or {},
             )
         exp = expiration_iso()
         resp = await graph_renew(
             user_id=subscription_row["owner_user_id"],
+            agent_id=agent_id,
             subscription_id=sub_id,
             expiration=exp,
         )
         if resp.get("status") != "ok":
             return await self.register_subscription(
                 owner_user_id=subscription_row["owner_user_id"],
+                agent_id=agent_id,
                 event_type=subscription_row["event_type"],
                 filter_dict=subscription_row.get("filter") or {},
             )
@@ -132,6 +137,7 @@ class OutlookCalendarSource(EventSource):
         try:
             await delete_subscription(
                 user_id=subscription_row["owner_user_id"],
+                agent_id=subscription_row.get("agent_id", ""),
                 subscription_id=sub_id,
             )
         except Exception as e:
@@ -187,7 +193,7 @@ class OutlookCalendarSource(EventSource):
                 continue
 
             url = f"{GRAPH_BASE}/{resource.lstrip('/')}"
-            resp = await oauth_api_call(row["owner_user_id"], "microsoft", "GET", url)
+            resp = await oauth_api_call(row["owner_user_id"], row.get("agent_id", ""), "microsoft", "GET", url)
             if resp.get("status") != "ok":
                 continue
             ev = resp.get("body") or {}

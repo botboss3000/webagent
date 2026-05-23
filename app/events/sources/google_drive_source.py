@@ -68,7 +68,7 @@ class GoogleDriveSource(EventSource):
         return base
 
     async def register_subscription(
-        self, *, owner_user_id: str, event_type: str, filter_dict: Dict[str, Any]
+        self, *, owner_user_id: str, agent_id: str, event_type: str, filter_dict: Dict[str, Any]
     ) -> SubscriptionRegistration:
         notif_url = _notification_url()
         if not notif_url:
@@ -76,7 +76,7 @@ class GoogleDriveSource(EventSource):
 
         # Get a startPageToken to begin watching from.
         resp = await oauth_api_call(
-            owner_user_id, "google", "GET",
+            owner_user_id, agent_id, "google", "GET",
             f"{DRIVE_BASE}/changes/startPageToken",
         )
         if resp.get("status") != "ok":
@@ -96,7 +96,7 @@ class GoogleDriveSource(EventSource):
             "params": {"ttl": str(ttl_seconds)},
         }
         watch = await oauth_api_call(
-            owner_user_id, "google", "POST",
+            owner_user_id, agent_id, "google", "POST",
             f"{DRIVE_BASE}/changes/watch",
             params={"pageToken": start_token},
             json_body=body,
@@ -126,6 +126,7 @@ class GoogleDriveSource(EventSource):
             pass
         return await self.register_subscription(
             owner_user_id=subscription_row["owner_user_id"],
+            agent_id=subscription_row.get("agent_id", ""),
             event_type=subscription_row["event_type"],
             filter_dict=subscription_row.get("filter") or {},
         )
@@ -137,7 +138,7 @@ class GoogleDriveSource(EventSource):
             return
         try:
             await oauth_api_call(
-                subscription_row["owner_user_id"], "google", "POST",
+                subscription_row["owner_user_id"], subscription_row.get("agent_id", ""), "google", "POST",
                 f"{DRIVE_BASE}/channels/stop",
                 json_body={"id": channel_id, "resourceId": resource_id},
             )
@@ -183,8 +184,9 @@ class GoogleDriveSource(EventSource):
         if not page_token:
             return []
         user_id = sub["owner_user_id"]
+        agent_id = sub.get("agent_id", "")
 
-        changes, new_token = await self._list_changes(user_id, page_token)
+        changes, new_token = await self._list_changes(user_id, agent_id, page_token)
         if new_token and new_token != page_token:
             meta["page_token"] = new_token
             try:
@@ -218,7 +220,7 @@ class GoogleDriveSource(EventSource):
             ))
         return out
 
-    async def _list_changes(self, user_id: str, page_token: str) -> tuple[List[dict], Optional[str]]:
+    async def _list_changes(self, user_id: str, agent_id: str, page_token: str) -> tuple[List[dict], Optional[str]]:
         params = {
             "pageToken": page_token,
             "fields": "newStartPageToken,nextPageToken,changes(fileId,removed,time,file(id,name,mimeType,parents,webViewLink,size,createdTime,modifiedTime))",
@@ -229,7 +231,7 @@ class GoogleDriveSource(EventSource):
         new_token = page_token
         for _ in range(10):
             resp = await oauth_api_call(
-                user_id, "google", "GET",
+                user_id, agent_id, "google", "GET",
                 f"{DRIVE_BASE}/changes",
                 params=params,
             )

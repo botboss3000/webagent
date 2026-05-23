@@ -16,6 +16,8 @@ import httpx
 from fastapi import APIRouter, Query as QueryParam, Request
 from fastapi.responses import HTMLResponse
 
+from app.integrations.oauth_helper import oauth_label
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/oauth", tags=["oauth"])
 
@@ -83,6 +85,8 @@ async def google_callback(
 
     user_id = state_data["user_id"]
     agent_id = state_data.get("agent_id", "")
+    if not agent_id:
+        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
 
     client_id, client_secret = await get_google_creds()
     if not client_id or not client_secret:
@@ -138,22 +142,21 @@ async def google_callback(
         service="google",
         config=config,
         secret_ref=json.dumps(secret),
-        label="oauth",
+        label=oauth_label(agent_id),
     )
 
-    if agent_id:
-        try:
-            await db.upsert_agent_connection(
-                agent_id=agent_id,
-                connection_type="google",
-                section="integration",
-                enabled=True,
-                config={"connected_user_id": user_id, "email": config["email"], "name": config["name"]},
-            )
-        except Exception as e:
-            logger.warning("Failed to update agent_connections for agent %s: %s", agent_id, e)
+    try:
+        await db.upsert_agent_connection(
+            agent_id=agent_id,
+            connection_type="google",
+            section="integration",
+            enabled=True,
+            config={"connected_user_id": user_id, "email": config["email"], "name": config["name"]},
+        )
+    except Exception as e:
+        logger.warning("Failed to update agent_connections for agent %s: %s", agent_id, e)
 
-    logger.info("Google OAuth connected for user %s (%s), agent=%s", user_id[:12], userinfo.get("email", "?"), agent_id or "none")
+    logger.info("Google OAuth connected for user %s (%s), agent=%s", user_id[:12], userinfo.get("email", "?"), agent_id)
     return HTMLResponse(_success_html("Google", "google-oauth-success"))
 
 
@@ -178,6 +181,8 @@ async def microsoft_callback(
 
     user_id = state_data["user_id"]
     agent_id = state_data.get("agent_id", "")
+    if not agent_id:
+        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
 
     client_id, client_secret = await get_microsoft_creds()
     if not client_id or not client_secret:
@@ -235,22 +240,21 @@ async def microsoft_callback(
         service="microsoft",
         config=config,
         secret_ref=json.dumps(secret),
-        label="oauth",
+        label=oauth_label(agent_id),
     )
 
-    if agent_id:
-        try:
-            await db.upsert_agent_connection(
-                agent_id=agent_id,
-                connection_type="microsoft",
-                section="integration",
-                enabled=True,
-                config={"connected_user_id": user_id, "email": email, "name": name},
-            )
-        except Exception as e:
-            logger.warning("Failed to update agent_connections for Microsoft, agent %s: %s", agent_id, e)
+    try:
+        await db.upsert_agent_connection(
+            agent_id=agent_id,
+            connection_type="microsoft",
+            section="integration",
+            enabled=True,
+            config={"connected_user_id": user_id, "email": email, "name": name},
+        )
+    except Exception as e:
+        logger.warning("Failed to update agent_connections for Microsoft, agent %s: %s", agent_id, e)
 
-    logger.info("Microsoft OAuth connected for user %s (%s), agent=%s", user_id[:12], email or "?", agent_id or "none")
+    logger.info("Microsoft OAuth connected for user %s (%s), agent=%s", user_id[:12], email or "?", agent_id)
     return HTMLResponse(_success_html("Microsoft", "microsoft-oauth-success"))
 
 
@@ -274,6 +278,8 @@ async def yahoo_callback(
 
     user_id = state_data["user_id"]
     agent_id = state_data.get("agent_id", "")
+    if not agent_id:
+        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
 
     client_id, client_secret = await get_yahoo_creds()
     if not client_id or not client_secret:
@@ -337,22 +343,21 @@ async def yahoo_callback(
         service="yahoo",
         config=config,
         secret_ref=json.dumps(secret),
-        label="oauth",
+        label=oauth_label(agent_id),
     )
 
-    if agent_id:
-        try:
-            await db.upsert_agent_connection(
-                agent_id=agent_id,
-                connection_type="yahoo",
-                section="integration",
-                enabled=True,
-                config={"connected_user_id": user_id, "email": email, "name": name},
-            )
-        except Exception as e:
-            logger.warning("Failed to update agent_connections for Yahoo, agent %s: %s", agent_id, e)
+    try:
+        await db.upsert_agent_connection(
+            agent_id=agent_id,
+            connection_type="yahoo",
+            section="integration",
+            enabled=True,
+            config={"connected_user_id": user_id, "email": email, "name": name},
+        )
+    except Exception as e:
+        logger.warning("Failed to update agent_connections for Yahoo, agent %s: %s", agent_id, e)
 
-    logger.info("Yahoo OAuth connected for user %s (%s), agent=%s", user_id[:12], email or "?", agent_id or "none")
+    logger.info("Yahoo OAuth connected for user %s (%s), agent=%s", user_id[:12], email or "?", agent_id)
     return HTMLResponse(_success_html("Yahoo", "yahoo-oauth-success"))
 
 
@@ -377,6 +382,8 @@ async def dropbox_callback(
 
     user_id = state_data["user_id"]
     agent_id = state_data.get("agent_id", "")
+    if not agent_id:
+        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
 
     client_id, client_secret = await get_dropbox_creds()
     if not client_id or not client_secret:
@@ -440,22 +447,21 @@ async def dropbox_callback(
         service="dropbox",
         config=config,
         secret_ref=json.dumps(secret),
-        label="oauth",
+        label=oauth_label(agent_id),
     )
 
-    if agent_id:
-        try:
-            await db.upsert_agent_connection(
-                agent_id=agent_id,
-                connection_type="dropbox",
-                section="integration",
-                enabled=True,
-                config={"connected_user_id": user_id, "email": email, "name": name},
-            )
-        except Exception as e:
-            logger.warning("Failed to update agent_connections for Dropbox, agent %s: %s", agent_id, e)
+    try:
+        await db.upsert_agent_connection(
+            agent_id=agent_id,
+            connection_type="dropbox",
+            section="integration",
+            enabled=True,
+            config={"connected_user_id": user_id, "email": email, "name": name},
+        )
+    except Exception as e:
+        logger.warning("Failed to update agent_connections for Dropbox, agent %s: %s", agent_id, e)
 
-    logger.info("Dropbox OAuth connected for user %s (%s), agent=%s", user_id[:12], email or "?", agent_id or "none")
+    logger.info("Dropbox OAuth connected for user %s (%s), agent=%s", user_id[:12], email or "?", agent_id)
     return HTMLResponse(_success_html("Dropbox", "dropbox-oauth-success"))
 
 
@@ -463,20 +469,19 @@ async def dropbox_callback(
 
 async def _store_oauth(db, user_id: str, service: str, config: dict, secret: dict,
                        agent_id: str, connection_type: str, section: str = "social"):
-    """Store tokens + upsert agent connection."""
+    """Store tokens + upsert agent connection — both scoped to the calling agent."""
     await db.auth_element_set(
         user_id=user_id, service=service, config=config,
-        secret_ref=json.dumps(secret), label="oauth",
+        secret_ref=json.dumps(secret), label=oauth_label(agent_id),
     )
-    if agent_id:
-        try:
-            await db.upsert_agent_connection(
-                agent_id=agent_id, connection_type=connection_type, section=section,
-                enabled=True,
-                config={"connected_user_id": user_id, "email": config.get("email", ""), "name": config.get("name", "")},
-            )
-        except Exception as e:
-            logger.warning("Failed to update agent_connections for %s, agent %s: %s", service, agent_id, e)
+    try:
+        await db.upsert_agent_connection(
+            agent_id=agent_id, connection_type=connection_type, section=section,
+            enabled=True,
+            config={"connected_user_id": user_id, "email": config.get("email", ""), "name": config.get("name", "")},
+        )
+    except Exception as e:
+        logger.warning("Failed to update agent_connections for %s, agent %s: %s", service, agent_id, e)
 
 
 def _token_secret(token_data: dict) -> dict:
@@ -509,6 +514,8 @@ async def meta_callback(
 
     user_id = state_data["user_id"]
     agent_id = state_data.get("agent_id", "")
+    if not agent_id:
+        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
     client_id, client_secret = await get_meta_creds()
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Meta OAuth not configured on server.", status_code=500)
@@ -546,19 +553,17 @@ async def meta_callback(
     }
     secret = _token_secret(token_data)
 
-    # Store under "meta" (parent) + aliases for facebook and instagram
+    # Store under "meta" (parent) + aliases for facebook and instagram, all scoped per-agent.
     await _store_oauth(db, user_id, "meta", config, secret, agent_id, "facebook", section="social")
-    await db.auth_element_set(user_id=user_id, service="facebook", config=config, secret_ref=json.dumps(secret), label="oauth")
-    await db.auth_element_set(user_id=user_id, service="instagram", config=config, secret_ref=json.dumps(secret), label="oauth")
-    # Also update instagram agent connection if agent_id
-    if agent_id:
-        try:
-            await db.upsert_agent_connection(agent_id=agent_id, connection_type="instagram", section="social",
-                enabled=True, config={"connected_user_id": user_id, "email": config["email"], "name": config["name"]})
-        except Exception:
-            pass
+    await db.auth_element_set(user_id=user_id, service="facebook", config=config, secret_ref=json.dumps(secret), label=oauth_label(agent_id))
+    await db.auth_element_set(user_id=user_id, service="instagram", config=config, secret_ref=json.dumps(secret), label=oauth_label(agent_id))
+    try:
+        await db.upsert_agent_connection(agent_id=agent_id, connection_type="instagram", section="social",
+            enabled=True, config={"connected_user_id": user_id, "email": config["email"], "name": config["name"]})
+    except Exception:
+        pass
 
-    logger.info("Meta OAuth connected for user %s (%s), agent=%s", user_id[:12], config.get("email") or me.get("name", "?"), agent_id or "none")
+    logger.info("Meta OAuth connected for user %s (%s), agent=%s", user_id[:12], config.get("email") or me.get("name", "?"), agent_id)
     return HTMLResponse(_success_html("Meta (Facebook & Instagram)", "meta-oauth-success"))
 
 
@@ -584,6 +589,8 @@ async def twitter_callback(
 
     user_id = state_data["user_id"]
     agent_id = state_data.get("agent_id", "")
+    if not agent_id:
+        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
     pkce_verifier = state_data.get("pkce_verifier", "")
 
     client_id, client_secret = await get_twitter_creds()
@@ -650,6 +657,8 @@ async def linkedin_callback(
 
     user_id = state_data["user_id"]
     agent_id = state_data.get("agent_id", "")
+    if not agent_id:
+        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
     client_id, client_secret = await get_linkedin_creds()
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "LinkedIn OAuth not configured on server.", status_code=500)
@@ -710,6 +719,8 @@ async def tiktok_callback(
 
     user_id = state_data["user_id"]
     agent_id = state_data.get("agent_id", "")
+    if not agent_id:
+        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
     pkce_verifier = state_data.get("pkce_verifier", "")
 
     client_id, client_secret = await get_tiktok_creds()
@@ -773,6 +784,8 @@ async def pinterest_callback(
 
     user_id = state_data["user_id"]
     agent_id = state_data.get("agent_id", "")
+    if not agent_id:
+        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
     client_id, client_secret = await get_pinterest_creds()
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Pinterest OAuth not configured on server.", status_code=500)
@@ -834,6 +847,8 @@ async def reddit_callback(
 
     user_id = state_data["user_id"]
     agent_id = state_data.get("agent_id", "")
+    if not agent_id:
+        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
     client_id, client_secret = await get_reddit_creds()
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Reddit OAuth not configured on server.", status_code=500)
@@ -894,6 +909,8 @@ async def snapchat_callback(
 
     user_id = state_data["user_id"]
     agent_id = state_data.get("agent_id", "")
+    if not agent_id:
+        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
     client_id, client_secret = await get_snapchat_creds()
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Snapchat OAuth not configured on server.", status_code=500)
@@ -956,6 +973,8 @@ async def twitch_callback(
 
     user_id = state_data["user_id"]
     agent_id = state_data.get("agent_id", "")
+    if not agent_id:
+        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
     client_id, client_secret = await get_twitch_creds()
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Twitch OAuth not configured on server.", status_code=500)
@@ -1017,6 +1036,8 @@ async def ebay_callback(
 
     user_id = state_data["user_id"]
     agent_id = state_data.get("agent_id", "")
+    if not agent_id:
+        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
     client_id, client_secret = await get_ebay_creds()
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "eBay OAuth not configured on server.", status_code=500)
@@ -1084,6 +1105,8 @@ async def etsy_callback(
 
     user_id = state_data["user_id"]
     agent_id = state_data.get("agent_id", "")
+    if not agent_id:
+        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
     pkce_verifier = state_data.get("pkce_verifier", "")
 
     client_id, client_secret = await get_etsy_creds()
@@ -1178,6 +1201,8 @@ async def shopify_callback(
 
     user_id = state_data["user_id"]
     agent_id = state_data.get("agent_id", "")
+    if not agent_id:
+        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
     expected_shop = (state_data.get("shop") or "").lower()
     if expected_shop and expected_shop != shop.lower():
         return HTMLResponse(_ERROR_HTML % "Shop domain mismatch.", status_code=400)
@@ -1261,6 +1286,8 @@ async def amazon_callback(
 
     user_id = state_data["user_id"]
     agent_id = state_data.get("agent_id", "")
+    if not agent_id:
+        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
     region = (state_data.get("region") or "NA").upper()
 
     client_id, client_secret = await get_amazon_creds()

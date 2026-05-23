@@ -40,6 +40,7 @@ from jose import jwt as jose_jwt
 from pydantic import BaseModel
 
 from app.auth.jwt import decode_token
+from app.integrations.oauth_helper import oauth_label
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/integrations", tags=["integrations"])
@@ -414,11 +415,12 @@ async def build_google_authorize_url(user_id: str, agent_id: str = "", request: 
     return f"https://accounts.google.com/o/oauth2/auth?{urlencode(params)}"
 
 
-async def revoke_and_delete_google(user_id: str) -> bool:
-    """Revoke Google token and delete from auth_elements. Returns True if deleted."""
+async def revoke_and_delete_google(user_id: str, agent_id: str) -> bool:
+    """Revoke this (user, agent)'s Google token and delete from auth_elements."""
     from app.db import get_db
     db = get_db()
-    elem = await db.auth_element_get(user_id, "google", "oauth")
+    label = oauth_label(agent_id)
+    elem = await db.auth_element_get(user_id, "google", label)
     if elem and elem.get("secret_ref"):
         try:
             tokens = json.loads(elem["secret_ref"])
@@ -431,7 +433,7 @@ async def revoke_and_delete_google(user_id: str) -> bool:
                     )
         except Exception as e:
             logger.warning("Failed to revoke Google token: %s", e)
-    return await db.auth_element_delete(user_id, "google", "oauth")
+    return await db.auth_element_delete(user_id, "google", label)
 
 
 # ── Microsoft ─────────────────────────────────────────────────────────────
@@ -477,11 +479,11 @@ async def build_microsoft_authorize_url(user_id: str, agent_id: str = "") -> str
     return f"https://login.microsoftonline.com/common/oauth2/v2.0/authorize?{urlencode(params)}"
 
 
-async def revoke_and_delete_microsoft(user_id: str) -> bool:
-    """Delete Microsoft tokens from auth_elements (Microsoft has no revoke endpoint)."""
+async def revoke_and_delete_microsoft(user_id: str, agent_id: str) -> bool:
+    """Delete this (user, agent)'s Microsoft tokens (no revoke endpoint)."""
     from app.db import get_db
     db = get_db()
-    return await db.auth_element_delete(user_id, "microsoft", "oauth")
+    return await db.auth_element_delete(user_id, "microsoft", oauth_label(agent_id))
 
 
 # ── Yahoo ─────────────────────────────────────────────────────────────────
@@ -526,11 +528,11 @@ async def build_yahoo_authorize_url(user_id: str, agent_id: str = "") -> str:
     return f"https://api.login.yahoo.com/oauth2/request_auth?{urlencode(params)}"
 
 
-async def revoke_and_delete_yahoo(user_id: str) -> bool:
-    """Delete Yahoo tokens from auth_elements."""
+async def revoke_and_delete_yahoo(user_id: str, agent_id: str) -> bool:
+    """Delete this (user, agent)'s Yahoo tokens."""
     from app.db import get_db
     db = get_db()
-    return await db.auth_element_delete(user_id, "yahoo", "oauth")
+    return await db.auth_element_delete(user_id, "yahoo", oauth_label(agent_id))
 
 
 # ── Dropbox ───────────────────────────────────────────────────────────────
@@ -576,11 +578,12 @@ async def build_dropbox_authorize_url(user_id: str, agent_id: str = "") -> str:
     return f"https://www.dropbox.com/oauth2/authorize?{urlencode(params)}"
 
 
-async def revoke_and_delete_dropbox(user_id: str) -> bool:
-    """Revoke Dropbox token and delete from auth_elements."""
+async def revoke_and_delete_dropbox(user_id: str, agent_id: str) -> bool:
+    """Revoke this (user, agent)'s Dropbox token and delete from auth_elements."""
     from app.db import get_db
     db = get_db()
-    elem = await db.auth_element_get(user_id, "dropbox", "oauth")
+    label = oauth_label(agent_id)
+    elem = await db.auth_element_get(user_id, "dropbox", label)
     if elem and elem.get("secret_ref"):
         try:
             tokens = json.loads(elem["secret_ref"])
@@ -593,7 +596,7 @@ async def revoke_and_delete_dropbox(user_id: str) -> bool:
                     )
         except Exception as e:
             logger.warning("Failed to revoke Dropbox token: %s", e)
-    return await db.auth_element_delete(user_id, "dropbox", "oauth")
+    return await db.auth_element_delete(user_id, "dropbox", label)
 
 
 # ── Meta (Facebook + Instagram) ───────────────────────────────────────────
@@ -633,11 +636,12 @@ async def build_meta_authorize_url(user_id: str, agent_id: str = "") -> str:
     return f"https://www.facebook.com/v19.0/dialog/oauth?{urlencode(params)}"
 
 
-async def revoke_and_delete_meta(user_id: str) -> bool:
+async def revoke_and_delete_meta(user_id: str, agent_id: str) -> bool:
     from app.db import get_db
     db = get_db()
+    label = oauth_label(agent_id)
     # Meta: revoke via Graph API DELETE /{user_id}/permissions
-    elem = await db.auth_element_get(user_id, "meta", "oauth")
+    elem = await db.auth_element_get(user_id, "meta", label)
     if elem and elem.get("secret_ref"):
         try:
             tokens = json.loads(elem["secret_ref"])
@@ -648,10 +652,10 @@ async def revoke_and_delete_meta(user_id: str) -> bool:
                     await c.delete(f"https://graph.facebook.com/v19.0/{meta_uid}/permissions", params={"access_token": access_token})
         except Exception as e:
             logger.warning("Failed to revoke Meta token: %s", e)
-    await db.auth_element_delete(user_id, "meta", "oauth")
-    # Also clean up the per-platform aliases
-    await db.auth_element_delete(user_id, "facebook", "oauth")
-    await db.auth_element_delete(user_id, "instagram", "oauth")
+    await db.auth_element_delete(user_id, "meta", label)
+    # Also clean up the per-platform aliases (same per-agent scope)
+    await db.auth_element_delete(user_id, "facebook", label)
+    await db.auth_element_delete(user_id, "instagram", label)
     return True
 
 
@@ -696,10 +700,11 @@ async def build_twitter_authorize_url(user_id: str, agent_id: str = "") -> tuple
     return f"https://twitter.com/i/oauth2/authorize?{urlencode(params)}", state
 
 
-async def revoke_and_delete_twitter(user_id: str) -> bool:
+async def revoke_and_delete_twitter(user_id: str, agent_id: str) -> bool:
     from app.db import get_db
     db = get_db()
-    elem = await db.auth_element_get(user_id, "twitter", "oauth")
+    label = oauth_label(agent_id)
+    elem = await db.auth_element_get(user_id, "twitter", label)
     if elem and elem.get("secret_ref"):
         try:
             tokens = json.loads(elem["secret_ref"])
@@ -715,7 +720,7 @@ async def revoke_and_delete_twitter(user_id: str) -> bool:
                     )
         except Exception as e:
             logger.warning("Failed to revoke Twitter token: %s", e)
-    return await db.auth_element_delete(user_id, "twitter", "oauth")
+    return await db.auth_element_delete(user_id, "twitter", label)
 
 
 # ── LinkedIn ──────────────────────────────────────────────────────────────
@@ -755,10 +760,10 @@ async def build_linkedin_authorize_url(user_id: str, agent_id: str = "") -> str:
     return f"https://www.linkedin.com/oauth/v2/authorization?{urlencode(params)}"
 
 
-async def revoke_and_delete_linkedin(user_id: str) -> bool:
+async def revoke_and_delete_linkedin(user_id: str, agent_id: str) -> bool:
     from app.db import get_db
     db = get_db()
-    return await db.auth_element_delete(user_id, "linkedin", "oauth")
+    return await db.auth_element_delete(user_id, "linkedin", oauth_label(agent_id))
 
 
 # ── TikTok ────────────────────────────────────────────────────────────────
@@ -801,10 +806,11 @@ async def build_tiktok_authorize_url(user_id: str, agent_id: str = "") -> str:
     return f"https://www.tiktok.com/v2/auth/authorize/?{urlencode(params)}"
 
 
-async def revoke_and_delete_tiktok(user_id: str) -> bool:
+async def revoke_and_delete_tiktok(user_id: str, agent_id: str) -> bool:
     from app.db import get_db
     db = get_db()
-    elem = await db.auth_element_get(user_id, "tiktok", "oauth")
+    label = oauth_label(agent_id)
+    elem = await db.auth_element_get(user_id, "tiktok", label)
     if elem and elem.get("secret_ref"):
         try:
             tokens = json.loads(elem["secret_ref"])
@@ -819,7 +825,7 @@ async def revoke_and_delete_tiktok(user_id: str) -> bool:
                     )
         except Exception as e:
             logger.warning("Failed to revoke TikTok token: %s", e)
-    return await db.auth_element_delete(user_id, "tiktok", "oauth")
+    return await db.auth_element_delete(user_id, "tiktok", label)
 
 
 # ── Pinterest ─────────────────────────────────────────────────────────────
@@ -859,10 +865,10 @@ async def build_pinterest_authorize_url(user_id: str, agent_id: str = "") -> str
     return f"https://www.pinterest.com/oauth/?{urlencode(params)}"
 
 
-async def revoke_and_delete_pinterest(user_id: str) -> bool:
+async def revoke_and_delete_pinterest(user_id: str, agent_id: str) -> bool:
     from app.db import get_db
     db = get_db()
-    return await db.auth_element_delete(user_id, "pinterest", "oauth")
+    return await db.auth_element_delete(user_id, "pinterest", oauth_label(agent_id))
 
 
 # ── Reddit ────────────────────────────────────────────────────────────────
@@ -903,10 +909,11 @@ async def build_reddit_authorize_url(user_id: str, agent_id: str = "") -> str:
     return f"https://www.reddit.com/api/v1/authorize?{urlencode(params)}"
 
 
-async def revoke_and_delete_reddit(user_id: str) -> bool:
+async def revoke_and_delete_reddit(user_id: str, agent_id: str) -> bool:
     from app.db import get_db
     db = get_db()
-    elem = await db.auth_element_get(user_id, "reddit", "oauth")
+    label = oauth_label(agent_id)
+    elem = await db.auth_element_get(user_id, "reddit", label)
     if elem and elem.get("secret_ref"):
         try:
             tokens = json.loads(elem["secret_ref"])
@@ -922,7 +929,7 @@ async def revoke_and_delete_reddit(user_id: str) -> bool:
                     )
         except Exception as e:
             logger.warning("Failed to revoke Reddit token: %s", e)
-    return await db.auth_element_delete(user_id, "reddit", "oauth")
+    return await db.auth_element_delete(user_id, "reddit", label)
 
 
 # ── Snapchat ──────────────────────────────────────────────────────────────
@@ -962,10 +969,11 @@ async def build_snapchat_authorize_url(user_id: str, agent_id: str = "") -> str:
     return f"https://accounts.snapchat.com/login/oauth2/authorize?{urlencode(params)}"
 
 
-async def revoke_and_delete_snapchat(user_id: str) -> bool:
+async def revoke_and_delete_snapchat(user_id: str, agent_id: str) -> bool:
     from app.db import get_db
     db = get_db()
-    elem = await db.auth_element_get(user_id, "snapchat", "oauth")
+    label = oauth_label(agent_id)
+    elem = await db.auth_element_get(user_id, "snapchat", label)
     if elem and elem.get("secret_ref"):
         try:
             tokens = json.loads(elem["secret_ref"])
@@ -979,7 +987,7 @@ async def revoke_and_delete_snapchat(user_id: str) -> bool:
                     )
         except Exception as e:
             logger.warning("Failed to revoke Snapchat token: %s", e)
-    return await db.auth_element_delete(user_id, "snapchat", "oauth")
+    return await db.auth_element_delete(user_id, "snapchat", label)
 
 
 # ── Twitch ────────────────────────────────────────────────────────────────
@@ -1019,10 +1027,11 @@ async def build_twitch_authorize_url(user_id: str, agent_id: str = "") -> str:
     return f"https://id.twitch.tv/oauth2/authorize?{urlencode(params)}"
 
 
-async def revoke_and_delete_twitch(user_id: str) -> bool:
+async def revoke_and_delete_twitch(user_id: str, agent_id: str) -> bool:
     from app.db import get_db
     db = get_db()
-    elem = await db.auth_element_get(user_id, "twitch", "oauth")
+    label = oauth_label(agent_id)
+    elem = await db.auth_element_get(user_id, "twitch", label)
     if elem and elem.get("secret_ref"):
         try:
             tokens = json.loads(elem["secret_ref"])
@@ -1036,7 +1045,7 @@ async def revoke_and_delete_twitch(user_id: str) -> bool:
                     )
         except Exception as e:
             logger.warning("Failed to revoke Twitch token: %s", e)
-    return await db.auth_element_delete(user_id, "twitch", "oauth")
+    return await db.auth_element_delete(user_id, "twitch", label)
 
 
 # ── eBay ──────────────────────────────────────────────────────────────────
@@ -1076,10 +1085,10 @@ async def build_ebay_authorize_url(user_id: str, agent_id: str = "", request: Op
     return f"https://auth.ebay.com/oauth2/authorize?{urlencode(params)}"
 
 
-async def revoke_and_delete_ebay(user_id: str) -> bool:
+async def revoke_and_delete_ebay(user_id: str, agent_id: str) -> bool:
     from app.db import get_db
     db = get_db()
-    return await db.auth_element_delete(user_id, "ebay", "oauth")
+    return await db.auth_element_delete(user_id, "ebay", oauth_label(agent_id))
 
 
 # ── Etsy ──────────────────────────────────────────────────────────────────
@@ -1123,10 +1132,10 @@ async def build_etsy_authorize_url(user_id: str, agent_id: str = "", request: Op
     return f"https://www.etsy.com/oauth/connect?{urlencode(params)}"
 
 
-async def revoke_and_delete_etsy(user_id: str) -> bool:
+async def revoke_and_delete_etsy(user_id: str, agent_id: str) -> bool:
     from app.db import get_db
     db = get_db()
-    return await db.auth_element_delete(user_id, "etsy", "oauth")
+    return await db.auth_element_delete(user_id, "etsy", oauth_label(agent_id))
 
 
 # ── Shopify (per-shop) ────────────────────────────────────────────────────
@@ -1182,10 +1191,10 @@ async def build_shopify_authorize_url(
     return f"https://{shop_norm}/admin/oauth/authorize?{urlencode(params)}"
 
 
-async def revoke_and_delete_shopify(user_id: str) -> bool:
+async def revoke_and_delete_shopify(user_id: str, agent_id: str) -> bool:
     from app.db import get_db
     db = get_db()
-    return await db.auth_element_delete(user_id, "shopify", "oauth")
+    return await db.auth_element_delete(user_id, "shopify", oauth_label(agent_id))
 
 
 # ── Amazon SP-API (LWA) ───────────────────────────────────────────────────
@@ -1257,10 +1266,10 @@ async def build_amazon_authorize_url(
     return f"{host}/apps/authorize/consent?{urlencode(params)}"
 
 
-async def revoke_and_delete_amazon(user_id: str) -> bool:
+async def revoke_and_delete_amazon(user_id: str, agent_id: str) -> bool:
     from app.db import get_db
     db = get_db()
-    return await db.auth_element_delete(user_id, "amazon", "oauth")
+    return await db.auth_element_delete(user_id, "amazon", oauth_label(agent_id))
 
 
 # ── Generic Web Scraper (admin-global) ───────────────────────────────────

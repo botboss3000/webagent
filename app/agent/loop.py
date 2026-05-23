@@ -581,7 +581,8 @@ async def stream_agent_events(
                         _int_summary.append({"provider": _ct, "connected": False})
                     continue
                 try:
-                    _elem = await db.auth_element_get(user_id, _ct, "oauth")
+                    from app.integrations.oauth_helper import oauth_label as _oauth_label
+                    _elem = await db.auth_element_get(user_id, _ct, _oauth_label(agent_id))
                 except Exception:
                     _elem = None
                 if _elem and _elem.get("secret_ref"):

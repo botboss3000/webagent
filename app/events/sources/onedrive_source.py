@@ -69,7 +69,7 @@ class OneDriveSource(EventSource):
         return base
 
     async def register_subscription(
-        self, *, owner_user_id: str, event_type: str, filter_dict: Dict[str, Any]
+        self, *, owner_user_id: str, agent_id: str, event_type: str, filter_dict: Dict[str, Any]
     ) -> SubscriptionRegistration:
         notif_url = _notification_url()
         if not notif_url:
@@ -78,6 +78,7 @@ class OneDriveSource(EventSource):
         exp = expiration_iso()
         resp = await create_subscription(
             user_id=owner_user_id,
+            agent_id=agent_id,
             change_type="updated",
             resource="me/drive/root",
             notification_url=notif_url,
@@ -90,7 +91,7 @@ class OneDriveSource(EventSource):
         sub_id = body.get("id") or ""
 
         # Seed a delta token so the first notification has a baseline.
-        delta_link = await self._initial_delta_link(owner_user_id)
+        delta_link = await self._initial_delta_link(owner_user_id, agent_id)
 
         return SubscriptionRegistration(
             external_subscription_id=sub_id,
@@ -101,11 +102,11 @@ class OneDriveSource(EventSource):
             },
         )
 
-    async def _initial_delta_link(self, user_id: str) -> Optional[str]:
+    async def _initial_delta_link(self, user_id: str, agent_id: str) -> Optional[str]:
         url = f"{GRAPH_BASE}/me/drive/root/delta"
         # walk to the end to get a @odata.deltaLink
         for _ in range(20):
-            resp = await oauth_api_call(user_id, "microsoft", "GET", url)
+            resp = await oauth_api_call(user_id, agent_id, "microsoft", "GET", url)
             if resp.get("status") != "ok":
                 return None
             body = resp.get("body") or {}
@@ -119,21 +120,25 @@ class OneDriveSource(EventSource):
 
     async def renew_subscription(self, subscription_row: Dict[str, Any]) -> SubscriptionRegistration:
         sub_id = subscription_row.get("external_subscription_id")
+        agent_id = subscription_row.get("agent_id", "")
         if not sub_id:
             return await self.register_subscription(
                 owner_user_id=subscription_row["owner_user_id"],
+                agent_id=agent_id,
                 event_type=subscription_row["event_type"],
                 filter_dict=subscription_row.get("filter") or {},
             )
         exp = expiration_iso()
         resp = await graph_renew(
             user_id=subscription_row["owner_user_id"],
+            agent_id=agent_id,
             subscription_id=sub_id,
             expiration=exp,
         )
         if resp.get("status") != "ok":
             return await self.register_subscription(
                 owner_user_id=subscription_row["owner_user_id"],
+                agent_id=agent_id,
                 event_type=subscription_row["event_type"],
                 filter_dict=subscription_row.get("filter") or {},
             )
@@ -152,6 +157,7 @@ class OneDriveSource(EventSource):
         try:
             await delete_subscription(
                 user_id=subscription_row["owner_user_id"],
+                agent_id=subscription_row.get("agent_id", ""),
                 subscription_id=sub_id,
             )
         except Exception as e:
@@ -192,7 +198,7 @@ class OneDriveSource(EventSource):
             delta_link = meta.get("delta_link") or ""
             if not delta_link:
                 continue
-            items, new_delta = await self._walk_delta(row["owner_user_id"], delta_link)
+            items, new_delta = await self._walk_delta(row["owner_user_id"], row.get("agent_id", ""), delta_link)
             meta["delta_link"] = new_delta or delta_link
             try:
                 await db.update_event_subscription(row["id"], external_metadata=meta)
@@ -221,12 +227,12 @@ class OneDriveSource(EventSource):
                 ))
         return out
 
-    async def _walk_delta(self, user_id: str, delta_link: str) -> tuple[List[dict], Optional[str]]:
+    async def _walk_delta(self, user_id: str, agent_id: str, delta_link: str) -> tuple[List[dict], Optional[str]]:
         url = delta_link
         out: List[dict] = []
         new_delta = None
         for _ in range(20):
-            resp = await oauth_api_call(user_id, "microsoft", "GET", url)
+            resp = await oauth_api_call(user_id, agent_id, "microsoft", "GET", url)
             if resp.get("status") != "ok":
                 break
             body = resp.get("body") or {}
