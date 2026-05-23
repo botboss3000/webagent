@@ -2447,11 +2447,11 @@ async function _renderConnectionsTab(body, agent) {
   body.appendChild(searchEmpty);
 
   const sections = [
+    { key: 'ability',     label: 'Agent Tools',  hint: 'Privileged capabilities — codebase edits, tool creation, automation.' },
     { key: 'channel',     label: 'Channels',     hint: 'How this agent sends and receives messages.' },
     { key: 'integration', label: 'Integrations', hint: 'Services and data sources this agent can access.' },
     { key: 'social',      label: 'Social Media', hint: 'Social platforms this agent can post and interact on.' },
     { key: 'marketplace', label: 'Marketplaces', hint: 'E-commerce platforms this agent can list, browse, and manage items on.' },
-    { key: 'ability',     label: 'Agent Tools',  hint: 'Privileged capabilities — codebase edits, tool creation, automation.' },
   ];
 
   // Track cards + their haystack for search filtering, plus their section
