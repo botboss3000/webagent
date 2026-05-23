@@ -1181,6 +1181,36 @@ body.light-mode .lv-edit-save-btn.dirty { background: #fff2e6; border-color: #ff
   text-align: center;
 }
 
+.conn-search-wrap {
+  margin-bottom: 12px;
+}
+.conn-search-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.conn-search-empty {
+  font-size: 12px;
+  color: #565f89;
+  padding: 8px 0 16px;
+}
+
+.conn-banner-notice {
+  font-size: 12px;
+  color: #9ece6a;
+  background: #1a2a1f;
+  border: 1px solid #2a4a35;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  transition: opacity 0.35s ease;
+}
+.conn-banner-notice.fade-out { opacity: 0; }
+
+.conn-section-header-static {
+  cursor: default !important;
+}
+.conn-section-header-static:hover .conn-section-label { color: #565f89 !important; }
+
 .conn-section {
   margin-bottom: 24px;
 }
