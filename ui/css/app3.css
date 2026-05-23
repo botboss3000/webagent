@@ -1953,6 +1953,13 @@ body.light-mode .ac-table-empty { color: #9a7c65; }
   background: rgba(86, 95, 137, 0.2);
   color: var(--fg-muted, #565f89);
 }
+.ac-int-badge-soon {
+  background: rgba(224, 175, 104, 0.15);
+  color: #e0af68;
+}
+.ac-int-coming-soon {
+  opacity: 0.6;
+}
 .ac-int-account-info {
   display: flex;
   align-items: center;
@@ -1964,6 +1971,7 @@ body.light-mode .ac-table-empty { color: #9a7c65; }
 }
 body.light-mode .ac-int-badge-on { background: rgba(40, 167, 69, 0.12); color: #1a7c31; }
 body.light-mode .ac-int-badge-off { background: rgba(107, 82, 64, 0.12); color: #9a7c65; }
+body.light-mode .ac-int-badge-soon { background: rgba(207, 132, 47, 0.12); color: #b46a23; }
 body.light-mode .ac-int-account-info { background: #faf7f4; border-color: #d4c4b4; }
 body.light-mode .ac-provider-row { background: #faf7f4; border-color: #d4c4b4; }
 

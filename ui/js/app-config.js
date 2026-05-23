@@ -832,15 +832,17 @@ function _initIntegrations() {
   _qs('ac-int-browser_session-edit')?.addEventListener('click', () => _editGenericProvider('browser_session'));
   _qs('ac-int-browser_session-unconfigure')?.addEventListener('click', _unconfigureBrowserSession);
 
-  // Channels (admin enable/disable; per-agent creds live in the agent's Connections tab)
+  // Channels (admin enable/disable; per-agent creds live in the agent's Abilities tab)
   const channels = ['telegram'];
   for (const c of channels) {
     _initCollapsible(c);
     _qs(`ac-int-${c}-save`)?.addEventListener('click', () => _enableChannel(c));
     _qs(`ac-int-${c}-unconfigure`)?.addEventListener('click', () => _disableChannel(c));
   }
+  // Coming-soon channel placeholders — searchable but not interactive.
+  const comingSoonChannels = ['whatsapp', 'slack', 'discord', 'email', 'twilio'];
 
-  _initIntegrationsSearch([...providers, ...genericProviders, ...channels]);
+  _initIntegrationsSearch([...providers, ...genericProviders, ...channels, ...comingSoonChannels]);
   _initIntegrationAdminChat();
 }
 
