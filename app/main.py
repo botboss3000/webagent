@@ -123,6 +123,25 @@ app.add_middleware(
 )
 app.add_middleware(NoCacheMiddleware)
 
+
+@app.middleware("http")
+async def _capture_public_base_url(request, call_next):
+    """Cache the public base URL of every incoming request so background code
+    paths (agent tools, scheduler) that have no Request object can still build
+    correct OAuth redirect URIs instead of falling back to http://localhost:8000."""
+    try:
+        from app.admin import integrations as _integ
+        derived = str(request.base_url).rstrip("/")
+        forwarded_proto = request.headers.get("x-forwarded-proto", "")
+        if forwarded_proto and derived.startswith("http://"):
+            derived = "https://" + derived[len("http://"):]
+        if derived and not derived.startswith("http://localhost") and not derived.startswith("http://127."):
+            _integ._LAST_SEEN_BASE_URL = derived
+    except Exception:
+        pass
+    return await call_next(request)
+
+
 # Include routers
 app.include_router(chat_router)
 app.include_router(terminal_router)

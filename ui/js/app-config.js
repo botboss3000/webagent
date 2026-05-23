@@ -808,6 +808,76 @@ async function _loadIntegrations() {
   }
 }
 
+// ── URI copy-button helpers ───────────────────────────────────────────────
+
+function _makeCopyBtn() {
+  const btn = document.createElement('button');
+  btn.className = 'ac-uri-copy-btn';
+  btn.title = 'Copy';
+  btn.style.cssText = 'background:none;border:none;cursor:pointer;padding:2px;color:var(--fg-3);display:inline-flex;align-items:center;flex-shrink:0;line-height:0;';
+  btn.innerHTML = icon('copy', { size: '13px' });
+  return btn;
+}
+
+function _bindUri(btn, getText) {
+  btn.onclick = () => {
+    navigator.clipboard.writeText(getText()).then(() => {
+      btn.innerHTML = icon('check', { size: '13px' });
+      btn.style.color = 'var(--success)';
+      setTimeout(() => {
+        btn.innerHTML = icon('copy', { size: '13px' });
+        btn.style.color = 'var(--fg-3)';
+      }, 1500);
+    });
+  };
+}
+
+// Attaches (or updates) a Lucide copy button next to a redirect-URI <code> element.
+// Inline variant (no display:block): button inserted as sibling, parent becomes flex.
+// Block variant (display:block): <code> becomes flex row [text-span][copy-btn].
+function _attachUriCopy(codeEl, uri) {
+  if (!codeEl) return;
+
+  if (codeEl.dataset.uriCopy === 'block') {
+    codeEl.querySelector('.ac-uri-text').textContent = uri;
+    return;
+  }
+
+  if (codeEl.dataset.uriCopy === 'inline') {
+    codeEl.textContent = uri;
+    return;
+  }
+
+  if (codeEl.style.display === 'block') {
+    codeEl.dataset.uriCopy = 'block';
+    codeEl.style.display = 'flex';
+    codeEl.style.alignItems = 'center';
+    codeEl.style.justifyContent = 'space-between';
+    codeEl.style.gap = '8px';
+    const span = document.createElement('span');
+    span.className = 'ac-uri-text';
+    span.style.wordBreak = 'break-all';
+    span.textContent = uri;
+    codeEl.appendChild(span);
+    const btn = _makeCopyBtn();
+    codeEl.appendChild(btn);
+    _bindUri(btn, () => span.textContent);
+  } else {
+    codeEl.dataset.uriCopy = 'inline';
+    codeEl.textContent = uri;
+    const btn = _makeCopyBtn();
+    codeEl.insertAdjacentElement('afterend', btn);
+    _bindUri(btn, () => codeEl.textContent);
+    if (codeEl.parentElement) {
+      Object.assign(codeEl.parentElement.style, {
+        display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap',
+      });
+    }
+  }
+}
+
+// ── Provider status ───────────────────────────────────────────────────────
+
 function _applyProviderStatus(provider, configured, clientId, redirectUri, enabledScopes) {
   const badge        = _qs(`ac-int-${provider}-badge`);
   const configuredEl = _qs(`ac-int-${provider}-configured`);
@@ -819,7 +889,10 @@ function _applyProviderStatus(provider, configured, clientId, redirectUri, enabl
     const cidEl = _qs(`ac-int-${provider}-cid`);
     if (cidEl) cidEl.textContent = clientId || '';
     const uriEl = _qs(`ac-int-${provider}-uri`);
-    if (uriEl) uriEl.textContent = redirectUri || '';
+    _attachUriCopy(uriEl, redirectUri || '');
+    // Populate form-uri too so Edit mode shows the URI with a copy button
+    const formUri = _qs(`ac-int-${provider}-form-uri`);
+    _attachUriCopy(formUri, redirectUri || '');
     // Show scope count in configured summary
     let scopeCountEl = document.getElementById(`ac-int-${provider}-scope-count`);
     if (!scopeCountEl && configuredEl) {
@@ -838,7 +911,7 @@ function _applyProviderStatus(provider, configured, clientId, redirectUri, enabl
     if (configuredEl) configuredEl.style.display = 'none';
     if (form) form.style.display = 'block';
     const formUri = _qs(`ac-int-${provider}-form-uri`);
-    if (formUri) formUri.textContent = redirectUri || '';
+    _attachUriCopy(formUri, redirectUri || '');
   }
   _setScopeSelection(provider, enabledScopes || null);
 }

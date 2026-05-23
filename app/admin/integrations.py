@@ -218,6 +218,9 @@ def resolve_user_id(authorization: str = "", token_qs: str = "") -> str:
     return ANONYMOUS_KEY
 
 
+_LAST_SEEN_BASE_URL: str = ""
+
+
 def _get_base_url(request: Optional[Request] = None) -> str:
     """Return the configured base URL.
 
@@ -226,8 +229,11 @@ def _get_base_url(request: Optional[Request] = None) -> str:
     2. webhook_base_url.txt file
     3. Derived from the incoming HTTP request (scheme + host) — works correctly
        on Cloud Run and any other hosted environment without extra config
-    4. Fallback to http://localhost:8000
+    4. Last-seen request-derived base URL (cached so background/agent code paths
+       that have no Request object still produce the right URL instead of localhost)
+    5. Fallback to http://localhost:8000
     """
+    global _LAST_SEEN_BASE_URL
     from pathlib import Path
     base_url = os.environ.get("WEBHOOK_BASE_URL", "")
     if not base_url:
@@ -239,14 +245,22 @@ def _get_base_url(request: Optional[Request] = None) -> str:
             pass
     if not base_url and request is not None:
         # Derive from the incoming request. Behind a TLS-terminating proxy (e.g.
-        # Cloud Run), the app sees http:// internally but the real scheme is in
-        # the X-Forwarded-Proto header — use that when present.
+        # Cloud Run, Caddy), the app sees http:// internally but the real scheme
+        # is in the X-Forwarded-Proto header — use that when present.
         derived = str(request.base_url).rstrip("/")
         forwarded_proto = request.headers.get("x-forwarded-proto", "")
         if forwarded_proto and derived.startswith("http://"):
             derived = "https://" + derived[len("http://"):]
         base_url = derived
-    return base_url or "http://localhost:8000"
+    if base_url:
+        # Remember the most recent non-fallback base so request-less callers
+        # (agent tools, scheduler) can reuse it instead of the localhost fallback.
+        if not base_url.startswith("http://localhost") and not base_url.startswith("http://127."):
+            _LAST_SEEN_BASE_URL = base_url
+        return base_url
+    if _LAST_SEEN_BASE_URL:
+        return _LAST_SEEN_BASE_URL
+    return "http://localhost:8000"
 
 
 # ── Generic state-token helpers ───────────────────────────────────────────
