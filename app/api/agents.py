@@ -661,6 +661,8 @@ _CONNECTION_CATALOG = [
     {"connection_type": "github",    "section": "integration", "display_name": "GitHub",           "status": "coming_soon"},
     {"connection_type": "bank",      "section": "integration", "display_name": "Bank Accounts",    "status": "coming_soon"},
     {"connection_type": "search",    "section": "integration", "display_name": "Search Engine",    "status": "coming_soon"},
+    {"connection_type": "scraper",          "section": "integration", "display_name": "Web Scraper",     "status": "available"},
+    {"connection_type": "browser_session",  "section": "integration", "display_name": "Browser Session", "status": "available"},
     # ── Social Media ──
     {"connection_type": "facebook",  "section": "social",      "display_name": "Facebook",         "status": "available"},
     {"connection_type": "instagram", "section": "social",      "display_name": "Instagram",        "status": "available"},

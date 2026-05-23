@@ -2037,6 +2037,8 @@ const _CONN_ICONS = {
   github:    'github',
   bank:      'landmark',
   search:    'globe',
+  scraper:         'globe',
+  browser_session: 'cookie',
   // Social Media
   facebook:  'users',
   instagram: 'camera',

@@ -781,7 +781,19 @@ function _initIntegrations() {
     _qs(`ac-int-${p}-edit`)?.addEventListener('click', () => _editProviderConfig(p));
     _qs(`ac-int-${p}-unconfigure`)?.addEventListener('click', () => _unconfigureProvider(p));
   }
-  _initIntegrationsSearch(providers);
+  // Generic, non-OAuth providers (different field shapes)
+  const genericProviders = ['scraper', 'browser_session'];
+  for (const p of genericProviders) {
+    _initCollapsible(p);
+  }
+  _qs('ac-int-scraper-save')?.addEventListener('click', _saveScraperConfig);
+  _qs('ac-int-scraper-edit')?.addEventListener('click', () => _editGenericProvider('scraper'));
+  _qs('ac-int-scraper-unconfigure')?.addEventListener('click', _unconfigureScraper);
+  _qs('ac-int-browser_session-save')?.addEventListener('click', _saveBrowserSession);
+  _qs('ac-int-browser_session-edit')?.addEventListener('click', () => _editGenericProvider('browser_session'));
+  _qs('ac-int-browser_session-unconfigure')?.addEventListener('click', _unconfigureBrowserSession);
+
+  _initIntegrationsSearch([...providers, ...genericProviders]);
 }
 
 function _initIntegrationsSearch(providers) {
@@ -828,11 +840,160 @@ async function _loadIntegrations() {
     _applyProviderStatus('reddit',    data.reddit_configured,    data.reddit_client_id,    data.reddit_redirect_uri,       data.reddit_scopes);
     _applyProviderStatus('snapchat',  data.snapchat_configured,  data.snapchat_client_id,  data.snapchat_redirect_uri,     data.snapchat_scopes);
     _applyProviderStatus('twitch',    data.twitch_configured,    data.twitch_client_id,    data.twitch_redirect_uri,       data.twitch_scopes);
+    _applyScraperStatus(data);
+    // Browser session is per-user — fetched from a separate endpoint.
+    _loadBrowserSessionStatus();
   } catch (e) {
-    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch']) {
+    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'scraper', 'browser_session']) {
       const s = _qs(`ac-int-${p}-status`);
       if (s) { s.textContent = `Failed to load: ${e.message}`; s.style.color = '#f7768e'; s.style.display = 'block'; }
     }
+  }
+}
+
+// ── Generic (non-OAuth) provider helpers ───────────────────────────────────
+
+function _applyScraperStatus(data) {
+  const badge        = _qs('ac-int-scraper-badge');
+  const configuredEl = _qs('ac-int-scraper-configured');
+  const form         = _qs('ac-int-scraper-form');
+  if (data.scraper_configured) {
+    if (badge) { badge.textContent = 'Configured'; badge.className = 'ac-int-badge ac-int-badge-on'; }
+    if (configuredEl) configuredEl.style.display = 'block';
+    if (form) form.style.display = 'none';
+    const provEl = _qs('ac-int-scraper-provider'); if (provEl) provEl.textContent = data.scraper_provider || '';
+    const epEl   = _qs('ac-int-scraper-endpoint'); if (epEl)   epEl.textContent   = data.scraper_endpoint || '(default)';
+    const extra  = [data.scraper_actor_id && `actor=${data.scraper_actor_id}`,
+                    data.scraper_host     && `host=${data.scraper_host}`].filter(Boolean).join(' · ');
+    const exEl   = _qs('ac-int-scraper-extra'); if (exEl)      exEl.textContent   = extra || '(none)';
+  } else {
+    if (badge) { badge.textContent = 'Not configured'; badge.className = 'ac-int-badge ac-int-badge-off'; }
+    if (configuredEl) configuredEl.style.display = 'none';
+    if (form) form.style.display = 'block';
+  }
+}
+
+async function _loadBrowserSessionStatus() {
+  const badge        = _qs('ac-int-browser_session-badge');
+  const configuredEl = _qs('ac-int-browser_session-configured');
+  const form         = _qs('ac-int-browser_session-form');
+  try {
+    const res = await _fetch(apiPath('/admin/integrations/browser-session'));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.configured) {
+      if (badge) { badge.textContent = 'Configured'; badge.className = 'ac-int-badge ac-int-badge-on'; }
+      if (configuredEl) configuredEl.style.display = 'block';
+      if (form) form.style.display = 'none';
+      const domEl  = _qs('ac-int-browser_session-domain'); if (domEl)  domEl.textContent  = data.domain || '(any)';
+      const uaEl   = _qs('ac-int-browser_session-ua');     if (uaEl)   uaEl.textContent   = data.user_agent || '(default)';
+      const cntEl  = _qs('ac-int-browser_session-count');  if (cntEl)  cntEl.textContent  = String(data.cookie_count || 0);
+      const svEl   = _qs('ac-int-browser_session-saved');  if (svEl)   svEl.textContent   = data.saved_at || '';
+    } else {
+      if (badge) { badge.textContent = 'Not configured'; badge.className = 'ac-int-badge ac-int-badge-off'; }
+      if (configuredEl) configuredEl.style.display = 'none';
+      if (form) form.style.display = 'block';
+    }
+  } catch (e) {
+    const s = _qs('ac-int-browser_session-status');
+    if (s) { s.textContent = `Failed to load: ${e.message}`; s.style.color = '#f7768e'; s.style.display = 'block'; }
+  }
+}
+
+function _editGenericProvider(provider) {
+  const configuredEl = _qs(`ac-int-${provider}-configured`);
+  const form         = _qs(`ac-int-${provider}-form`);
+  const statusEl     = _qs(`ac-int-${provider}-status`);
+  if (statusEl) statusEl.style.display = 'none';
+  if (configuredEl) configuredEl.style.display = 'none';
+  if (form) form.style.display = 'block';
+}
+
+async function _saveScraperConfig() {
+  if (!isAdmin()) { showRestrictedModal(); return; }
+  const provInput   = _qs('ac-int-scraper-input-provider');
+  const keyInput    = _qs('ac-int-scraper-input-key');
+  const epInput     = _qs('ac-int-scraper-input-endpoint');
+  const actorInput  = _qs('ac-int-scraper-input-actor');
+  const hostInput   = _qs('ac-int-scraper-input-host');
+  const statusEl    = _qs('ac-int-scraper-status');
+  if (!keyInput?.value?.trim()) {
+    if (statusEl) { statusEl.textContent = 'API key is required.'; statusEl.style.color = '#e0af68'; statusEl.style.display = 'block'; }
+    return;
+  }
+  try {
+    const res = await _fetch(apiPath('/admin/integrations/scraper'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: provInput?.value || 'apify',
+        api_key: keyInput.value.trim(),
+        endpoint: epInput?.value?.trim() || '',
+        actor_id: actorInput?.value?.trim() || '',
+        host: hostInput?.value?.trim() || '',
+      }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (keyInput) keyInput.value = '';
+    if (statusEl) { statusEl.textContent = 'Configured successfully.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; setTimeout(() => { statusEl.style.display = 'none'; }, 3000); }
+    _loadIntegrations();
+    _expandCard('scraper');
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = `Error: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
+  }
+}
+
+async function _unconfigureScraper() {
+  if (!isAdmin()) { showRestrictedModal(); return; }
+  const statusEl = _qs('ac-int-scraper-status');
+  try {
+    const res = await _fetch(apiPath('/admin/integrations/scraper'), { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (statusEl) { statusEl.textContent = 'Removed.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; setTimeout(() => { statusEl.style.display = 'none'; }, 3000); }
+    _loadIntegrations();
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = `Error: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
+  }
+}
+
+async function _saveBrowserSession() {
+  const domainInput  = _qs('ac-int-browser_session-input-domain');
+  const uaInput      = _qs('ac-int-browser_session-input-ua');
+  const cookiesInput = _qs('ac-int-browser_session-input-cookies');
+  const statusEl     = _qs('ac-int-browser_session-status');
+  if (!cookiesInput?.value?.trim()) {
+    if (statusEl) { statusEl.textContent = 'Cookies are required.'; statusEl.style.color = '#e0af68'; statusEl.style.display = 'block'; }
+    return;
+  }
+  try {
+    const res = await _fetch(apiPath('/admin/integrations/browser-session'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        domain: domainInput?.value?.trim() || '',
+        user_agent: uaInput?.value?.trim() || '',
+        cookies: cookiesInput.value.trim(),
+      }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (cookiesInput) cookiesInput.value = '';
+    if (statusEl) { statusEl.textContent = 'Session saved.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; setTimeout(() => { statusEl.style.display = 'none'; }, 3000); }
+    _loadBrowserSessionStatus();
+    _expandCard('browser_session');
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = `Error: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
+  }
+}
+
+async function _unconfigureBrowserSession() {
+  const statusEl = _qs('ac-int-browser_session-status');
+  try {
+    const res = await _fetch(apiPath('/admin/integrations/browser-session'), { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (statusEl) { statusEl.textContent = 'Removed.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; setTimeout(() => { statusEl.style.display = 'none'; }, 3000); }
+    _loadBrowserSessionStatus();
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = `Error: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
   }
 }
 
