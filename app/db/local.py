@@ -232,6 +232,72 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_automations_hash
     ON agent_automations(agent_id, owner_user_id, source_hash);
 
 -- ============================================================
+-- Agent Event Subscriptions: push/poll-based triggers, sibling
+-- to agent_automations (which are cron-based). See migration 016.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS agent_event_subscriptions (
+    id                          TEXT PRIMARY KEY,
+    agent_id                    TEXT NOT NULL,
+    owner_user_id               TEXT NOT NULL,
+    source                      TEXT NOT NULL,
+    event_type                  TEXT NOT NULL,
+    filter_json                 TEXT NOT NULL DEFAULT '{}',
+    task_label                  TEXT NOT NULL DEFAULT '',
+    prompt                      TEXT NOT NULL DEFAULT '',
+    trigger_natural             TEXT NOT NULL DEFAULT '',
+    channel                     TEXT,
+    channel_recipient           TEXT,
+    silent                      INTEGER NOT NULL DEFAULT 0,
+    enabled                     INTEGER NOT NULL DEFAULT 1,
+    external_subscription_id    TEXT,
+    external_resource_id        TEXT,
+    external_expiration_at      TEXT,
+    external_metadata           TEXT NOT NULL DEFAULT '{}',
+    poll_cursor                 TEXT,
+    poll_interval_seconds       INTEGER,
+    last_polled_at              TEXT,
+    last_event_at               TEXT,
+    last_event_external_id      TEXT,
+    last_status                 TEXT,
+    last_error                  TEXT,
+    last_session_id             TEXT,
+    fire_count                  INTEGER NOT NULL DEFAULT 0,
+    source_hash                 TEXT NOT NULL DEFAULT '',
+    created_at                  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at                  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_evt_sub_agent ON agent_event_subscriptions(agent_id);
+CREATE INDEX IF NOT EXISTS idx_evt_sub_owner ON agent_event_subscriptions(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_evt_sub_source ON agent_event_subscriptions(source, event_type);
+CREATE INDEX IF NOT EXISTS idx_evt_sub_ext ON agent_event_subscriptions(source, external_subscription_id);
+CREATE INDEX IF NOT EXISTS idx_evt_sub_expiry ON agent_event_subscriptions(external_expiration_at);
+CREATE INDEX IF NOT EXISTS idx_evt_sub_poll ON agent_event_subscriptions(source, last_polled_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_evt_sub_hash
+    ON agent_event_subscriptions(agent_id, owner_user_id, source_hash);
+
+CREATE TABLE IF NOT EXISTS event_deliveries (
+    id                  TEXT PRIMARY KEY,
+    subscription_id     TEXT NOT NULL,
+    source              TEXT NOT NULL,
+    event_type          TEXT NOT NULL,
+    event_external_id   TEXT NOT NULL,
+    owner_user_id       TEXT NOT NULL,
+    agent_id            TEXT NOT NULL,
+    session_id          TEXT,
+    status              TEXT NOT NULL DEFAULT 'pending',
+    error               TEXT,
+    payload_excerpt     TEXT,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_evt_del_sub ON event_deliveries(subscription_id);
+CREATE INDEX IF NOT EXISTS idx_evt_del_dedup
+    ON event_deliveries(subscription_id, event_external_id);
+CREATE INDEX IF NOT EXISTS idx_evt_del_created ON event_deliveries(created_at DESC);
+
+-- ============================================================
 -- Memory System: core knowledge brain
 -- ============================================================
 
@@ -3577,6 +3643,40 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
+    async def find_user_by_oauth_account(
+        self,
+        service: str,
+        email_or_account: str,
+        label: str = "oauth",
+    ) -> Optional[str]:
+        """Return user_id whose auth_elements row for (service, label) has the
+        given email/account in its config JSON. Used by inbound event sources
+        (Gmail Pub/Sub, Graph notifications) to map provider events back to
+        a webAgent user. None if no match."""
+        if not email_or_account:
+            return None
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT user_id, config FROM auth_elements WHERE service = ? AND label = ?",
+                (service, label),
+            ).fetchall()
+            target = email_or_account.strip().lower()
+            for r in rows:
+                raw = r["config"] if "config" in r.keys() else None
+                if not raw:
+                    continue
+                try:
+                    cfg = json.loads(raw)
+                except Exception:
+                    continue
+                acct = (cfg.get("email") or cfg.get("account") or cfg.get("name") or "").strip().lower()
+                if acct == target:
+                    return r["user_id"]
+            return None
+        finally:
+            conn.close()
+
     async def auth_element_list(
         self, user_id: str, service: Optional[str] = None
     ) -> List[dict]:
@@ -4861,6 +4961,385 @@ class LocalBackend(StorageBackend):
             return [self._automation_row_to_dict(r) for r in rows]
         finally:
             conn.close()
+
+    # ─── Agent event subscriptions ──────────────────────────────────────
+
+    @staticmethod
+    def _event_sub_row_to_dict(row: sqlite3.Row) -> dict:
+        d = dict(row)
+        d["silent"] = bool(d.get("silent"))
+        d["enabled"] = bool(d.get("enabled"))
+        for k in ("filter_json", "external_metadata"):
+            raw = d.get(k) or "{}"
+            try:
+                d[k.replace("_json", "") if k == "filter_json" else k] = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            except Exception:
+                d[k.replace("_json", "") if k == "filter_json" else k] = {}
+        # Expose `filter` as the parsed dict; keep `filter_json` for raw access.
+        if "filter" not in d:
+            d["filter"] = {}
+        return d
+
+    async def list_event_subscriptions(
+        self,
+        agent_id: Optional[str] = None,
+        owner_user_id: Optional[str] = None,
+        source: Optional[str] = None,
+        enabled_only: bool = False,
+    ) -> List[dict]:
+        conn = self._get_conn()
+        try:
+            clauses, params = [], []
+            if agent_id:
+                clauses.append("agent_id = ?"); params.append(agent_id)
+            if owner_user_id:
+                clauses.append("owner_user_id = ?"); params.append(owner_user_id)
+            if source:
+                clauses.append("source = ?"); params.append(source)
+            if enabled_only:
+                clauses.append("enabled = 1")
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            rows = conn.execute(
+                f"SELECT * FROM agent_event_subscriptions {where} ORDER BY created_at ASC",
+                params,
+            ).fetchall()
+            return [self._event_sub_row_to_dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def get_event_subscription(self, sub_id: str) -> Optional[dict]:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM agent_event_subscriptions WHERE id = ?",
+                (sub_id,),
+            ).fetchone()
+            return self._event_sub_row_to_dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def find_event_subscriptions_for_event(
+        self,
+        owner_user_id: str,
+        source: str,
+        event_type: str,
+    ) -> List[dict]:
+        """All enabled subs matching (owner, source, event_type). Router applies filters."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT * FROM agent_event_subscriptions
+                   WHERE enabled = 1
+                     AND owner_user_id = ?
+                     AND source = ?
+                     AND event_type = ?
+                   ORDER BY created_at ASC""",
+                (owner_user_id, source, event_type),
+            ).fetchall()
+            return [self._event_sub_row_to_dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def upsert_event_subscription(
+        self,
+        *,
+        agent_id: str,
+        owner_user_id: str,
+        source_hash: str,
+        source: str,
+        event_type: str,
+        filter_dict: Optional[dict] = None,
+        task_label: str = "",
+        prompt: str = "",
+        trigger_natural: str = "",
+        channel: Optional[str] = None,
+        channel_recipient: Optional[str] = None,
+        silent: bool = False,
+        enabled: bool = True,
+    ) -> dict:
+        now = _now_iso()
+        filter_json = json.dumps(filter_dict or {}, sort_keys=True)
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                existing = conn.execute(
+                    """SELECT id FROM agent_event_subscriptions
+                       WHERE agent_id = ? AND owner_user_id = ? AND source_hash = ?""",
+                    (agent_id, owner_user_id, source_hash),
+                ).fetchone()
+                if existing:
+                    row_id = existing["id"]
+                    conn.execute(
+                        """UPDATE agent_event_subscriptions SET
+                              source = ?, event_type = ?, filter_json = ?,
+                              task_label = ?, prompt = ?, trigger_natural = ?,
+                              channel = ?, channel_recipient = ?,
+                              silent = ?, enabled = ?, updated_at = ?
+                           WHERE id = ?""",
+                        (source, event_type, filter_json,
+                         task_label, prompt, trigger_natural,
+                         channel, channel_recipient,
+                         1 if silent else 0, 1 if enabled else 0,
+                         now, row_id),
+                    )
+                else:
+                    row_id = _uuid()
+                    conn.execute(
+                        """INSERT INTO agent_event_subscriptions
+                           (id, agent_id, owner_user_id, source, event_type, filter_json,
+                            task_label, prompt, trigger_natural, channel, channel_recipient,
+                            silent, enabled, source_hash, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (row_id, agent_id, owner_user_id, source, event_type, filter_json,
+                         task_label, prompt, trigger_natural, channel, channel_recipient,
+                         1 if silent else 0, 1 if enabled else 0,
+                         source_hash, now, now),
+                    )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT * FROM agent_event_subscriptions WHERE id = ?",
+                    (row_id,),
+                ).fetchone()
+                return self._event_sub_row_to_dict(row)
+            finally:
+                conn.close()
+
+    async def update_event_subscription(self, sub_id: str, **fields) -> Optional[dict]:
+        if not fields:
+            return await self.get_event_subscription(sub_id)
+        allowed = {
+            "task_label", "prompt", "trigger_natural", "filter_json",
+            "channel", "channel_recipient", "silent", "enabled",
+            "external_subscription_id", "external_resource_id",
+            "external_expiration_at", "external_metadata",
+            "poll_cursor", "poll_interval_seconds", "last_polled_at",
+            "last_event_at", "last_event_external_id",
+            "last_status", "last_error", "last_session_id",
+            "fire_count",
+        }
+        sets, params = [], []
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            if k in ("silent", "enabled"):
+                v = 1 if v else 0
+            if k in ("filter_json", "external_metadata") and isinstance(v, dict):
+                v = json.dumps(v, sort_keys=True)
+            sets.append(f"{k} = ?"); params.append(v)
+        if not sets:
+            return await self.get_event_subscription(sub_id)
+        sets.append("updated_at = ?"); params.append(_now_iso())
+        params.append(sub_id)
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    f"UPDATE agent_event_subscriptions SET {', '.join(sets)} WHERE id = ?",
+                    params,
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return await self.get_event_subscription(sub_id)
+
+    async def delete_event_subscription(self, sub_id: str) -> bool:
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "DELETE FROM agent_event_subscriptions WHERE id = ?",
+                    (sub_id,),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    async def delete_event_subscriptions_not_in(
+        self,
+        agent_id: str,
+        owner_user_id: str,
+        keep_hashes: List[str],
+    ) -> List[dict]:
+        """Remove rows whose source_hash is not in keep_hashes; return the removed rows
+        so the caller can unregister provider-side watches."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                if keep_hashes:
+                    placeholders = ",".join(["?"] * len(keep_hashes))
+                    to_remove = conn.execute(
+                        f"""SELECT * FROM agent_event_subscriptions
+                            WHERE agent_id = ? AND owner_user_id = ?
+                              AND source_hash NOT IN ({placeholders})""",
+                        [agent_id, owner_user_id, *keep_hashes],
+                    ).fetchall()
+                    conn.execute(
+                        f"""DELETE FROM agent_event_subscriptions
+                            WHERE agent_id = ? AND owner_user_id = ?
+                              AND source_hash NOT IN ({placeholders})""",
+                        [agent_id, owner_user_id, *keep_hashes],
+                    )
+                else:
+                    to_remove = conn.execute(
+                        """SELECT * FROM agent_event_subscriptions
+                           WHERE agent_id = ? AND owner_user_id = ?""",
+                        (agent_id, owner_user_id),
+                    ).fetchall()
+                    conn.execute(
+                        """DELETE FROM agent_event_subscriptions
+                           WHERE agent_id = ? AND owner_user_id = ?""",
+                        (agent_id, owner_user_id),
+                    )
+                conn.commit()
+                return [self._event_sub_row_to_dict(r) for r in to_remove]
+            finally:
+                conn.close()
+
+    async def find_event_subscriptions_by_external(
+        self,
+        source: str,
+        external_subscription_id: str,
+    ) -> List[dict]:
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT * FROM agent_event_subscriptions
+                   WHERE source = ? AND external_subscription_id = ?""",
+                (source, external_subscription_id),
+            ).fetchall()
+            return [self._event_sub_row_to_dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def find_event_subscriptions_for_user_source(
+        self,
+        owner_user_id: str,
+        source: str,
+    ) -> List[dict]:
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT * FROM agent_event_subscriptions
+                   WHERE owner_user_id = ? AND source = ?""",
+                (owner_user_id, source),
+            ).fetchall()
+            return [self._event_sub_row_to_dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def list_event_subscriptions_needing_renewal(
+        self,
+        cutoff_iso: str,
+    ) -> List[dict]:
+        """Enabled push-style subs whose external_expiration_at is past `cutoff_iso`."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT * FROM agent_event_subscriptions
+                   WHERE enabled = 1
+                     AND external_expiration_at IS NOT NULL
+                     AND external_expiration_at <= ?
+                   ORDER BY external_expiration_at ASC""",
+                (cutoff_iso,),
+            ).fetchall()
+            return [self._event_sub_row_to_dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def list_event_subscriptions_for_poll(
+        self,
+        source: str,
+        before_iso: str,
+    ) -> List[dict]:
+        """Poll-source subs that haven't been polled since `before_iso` (or never)."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT * FROM agent_event_subscriptions
+                   WHERE enabled = 1
+                     AND source = ?
+                     AND (last_polled_at IS NULL OR last_polled_at <= ?)
+                   ORDER BY (last_polled_at IS NULL) DESC, last_polled_at ASC""",
+                (source, before_iso),
+            ).fetchall()
+            return [self._event_sub_row_to_dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    # ─── Event deliveries (dedup + audit log) ───────────────────────────
+
+    async def find_event_delivery(
+        self,
+        subscription_id: str,
+        event_external_id: str,
+    ) -> Optional[dict]:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                """SELECT * FROM event_deliveries
+                   WHERE subscription_id = ? AND event_external_id = ?
+                   ORDER BY created_at DESC LIMIT 1""",
+                (subscription_id, event_external_id),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def insert_event_delivery(
+        self,
+        *,
+        subscription_id: str,
+        source: str,
+        event_type: str,
+        event_external_id: str,
+        owner_user_id: str,
+        agent_id: str,
+        session_id: Optional[str] = None,
+        status: str = "pending",
+        error: Optional[str] = None,
+        payload_excerpt: Optional[str] = None,
+    ) -> str:
+        row_id = _uuid()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """INSERT INTO event_deliveries
+                       (id, subscription_id, source, event_type, event_external_id,
+                        owner_user_id, agent_id, session_id, status, error, payload_excerpt)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (row_id, subscription_id, source, event_type, event_external_id,
+                     owner_user_id, agent_id, session_id, status, error, payload_excerpt),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return row_id
+
+    async def update_event_delivery(
+        self,
+        delivery_id: str,
+        **fields,
+    ) -> None:
+        allowed = {"status", "error", "session_id", "payload_excerpt"}
+        sets, params = [], []
+        for k, v in fields.items():
+            if k in allowed:
+                sets.append(f"{k} = ?"); params.append(v)
+        if not sets:
+            return
+        params.append(delivery_id)
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    f"UPDATE event_deliveries SET {', '.join(sets)} WHERE id = ?",
+                    params,
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
 
 class _LocalTableProxy:

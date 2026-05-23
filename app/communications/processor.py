@@ -33,6 +33,53 @@ from app.agent.session_history import build_openai_history_from_session
 logger = logging.getLogger(__name__)
 
 
+async def _emit_channel_message_event(
+    channel: str,
+    external_id: str,
+    message_text: str,
+    user_id: str,
+) -> None:
+    """Normalize an inbound channel message and hand it to the event router.
+
+    No-op if the event subsystem is unavailable. Each channel is also a
+    registered event source (telegram/slack/discord/sms/whatsapp) — the
+    router only fires if a subscription exists for this owner + channel,
+    so this is cheap when nothing is listening.
+    """
+    try:
+        from app.events.types import NormalizedEvent
+        from app.events.router import route_event
+    except Exception:
+        return
+
+    payload = {
+        "channel": channel,
+        "chat_id": external_id,
+        "from_number": external_id if channel in ("sms", "whatsapp") else None,
+        "text": message_text or "",
+    }
+    payload = {k: v for k, v in payload.items() if v is not None}
+
+    # event_type "message_received" is the shared shape across all comms channels.
+    import hashlib
+    from datetime import datetime, timezone
+    digest = hashlib.sha256(f"{channel}|{external_id}|{message_text or ''}".encode("utf-8")).hexdigest()[:16]
+    evt = NormalizedEvent(
+        source=channel,
+        event_type="message_received",
+        owner_user_id=user_id,
+        external_id=f"{channel}:{external_id}:{digest}",
+        occurred_at=datetime.now(timezone.utc).isoformat(),
+        payload=payload,
+        raw_ref={"channel": channel, "external_id": external_id},
+    )
+
+    try:
+        await route_event(evt)
+    except Exception as e:
+        logger.debug("route_event from %s emit failed: %s", channel, e)
+
+
 async def process_channel_message(
     channel: str,
     external_id: str,
@@ -60,6 +107,13 @@ async def process_channel_message(
     # 1. Get or create identity
     identity = await get_or_create_identity(channel, external_id)
     user_id = identity.user_id
+
+    # 1a. Fan out to any event subscriptions registered against this channel.
+    # Fire-and-forget so a slow event subscriber never blocks the chat reply.
+    try:
+        await _emit_channel_message_event(channel, external_id, message_text, user_id)
+    except Exception as _evt_err:
+        logger.debug("Channel event emit failed (non-fatal): %s", _evt_err)
 
     # 2. Ensure a session exists
     db = get_db()

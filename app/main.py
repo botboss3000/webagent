@@ -48,6 +48,7 @@ from app.admin.db_mode import router as admin_db_router
 from app.admin.storage import router as admin_storage_router
 from app.api.webhooks import router as webhooks_router
 from app.api.webhooks_generic import router as webhooks_generic_router
+from app.api.events import router as events_router
 try:
     from app.admin.source import router as admin_source_router
     _HAS_SOURCE_TOOLS = True
@@ -186,6 +187,9 @@ app.include_router(webhooks_generic_router)
 # Register communication plugin webhook router (for Telegram, WhatsApp, SMS etc.)
 app.include_router(webhooks_router)
 
+# Register event trigger intake (Gmail Pub/Sub, Graph subscriptions, etc.)
+app.include_router(events_router)
+
 # Register integrations & OAuth routers
 app.include_router(integrations_router)
 app.include_router(oauth_router)
@@ -274,6 +278,12 @@ async def shutdown():
     try:
         from app.scheduler import stop_scheduler
         await stop_scheduler()
+    except Exception:
+        pass
+    # Stop the event runtime.
+    try:
+        from app.events import stop_event_runtime
+        await stop_event_runtime()
     except Exception:
         pass
 
@@ -409,6 +419,13 @@ async def startup():
         await start_scheduler()
     except Exception as _sch_err:
         logger.warning("Failed to start automation scheduler: %s", _sch_err)
+
+    # ── Start event runtime (poll loop + subscription renewer) ──
+    try:
+        from app.events import start_event_runtime
+        await start_event_runtime()
+    except Exception as _evt_err:
+        logger.warning("Failed to start event runtime: %s", _evt_err)
 
     # ── Seed LLM config from env vars into auth_elements (cloud-first deploy) ──
     api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
