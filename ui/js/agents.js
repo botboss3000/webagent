@@ -2081,6 +2081,7 @@ async function _renderConnectionsTab(body, agent) {
     { key: 'channel',     label: 'Channels',     hint: 'How this agent sends and receives messages.' },
     { key: 'integration', label: 'Integrations', hint: 'Services and data sources this agent can access.' },
     { key: 'social',      label: 'Social Media', hint: 'Social platforms this agent can post and interact on.' },
+    { key: 'marketplace', label: 'Marketplaces', hint: 'E-commerce platforms this agent can list, browse, and manage items on.' },
   ];
 
   for (const sec of sections) {
@@ -2352,6 +2353,24 @@ function _buildConnectionBody(conn, canEdit = true, agentId = null) {
       label: 'Twitch Account',
       hint: 'Link your Twitch account for channel and stream data access.',
     },
+    ebay: {
+      label: 'eBay Account',
+      hint: 'Link your eBay seller account to search, list, and manage items.',
+    },
+    etsy: {
+      label: 'Etsy Account',
+      hint: 'Link your Etsy account to search listings and manage your shop.',
+    },
+    shopify: {
+      label: 'Shopify Store',
+      hint: 'Connect your Shopify store to read and manage products and orders.',
+      requiresShopDomain: true,
+    },
+    amazon: {
+      label: 'Amazon Seller',
+      hint: 'Link your Amazon Selling Partner account (region required).',
+      requiresRegion: true,
+    },
   };
 
   const oauthInfo = _OAUTH_PROVIDERS[conn.connection_type];
@@ -2416,6 +2435,10 @@ window.addEventListener('message', e => {
     'reddit-oauth-success',
     'snapchat-oauth-success',
     'twitch-oauth-success',
+    'ebay-oauth-success',
+    'etsy-oauth-success',
+    'shopify-oauth-success',
+    'amazon-oauth-success',
   ];
   if (successTypes.includes(e.data?.type)) {
     if (_oauthPopup) { _oauthPopup.close(); _oauthPopup = null; }
@@ -2427,9 +2450,22 @@ async function _oauthConnectFromAgent(provider, agent, conn, cardEl) {
   const msgEl = cardEl.querySelector('.conn-save-msg');
   if (msgEl) { msgEl.textContent = ''; msgEl.className = 'conn-save-msg'; }
 
+  // Some providers need extra parameters before the authorize URL can be built.
+  const extraParams = {};
+  if (provider === 'shopify') {
+    const shop = window.prompt('Enter your Shopify shop domain (e.g. my-store.myshopify.com):', '');
+    if (!shop) return;
+    extraParams.shop = shop.trim();
+  } else if (provider === 'amazon') {
+    const region = window.prompt('Amazon SP-API region — NA, EU, or FE:', 'NA');
+    if (!region) return;
+    extraParams.region = region.trim().toUpperCase();
+  }
+
+  const qs = new URLSearchParams({ user_id: app.currentUserId, ...extraParams }).toString();
   try {
     const res = await fetch(
-      `/api/v1/agents/${agent.id}/connections/${provider}/authorize?user_id=${encodeURIComponent(app.currentUserId)}`
+      `/api/v1/agents/${agent.id}/connections/${provider}/authorize?${qs}`
     );
     const data = await res.json();
     if (data.error) {
