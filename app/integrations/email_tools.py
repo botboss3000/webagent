@@ -29,6 +29,7 @@ _GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 
 async def gmail_list_messages(
     user_id: str,
+    agent_id: str,
     query: str = "",
     max_results: int = 10,
     label_ids: str = "",
@@ -38,20 +39,20 @@ async def gmail_list_messages(
         params["q"] = query
     if label_ids:
         params["labelIds"] = [s.strip() for s in label_ids.split(",") if s.strip()]
-    result = await oauth_api_call(user_id, "google", "GET", f"{_GMAIL_BASE}/messages", params=params)
+    result = await oauth_api_call(user_id, agent_id, "google", "GET", f"{_GMAIL_BASE}/messages", params=params)
     if result.get("status") == "not_connected":
         return not_connected_payload("google")
     return json.dumps(result)
 
 
-async def gmail_get_message(user_id: str, message_id: str, format: str = "metadata") -> str:
+async def gmail_get_message(user_id: str, agent_id: str, message_id: str, format: str = "metadata") -> str:
     if not message_id:
         return json.dumps({"status": "error", "message": "message_id required"})
     params = {"format": format or "metadata"}
     if (format or "metadata") == "metadata":
         params["metadataHeaders"] = ["From", "To", "Subject", "Date", "Cc"]
     result = await oauth_api_call(
-        user_id, "google", "GET",
+        user_id, agent_id, "google", "GET",
         f"{_GMAIL_BASE}/messages/{message_id}",
         params=params,
     )
@@ -68,6 +69,7 @@ async def gmail_get_message(user_id: str, message_id: str, format: str = "metada
 
 async def gmail_send(
     user_id: str,
+    agent_id: str,
     to: str,
     subject: str,
     body: str,
@@ -75,7 +77,7 @@ async def gmail_send(
     bcc: str = "",
     html: bool = False,
 ) -> str:
-    tok = await get_oauth_token(user_id, "google")
+    tok = await get_oauth_token(user_id, agent_id, "google")
     if not tok:
         return not_connected_payload("google")
     if not to or not subject:
@@ -97,7 +99,7 @@ async def gmail_send(
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode().rstrip("=")
 
     result = await oauth_api_call(
-        user_id, "google", "POST",
+        user_id, agent_id, "google", "POST",
         f"{_GMAIL_BASE}/messages/send",
         json_body={"raw": raw},
     )
@@ -127,6 +129,7 @@ _GRAPH = "https://graph.microsoft.com/v1.0"
 
 async def outlook_list_messages(
     user_id: str,
+    agent_id: str,
     query: str = "",
     unread_only: bool = False,
     max_results: int = 10,
@@ -148,20 +151,20 @@ async def outlook_list_messages(
         params.pop("$orderby", None)  # Graph forbids $orderby with $search
 
     url = f"{_GRAPH}/me/mailFolders/{folder}/messages" if folder else f"{_GRAPH}/me/messages"
-    result = await oauth_api_call(user_id, "microsoft", "GET", url, params=params)
+    result = await oauth_api_call(user_id, agent_id, "microsoft", "GET", url, params=params)
     if result.get("status") == "not_connected":
         return not_connected_payload("microsoft")
     return json.dumps(result)
 
 
-async def outlook_get_message(user_id: str, message_id: str, full_body: bool = False) -> str:
+async def outlook_get_message(user_id: str, agent_id: str, message_id: str, full_body: bool = False) -> str:
     if not message_id:
         return json.dumps({"status": "error", "message": "message_id required"})
     select = "id,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,bodyPreview"
     if full_body:
         select += ",body"
     result = await oauth_api_call(
-        user_id, "microsoft", "GET",
+        user_id, agent_id, "microsoft", "GET",
         f"{_GRAPH}/me/messages/{message_id}",
         params={"$select": select},
     )
@@ -172,6 +175,7 @@ async def outlook_get_message(user_id: str, message_id: str, full_body: bool = F
 
 async def outlook_send(
     user_id: str,
+    agent_id: str,
     to: str,
     subject: str,
     body: str,
@@ -196,7 +200,7 @@ async def outlook_send(
         message["bccRecipients"] = _addrs(bcc)
 
     result = await oauth_api_call(
-        user_id, "microsoft", "POST",
+        user_id, agent_id, "microsoft", "POST",
         f"{_GRAPH}/me/sendMail",
         json_body={"message": message, "saveToSentItems": True},
     )
@@ -207,11 +211,11 @@ async def outlook_send(
 
 # ── Yahoo Mail (identity only) ────────────────────────────────────────────
 
-async def yahoo_userinfo(user_id: str) -> str:
+async def yahoo_userinfo(user_id: str, agent_id: str) -> str:
     """Return Yahoo profile info. Yahoo no longer offers a public REST Mail
     API; mailbox access requires IMAP/SMTP (outside this tool layer)."""
     result = await oauth_api_call(
-        user_id, "yahoo", "GET",
+        user_id, agent_id, "yahoo", "GET",
         "https://api.login.yahoo.com/openid/v1/userinfo",
     )
     if result.get("status") == "not_connected":

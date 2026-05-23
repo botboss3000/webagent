@@ -19,6 +19,7 @@ _DRIVE_BASE = "https://www.googleapis.com/drive/v3"
 
 async def drive_list_files(
     user_id: str,
+    agent_id: str,
     query: str = "",
     page_size: int = 20,
     order_by: str = "modifiedTime desc",
@@ -30,7 +31,7 @@ async def drive_list_files(
     }
     if query:
         params["q"] = query
-    result = await oauth_api_call(user_id, "google", "GET", f"{_DRIVE_BASE}/files", params=params)
+    result = await oauth_api_call(user_id, agent_id, "google", "GET", f"{_DRIVE_BASE}/files", params=params)
     if result.get("status") == "not_connected":
         return not_connected_payload("google")
     return json.dumps(result)
@@ -38,6 +39,7 @@ async def drive_list_files(
 
 async def drive_get_file(
     user_id: str,
+    agent_id: str,
     file_id: str,
     download: bool = False,
     export_mime_type: str = "",
@@ -47,7 +49,7 @@ async def drive_get_file(
 
     if not download:
         result = await oauth_api_call(
-            user_id, "google", "GET",
+            user_id, agent_id, "google", "GET",
             f"{_DRIVE_BASE}/files/{file_id}",
             params={"fields": "id,name,mimeType,modifiedTime,owners,webViewLink,size,parents"},
         )
@@ -55,7 +57,7 @@ async def drive_get_file(
             return not_connected_payload("google")
         return json.dumps(result)
 
-    tok = await get_oauth_token(user_id, "google")
+    tok = await get_oauth_token(user_id, agent_id, "google")
     if not tok:
         return not_connected_payload("google")
 
@@ -76,6 +78,7 @@ _GRAPH = "https://graph.microsoft.com/v1.0"
 
 async def onedrive_list_files(
     user_id: str,
+    agent_id: str,
     folder_path: str = "",
     max_results: int = 25,
 ) -> str:
@@ -88,18 +91,18 @@ async def onedrive_list_files(
         "$top": max(1, min(int(max_results or 25), 200)),
         "$select": "id,name,size,webUrl,lastModifiedDateTime,file,folder",
     }
-    result = await oauth_api_call(user_id, "microsoft", "GET", url, params=params)
+    result = await oauth_api_call(user_id, agent_id, "microsoft", "GET", url, params=params)
     if result.get("status") == "not_connected":
         return not_connected_payload("microsoft")
     return json.dumps(result)
 
 
-async def onedrive_search(user_id: str, query: str, max_results: int = 25) -> str:
+async def onedrive_search(user_id: str, agent_id: str, query: str, max_results: int = 25) -> str:
     if not query:
         return json.dumps({"status": "error", "message": "query required"})
     url = f"{_GRAPH}/me/drive/root/search(q='{query}')"
     result = await oauth_api_call(
-        user_id, "microsoft", "GET", url,
+        user_id, agent_id, "microsoft", "GET", url,
         params={"$top": max(1, min(int(max_results or 25), 200)),
                 "$select": "id,name,size,webUrl,lastModifiedDateTime,file,folder"},
     )
@@ -108,13 +111,13 @@ async def onedrive_search(user_id: str, query: str, max_results: int = 25) -> st
     return json.dumps(result)
 
 
-async def onedrive_get_file(user_id: str, file_id: str, download: bool = False) -> str:
+async def onedrive_get_file(user_id: str, agent_id: str, file_id: str, download: bool = False) -> str:
     if not file_id:
         return json.dumps({"status": "error", "message": "file_id required"})
 
     if not download:
         result = await oauth_api_call(
-            user_id, "microsoft", "GET",
+            user_id, agent_id, "microsoft", "GET",
             f"{_GRAPH}/me/drive/items/{file_id}",
             params={"$select": "id,name,size,webUrl,lastModifiedDateTime,file,parentReference"},
         )
@@ -122,7 +125,7 @@ async def onedrive_get_file(user_id: str, file_id: str, download: bool = False) 
             return not_connected_payload("microsoft")
         return json.dumps(result)
 
-    tok = await get_oauth_token(user_id, "microsoft")
+    tok = await get_oauth_token(user_id, agent_id, "microsoft")
     if not tok:
         return not_connected_payload("microsoft")
     return await _binary_download(f"{_GRAPH}/me/drive/items/{file_id}/content", None, tok["access_token"])
@@ -134,7 +137,7 @@ _DBX = "https://api.dropboxapi.com/2"
 _DBX_CONTENT = "https://content.dropboxapi.com/2"
 
 
-async def dropbox_list_files(user_id: str, path: str = "", recursive: bool = False, max_results: int = 50) -> str:
+async def dropbox_list_files(user_id: str, agent_id: str, path: str = "", recursive: bool = False, max_results: int = 50) -> str:
     """List Dropbox folder. path empty = root."""
     body = {
         "path": path or "",
@@ -142,7 +145,7 @@ async def dropbox_list_files(user_id: str, path: str = "", recursive: bool = Fal
         "limit": max(1, min(int(max_results or 50), 2000)),
     }
     result = await oauth_api_call(
-        user_id, "dropbox", "POST",
+        user_id, agent_id, "dropbox", "POST",
         f"{_DBX}/files/list_folder",
         json_body=body,
     )
@@ -151,7 +154,7 @@ async def dropbox_list_files(user_id: str, path: str = "", recursive: bool = Fal
     return json.dumps(result)
 
 
-async def dropbox_search(user_id: str, query: str, max_results: int = 25) -> str:
+async def dropbox_search(user_id: str, agent_id: str, query: str, max_results: int = 25) -> str:
     if not query:
         return json.dumps({"status": "error", "message": "query required"})
     body = {
@@ -159,7 +162,7 @@ async def dropbox_search(user_id: str, query: str, max_results: int = 25) -> str
         "options": {"max_results": max(1, min(int(max_results or 25), 1000))},
     }
     result = await oauth_api_call(
-        user_id, "dropbox", "POST",
+        user_id, agent_id, "dropbox", "POST",
         f"{_DBX}/files/search_v2",
         json_body=body,
     )
@@ -168,11 +171,11 @@ async def dropbox_search(user_id: str, query: str, max_results: int = 25) -> str
     return json.dumps(result)
 
 
-async def dropbox_download(user_id: str, path: str) -> str:
+async def dropbox_download(user_id: str, agent_id: str, path: str) -> str:
     """Download a Dropbox file. Path is the Dropbox file path (e.g. '/folder/file.txt')."""
     if not path:
         return json.dumps({"status": "error", "message": "path required"})
-    tok = await get_oauth_token(user_id, "dropbox")
+    tok = await get_oauth_token(user_id, agent_id, "dropbox")
     if not tok:
         return not_connected_payload("dropbox")
 

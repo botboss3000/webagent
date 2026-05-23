@@ -37,7 +37,7 @@ class RedditSource(EventSource):
         return base
 
     async def register_subscription(
-        self, *, owner_user_id: str, event_type: str, filter_dict: Dict[str, Any]
+        self, *, owner_user_id: str, agent_id: str, event_type: str, filter_dict: Dict[str, Any]
     ) -> SubscriptionRegistration:
         return SubscriptionRegistration(poll_cursor=None)
 
@@ -51,7 +51,7 @@ class RedditSource(EventSource):
         if cursor:
             params["before"] = cursor
         resp = await oauth_api_call(
-            subscription_row["owner_user_id"], "reddit", "GET",
+            subscription_row["owner_user_id"], subscription_row.get("agent_id", ""), "reddit", "GET",
             f"https://oauth.reddit.com{path}",
             params=params,
             headers={"User-Agent": "webagent-events/1.0"},

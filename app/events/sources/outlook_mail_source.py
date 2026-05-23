@@ -38,7 +38,7 @@ from app.events.providers.graph_subscription import (
     renew_subscription as graph_renew,
 )
 from app.events.types import NormalizedEvent, SubscriptionRegistration
-from app.integrations.oauth_helper import oauth_api_call
+from app.integrations.oauth_helper import oauth_api_call, oauth_label
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +88,7 @@ class OutlookMailSource(EventSource):
     # ── Subscribe / renew / unsubscribe ──────────────────────────────────
 
     async def register_subscription(
-        self, *, owner_user_id: str, event_type: str, filter_dict: Dict[str, Any]
+        self, *, owner_user_id: str, agent_id: str, event_type: str, filter_dict: Dict[str, Any]
     ) -> SubscriptionRegistration:
         notif_url = _notification_url()
         if not notif_url:
@@ -97,6 +97,7 @@ class OutlookMailSource(EventSource):
         exp = expiration_iso()
         resp = await create_subscription(
             user_id=owner_user_id,
+            agent_id=agent_id,
             change_type="created",
             resource="me/mailFolders('Inbox')/messages",
             notification_url=notif_url,
@@ -115,7 +116,7 @@ class OutlookMailSource(EventSource):
         try:
             from app.db import get_db
             db = get_db()
-            elem = await db.auth_element_get(owner_user_id, "microsoft", "oauth")
+            elem = await db.auth_element_get(owner_user_id, "microsoft", oauth_label(agent_id))
             cfg = json.loads(elem.get("config") or "{}") if elem else {}
             connected_email = (cfg.get("email") or "").lower()
         except Exception:
@@ -133,15 +134,18 @@ class OutlookMailSource(EventSource):
 
     async def renew_subscription(self, subscription_row: Dict[str, Any]) -> SubscriptionRegistration:
         sub_id = subscription_row.get("external_subscription_id")
+        agent_id = subscription_row.get("agent_id", "")
         if not sub_id:
             return await self.register_subscription(
                 owner_user_id=subscription_row["owner_user_id"],
+                agent_id=agent_id,
                 event_type=subscription_row["event_type"],
                 filter_dict=subscription_row.get("filter") or {},
             )
         exp = expiration_iso()
         resp = await graph_renew(
             user_id=subscription_row["owner_user_id"],
+            agent_id=agent_id,
             subscription_id=sub_id,
             expiration=exp,
         )
@@ -149,6 +153,7 @@ class OutlookMailSource(EventSource):
             # Subscription may be gone — recreate.
             return await self.register_subscription(
                 owner_user_id=subscription_row["owner_user_id"],
+                agent_id=agent_id,
                 event_type=subscription_row["event_type"],
                 filter_dict=subscription_row.get("filter") or {},
             )
@@ -167,6 +172,7 @@ class OutlookMailSource(EventSource):
         try:
             await delete_subscription(
                 user_id=subscription_row["owner_user_id"],
+                agent_id=subscription_row.get("agent_id", ""),
                 subscription_id=sub_id,
             )
         except Exception as e:
@@ -224,7 +230,7 @@ class OutlookMailSource(EventSource):
                 logger.warning("Outlook clientState mismatch for sub %s", sub_id)
                 continue
 
-            msg = await self._fetch_message(row["owner_user_id"], resource)
+            msg = await self._fetch_message(row["owner_user_id"], row.get("agent_id", ""), resource)
             if not msg:
                 continue
             filter_dict = row.get("filter") or {}
@@ -234,9 +240,9 @@ class OutlookMailSource(EventSource):
 
         return events
 
-    async def _fetch_message(self, user_id: str, resource_path: str) -> Optional[dict]:
+    async def _fetch_message(self, user_id: str, agent_id: str, resource_path: str) -> Optional[dict]:
         url = f"{GRAPH_BASE}/{resource_path.lstrip('/')}"
-        resp = await oauth_api_call(user_id, "microsoft", "GET", url)
+        resp = await oauth_api_call(user_id, agent_id, "microsoft", "GET", url)
         if resp.get("status") != "ok":
             logger.debug("Outlook fetch failed for %s: %s", resource_path, resp)
             return None

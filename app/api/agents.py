@@ -1028,13 +1028,16 @@ async def get_agent_connections(agent_id: str, user_id: str = Query(...)):
         "shopify":   "shopify",
         "amazon":    "amazon",
     }
-    # Cache fetched service records to avoid double-fetching (e.g. meta for both fb/ig)
+    # Tokens are scoped per (user, agent); look up only this agent's row so that
+    # signing into Google on Agent A does NOT make Agent B appear connected.
+    from app.integrations.oauth_helper import oauth_label
+    _label = oauth_label(agent_id)
     _service_cache: dict[str, dict] = {}
     provider_auth: dict[str, dict] = {}
     for ct, service_key in _OAUTH_PROVIDERS.items():
         try:
             if service_key not in _service_cache:
-                elem = await db.auth_element_get(user_id, service_key, "oauth")
+                elem = await db.auth_element_get(user_id, service_key, _label)
                 if elem:
                     cfg = elem.get("config", {})
                     if isinstance(cfg, str):
@@ -1192,7 +1195,7 @@ async def google_authorize_for_agent(request: Request, agent_id: str, user_id: s
 async def google_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     """Disconnect Google account for a user (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_google
-    deleted = await revoke_and_delete_google(user_id)
+    deleted = await revoke_and_delete_google(user_id, agent_id)
     return {"status": "ok", "deleted": deleted}
 
 
@@ -1213,7 +1216,7 @@ async def microsoft_authorize_for_agent(agent_id: str, user_id: str = Query(...)
 async def microsoft_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     """Disconnect Microsoft account for a user (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_microsoft
-    deleted = await revoke_and_delete_microsoft(user_id)
+    deleted = await revoke_and_delete_microsoft(user_id, agent_id)
     return {"status": "ok", "deleted": deleted}
 
 
@@ -1234,7 +1237,7 @@ async def yahoo_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
 async def yahoo_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     """Disconnect Yahoo account for a user (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_yahoo
-    deleted = await revoke_and_delete_yahoo(user_id)
+    deleted = await revoke_and_delete_yahoo(user_id, agent_id)
     return {"status": "ok", "deleted": deleted}
 
 
@@ -1255,7 +1258,7 @@ async def dropbox_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
 async def dropbox_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     """Disconnect Dropbox account for a user (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_dropbox
-    deleted = await revoke_and_delete_dropbox(user_id)
+    deleted = await revoke_and_delete_dropbox(user_id, agent_id)
     return {"status": "ok", "deleted": deleted}
 
 
@@ -1279,7 +1282,7 @@ async def facebook_authorize_for_agent(agent_id: str, user_id: str = Query(...))
 async def facebook_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     """Disconnect Meta account (removes Facebook + Instagram access, preserves admin toggle)."""
     from app.admin.integrations import revoke_and_delete_meta
-    deleted = await revoke_and_delete_meta(user_id)
+    deleted = await revoke_and_delete_meta(user_id, agent_id)
     return {"status": "ok", "deleted": deleted}
 
 
@@ -1300,7 +1303,7 @@ async def instagram_authorize_for_agent(agent_id: str, user_id: str = Query(...)
 async def instagram_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     """Disconnect Meta account (removes Facebook + Instagram access, preserves admin toggle)."""
     from app.admin.integrations import revoke_and_delete_meta
-    deleted = await revoke_and_delete_meta(user_id)
+    deleted = await revoke_and_delete_meta(user_id, agent_id)
     return {"status": "ok", "deleted": deleted}
 
 
@@ -1321,7 +1324,7 @@ async def twitter_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
 async def twitter_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     """Disconnect Twitter/X account (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_twitter
-    deleted = await revoke_and_delete_twitter(user_id)
+    deleted = await revoke_and_delete_twitter(user_id, agent_id)
     return {"status": "ok", "deleted": deleted}
 
 
@@ -1342,7 +1345,7 @@ async def linkedin_authorize_for_agent(agent_id: str, user_id: str = Query(...))
 async def linkedin_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     """Disconnect LinkedIn account (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_linkedin
-    deleted = await revoke_and_delete_linkedin(user_id)
+    deleted = await revoke_and_delete_linkedin(user_id, agent_id)
     return {"status": "ok", "deleted": deleted}
 
 
@@ -1363,7 +1366,7 @@ async def tiktok_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
 async def tiktok_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     """Disconnect TikTok account (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_tiktok
-    deleted = await revoke_and_delete_tiktok(user_id)
+    deleted = await revoke_and_delete_tiktok(user_id, agent_id)
     return {"status": "ok", "deleted": deleted}
 
 
@@ -1384,7 +1387,7 @@ async def pinterest_authorize_for_agent(agent_id: str, user_id: str = Query(...)
 async def pinterest_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     """Disconnect Pinterest account (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_pinterest
-    deleted = await revoke_and_delete_pinterest(user_id)
+    deleted = await revoke_and_delete_pinterest(user_id, agent_id)
     return {"status": "ok", "deleted": deleted}
 
 
@@ -1405,7 +1408,7 @@ async def reddit_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
 async def reddit_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     """Disconnect Reddit account (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_reddit
-    deleted = await revoke_and_delete_reddit(user_id)
+    deleted = await revoke_and_delete_reddit(user_id, agent_id)
     return {"status": "ok", "deleted": deleted}
 
 
@@ -1426,7 +1429,7 @@ async def snapchat_authorize_for_agent(agent_id: str, user_id: str = Query(...))
 async def snapchat_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     """Disconnect Snapchat account (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_snapchat
-    deleted = await revoke_and_delete_snapchat(user_id)
+    deleted = await revoke_and_delete_snapchat(user_id, agent_id)
     return {"status": "ok", "deleted": deleted}
 
 
@@ -1447,7 +1450,7 @@ async def twitch_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
 async def twitch_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     """Disconnect Twitch account (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_twitch
-    deleted = await revoke_and_delete_twitch(user_id)
+    deleted = await revoke_and_delete_twitch(user_id, agent_id)
     return {"status": "ok", "deleted": deleted}
 
 
@@ -1470,7 +1473,7 @@ async def ebay_authorize_for_agent(request: Request, agent_id: str, user_id: str
 async def ebay_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     """Disconnect eBay account (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_ebay
-    deleted = await revoke_and_delete_ebay(user_id)
+    deleted = await revoke_and_delete_ebay(user_id, agent_id)
     return {"status": "ok", "deleted": deleted}
 
 
@@ -1491,7 +1494,7 @@ async def etsy_authorize_for_agent(request: Request, agent_id: str, user_id: str
 async def etsy_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     """Disconnect Etsy account (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_etsy
-    deleted = await revoke_and_delete_etsy(user_id)
+    deleted = await revoke_and_delete_etsy(user_id, agent_id)
     return {"status": "ok", "deleted": deleted}
 
 
@@ -1524,7 +1527,7 @@ async def shopify_authorize_for_agent(
 async def shopify_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     """Disconnect Shopify shop (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_shopify
-    deleted = await revoke_and_delete_shopify(user_id)
+    deleted = await revoke_and_delete_shopify(user_id, agent_id)
     return {"status": "ok", "deleted": deleted}
 
 
@@ -1552,7 +1555,7 @@ async def amazon_authorize_for_agent(
 async def amazon_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     """Disconnect Amazon SP-API (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_amazon
-    deleted = await revoke_and_delete_amazon(user_id)
+    deleted = await revoke_and_delete_amazon(user_id, agent_id)
     return {"status": "ok", "deleted": deleted}
 
 

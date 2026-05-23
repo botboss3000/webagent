@@ -108,6 +108,7 @@ def _looks_like_login_redirect(resp: httpx.Response) -> bool:
 
 async def web_scrape_search(
     user_id: str,
+    agent_id: str,
     query: str,
     location: str = "",
     filters: Optional[dict] = None,
@@ -169,7 +170,7 @@ async def web_scrape_search(
     })
 
 
-async def web_scrape_url(user_id: str, url: str, render_js: bool = False) -> str:
+async def web_scrape_url(user_id: str, agent_id: str, url: str, render_js: bool = False) -> str:
     """Fetch a single URL through the configured scraper (handles JS / blocks)."""
     if not url:
         return _err("url is required")
@@ -221,7 +222,7 @@ async def web_scrape_url(user_id: str, url: str, render_js: bool = False) -> str
 
 # ── Browser session tools ──────────────────────────────────────────────────
 
-async def web_session_status(user_id: str) -> str:
+async def web_session_status(user_id: str, agent_id: str) -> str:
     """Report whether a browser session is configured for this user."""
     sess = await _load_browser_session(user_id)
     if not sess:
@@ -236,6 +237,7 @@ async def web_session_status(user_id: str) -> str:
 
 async def web_session_fetch(
     user_id: str,
+    agent_id: str,
     url: str,
     method: str = "GET",
     params: Optional[dict] = None,
@@ -315,6 +317,7 @@ def _compile_csrf_regex(pattern: str) -> Optional[re.Pattern]:
 
 async def web_session_graphql(
     user_id: str,
+    agent_id: str,
     url: str,
     doc_id: str = "",
     query: str = "",

@@ -50,11 +50,11 @@ class TwitterSource(EventSource):
         return base
 
     async def register_subscription(
-        self, *, owner_user_id: str, event_type: str, filter_dict: Dict[str, Any]
+        self, *, owner_user_id: str, agent_id: str, event_type: str, filter_dict: Dict[str, Any]
     ) -> SubscriptionRegistration:
         # Get the user's X user_id so we can call /2/users/{id}/mentions later.
         resp = await oauth_api_call(
-            owner_user_id, "twitter", "GET",
+            owner_user_id, agent_id, "twitter", "GET",
             "https://api.twitter.com/2/users/me",
         )
         x_user_id = ""
@@ -80,7 +80,7 @@ class TwitterSource(EventSource):
         if cursor:
             params["since_id"] = cursor
         url = f"https://api.twitter.com/2/users/{x_user_id}/mentions"
-        resp = await oauth_api_call(subscription_row["owner_user_id"], "twitter", "GET", url, params=params)
+        resp = await oauth_api_call(subscription_row["owner_user_id"], subscription_row.get("agent_id", ""), "twitter", "GET", url, params=params)
         if resp.get("status") != "ok":
             return [], cursor
         body = resp.get("body") or {}

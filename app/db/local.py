@@ -1508,6 +1508,19 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Migration 023: added agents.authorized_users column")
 
+            # ── Migration 024: scope OAuth tokens per agent ──
+            # Tokens previously stored under label='oauth' were shared across all
+            # agents for a user. After this change each agent gets its own
+            # label='oauth:<agent_id>' row. Legacy 'oauth' rows are unreachable;
+            # drop them so users re-sign in per agent (matches intended UX).
+            legacy_count = conn.execute(
+                "SELECT COUNT(*) FROM auth_elements WHERE label = 'oauth'"
+            ).fetchone()[0]
+            if legacy_count:
+                conn.execute("DELETE FROM auth_elements WHERE label = 'oauth'")
+                conn.commit()
+                logger.info("Migration 024: dropped %d legacy global OAuth token row(s) — users will re-sign in per agent", legacy_count)
+
             # ── Seed: agent templates from app/context/agents/*.json (full schema) ──
             self._seed_agent_templates_from_json_files(conn)
 
@@ -3647,19 +3660,19 @@ class LocalBackend(StorageBackend):
         self,
         service: str,
         email_or_account: str,
-        label: str = "oauth",
     ) -> Optional[str]:
-        """Return user_id whose auth_elements row for (service, label) has the
+        """Return user_id whose auth_elements row for service+OAuth-label has the
         given email/account in its config JSON. Used by inbound event sources
         (Gmail Pub/Sub, Graph notifications) to map provider events back to
-        a webAgent user. None if no match."""
+        a webAgent user. Matches any per-agent OAuth label (``oauth:<agent_id>``)
+        for the user. None if no match."""
         if not email_or_account:
             return None
         conn = self._get_conn()
         try:
             rows = conn.execute(
-                "SELECT user_id, config FROM auth_elements WHERE service = ? AND label = ?",
-                (service, label),
+                "SELECT user_id, config FROM auth_elements WHERE service = ? AND label LIKE 'oauth:%'",
+                (service,),
             ).fetchall()
             target = email_or_account.strip().lower()
             for r in rows:

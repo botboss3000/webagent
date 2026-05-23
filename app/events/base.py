@@ -91,13 +91,16 @@ class EventSource(ABC):
         self,
         *,
         owner_user_id: str,
+        agent_id: str,
         event_type: str,
         filter_dict: Dict[str, Any],
     ) -> SubscriptionRegistration:
-        """Wire up the provider side of one subscription for one user.
+        """Wire up the provider side of one subscription for one (user, agent).
 
         Push sources register a watch / Graph subscription and return its
-        IDs + TTL. Poll sources return an initial cursor (or none).
+        IDs + TTL. Poll sources return an initial cursor (or none). OAuth
+        tokens are scoped per (user, agent), so the source MUST pass
+        ``agent_id`` to every ``oauth_api_call`` / ``auth_element_get``.
         """
         ...
 
@@ -113,6 +116,7 @@ class EventSource(ABC):
         """
         return await self.register_subscription(
             owner_user_id=subscription_row["owner_user_id"],
+            agent_id=subscription_row.get("agent_id", ""),
             event_type=subscription_row["event_type"],
             filter_dict=subscription_row.get("filter") or {},
         )

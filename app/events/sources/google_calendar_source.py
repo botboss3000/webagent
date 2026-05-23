@@ -79,7 +79,7 @@ class GoogleCalendarSource(EventSource):
     # ── Subscribe / renew / unsubscribe ──────────────────────────────────
 
     async def register_subscription(
-        self, *, owner_user_id: str, event_type: str, filter_dict: Dict[str, Any]
+        self, *, owner_user_id: str, agent_id: str, event_type: str, filter_dict: Dict[str, Any]
     ) -> SubscriptionRegistration:
         notif_url = _notification_url()
         if not notif_url:
@@ -97,13 +97,13 @@ class GoogleCalendarSource(EventSource):
             "params": {"ttl": str(ttl_seconds)},
         }
         url = f"{CAL_BASE}/calendars/{calendar_id}/events/watch"
-        resp = await oauth_api_call(owner_user_id, "google", "POST", url, json_body=body)
+        resp = await oauth_api_call(owner_user_id, agent_id, "google", "POST", url, json_body=body)
         if resp.get("status") != "ok":
             raise RuntimeError(f"Calendar watch failed: {resp}")
         body_out = resp.get("body") or {}
 
         # Seed a syncToken so the very first notification has a baseline to diff from.
-        sync_token = await self._fetch_initial_sync_token(owner_user_id, calendar_id)
+        sync_token = await self._fetch_initial_sync_token(owner_user_id, agent_id, calendar_id)
 
         exp_ms = body_out.get("expiration")
         try:
@@ -130,6 +130,7 @@ class GoogleCalendarSource(EventSource):
             pass
         return await self.register_subscription(
             owner_user_id=subscription_row["owner_user_id"],
+            agent_id=subscription_row.get("agent_id", ""),
             event_type=subscription_row["event_type"],
             filter_dict=subscription_row.get("filter") or {},
         )
@@ -141,21 +142,21 @@ class GoogleCalendarSource(EventSource):
             return
         try:
             await oauth_api_call(
-                subscription_row["owner_user_id"], "google", "POST",
+                subscription_row["owner_user_id"], subscription_row.get("agent_id", ""), "google", "POST",
                 f"{CAL_BASE}/channels/stop",
                 json_body={"id": channel_id, "resourceId": resource_id},
             )
         except Exception as e:
             logger.warning("Calendar channel stop failed: %s", e)
 
-    async def _fetch_initial_sync_token(self, user_id: str, calendar_id: str) -> Optional[str]:
+    async def _fetch_initial_sync_token(self, user_id: str, agent_id: str, calendar_id: str) -> Optional[str]:
         params = {"maxResults": 1, "showDeleted": "true", "singleEvents": "true"}
         page_token = None
         for _ in range(20):
             if page_token:
                 params["pageToken"] = page_token
             url = f"{CAL_BASE}/calendars/{calendar_id}/events"
-            resp = await oauth_api_call(user_id, "google", "GET", url, params=params)
+            resp = await oauth_api_call(user_id, agent_id, "google", "GET", url, params=params)
             if resp.get("status") != "ok":
                 return None
             body = resp.get("body") or {}
@@ -210,8 +211,9 @@ class GoogleCalendarSource(EventSource):
         calendar_id = meta.get("calendar_id") or "primary"
         sync_token = meta.get("sync_token") or ""
         user_id = sub["owner_user_id"]
+        agent_id = sub.get("agent_id", "")
 
-        new_events, new_sync_token = await self._list_changed_events(user_id, calendar_id, sync_token)
+        new_events, new_sync_token = await self._list_changed_events(user_id, agent_id, calendar_id, sync_token)
 
         if new_sync_token and new_sync_token != sync_token:
             meta["sync_token"] = new_sync_token
@@ -229,7 +231,7 @@ class GoogleCalendarSource(EventSource):
         return emitted
 
     async def _list_changed_events(
-        self, user_id: str, calendar_id: str, sync_token: str,
+        self, user_id: str, agent_id: str, calendar_id: str, sync_token: str,
     ) -> tuple[List[dict], Optional[str]]:
         url = f"{CAL_BASE}/calendars/{calendar_id}/events"
         params: Dict[str, Any] = {"showDeleted": "true", "singleEvents": "true"}
@@ -244,7 +246,7 @@ class GoogleCalendarSource(EventSource):
         for _ in range(10):
             if page_token:
                 params["pageToken"] = page_token
-            resp = await oauth_api_call(user_id, "google", "GET", url, params=params)
+            resp = await oauth_api_call(user_id, agent_id, "google", "GET", url, params=params)
             if resp.get("status") != "ok":
                 logger.warning("Calendar events.list failed: %s", resp)
                 break

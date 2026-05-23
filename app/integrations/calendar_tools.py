@@ -13,6 +13,7 @@ _GCAL_BASE = "https://www.googleapis.com/calendar/v3"
 
 async def gcal_list_events(
     user_id: str,
+    agent_id: str,
     calendar_id: str = "primary",
     query: str = "",
     time_min: str = "",
@@ -30,7 +31,7 @@ async def gcal_list_events(
     if query:
         params["q"] = query
     result = await oauth_api_call(
-        user_id, "google", "GET",
+        user_id, agent_id, "google", "GET",
         f"{_GCAL_BASE}/calendars/{calendar_id}/events",
         params=params,
     )
@@ -41,6 +42,7 @@ async def gcal_list_events(
 
 async def gcal_create_event(
     user_id: str,
+    agent_id: str,
     summary: str,
     start: str,
     end: str,
@@ -71,7 +73,7 @@ async def gcal_create_event(
         body["attendees"] = [{"email": a.strip()} for a in attendees.split(",") if a.strip()]
 
     result = await oauth_api_call(
-        user_id, "google", "POST",
+        user_id, agent_id, "google", "POST",
         f"{_GCAL_BASE}/calendars/{calendar_id}/events",
         json_body=body,
     )
@@ -87,6 +89,7 @@ _GRAPH = "https://graph.microsoft.com/v1.0"
 
 async def outlook_calendar_list_events(
     user_id: str,
+    agent_id: str,
     time_min: str = "",
     time_max: str = "",
     max_results: int = 10,
@@ -117,7 +120,7 @@ async def outlook_calendar_list_events(
         params.pop("$orderby", None)
         params.pop("$filter", None)
 
-    result = await oauth_api_call(user_id, "microsoft", "GET", url, params=params)
+    result = await oauth_api_call(user_id, agent_id, "microsoft", "GET", url, params=params)
     if result.get("status") == "not_connected":
         return not_connected_payload("microsoft")
     return json.dumps(result)
@@ -125,6 +128,7 @@ async def outlook_calendar_list_events(
 
 async def outlook_calendar_create_event(
     user_id: str,
+    agent_id: str,
     subject: str,
     start: str,
     end: str,
@@ -153,7 +157,7 @@ async def outlook_calendar_create_event(
         ]
 
     result = await oauth_api_call(
-        user_id, "microsoft", "POST",
+        user_id, agent_id, "microsoft", "POST",
         f"{_GRAPH}/me/events",
         json_body=body,
     )
