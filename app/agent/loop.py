@@ -542,7 +542,8 @@ async def stream_agent_events(
     # ── Integration status: inject available OAuth integrations into system prompt ──
     _OAUTH_PROVIDER_TYPES = {"google", "microsoft", "yahoo", "dropbox", "meta",
                               "twitter", "linkedin", "tiktok", "pinterest",
-                              "reddit", "snapchat", "twitch"}
+                              "reddit", "snapchat", "twitch",
+                              "scraper", "browser_session"}
     _int_summary: list = []
     if agent_id:
         try:
@@ -551,6 +552,31 @@ async def stream_agent_events(
                               if r.get("enabled") and r.get("connection_type") in _OAUTH_PROVIDER_TYPES]
             for _r in _enabled_oauth:
                 _ct = _r["connection_type"]
+                # Generic, non-OAuth providers live in different auth_elements rows.
+                if _ct == "scraper":
+                    try:
+                        from app.admin.integrations import get_scraper_creds as _gsc
+                        _scfg = await _gsc()
+                    except Exception:
+                        _scfg = None
+                    if _scfg:
+                        _int_summary.append({"provider": _ct, "connected": True,
+                                             "account": _scfg.get("provider", "")})
+                    else:
+                        _int_summary.append({"provider": _ct, "connected": False})
+                    continue
+                if _ct == "browser_session":
+                    try:
+                        from app.admin.integrations import get_browser_session_creds as _gbs
+                        _bsess = await _gbs(user_id)
+                    except Exception:
+                        _bsess = None
+                    if _bsess:
+                        _int_summary.append({"provider": _ct, "connected": True,
+                                             "account": _bsess.get("domain", "")})
+                    else:
+                        _int_summary.append({"provider": _ct, "connected": False})
+                    continue
                 try:
                     _elem = await db.auth_element_get(user_id, _ct, "oauth")
                 except Exception:
@@ -591,6 +617,8 @@ async def stream_agent_events(
         "snapchat":  "snapchat_userinfo (Snap Kit limited to identity)",
         "tiktok":    "tiktok_userinfo, tiktok_list_videos",
         "twitch":    "twitch_me, twitch_get_streams, twitch_followed_channels",
+        "scraper":   "web_scrape_search (query the configured scraper), web_scrape_url (fetch one URL through the scraper)",
+        "browser_session": "web_session_status, web_session_fetch, web_session_graphql (HTTP requests using the user's stored cookies — for sites the user is already logged into)",
     }
     if _int_summary:
         _int_lines = []
@@ -607,6 +635,22 @@ async def stream_agent_events(
                     f' — call check_oauth_connection("{_s["provider"]}") to get a connect link for the user'
                 )
         system_prompt = (system_prompt or "") + "\n\n## Available Integrations\n" + "\n".join(_int_lines)
+
+        # If a generic web tool is connected, also inject the site-recipe
+        # fragment so the agent knows the common URL templates / GraphQL
+        # doc-ids without us hardcoding them in the integration itself.
+        _has_generic_web = any(
+            s.get("connected") and s.get("provider") in ("scraper", "browser_session")
+            for s in _int_summary
+        )
+        if _has_generic_web:
+            try:
+                from app.db.system_prompt_fragments import get_prompt_fragments as _gpf
+                _recipes = (_gpf().get("web_automation_recipes") or "").strip()
+            except Exception:
+                _recipes = ""
+            if _recipes:
+                system_prompt = (system_prompt or "") + "\n\n## Web automation recipes\n" + _recipes
 
     yield {"type": "pipeline", "level": "pipeline",
            "step": "integration_status",
