@@ -699,13 +699,13 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
     else:
         req_agent_id = getattr(request, 'agent_id', None)
         req_template = getattr(request, 'agent_template_id', None)
-        if req_template == 'admin-agent':
+        if req_template in ('admin-agent', 'integration-admin-agent'):
             if not await db.is_user_admin(request.user_id):
-                raise HTTPException(status_code=403, detail="Admin agent is only available to admin users.")
+                raise HTTPException(status_code=403, detail="This agent is only available to admin users.")
             agent = await db.get_or_resolve_session_agent(
                 session_id=request.session_id,
                 user_id=request.user_id,
-                template_id='admin-agent',
+                template_id=req_template,
             )
         elif req_agent_id:
             agent = await db.get_agent_by_id(req_agent_id)
