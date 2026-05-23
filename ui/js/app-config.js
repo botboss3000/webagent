@@ -64,7 +64,7 @@ let _intAdminWired = false;
 // ── Sidebar nav + scroll highlighting ────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────
 const _SECTION_KEY = 'appConfig_activeSection';
-const _VALID_SECTIONS = ['llm', 'integrations', 'database', 'optimizer', 'git', 'automation', 'app-settings', 'user-management'];
+const _VALID_SECTIONS = ['llm', 'integrations', 'database', 'optimizer', 'git', 'automation', 'events', 'app-settings', 'user-management'];
 let _activeSection = localStorage.getItem(_SECTION_KEY) || 'llm';
 
 function _showSection(section) {
@@ -1999,6 +1999,7 @@ export function initAppConfig() {
   _initOptimizer();
   _initGit();
   _initAutomation();
+  _initEvents();
   _initAppSettings();
   _initUserManagement();
   _initialized = true;
@@ -2017,6 +2018,7 @@ export async function startAppConfig() {
   _loadOptimizer();
   _loadGit();
   _loadAutomation();
+  _loadEvents();
   _loadAppSettings();
   _loadUserManagement();
 }
@@ -2241,6 +2243,240 @@ async function _syncAutomation() {
       out.textContent = `Sync failed: ${e.message}`;
       out.style.color = '#f7768e';
     }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// ── Event Sources (admin panel) ──────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
+
+function _initEvents() {
+  _qs('ac-events-refresh')?.addEventListener('click', _loadEvents);
+}
+
+function _adminUserId() {
+  return (window.app && app.currentUserId) || localStorage.getItem('webagent_active_user_id') || '';
+}
+
+async function _loadEvents() {
+  await Promise.all([
+    _loadEventsRuntime(),
+    _loadEventsSources(),
+    _loadEventsDeliveries(),
+  ]);
+}
+
+async function _loadEventsRuntime() {
+  const badge = _qs('ac-events-runtime-badge');
+  const info  = _qs('ac-events-runtime-info');
+  if (!badge || !info) return;
+  badge.textContent = 'loading…';
+  try {
+    const r = await fetch(`/admin/events/runtime-status?requesting_user_id=${encodeURIComponent(_adminUserId())}`);
+    if (!r.ok) {
+      badge.textContent = (r.status === 403) ? 'admin only' : 'error';
+      badge.style.color = '#f7768e';
+      info.textContent = '';
+      return;
+    }
+    const d = await r.json();
+    const both = d.poller_running && d.renewer_running;
+    badge.textContent = both ? '✓ running' : (d.poller_running || d.renewer_running ? 'partial' : '✗ stopped');
+    badge.style.color = both ? '#9ece6a' : '#e0af68';
+    info.innerHTML =
+      `poller: <strong style="color:${d.poller_running ? '#9ece6a' : '#f7768e'};">${d.poller_running ? 'running' : 'stopped'}</strong> · ` +
+      `renewer: <strong style="color:${d.renewer_running ? '#9ece6a' : '#f7768e'};">${d.renewer_running ? 'running' : 'stopped'}</strong> · ` +
+      `expiring within 24h: <strong>${d.subscriptions_expiring_within_24h}</strong>`;
+  } catch (e) {
+    badge.textContent = 'error';
+    badge.style.color = '#f7768e';
+    info.textContent = e.message || '';
+  }
+}
+
+async function _loadEventsSources() {
+  const wrap = _qs('ac-events-sources');
+  if (!wrap) return;
+  wrap.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px;">Loading sources…</div>';
+  try {
+    const r = await fetch(`/admin/events/sources?requesting_user_id=${encodeURIComponent(_adminUserId())}`);
+    if (!r.ok) {
+      wrap.innerHTML = `<div style="font-size:12px;color:#f7768e;padding:8px;">${r.status === 403 ? 'Admin access required.' : 'Could not load sources.'}</div>`;
+      return;
+    }
+    const d = await r.json();
+    wrap.innerHTML = '';
+    if (!d.sources || !d.sources.length) {
+      wrap.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px;">No event sources registered.</div>';
+      return;
+    }
+    for (const s of d.sources) {
+      wrap.appendChild(_renderEventSourceRow(s));
+    }
+  } catch (e) {
+    wrap.innerHTML = `<div style="font-size:12px;color:#f7768e;padding:8px;">Error: ${e.message}</div>`;
+  }
+}
+
+function _renderEventSourceRow(s) {
+  const row = document.createElement('div');
+  row.style.cssText = 'border:1px solid var(--border);border-radius:6px;padding:10px 12px;background:var(--bg-0);display:grid;grid-template-columns:1fr auto;gap:10px;';
+
+  const left = document.createElement('div');
+  left.style.cssText = 'display:flex;flex-direction:column;gap:4px;min-width:0;';
+
+  const titleRow = document.createElement('div');
+  titleRow.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;';
+  const name = document.createElement('div');
+  name.style.cssText = 'font-size:13px;font-weight:600;color:var(--fg-1);';
+  name.textContent = s.name;
+  titleRow.appendChild(name);
+  const enabledBadge = document.createElement('span');
+  const enColor = s.enabled ? '#9ece6a' : '#e0af68';
+  enabledBadge.style.cssText = `font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:${enColor};border:1px solid ${enColor};border-radius:3px;padding:1px 6px;`;
+  enabledBadge.textContent = s.enabled ? 'enabled' : 'disabled';
+  titleRow.appendChild(enabledBadge);
+  const pushBadge = document.createElement('span');
+  pushBadge.style.cssText = 'font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);border:1px solid var(--border);border-radius:3px;padding:1px 6px;';
+  pushBadge.textContent = s.supports_push ? 'push' : 'poll';
+  titleRow.appendChild(pushBadge);
+  left.appendChild(titleRow);
+
+  const types = document.createElement('div');
+  types.style.cssText = 'font-size:11px;color:var(--accent);font-family:monospace;';
+  types.textContent = (s.event_types || []).join(', ');
+  left.appendChild(types);
+
+  if (s.description) {
+    const desc = document.createElement('div');
+    desc.style.cssText = 'font-size:11px;color:var(--muted);';
+    desc.textContent = s.description;
+    left.appendChild(desc);
+  }
+
+  const counts = document.createElement('div');
+  counts.style.cssText = 'font-size:11px;color:var(--fg-3);';
+  const errPart = (s.subscription_errored ? ` · <span style="color:#f7768e;">${s.subscription_errored} errored</span>` : '');
+  counts.innerHTML = `subs: <strong>${s.subscription_enabled}</strong> enabled / ${s.subscription_total} total${errPart}`;
+  left.appendChild(counts);
+
+  if (s.env_vars && s.env_vars.length) {
+    const env = document.createElement('div');
+    env.style.cssText = 'font-size:11px;color:var(--fg-3);font-family:monospace;';
+    env.innerHTML = 'env: ' + s.env_vars.map(v =>
+      `<span style="color:${v.set ? '#9ece6a' : '#f7768e'};">${v.name}=${v.set ? 'set' : 'unset'}</span>`
+    ).join(' · ');
+    left.appendChild(env);
+  }
+  if (s.required_provider) {
+    const prov = document.createElement('div');
+    prov.style.cssText = 'font-size:11px;color:var(--fg-3);';
+    prov.textContent = `OAuth: ${s.required_provider}`;
+    left.appendChild(prov);
+  }
+
+  row.appendChild(left);
+
+  // Right column: actions
+  const right = document.createElement('div');
+  right.style.cssText = 'display:flex;flex-direction:column;gap:6px;align-items:flex-end;min-width:160px;';
+  const rerunBtn = document.createElement('button');
+  rerunBtn.className = 'ac-btn';
+  rerunBtn.style.cssText = 'font-size:11px;padding:4px 10px;';
+  rerunBtn.textContent = 'Re-register all';
+  rerunBtn.title = 'Re-run register_subscription for every enabled subscription on this source. Use after recreating provider infrastructure.';
+  const stopBtn = document.createElement('button');
+  stopBtn.className = 'ac-btn';
+  stopBtn.style.cssText = 'font-size:11px;padding:4px 10px;color:#f7768e;';
+  stopBtn.textContent = 'Stop all';
+  stopBtn.title = 'Unregister every subscription at the provider. Use before deleting provider infrastructure.';
+  const result = document.createElement('div');
+  result.style.cssText = 'font-size:11px;color:var(--muted);text-align:right;';
+
+  rerunBtn.addEventListener('click', async () => {
+    if (!confirm(`Re-register all ${s.subscription_enabled} enabled subscriptions for ${s.name}?`)) return;
+    rerunBtn.textContent = 'Running…';
+    rerunBtn.disabled = true;
+    try {
+      const r = await fetch(`/admin/events/sources/${encodeURIComponent(s.name)}/re-register-all?requesting_user_id=${encodeURIComponent(_adminUserId())}`, { method: 'POST' });
+      const d = await r.json();
+      if (r.ok) {
+        result.textContent = `✓ ${d.succeeded} ok, ${d.failed} failed`;
+        result.style.color = d.failed ? '#e0af68' : '#9ece6a';
+      } else {
+        result.textContent = `✗ ${d.detail || 'failed'}`;
+        result.style.color = '#f7768e';
+      }
+    } catch (e) {
+      result.textContent = `✗ ${e.message}`;
+      result.style.color = '#f7768e';
+    }
+    rerunBtn.textContent = 'Re-register all';
+    rerunBtn.disabled = false;
+    setTimeout(_loadEventsSources, 600);
+  });
+
+  stopBtn.addEventListener('click', async () => {
+    const disable = confirm(`Stop all ${s.subscription_total} subscriptions for ${s.name}?\n\nClick OK to also disable the rows (so the renewer won't pick them back up).\nClick Cancel to just unregister at the provider but keep the rows enabled.`);
+    stopBtn.textContent = 'Running…';
+    stopBtn.disabled = true;
+    try {
+      const url = `/admin/events/sources/${encodeURIComponent(s.name)}/stop-all?requesting_user_id=${encodeURIComponent(_adminUserId())}&disable_rows=${disable ? 'true' : 'false'}`;
+      const r = await fetch(url, { method: 'POST' });
+      const d = await r.json();
+      if (r.ok) {
+        result.textContent = `✓ ${d.stopped} stopped, ${d.failed} failed${disable ? ' (rows disabled)' : ''}`;
+        result.style.color = d.failed ? '#e0af68' : '#9ece6a';
+      } else {
+        result.textContent = `✗ ${d.detail || 'failed'}`;
+        result.style.color = '#f7768e';
+      }
+    } catch (e) {
+      result.textContent = `✗ ${e.message}`;
+      result.style.color = '#f7768e';
+    }
+    stopBtn.textContent = 'Stop all';
+    stopBtn.disabled = false;
+    setTimeout(_loadEventsSources, 600);
+  });
+
+  right.appendChild(rerunBtn);
+  right.appendChild(stopBtn);
+  right.appendChild(result);
+  row.appendChild(right);
+  return row;
+}
+
+async function _loadEventsDeliveries() {
+  const wrap = _qs('ac-events-deliveries');
+  if (!wrap) return;
+  try {
+    const r = await fetch(`/admin/events/deliveries?requesting_user_id=${encodeURIComponent(_adminUserId())}&limit=50`);
+    if (!r.ok) {
+      wrap.innerHTML = `<div>${r.status === 403 ? 'Admin access required.' : 'Could not load deliveries.'}</div>`;
+      return;
+    }
+    const d = await r.json();
+    const rows = d.deliveries || [];
+    if (!rows.length) {
+      wrap.innerHTML = '<div>(no deliveries yet)</div>';
+      return;
+    }
+    const colorByStatus = {
+      ok: '#9ece6a',
+      test: '#7aa2f7',
+      duplicate: '#565f89',
+      pending: '#e0af68',
+      error: '#f7768e',
+    };
+    wrap.innerHTML = rows.map(r => {
+      const color = colorByStatus[r.status] || 'var(--fg-3)';
+      const errPart = r.error ? `  ${r.error.substr(0, 80)}` : '';
+      const t = (r.created_at || '').replace('T', ' ').substr(0, 19);
+      return `<div style="margin-bottom:3px;"><span style="color:var(--muted);">${t}</span>  <span style="color:${color};font-weight:600;">${r.status.padEnd(9)}</span> <span style="color:var(--accent);">${r.source}.${r.event_type}</span> evt=${(r.event_external_id || '').substr(0, 36)} sub=${(r.subscription_id || '').substr(0, 8)}${errPart}</div>`;
+    }).join('');
+  } catch (e) {
+    wrap.innerHTML = `<div>Error: ${e.message}</div>`;
   }
 }
 
