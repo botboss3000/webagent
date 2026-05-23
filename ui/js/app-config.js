@@ -640,6 +640,40 @@ const _PROVIDER_SCOPES = {
     { value: 'chat:read',                    label: 'Chat: read' },
     { value: 'chat:edit',                    label: 'Chat: write' },
   ],
+  ebay: [
+    { value: 'https://api.ebay.com/oauth/api_scope',                              label: 'Public APIs' },
+    { value: 'https://api.ebay.com/oauth/api_scope/buy.order.readonly',           label: 'Buy: orders (read)' },
+    { value: 'https://api.ebay.com/oauth/api_scope/sell.inventory',               label: 'Sell: inventory' },
+    { value: 'https://api.ebay.com/oauth/api_scope/sell.inventory.readonly',      label: 'Sell: inventory (read)' },
+    { value: 'https://api.ebay.com/oauth/api_scope/sell.account',                 label: 'Sell: account' },
+    { value: 'https://api.ebay.com/oauth/api_scope/sell.account.readonly',        label: 'Sell: account (read)' },
+    { value: 'https://api.ebay.com/oauth/api_scope/sell.fulfillment',             label: 'Sell: fulfillment' },
+    { value: 'https://api.ebay.com/oauth/api_scope/sell.fulfillment.readonly',    label: 'Sell: fulfillment (read)' },
+    { value: 'https://api.ebay.com/oauth/api_scope/sell.marketing',               label: 'Sell: marketing' },
+    { value: 'https://api.ebay.com/oauth/api_scope/sell.marketing.readonly',      label: 'Sell: marketing (read)' },
+  ],
+  etsy: [
+    { value: 'email_r',          label: 'Email (read)' },
+    { value: 'profile_r',        label: 'Profile (read)' },
+    { value: 'shops_r',          label: 'Shops (read)' },
+    { value: 'shops_w',          label: 'Shops (write)' },
+    { value: 'listings_r',       label: 'Listings (read)' },
+    { value: 'listings_w',       label: 'Listings (write)' },
+    { value: 'listings_d',       label: 'Listings (delete)' },
+    { value: 'transactions_r',   label: 'Transactions (read)' },
+  ],
+  shopify: [
+    { value: 'read_products',    label: 'Products (read)' },
+    { value: 'write_products',   label: 'Products (write)' },
+    { value: 'read_inventory',   label: 'Inventory (read)' },
+    { value: 'write_inventory',  label: 'Inventory (write)' },
+    { value: 'read_orders',      label: 'Orders (read)' },
+    { value: 'write_orders',     label: 'Orders (write)' },
+    { value: 'read_locations',   label: 'Locations (read)' },
+  ],
+  amazon: [
+    { value: 'sellingpartnerapi::client_credential:refresh_token', label: 'SP-API refresh token' },
+  ],
 };
 
 function _renderScopeCheckboxes(provider) {
@@ -773,7 +807,7 @@ function _expandCard(provider) {
 }
 
 function _initIntegrations() {
-  const providers = ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch'];
+  const providers = ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon'];
   for (const p of providers) {
     _initCollapsible(p);
     _renderScopeCheckboxes(p);
@@ -840,11 +874,15 @@ async function _loadIntegrations() {
     _applyProviderStatus('reddit',    data.reddit_configured,    data.reddit_client_id,    data.reddit_redirect_uri,       data.reddit_scopes);
     _applyProviderStatus('snapchat',  data.snapchat_configured,  data.snapchat_client_id,  data.snapchat_redirect_uri,     data.snapchat_scopes);
     _applyProviderStatus('twitch',    data.twitch_configured,    data.twitch_client_id,    data.twitch_redirect_uri,       data.twitch_scopes);
+    _applyProviderStatus('ebay',      data.ebay_configured,      data.ebay_client_id,      data.ebay_redirect_uri,         data.ebay_scopes);
+    _applyProviderStatus('etsy',      data.etsy_configured,      data.etsy_client_id,      data.etsy_redirect_uri,         data.etsy_scopes);
+    _applyProviderStatus('shopify',   data.shopify_configured,   data.shopify_client_id,   data.shopify_redirect_uri,      data.shopify_scopes);
+    _applyProviderStatus('amazon',    data.amazon_configured,    data.amazon_client_id,    data.amazon_redirect_uri,       data.amazon_scopes);
     _applyScraperStatus(data);
     // Browser session is per-user — fetched from a separate endpoint.
     _loadBrowserSessionStatus();
   } catch (e) {
-    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'scraper', 'browser_session']) {
+    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session']) {
       const s = _qs(`ac-int-${p}-status`);
       if (s) { s.textContent = `Failed to load: ${e.message}`; s.style.color = '#f7768e'; s.style.display = 'block'; }
     }
