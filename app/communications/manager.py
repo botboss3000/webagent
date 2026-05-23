@@ -138,15 +138,24 @@ class PluginManager:
         if not is_offline:
             logger.info("Webhook base URL is set (%s), skipping auto-polling", base_url)
             return
+        admin_enabled = await _admin_enabled_channels()
         for plugin in self.get_enabled_plugins():
-            if hasattr(plugin, "start_polling"):
-                await plugin.start_polling()
-                logger.info("Auto-started polling for %s", plugin.name)
+            if not hasattr(plugin, "start_polling"):
+                continue
+            if plugin.name not in admin_enabled:
+                logger.info("Skipping polling for %s — channel not enabled in App Config", plugin.name)
+                continue
+            await plugin.start_polling()
+            logger.info("Auto-started polling for %s", plugin.name)
         # Also start polling for any per-agent Telegram tokens not in registry
         await self._start_agent_connection_polling()
 
     async def _start_agent_connection_polling(self) -> None:
         """Load per-agent Telegram connections from DB and start polling for unique tokens."""
+        admin_enabled = await _admin_enabled_channels()
+        if "telegram" not in admin_enabled:
+            logger.info("Telegram channel not enabled in App Config — skipping per-agent pollers")
+            return
         try:
             from app.db import get_db
             db = get_db()
@@ -228,6 +237,49 @@ class PluginManager:
             )
             return
         await self._start_agent_connection_polling()
+
+    async def stop_channel_pollers(self, channel: str) -> int:
+        """Stop the base plugin and every per-agent poller for a channel.
+
+        Called when the admin disables a channel in App Config so we don't
+        keep listening on Telegram (or other channel) after revocation.
+        Returns the number of plugins stopped.
+        """
+        stopped = 0
+        # Base plugin (e.g. "telegram") and any keyed variants ("telegram:abcd12")
+        keys_to_stop = [name for name in list(self._plugins.keys())
+                        if name == channel or name.startswith(f"{channel}:")]
+        for key in keys_to_stop:
+            plugin = self._plugins.get(key)
+            if not plugin:
+                continue
+            if hasattr(plugin, "stop_polling"):
+                try:
+                    await plugin.stop_polling()
+                    stopped += 1
+                    logger.info("Stopped poller for %s", key)
+                except Exception as e:
+                    logger.warning("Failed to stop poller for %s: %s", key, e)
+            # Remove per-agent variants entirely; keep base plugin so it can
+            # be re-started cleanly if the channel is re-enabled.
+            if key != channel:
+                self._plugins.pop(key, None)
+        return stopped
+
+
+async def _admin_enabled_channels() -> set[str]:
+    """Read which communication channels the admin has enabled in App Config.
+
+    Returns an empty set on any error so a misconfigured DB doesn't accidentally
+    enable channels that should be off.
+    """
+    try:
+        from app.admin.integrations import get_channel_enabled_map
+        m = await get_channel_enabled_map()
+        return {name for name, on in m.items() if on}
+    except Exception as e:
+        logger.warning("Could not read admin channel enablement: %s", e)
+        return set()
 
 
 # -- Global singleton --
