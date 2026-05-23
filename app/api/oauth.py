@@ -1,10 +1,10 @@
 """Public OAuth callback endpoints — handles redirects from OAuth providers.
 
 Supported:
-  GET /api/v1/oauth/callback/google
-  GET /api/v1/oauth/callback/microsoft
-  GET /api/v1/oauth/callback/yahoo
-  GET /api/v1/oauth/callback/dropbox
+  Productivity:  google, microsoft, yahoo, dropbox
+  Social:        meta (fb+ig), twitter, linkedin, tiktok, pinterest, reddit,
+                 snapchat, twitch
+  Marketplaces:  ebay, etsy, shopify, amazon
 """
 
 import json
@@ -992,3 +992,311 @@ async def twitch_callback(
     await _store_oauth(db, user_id, "twitch", config, _token_secret(token_data), agent_id, "twitch")
     logger.info("Twitch OAuth connected for user %s (%s), agent=%s", user_id[:12], config["name"] or "?", agent_id or "none")
     return HTMLResponse(_success_html("Twitch", "twitch-oauth-success"))
+
+
+# ── eBay ──────────────────────────────────────────────────────────────────
+
+@router.get("/callback/ebay")
+async def ebay_callback(
+    request: Request,
+    code: str = QueryParam(None),
+    state: str = QueryParam(None),
+    error: str = QueryParam(None),
+    error_description: str = QueryParam(None),
+):
+    if error:
+        return HTMLResponse(_ERROR_HTML % f"eBay returned: {error_description or error}", status_code=400)
+    if not code or not state:
+        return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
+
+    import base64 as _b64
+    from app.admin.integrations import decode_state_token, get_ebay_creds, get_ebay_redirect_uri
+    state_data = decode_state_token(state, provider="ebay")
+    if not state_data or not state_data.get("user_id"):
+        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
+
+    user_id = state_data["user_id"]
+    agent_id = state_data.get("agent_id", "")
+    client_id, client_secret = await get_ebay_creds()
+    if not client_id or not client_secret:
+        return HTMLResponse(_ERROR_HTML % "eBay OAuth not configured on server.", status_code=500)
+
+    redirect_uri = get_ebay_redirect_uri(request)
+    creds_b64 = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    async with httpx.AsyncClient() as c:
+        token_resp = await c.post(
+            "https://api.ebay.com/identity/v1/oauth2/token",
+            headers={"Authorization": f"Basic {creds_b64}", "Content-Type": "application/x-www-form-urlencoded"},
+            data={"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri},
+        )
+    if token_resp.status_code != 200:
+        logger.error("eBay token exchange failed: %s", token_resp.text)
+        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
+
+    token_data = token_resp.json()
+    access_token = token_data.get("access_token", "")
+
+    # Fetch the seller's username so the UI can show who's connected.
+    name = ""
+    try:
+        async with httpx.AsyncClient() as c:
+            me_resp = await c.get(
+                "https://apiz.ebay.com/commerce/identity/v1/user/",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+        if me_resp.status_code == 200:
+            me = me_resp.json()
+            name = me.get("username", "") or me.get("userId", "")
+    except Exception:
+        pass
+
+    from app.db import get_db
+    db = get_db()
+    config = {
+        "name": name,
+        "email": "",
+        "picture": "",
+        "connected_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await _store_oauth(db, user_id, "ebay", config, _token_secret(token_data), agent_id, "ebay", section="marketplace")
+    logger.info("eBay OAuth connected for user %s (%s), agent=%s", user_id[:12], name or "?", agent_id or "none")
+    return HTMLResponse(_success_html("eBay", "ebay-oauth-success"))
+
+
+# ── Etsy ──────────────────────────────────────────────────────────────────
+
+@router.get("/callback/etsy")
+async def etsy_callback(
+    request: Request,
+    code: str = QueryParam(None),
+    state: str = QueryParam(None),
+    error: str = QueryParam(None),
+):
+    if error:
+        return HTMLResponse(_ERROR_HTML % f"Etsy returned: {error}", status_code=400)
+    if not code or not state:
+        return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
+
+    from app.admin.integrations import decode_state_token, get_etsy_creds, get_etsy_redirect_uri
+    state_data = decode_state_token(state, provider="etsy")
+    if not state_data or not state_data.get("user_id"):
+        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
+
+    user_id = state_data["user_id"]
+    agent_id = state_data.get("agent_id", "")
+    pkce_verifier = state_data.get("pkce_verifier", "")
+
+    client_id, client_secret = await get_etsy_creds()
+    if not client_id or not client_secret:
+        return HTMLResponse(_ERROR_HTML % "Etsy OAuth not configured on server.", status_code=500)
+
+    redirect_uri = get_etsy_redirect_uri(request)
+    async with httpx.AsyncClient() as c:
+        token_resp = await c.post(
+            "https://api.etsy.com/v3/public/oauth/token",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "grant_type": "authorization_code",
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "code": code,
+                "code_verifier": pkce_verifier,
+            },
+        )
+    if token_resp.status_code != 200:
+        logger.error("Etsy token exchange failed: %s", token_resp.text)
+        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
+
+    token_data = token_resp.json()
+    access_token = token_data.get("access_token", "")
+    # Etsy access_tokens are formatted "<user_id>.<token>".
+    etsy_user_id = access_token.split(".", 1)[0] if "." in access_token else ""
+
+    name = ""
+    email = ""
+    picture = ""
+    shop_id = ""
+    try:
+        async with httpx.AsyncClient() as c:
+            me_resp = await c.get(
+                f"https://openapi.etsy.com/v3/application/users/{etsy_user_id}",
+                headers={"Authorization": f"Bearer {access_token}", "x-api-key": client_id},
+            )
+        if me_resp.status_code == 200:
+            me = me_resp.json()
+            name = (me.get("first_name", "") + " " + me.get("last_name", "")).strip() or me.get("login_name", "")
+            email = me.get("primary_email", "")
+            picture = me.get("image_url_75x75", "")
+
+        # Look up the user's shop (if any) — needed for create/list listing calls.
+        async with httpx.AsyncClient() as c:
+            shop_resp = await c.get(
+                f"https://openapi.etsy.com/v3/application/users/{etsy_user_id}/shops",
+                headers={"Authorization": f"Bearer {access_token}", "x-api-key": client_id},
+            )
+        if shop_resp.status_code == 200:
+            sd = shop_resp.json() or {}
+            shop_id = str(sd.get("shop_id", "")) if "shop_id" in sd else ""
+    except Exception as e:
+        logger.warning("Etsy profile/shop lookup failed: %s", e)
+
+    from app.db import get_db
+    db = get_db()
+    config = {
+        "name": name,
+        "email": email,
+        "picture": picture,
+        "etsy_user_id": etsy_user_id,
+        "shop_id": shop_id,
+        "connected_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await _store_oauth(db, user_id, "etsy", config, _token_secret(token_data), agent_id, "etsy", section="marketplace")
+    logger.info("Etsy OAuth connected for user %s (%s, shop=%s), agent=%s", user_id[:12], name or "?", shop_id or "-", agent_id or "none")
+    return HTMLResponse(_success_html("Etsy", "etsy-oauth-success"))
+
+
+# ── Shopify (per-shop) ────────────────────────────────────────────────────
+
+@router.get("/callback/shopify")
+async def shopify_callback(
+    request: Request,
+    code: str = QueryParam(None),
+    state: str = QueryParam(None),
+    shop: str = QueryParam(None),
+    hmac: str = QueryParam(None),
+    error: str = QueryParam(None),
+):
+    if error:
+        return HTMLResponse(_ERROR_HTML % f"Shopify returned: {error}", status_code=400)
+    if not code or not state or not shop:
+        return HTMLResponse(_ERROR_HTML % "Missing code, state, or shop parameter.", status_code=400)
+
+    from app.admin.integrations import decode_state_token, get_shopify_creds
+    state_data = decode_state_token(state, provider="shopify")
+    if not state_data or not state_data.get("user_id"):
+        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
+
+    user_id = state_data["user_id"]
+    agent_id = state_data.get("agent_id", "")
+    expected_shop = (state_data.get("shop") or "").lower()
+    if expected_shop and expected_shop != shop.lower():
+        return HTMLResponse(_ERROR_HTML % "Shop domain mismatch.", status_code=400)
+
+    client_id, client_secret = await get_shopify_creds()
+    if not client_id or not client_secret:
+        return HTMLResponse(_ERROR_HTML % "Shopify OAuth not configured on server.", status_code=500)
+
+    async with httpx.AsyncClient() as c:
+        token_resp = await c.post(
+            f"https://{shop}/admin/oauth/access_token",
+            json={"client_id": client_id, "client_secret": client_secret, "code": code},
+            headers={"Content-Type": "application/json"},
+        )
+    if token_resp.status_code != 200:
+        logger.error("Shopify token exchange failed: %s", token_resp.text)
+        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
+
+    token_data = token_resp.json()
+    access_token = token_data.get("access_token", "")
+
+    # Fetch shop info for display.
+    shop_name = shop
+    email = ""
+    try:
+        async with httpx.AsyncClient() as c:
+            shop_resp = await c.get(
+                f"https://{shop}/admin/api/2024-10/shop.json",
+                headers={"X-Shopify-Access-Token": access_token},
+            )
+        if shop_resp.status_code == 200:
+            s = shop_resp.json().get("shop", {})
+            shop_name = s.get("name", shop)
+            email = s.get("email", "")
+    except Exception:
+        pass
+
+    # Shopify tokens don't expire; store as-is without expires_in.
+    secret = {
+        "access_token": access_token,
+        "refresh_token": "",
+        "expires_in": 0,
+        "token_type": "Bearer",
+        "scope": token_data.get("scope", ""),
+    }
+
+    from app.db import get_db
+    db = get_db()
+    config = {
+        "name": shop_name,
+        "email": email,
+        "picture": "",
+        "shop": shop,
+        "connected_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await _store_oauth(db, user_id, "shopify", config, secret, agent_id, "shopify", section="marketplace")
+    logger.info("Shopify OAuth connected for user %s (%s), agent=%s", user_id[:12], shop, agent_id or "none")
+    return HTMLResponse(_success_html("Shopify", "shopify-oauth-success"))
+
+
+# ── Amazon SP-API (LWA) ───────────────────────────────────────────────────
+
+@router.get("/callback/amazon")
+async def amazon_callback(
+    request: Request,
+    spapi_oauth_code: str = QueryParam(None),
+    state: str = QueryParam(None),
+    selling_partner_id: str = QueryParam(None),
+    mws_auth_token: str = QueryParam(None),
+    error: str = QueryParam(None),
+):
+    if error:
+        return HTMLResponse(_ERROR_HTML % f"Amazon returned: {error}", status_code=400)
+    if not spapi_oauth_code or not state:
+        return HTMLResponse(_ERROR_HTML % "Missing spapi_oauth_code or state parameter.", status_code=400)
+
+    from app.admin.integrations import decode_state_token, get_amazon_creds, get_amazon_redirect_uri
+    state_data = decode_state_token(state, provider="amazon")
+    if not state_data or not state_data.get("user_id"):
+        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
+
+    user_id = state_data["user_id"]
+    agent_id = state_data.get("agent_id", "")
+    region = (state_data.get("region") or "NA").upper()
+
+    client_id, client_secret = await get_amazon_creds()
+    if not client_id or not client_secret:
+        return HTMLResponse(_ERROR_HTML % "Amazon LWA not configured on server.", status_code=500)
+
+    redirect_uri = get_amazon_redirect_uri(request)
+    async with httpx.AsyncClient() as c:
+        token_resp = await c.post(
+            "https://api.amazon.com/auth/o2/token",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "grant_type": "authorization_code",
+                "code": spapi_oauth_code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": redirect_uri,
+            },
+        )
+    if token_resp.status_code != 200:
+        logger.error("Amazon LWA token exchange failed: %s", token_resp.text)
+        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
+
+    token_data = token_resp.json()
+
+    from app.db import get_db
+    db = get_db()
+    config = {
+        "name": selling_partner_id or "",
+        "email": "",
+        "picture": "",
+        "selling_partner_id": selling_partner_id or "",
+        "region": region,
+        "connected_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await _store_oauth(db, user_id, "amazon", config, _token_secret(token_data), agent_id, "amazon", section="marketplace")
+    logger.info("Amazon SP-API connected for user %s (sp_id=%s, region=%s), agent=%s",
+                user_id[:12], selling_partner_id or "?", region, agent_id or "none")
+    return HTMLResponse(_success_html("Amazon", "amazon-oauth-success"))

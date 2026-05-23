@@ -661,6 +661,8 @@ _CONNECTION_CATALOG = [
     {"connection_type": "github",    "section": "integration", "display_name": "GitHub",           "status": "coming_soon"},
     {"connection_type": "bank",      "section": "integration", "display_name": "Bank Accounts",    "status": "coming_soon"},
     {"connection_type": "search",    "section": "integration", "display_name": "Search Engine",    "status": "coming_soon"},
+    {"connection_type": "scraper",          "section": "integration", "display_name": "Web Scraper",     "status": "available"},
+    {"connection_type": "browser_session",  "section": "integration", "display_name": "Browser Session", "status": "available"},
     # ── Social Media ──
     {"connection_type": "facebook",  "section": "social",      "display_name": "Facebook",         "status": "available"},
     {"connection_type": "instagram", "section": "social",      "display_name": "Instagram",        "status": "available"},
@@ -671,6 +673,11 @@ _CONNECTION_CATALOG = [
     {"connection_type": "reddit",    "section": "social",      "display_name": "Reddit",           "status": "available"},
     {"connection_type": "snapchat",  "section": "social",      "display_name": "Snapchat",         "status": "available"},
     {"connection_type": "twitch",    "section": "social",      "display_name": "Twitch",           "status": "available"},
+    # ── Marketplaces ──
+    {"connection_type": "ebay",      "section": "marketplace", "display_name": "eBay",             "status": "available"},
+    {"connection_type": "etsy",      "section": "marketplace", "display_name": "Etsy",             "status": "available"},
+    {"connection_type": "shopify",   "section": "marketplace", "display_name": "Shopify",          "status": "available"},
+    {"connection_type": "amazon",    "section": "marketplace", "display_name": "Amazon Seller",    "status": "available"},
 ]
 
 
@@ -704,6 +711,10 @@ async def get_agent_connections(agent_id: str, user_id: str = Query(...)):
         "reddit":    "reddit",
         "snapchat":  "snapchat",
         "twitch":    "twitch",
+        "ebay":      "ebay",
+        "etsy":      "etsy",
+        "shopify":   "shopify",
+        "amazon":    "amazon",
     }
     # Cache fetched service records to avoid double-fetching (e.g. meta for both fb/ig)
     _service_cache: dict[str, dict] = {}
@@ -1110,6 +1121,111 @@ async def twitch_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
     """Disconnect Twitch account (revoke OAuth only, preserve admin toggle)."""
     from app.admin.integrations import revoke_and_delete_twitch
     deleted = await revoke_and_delete_twitch(user_id)
+    return {"status": "ok", "deleted": deleted}
+
+
+# ── Marketplace OAuth routes ──────────────────────────────────────────────
+
+@router.get("/agents/{agent_id}/connections/ebay/authorize")
+async def ebay_authorize_for_agent(request: Request, agent_id: str, user_id: str = Query(...)):
+    """Generate eBay OAuth authorization URL for a user+agent pair."""
+    db = get_db()
+    await _require_connection_enabled(db, agent_id, "ebay")
+    from app.admin.integrations import get_ebay_creds, build_ebay_authorize_url
+    client_id, _ = await get_ebay_creds()
+    if not client_id:
+        return {"error": "eBay OAuth not configured. Admin must set credentials in App Config → Integrations."}
+    authorize_url = await build_ebay_authorize_url(user_id=user_id, agent_id=agent_id, request=request)
+    return {"authorize_url": authorize_url}
+
+
+@router.delete("/agents/{agent_id}/connections/ebay/disconnect")
+async def ebay_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Disconnect eBay account (revoke OAuth only, preserve admin toggle)."""
+    from app.admin.integrations import revoke_and_delete_ebay
+    deleted = await revoke_and_delete_ebay(user_id)
+    return {"status": "ok", "deleted": deleted}
+
+
+@router.get("/agents/{agent_id}/connections/etsy/authorize")
+async def etsy_authorize_for_agent(request: Request, agent_id: str, user_id: str = Query(...)):
+    """Generate Etsy OAuth authorization URL for a user+agent pair."""
+    db = get_db()
+    await _require_connection_enabled(db, agent_id, "etsy")
+    from app.admin.integrations import get_etsy_creds, build_etsy_authorize_url
+    client_id, _ = await get_etsy_creds()
+    if not client_id:
+        return {"error": "Etsy OAuth not configured. Admin must set credentials in App Config → Integrations."}
+    authorize_url = await build_etsy_authorize_url(user_id=user_id, agent_id=agent_id, request=request)
+    return {"authorize_url": authorize_url}
+
+
+@router.delete("/agents/{agent_id}/connections/etsy/disconnect")
+async def etsy_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Disconnect Etsy account (revoke OAuth only, preserve admin toggle)."""
+    from app.admin.integrations import revoke_and_delete_etsy
+    deleted = await revoke_and_delete_etsy(user_id)
+    return {"status": "ok", "deleted": deleted}
+
+
+@router.get("/agents/{agent_id}/connections/shopify/authorize")
+async def shopify_authorize_for_agent(
+    request: Request,
+    agent_id: str,
+    user_id: str = Query(...),
+    shop: str = Query(..., description="Shopify shop domain, e.g. 'my-store' or 'my-store.myshopify.com'"),
+):
+    """Generate Shopify install URL for a specific shop. Requires shop domain."""
+    db = get_db()
+    await _require_connection_enabled(db, agent_id, "shopify")
+    from app.admin.integrations import get_shopify_creds, build_shopify_authorize_url
+    client_id, _ = await get_shopify_creds()
+    if not client_id:
+        return {"error": "Shopify OAuth not configured. Admin must set credentials in App Config → Integrations."}
+    if not shop:
+        return {"error": "Shop domain is required (e.g. 'my-store.myshopify.com')."}
+    try:
+        authorize_url = await build_shopify_authorize_url(
+            user_id=user_id, shop=shop, agent_id=agent_id, request=request,
+        )
+    except ValueError as e:
+        return {"error": str(e)}
+    return {"authorize_url": authorize_url}
+
+
+@router.delete("/agents/{agent_id}/connections/shopify/disconnect")
+async def shopify_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Disconnect Shopify shop (revoke OAuth only, preserve admin toggle)."""
+    from app.admin.integrations import revoke_and_delete_shopify
+    deleted = await revoke_and_delete_shopify(user_id)
+    return {"status": "ok", "deleted": deleted}
+
+
+@router.get("/agents/{agent_id}/connections/amazon/authorize")
+async def amazon_authorize_for_agent(
+    request: Request,
+    agent_id: str,
+    user_id: str = Query(...),
+    region: str = Query("NA", description="Amazon SP-API region: NA, EU, or FE"),
+):
+    """Generate Amazon Seller Central authorization URL for a user+agent pair."""
+    db = get_db()
+    await _require_connection_enabled(db, agent_id, "amazon")
+    from app.admin.integrations import get_amazon_creds, build_amazon_authorize_url
+    client_id, _ = await get_amazon_creds()
+    if not client_id:
+        return {"error": "Amazon LWA not configured. Admin must set credentials in App Config → Integrations."}
+    authorize_url = await build_amazon_authorize_url(
+        user_id=user_id, region=region, agent_id=agent_id, request=request,
+    )
+    return {"authorize_url": authorize_url}
+
+
+@router.delete("/agents/{agent_id}/connections/amazon/disconnect")
+async def amazon_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
+    """Disconnect Amazon SP-API (revoke OAuth only, preserve admin toggle)."""
+    from app.admin.integrations import revoke_and_delete_amazon
+    deleted = await revoke_and_delete_amazon(user_id)
     return {"status": "ok", "deleted": deleted}
 
 

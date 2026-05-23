@@ -32,6 +32,10 @@ _REFRESH_ENDPOINTS = {
     "linkedin":  ("https://www.linkedin.com/oauth/v2/accessToken",                      False, False),
     "tiktok":    ("https://open.tiktokapis.com/v2/oauth/token/",                        False, False),
     "twitch":    ("https://id.twitch.tv/oauth2/token",                                  False, False),
+    "ebay":      ("https://api.ebay.com/identity/v1/oauth2/token",                      True,  False),
+    "etsy":      ("https://api.etsy.com/v3/public/oauth/token",                         False, False),
+    "amazon":    ("https://api.amazon.com/auth/o2/token",                               False, False),
+    # Shopify access tokens don't expire — no refresh endpoint needed.
 }
 
 
@@ -48,6 +52,10 @@ _PROVIDER_CRED_FNS = {
     "reddit":    "get_reddit_creds",
     "snapchat":  "get_snapchat_creds",
     "twitch":    "get_twitch_creds",
+    "ebay":      "get_ebay_creds",
+    "etsy":      "get_etsy_creds",
+    "shopify":   "get_shopify_creds",
+    "amazon":    "get_amazon_creds",
 }
 
 
