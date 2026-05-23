@@ -55,6 +55,11 @@ let _parallelProviders = [];
 let _parallelUidCounter = 0;
 let _modelFetchDebounce = null;
 
+// Integration Admin chat state
+let _intAdminSessionId = null;
+let _intAdminAbort = null;
+let _intAdminWired = false;
+
 // ─────────────────────────────────────────────────────────────────────────
 // ── Sidebar nav + scroll highlighting ────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────
@@ -782,6 +787,152 @@ function _initIntegrations() {
     _qs(`ac-int-${p}-unconfigure`)?.addEventListener('click', () => _unconfigureProvider(p));
   }
   _initIntegrationsSearch(providers);
+  _initIntegrationAdminChat();
+}
+
+// ── Integration Admin chat ───────────────────────────────────────────────
+function _intAdminStorageKey() {
+  const uid = app.currentUserId || 'anon';
+  return `intAdminChat_session_${uid}`;
+}
+
+function _intAdminGetSession() {
+  if (_intAdminSessionId) return _intAdminSessionId;
+  try {
+    const stored = localStorage.getItem(_intAdminStorageKey());
+    if (stored) { _intAdminSessionId = stored; return stored; }
+  } catch (_) {}
+  const fresh = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ('s-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+  _intAdminSessionId = fresh;
+  try { localStorage.setItem(_intAdminStorageKey(), fresh); } catch (_) {}
+  return fresh;
+}
+
+function _intAdminAppendBubble(role, text) {
+  const box = _qs('ac-int-admin-chat-messages');
+  if (!box) return null;
+  if (box.style.display === 'none') box.style.display = 'block';
+  const bubble = document.createElement('div');
+  bubble.style.cssText = 'margin:6px 0;padding:8px 10px;border-radius:6px;white-space:pre-wrap;word-wrap:break-word;'
+    + (role === 'user'
+       ? 'background:var(--bg-2);align-self:flex-end;'
+       : 'background:var(--bg-1);border:1px solid var(--border);');
+  bubble.dataset.role = role;
+  bubble.textContent = text || '';
+  box.appendChild(bubble);
+  box.scrollTop = box.scrollHeight;
+  return bubble;
+}
+
+function _intAdminShowError(msg) {
+  const err = _qs('ac-int-admin-chat-error');
+  if (!err) return;
+  err.textContent = msg || '';
+  err.style.display = msg ? 'block' : 'none';
+}
+
+function _intAdminSetBusy(busy) {
+  const input = _qs('ac-int-admin-chat-input');
+  const send = _qs('ac-int-admin-chat-send');
+  if (input) input.disabled = busy;
+  if (send) send.disabled = busy;
+}
+
+async function _intAdminSend() {
+  const input = _qs('ac-int-admin-chat-input');
+  if (!input) return;
+  const text = (input.value || '').trim();
+  if (!text) return;
+  if (!app.currentUserId) {
+    _intAdminShowError('Sign in to use the Integration Admin chat.');
+    return;
+  }
+  _intAdminShowError('');
+  input.value = '';
+  _intAdminSetBusy(true);
+  _intAdminAppendBubble('user', text);
+  const agentBubble = _intAdminAppendBubble('agent', '…');
+  let agentBuffer = '';
+
+  const payload = {
+    message: text,
+    session_id: _intAdminGetSession(),
+    user_id: app.currentUserId,
+    agent_template_id: 'integration-admin-agent',
+  };
+
+  if (_intAdminAbort) { try { _intAdminAbort.abort(); } catch (_) {} }
+  _intAdminAbort = new AbortController();
+
+  try {
+    const resp = await _fetch(apiPath('/api/v1/chat/stream'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: _intAdminAbort.signal,
+    });
+    if (!resp.ok) {
+      const detail = resp.status === 403
+        ? 'Admin access required.'
+        : `Server error: ${resp.status}`;
+      if (agentBubble) agentBubble.textContent = detail;
+      _intAdminShowError(detail);
+      _intAdminSetBusy(false);
+      return;
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        let event;
+        try { event = JSON.parse(line.slice(6)); } catch { continue; }
+        if (event.type === 'stream') {
+          agentBuffer += (event.content || '');
+          if (agentBubble) {
+            agentBubble.textContent = agentBuffer;
+            const box = _qs('ac-int-admin-chat-messages');
+            if (box) box.scrollTop = box.scrollHeight;
+          }
+        } else if (event.type === 'response') {
+          agentBuffer = '';
+          if (agentBubble) agentBubble.textContent = event.content || '';
+        } else if (event.type === 'error') {
+          _intAdminShowError(event.message || 'Unknown error');
+          if (agentBubble) agentBubble.textContent = 'Error: ' + (event.message || '');
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      _intAdminShowError('Request failed: ' + e.message);
+      if (agentBubble) agentBubble.textContent = 'Error: ' + e.message;
+    }
+  } finally {
+    _intAdminSetBusy(false);
+    _intAdminAbort = null;
+  }
+}
+
+function _initIntegrationAdminChat() {
+  if (_intAdminWired) return;
+  const input = _qs('ac-int-admin-chat-input');
+  const send = _qs('ac-int-admin-chat-send');
+  if (!input || !send) return;
+  send.addEventListener('click', () => { _intAdminSend(); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      _intAdminSend();
+    }
+  });
+  _intAdminWired = true;
 }
 
 function _initIntegrationsSearch(providers) {
@@ -1842,4 +1993,9 @@ async function _syncAutomation() {
 /** Called when leaving the App Config tab. */
 export function stopAppConfig() {
   _active = false;
+  if (_intAdminAbort) { try { _intAdminAbort.abort(); } catch (_) {} _intAdminAbort = null; }
+  const box = _qs('ac-int-admin-chat-messages');
+  if (box) { box.innerHTML = ''; box.style.display = 'none'; }
+  const err = _qs('ac-int-admin-chat-error');
+  if (err) { err.textContent = ''; err.style.display = 'none'; }
 }

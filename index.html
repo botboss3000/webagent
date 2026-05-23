@@ -687,6 +687,21 @@
               <div id="ac-int-search-empty" class="ac-hint" style="display:none;margin-top:6px;">No integrations match your search.</div>
             </div>
 
+            <!-- Integration Admin Chat -->
+            <div class="ac-card" id="ac-int-admin-chat-card" style="margin-bottom:16px;">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+                <i data-lucide="bot" class="lucide-icon"></i>
+                <div style="font-weight:600;font-size:14px;">Ask Integration Admin</div>
+                <span class="ac-hint" style="margin:0;">Describe an integration to create or modify.</span>
+              </div>
+              <div id="ac-int-admin-chat-messages" style="max-height:280px;overflow-y:auto;display:none;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px;font-size:13px;"></div>
+              <div style="display:flex;gap:8px;align-items:flex-end;">
+                <textarea id="ac-int-admin-chat-input" rows="2" class="ac-input" style="flex:1;resize:vertical;min-height:40px;" placeholder="e.g. Create a Slack integration with send_message and list_channels tools"></textarea>
+                <button id="ac-int-admin-chat-send" class="ac-btn ac-btn-primary">Send</button>
+              </div>
+              <div id="ac-int-admin-chat-error" class="ac-hint" style="display:none;margin-top:6px;color:#f7768e;"></div>
+            </div>
+
             <!-- Google OAuth Config -->
             <div class="ac-card" id="ac-int-google-card">
               <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
