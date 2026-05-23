@@ -253,9 +253,17 @@ def _get_base_url(request: Optional[Request] = None) -> str:
             derived = "https://" + derived[len("http://"):]
         base_url = derived
     if base_url:
-        # Remember the most recent non-fallback base so request-less callers
-        # (agent tools, scheduler) can reuse it instead of the localhost fallback.
-        if not base_url.startswith("http://localhost") and not base_url.startswith("http://127."):
+        # Remember the most recent base so request-less callers (agent tools,
+        # scheduler) can reuse it. Never let a localhost/loopback hit overwrite
+        # a real public URL already cached (production internal pings shouldn't
+        # poison the cache), but localhost CAN overwrite an empty cache so
+        # local dev still works.
+        is_local = base_url.startswith("http://localhost") or base_url.startswith("http://127.")
+        cache_is_public = bool(_LAST_SEEN_BASE_URL) and not (
+            _LAST_SEEN_BASE_URL.startswith("http://localhost")
+            or _LAST_SEEN_BASE_URL.startswith("http://127.")
+        )
+        if not (is_local and cache_is_public):
             _LAST_SEEN_BASE_URL = base_url
         return base_url
     if _LAST_SEEN_BASE_URL:
