@@ -100,6 +100,7 @@ async def execute_automation(automation: Dict[str, Any]) -> Dict[str, Any]:
     from app.db import get_db
     from app.agent.loop import run_agent_loop_buffered
     from app.agent.prompts import build_system_prompt
+    from app.admin.integrations import is_ability_enabled_for_agent
 
     db = get_db()
     automation_id = automation["id"]
@@ -110,6 +111,18 @@ async def execute_automation(automation: Dict[str, Any]) -> Dict[str, Any]:
     recipient = automation.get("channel_recipient")
     silent = bool(automation.get("silent"))
     label = automation.get("task_label") or "Scheduled task"
+
+    if not await is_ability_enabled_for_agent(agent_id, "automation"):
+        logger.info(
+            "Skipping automation %s for agent %s — automation ability is disabled",
+            automation_id, agent_id,
+        )
+        await db.update_automation(
+            automation_id,
+            last_status="skipped",
+            last_error="automation ability disabled",
+        )
+        return {"ok": False, "error": "automation ability disabled"}
 
     await db.update_automation(automation_id, last_status="running", last_error=None)
 

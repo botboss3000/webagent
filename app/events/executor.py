@@ -157,6 +157,7 @@ async def execute_event_subscription(
     from app.db import get_db
     from app.agent.loop import run_agent_loop_buffered
     from app.agent.prompts import build_system_prompt
+    from app.admin.integrations import is_ability_enabled_for_agent
 
     db = get_db()
     agent_id = sub["agent_id"]
@@ -164,6 +165,13 @@ async def execute_event_subscription(
     prompt_text = sub.get("prompt") or ""
     preferred_channel = sub.get("channel")
     label = sub.get("task_label") or f"{sub.get('source','event')}:{sub.get('event_type','?')}"
+
+    if not await is_ability_enabled_for_agent(agent_id, "automation"):
+        logger.info(
+            "Skipping event subscription %s for agent %s — automation ability is disabled",
+            sub.get("id"), agent_id,
+        )
+        return {"ok": False, "error": "automation ability disabled"}
 
     try:
         agent = await db.get_agent_by_id(agent_id)

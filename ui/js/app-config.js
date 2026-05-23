@@ -843,7 +843,7 @@ function _initIntegrations() {
   const comingSoonChannels = ['whatsapp', 'slack', 'discord', 'email', 'twilio'];
 
   // Agent Tools (admin enable/disable; per-agent toggles in the Abilities tab)
-  const abilities = ['codebase_admin', 'create_tools'];
+  const abilities = ['codebase_admin', 'create_tools', 'automation'];
   for (const a of abilities) {
     _initCollapsible(a);
     _qs(`ac-int-${a}-save`)?.addEventListener('click', () => _enableAbility(a));
@@ -1054,10 +1054,11 @@ async function _loadIntegrations() {
     _applyChannelStatus('telegram', data.telegram_configured);
     _applyAbilityStatus('codebase_admin', data.codebase_admin_configured);
     _applyAbilityStatus('create_tools',   data.create_tools_configured);
+    _applyAbilityStatus('automation',     data.automation_configured);
     // Browser session is per-user — fetched from a separate endpoint.
     _loadBrowserSessionStatus();
   } catch (e) {
-    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram', 'codebase_admin', 'create_tools']) {
+    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram', 'codebase_admin', 'create_tools', 'automation']) {
       const s = _qs(`ac-int-${p}-status`);
       if (s) { s.textContent = `Failed to load: ${e.message}`; s.style.color = '#f7768e'; s.style.display = 'block'; }
     }
@@ -1148,6 +1149,14 @@ async function _enableAbility(ability) {
 
 async function _disableAbility(ability) {
   const statusEl = _qs(`ac-int-${ability}-status`);
+  if (ability === 'automation') {
+    const ok = confirm(
+      'Disable Automation?\n\n'
+      + 'This will permanently delete every agent\'s scheduled tasks and event subscriptions. '
+      + 'This cannot be undone.'
+    );
+    if (!ok) return;
+  }
   if (statusEl) statusEl.style.display = 'none';
   try {
     const res = await _fetch(apiPath(`/admin/integrations/abilities/${ability}`), { method: 'DELETE' });

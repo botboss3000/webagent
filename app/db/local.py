@@ -4945,6 +4945,17 @@ class LocalBackend(StorageBackend):
             finally:
                 conn.close()
 
+    async def delete_all_automations(self) -> int:
+        """Wipe every row from agent_automations. Returns the count removed."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute("DELETE FROM agent_automations")
+                conn.commit()
+                return cur.rowcount
+            finally:
+                conn.close()
+
     async def claim_due_automations(self, now_iso: Optional[str] = None) -> List[dict]:
         """Return enabled automation rows whose next_run_at has elapsed."""
         ts = now_iso or _now_iso()
@@ -5152,6 +5163,31 @@ class LocalBackend(StorageBackend):
                 )
                 conn.commit()
                 return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    async def delete_all_event_subscriptions(self) -> int:
+        """Wipe every row from agent_event_subscriptions. Returns the count removed."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute("DELETE FROM agent_event_subscriptions")
+                conn.commit()
+                return cur.rowcount
+            finally:
+                conn.close()
+
+    async def delete_all_ability_connections(self, connection_type: str) -> int:
+        """Wipe every agent_connections row matching the given ability connection_type."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "DELETE FROM agent_connections WHERE section = 'ability' AND connection_type = ?",
+                    (connection_type,),
+                )
+                conn.commit()
+                return cur.rowcount
             finally:
                 conn.close()
 

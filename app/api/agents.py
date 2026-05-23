@@ -983,6 +983,7 @@ _CONNECTION_CATALOG = [
     # ── Agent Tools (host-side privileged capabilities) ──
     {"connection_type": "codebase_admin", "section": "ability", "display_name": "Codebase Admin", "status": "available"},
     {"connection_type": "create_tools",   "section": "ability", "display_name": "Create Tools",   "status": "available"},
+    {"connection_type": "automation",     "section": "ability", "display_name": "Automation",     "status": "available"},
 ]
 
 
