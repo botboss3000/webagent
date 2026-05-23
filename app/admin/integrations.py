@@ -1355,6 +1355,15 @@ _CHANNEL_CONFIG_KEY: dict[str, str] = {
     "telegram": "channel_telegram",
 }
 
+# Agent Tools — privileged host-side capabilities (codebase admin, tool
+# creation). Same enable-flag mechanism as channels: an `auth_elements` row
+# with `secret_ref="enabled"` under `ability_{name}` means the app admin has
+# turned the ability on, after which agent admins can enable it per-agent.
+_ABILITY_CONFIG_KEY: dict[str, str] = {
+    "codebase_admin": "ability_codebase_admin",
+    "create_tools":   "ability_create_tools",
+}
+
 
 async def get_admin_configured_providers(user_id: Optional[str] = None) -> set[str]:
     """Return the set of connection_types that are set up and toggleable.
@@ -1383,6 +1392,15 @@ async def get_admin_configured_providers(user_id: Optional[str] = None) -> set[s
                 configured.add(ct)
         except Exception as e:
             logger.debug("auth_element_get failed for channel %s: %s", service_key, e)
+
+    # Agent Tools (codebase_admin, create_tools) — same enable-flag pattern.
+    for ct, service_key in _ABILITY_CONFIG_KEY.items():
+        try:
+            elem = await db.auth_element_get(_ADMIN_USER, service_key, "default")
+            if elem and elem.get("secret_ref"):
+                configured.add(ct)
+        except Exception as e:
+            logger.debug("auth_element_get failed for ability %s: %s", service_key, e)
 
     # Cache per service_key — facebook & instagram share `meta_oauth_config`.
     seen: dict[str, bool] = {}
@@ -1467,6 +1485,7 @@ async def get_integration_config(
     amz_cid, amz_csec         = await get_amazon_creds()
     scraper_cfg               = await get_scraper_creds()
     channel_enabled           = await get_channel_enabled_map()
+    ability_enabled           = await get_ability_enabled_map()
 
     # Fetch enabled scopes for all providers (returns defaults when unconfigured)
     g_scopes    = await _get_enabled_scopes("google_oauth_config",    GOOGLE_SCOPES)
@@ -1561,7 +1580,10 @@ async def get_integration_config(
         "scraper_actor_id":     (scraper_cfg or {}).get("extra", {}).get("actor_id", ""),
         "scraper_host":         (scraper_cfg or {}).get("extra", {}).get("host", ""),
         # Channels (admin enable/disable; per-agent creds live in Connections)
-        "telegram_configured":  channel_enabled.get("telegram", False),
+        "telegram_configured":       channel_enabled.get("telegram", False),
+        # Agent Tools (host-side privileged capabilities)
+        "codebase_admin_configured": ability_enabled.get("codebase_admin", False),
+        "create_tools_configured":   ability_enabled.get("create_tools", False),
     }
 
 
@@ -1929,6 +1951,66 @@ async def get_channel_enabled_map() -> dict[str, bool]:
             logger.debug("auth_element_get failed for channel %s: %s", service_key, e)
             out[ct] = False
     return out
+
+
+async def get_ability_enabled_map() -> dict[str, bool]:
+    """Return {ability_name: enabled} for every entry in `_ABILITY_CONFIG_KEY`."""
+    try:
+        from app.db import get_db
+        db = get_db()
+    except Exception as e:
+        logger.debug("Failed to import db while reading ability states: %s", e)
+        return {ab: False for ab in _ABILITY_CONFIG_KEY}
+    out: dict[str, bool] = {}
+    for ab, service_key in _ABILITY_CONFIG_KEY.items():
+        try:
+            elem = await db.auth_element_get(_ADMIN_USER, service_key, "default")
+            out[ab] = bool(elem and elem.get("secret_ref"))
+        except Exception as e:
+            logger.debug("auth_element_get failed for ability %s: %s", service_key, e)
+            out[ab] = False
+    return out
+
+
+@router.post("/abilities/{ability}")
+async def enable_ability(
+    ability: str,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Enable an agent ability (admin). Once enabled here, agent admins can
+    turn it on per-agent in the Abilities tab."""
+    if ability not in _ABILITY_CONFIG_KEY:
+        return {"status": "error", "message": f"Unknown ability: {ability}"}
+    from app.db import get_db
+    db = get_db()
+    await db.auth_element_set(
+        user_id=_ADMIN_USER,
+        service=_ABILITY_CONFIG_KEY[ability],
+        config={"enabled": True},
+        secret_ref="enabled",
+        label="default",
+    )
+    logger.info("Ability %s enabled by admin", ability)
+    return {"status": "ok", "ability": ability, "enabled": True}
+
+
+@router.delete("/abilities/{ability}")
+async def disable_ability(
+    ability: str,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Disable an agent ability (admin). Hides it from the agent Abilities
+    tab. Existing per-agent `agent_connections` rows stay so they reactivate
+    if the ability is re-enabled."""
+    if ability not in _ABILITY_CONFIG_KEY:
+        return {"status": "error", "message": f"Unknown ability: {ability}"}
+    from app.db import get_db
+    db = get_db()
+    deleted = await db.auth_element_delete(_ADMIN_USER, _ABILITY_CONFIG_KEY[ability], "default")
+    logger.info("Ability %s disabled by admin (deleted=%s)", ability, deleted)
+    return {"status": "ok", "ability": ability, "enabled": False}
 
 
 @router.post("/channels/{channel}")

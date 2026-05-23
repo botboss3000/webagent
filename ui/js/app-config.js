@@ -842,7 +842,15 @@ function _initIntegrations() {
   // Coming-soon channel placeholders — searchable but not interactive.
   const comingSoonChannels = ['whatsapp', 'slack', 'discord', 'email', 'twilio'];
 
-  _initIntegrationsSearch([...providers, ...genericProviders, ...channels, ...comingSoonChannels]);
+  // Agent Tools (admin enable/disable; per-agent toggles in the Abilities tab)
+  const abilities = ['codebase_admin', 'create_tools'];
+  for (const a of abilities) {
+    _initCollapsible(a);
+    _qs(`ac-int-${a}-save`)?.addEventListener('click', () => _enableAbility(a));
+    _qs(`ac-int-${a}-unconfigure`)?.addEventListener('click', () => _disableAbility(a));
+  }
+
+  _initIntegrationsSearch([...providers, ...genericProviders, ...channels, ...comingSoonChannels, ...abilities]);
   _initIntegrationAdminChat();
 }
 
@@ -1044,10 +1052,12 @@ async function _loadIntegrations() {
     _applyProviderStatus('amazon',    data.amazon_configured,    data.amazon_client_id,    data.amazon_redirect_uri,       data.amazon_scopes);
     _applyScraperStatus(data);
     _applyChannelStatus('telegram', data.telegram_configured);
+    _applyAbilityStatus('codebase_admin', data.codebase_admin_configured);
+    _applyAbilityStatus('create_tools',   data.create_tools_configured);
     // Browser session is per-user — fetched from a separate endpoint.
     _loadBrowserSessionStatus();
   } catch (e) {
-    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram']) {
+    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram', 'codebase_admin', 'create_tools']) {
       const s = _qs(`ac-int-${p}-status`);
       if (s) { s.textContent = `Failed to load: ${e.message}`; s.style.color = '#f7768e'; s.style.display = 'block'; }
     }
@@ -1111,6 +1121,38 @@ async function _disableChannel(channel) {
     const res = await _fetch(apiPath(`/admin/integrations/channels/${channel}`), { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     _applyChannelStatus(channel, false);
+    if (statusEl) { statusEl.textContent = 'Disabled.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; }
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = `Failed: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
+  }
+}
+
+// ── Agent Tools (admin enable/disable; per-agent picks in Abilities tab) ──
+function _applyAbilityStatus(ability, enabled) {
+  // Same DOM contract as channel cards (badge / configured / form).
+  _applyChannelStatus(ability, enabled);
+}
+
+async function _enableAbility(ability) {
+  const statusEl = _qs(`ac-int-${ability}-status`);
+  if (statusEl) statusEl.style.display = 'none';
+  try {
+    const res = await _fetch(apiPath(`/admin/integrations/abilities/${ability}`), { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _applyAbilityStatus(ability, true);
+    if (statusEl) { statusEl.textContent = 'Enabled.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; }
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = `Failed: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
+  }
+}
+
+async function _disableAbility(ability) {
+  const statusEl = _qs(`ac-int-${ability}-status`);
+  if (statusEl) statusEl.style.display = 'none';
+  try {
+    const res = await _fetch(apiPath(`/admin/integrations/abilities/${ability}`), { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _applyAbilityStatus(ability, false);
     if (statusEl) { statusEl.textContent = 'Disabled.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; }
   } catch (e) {
     if (statusEl) { statusEl.textContent = `Failed: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
