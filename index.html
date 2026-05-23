@@ -678,7 +678,7 @@
               <i data-lucide="puzzle" class="lucide-icon ac-section-icon"></i>
               <div>
                 <h2 class="ac-section-title">Agent Abilities</h2>
-                <p class="ac-section-desc">Channels and third-party services your agents can use. Only abilities enabled here can be turned on in an agent's Connections tab.</p>
+                <p class="ac-section-desc">Channels and third-party services your agents can use. Only abilities enabled here can be turned on in an agent's Abilities tab.</p>
               </div>
             </div>
 
@@ -721,7 +721,7 @@
               </div>
 
               <div id="ac-int-telegram-configured" style="display:none;font-size:12px;">
-                <div class="ac-hint" style="margin:0;">Telegram is available on the agent's <strong>Connections</strong> tab. Each agent enters its own bot token there.</div>
+                <div class="ac-hint" style="margin:0;">Telegram is available on the agent's <strong>Abilities</strong> tab. Each agent enters its own bot token there.</div>
                 <div style="margin-top:12px;display:flex;gap:8px;">
                   <button id="ac-int-telegram-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
                 </div>
@@ -734,12 +734,85 @@
               <span id="ac-int-telegram-status" class="ac-status" style="display:none;margin-top:8px;"></span>
             </div>
 
+            <!-- WhatsApp Channel (coming soon) -->
+            <div class="ac-card ac-int-coming-soon" id="ac-int-whatsapp-card">
+              <div style="display:flex;align-items:center;gap:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#25D366" d="M17.5 14.4c-.3-.1-1.7-.8-2-.9-.3-.1-.5-.1-.7.1-.2.3-.7.9-.9 1.1-.2.2-.3.2-.6.1-.3-.1-1.2-.5-2.3-1.4-.8-.7-1.4-1.7-1.5-1.9-.2-.3 0-.5.1-.6.1-.1.3-.3.4-.5.1-.2.2-.3.3-.5.1-.2 0-.4 0-.5-.1-.1-.7-1.6-.9-2.2-.2-.5-.5-.5-.7-.5h-.6c-.2 0-.5.1-.8.4-.3.3-1 1-1 2.4 0 1.4 1 2.8 1.1 3 .1.2 2 3 4.8 4.2.7.3 1.2.5 1.6.6.7.2 1.3.2 1.8.1.5-.1 1.7-.7 1.9-1.4.2-.7.2-1.2.2-1.4-.1-.1-.3-.2-.5-.3zM12 2C6.5 2 2 6.5 2 12c0 1.7.4 3.4 1.3 4.9L2 22l5.3-1.3c1.4.8 3.1 1.2 4.7 1.2 5.5 0 10-4.5 10-10S17.5 2 12 2zm0 18c-1.5 0-3-.4-4.3-1.2l-.3-.2-3.2.8.8-3.1-.2-.3C3.9 14.7 3.5 13.4 3.5 12c0-4.7 3.8-8.5 8.5-8.5s8.5 3.8 8.5 8.5-3.8 8.5-8.5 8.5z"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">WhatsApp</div>
+                  <div class="ac-hint" style="margin:0;">WhatsApp Business messaging via Meta or Twilio.</div>
+                </div>
+                <span class="ac-int-badge ac-int-badge-soon">Coming soon</span>
+              </div>
+            </div>
+
+            <!-- Slack Channel (coming soon) -->
+            <div class="ac-card ac-int-coming-soon" id="ac-int-slack-card">
+              <div style="display:flex;align-items:center;gap:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#E01E5A" d="M5 15a2 2 0 1 1-2-2h2v2zm1 0a2 2 0 1 1 4 0v5a2 2 0 1 1-4 0v-5z"/>
+                  <path fill="#36C5F0" d="M9 5a2 2 0 1 1 2-2v2H9zm0 1a2 2 0 1 1 0 4H4a2 2 0 1 1 0-4h5z"/>
+                  <path fill="#2EB67D" d="M19 9a2 2 0 1 1 2 2h-2V9zm-1 0a2 2 0 1 1-4 0V4a2 2 0 1 1 4 0v5z"/>
+                  <path fill="#ECB22E" d="M15 19a2 2 0 1 1-2 2v-2h2zm0-1a2 2 0 1 1 0-4h5a2 2 0 1 1 0 4h-5z"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Slack</div>
+                  <div class="ac-hint" style="margin:0;">Slack bot for channels and DMs in your workspace.</div>
+                </div>
+                <span class="ac-int-badge ac-int-badge-soon">Coming soon</span>
+              </div>
+            </div>
+
+            <!-- Discord Channel (coming soon) -->
+            <div class="ac-card ac-int-coming-soon" id="ac-int-discord-card">
+              <div style="display:flex;align-items:center;gap:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#5865F2" d="M20.3 4.4a18.6 18.6 0 0 0-4.6-1.4l-.2.4a17 17 0 0 0-5 0L10.3 3a18.6 18.6 0 0 0-4.6 1.4A19 19 0 0 0 2.4 15a18.7 18.7 0 0 0 5.7 2.9l.5-.7a13 13 0 0 1-2-1c.2-.1.4-.2.5-.4a13.3 13.3 0 0 0 11.7 0c.1.2.3.3.5.4a13 13 0 0 1-2 1l.5.7A18.7 18.7 0 0 0 23.6 15a19 19 0 0 0-3.3-10.6zM8.5 13c-1.1 0-2-1-2-2.3 0-1.3.9-2.4 2-2.4s2 1.1 2 2.4c0 1.3-.9 2.3-2 2.3zm7 0c-1.1 0-2-1-2-2.3 0-1.3.9-2.4 2-2.4s2 1.1 2 2.4c0 1.3-.9 2.3-2 2.3z"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Discord</div>
+                  <div class="ac-hint" style="margin:0;">Discord bot for server channels and DMs.</div>
+                </div>
+                <span class="ac-int-badge ac-int-badge-soon">Coming soon</span>
+              </div>
+            </div>
+
+            <!-- Email Channel (coming soon) -->
+            <div class="ac-card ac-int-coming-soon" id="ac-int-email-card">
+              <div style="display:flex;align-items:center;gap:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#7aa2f7" d="M20 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm0 4-8 5-8-5V6l8 5 8-5v2z"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Email</div>
+                  <div class="ac-hint" style="margin:0;">Inbound and outbound email via SMTP / IMAP or a hosted provider.</div>
+                </div>
+                <span class="ac-int-badge ac-int-badge-soon">Coming soon</span>
+              </div>
+            </div>
+
+            <!-- Twilio SMS / Voice (coming soon) -->
+            <div class="ac-card ac-int-coming-soon" id="ac-int-twilio-card">
+              <div style="display:flex;align-items:center;gap:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#F22F46" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-3.4 13.4a1.8 1.8 0 1 1 0-3.6 1.8 1.8 0 0 1 0 3.6zm0-5.2a1.8 1.8 0 1 1 0-3.6 1.8 1.8 0 0 1 0 3.6zm6.8 5.2a1.8 1.8 0 1 1 0-3.6 1.8 1.8 0 0 1 0 3.6zm0-5.2a1.8 1.8 0 1 1 0-3.6 1.8 1.8 0 0 1 0 3.6z"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Twilio (SMS &amp; Voice)</div>
+                  <div class="ac-hint" style="margin:0;">SMS and voice calls via Twilio.</div>
+                </div>
+                <span class="ac-int-badge ac-int-badge-soon">Coming soon</span>
+              </div>
+            </div>
+
             <!-- ── Productivity ── -->
             <div class="ac-section-header" style="margin-top:24px;">
               <i data-lucide="briefcase" class="lucide-icon ac-section-icon"></i>
               <div>
                 <h3 class="ac-section-title" style="font-size:14px;">Productivity</h3>
-                <p class="ac-section-desc">App-level credentials for mail, calendar and file providers. Users connect their personal accounts from the agent's Connections tab.</p>
+                <p class="ac-section-desc">App-level credentials for mail, calendar and file providers. Users connect their personal accounts from the agent's Abilities tab.</p>
               </div>
             </div>
 
@@ -763,7 +836,7 @@
                 <div style="display:flex;flex-direction:column;gap:6px;">
                   <div><span style="color:var(--fg-muted);">Client ID:</span> <code id="ac-int-google-cid" style="font-size:11px;"></code></div>
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-google-uri" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div class="ac-hint" style="margin-top:4px;">Users connect their Google accounts from each agent's <strong>Connections</strong> tab.</div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect their Google accounts from each agent's <strong>Abilities</strong> tab.</div>
                 </div>
                 <div style="margin-top:12px;display:flex;gap:8px;">
                   <button id="ac-int-google-edit" class="ac-btn ac-btn-ghost">Edit</button>
@@ -822,7 +895,7 @@
                 <div style="display:flex;flex-direction:column;gap:6px;">
                   <div><span style="color:var(--fg-muted);">Client ID:</span> <code id="ac-int-microsoft-cid" style="font-size:11px;"></code></div>
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-microsoft-uri" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div class="ac-hint" style="margin-top:4px;">Users connect their Microsoft accounts from each agent's <strong>Connections</strong> tab.</div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect their Microsoft accounts from each agent's <strong>Abilities</strong> tab.</div>
                 </div>
                 <div style="margin-top:12px;display:flex;gap:8px;">
                   <button id="ac-int-microsoft-edit" class="ac-btn ac-btn-ghost">Edit</button>
@@ -881,7 +954,7 @@
                 <div style="display:flex;flex-direction:column;gap:6px;">
                   <div><span style="color:var(--fg-muted);">Client ID:</span> <code id="ac-int-yahoo-cid" style="font-size:11px;"></code></div>
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-yahoo-uri" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div class="ac-hint" style="margin-top:4px;">Users connect their Yahoo accounts from each agent's <strong>Connections</strong> tab.</div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect their Yahoo accounts from each agent's <strong>Abilities</strong> tab.</div>
                 </div>
                 <div style="margin-top:12px;display:flex;gap:8px;">
                   <button id="ac-int-yahoo-edit" class="ac-btn ac-btn-ghost">Edit</button>
@@ -937,7 +1010,7 @@
                 <div style="display:flex;flex-direction:column;gap:6px;">
                   <div><span style="color:var(--fg-muted);">App Key:</span> <code id="ac-int-dropbox-cid" style="font-size:11px;"></code></div>
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-dropbox-uri" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div class="ac-hint" style="margin-top:4px;">Users connect their Dropbox accounts from each agent's <strong>Connections</strong> tab.</div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect their Dropbox accounts from each agent's <strong>Abilities</strong> tab.</div>
                 </div>
                 <div style="margin-top:12px;display:flex;gap:8px;">
                   <button id="ac-int-dropbox-edit" class="ac-btn ac-btn-ghost">Edit</button>
@@ -982,7 +1055,7 @@
               <i data-lucide="share-2" class="lucide-icon ac-section-icon"></i>
               <div>
                 <h3 class="ac-section-title" style="font-size:14px;">Social Media</h3>
-                <p class="ac-section-desc">App-level credentials for social platform OAuth. Users connect their personal accounts from the agent's Connections tab.</p>
+                <p class="ac-section-desc">App-level credentials for social platform OAuth. Users connect their personal accounts from the agent's Abilities tab.</p>
               </div>
             </div>
 
@@ -1003,7 +1076,7 @@
                 <div style="display:flex;flex-direction:column;gap:6px;">
                   <div><span style="color:var(--fg-muted);">App ID:</span> <code id="ac-int-meta-cid" style="font-size:11px;"></code></div>
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-meta-uri" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Abilities</strong> tab.</div>
                 </div>
                 <div style="margin-top:12px;display:flex;gap:8px;">
                   <button id="ac-int-meta-edit" class="ac-btn ac-btn-ghost">Edit</button>
@@ -1059,7 +1132,7 @@
                 <div style="display:flex;flex-direction:column;gap:6px;">
                   <div><span style="color:var(--fg-muted);">Client ID:</span> <code id="ac-int-twitter-cid" style="font-size:11px;"></code></div>
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-twitter-uri" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Abilities</strong> tab.</div>
                 </div>
                 <div style="margin-top:12px;display:flex;gap:8px;">
                   <button id="ac-int-twitter-edit" class="ac-btn ac-btn-ghost">Edit</button>
@@ -1115,7 +1188,7 @@
                 <div style="display:flex;flex-direction:column;gap:6px;">
                   <div><span style="color:var(--fg-muted);">Client ID:</span> <code id="ac-int-linkedin-cid" style="font-size:11px;"></code></div>
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-linkedin-uri" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Abilities</strong> tab.</div>
                 </div>
                 <div style="margin-top:12px;display:flex;gap:8px;">
                   <button id="ac-int-linkedin-edit" class="ac-btn ac-btn-ghost">Edit</button>
@@ -1171,7 +1244,7 @@
                 <div style="display:flex;flex-direction:column;gap:6px;">
                   <div><span style="color:var(--fg-muted);">Client Key:</span> <code id="ac-int-tiktok-cid" style="font-size:11px;"></code></div>
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-tiktok-uri" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Abilities</strong> tab.</div>
                 </div>
                 <div style="margin-top:12px;display:flex;gap:8px;">
                   <button id="ac-int-tiktok-edit" class="ac-btn ac-btn-ghost">Edit</button>
@@ -1226,7 +1299,7 @@
                 <div style="display:flex;flex-direction:column;gap:6px;">
                   <div><span style="color:var(--fg-muted);">App ID:</span> <code id="ac-int-pinterest-cid" style="font-size:11px;"></code></div>
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-pinterest-uri" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Abilities</strong> tab.</div>
                 </div>
                 <div style="margin-top:12px;display:flex;gap:8px;">
                   <button id="ac-int-pinterest-edit" class="ac-btn ac-btn-ghost">Edit</button>
@@ -1281,7 +1354,7 @@
                 <div style="display:flex;flex-direction:column;gap:6px;">
                   <div><span style="color:var(--fg-muted);">Client ID:</span> <code id="ac-int-reddit-cid" style="font-size:11px;"></code></div>
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-reddit-uri" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Abilities</strong> tab.</div>
                 </div>
                 <div style="margin-top:12px;display:flex;gap:8px;">
                   <button id="ac-int-reddit-edit" class="ac-btn ac-btn-ghost">Edit</button>
@@ -1336,7 +1409,7 @@
                 <div style="display:flex;flex-direction:column;gap:6px;">
                   <div><span style="color:var(--fg-muted);">Client ID:</span> <code id="ac-int-snapchat-cid" style="font-size:11px;"></code></div>
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-snapchat-uri" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Abilities</strong> tab.</div>
                 </div>
                 <div style="margin-top:12px;display:flex;gap:8px;">
                   <button id="ac-int-snapchat-edit" class="ac-btn ac-btn-ghost">Edit</button>
@@ -1391,7 +1464,7 @@
                 <div style="display:flex;flex-direction:column;gap:6px;">
                   <div><span style="color:var(--fg-muted);">Client ID:</span> <code id="ac-int-twitch-cid" style="font-size:11px;"></code></div>
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-twitch-uri" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Connections</strong> tab.</div>
+                  <div class="ac-hint" style="margin-top:4px;">Users connect from the agent's <strong>Abilities</strong> tab.</div>
                 </div>
                 <div style="margin-top:12px;display:flex;gap:8px;">
                   <button id="ac-int-twitch-edit" class="ac-btn ac-btn-ghost">Edit</button>
@@ -1434,7 +1507,7 @@
               <i data-lucide="shopping-bag" class="lucide-icon ac-section-icon"></i>
               <div>
                 <h3 class="ac-section-title" style="font-size:14px;">Marketplaces</h3>
-                <p class="ac-section-desc">App-level credentials for e-commerce platform OAuth. Sellers connect their accounts from the agent's Connections tab.</p>
+                <p class="ac-section-desc">App-level credentials for e-commerce platform OAuth. Sellers connect their accounts from the agent's Abilities tab.</p>
               </div>
             </div>
 
@@ -1457,7 +1530,7 @@
                 <div style="display:flex;flex-direction:column;gap:6px;">
                   <div><span style="color:var(--fg-muted);">Client ID:</span> <code id="ac-int-ebay-cid" style="font-size:11px;"></code></div>
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-ebay-uri" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div class="ac-hint" style="margin-top:4px;">Sellers connect from the agent's <strong>Connections</strong> tab.</div>
+                  <div class="ac-hint" style="margin-top:4px;">Sellers connect from the agent's <strong>Abilities</strong> tab.</div>
                 </div>
                 <div style="margin-top:12px;display:flex;gap:8px;">
                   <button id="ac-int-ebay-edit" class="ac-btn ac-btn-ghost">Edit</button>
@@ -1512,7 +1585,7 @@
                 <div style="display:flex;flex-direction:column;gap:6px;">
                   <div><span style="color:var(--fg-muted);">Keystring (Client ID):</span> <code id="ac-int-etsy-cid" style="font-size:11px;"></code></div>
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-etsy-uri" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div class="ac-hint" style="margin-top:4px;">Sellers connect from the agent's <strong>Connections</strong> tab.</div>
+                  <div class="ac-hint" style="margin-top:4px;">Sellers connect from the agent's <strong>Abilities</strong> tab.</div>
                 </div>
                 <div style="margin-top:12px;display:flex;gap:8px;">
                   <button id="ac-int-etsy-edit" class="ac-btn ac-btn-ghost">Edit</button>
@@ -1567,7 +1640,7 @@
                 <div style="display:flex;flex-direction:column;gap:6px;">
                   <div><span style="color:var(--fg-muted);">API Key:</span> <code id="ac-int-shopify-cid" style="font-size:11px;"></code></div>
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-shopify-uri" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div class="ac-hint" style="margin-top:4px;">Sellers connect from the agent's <strong>Connections</strong> tab (will be prompted for shop domain).</div>
+                  <div class="ac-hint" style="margin-top:4px;">Sellers connect from the agent's <strong>Abilities</strong> tab (will be prompted for shop domain).</div>
                 </div>
                 <div style="margin-top:12px;display:flex;gap:8px;">
                   <button id="ac-int-shopify-edit" class="ac-btn ac-btn-ghost">Edit</button>
@@ -1623,7 +1696,7 @@
                 <div style="display:flex;flex-direction:column;gap:6px;">
                   <div><span style="color:var(--fg-muted);">LWA Client ID:</span> <code id="ac-int-amazon-cid" style="font-size:11px;"></code></div>
                   <div><span style="color:var(--fg-muted);">Redirect URI:</span> <code id="ac-int-amazon-uri" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div class="ac-hint" style="margin-top:4px;">Sellers connect from the agent's <strong>Connections</strong> tab (will be prompted for region: NA, EU, or FE).</div>
+                  <div class="ac-hint" style="margin-top:4px;">Sellers connect from the agent's <strong>Abilities</strong> tab (will be prompted for region: NA, EU, or FE).</div>
                 </div>
                 <div style="margin-top:12px;display:flex;gap:8px;">
                   <button id="ac-int-amazon-edit" class="ac-btn ac-btn-ghost">Edit</button>

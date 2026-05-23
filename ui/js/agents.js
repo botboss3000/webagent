@@ -419,7 +419,7 @@ function _buildDetailPanel(agent) {
 
   const tabBar = document.createElement('div');
   tabBar.className = 'agent-detail-tabs';
-  const tabs = [['config','Config'],['tools','Tools'],['test','Agent Loop'],['connections','Connections'],['automation','Automation']];
+  const tabs = [['config','Config'],['tools','Tools'],['test','Agent Loop'],['connections','Abilities'],['automation','Automation']];
   if (_userIsAdmin) tabs.push(['members','Members']);
   for (const [key, label] of tabs) {
     const btn = document.createElement('button');
