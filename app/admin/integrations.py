@@ -16,6 +16,12 @@ Supported providers:
   - Reddit     (posts, comments, profile)
   - Snapchat   (profile, Bitmoji)
   - Twitch     (channel, clips, subscriptions)
+
+  Marketplaces
+  - eBay       (Buy + Sell APIs)
+  - Etsy       (Open API v3)
+  - Shopify    (Admin API, per-shop)
+  - Amazon     (Selling Partner API, LWA OAuth)
 """
 
 import base64
@@ -170,6 +176,50 @@ TWITCH_SCOPES = [
     "chat:edit",
 ]
 
+# ── Marketplace scopes ────────────────────────────────────────────────────
+
+EBAY_SCOPES = [
+    "https://api.ebay.com/oauth/api_scope",
+    "https://api.ebay.com/oauth/api_scope/buy.order.readonly",
+    "https://api.ebay.com/oauth/api_scope/sell.inventory",
+    "https://api.ebay.com/oauth/api_scope/sell.inventory.readonly",
+    "https://api.ebay.com/oauth/api_scope/sell.account",
+    "https://api.ebay.com/oauth/api_scope/sell.account.readonly",
+    "https://api.ebay.com/oauth/api_scope/sell.fulfillment",
+    "https://api.ebay.com/oauth/api_scope/sell.fulfillment.readonly",
+    "https://api.ebay.com/oauth/api_scope/sell.marketing",
+    "https://api.ebay.com/oauth/api_scope/sell.marketing.readonly",
+]
+
+ETSY_SCOPES = [
+    "email_r",
+    "profile_r",
+    "shops_r",
+    "shops_w",
+    "listings_r",
+    "listings_w",
+    "listings_d",
+    "transactions_r",
+]
+
+# Shopify scopes are per-shop / per-install — these are the defaults requested
+# at install time. Tweak in the admin UI to match the app's Partner config.
+SHOPIFY_SCOPES = [
+    "read_products",
+    "write_products",
+    "read_inventory",
+    "write_inventory",
+    "read_orders",
+    "write_orders",
+    "read_locations",
+]
+
+# Amazon SP-API uses a single LWA scope; the actual roles (Orders, Inventory,
+# Pricing, etc.) are granted via the Seller Central app registration, not OAuth.
+AMAZON_SCOPES = [
+    "sellingpartnerapi::client_credential:refresh_token",
+]
+
 # Map each provider to its config service key and default scope list
 _PROVIDER_SCOPE_DEFAULTS: dict[str, tuple[str, list]] = {
     "google":    ("google_oauth_config",    GOOGLE_SCOPES),
@@ -184,6 +234,10 @@ _PROVIDER_SCOPE_DEFAULTS: dict[str, tuple[str, list]] = {
     "reddit":    ("reddit_oauth_config",    REDDIT_SCOPES),
     "snapchat":  ("snapchat_oauth_config",  SNAPCHAT_SCOPES),
     "twitch":    ("twitch_oauth_config",    TWITCH_SCOPES),
+    "ebay":      ("ebay_oauth_config",      EBAY_SCOPES),
+    "etsy":      ("etsy_oauth_config",      ETSY_SCOPES),
+    "shopify":   ("shopify_oauth_config",   SHOPIFY_SCOPES),
+    "amazon":    ("amazon_oauth_config",    AMAZON_SCOPES),
 }
 
 
@@ -985,6 +1039,230 @@ async def revoke_and_delete_twitch(user_id: str) -> bool:
     return await db.auth_element_delete(user_id, "twitch", "oauth")
 
 
+# ── eBay ──────────────────────────────────────────────────────────────────
+
+async def get_ebay_creds() -> tuple[str, str]:
+    try:
+        from app.db import get_db
+        db = get_db()
+        elem = await db.auth_element_get(_ADMIN_USER, "ebay_oauth_config", "default")
+        if elem and elem.get("config"):
+            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
+            cid = config.get("client_id", "")
+            csec = elem.get("secret_ref", "") or config.get("client_secret", "")
+            if cid and csec:
+                return (cid, csec)
+    except Exception as e:
+        logger.debug("Failed to read eBay creds from DB: %s", e)
+    return (os.environ.get("EBAY_CLIENT_ID", ""), os.environ.get("EBAY_CLIENT_SECRET", ""))
+
+
+def get_ebay_redirect_uri(request: Optional[Request] = None) -> str:
+    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/ebay"
+
+
+async def build_ebay_authorize_url(user_id: str, agent_id: str = "", request: Optional[Request] = None) -> str:
+    client_id, _ = await get_ebay_creds()
+    redirect_uri = get_ebay_redirect_uri(request)
+    state = make_state_token(user_id, agent_id, provider="ebay")
+    scopes = await _get_enabled_scopes("ebay_oauth_config", EBAY_SCOPES)
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,  # eBay calls this the "RuName" but accepts the URI here for web flows
+        "response_type": "code",
+        "scope": " ".join(scopes),
+        "state": state,
+    }
+    return f"https://auth.ebay.com/oauth2/authorize?{urlencode(params)}"
+
+
+async def revoke_and_delete_ebay(user_id: str) -> bool:
+    from app.db import get_db
+    db = get_db()
+    return await db.auth_element_delete(user_id, "ebay", "oauth")
+
+
+# ── Etsy ──────────────────────────────────────────────────────────────────
+
+async def get_etsy_creds() -> tuple[str, str]:
+    try:
+        from app.db import get_db
+        db = get_db()
+        elem = await db.auth_element_get(_ADMIN_USER, "etsy_oauth_config", "default")
+        if elem and elem.get("config"):
+            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
+            cid = config.get("client_id", "")
+            csec = elem.get("secret_ref", "") or config.get("client_secret", "")
+            if cid and csec:
+                return (cid, csec)
+    except Exception as e:
+        logger.debug("Failed to read Etsy creds from DB: %s", e)
+    return (os.environ.get("ETSY_CLIENT_ID", ""), os.environ.get("ETSY_CLIENT_SECRET", ""))
+
+
+def get_etsy_redirect_uri(request: Optional[Request] = None) -> str:
+    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/etsy"
+
+
+async def build_etsy_authorize_url(user_id: str, agent_id: str = "", request: Optional[Request] = None) -> str:
+    """Etsy uses OAuth 2.0 + PKCE. Stash the verifier in the state JWT."""
+    client_id, _ = await get_etsy_creds()
+    redirect_uri = get_etsy_redirect_uri(request)
+    verifier, challenge = _pkce_pair()
+    state = make_state_token(user_id, agent_id, provider="etsy", pkce_verifier=verifier)
+    scopes = await _get_enabled_scopes("etsy_oauth_config", ETSY_SCOPES)
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "scope": " ".join(scopes),
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+    }
+    return f"https://www.etsy.com/oauth/connect?{urlencode(params)}"
+
+
+async def revoke_and_delete_etsy(user_id: str) -> bool:
+    from app.db import get_db
+    db = get_db()
+    return await db.auth_element_delete(user_id, "etsy", "oauth")
+
+
+# ── Shopify (per-shop) ────────────────────────────────────────────────────
+
+async def get_shopify_creds() -> tuple[str, str]:
+    try:
+        from app.db import get_db
+        db = get_db()
+        elem = await db.auth_element_get(_ADMIN_USER, "shopify_oauth_config", "default")
+        if elem and elem.get("config"):
+            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
+            cid = config.get("client_id", "")
+            csec = elem.get("secret_ref", "") or config.get("client_secret", "")
+            if cid and csec:
+                return (cid, csec)
+    except Exception as e:
+        logger.debug("Failed to read Shopify creds from DB: %s", e)
+    return (os.environ.get("SHOPIFY_API_KEY", ""), os.environ.get("SHOPIFY_API_SECRET", ""))
+
+
+def get_shopify_redirect_uri(request: Optional[Request] = None) -> str:
+    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/shopify"
+
+
+def _shopify_normalize_shop(shop: str) -> str:
+    """Normalize 'my-store' or 'my-store.myshopify.com' → 'my-store.myshopify.com'."""
+    s = (shop or "").strip().lower().replace("https://", "").replace("http://", "").rstrip("/")
+    if "." not in s:
+        s = f"{s}.myshopify.com"
+    return s
+
+
+async def build_shopify_authorize_url(
+    user_id: str,
+    shop: str,
+    agent_id: str = "",
+    request: Optional[Request] = None,
+) -> str:
+    """Build the per-shop Shopify install URL. Caller must supply the shop domain."""
+    if not shop:
+        raise ValueError("shop domain required for Shopify authorize")
+    shop_norm = _shopify_normalize_shop(shop)
+    client_id, _ = await get_shopify_creds()
+    redirect_uri = get_shopify_redirect_uri(request)
+    state = make_state_token(user_id, agent_id, provider="shopify", shop=shop_norm)
+    scopes = await _get_enabled_scopes("shopify_oauth_config", SHOPIFY_SCOPES)
+    params = {
+        "client_id": client_id,
+        "scope": ",".join(scopes),
+        "redirect_uri": redirect_uri,
+        "state": state,
+    }
+    return f"https://{shop_norm}/admin/oauth/authorize?{urlencode(params)}"
+
+
+async def revoke_and_delete_shopify(user_id: str) -> bool:
+    from app.db import get_db
+    db = get_db()
+    return await db.auth_element_delete(user_id, "shopify", "oauth")
+
+
+# ── Amazon SP-API (LWA) ───────────────────────────────────────────────────
+
+async def get_amazon_creds() -> tuple[str, str]:
+    try:
+        from app.db import get_db
+        db = get_db()
+        elem = await db.auth_element_get(_ADMIN_USER, "amazon_oauth_config", "default")
+        if elem and elem.get("config"):
+            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
+            cid = config.get("client_id", "")
+            csec = elem.get("secret_ref", "") or config.get("client_secret", "")
+            if cid and csec:
+                return (cid, csec)
+    except Exception as e:
+        logger.debug("Failed to read Amazon creds from DB: %s", e)
+    return (os.environ.get("AMAZON_LWA_CLIENT_ID", ""), os.environ.get("AMAZON_LWA_CLIENT_SECRET", ""))
+
+
+def get_amazon_redirect_uri(request: Optional[Request] = None) -> str:
+    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/amazon"
+
+
+async def _get_amazon_app_id() -> str:
+    """The Seller Central application id (separate from the LWA client_id).
+
+    Stored in admin config alongside the LWA creds.
+    """
+    try:
+        from app.db import get_db
+        db = get_db()
+        elem = await db.auth_element_get(_ADMIN_USER, "amazon_oauth_config", "default")
+        if elem and elem.get("config"):
+            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
+            return config.get("app_id", "") or os.environ.get("AMAZON_SP_APP_ID", "")
+    except Exception:
+        pass
+    return os.environ.get("AMAZON_SP_APP_ID", "")
+
+
+async def build_amazon_authorize_url(
+    user_id: str,
+    region: str = "NA",
+    agent_id: str = "",
+    request: Optional[Request] = None,
+) -> str:
+    """Build the Amazon Seller Central authorization URL.
+
+    Sellers complete the OAuth handshake on Seller Central (region-specific),
+    then Amazon redirects back to our LWA callback with a spapi_oauth_code.
+    """
+    app_id = await _get_amazon_app_id()
+    redirect_uri = get_amazon_redirect_uri(request)
+    state = make_state_token(user_id, agent_id, provider="amazon", region=region.upper())
+    # Seller Central hosts the consent screen, not LWA directly.
+    sc_hosts = {
+        "NA": "https://sellercentral.amazon.com",
+        "EU": "https://sellercentral.amazon.co.uk",
+        "FE": "https://sellercentral.amazon.co.jp",
+    }
+    host = sc_hosts.get(region.upper(), sc_hosts["NA"])
+    params = {
+        "application_id": app_id,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "version": "beta",
+    }
+    return f"{host}/apps/authorize/consent?{urlencode(params)}"
+
+
+async def revoke_and_delete_amazon(user_id: str) -> bool:
+    from app.db import get_db
+    db = get_db()
+    return await db.auth_element_delete(user_id, "amazon", "oauth")
+
+
 # ── Admin endpoints ──────────────────────────────────────────────────────
 
 class OAuthConfigRequest(BaseModel):
@@ -1018,6 +1296,10 @@ async def get_integration_config(
     red_cid, red_csec         = await get_reddit_creds()
     snap_cid, snap_csec       = await get_snapchat_creds()
     twitch_cid, twitch_csec   = await get_twitch_creds()
+    ebay_cid, ebay_csec       = await get_ebay_creds()
+    etsy_cid, etsy_csec       = await get_etsy_creds()
+    shop_cid, shop_csec       = await get_shopify_creds()
+    amz_cid, amz_csec         = await get_amazon_creds()
 
     # Fetch enabled scopes for all providers (returns defaults when unconfigured)
     g_scopes    = await _get_enabled_scopes("google_oauth_config",    GOOGLE_SCOPES)
@@ -1032,6 +1314,10 @@ async def get_integration_config(
     red_scopes  = await _get_enabled_scopes("reddit_oauth_config",    REDDIT_SCOPES)
     snap_scopes = await _get_enabled_scopes("snapchat_oauth_config",  SNAPCHAT_SCOPES)
     twit_scopes = await _get_enabled_scopes("twitch_oauth_config",    TWITCH_SCOPES)
+    ebay_scopes = await _get_enabled_scopes("ebay_oauth_config",      EBAY_SCOPES)
+    etsy_scopes = await _get_enabled_scopes("etsy_oauth_config",      ETSY_SCOPES)
+    shop_scopes = await _get_enabled_scopes("shopify_oauth_config",   SHOPIFY_SCOPES)
+    amz_scopes  = await _get_enabled_scopes("amazon_oauth_config",    AMAZON_SCOPES)
 
     return {
         # Productivity
@@ -1084,6 +1370,23 @@ async def get_integration_config(
         "twitch_client_id":     _mask(twitch_cid),
         "twitch_scopes":        twit_scopes,
         "twitch_redirect_uri":  get_twitch_redirect_uri(request),
+        # Marketplaces
+        "ebay_configured":      bool(ebay_cid and ebay_csec),
+        "ebay_client_id":       _mask(ebay_cid),
+        "ebay_scopes":          ebay_scopes,
+        "ebay_redirect_uri":    get_ebay_redirect_uri(request),
+        "etsy_configured":      bool(etsy_cid and etsy_csec),
+        "etsy_client_id":       _mask(etsy_cid),
+        "etsy_scopes":          etsy_scopes,
+        "etsy_redirect_uri":    get_etsy_redirect_uri(request),
+        "shopify_configured":   bool(shop_cid and shop_csec),
+        "shopify_client_id":    _mask(shop_cid),
+        "shopify_scopes":       shop_scopes,
+        "shopify_redirect_uri": get_shopify_redirect_uri(request),
+        "amazon_configured":    bool(amz_cid and amz_csec),
+        "amazon_client_id":     _mask(amz_cid),
+        "amazon_scopes":        amz_scopes,
+        "amazon_redirect_uri":  get_amazon_redirect_uri(request),
     }
 
 
@@ -1277,6 +1580,10 @@ _pin_save,  _pin_delete          = _make_social_endpoints("pinterest",  "pintere
 _red_save,  _red_delete          = _make_social_endpoints("reddit",     "reddit_oauth_config",    "Reddit")
 _snap_save, _snap_delete         = _make_social_endpoints("snapchat",   "snapchat_oauth_config",  "Snapchat")
 _twitch_save, _twitch_delete     = _make_social_endpoints("twitch",     "twitch_oauth_config",    "Twitch")
+_ebay_save,   _ebay_delete       = _make_social_endpoints("ebay",       "ebay_oauth_config",      "eBay")
+_etsy_save,   _etsy_delete       = _make_social_endpoints("etsy",       "etsy_oauth_config",      "Etsy")
+_shop_save,   _shop_delete       = _make_social_endpoints("shopify",    "shopify_oauth_config",   "Shopify")
+_amz_save,    _amz_delete        = _make_social_endpoints("amazon",     "amazon_oauth_config",    "Amazon SP-API")
 
 router.post("/meta",      response_model=None)(_meta_save)
 router.delete("/meta",    response_model=None)(_meta_delete)
@@ -1294,3 +1601,11 @@ router.post("/snapchat",  response_model=None)(_snap_save)
 router.delete("/snapchat",response_model=None)(_snap_delete)
 router.post("/twitch",    response_model=None)(_twitch_save)
 router.delete("/twitch",  response_model=None)(_twitch_delete)
+router.post("/ebay",      response_model=None)(_ebay_save)
+router.delete("/ebay",    response_model=None)(_ebay_delete)
+router.post("/etsy",      response_model=None)(_etsy_save)
+router.delete("/etsy",    response_model=None)(_etsy_delete)
+router.post("/shopify",   response_model=None)(_shop_save)
+router.delete("/shopify", response_model=None)(_shop_delete)
+router.post("/amazon",    response_model=None)(_amz_save)
+router.delete("/amazon",  response_model=None)(_amz_delete)
