@@ -154,7 +154,7 @@ class ToolLoader:
         enabled_providers: set = set()
         try:
             from app.integrations import gather_enabled_providers
-            enabled_providers = await gather_enabled_providers(agent_id) if agent_id else set()
+            enabled_providers = await gather_enabled_providers(agent_id, user_id) if agent_id else set()
         except ImportError:
             pass
         except Exception as e:

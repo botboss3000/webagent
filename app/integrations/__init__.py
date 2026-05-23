@@ -98,12 +98,13 @@ def integration_tool_metadata() -> Dict[str, Dict]:
     return out
 
 
-async def gather_enabled_providers(agent_id: str) -> set:
-    """Return connection_types that are both enabled on this agent AND admin-configured.
+async def gather_enabled_providers(agent_id: str, user_id: Optional[str] = None) -> set:
+    """Return connection_types that are both enabled on this agent AND configured.
 
-    Intersecting with admin config prevents stale agent_connections rows from
-    leaking integration awareness to the LLM after an admin removes the
-    underlying OAuth credentials.
+    Intersecting with the configured set prevents stale agent_connections rows
+    from leaking integration awareness to the LLM after admin OAuth creds (or
+    per-user browser_session cookies) are removed. `user_id` is needed to
+    decide whether `browser_session` is set up for the active user.
     """
     if not agent_id:
         return set()
@@ -112,7 +113,7 @@ async def gather_enabled_providers(agent_id: str) -> set:
         from app.admin.integrations import get_admin_configured_providers
         rows = await get_db().get_agent_connections(agent_id)
         enabled = {r["connection_type"] for r in rows if r.get("enabled")}
-        return enabled & await get_admin_configured_providers()
+        return enabled & await get_admin_configured_providers(user_id)
     except Exception as e:
         logger.warning("Could not read agent_connections for %s: %s", agent_id, e)
         return set()

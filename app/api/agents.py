@@ -698,7 +698,7 @@ async def get_agent_connections(agent_id: str, user_id: str = Query(...)):
     # Only surface integrations the admin has configured (plus the per-agent/
     # per-user ones that need no admin OAuth setup). Unconfigured providers
     # are hidden from the agent page entirely so they cannot be toggled on.
-    configured_providers = await get_admin_configured_providers()
+    configured_providers = await get_admin_configured_providers(user_id)
 
     # Fetch auth_elements for all OAuth-backed providers.
     # Maps connection_type → service key stored in auth_elements.
@@ -812,7 +812,7 @@ async def upsert_agent_connection(
     # always allowed so the UI can clean up stale rows if creds were removed.)
     if req.enabled:
         from app.admin.integrations import get_admin_configured_providers
-        if connection_type not in await get_admin_configured_providers():
+        if connection_type not in await get_admin_configured_providers(req.user_id):
             raise HTTPException(
                 status_code=400,
                 detail=(
