@@ -22,6 +22,8 @@ PUBLIC_PATHS = {
     "/api/v1/auth/recall",
     "/api/v1/auth/logout",
     "/test",
+    "/privacy",
+    "/tos",
 }
 
 # Static asset prefixes (CSS, JS, images — always public)

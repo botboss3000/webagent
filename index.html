@@ -298,6 +298,12 @@
           <i data-lucide="log-out" class="lucide-icon" style="width:15px;height:15px;"></i>
           Sign Out
         </button>
+
+        <div class="user-dropdown-legal">
+          <a href="/privacy" target="_blank" rel="noopener">Privacy</a>
+          <span aria-hidden="true">·</span>
+          <a href="/tos" target="_blank" rel="noopener">Terms</a>
+        </div>
       </div>
     </div>
   </span>
@@ -674,6 +680,11 @@
                 <h2 class="ac-section-title">Integrations</h2>
                 <p class="ac-section-desc">Configure third-party service credentials. Users connect their accounts via each agent's Connections tab.</p>
               </div>
+            </div>
+
+            <div class="ac-field" style="margin-bottom:12px;">
+              <input type="search" id="ac-int-search" class="ac-input" placeholder="Search integrations…" autocomplete="off">
+              <div id="ac-int-search-empty" class="ac-hint" style="display:none;margin-top:6px;">No integrations match your search.</div>
             </div>
 
             <!-- Google OAuth Config -->

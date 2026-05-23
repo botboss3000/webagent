@@ -302,6 +302,25 @@ async def login_ui():
         return HTMLResponse("<p>Missing login.html</p>", status_code=404)
     return HTMLResponse(content=login_html.read_text(encoding="utf-8"))
 
+
+@app.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
+async def privacy_page():
+    """Serve the privacy policy page (public, no auth)."""
+    privacy_html = _APP_DIR.parent / "ui" / "privacy.html"
+    if not privacy_html.is_file():
+        return HTMLResponse("<p>Missing privacy.html</p>", status_code=404)
+    return HTMLResponse(content=privacy_html.read_text(encoding="utf-8"))
+
+
+@app.get("/tos", response_class=HTMLResponse, include_in_schema=False)
+async def tos_page():
+    """Serve the terms of service page (public, no auth)."""
+    tos_html = _APP_DIR.parent / "ui" / "tos.html"
+    if not tos_html.is_file():
+        return HTMLResponse("<p>Missing tos.html</p>", status_code=404)
+    return HTMLResponse(content=tos_html.read_text(encoding="utf-8"))
+
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}

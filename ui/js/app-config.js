@@ -781,6 +781,34 @@ function _initIntegrations() {
     _qs(`ac-int-${p}-edit`)?.addEventListener('click', () => _editProviderConfig(p));
     _qs(`ac-int-${p}-unconfigure`)?.addEventListener('click', () => _unconfigureProvider(p));
   }
+  _initIntegrationsSearch(providers);
+}
+
+function _initIntegrationsSearch(providers) {
+  const input = _qs('ac-int-search');
+  if (!input) return;
+  const emptyEl = _qs('ac-int-search-empty');
+  const cards = providers
+    .map(p => {
+      const card = document.getElementById(`ac-int-${p}-card`);
+      if (!card) return null;
+      const header = card.querySelector(':scope > div');
+      const haystack = (p + ' ' + (header ? header.textContent : '')).toLowerCase();
+      return { card, haystack };
+    })
+    .filter(Boolean);
+
+  const apply = () => {
+    const q = input.value.trim().toLowerCase();
+    let visible = 0;
+    for (const { card, haystack } of cards) {
+      const match = !q || haystack.includes(q);
+      card.style.display = match ? '' : 'none';
+      if (match) visible++;
+    }
+    if (emptyEl) emptyEl.style.display = (q && visible === 0) ? 'block' : 'none';
+  };
+  input.addEventListener('input', apply);
 }
 
 async function _loadIntegrations() {
