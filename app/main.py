@@ -69,6 +69,7 @@ from app.admin.events_admin import router as admin_events_router
 from app.admin.scheduler_config import router as scheduler_admin_router
 from app.api.agents import router as agents_router
 from app.api.data_sources import router as data_sources_router
+from app.api.files import router as files_router
 from app.admin.users import router as admin_users_router
 
 # ── Auth ──
@@ -212,6 +213,7 @@ app.include_router(admin_events_router)
 app.include_router(scheduler_admin_router)
 app.include_router(agents_router)
 app.include_router(data_sources_router)
+app.include_router(files_router)
 app.include_router(admin_users_router)
 
 # Register auth router

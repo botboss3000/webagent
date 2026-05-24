@@ -32,6 +32,7 @@
 <link rel="stylesheet" href="./ui/css/loop-visual.css">
 <link rel="stylesheet" href="./ui/css/autoagent.css">
 <link rel="stylesheet" href="./ui/css/agents.css">
+<link rel="stylesheet" href="./ui/css/files.css">
 <!-- Design system tokens + visual overrides (loaded last to take effect) -->
 <link rel="stylesheet" href="./ui/css/design-system.css">
 </head>
@@ -195,6 +196,7 @@
       <option value="autoagent">AutoAgent</option>
       <option value="agents">Agents</option>
       <option value="app-config">App Config</option>
+      <option value="files">Files</option>
       <option value="account">Manage Account</option>
     </select>
     <button id="tab-select-btn" class="tab-select-pill" aria-haspopup="listbox">
@@ -229,6 +231,9 @@
       </div>
       <div class="tab-option" data-value="app-config" data-icon="sliders-horizontal" role="option">
         <i data-lucide="sliders-horizontal" class="lucide-icon menu-icon"></i>App Config
+      </div>
+      <div class="tab-option" data-value="files" data-icon="folder-tree" role="option">
+        <i data-lucide="folder-tree" class="lucide-icon menu-icon"></i>Files
       </div>
       <div class="tab-option" data-value="account" data-icon="user-cog" role="option">
         <i data-lucide="user-cog" class="lucide-icon menu-icon"></i>Manage Account
@@ -2542,6 +2547,57 @@
       </div>
     </div>
 
+    <!-- ── Files tab: VS Code-style file editor ───────────────── -->
+    <div id="tab-files" class="tab-content">
+      <div id="files-restricted-overlay" style="display:none;">
+        <div class="files-restricted-card">
+          <div class="files-restricted-icon"><i data-lucide="lock" style="width:32px;height:32px;"></i></div>
+          <div class="files-restricted-title">Restricted Access</div>
+          <div class="files-restricted-desc">The Files editor is only available for admin users.</div>
+        </div>
+      </div>
+      <div id="files-editor" class="files-editor">
+        <!-- Sidebar: directory tree -->
+        <aside id="files-sidebar" class="files-sidebar">
+          <div class="files-sidebar-header">
+            <span class="files-sidebar-title">Explorer</span>
+            <div class="files-sidebar-actions">
+              <button class="files-icon-btn" id="files-new-file" title="New file"><i data-lucide="file-plus" class="lucide-icon"></i></button>
+              <button class="files-icon-btn" id="files-new-folder" title="New folder"><i data-lucide="folder-plus" class="lucide-icon"></i></button>
+              <button class="files-icon-btn" id="files-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
+              <button class="files-icon-btn" id="files-collapse-all" title="Collapse all"><i data-lucide="chevrons-down-up" class="lucide-icon"></i></button>
+            </div>
+          </div>
+          <div id="files-tree" class="files-tree" role="tree"></div>
+        </aside>
+
+        <!-- Resize handle between sidebar and editor -->
+        <div id="files-resize-handle" class="files-resize-handle" title="Drag to resize"></div>
+
+        <!-- Toggle button to show sidebar when collapsed -->
+        <button id="files-sidebar-toggle" class="files-sidebar-toggle" title="Toggle sidebar">
+          <i data-lucide="panel-left" class="lucide-icon"></i>
+        </button>
+
+        <!-- Main editor area: tabs + content -->
+        <main class="files-main">
+          <div id="files-tabs" class="files-tabs" role="tablist"></div>
+          <div id="files-content" class="files-content">
+            <div class="files-welcome">
+              <i data-lucide="folder-tree" class="lucide-icon files-welcome-icon"></i>
+              <div class="files-welcome-title">File Editor</div>
+              <div class="files-welcome-text">Pick a file from the Explorer on the left to open it here.</div>
+            </div>
+          </div>
+          <div id="files-status-bar" class="files-status-bar">
+            <span id="files-status-path" class="files-status-path"></span>
+            <span class="files-status-spacer"></span>
+            <span id="files-status-info" class="files-status-info"></span>
+          </div>
+        </main>
+      </div>
+    </div>
+
   </div>
 
   <!-- Chat resize handle -->
@@ -3061,6 +3117,7 @@
     { id: 'autoagent',   icon: 'palette',     label: 'AutoAgent'  },
     { id: 'agents',      icon: 'bot',              label: 'Agents'     },
     { id: 'app-config',  icon: 'sliders-horizontal', label: 'App Config' },
+    { id: 'files',       icon: 'folder-tree',      label: 'Files'      },
     { id: 'account',     icon: 'user-cog',         label: 'Manage Account' },
   ];
 

@@ -9,6 +9,7 @@ import { startAutoAgent, stopAutoAgent } from './autoagent.js';
 import { startAgents, stopAgents } from './agents.js';
 import { startAppConfig, stopAppConfig } from './app-config.js';
 import { startAccount } from './account.js';
+import { startFiles, stopFiles } from './files.js';
 
 function setChatSideVisible(visible) {
   const chatSide = document.getElementById('chat-side');
@@ -134,7 +135,17 @@ export function initTabs() {
       stopAutoAgent();
       stopAgents();
       stopAppConfig();
+      stopFiles();
       startAccount();
+    } else if (tabValue === 'files') {
+      stopStream();
+      stopLoop();
+      stopLoopVisual();
+      stopGithub();
+      stopAutoAgent();
+      stopAgents();
+      stopAppConfig();
+      startFiles();
     }
   }
 

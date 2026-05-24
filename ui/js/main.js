@@ -18,6 +18,7 @@ import { initAutoAgent } from './autoagent.js';
 import { initAgents } from './agents.js';
 import { initAppConfig } from './app-config.js';
 import { initAccount } from './account.js';
+import { initFiles } from './files.js';
 import { initChatResize } from './chatResize.js';
 import { isAuthenticated, showLeftOverlay, hideLeftOverlay } from './left-login.js';
 import './icons.js'; // auto-renders Lucide icons on DOM mutations
@@ -166,6 +167,7 @@ _anonReady.then(() => {
   _safeInit('initAgents',      initAgents);
   _safeInit('initAppConfig',   initAppConfig);
   _safeInit('initAccount',     initAccount);
+  _safeInit('initFiles',       initFiles);
   _safeInit('initSessions',    initSessions);
   _safeInit('initChatResize',  initChatResize);
 });
