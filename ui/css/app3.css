@@ -136,6 +136,39 @@
     border-color: #e0af68;
   }
 
+  .db-row-delete-th,
+  .db-row-delete-td {
+    width: 28px;
+    min-width: 28px;
+    max-width: 28px;
+    padding: 0;
+    text-align: center;
+    background: transparent;
+  }
+  .db-row-delete {
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    color: #565f89;
+    width: 22px;
+    height: 22px;
+    line-height: 18px;
+    text-align: center;
+    font-size: 12px;
+    cursor: pointer;
+    border-radius: 3px;
+    opacity: 0.45;
+    padding: 0;
+    transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .db-row:hover .db-row-delete,
+  .db-row-delete:hover {
+    opacity: 1;
+  }
+  .db-row-delete:hover {
+    color: #f7768e;
+    border-color: #f7768e;
+  }
+
   .db-table td, .db-table th {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1211,6 +1244,15 @@ body.light-mode .db-cell-edit {
 body.light-mode .db-cell-edit:hover {
   color: #d4873a;
   border-color: #d4873a;
+}
+body.light-mode .db-row-delete {
+  background: #fffaf5;
+  border-color: #ffdec4;
+  color: #cca08a;
+}
+body.light-mode .db-row-delete:hover {
+  color: #c0392b;
+  border-color: #c0392b;
 }
 body.light-mode .db-edit-input {
   background: #fffaf5;

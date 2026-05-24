@@ -427,7 +427,7 @@ function renderTableData(result, silent) {
       const existingRows = tbody.querySelectorAll('tr.db-row');
       for (let ri = 0; ri < result.rows.length && ri < existingRows.length; ri++) {
         const row = result.rows[ri];
-        const cells = existingRows[ri].querySelectorAll('td');
+        const cells = existingRows[ri].querySelectorAll('td.db-cell');
         for (let ci = 0; ci < displayCols.length && ci < cells.length; ci++) {
           const col = displayCols[ci];
           const val = row[col];
@@ -466,6 +466,8 @@ function renderTableData(result, silent) {
 
   // Header row — column names clickable to open filter popup
   html += '<tr>';
+  // Leading column for per-row delete buttons
+  html += '<th class="db-th db-row-delete-th"></th>';
   for (const col of displayCols) {
     const w = getColWidth(result.table, col);
     const style = w ? ` style="width:${w};min-width:${w};max-width:${w}"` : '';
@@ -503,6 +505,7 @@ function renderTableData(result, silent) {
     const isInteractions = result.table === 'interactions';
     const trStyle = isInteractions ? ' style="height:100px"' : '';
     html += `<tr class="${rowClass}" data-ri="${ri}"${trStyle}>`;
+    html += `<td class="db-row-delete-td"><button class="db-row-delete" data-ri="${ri}" title="Delete row">🗑</button></td>`;
     for (const col of displayCols) {
       const val = row[col];
       const w = getColWidth(result.table, col);
@@ -517,7 +520,7 @@ function renderTableData(result, silent) {
       </td>`;
     }
     html += '</tr>';
-    html += `<tr class="db-row-resize-row" data-ri="${ri}"><td colspan="${displayCols.length}" class="db-row-resize-td"><div class="db-row-resize-handle" data-ri="${ri}"></div></td></tr>`;
+    html += `<tr class="db-row-resize-row" data-ri="${ri}"><td colspan="${displayCols.length + 1}" class="db-row-resize-td"><div class="db-row-resize-handle" data-ri="${ri}"></div></td></tr>`;
   }
   html += '</tbody></table>';
   data.innerHTML = html;
