@@ -1,5 +1,6 @@
 {
   "id": "integration-admin-agent",
+  "version": 1,
   "name": "Integration Admin",
   "description": "Creates and modifies third-party integration modules (app/integrations/*_tools.py) and OAuth credentials. Admin-only.",
   "icon": "🧩",

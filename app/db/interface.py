@@ -422,11 +422,25 @@ class StorageBackend(ABC):
         ...
 
     @abstractmethod
-    async def seed_agent_templates(self) -> int:
+    async def seed_agent_templates(self, force: bool = False) -> dict:
         """
-        Re-seed agent_templates from app/context/agents/*.json.
-        Upserts all template rows so JSON changes take effect.
-        Returns the number of templates seeded.
+        Re-seed agent_templates + agent_prompt_templates from app/context/agents/*.json.
+
+        Behavior:
+          - Computes a manifest hash over the JSON files.
+          - If hash matches app_meta['last_agent_manifest_hash'] AND force is False,
+            returns immediately with cached=True (no DB writes).
+          - Otherwise per-template per-slot upserts respecting the source guard:
+            existing rows with source='admin' are skipped unless force=True.
+
+        Returns a summary dict:
+            {
+              "changed": int,         # slot rows inserted/updated
+              "skipped_admin": int,   # admin-sourced rows left alone
+              "templates": int,       # config rows upserted
+              "cached": bool,         # whether the manifest short-circuit fired
+              "manifest_hash": str,
+            }
         """
         ...
 
@@ -620,6 +634,26 @@ class StorageBackend(ABC):
         """
         Create a new custom agent for a user, cloned from the default template.
         Returns the new agents row as a dict (with source='custom').
+        """
+        ...
+
+    @abstractmethod
+    async def save_agent_as_template(
+        self,
+        agent_id: str,
+        template_id: str,
+        name: str,
+        description: str = "",
+        icon: str = "",
+        discoverable: bool = False,
+        access_level: str = "all",
+        updated_by: str = "admin",
+    ) -> dict:
+        """
+        Snapshot a custom agent's config + admin-base prompt slots into a new
+        agent_templates row plus matching agent_prompt_templates rows
+        (source='admin' so JSON re-seed won't clobber them).
+        Raises ValueError if the agent is missing or template_id already exists.
         """
         ...
 

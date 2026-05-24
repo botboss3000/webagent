@@ -611,10 +611,116 @@ function wireStreamBuffer() {
 
 // ── Public entry ────────────────────────────────────────────────────────────
 
+// ── Agent Prompt Templates panel ───────────────────────────────────────────
+//
+// Renders #ac-tpl-* widgets in the Storage section. Talks to
+// /admin/db/templates (GET) and /admin/db/templates/seed[-force] (POST).
+
+function _esc(s) {
+  const d = document.createElement('div');
+  d.appendChild(document.createTextNode(s == null ? '' : String(s)));
+  return d.innerHTML;
+}
+
+async function loadTemplatePanel() {
+  const listEl   = qs('ac-tpl-list');
+  const badgeEl  = qs('ac-tpl-sync-badge');
+  const hashRow  = qs('ac-tpl-hash-row');
+  if (!listEl) return;
+  try {
+    const r = await fetch(apiPath('/admin/db/templates'));
+    if (!r.ok) {
+      listEl.innerHTML = `<div class="ac-hint" style="color:var(--danger);">Failed: HTTP ${r.status}</div>`;
+      if (badgeEl) { badgeEl.textContent = 'error'; badgeEl.style.color = 'var(--danger)'; }
+      return;
+    }
+    const data = await r.json();
+    if (badgeEl) {
+      badgeEl.textContent = data.in_sync ? 'in sync with JSON' : 'JSON changed — re-seed pending';
+      badgeEl.style.color = data.in_sync ? 'var(--success)' : '#e0af68';
+    }
+    if (hashRow) {
+      const cur = (data.current_manifest_hash || '').slice(0, 12);
+      const sto = (data.stored_manifest_hash  || '').slice(0, 12) || '(none)';
+      hashRow.textContent = `JSON manifest: ${cur} · stored: ${sto}`;
+    }
+    const templates = data.templates || [];
+    if (!templates.length) {
+      listEl.innerHTML = `<div class="ac-hint">No templates seeded yet — click Re-Seed.</div>`;
+      return;
+    }
+    listEl.innerHTML = templates.map(t => {
+      const adminBadge = t.admin_edited_slots > 0
+        ? `<span style="background:#bb9af7;color:var(--bg-0);font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px;">${t.admin_edited_slots} admin-edited</span>`
+        : '';
+      const slotPills = (t.slots || []).map(s => {
+        const color = s.source === 'admin' ? '#bb9af7' : 'var(--muted)';
+        return `<span style="font-size:10px;color:${color};margin-right:8px;">${_esc(s.slot_name)} v${s.version}</span>`;
+      }).join('');
+      return `
+        <div style="border:1px solid var(--border);border-radius:6px;padding:8px 10px;background:var(--bg-elev);">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <strong style="font-size:12px;">${_esc(t.name)}</strong>
+            <span style="font-size:10px;color:var(--muted);">${_esc(t.id)}</span>
+            ${adminBadge}
+            <span style="margin-left:auto;font-size:10px;color:var(--muted);">${t.slot_count} slots · v${t.min_version}${t.min_version !== t.max_version ? '–v' + t.max_version : ''}</span>
+          </div>
+          <div style="margin-top:6px;">${slotPills}</div>
+        </div>`;
+    }).join('');
+  } catch (e) {
+    listEl.innerHTML = `<div class="ac-hint" style="color:var(--danger);">Load failed: ${_esc(e.message || e)}</div>`;
+    if (badgeEl) { badgeEl.textContent = 'error'; badgeEl.style.color = 'var(--danger)'; }
+  }
+}
+
+async function runTemplateSeed(force) {
+  const outEl = qs('ac-tpl-output');
+  if (force) {
+    const ok = window.confirm(
+      'Force Re-Seed will OVERWRITE any agent_prompt_templates rows that were edited via the admin UI ' +
+      '(source = admin). Their content + version will be reset to the on-disk JSON values.\n\n' +
+      'Continue?'
+    );
+    if (!ok) return;
+  }
+  try {
+    const r = await fetch(apiPath(force ? '/admin/db/templates/seed-force' : '/admin/db/templates/seed'), {
+      method: 'POST',
+    });
+    const body = await r.json().catch(() => ({}));
+    if (outEl) {
+      outEl.style.display = 'block';
+      outEl.style.color = r.ok ? '' : 'var(--danger)';
+      outEl.textContent = JSON.stringify(body, null, 2);
+    }
+  } catch (e) {
+    if (outEl) {
+      outEl.style.display = 'block';
+      outEl.style.color = 'var(--danger)';
+      outEl.textContent = `Request failed: ${e.message || e}`;
+    }
+  }
+  await loadTemplatePanel();
+}
+
+function wireTemplatePanel() {
+  const refresh = qs('ac-tpl-refresh-btn');
+  const seed    = qs('ac-tpl-seed-btn');
+  const force   = qs('ac-tpl-seed-force-btn');
+  if (refresh) refresh.addEventListener('click', () => loadTemplatePanel());
+  if (seed)    seed.addEventListener('click',    () => runTemplateSeed(false));
+  if (force)   force.addEventListener('click',   () => runTemplateSeed(true));
+}
+
+
+// ── Public entry ────────────────────────────────────────────────────────────
+
 export function initStorageUi() {
   PAGE = bindMount('ac-storage-');
   wire(PAGE);
   wireStreamBuffer();
+  wireTemplatePanel();
 
   if (PAGE) {
     renderNotes(PAGE.dbNotes, DB_NOTES, PAGE.provider && PAGE.provider.value);
@@ -630,6 +736,7 @@ export function initStorageUi() {
         loadTenants(PAGE);
       }
       loadStreamBufferSetting();
+      loadTemplatePanel();
     };
     setTimeout(() => { try { window.__refreshStorageSection(); } catch {} }, 200);
   }

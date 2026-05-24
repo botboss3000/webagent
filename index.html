@@ -2112,6 +2112,26 @@
               </div>
             </div>
 
+            <!-- ── Agent Prompt Templates ── -->
+            <div class="ac-card">
+              <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
+                <i data-lucide="file-stack" class="lucide-icon" style="width:14px;height:14px;color:#9ece6a;"></i>
+                Agent Prompt Templates
+                <span id="ac-tpl-sync-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+              </div>
+              <div class="ac-hint" style="margin-top:8px;">
+                Templates seed from <code>app/context/agents/*.json</code> at boot. Re-seed never overwrites slots edited from the admin UI (<code>source = admin</code>) unless you click <strong>Force Re-Seed</strong>.
+              </div>
+              <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">
+                <button id="ac-tpl-refresh-btn" class="ac-btn">Refresh</button>
+                <button id="ac-tpl-seed-btn" class="ac-btn ac-btn-primary">Re-Seed from JSON</button>
+                <button id="ac-tpl-seed-force-btn" class="ac-btn" style="border-color:#f7768e;color:#f7768e;">Force Re-Seed (overwrite admin)</button>
+              </div>
+              <div id="ac-tpl-hash-row" class="ac-hint" style="margin-top:8px;font-family:var(--mono,monospace);font-size:10px;word-break:break-all;"></div>
+              <div id="ac-tpl-list" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;"></div>
+              <pre id="ac-tpl-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:240px;overflow-y:auto;display:none;"></pre>
+            </div>
+
             <!-- ── Data Migration ── -->
             <details class="ac-card">
               <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;font-weight:600;">
