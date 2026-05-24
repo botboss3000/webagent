@@ -391,6 +391,7 @@ function _populateAgentTabBar(tabBar, agent, panel) {
   const tabs = [['config','Config'],['tools','Tools'],['test','Agent Loop'],['connections','Abilities']];
   if (state?.automationEnabled) tabs.push(['automation','Automation']);
   if (_userIsAdmin) tabs.push(['members','Members']);
+  tabs.push(['monetization','Monetization']);
   for (const [key, label] of tabs) {
     const btn = document.createElement('button');
     btn.className = 'agents-detail-tab' + (activeTab === key ? ' active' : '');
@@ -541,6 +542,14 @@ function _renderPanelBody(agent, panelEl) {
   else if (tab === 'connections')  _renderConnectionsTab(body, agent);
   else if (tab === 'automation')   _renderAutomationTab(body, agent, panelEl);
   else if (tab === 'members')      _renderMembersTab(body, agent);
+  else if (tab === 'monetization') {
+    // Defer to the billing module (loaded as a separate script).
+    if (window.AppBilling && typeof window.AppBilling.renderMonetizationPanel === 'function') {
+      window.AppBilling.renderMonetizationPanel(`agent:${agent.id}`, body, { agentId: agent.id });
+    } else {
+      body.innerHTML = '<div style="padding:12px;color:var(--fg-3);">Billing module not loaded.</div>';
+    }
+  }
 }
 
 // ── Automation tab ────────────────────────────────────────────────────────────

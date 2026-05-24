@@ -16,6 +16,7 @@ import { registerSessionApi, initSessions } from './sessions.js';
 import { initGithub } from './github.js';
 import { initAutoAgent } from './autoagent.js';
 import { initAgents } from './agents.js';
+import { initBilling } from './billing.js';
 import { initAppConfig } from './app-config.js';
 import { initAccount } from './account.js';
 import { initChatResize } from './chatResize.js';
@@ -164,6 +165,7 @@ _anonReady.then(() => {
   _safeInit('initGithub',      initGithub);
   _safeInit('initAutoAgent',   initAutoAgent);
   _safeInit('initAgents',      initAgents);
+  _safeInit('initBilling',     initBilling);
   _safeInit('initAppConfig',   initAppConfig);
   _safeInit('initAccount',     initAccount);
   _safeInit('initSessions',    initSessions);

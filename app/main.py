@@ -70,6 +70,7 @@ from app.admin.scheduler_config import router as scheduler_admin_router
 from app.api.agents import router as agents_router
 from app.api.data_sources import router as data_sources_router
 from app.admin.users import router as admin_users_router
+from app.api.billing import router as billing_router
 
 # ── Auth ──
 from app.auth import router as auth_router
@@ -213,6 +214,7 @@ app.include_router(scheduler_admin_router)
 app.include_router(agents_router)
 app.include_router(data_sources_router)
 app.include_router(admin_users_router)
+app.include_router(billing_router)
 
 # Register auth router
 app.include_router(auth_router)
