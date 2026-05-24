@@ -783,12 +783,15 @@ class SupabaseBackend(StorageBackend):
     # ---- Agent Assignment ----
 
     async def get_agent_for_user(self, user_id: str) -> Optional[dict]:
+        # Returns any agent the user owns (oldest first). There is no longer
+        # a "default agent" concept — callers that need a specific agent
+        # should pass agent_id explicitly.
         try:
             res = (
                 self._client.table("agents")
                 .select("*")
-                .eq("is_user_default", True)
                 .contains("admin_users", [user_id])
+                .order("created_at", desc=False)
                 .limit(1)
                 .execute()
             )
@@ -828,8 +831,8 @@ class SupabaseBackend(StorageBackend):
                 .select(
                     "*, context(id, context_type, title, content, tags, created_at, updated_at)"
                 )
-                .eq("is_user_default", True)
                 .contains("admin_users", [user_id])
+                .order("created_at", desc=False)
                 .limit(1)
             )
             if context_types:

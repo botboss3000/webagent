@@ -2987,16 +2987,16 @@ class LocalBackend(StorageBackend):
             conn.close()
     
     async def get_agent_for_user(self, user_id: str) -> Optional[dict]:
-        default_id = await self.get_user_default_agent_id(user_id)
-        if default_id:
-            agent = await self.get_agent_by_id(default_id)
-            if agent:
-                return agent
+        # Returns any agent the user owns (oldest first). There is no longer
+        # a "default agent" concept — callers that need a specific agent
+        # should pass agent_id explicitly. This is a fallback for non-web
+        # entry points (webhooks, comms processors) that need *some* agent.
         conn = self._get_conn()
         try:
             row = conn.execute(
-                """SELECT * FROM agents WHERE is_user_default = 1
-                   AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?) LIMIT 1""", (user_id,)
+                """SELECT * FROM agents
+                   WHERE EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)
+                   ORDER BY created_at ASC LIMIT 1""", (user_id,)
             ).fetchone()
             return dict(row) if row else None
         finally:
@@ -3017,12 +3017,13 @@ class LocalBackend(StorageBackend):
         user_id: str,
         context_types: Optional[List[str]] = None,
     ) -> Optional[dict]:
-        """Fetch the user's default agent + its resolved prompt slots."""
+        """Fetch any agent owned by the user (oldest first) + resolved prompt slots."""
         conn = self._get_conn()
         try:
             row = conn.execute(
-                """SELECT * FROM agents WHERE is_user_default = 1
-                   AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?) LIMIT 1""",
+                """SELECT * FROM agents
+                   WHERE EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)
+                   ORDER BY created_at ASC LIMIT 1""",
                 (user_id,)
             ).fetchone()
             if not row:

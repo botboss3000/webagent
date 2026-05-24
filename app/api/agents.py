@@ -12,7 +12,6 @@ POST /api/v1/agents                     — create a new custom agent (cloned fr
 GET  /api/v1/agents/{agent_id}          — get a single custom agent
 PUT  /api/v1/agents/{agent_id}          — update editable fields on a custom agent
 DELETE /api/v1/agents/{agent_id}        — delete a custom agent
-POST /api/v1/agents/{agent_id}/set-default — set as the user's default agent
 GET  /api/v1/agents/templates           — list agent templates (for tool breakdown display)
 POST /api/v1/agents/test                — run a test message through an agent config
 GET  /api/v1/agents/{agent_id}/members  — list agent admins + members with stats (agent admin only)
@@ -96,10 +95,6 @@ class UpsertConnectionRequest(BaseModel):
 
 class AnonSessionRequest(BaseModel):
     browser_id: Optional[str] = None
-
-
-class SetDefaultRequest(BaseModel):
-    user_id: str
 
 
 class TestAgentRequest(BaseModel):
@@ -859,28 +854,6 @@ async def delete_agent(agent_id: str, user_id: str = Query(...)):
     if not deleted:
         raise HTTPException(status_code=404, detail="Agent not found, not owned by this user, or is a system agent.")
     return {"deleted": True, "agent_id": agent_id}
-
-
-@router.post("/agents/{agent_id}/set-default")
-async def set_default_agent(agent_id: str, req: SetDefaultRequest):
-    """
-    Set the user's default agent.
-    agent_id may be a template id (e.g. 'default') or a custom agents.id UUID.
-    Only agents with can_be_default=true may be set as default.
-    """
-    db = get_db()
-    # Verify the agent exists and can_be_default
-    agents = await db.list_agents_for_user(req.user_id, include_admin=await db.is_user_admin(req.user_id))
-    target = next((a for a in agents if a.get("id") == agent_id), None)
-    if not target:
-        raise HTTPException(status_code=404, detail="Agent not found or not accessible to this user.")
-    if not target.get("can_be_default", True):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Agent '{target.get('name', agent_id)}' cannot be set as the default agent.",
-        )
-    await db.set_user_default_agent(req.user_id, agent_id)
-    return {"default_agent_id": agent_id}
 
 
 @router.post("/agents/test")
