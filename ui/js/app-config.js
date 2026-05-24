@@ -1345,19 +1345,78 @@ function _bindUri(btn, getText) {
   });
 }
 
+// Returns [uri] for hosts where only one variant makes sense (localhost, IPs,
+// single-label hosts) and [uri, alt] for real domains, toggling the `www.`
+// prefix. Used so the OAuth setup UI prompts the user to register BOTH apex
+// and www callback URIs with the provider — otherwise sign-in fails for
+// whichever host they didn't register.
+function _hostVariants(uri) {
+  if (!uri) return [];
+  let parsed;
+  try { parsed = new URL(uri); } catch { return [uri]; }
+  const host = parsed.host;
+  let altHost = '';
+  if (host.startsWith('www.')) {
+    altHost = host.slice(4);
+  } else if (host.includes('.') && !host.startsWith('localhost') && !/^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/.test(host)) {
+    altHost = 'www.' + host;
+  }
+  if (!altHost || altHost === host) return [uri];
+  const altUri = `${parsed.protocol}//${altHost}${parsed.pathname}${parsed.search}${parsed.hash}`;
+  return [uri, altUri];
+}
+
 // Attaches (or updates) a Lucide copy button next to a redirect-URI <code> element.
 // Inline variant (no display:block): button inserted as sibling, parent becomes flex.
 // Block variant (display:block): <code> becomes flex row [text-span][copy-btn].
+// Multi-variant (apex + www): <code> becomes flex column with one row per URI.
 function _attachUriCopy(codeEl, uri) {
   if (!codeEl) return;
+  const variants = _hostVariants(uri);
+
+  // Multi-variant: clear & rebuild as a stacked list, one row per URI.
+  if (variants.length > 1) {
+    // Remove any orphan sibling copy button left over from a prior single-variant render.
+    const sib = codeEl.nextElementSibling;
+    if (sib && sib.classList && sib.classList.contains('ac-uri-copy-btn')) sib.remove();
+    codeEl.innerHTML = '';
+    codeEl.dataset.uriCopy = 'multi';
+    codeEl.style.display = 'flex';
+    codeEl.style.flexDirection = 'column';
+    codeEl.style.alignItems = 'stretch';
+    codeEl.style.gap = '4px';
+    variants.forEach(v => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;';
+      const span = document.createElement('span');
+      span.style.wordBreak = 'break-all';
+      span.textContent = v;
+      const btn = _makeCopyBtn();
+      _bindUri(btn, () => span.textContent);
+      row.appendChild(span);
+      row.appendChild(btn);
+      codeEl.appendChild(row);
+    });
+    return;
+  }
+
+  // Single-variant: original behavior, with cleanup if we previously rendered multi.
+  const single = variants[0] || '';
+  if (codeEl.dataset.uriCopy === 'multi') {
+    codeEl.innerHTML = '';
+    codeEl.dataset.uriCopy = '';
+    codeEl.style.flexDirection = '';
+    codeEl.style.alignItems = '';
+    codeEl.style.gap = '';
+  }
 
   if (codeEl.dataset.uriCopy === 'block') {
-    codeEl.querySelector('.ac-uri-text').textContent = uri;
+    codeEl.querySelector('.ac-uri-text').textContent = single;
     return;
   }
 
   if (codeEl.dataset.uriCopy === 'inline') {
-    codeEl.textContent = uri;
+    codeEl.textContent = single;
     return;
   }
 
@@ -1370,14 +1429,14 @@ function _attachUriCopy(codeEl, uri) {
     const span = document.createElement('span');
     span.className = 'ac-uri-text';
     span.style.wordBreak = 'break-all';
-    span.textContent = uri;
+    span.textContent = single;
     codeEl.appendChild(span);
     const btn = _makeCopyBtn();
     codeEl.appendChild(btn);
     _bindUri(btn, () => span.textContent);
   } else {
     codeEl.dataset.uriCopy = 'inline';
-    codeEl.textContent = uri;
+    codeEl.textContent = single;
     const btn = _makeCopyBtn();
     codeEl.insertAdjacentElement('afterend', btn);
     _bindUri(btn, () => codeEl.textContent);
