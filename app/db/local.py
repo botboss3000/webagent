@@ -767,6 +767,167 @@ CREATE TABLE IF NOT EXISTS tenant_key_meta (
 CREATE INDEX IF NOT EXISTS idx_tenant_key_meta_active
     ON tenant_key_meta(user_id, status);
 
+-- ============================================================
+-- Billing / monetization tables
+-- ============================================================
+
+-- Pricing config keyed by scope: 'platform' (one row) or 'agent:<id>'.
+CREATE TABLE IF NOT EXISTS billing_configs (
+    scope                      TEXT    PRIMARY KEY,
+    strategy                   TEXT    NOT NULL DEFAULT 'free'
+        CHECK (strategy IN ('free','credits','per_message','per_token','subscription','trial')),
+    allowed_strategies         TEXT    NOT NULL DEFAULT '[]',
+    allowed_processors         TEXT    NOT NULL DEFAULT '[]',
+    rate_card_default_llm      TEXT    NOT NULL DEFAULT '{}',
+    rate_card_byo_llm          TEXT    NOT NULL DEFAULT '{}',
+    platform_fee_pct           REAL    NOT NULL DEFAULT 0,
+    platform_fee_flat_cents    INTEGER NOT NULL DEFAULT 0,
+    trial_config               TEXT    NOT NULL DEFAULT '{}',
+    subscription_price_cents   INTEGER NOT NULL DEFAULT 0,
+    currency                   TEXT    NOT NULL DEFAULT 'usd',
+    created_at                 TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at                 TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_by                 TEXT
+);
+
+-- Per-LLM-call usage + billing record. Always inserted, even for free/exempt
+-- chats (with zero amounts and is_exempt=1) so admins see full traffic.
+CREATE TABLE IF NOT EXISTS usage_events (
+    id                          TEXT PRIMARY KEY,
+    agent_id                    TEXT NOT NULL,
+    user_id                     TEXT NOT NULL,
+    interaction_id              TEXT,
+    input_tokens                INTEGER NOT NULL DEFAULT 0,
+    output_tokens               INTEGER NOT NULL DEFAULT 0,
+    provider_cost_cents         INTEGER NOT NULL DEFAULT 0,
+    end_user_charge_cents       INTEGER NOT NULL DEFAULT 0,
+    platform_fee_cents          INTEGER NOT NULL DEFAULT 0,
+    agent_admin_earnings_cents  INTEGER NOT NULL DEFAULT 0,
+    strategy                    TEXT NOT NULL DEFAULT 'free',
+    is_byo_llm                  INTEGER NOT NULL DEFAULT 0,
+    is_trial                    INTEGER NOT NULL DEFAULT 0,
+    is_exempt                   INTEGER NOT NULL DEFAULT 0,
+    created_at                  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_events_agent_created
+    ON usage_events(agent_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_usage_events_user_created
+    ON usage_events(user_id, created_at);
+
+-- Credit wallets. owner_type='user' for end-user purchased credits;
+-- owner_type='agent_admin' for informational earnings (real money lives in
+-- the payment processor's connected account).
+CREATE TABLE IF NOT EXISTS wallets (
+    id            TEXT PRIMARY KEY,
+    owner_type    TEXT NOT NULL CHECK (owner_type IN ('user','agent_admin')),
+    owner_id      TEXT NOT NULL,
+    balance_cents INTEGER NOT NULL DEFAULT 0,
+    hold_cents    INTEGER NOT NULL DEFAULT 0,
+    currency      TEXT NOT NULL DEFAULT 'usd',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(owner_type, owner_id, currency)
+);
+
+-- Immutable ledger of every wallet movement.
+CREATE TABLE IF NOT EXISTS wallet_transactions (
+    id          TEXT PRIMARY KEY,
+    wallet_id   TEXT NOT NULL,
+    delta_cents INTEGER NOT NULL,
+    kind        TEXT NOT NULL CHECK (kind IN
+        ('purchase','usage','refund','platform_fee','earnings','hold','release')),
+    ref_id      TEXT,
+    note        TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_wallet_tx_wallet ON wallet_transactions(wallet_id);
+
+-- One subscription per (user, agent). Processor is whichever the user paid via.
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id                       TEXT PRIMARY KEY,
+    user_id                  TEXT NOT NULL,
+    agent_id                 TEXT NOT NULL,
+    processor                TEXT NOT NULL,
+    external_subscription_id TEXT,
+    status                   TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending','active','past_due','cancelled','expired')),
+    current_period_end       TEXT,
+    created_at               TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at               TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_agent ON subscriptions(agent_id);
+
+-- One trial allotment per (user, agent). Counters decrement on use.
+CREATE TABLE IF NOT EXISTS trials (
+    id                  TEXT PRIMARY KEY,
+    user_id             TEXT NOT NULL,
+    agent_id            TEXT NOT NULL,
+    started_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at          TEXT,
+    messages_remaining  INTEGER,
+    tokens_remaining    INTEGER,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_trials_user_agent ON trials(user_id, agent_id);
+
+-- Per-agent-admin onboarding state for each payment processor.
+CREATE TABLE IF NOT EXISTS payment_accounts (
+    user_id              TEXT NOT NULL,
+    processor            TEXT NOT NULL,
+    external_account_id  TEXT,
+    onboarding_complete  INTEGER NOT NULL DEFAULT 0,
+    metadata             TEXT NOT NULL DEFAULT '{}',
+    created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, processor)
+);
+
+-- Source of truth for inbound payments. Webhook handlers write here.
+CREATE TABLE IF NOT EXISTS payments (
+    id                  TEXT PRIMARY KEY,
+    processor           TEXT NOT NULL,
+    external_payment_id TEXT,
+    user_id             TEXT NOT NULL,
+    agent_id            TEXT,
+    amount_cents        INTEGER NOT NULL DEFAULT 0,
+    currency            TEXT NOT NULL DEFAULT 'usd',
+    kind                TEXT NOT NULL CHECK (kind IN ('purchase','subscription','one_off')),
+    status              TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending','completed','failed','refunded')),
+    metadata            TEXT NOT NULL DEFAULT '{}',
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id);
+CREATE INDEX IF NOT EXISTS idx_payments_external
+    ON payments(processor, external_payment_id);
+
+-- Exemption rules. Three kinds:
+--   'agent'          — whole agent is free   (agent_id set, user_id NULL)
+--   'user'           — user is exempt across all agents (user_id set, agent_id NULL)
+--   'user_for_agent' — user is exempt for one agent     (both set)
+CREATE TABLE IF NOT EXISTS billing_exemptions (
+    id                  TEXT PRIMARY KEY,
+    kind                TEXT NOT NULL CHECK (kind IN ('agent','user','user_for_agent')),
+    agent_id            TEXT,
+    user_id             TEXT,
+    granted_by_user_id  TEXT,
+    reason              TEXT,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_exemptions_agent ON billing_exemptions(agent_id);
+CREATE INDEX IF NOT EXISTS idx_exemptions_user  ON billing_exemptions(user_id);
+CREATE INDEX IF NOT EXISTS idx_exemptions_kind  ON billing_exemptions(kind);
+
 """
 
 

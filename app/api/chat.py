@@ -25,6 +25,7 @@ from app.agent.session_history import build_openai_history_from_session
 from app.agent.run_buffer import get_registry as get_run_buffer_registry
 from app.optimizer.runner import run_optimizer_async
 from app.agent import trigger_index
+from app.billing.enforcement import check_access as billing_check_access
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
@@ -78,7 +79,22 @@ async def _enforce_agent_access_policy(db, agent: dict, user_id: str) -> None:
     if mode == "authorized":
         if user_id not in (roles.get("authorized_users") or []):
             raise HTTPException(status_code=403, detail="This agent requires admin authorization for new users.")
+
+
+async def _enforce_billing_access(db, agent: dict, user_id: str) -> None:
+    """Gate chat on billing state — credits, subscription, or trial.
+
+    Agents with no billing config (or strategy='free', or where the user is
+    exempt) pass through. Otherwise we raise HTTP 402 with a structured
+    reason so the frontend can show the right paywall."""
+    try:
+        decision = await billing_check_access(agent, user_id, db)
+    except Exception as e:
+        logger.debug("billing access check failed (allowing): %s", e)
         return
+    if decision.allow:
+        return
+    raise HTTPException(status_code=402, detail=decision.to_dict())
 
 
 async def _ensure_session(db, user_id: str, session_id: str, title: str = None) -> None:
@@ -337,6 +353,7 @@ async def chat(request: ChatRequest, fastapi_request: Request):
 
         # ── Agent access policy enforcement ──
         await _enforce_agent_access_policy(db, agent, request.user_id)
+        await _enforce_billing_access(db, agent, request.user_id)
 
         # ── Participants enforcement ──
         # Ensure the user and agent are registered as participants
@@ -766,6 +783,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
 
     # ── Agent access policy enforcement ──
     await _enforce_agent_access_policy(db, agent, request.user_id)
+    await _enforce_billing_access(db, agent, request.user_id)
 
     # -- Bind session to agent --
     existing_agent_id = await db.get_session_agent_id(request.session_id)

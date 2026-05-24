@@ -28,6 +28,8 @@ from app.agent.loop_executor import LoopConfig
 from app.db import get_db
 from app.db.system_prompt_fragments import get_prompt_fragments
 from app.optimizer.runner import run_optimizer_async
+from app.billing import pricing as _billing_pricing
+from app.billing import wallet as _billing_wallet
 
 
 def _fire_optimizer(user_id: str, session_id: str, channel: Optional[str] = None) -> None:
@@ -409,6 +411,154 @@ async def _race_llm_calls(
         "output_tokens": final_output_tokens,
         "cost": final_cost,
     }
+
+
+async def _record_billing_usage(
+    db: Any,
+    agent_id: str,
+    user_id: str,
+    input_tokens: Optional[int],
+    output_tokens: Optional[int],
+    llm_cost: Optional[float],
+    interaction_id: Optional[str] = None,
+) -> Optional[dict]:
+    """Compute the per-call charge, write a usage_events row, and debit the
+    user's credit wallet when applicable.
+
+    Returns the ChargeResult as a dict for callers that want to emit it to
+    the event stream, or None on failure / when billing tables don't exist.
+    Silent-failure-friendly: any exception is logged and swallowed so the
+    chat continues working even if billing is misconfigured."""
+    if not agent_id or not user_id:
+        return None
+    try:
+        agent = await db.get_agent_by_id(agent_id)
+        if not agent:
+            return None
+        provider_cents = int(round((llm_cost or 0) * 100)) if llm_cost else 0
+        usage = _billing_pricing.Usage(
+            input_tokens=int(input_tokens or 0),
+            output_tokens=int(output_tokens or 0),
+            provider_cost_cents=provider_cents,
+            message_count=1,
+        )
+        result = await _billing_pricing.resolve_charge(agent, user_id, usage, db)
+
+        # Insert usage_events row (always, even free/exempt, for visibility)
+        import uuid as _uuid
+        try:
+            if hasattr(db, "_get_conn"):
+                conn = db._get_conn()
+                try:
+                    conn.execute(
+                        "INSERT INTO usage_events ("
+                        "id, agent_id, user_id, interaction_id, input_tokens, output_tokens, "
+                        "provider_cost_cents, end_user_charge_cents, platform_fee_cents, "
+                        "agent_admin_earnings_cents, strategy, is_byo_llm, is_trial, is_exempt"
+                        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            str(_uuid.uuid4()), agent_id, user_id, interaction_id,
+                            usage.input_tokens, usage.output_tokens, provider_cents,
+                            result.end_user_charge_cents, result.platform_fee_cents,
+                            result.agent_admin_earnings_cents, result.strategy,
+                            1 if result.is_byo_llm else 0,
+                            1 if result.is_trial else 0,
+                            1 if result.is_exempt else 0,
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            elif hasattr(db, "get_raw_client"):
+                db.get_raw_client().table("usage_events").insert({
+                    "id": str(_uuid.uuid4()),
+                    "agent_id": agent_id,
+                    "user_id": user_id,
+                    "interaction_id": interaction_id,
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "provider_cost_cents": provider_cents,
+                    "end_user_charge_cents": result.end_user_charge_cents,
+                    "platform_fee_cents": result.platform_fee_cents,
+                    "agent_admin_earnings_cents": result.agent_admin_earnings_cents,
+                    "strategy": result.strategy,
+                    "is_byo_llm": 1 if result.is_byo_llm else 0,
+                    "is_trial": 1 if result.is_trial else 0,
+                    "is_exempt": 1 if result.is_exempt else 0,
+                }).execute()
+        except Exception as e:
+            logger.debug("usage_events insert skipped: %s", e)
+
+        # Debit the user's wallet for credit-based strategies
+        if (
+            result.end_user_charge_cents > 0
+            and not result.is_exempt
+            and not result.is_trial
+            and result.strategy in ("credits", "per_message", "per_token")
+        ):
+            try:
+                await _billing_wallet.credit(
+                    db,
+                    owner_type="user",
+                    owner_id=user_id,
+                    amount_cents=-result.end_user_charge_cents,
+                    kind="usage",
+                    ref_id=interaction_id,
+                    note=f"agent:{agent_id}",
+                )
+            except Exception as e:
+                logger.debug("wallet debit skipped: %s", e)
+
+        # Decrement trial counters if applicable
+        if result.is_trial:
+            try:
+                if hasattr(db, "_get_conn"):
+                    conn = db._get_conn()
+                    try:
+                        conn.execute(
+                            "UPDATE trials SET messages_remaining = "
+                            "CASE WHEN messages_remaining IS NULL THEN NULL ELSE messages_remaining - 1 END, "
+                            "tokens_remaining = CASE WHEN tokens_remaining IS NULL THEN NULL "
+                            "ELSE tokens_remaining - ? END "
+                            "WHERE user_id=? AND agent_id=?",
+                            (usage.input_tokens + usage.output_tokens, user_id, agent_id),
+                        )
+                        conn.commit()
+                    finally:
+                        conn.close()
+            except Exception as e:
+                logger.debug("trial decrement skipped: %s", e)
+
+        # Credit the agent admin's earnings wallet (informational mirror)
+        if result.agent_admin_earnings_cents > 0:
+            try:
+                roles = await db.get_agent_roles(agent_id)
+                admins = roles.get("admin_users") or []
+                if admins:
+                    await _billing_wallet.credit(
+                        db,
+                        owner_type="agent_admin",
+                        owner_id=admins[0],
+                        amount_cents=result.agent_admin_earnings_cents,
+                        kind="earnings",
+                        ref_id=interaction_id,
+                        note=f"agent:{agent_id}",
+                    )
+            except Exception as e:
+                logger.debug("earnings credit skipped: %s", e)
+
+        return {
+            "end_user_charge_cents": result.end_user_charge_cents,
+            "platform_fee_cents": result.platform_fee_cents,
+            "agent_admin_earnings_cents": result.agent_admin_earnings_cents,
+            "strategy": result.strategy,
+            "is_byo_llm": result.is_byo_llm,
+            "is_trial": result.is_trial,
+            "is_exempt": result.is_exempt,
+        }
+    except Exception as e:
+        logger.debug("billing usage recording skipped: %s", e)
+        return None
 
 
 async def _check_interrupt(session_id: str, interrupt_event: Optional[asyncio.Event]):
@@ -981,6 +1131,14 @@ async def stream_agent_events(
                    "step": "llm_call_end", "duration_ms": llm_duration,
                    "input_tokens": input_tokens, "output_tokens": output_tokens,
                    "has_tool_calls": bool(tool_calls_data)}
+
+            # ── Billing: record usage + charge wallet (best-effort, never blocks chat) ──
+            _billing_event = await _record_billing_usage(
+                db, agent_id, user_id, input_tokens, output_tokens, llm_cost,
+                interaction_id=parent_interaction_id,
+            )
+            if _billing_event:
+                yield {"type": "billing", "level": "billing", **_billing_event}
 
             # ── Handle tool calls ──
             if collected_tool_calls:

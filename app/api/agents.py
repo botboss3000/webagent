@@ -238,7 +238,41 @@ async def create_agent(req: CreateAgentRequest):
         description=req.description or "",
         template_id=req.template_id or "default",
     )
+    # Platform admins' own agents are exempt from payment by default.
+    # The admin can delete the exemption later via /billing/exemptions if
+    # they want to charge for their own agent.
+    try:
+        if await db.is_user_admin(req.user_id):
+            await _maybe_auto_exempt_agent(db, agent["id"], req.user_id)
+    except Exception:
+        pass
     return {"agent": _safe_agent(agent)}
+
+
+async def _maybe_auto_exempt_agent(db, agent_id: str, granting_user_id: str) -> None:
+    """Insert a kind='agent' exemption if one doesn't already exist."""
+    if not hasattr(db, "_get_conn"):
+        return
+    import uuid as _uuid
+    conn = db._get_conn()
+    try:
+        existing = conn.execute(
+            "SELECT id FROM billing_exemptions WHERE kind='agent' AND agent_id=? LIMIT 1",
+            (agent_id,),
+        ).fetchone()
+        if existing:
+            return
+        conn.execute(
+            "INSERT INTO billing_exemptions (id, kind, agent_id, granted_by_user_id, reason) VALUES (?,?,?,?,?)",
+            (str(_uuid.uuid4()), "agent", agent_id, granting_user_id,
+             "auto: platform-admin-owned agent"),
+        )
+        conn.commit()
+    except Exception:
+        # Table may not exist yet pre-migration; safe to ignore.
+        pass
+    finally:
+        conn.close()
 
 
 @router.get("/agents/{agent_id}")
