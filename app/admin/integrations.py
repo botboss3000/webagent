@@ -32,10 +32,10 @@ import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse, urlunparse
 
 import httpx
-from fastapi import APIRouter, Header, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from jose import jwt as jose_jwt
 from pydantic import BaseModel
 
@@ -337,6 +337,87 @@ def _get_base_url(request: Optional[Request] = None) -> str:
     return "http://localhost:8000"
 
 
+# ── Per-provider stored redirect URI ──────────────────────────────────────
+
+async def get_stored_oauth_redirect_uri(service_key: str) -> Optional[str]:
+    """Return the admin-saved redirect URI for a provider, or None if unset.
+
+    Each provider's stored OAuth config can carry an explicit `redirect_uri`
+    chosen by the admin at setup time. That value is sent verbatim on the
+    OAuth flow so the registered URI at the provider matches no matter which
+    host the user originally arrived on. Returns None when the field isn't
+    present so callers can fall back to a request-derived default."""
+    try:
+        from app.db import get_db
+        db = get_db()
+        elem = await db.auth_element_get(_ADMIN_USER, service_key, "default")
+        if elem and elem.get("config"):
+            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
+            uri = (config or {}).get("redirect_uri") or ""
+            return uri.strip() or None
+    except Exception as e:
+        logger.debug("get_stored_oauth_redirect_uri(%s) failed: %s", service_key, e)
+    return None
+
+
+def _validate_oauth_redirect_uri(uri: str, expected_path: str) -> str:
+    """Validate an admin-entered redirect URI and return the normalized form.
+
+    Path is fixed (the FastAPI route the OAuth provider must hit); scheme is
+    locked to https (with an http exemption for localhost dev). Host is the
+    legitimate variable — only a presence check here; the UI shows a soft
+    warning when it differs from the admin's current host. Raises
+    HTTPException(400) on any failure so the admin sees the rejection in the
+    setup form."""
+    raw = (uri or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="redirect_uri must not be empty")
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        raise HTTPException(status_code=400, detail="redirect_uri is not a valid URL")
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise HTTPException(status_code=400, detail="redirect_uri must include a host")
+    is_loopback = host in ("localhost", "127.0.0.1", "::1")
+    if scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="redirect_uri must use https")
+    if scheme == "http" and not is_loopback:
+        raise HTTPException(status_code=400, detail="redirect_uri must use https")
+    path = parsed.path or ""
+    if path.endswith("/") and path != "/":
+        path = path.rstrip("/")
+    if path != expected_path:
+        raise HTTPException(
+            status_code=400,
+            detail=f"redirect_uri path must be {expected_path}",
+        )
+    if parsed.query:
+        raise HTTPException(status_code=400, detail="redirect_uri must not include a query string")
+    if parsed.fragment:
+        raise HTTPException(status_code=400, detail="redirect_uri must not include a fragment")
+    # Rebuild from validated components — lowercased scheme + host, original
+    # port + userinfo if any, normalized path, no query/fragment.
+    netloc = parsed.netloc
+    # Lowercase only the host portion of netloc, preserving any port.
+    if "@" in netloc or ":" in netloc.split("@")[-1]:
+        # Has userinfo or explicit port — recompose carefully.
+        userinfo = ""
+        if "@" in netloc:
+            userinfo, netloc = netloc.rsplit("@", 1)
+            userinfo += "@"
+        if ":" in netloc:
+            h, port = netloc.rsplit(":", 1)
+            netloc = f"{h.lower()}:{port}"
+        else:
+            netloc = netloc.lower()
+        netloc = userinfo + netloc
+    else:
+        netloc = netloc.lower()
+    return urlunparse((scheme, netloc, path, "", "", ""))
+
+
 # ── Generic state-token helpers ───────────────────────────────────────────
 
 def make_state_token(user_id: str, agent_id: str = "", provider: str = "google", **extra) -> str:
@@ -404,14 +485,17 @@ def get_google_creds_sync() -> tuple[str, str]:
     )
 
 
-def get_redirect_uri(request: Optional[Request] = None) -> str:
+async def get_redirect_uri(request: Optional[Request] = None) -> str:
+    stored = await get_stored_oauth_redirect_uri("google_oauth_config")
+    if stored:
+        return stored
     return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/google"
 
 
 async def build_google_authorize_url(user_id: str, agent_id: str = "", request: Optional[Request] = None) -> str:
     """Build the full Google OAuth authorization URL."""
     client_id, _ = await get_google_creds()
-    redirect_uri = get_redirect_uri(request)
+    redirect_uri = await get_redirect_uri(request)
     state = make_state_token(user_id, agent_id, provider="google")
     scopes = await _get_enabled_scopes("google_oauth_config", GOOGLE_SCOPES)
     params = {
@@ -469,14 +553,17 @@ async def get_microsoft_creds() -> tuple[str, str]:
     )
 
 
-def get_microsoft_redirect_uri(request: Optional[Request] = None) -> str:
+async def get_microsoft_redirect_uri(request: Optional[Request] = None) -> str:
+    stored = await get_stored_oauth_redirect_uri("microsoft_oauth_config")
+    if stored:
+        return stored
     return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/microsoft"
 
 
 async def build_microsoft_authorize_url(user_id: str, agent_id: str = "") -> str:
     """Build the full Microsoft OAuth authorization URL (common / multi-tenant)."""
     client_id, _ = await get_microsoft_creds()
-    redirect_uri = get_microsoft_redirect_uri()
+    redirect_uri = await get_microsoft_redirect_uri()
     state = make_state_token(user_id, agent_id, provider="microsoft")
     scopes = await _get_enabled_scopes("microsoft_oauth_config", MICROSOFT_SCOPES)
     params = {
@@ -519,14 +606,17 @@ async def get_yahoo_creds() -> tuple[str, str]:
     )
 
 
-def get_yahoo_redirect_uri(request: Optional[Request] = None) -> str:
+async def get_yahoo_redirect_uri(request: Optional[Request] = None) -> str:
+    stored = await get_stored_oauth_redirect_uri("yahoo_oauth_config")
+    if stored:
+        return stored
     return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/yahoo"
 
 
 async def build_yahoo_authorize_url(user_id: str, agent_id: str = "") -> str:
     """Build the Yahoo OAuth authorization URL."""
     client_id, _ = await get_yahoo_creds()
-    redirect_uri = get_yahoo_redirect_uri()
+    redirect_uri = await get_yahoo_redirect_uri()
     state = make_state_token(user_id, agent_id, provider="yahoo")
     scopes = await _get_enabled_scopes("yahoo_oauth_config", YAHOO_SCOPES)
     params = {
@@ -568,14 +658,17 @@ async def get_dropbox_creds() -> tuple[str, str]:
     )
 
 
-def get_dropbox_redirect_uri(request: Optional[Request] = None) -> str:
+async def get_dropbox_redirect_uri(request: Optional[Request] = None) -> str:
+    stored = await get_stored_oauth_redirect_uri("dropbox_oauth_config")
+    if stored:
+        return stored
     return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/dropbox"
 
 
 async def build_dropbox_authorize_url(user_id: str, agent_id: str = "") -> str:
     """Build the Dropbox OAuth authorization URL."""
     client_id, _ = await get_dropbox_creds()
-    redirect_uri = get_dropbox_redirect_uri()
+    redirect_uri = await get_dropbox_redirect_uri()
     state = make_state_token(user_id, agent_id, provider="dropbox")
     scopes = await _get_enabled_scopes("dropbox_oauth_config", DROPBOX_SCOPES)
     params = {
@@ -628,13 +721,16 @@ async def get_meta_creds() -> tuple[str, str]:
     return (os.environ.get("META_APP_ID", ""), os.environ.get("META_APP_SECRET", ""))
 
 
-def get_meta_redirect_uri(request: Optional[Request] = None) -> str:
+async def get_meta_redirect_uri(request: Optional[Request] = None) -> str:
+    stored = await get_stored_oauth_redirect_uri("meta_oauth_config")
+    if stored:
+        return stored
     return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/meta"
 
 
 async def build_meta_authorize_url(user_id: str, agent_id: str = "") -> str:
     client_id, _ = await get_meta_creds()
-    redirect_uri = get_meta_redirect_uri()
+    redirect_uri = await get_meta_redirect_uri()
     state = make_state_token(user_id, agent_id, provider="meta")
     scopes = await _get_enabled_scopes("meta_oauth_config", META_SCOPES)
     params = {
@@ -688,14 +784,17 @@ async def get_twitter_creds() -> tuple[str, str]:
     return (os.environ.get("TWITTER_CLIENT_ID", ""), os.environ.get("TWITTER_CLIENT_SECRET", ""))
 
 
-def get_twitter_redirect_uri(request: Optional[Request] = None) -> str:
+async def get_twitter_redirect_uri(request: Optional[Request] = None) -> str:
+    stored = await get_stored_oauth_redirect_uri("twitter_oauth_config")
+    if stored:
+        return stored
     return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/twitter"
 
 
 async def build_twitter_authorize_url(user_id: str, agent_id: str = "") -> tuple[str, str]:
     """Returns (authorize_url, state_token). Twitter requires PKCE."""
     client_id, _ = await get_twitter_creds()
-    redirect_uri = get_twitter_redirect_uri()
+    redirect_uri = await get_twitter_redirect_uri()
     verifier, challenge = _pkce_pair()
     state = make_state_token(user_id, agent_id, provider="twitter", pkce_verifier=verifier)
     scopes = await _get_enabled_scopes("twitter_oauth_config", TWITTER_SCOPES)
@@ -752,13 +851,16 @@ async def get_linkedin_creds() -> tuple[str, str]:
     return (os.environ.get("LINKEDIN_CLIENT_ID", ""), os.environ.get("LINKEDIN_CLIENT_SECRET", ""))
 
 
-def get_linkedin_redirect_uri(request: Optional[Request] = None) -> str:
+async def get_linkedin_redirect_uri(request: Optional[Request] = None) -> str:
+    stored = await get_stored_oauth_redirect_uri("linkedin_oauth_config")
+    if stored:
+        return stored
     return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/linkedin"
 
 
 async def build_linkedin_authorize_url(user_id: str, agent_id: str = "") -> str:
     client_id, _ = await get_linkedin_creds()
-    redirect_uri = get_linkedin_redirect_uri()
+    redirect_uri = await get_linkedin_redirect_uri()
     state = make_state_token(user_id, agent_id, provider="linkedin")
     scopes = await _get_enabled_scopes("linkedin_oauth_config", LINKEDIN_SCOPES)
     params = {
@@ -795,13 +897,16 @@ async def get_tiktok_creds() -> tuple[str, str]:
     return (os.environ.get("TIKTOK_CLIENT_KEY", ""), os.environ.get("TIKTOK_CLIENT_SECRET", ""))
 
 
-def get_tiktok_redirect_uri(request: Optional[Request] = None) -> str:
+async def get_tiktok_redirect_uri(request: Optional[Request] = None) -> str:
+    stored = await get_stored_oauth_redirect_uri("tiktok_oauth_config")
+    if stored:
+        return stored
     return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/tiktok"
 
 
 async def build_tiktok_authorize_url(user_id: str, agent_id: str = "") -> str:
     client_id, _ = await get_tiktok_creds()
-    redirect_uri = get_tiktok_redirect_uri()
+    redirect_uri = await get_tiktok_redirect_uri()
     verifier, challenge = _pkce_pair()
     state = make_state_token(user_id, agent_id, provider="tiktok", pkce_verifier=verifier)
     scopes = await _get_enabled_scopes("tiktok_oauth_config", TIKTOK_SCOPES)
@@ -857,13 +962,16 @@ async def get_pinterest_creds() -> tuple[str, str]:
     return (os.environ.get("PINTEREST_APP_ID", ""), os.environ.get("PINTEREST_APP_SECRET", ""))
 
 
-def get_pinterest_redirect_uri(request: Optional[Request] = None) -> str:
+async def get_pinterest_redirect_uri(request: Optional[Request] = None) -> str:
+    stored = await get_stored_oauth_redirect_uri("pinterest_oauth_config")
+    if stored:
+        return stored
     return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/pinterest"
 
 
 async def build_pinterest_authorize_url(user_id: str, agent_id: str = "") -> str:
     client_id, _ = await get_pinterest_creds()
-    redirect_uri = get_pinterest_redirect_uri()
+    redirect_uri = await get_pinterest_redirect_uri()
     state = make_state_token(user_id, agent_id, provider="pinterest")
     scopes = await _get_enabled_scopes("pinterest_oauth_config", PINTEREST_SCOPES)
     params = {
@@ -900,13 +1008,16 @@ async def get_reddit_creds() -> tuple[str, str]:
     return (os.environ.get("REDDIT_CLIENT_ID", ""), os.environ.get("REDDIT_CLIENT_SECRET", ""))
 
 
-def get_reddit_redirect_uri(request: Optional[Request] = None) -> str:
+async def get_reddit_redirect_uri(request: Optional[Request] = None) -> str:
+    stored = await get_stored_oauth_redirect_uri("reddit_oauth_config")
+    if stored:
+        return stored
     return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/reddit"
 
 
 async def build_reddit_authorize_url(user_id: str, agent_id: str = "") -> str:
     client_id, _ = await get_reddit_creds()
-    redirect_uri = get_reddit_redirect_uri()
+    redirect_uri = await get_reddit_redirect_uri()
     state = make_state_token(user_id, agent_id, provider="reddit")
     scopes = await _get_enabled_scopes("reddit_oauth_config", REDDIT_SCOPES)
     params = {
@@ -961,13 +1072,16 @@ async def get_snapchat_creds() -> tuple[str, str]:
     return (os.environ.get("SNAPCHAT_CLIENT_ID", ""), os.environ.get("SNAPCHAT_CLIENT_SECRET", ""))
 
 
-def get_snapchat_redirect_uri(request: Optional[Request] = None) -> str:
+async def get_snapchat_redirect_uri(request: Optional[Request] = None) -> str:
+    stored = await get_stored_oauth_redirect_uri("snapchat_oauth_config")
+    if stored:
+        return stored
     return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/snapchat"
 
 
 async def build_snapchat_authorize_url(user_id: str, agent_id: str = "") -> str:
     client_id, _ = await get_snapchat_creds()
-    redirect_uri = get_snapchat_redirect_uri()
+    redirect_uri = await get_snapchat_redirect_uri()
     state = make_state_token(user_id, agent_id, provider="snapchat")
     scopes = await _get_enabled_scopes("snapchat_oauth_config", SNAPCHAT_SCOPES)
     params = {
@@ -1019,13 +1133,16 @@ async def get_twitch_creds() -> tuple[str, str]:
     return (os.environ.get("TWITCH_CLIENT_ID", ""), os.environ.get("TWITCH_CLIENT_SECRET", ""))
 
 
-def get_twitch_redirect_uri(request: Optional[Request] = None) -> str:
+async def get_twitch_redirect_uri(request: Optional[Request] = None) -> str:
+    stored = await get_stored_oauth_redirect_uri("twitch_oauth_config")
+    if stored:
+        return stored
     return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/twitch"
 
 
 async def build_twitch_authorize_url(user_id: str, agent_id: str = "") -> str:
     client_id, _ = await get_twitch_creds()
-    redirect_uri = get_twitch_redirect_uri()
+    redirect_uri = await get_twitch_redirect_uri()
     state = make_state_token(user_id, agent_id, provider="twitch")
     scopes = await _get_enabled_scopes("twitch_oauth_config", TWITCH_SCOPES)
     params = {
@@ -1077,13 +1194,16 @@ async def get_ebay_creds() -> tuple[str, str]:
     return (os.environ.get("EBAY_CLIENT_ID", ""), os.environ.get("EBAY_CLIENT_SECRET", ""))
 
 
-def get_ebay_redirect_uri(request: Optional[Request] = None) -> str:
+async def get_ebay_redirect_uri(request: Optional[Request] = None) -> str:
+    stored = await get_stored_oauth_redirect_uri("ebay_oauth_config")
+    if stored:
+        return stored
     return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/ebay"
 
 
 async def build_ebay_authorize_url(user_id: str, agent_id: str = "", request: Optional[Request] = None) -> str:
     client_id, _ = await get_ebay_creds()
-    redirect_uri = get_ebay_redirect_uri(request)
+    redirect_uri = await get_ebay_redirect_uri(request)
     state = make_state_token(user_id, agent_id, provider="ebay")
     scopes = await _get_enabled_scopes("ebay_oauth_config", EBAY_SCOPES)
     params = {
@@ -1120,14 +1240,17 @@ async def get_etsy_creds() -> tuple[str, str]:
     return (os.environ.get("ETSY_CLIENT_ID", ""), os.environ.get("ETSY_CLIENT_SECRET", ""))
 
 
-def get_etsy_redirect_uri(request: Optional[Request] = None) -> str:
+async def get_etsy_redirect_uri(request: Optional[Request] = None) -> str:
+    stored = await get_stored_oauth_redirect_uri("etsy_oauth_config")
+    if stored:
+        return stored
     return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/etsy"
 
 
 async def build_etsy_authorize_url(user_id: str, agent_id: str = "", request: Optional[Request] = None) -> str:
     """Etsy uses OAuth 2.0 + PKCE. Stash the verifier in the state JWT."""
     client_id, _ = await get_etsy_creds()
-    redirect_uri = get_etsy_redirect_uri(request)
+    redirect_uri = await get_etsy_redirect_uri(request)
     verifier, challenge = _pkce_pair()
     state = make_state_token(user_id, agent_id, provider="etsy", pkce_verifier=verifier)
     scopes = await _get_enabled_scopes("etsy_oauth_config", ETSY_SCOPES)
@@ -1167,7 +1290,10 @@ async def get_shopify_creds() -> tuple[str, str]:
     return (os.environ.get("SHOPIFY_API_KEY", ""), os.environ.get("SHOPIFY_API_SECRET", ""))
 
 
-def get_shopify_redirect_uri(request: Optional[Request] = None) -> str:
+async def get_shopify_redirect_uri(request: Optional[Request] = None) -> str:
+    stored = await get_stored_oauth_redirect_uri("shopify_oauth_config")
+    if stored:
+        return stored
     return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/shopify"
 
 
@@ -1190,7 +1316,7 @@ async def build_shopify_authorize_url(
         raise ValueError("shop domain required for Shopify authorize")
     shop_norm = _shopify_normalize_shop(shop)
     client_id, _ = await get_shopify_creds()
-    redirect_uri = get_shopify_redirect_uri(request)
+    redirect_uri = await get_shopify_redirect_uri(request)
     state = make_state_token(user_id, agent_id, provider="shopify", shop=shop_norm)
     scopes = await _get_enabled_scopes("shopify_oauth_config", SHOPIFY_SCOPES)
     params = {
@@ -1226,7 +1352,10 @@ async def get_amazon_creds() -> tuple[str, str]:
     return (os.environ.get("AMAZON_LWA_CLIENT_ID", ""), os.environ.get("AMAZON_LWA_CLIENT_SECRET", ""))
 
 
-def get_amazon_redirect_uri(request: Optional[Request] = None) -> str:
+async def get_amazon_redirect_uri(request: Optional[Request] = None) -> str:
+    stored = await get_stored_oauth_redirect_uri("amazon_oauth_config")
+    if stored:
+        return stored
     return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/amazon"
 
 
@@ -1259,7 +1388,7 @@ async def build_amazon_authorize_url(
     then Amazon redirects back to our LWA callback with a spapi_oauth_code.
     """
     app_id = await _get_amazon_app_id()
-    redirect_uri = get_amazon_redirect_uri(request)
+    redirect_uri = await get_amazon_redirect_uri(request)
     state = make_state_token(user_id, agent_id, provider="amazon", region=region.upper())
     # Seller Central hosts the consent screen, not LWA directly.
     sc_hosts = {
@@ -1459,6 +1588,41 @@ class OAuthConfigRequest(BaseModel):
     client_id: str
     client_secret: str
     scopes: Optional[list[str]] = None
+    redirect_uri: Optional[str] = None
+
+
+# Each provider's callback path under /api/v1/oauth/callback/... The save
+# handlers validate that the admin-entered redirect_uri matches this path
+# exactly (locking down everything but the host) before storing.
+_PROVIDER_CALLBACK_PATH = {
+    "google":    "/api/v1/oauth/callback/google",
+    "microsoft": "/api/v1/oauth/callback/microsoft",
+    "yahoo":     "/api/v1/oauth/callback/yahoo",
+    "dropbox":   "/api/v1/oauth/callback/dropbox",
+    "meta":      "/api/v1/oauth/callback/meta",
+    "twitter":   "/api/v1/oauth/callback/twitter",
+    "linkedin":  "/api/v1/oauth/callback/linkedin",
+    "tiktok":    "/api/v1/oauth/callback/tiktok",
+    "pinterest": "/api/v1/oauth/callback/pinterest",
+    "reddit":    "/api/v1/oauth/callback/reddit",
+    "snapchat":  "/api/v1/oauth/callback/snapchat",
+    "twitch":    "/api/v1/oauth/callback/twitch",
+    "ebay":      "/api/v1/oauth/callback/ebay",
+    "etsy":      "/api/v1/oauth/callback/etsy",
+    "shopify":   "/api/v1/oauth/callback/shopify",
+    "amazon":    "/api/v1/oauth/callback/amazon",
+}
+
+
+def _apply_redirect_uri(cfg: dict, provider: str, req_redirect_uri: Optional[str]) -> None:
+    """If the admin supplied a redirect_uri, validate & write it into cfg."""
+    raw = (req_redirect_uri or "").strip()
+    if not raw:
+        return
+    expected_path = _PROVIDER_CALLBACK_PATH.get(provider)
+    if not expected_path:
+        return
+    cfg["redirect_uri"] = _validate_oauth_redirect_uri(raw, expected_path)
 
 
 class ScraperConfigRequest(BaseModel):
@@ -1526,74 +1690,97 @@ async def get_integration_config(
     shop_scopes = await _get_enabled_scopes("shopify_oauth_config",   SHOPIFY_SCOPES)
     amz_scopes  = await _get_enabled_scopes("amazon_oauth_config",    AMAZON_SCOPES)
 
+    # The configured-view URI (per provider) is whatever the admin saved at
+    # setup time; if nothing is saved yet, the helper falls back to a
+    # request-derived URI so the setup form has a sensible placeholder.
+    suggested_base = _get_base_url(request).rstrip("/")
+    def _suggest(provider: str) -> str:
+        return f"{suggested_base}/api/v1/oauth/callback/{provider}"
+
     return {
         # Productivity
         "google_configured":    bool(google_cid and google_csec),
         "google_client_id":     _mask(google_cid),
         "google_scopes":        g_scopes,
-        "redirect_uri":         get_redirect_uri(request),
+        "redirect_uri":         await get_redirect_uri(request),
+        "redirect_uri_suggested": _suggest("google"),
         "microsoft_configured": bool(ms_cid and ms_csec),
         "microsoft_client_id":  _mask(ms_cid),
         "microsoft_scopes":     ms_scopes,
-        "microsoft_redirect_uri": get_microsoft_redirect_uri(request),
+        "microsoft_redirect_uri": await get_microsoft_redirect_uri(request),
+        "microsoft_redirect_uri_suggested": _suggest("microsoft"),
         "yahoo_configured":     bool(yahoo_cid and yahoo_csec),
         "yahoo_client_id":      _mask(yahoo_cid),
         "yahoo_scopes":         yh_scopes,
-        "yahoo_redirect_uri":   get_yahoo_redirect_uri(request),
+        "yahoo_redirect_uri":   await get_yahoo_redirect_uri(request),
+        "yahoo_redirect_uri_suggested": _suggest("yahoo"),
         "dropbox_configured":   bool(dbx_cid and dbx_csec),
         "dropbox_client_id":    _mask(dbx_cid),
         "dropbox_scopes":       dbx_scopes,
-        "dropbox_redirect_uri": get_dropbox_redirect_uri(request),
+        "dropbox_redirect_uri": await get_dropbox_redirect_uri(request),
+        "dropbox_redirect_uri_suggested": _suggest("dropbox"),
         # Social media
         "meta_configured":      bool(meta_cid and meta_csec),
         "meta_client_id":       _mask(meta_cid),
         "meta_scopes":          meta_scopes,
-        "meta_redirect_uri":    get_meta_redirect_uri(request),
+        "meta_redirect_uri":    await get_meta_redirect_uri(request),
+        "meta_redirect_uri_suggested": _suggest("meta"),
         "twitter_configured":   bool(tw_cid and tw_csec),
         "twitter_client_id":    _mask(tw_cid),
         "twitter_scopes":       tw_scopes,
-        "twitter_redirect_uri": get_twitter_redirect_uri(request),
+        "twitter_redirect_uri": await get_twitter_redirect_uri(request),
+        "twitter_redirect_uri_suggested": _suggest("twitter"),
         "linkedin_configured":  bool(li_cid and li_csec),
         "linkedin_client_id":   _mask(li_cid),
         "linkedin_scopes":      li_scopes,
-        "linkedin_redirect_uri": get_linkedin_redirect_uri(request),
+        "linkedin_redirect_uri": await get_linkedin_redirect_uri(request),
+        "linkedin_redirect_uri_suggested": _suggest("linkedin"),
         "tiktok_configured":    bool(tt_cid and tt_csec),
         "tiktok_client_id":     _mask(tt_cid),
         "tiktok_scopes":        tt_scopes,
-        "tiktok_redirect_uri":  get_tiktok_redirect_uri(request),
+        "tiktok_redirect_uri":  await get_tiktok_redirect_uri(request),
+        "tiktok_redirect_uri_suggested": _suggest("tiktok"),
         "pinterest_configured": bool(pin_cid and pin_csec),
         "pinterest_client_id":  _mask(pin_cid),
         "pinterest_scopes":     pin_scopes,
-        "pinterest_redirect_uri": get_pinterest_redirect_uri(request),
+        "pinterest_redirect_uri": await get_pinterest_redirect_uri(request),
+        "pinterest_redirect_uri_suggested": _suggest("pinterest"),
         "reddit_configured":    bool(red_cid and red_csec),
         "reddit_client_id":     _mask(red_cid),
         "reddit_scopes":        red_scopes,
-        "reddit_redirect_uri":  get_reddit_redirect_uri(request),
+        "reddit_redirect_uri":  await get_reddit_redirect_uri(request),
+        "reddit_redirect_uri_suggested": _suggest("reddit"),
         "snapchat_configured":  bool(snap_cid and snap_csec),
         "snapchat_client_id":   _mask(snap_cid),
         "snapchat_scopes":      snap_scopes,
-        "snapchat_redirect_uri": get_snapchat_redirect_uri(request),
+        "snapchat_redirect_uri": await get_snapchat_redirect_uri(request),
+        "snapchat_redirect_uri_suggested": _suggest("snapchat"),
         "twitch_configured":    bool(twitch_cid and twitch_csec),
         "twitch_client_id":     _mask(twitch_cid),
         "twitch_scopes":        twit_scopes,
-        "twitch_redirect_uri":  get_twitch_redirect_uri(request),
+        "twitch_redirect_uri":  await get_twitch_redirect_uri(request),
+        "twitch_redirect_uri_suggested": _suggest("twitch"),
         # Marketplaces
         "ebay_configured":      bool(ebay_cid and ebay_csec),
         "ebay_client_id":       _mask(ebay_cid),
         "ebay_scopes":          ebay_scopes,
-        "ebay_redirect_uri":    get_ebay_redirect_uri(request),
+        "ebay_redirect_uri":    await get_ebay_redirect_uri(request),
+        "ebay_redirect_uri_suggested": _suggest("ebay"),
         "etsy_configured":      bool(etsy_cid and etsy_csec),
         "etsy_client_id":       _mask(etsy_cid),
         "etsy_scopes":          etsy_scopes,
-        "etsy_redirect_uri":    get_etsy_redirect_uri(request),
+        "etsy_redirect_uri":    await get_etsy_redirect_uri(request),
+        "etsy_redirect_uri_suggested": _suggest("etsy"),
         "shopify_configured":   bool(shop_cid and shop_csec),
         "shopify_client_id":    _mask(shop_cid),
         "shopify_scopes":       shop_scopes,
-        "shopify_redirect_uri": get_shopify_redirect_uri(request),
+        "shopify_redirect_uri": await get_shopify_redirect_uri(request),
+        "shopify_redirect_uri_suggested": _suggest("shopify"),
         "amazon_configured":    bool(amz_cid and amz_csec),
         "amazon_client_id":     _mask(amz_cid),
         "amazon_scopes":        amz_scopes,
-        "amazon_redirect_uri":  get_amazon_redirect_uri(request),
+        "amazon_redirect_uri":  await get_amazon_redirect_uri(request),
+        "amazon_redirect_uri_suggested": _suggest("amazon"),
         # Generic, non-OAuth providers (no client_id/secret pair)
         "scraper_configured":   bool(scraper_cfg),
         "scraper_provider":     (scraper_cfg or {}).get("provider", ""),
@@ -1621,6 +1808,7 @@ async def save_google_config(
     cfg: dict = {"client_id": req.client_id.strip()}
     if req.scopes is not None:
         cfg["enabled_scopes"] = req.scopes
+    _apply_redirect_uri(cfg, "google", req.redirect_uri)
     await db.auth_element_set(
         user_id=_ADMIN_USER,
         service="google_oauth_config",
@@ -1657,6 +1845,7 @@ async def save_microsoft_config(
     cfg: dict = {"client_id": req.client_id.strip()}
     if req.scopes is not None:
         cfg["enabled_scopes"] = req.scopes
+    _apply_redirect_uri(cfg, "microsoft", req.redirect_uri)
     await db.auth_element_set(
         user_id=_ADMIN_USER,
         service="microsoft_oauth_config",
@@ -1693,6 +1882,7 @@ async def save_yahoo_config(
     cfg: dict = {"client_id": req.client_id.strip()}
     if req.scopes is not None:
         cfg["enabled_scopes"] = req.scopes
+    _apply_redirect_uri(cfg, "yahoo", req.redirect_uri)
     await db.auth_element_set(
         user_id=_ADMIN_USER,
         service="yahoo_oauth_config",
@@ -1729,6 +1919,7 @@ async def save_dropbox_config(
     cfg: dict = {"client_id": req.client_id.strip()}
     if req.scopes is not None:
         cfg["enabled_scopes"] = req.scopes
+    _apply_redirect_uri(cfg, "dropbox", req.redirect_uri)
     await db.auth_element_set(
         user_id=_ADMIN_USER,
         service="dropbox_oauth_config",
@@ -1768,6 +1959,7 @@ def _make_social_endpoints(provider: str, config_key: str, label: str):
         cfg: dict = {"client_id": req.client_id.strip()}
         if req.scopes is not None:
             cfg["enabled_scopes"] = req.scopes
+        _apply_redirect_uri(cfg, provider, req.redirect_uri)
         await db.auth_element_set(
             user_id=_ADMIN_USER,
             service=config_key,

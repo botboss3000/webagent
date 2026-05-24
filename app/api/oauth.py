@@ -92,7 +92,7 @@ async def google_callback(
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Google OAuth not configured on server.", status_code=500)
 
-    redirect_uri = get_redirect_uri(request)
+    redirect_uri = await get_redirect_uri(request)
 
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(
@@ -188,7 +188,7 @@ async def microsoft_callback(
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Microsoft OAuth not configured on server.", status_code=500)
 
-    redirect_uri = get_microsoft_redirect_uri()
+    redirect_uri = await get_microsoft_redirect_uri(request)
 
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(
@@ -285,7 +285,7 @@ async def yahoo_callback(
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Yahoo OAuth not configured on server.", status_code=500)
 
-    redirect_uri = get_yahoo_redirect_uri()
+    redirect_uri = await get_yahoo_redirect_uri(request)
 
     import base64
     credentials = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
@@ -389,7 +389,7 @@ async def dropbox_callback(
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Dropbox OAuth not configured on server.", status_code=500)
 
-    redirect_uri = get_dropbox_redirect_uri()
+    redirect_uri = await get_dropbox_redirect_uri(request)
 
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(
@@ -520,7 +520,7 @@ async def meta_callback(
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Meta OAuth not configured on server.", status_code=500)
 
-    redirect_uri = get_meta_redirect_uri()
+    redirect_uri = await get_meta_redirect_uri(request)
     async with httpx.AsyncClient() as c:
         token_resp = await c.get(
             "https://graph.facebook.com/v19.0/oauth/access_token",
@@ -597,7 +597,7 @@ async def twitter_callback(
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Twitter OAuth not configured on server.", status_code=500)
 
-    redirect_uri = get_twitter_redirect_uri()
+    redirect_uri = await get_twitter_redirect_uri(request)
     creds_b64 = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
 
     async with httpx.AsyncClient() as c:
@@ -663,7 +663,7 @@ async def linkedin_callback(
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "LinkedIn OAuth not configured on server.", status_code=500)
 
-    redirect_uri = get_linkedin_redirect_uri()
+    redirect_uri = await get_linkedin_redirect_uri(request)
     async with httpx.AsyncClient() as c:
         token_resp = await c.post(
             "https://www.linkedin.com/oauth/v2/accessToken",
@@ -727,7 +727,7 @@ async def tiktok_callback(
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "TikTok OAuth not configured on server.", status_code=500)
 
-    redirect_uri = get_tiktok_redirect_uri()
+    redirect_uri = await get_tiktok_redirect_uri(request)
     async with httpx.AsyncClient() as c:
         token_resp = await c.post(
             "https://open.tiktokapis.com/v2/oauth/token/",
@@ -790,7 +790,7 @@ async def pinterest_callback(
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Pinterest OAuth not configured on server.", status_code=500)
 
-    redirect_uri = get_pinterest_redirect_uri()
+    redirect_uri = await get_pinterest_redirect_uri(request)
     import base64 as _b64
     creds_b64 = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
     async with httpx.AsyncClient() as c:
@@ -853,7 +853,7 @@ async def reddit_callback(
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Reddit OAuth not configured on server.", status_code=500)
 
-    redirect_uri = get_reddit_redirect_uri()
+    redirect_uri = await get_reddit_redirect_uri(request)
     creds_b64 = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
     async with httpx.AsyncClient() as c:
         token_resp = await c.post(
@@ -915,7 +915,7 @@ async def snapchat_callback(
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Snapchat OAuth not configured on server.", status_code=500)
 
-    redirect_uri = get_snapchat_redirect_uri()
+    redirect_uri = await get_snapchat_redirect_uri(request)
     import base64 as _b64
     creds_b64 = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
     async with httpx.AsyncClient() as c:
@@ -979,7 +979,7 @@ async def twitch_callback(
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Twitch OAuth not configured on server.", status_code=500)
 
-    redirect_uri = get_twitch_redirect_uri()
+    redirect_uri = await get_twitch_redirect_uri(request)
     async with httpx.AsyncClient() as c:
         token_resp = await c.post(
             "https://id.twitch.tv/oauth2/token",
@@ -1042,7 +1042,7 @@ async def ebay_callback(
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "eBay OAuth not configured on server.", status_code=500)
 
-    redirect_uri = get_ebay_redirect_uri(request)
+    redirect_uri = await get_ebay_redirect_uri(request)
     creds_b64 = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
     async with httpx.AsyncClient() as c:
         token_resp = await c.post(
@@ -1113,7 +1113,7 @@ async def etsy_callback(
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Etsy OAuth not configured on server.", status_code=500)
 
-    redirect_uri = get_etsy_redirect_uri(request)
+    redirect_uri = await get_etsy_redirect_uri(request)
     async with httpx.AsyncClient() as c:
         token_resp = await c.post(
             "https://api.etsy.com/v3/public/oauth/token",
@@ -1294,7 +1294,7 @@ async def amazon_callback(
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Amazon LWA not configured on server.", status_code=500)
 
-    redirect_uri = get_amazon_redirect_uri(request)
+    redirect_uri = await get_amazon_redirect_uri(request)
     async with httpx.AsyncClient() as c:
         token_resp = await c.post(
             "https://api.amazon.com/auth/o2/token",
