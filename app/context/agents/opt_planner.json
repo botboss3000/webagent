@@ -1,5 +1,6 @@
 {
   "id": "opt_planner",
+  "version": 1,
   "name": "Optimizer Planner",
   "description": "Pipeline agent — plans and structures optimizer passes.",
   "icon": "📋",

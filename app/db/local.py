@@ -172,6 +172,9 @@ CREATE TABLE IF NOT EXISTS agent_prompts (
     lock            INTEGER,
     merge_mode      TEXT,
     content         TEXT NOT NULL DEFAULT '',
+    -- Origin version this row was cloned from (in agent_prompt_templates).
+    -- NULL on user-override rows and on legacy rows pre-versioning.
+    template_version INTEGER,
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_by      TEXT
 );
@@ -180,6 +183,43 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_prompts_slot_user
     ON agent_prompts(agent_id, slot_name, IFNULL(user_id, ''));
 CREATE INDEX IF NOT EXISTS idx_agent_prompts_agent ON agent_prompts(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_prompts_user  ON agent_prompts(user_id);
+
+-- ============================================================
+-- Agent Prompt Templates: canonical slot defaults per template.
+-- JSON files in app/context/agents/*.json seed this table; admin edits
+-- promoted here are protected from re-seed via source='admin'.
+-- When a new agent is created, rows here are cloned into agent_prompts
+-- under the new agent's id (with template_version stamped on each row).
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS agent_prompt_templates (
+    id              TEXT PRIMARY KEY,
+    template_id     TEXT NOT NULL,
+    slot_name       TEXT NOT NULL,
+    order_index     INTEGER NOT NULL DEFAULT 0,
+    lock            INTEGER NOT NULL DEFAULT 0,
+    merge_mode      TEXT NOT NULL DEFAULT 'replace',
+    content         TEXT NOT NULL DEFAULT '',
+    version         INTEGER NOT NULL DEFAULT 1,
+    source          TEXT NOT NULL DEFAULT 'json' CHECK (source IN ('json','admin')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_by      TEXT NOT NULL DEFAULT 'system',
+    UNIQUE (template_id, slot_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_prompt_templates_tpl
+    ON agent_prompt_templates(template_id);
+
+-- ============================================================
+-- App Meta: generic key/value store for cross-cutting runtime
+-- metadata (manifest hashes, schema versions, feature toggles).
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS app_meta (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 -- ============================================================
 -- Agent Connections: per-agent channel/integration config
@@ -1555,6 +1595,76 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Migration 024: dropped %d legacy global OAuth token row(s) — users will re-sign in per agent", legacy_count)
 
+            # ── Migration 025: add template_version column to agent_prompts ──
+            ap_cols_025 = {row[1] for row in conn.execute("PRAGMA table_info(agent_prompts)").fetchall()}
+            if "template_version" not in ap_cols_025:
+                conn.execute("ALTER TABLE agent_prompts ADD COLUMN template_version INTEGER")
+                conn.commit()
+                logger.info("Migration 025: added agent_prompts.template_version column")
+
+            # ── Migration 026: move admin-base slot rows from agent_prompts → agent_prompt_templates ──
+            # Pre-refactor, agent_prompts double-dutied as both per-agent rows AND
+            # template defaults (the latter identified by user_id IS NULL + agent_id
+            # matching a row in agent_templates). The new agent_prompt_templates table
+            # is the canonical home for template defaults. One-shot, idempotent: gated
+            # by app_meta key 'admin_base_migrated' so it never re-runs.
+            _migrated_flag = conn.execute(
+                "SELECT value FROM app_meta WHERE key = 'admin_base_migrated'"
+            ).fetchone()
+            if not _migrated_flag:
+                _mig_now = _now_iso()
+                # Pull every admin-base row whose agent_id is a known template id.
+                _tpl_rows = conn.execute(
+                    """SELECT ap.agent_id AS template_id, ap.slot_name, ap.order_index,
+                              ap.lock, ap.merge_mode, ap.content, ap.updated_at, ap.updated_by
+                       FROM agent_prompts ap
+                       INNER JOIN agent_templates t ON t.id = ap.agent_id
+                       WHERE ap.user_id IS NULL"""
+                ).fetchall()
+                _copied = 0
+                for r in _tpl_rows:
+                    try:
+                        conn.execute(
+                            """INSERT INTO agent_prompt_templates
+                               (id, template_id, slot_name, order_index, lock,
+                                merge_mode, content, version, source,
+                                updated_at, updated_by)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'json', ?, ?)
+                               ON CONFLICT(template_id, slot_name) DO NOTHING""",
+                            (
+                                _uuid(),
+                                r["template_id"], r["slot_name"],
+                                r["order_index"] if r["order_index"] is not None else 0,
+                                r["lock"] if r["lock"] is not None else 0,
+                                r["merge_mode"] or "replace",
+                                r["content"] or "",
+                                r["updated_at"] or _mig_now,
+                                r["updated_by"] or "migration",
+                            ),
+                        )
+                        _copied += 1
+                    except Exception as _ins_err:
+                        logger.warning("Migration 026: failed copying %s/%s: %s",
+                                       r["template_id"], r["slot_name"], _ins_err)
+                # Drop the admin-base rows now that they live in agent_prompt_templates.
+                _del_cur = conn.execute(
+                    """DELETE FROM agent_prompts
+                       WHERE user_id IS NULL
+                         AND agent_id IN (SELECT id FROM agent_templates)"""
+                )
+                conn.execute(
+                    """INSERT INTO app_meta (key, value, updated_at)
+                       VALUES ('admin_base_migrated', '1', ?)
+                       ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                                     updated_at = excluded.updated_at""",
+                    (_mig_now,),
+                )
+                conn.commit()
+                logger.info(
+                    "Migration 026: moved %d admin-base slot rows into agent_prompt_templates (dropped %d from agent_prompts)",
+                    _copied, _del_cur.rowcount,
+                )
+
             # ── Seed: agent templates from app/context/agents/*.json (full schema) ──
             self._seed_agent_templates_from_json_files(conn)
 
@@ -1785,9 +1895,9 @@ class LocalBackend(StorageBackend):
                 return 0
 
             tpl_rows = conn.execute(
-                """SELECT slot_name, order_index, lock, merge_mode, content
-                   FROM agent_prompts
-                   WHERE agent_id = 'default' AND user_id IS NULL""",
+                """SELECT slot_name, order_index, lock, merge_mode, content, version
+                   FROM agent_prompt_templates
+                   WHERE template_id = 'default'""",
             ).fetchall()
             if not tpl_rows:
                 logger.warning("No default template slots found for context copy")
@@ -1797,10 +1907,11 @@ class LocalBackend(StorageBackend):
             for row in tpl_rows:
                 conn.execute(
                     """INSERT INTO agent_prompts
-                       (id, agent_id, slot_name, user_id, order_index, lock, merge_mode, content, updated_at, updated_by)
-                       VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, 'system')""",
+                       (id, agent_id, slot_name, user_id, order_index, lock, merge_mode,
+                        content, template_version, updated_at, updated_by)
+                       VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'system')""",
                     (_uuid(), agent_id, row["slot_name"], row["order_index"],
-                     row["lock"], row["merge_mode"], row["content"], now),
+                     row["lock"], row["merge_mode"], row["content"], row["version"], now),
                 )
             conn.execute("UPDATE agents SET updated_at = ? WHERE id = ?", (now, agent_id))
             conn.commit()
@@ -1815,23 +1926,75 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
-    def _seed_agent_templates_from_json_files(self, conn: sqlite3.Connection) -> None:
+    def _seed_agent_templates_from_json_files(
+        self,
+        conn: sqlite3.Connection,
+        force: bool = False,
+    ) -> dict:
         """
-        Scan app/context/agents/*.json and upsert each into
-        agent_templates table (config fields only) plus admin-base slot rows
-        in agent_prompts keyed by agent_id = template_id.
+        Manifest-gated, non-destructive seeder.
 
-        JSON files may declare slots explicitly via a `slots` array; if absent,
-        legacy keys (agent_prompt/user_prompt/skills_prompt/tasks_prompt/
-        misc_prompt/system_prompt/bootstrap_tools) are converted into slots
-        using a sensible default order.
+        Source of truth = app/context/agents/*.json. Writes:
+          - agent_templates row (config only) — full upsert
+          - agent_prompt_templates rows (one per slot) — version-aware:
+              * missing row              → INSERT (source='json')
+              * existing source='json'   → UPDATE iff JSON version > DB version
+              * existing source='admin'  → SKIP (admin edits are protected)
+              * force=True               → overwrite admin rows too (bumps version)
+
+        Short-circuit: hash app/context/agents/* into a manifest digest. If it
+        matches app_meta['last_agent_manifest_hash'] AND force is False, return
+        immediately with {"changed": 0, "skipped_admin": 0, "cached": True}.
+
+        Returns summary dict:
+            {
+              "changed": int,         # rows inserted/updated this pass
+              "skipped_admin": int,   # admin-sourced rows we left alone
+              "templates": int,       # config rows upserted
+              "cached": bool,         # whether the manifest short-circuit fired
+              "manifest_hash": str,
+            }
         """
-        from app.context.md_seeder import scan_agent_json_files
+        from app.context.md_seeder import (
+            scan_agent_json_files,
+            compute_agent_manifest_hash,
+        )
+
+        manifest_hash = compute_agent_manifest_hash()
+
+        # Short-circuit: if hash matches what's already applied, nothing to do.
+        if not force:
+            row = conn.execute(
+                "SELECT value FROM app_meta WHERE key = 'last_agent_manifest_hash'"
+            ).fetchone()
+            if row and row["value"] == manifest_hash:
+                return {
+                    "changed": 0,
+                    "skipped_admin": 0,
+                    "templates": 0,
+                    "cached": True,
+                    "manifest_hash": manifest_hash,
+                }
+
         templates = scan_agent_json_files()
         if not templates:
-            return
+            return {
+                "changed": 0,
+                "skipped_admin": 0,
+                "templates": 0,
+                "cached": False,
+                "manifest_hash": manifest_hash,
+            }
+
         now = _now_iso()
+        changed = 0
+        skipped_admin = 0
+
         for tpl in templates:
+            tpl_id = tpl["id"]
+            tpl_version = int(tpl.get("version") or 1)
+
+            # 1. agent_templates row — config only, always upsert
             conn.execute(
                 """INSERT INTO agent_templates
                    (id, name, description, icon, max_turn_count, model, provider,
@@ -1859,7 +2022,7 @@ class LocalBackend(StorageBackend):
                     trigger_key = excluded.trigger_key,
                     loop_logic = excluded.loop_logic,
                     updated_at = excluded.updated_at""",
-                (tpl["id"], tpl.get("name", tpl["id"]), tpl.get("description", ""),
+                (tpl_id, tpl.get("name", tpl_id), tpl.get("description", ""),
                  tpl.get("icon", ""), tpl["max_turn_count"],
                  tpl["model"], tpl["provider"], tpl["temperature"],
                  tpl["max_tokens"], tpl["metadata"],
@@ -1872,28 +2035,88 @@ class LocalBackend(StorageBackend):
                  now, now),
             )
 
-            # Seed slot rows under agent_id = template_id (user_id IS NULL = admin base).
-            slots = self._slots_from_template_data(tpl)
-            # Wipe existing template base slots before re-seeding so the JSON wins.
-            conn.execute(
-                "DELETE FROM agent_prompts WHERE agent_id = ? AND user_id IS NULL",
-                (tpl["id"],),
-            )
-            for s in slots:
-                conn.execute(
-                    """INSERT INTO agent_prompts
-                       (id, agent_id, slot_name, user_id, order_index, lock, merge_mode, content, updated_at, updated_by)
-                       VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, 'system')""",
-                    (_uuid(), tpl["id"], s["slot_name"], s["order_index"],
-                     1 if s.get("lock") else 0,
-                     s.get("merge_mode", "replace"),
-                     s.get("content", ""), now),
+            # 2. agent_prompt_templates rows — per slot, version-gated upsert
+            for s in self._slots_from_template_data(tpl):
+                slot_name = s["slot_name"]
+                existing = conn.execute(
+                    """SELECT id, version, source FROM agent_prompt_templates
+                       WHERE template_id = ? AND slot_name = ?""",
+                    (tpl_id, slot_name),
+                ).fetchone()
+
+                slot_payload = (
+                    s.get("order_index", 0) or 0,
+                    1 if s.get("lock") else 0,
+                    s.get("merge_mode", "replace"),
+                    s.get("content", "") or "",
                 )
-        conn.commit()
-        logger.info(
-            "Upserted %d agent template(s) (with slot rows) from app/context/agents/*.json",
-            len(templates),
+
+                if existing is None:
+                    # Brand-new slot row.
+                    conn.execute(
+                        """INSERT INTO agent_prompt_templates
+                           (id, template_id, slot_name, order_index, lock,
+                            merge_mode, content, version, source,
+                            updated_at, updated_by)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'json', ?, 'system')""",
+                        (_uuid(), tpl_id, slot_name,
+                         slot_payload[0], slot_payload[1],
+                         slot_payload[2], slot_payload[3],
+                         tpl_version, now),
+                    )
+                    changed += 1
+                    continue
+
+                # Existing row — respect source guard.
+                if existing["source"] == "admin" and not force:
+                    skipped_admin += 1
+                    continue
+
+                # JSON-sourced (or force=True): bump iff version advanced.
+                # Force always bumps (so admin → re-pinned to JSON content + version).
+                if force or tpl_version > (existing["version"] or 0):
+                    conn.execute(
+                        """UPDATE agent_prompt_templates
+                           SET order_index = ?,
+                               lock = ?,
+                               merge_mode = ?,
+                               content = ?,
+                               version = ?,
+                               source = 'json',
+                               updated_at = ?,
+                               updated_by = ?
+                           WHERE id = ?""",
+                        (slot_payload[0], slot_payload[1],
+                         slot_payload[2], slot_payload[3],
+                         tpl_version, now,
+                         "system" if not force else "system-force",
+                         existing["id"]),
+                    )
+                    changed += 1
+
+        # Stamp the new manifest hash so the next call short-circuits.
+        conn.execute(
+            """INSERT INTO app_meta (key, value, updated_at)
+               VALUES ('last_agent_manifest_hash', ?, ?)
+               ON CONFLICT(key) DO UPDATE
+                 SET value = excluded.value,
+                     updated_at = excluded.updated_at""",
+            (manifest_hash, now),
         )
+        conn.commit()
+
+        logger.info(
+            "Seeded %d agent template(s) from JSON: %d slot rows changed, %d admin rows skipped%s",
+            len(templates), changed, skipped_admin,
+            " (force=True)" if force else "",
+        )
+        return {
+            "changed": changed,
+            "skipped_admin": skipped_admin,
+            "templates": len(templates),
+            "cached": False,
+            "manifest_hash": manifest_hash,
+        }
 
     @staticmethod
     def _slots_from_template_data(tpl: dict) -> List[dict]:
@@ -1951,30 +2174,34 @@ class LocalBackend(StorageBackend):
         target_id: str,
         now: Optional[str] = None,
     ) -> int:
-        """Copy admin-base slot rows from a template (or another agent) to a new agent.
+        """Clone canonical slot rows from agent_prompt_templates → agent_prompts.
 
-        Falls back to the 'default' template if no slots exist for source_id.
+        Reads agent_prompt_templates WHERE template_id = source_id. Falls back
+        to template_id = 'default' if the requested source has no slots.
+        Each cloned row gets template_version stamped from the source row so the
+        agent can later be told "your template moved to v4, refresh?".
         """
         now = now or _now_iso()
         rows = conn.execute(
-            """SELECT slot_name, order_index, lock, merge_mode, content
-               FROM agent_prompts WHERE agent_id = ? AND user_id IS NULL
+            """SELECT slot_name, order_index, lock, merge_mode, content, version
+               FROM agent_prompt_templates WHERE template_id = ?
                ORDER BY order_index""",
             (source_id,),
         ).fetchall()
         if not rows and source_id != "default":
             rows = conn.execute(
-                """SELECT slot_name, order_index, lock, merge_mode, content
-                   FROM agent_prompts WHERE agent_id = 'default' AND user_id IS NULL
+                """SELECT slot_name, order_index, lock, merge_mode, content, version
+                   FROM agent_prompt_templates WHERE template_id = 'default'
                    ORDER BY order_index""",
             ).fetchall()
         for r in rows:
             conn.execute(
                 """INSERT INTO agent_prompts
-                   (id, agent_id, slot_name, user_id, order_index, lock, merge_mode, content, updated_at, updated_by)
-                   VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, 'system')""",
+                   (id, agent_id, slot_name, user_id, order_index, lock, merge_mode,
+                    content, template_version, updated_at, updated_by)
+                   VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'system')""",
                 (_uuid(), target_id, r["slot_name"], r["order_index"],
-                 r["lock"], r["merge_mode"], r["content"], now),
+                 r["lock"], r["merge_mode"], r["content"], r["version"], now),
             )
         return len(rows)
 
@@ -3092,8 +3319,8 @@ class LocalBackend(StorageBackend):
     async def create_agent_for_user(self, user_id: str) -> dict:
         conn = self._get_conn()
         try:
-            # Always seed from JSON files to ensure latest values
-            self._seed_agent_templates_from_json_files(conn)
+            # Templates are seeded at boot (manifest-gated) + on admin re-seed.
+            # No per-call re-seed: avoids needless DB churn and protects admin edits.
 
             # Clone the default template
             tpl = conn.execute(
@@ -3219,18 +3446,15 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
-    async def seed_agent_templates(self) -> int:
-        """Re-seed agent_templates from app/context/agents/*.json. Returns count."""
+    async def seed_agent_templates(self, force: bool = False) -> dict:
+        """Re-seed agent_templates + agent_prompt_templates from JSON.
+
+        force=True overrides the manifest short-circuit AND overwrites
+        agent_prompt_templates rows whose source = 'admin'. Use sparingly.
+        """
         conn = self._get_conn()
         try:
-            before = conn.execute(
-                "SELECT COUNT(*) FROM agent_templates"
-            ).fetchone()[0]
-            self._seed_agent_templates_from_json_files(conn)
-            after = conn.execute(
-                "SELECT COUNT(*) FROM agent_templates"
-            ).fetchone()[0]
-            return after - before
+            return self._seed_agent_templates_from_json_files(conn, force=force)
         finally:
             conn.close()
 
@@ -3249,8 +3473,8 @@ class LocalBackend(StorageBackend):
         """
         conn = self._get_conn()
         try:
-            # Ensure templates are seeded from JSON
-            self._seed_agent_templates_from_json_files(conn)
+            # Templates are seeded at boot (manifest-gated) + on admin re-seed.
+            # No per-call re-seed here either.
 
             # Check for existing agent with matching admin_users + template_id
             row = conn.execute(
@@ -3990,6 +4214,125 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
+    async def save_agent_as_template(
+        self,
+        agent_id: str,
+        template_id: str,
+        name: str,
+        description: str = "",
+        icon: str = "",
+        discoverable: bool = False,
+        access_level: str = "all",
+        updated_by: str = "admin",
+    ) -> dict:
+        """Snapshot a custom agent into agent_templates + agent_prompt_templates.
+
+        Reads the agent's row from `agents` for config (model, temperature,
+        loop_logic, etc.) and the admin-base slot rows from `agent_prompts`
+        (user_id IS NULL) for prompt content. Writes:
+          - one row in agent_templates (config + new template_id)
+          - one row per slot in agent_prompt_templates with source='admin'
+            so future JSON re-seed will not overwrite it.
+
+        Raises ValueError if the agent does not exist or the template_id is
+        already taken.
+        """
+        template_id = (template_id or "").strip()
+        if not template_id:
+            raise ValueError("template_id required")
+        if not name or not name.strip():
+            raise ValueError("name required")
+
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                agent_row = conn.execute(
+                    "SELECT * FROM agents WHERE id = ?", (agent_id,)
+                ).fetchone()
+                if not agent_row:
+                    raise ValueError(f"agent {agent_id} not found")
+                agent = dict(agent_row)
+
+                existing_tpl = conn.execute(
+                    "SELECT id FROM agent_templates WHERE id = ?", (template_id,)
+                ).fetchone()
+                if existing_tpl:
+                    raise ValueError(f"template_id '{template_id}' already exists")
+
+                slot_rows = conn.execute(
+                    """SELECT slot_name, order_index, lock, merge_mode, content
+                       FROM agent_prompts
+                       WHERE agent_id = ? AND user_id IS NULL
+                       ORDER BY order_index ASC""",
+                    (agent_id,),
+                ).fetchall()
+
+                now = _now_iso()
+                conn.execute(
+                    """INSERT INTO agent_templates
+                       (id, name, description, icon, max_turn_count, model, provider,
+                        temperature, max_tokens, metadata,
+                        can_be_default, is_system, is_pipeline, access_level,
+                        is_admin_agent, discoverable,
+                        trigger_type, trigger_key, loop_logic,
+                        created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        template_id,
+                        name.strip(),
+                        description or "",
+                        icon or "",
+                        agent.get("max_turn_count") or 10,
+                        agent.get("model"),
+                        agent.get("provider"),
+                        agent.get("temperature") if agent.get("temperature") is not None else 0.0,
+                        agent.get("max_tokens") or 4096,
+                        agent.get("metadata") or "{}",
+                        1,  # can_be_default
+                        0,  # is_system (user-created)
+                        0,  # is_pipeline
+                        access_level or "all",
+                        int(bool(agent.get("is_admin_agent"))),
+                        1 if discoverable else 0,
+                        agent.get("trigger_type") or "user_input",
+                        agent.get("trigger_key"),
+                        agent.get("loop_logic") or "[]",
+                        now, now,
+                    ),
+                )
+
+                slot_count = 0
+                for r in slot_rows:
+                    conn.execute(
+                        """INSERT INTO agent_prompt_templates
+                           (id, template_id, slot_name, order_index, lock,
+                            merge_mode, content, version, source,
+                            updated_at, updated_by)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'admin', ?, ?)""",
+                        (
+                            _uuid(),
+                            template_id,
+                            r["slot_name"],
+                            int(r["order_index"] or 0),
+                            int(r["lock"] or 0),
+                            r["merge_mode"] or "replace",
+                            r["content"] or "",
+                            now,
+                            updated_by,
+                        ),
+                    )
+                    slot_count += 1
+
+                conn.commit()
+                tpl_row = conn.execute(
+                    "SELECT * FROM agent_templates WHERE id = ?", (template_id,)
+                ).fetchone()
+                result = dict(tpl_row) if tpl_row else {}
+                result["slot_count"] = slot_count
+                return result
+            finally:
+                conn.close()
+
     async def list_agents_for_user(self, user_id: str, include_admin: bool = False) -> List[dict]:
         """
         Return all agents visible to a user:
@@ -4098,7 +4441,8 @@ class LocalBackend(StorageBackend):
         import uuid as _uuid_mod
         conn = self._get_conn()
         try:
-            self._seed_agent_templates_from_json_files(conn)
+            # Templates are seeded at boot (manifest-gated) + on admin re-seed.
+            # No per-call re-seed: protects admin edits + avoids DB churn.
             tpl_row = conn.execute(
                 "SELECT * FROM agent_templates WHERE id = ?", (template_id,)
             ).fetchone()

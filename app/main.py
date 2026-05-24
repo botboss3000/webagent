@@ -407,6 +407,26 @@ async def test_interface():
 @app.on_event("startup")
 async def startup():
     """Register communication webhooks or start polling on server start."""
+    # Seed agent templates from JSON (manifest-gated short-circuit makes this
+    # cheap when unchanged). LocalBackend self-seeds in __init__, so this call
+    # is mainly the trigger for SupabaseBackend; for Local it's still a
+    # belt-and-braces no-op when the hash matches.
+    try:
+        from app.db import get_db as _get_db_seed
+        _seed_db = _get_db_seed()
+        _seed_summary = await _seed_db.seed_agent_templates(force=False)
+        if _seed_summary.get("cached"):
+            logger.info("Agent template seed: cached (manifest hash unchanged)")
+        else:
+            logger.info(
+                "Agent template seed: changed=%s skipped_admin=%s templates=%s",
+                _seed_summary.get("changed"),
+                _seed_summary.get("skipped_admin"),
+                _seed_summary.get("templates"),
+            )
+    except Exception as _seed_err:
+        logger.warning("Agent template seed at startup failed: %s", _seed_err)
+
     # Build trigger routing index from agent_templates
     try:
         from app.agent import trigger_index
