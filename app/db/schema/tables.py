@@ -91,6 +91,11 @@ TABLES: List[Table] = [
         Column("source", "TEXT"),
         Column("from_id", "TEXT"),
         Column("to_id", "TEXT"),
+        # Stream-persistence ordering (added 2026-05-24). NULL on legacy rows;
+        # callers fall back to created_at ordering when session_seq IS NULL.
+        Column("session_seq", "INTEGER"),
+        Column("turn_id", "TEXT"),
+        Column("turn_seq", "INTEGER"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
 
@@ -463,6 +468,8 @@ TABLES: List[Table] = [
 INDEXES: List[Index] = [
     Index("idx_interactions_session", "interactions", "session_id"),
     Index("idx_interactions_created", "interactions", "created_at"),
+    Index("idx_interactions_session_seq", "interactions", "session_id, session_seq"),
+    Index("idx_interactions_turn", "interactions", "turn_id"),
     Index("idx_summaries_user", "session_summaries", "user_id"),
     Index("idx_agent_prompts_agent", "agent_prompts", "agent_id"),
     Index("idx_agent_prompts_user", "agent_prompts", "user_id"),

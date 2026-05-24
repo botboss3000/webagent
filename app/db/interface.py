@@ -66,9 +66,55 @@ class StorageBackend(ABC):
         sender_id: Optional[str] = None,
         receiver_id: Optional[str] = None,
         source: Optional[str] = None,
+        session_seq: Optional[int] = None,
+        turn_id: Optional[str] = None,
+        turn_seq: Optional[int] = None,
     ) -> str:
         """Insert an interaction row. Returns the interaction id."""
         ...
+
+    async def insert_interactions_batch(self, rows: List[Dict[str, Any]]) -> List[str]:
+        """Bulk-insert interaction rows in a single round-trip.
+
+        Each dict may contain: id, session_id, parent_id, role, content,
+        tool_name, tool_call_id, channel, metadata, input, output, source,
+        from_id, to_id, session_seq, turn_id, turn_seq, created_at.
+
+        Caller is responsible for session ownership. Default impl falls back
+        to a loop of insert_interaction — subclasses should override for
+        true batching (PostgREST array body / SQLite executemany).
+        """
+        ids: List[str] = []
+        for r in rows:
+            rid = await self.insert_interaction(
+                user_id=r.get("user_id", ""),
+                session_id=r["session_id"],
+                role=r.get("role", "tool"),
+                content=r.get("content", ""),
+                parent_id=r.get("parent_id"),
+                tool_name=r.get("tool_name"),
+                tool_call_id=r.get("tool_call_id"),
+                channel=r.get("channel"),
+                metadata=r.get("metadata"),
+                input_data=r.get("input"),
+                output_data=r.get("output"),
+                sender_id=r.get("from_id"),
+                receiver_id=r.get("to_id"),
+                source=r.get("source"),
+                session_seq=r.get("session_seq"),
+                turn_id=r.get("turn_id"),
+                turn_seq=r.get("turn_seq"),
+            )
+            ids.append(rid)
+        return ids
+
+    async def next_session_seq(self, session_id: str, count: int = 1) -> int:
+        """Return the next session_seq value to assign for this session.
+
+        Default impl returns 1 (forces caller to rely on its own counter).
+        Subclasses should query MAX(session_seq) on bootstrap or restart.
+        """
+        return 1
 
     # ---- Default-template seeding ----
 

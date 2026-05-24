@@ -88,11 +88,18 @@ CREATE TABLE IF NOT EXISTS interactions (
     source TEXT,
     from_id TEXT,
     to_id TEXT,
+    session_seq INTEGER,
+    turn_id TEXT,
+    turn_seq INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_interactions_session ON interactions(session_id);
 CREATE INDEX IF NOT EXISTS idx_interactions_created ON interactions(created_at);
+-- idx_interactions_session_seq and idx_interactions_turn are created by the
+-- ALTER TABLE migration block after the columns are guaranteed to exist.
+-- They are not declared here because on an existing DB the SCHEMA_SQL runs
+-- BEFORE the ALTER TABLE migrations, so the columns wouldn't exist yet.
 
 CREATE TABLE IF NOT EXISTS session_summaries (
     id TEXT PRIMARY KEY,
@@ -867,6 +874,33 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Added interactions.from_id and to_id columns")
 
+            # ── Migration: add session_seq / turn_id / turn_seq for stream persistence ──
+            cursor = conn.execute("PRAGMA table_info(interactions)")
+            cols_seq = {row[1] for row in cursor.fetchall()}
+            added = False
+            if "session_seq" not in cols_seq:
+                conn.execute("ALTER TABLE interactions ADD COLUMN session_seq INTEGER")
+                added = True
+            if "turn_id" not in cols_seq:
+                conn.execute("ALTER TABLE interactions ADD COLUMN turn_id TEXT")
+                added = True
+            if "turn_seq" not in cols_seq:
+                conn.execute("ALTER TABLE interactions ADD COLUMN turn_seq INTEGER")
+                added = True
+            # Indexes always (idempotent) — also covers fresh DBs where the cols
+            # were created by SCHEMA_SQL and the ALTER branches above were skipped.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_interactions_session_seq "
+                "ON interactions(session_id, session_seq)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_interactions_turn "
+                "ON interactions(turn_id)"
+            )
+            conn.commit()
+            if added:
+                logger.info("Added interactions.session_seq / turn_id / turn_seq columns + indexes")
+
             # ── Migration: add metadata column to sessions (for optimizer tracking) ──
             cursor = conn.execute("PRAGMA table_info(sessions)")
             sess_cols = {row[1] for row in cursor.fetchall()}
@@ -1625,6 +1659,9 @@ class LocalBackend(StorageBackend):
         sender_id: Optional[str] = None,
         receiver_id: Optional[str] = None,
         source: Optional[str] = None,
+        session_seq: Optional[int] = None,
+        turn_id: Optional[str] = None,
+        turn_seq: Optional[int] = None,
     ) -> str:
         await self.assert_session_owned(user_id, session_id)
         # Optimizer/Finalizer sessions get source='optimizer' for all interactions
@@ -1635,8 +1672,8 @@ class LocalBackend(StorageBackend):
             try:
                 interaction_id = _uuid()
                 conn.execute(
-                    "INSERT INTO interactions (id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, source, from_id, to_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (interaction_id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input_data, output_data, source or 'user', sender_id, receiver_id),
+                    "INSERT INTO interactions (id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, source, from_id, to_id, session_seq, turn_id, turn_seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (interaction_id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input_data, output_data, source or 'user', sender_id, receiver_id, session_seq, turn_id, turn_seq),
                 )
                 conn.commit()
                 logger.debug("Inserted interaction %s", interaction_id)
@@ -1644,6 +1681,82 @@ class LocalBackend(StorageBackend):
             except Exception as e:
                 logger.error("Error inserting interaction: %s", e)
                 raise
+            finally:
+                conn.close()
+
+    async def insert_interactions_batch(self, rows: List[Dict[str, Any]]) -> List[str]:
+        """Bulk-insert interactions in one transaction.
+
+        Each row dict may contain any of the columns: id, session_id, parent_id,
+        role, content, tool_name, tool_call_id, channel, metadata, input, output,
+        source, from_id, to_id, session_seq, turn_id, turn_seq, created_at.
+        Missing optional fields default to None / sane defaults.
+        Caller is responsible for session ownership.
+        Returns the list of inserted ids in the same order.
+        """
+        if not rows:
+            return []
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                ids: List[str] = []
+                values: List[tuple] = []
+                for r in rows:
+                    rid = r.get("id") or _uuid()
+                    ids.append(rid)
+                    created_at = r.get("created_at")  # caller-supplied ISO timestamp or None
+                    values.append((
+                        rid,
+                        r["session_id"],
+                        r.get("parent_id"),
+                        r.get("role", "tool"),
+                        r.get("content", ""),
+                        r.get("tool_name"),
+                        r.get("tool_call_id"),
+                        r.get("channel"),
+                        r.get("metadata"),
+                        r.get("input"),
+                        r.get("output"),
+                        r.get("source") or "user",
+                        r.get("from_id"),
+                        r.get("to_id"),
+                        r.get("session_seq"),
+                        r.get("turn_id"),
+                        r.get("turn_seq"),
+                        created_at,
+                    ))
+                # Use COALESCE to keep schema default when created_at is None.
+                conn.executemany(
+                    "INSERT INTO interactions (id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, source, from_id, to_id, session_seq, turn_id, turn_seq, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))",
+                    values,
+                )
+                conn.commit()
+                logger.debug("Bulk inserted %d interactions", len(ids))
+                return ids
+            except Exception as e:
+                logger.error("Error in insert_interactions_batch: %s", e)
+                raise
+            finally:
+                conn.close()
+
+    async def next_session_seq(self, session_id: str, count: int = 1) -> int:
+        """Reserve `count` consecutive session_seq values; return the FIRST one.
+
+        Returns 1 if the session has no prior rows. Caller assigns
+        FIRST, FIRST+1, ..., FIRST+count-1 to its rows.
+        """
+        if count < 1:
+            count = 1
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT COALESCE(MAX(session_seq), 0) FROM interactions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                current = (row[0] if row and row[0] is not None else 0)
+                return int(current) + 1
             finally:
                 conn.close()
 

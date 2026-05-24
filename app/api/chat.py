@@ -22,6 +22,7 @@ from app.agent.prompts import (
 from app.agent.loop import run_agent_loop_buffered, stream_agent_events
 from app.agent.loop_executor import LoopConfig
 from app.agent.session_history import build_openai_history_from_session
+from app.agent.run_buffer import get_registry as get_run_buffer_registry
 from app.optimizer.runner import run_optimizer_async
 from app.agent import trigger_index
 
@@ -360,6 +361,27 @@ async def chat(request: ChatRequest, fastapi_request: Request):
             source="optimizer" if is_opt else None,
         )
 
+        # ── Start a run buffer for this turn ──
+        _run_buffer = await get_run_buffer_registry().start_turn(
+            session_id=request.session_id,
+            user_id=request.user_id,
+            turn_id=user_interaction_id,
+            db=db,
+        )
+        try:
+            _user_ss, _user_ts = _run_buffer.next_seq()
+            _conn = db._get_conn()
+            try:
+                _conn.execute(
+                    "UPDATE interactions SET session_seq=?, turn_id=?, turn_seq=? WHERE id=?",
+                    (_user_ss, user_interaction_id, _user_ts, user_interaction_id),
+                )
+                _conn.commit()
+            finally:
+                _conn.close()
+        except Exception as _seqerr:
+            logger.debug("Failed to backfill seq on user row (buffered): %s", _seqerr)
+
         # ── Emit user message to visualizer listeners ──
         await _emit_to_visualizers(request.session_id, {
             "type": "user_message", "level": "user",
@@ -601,6 +623,12 @@ async def chat(request: ChatRequest, fastapi_request: Request):
                 "step": "memory_save_start", "slug": f"chat/{request.session_id[:8]}",
             })
 
+        # End the run buffer for this turn — starts the retention countdown.
+        try:
+            await get_run_buffer_registry().end_turn(request.session_id)
+        except Exception as _eb:
+            logger.debug("end_turn failed (buffered) for session %s: %s", request.session_id, _eb)
+
         return ChatResponse(
             reply=assistant_reply,
             response=assistant_reply,
@@ -608,6 +636,11 @@ async def chat(request: ChatRequest, fastapi_request: Request):
         )
 
     except Exception as e:
+        # Make sure we mark the run buffer ended even on error path.
+        try:
+            await get_run_buffer_registry().end_turn(request.session_id)
+        except Exception:
+            pass
         logger.error(f"Chat endpoint error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -759,6 +792,31 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         sender_id=request.user_id,
         receiver_id=agent["id"],
     )
+
+    # ── Start a run buffer for this turn ──
+    # All events emitted via _emit_to_visualizers from this point on are
+    # stamped + appended to the buffer, enabling WS replay on reconnect.
+    _run_buffer = await get_run_buffer_registry().start_turn(
+        session_id=request.session_id,
+        user_id=request.user_id,
+        turn_id=user_interaction_id,
+        db=db,
+    )
+    # Backfill session_seq on the user row we already inserted by taking
+    # the first slot from the buffer counter. Cheap UPDATE.
+    try:
+        _user_ss, _user_ts = _run_buffer.next_seq()
+        _conn = db._get_conn()
+        try:
+            _conn.execute(
+                "UPDATE interactions SET session_seq=?, turn_id=?, turn_seq=? WHERE id=?",
+                (_user_ss, user_interaction_id, _user_ts, user_interaction_id),
+            )
+            _conn.commit()
+        finally:
+            _conn.close()
+    except Exception as _seqerr:
+        logger.debug("Failed to backfill seq on user row: %s", _seqerr)
 
     async def event_generator():
         nonlocal agent
@@ -959,17 +1017,26 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         asyncio.create_task(run_agent_task())
 
         # Stream from the queue — also broadcast to session + user listeners
-        while True:
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=20)
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+                    continue
+                if event is None:
+                    break
+                # Broadcast to WebSocket listeners (session + user). This also
+                # stamps the event with session_seq/turn_id/turn_seq via the
+                # RunBuffer, so the event yielded below carries those fields.
+                await _emit_to_visualizers(request.session_id, event, user_id=request.user_id)
+                yield f"data: {json.dumps(event)}\n\n"
+        finally:
+            # End the run buffer for this turn — starts the retention countdown.
             try:
-                event = await asyncio.wait_for(q.get(), timeout=20)
-            except asyncio.TimeoutError:
-                yield ": ping\n\n"
-                continue
-            if event is None:
-                break
-            # Broadcast to WebSocket listeners (session + user)
-            await _emit_to_visualizers(request.session_id, event, user_id=request.user_id)
-            yield f"data: {json.dumps(event)}\n\n"
+                await get_run_buffer_registry().end_turn(request.session_id)
+            except Exception as _eb:
+                logger.debug("end_turn failed for session %s: %s", request.session_id, _eb)
 
     async def safe_event_generator():
         try:
@@ -1054,8 +1121,23 @@ def unregister_visualizer_listener(session_id: str, websocket: Any):
 
 
 async def _emit_to_visualizers(session_id: str, event: Dict[str, Any], user_id: Optional[str] = None):
-    """Push an event to all visualizer listeners for a session, and optionally user listeners."""
+    """Push an event to all visualizer listeners for a session, and optionally user listeners.
+
+    Side effect: if a RunBuffer is active for this session, the event is
+    stamped with session_seq / turn_id / turn_seq / emit_time before broadcast,
+    so reconnecting clients can replay events newer than their last seen seq.
+    """
     import json
+    # Stamp via the in-memory run buffer (if a turn is active for this session).
+    # This mutates `event` to add session_seq / turn_id / turn_seq / emit_time.
+    try:
+        _reg = get_run_buffer_registry()
+        _buf = _reg.get(session_id)
+        if _buf is not None:
+            _buf.stamp_event(event)
+    except Exception as _be:
+        logger.debug("RunBuffer stamp failed for session %s: %s", session_id, _be)
+
     listeners = _visualizer_listeners.get(session_id, [])
     disconnected = []
     for ws in listeners:

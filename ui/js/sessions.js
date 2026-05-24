@@ -566,6 +566,9 @@ export function initSessions() {
 
   function switchToSession(sid) {
     if (!sid || sid === app.currentSessionId) { closeMenu(); return; }
+    // Tear down the LOCAL SSE fetch only — the BACKEND agent loop keeps
+    // running for the session we're leaving. Its events still accumulate
+    // in the server-side RunBuffer so we can replay them if we come back.
     abortChatStream();
     app.currentSessionId = sid;
     localStorage.setItem('terminalSessionId', app.currentSessionId);
@@ -577,6 +580,20 @@ export function initSessions() {
     _renderSessionRows();
     _setTriggerLabel();
     closeMenu();
+
+    // Ask the WS to replay any events for THIS (newly-active) session that
+    // we missed while we were on the other one. The server checks its
+    // in-memory RunBuffer for `sid` and resends events > last_session_seq.
+    try {
+      if (app.agentWs && app.agentWs.readyState === WebSocket.OPEN) {
+        const lastSeq = (app.lastSessionSeq && app.lastSessionSeq[sid]) || 0;
+        app.agentWs.send(JSON.stringify({
+          type: 'resume',
+          session_id: sid,
+          last_session_seq: lastSeq,
+        }));
+      }
+    } catch (_e) { /* socket may not be ready — replay on next reconnect */ }
   }
 
   function openRowActions(sid, row) {

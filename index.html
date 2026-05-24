@@ -2094,6 +2094,24 @@
               <pre id="ac-storage-enc-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;display:none;"></pre>
             </div>
 
+            <!-- ── Stream Buffer (in-memory per-turn event log for WS replay) ── -->
+            <div class="ac-card">
+              <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
+                <i data-lucide="activity" class="lucide-icon" style="width:14px;height:14px;color:#7dcfff;"></i>
+                Stream Buffer
+                <span id="ac-storage-sbuf-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;"></span>
+              </div>
+              <div class="ac-hint" style="margin-top:8px;">
+                Each chat turn keeps its events (stream tokens, tool calls, results) in memory so a refresh or session switch can replay what was missed. Buffer is dropped this many seconds after the turn finishes. 0 = drop immediately. Max 3600.
+              </div>
+              <label class="ac-label" style="margin-top:10px;">Retention seconds</label>
+              <div style="display:flex;gap:8px;align-items:center;">
+                <input type="number" id="ac-storage-sbuf-seconds" class="ac-input" min="0" max="3600" step="1" style="width:120px;" value="60">
+                <button id="ac-storage-sbuf-save" class="ac-btn ac-btn-primary">Save</button>
+                <span id="ac-storage-sbuf-status" class="ac-hint" style="margin-left:6px;"></span>
+              </div>
+            </div>
+
             <!-- ── Data Migration ── -->
             <details class="ac-card">
               <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;font-weight:600;">

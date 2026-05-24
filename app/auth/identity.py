@@ -45,6 +45,17 @@ async def assert_caller_is(request: Request, claimed_user_id: Optional[str]) -> 
     """
     state_uid = getattr(request.state, "user_id", None)
     if not state_uid:
+        # AuthMiddleware is not registered globally (see app/auth/__init__.py
+        # comment), so request.state.user_id is unset. Decode the JWT from
+        # the Authorization header (or ?token=) ourselves as a fallback.
+        auth_header = request.headers.get("Authorization", "")
+        token = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+        if not token:
+            token = request.query_params.get("token", "")
+        payload = decode_token(token) if token else None
+        if payload:
+            state_uid = payload.get("user_id") or payload.get("sub")
+    if not state_uid:
         raise HTTPException(status_code=401, detail="Not authenticated")
     if not claimed_user_id:
         return state_uid

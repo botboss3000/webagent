@@ -18,6 +18,7 @@ from websockets.exceptions import ConnectionClosedOK
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.api.chat import register_user_listener, unregister_user_listener
+from app.agent.run_buffer import get_registry as get_run_buffer_registry
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,16 @@ async def agent_websocket(websocket: WebSocket):
     Per-user event subscriber WebSocket.
 
     Client sends on connect:
-      {"mode": "user_subscriber", "user_id": "uuid-here"}
+      {
+        "mode": "user_subscriber",
+        "user_id": "uuid-here",
+        "token": "<jwt>",
+        // OPTIONAL — resume any in-flight runs the client knows about.
+        // Map of session_id -> last_session_seq the client has already seen.
+        // Server replays buffered events with session_seq > that value
+        // BEFORE switching to live streaming.
+        "resume": { "<session_id>": <int_seq>, ... }
+      }
 
     Server replies with heartbeat pings and streams all agent events
     (stream, response, tool_call, tool_result, pipeline, db, etc.)
@@ -96,18 +106,89 @@ async def agent_websocket(websocket: WebSocket):
         register_user_listener(user_id, websocket)
         logger.info(f"User subscriber registered for user {user_id}")
 
+        # ── Replay buffered events from active in-flight runs ──
+        # If the client knows about active turns it was watching before the
+        # reconnect, replay anything it missed BEFORE confirming the
+        # subscription. This way the client never sees a gap between its
+        # "last seen seq" and the next live event.
+        resume_map = data.get("resume") or {}
+        replayed_summary: dict = {}
+        if isinstance(resume_map, dict) and resume_map:
+            try:
+                reg = get_run_buffer_registry()
+                for sid, last_seq in resume_map.items():
+                    if not isinstance(sid, str):
+                        continue
+                    try:
+                        last_seq_int = int(last_seq)
+                    except (TypeError, ValueError):
+                        last_seq_int = 0
+                    buf = reg.get(sid)
+                    if buf is None:
+                        continue
+                    # Optional tenancy guard: only replay buffers owned by this user.
+                    if buf.user_id and buf.user_id != user_id:
+                        continue
+                    missed = buf.replay_after(last_seq_int)
+                    replayed_summary[sid] = len(missed)
+                    for ev in missed:
+                        try:
+                            await websocket.send_text(json.dumps(
+                                {**ev, "replayed": True},
+                                default=_json_default,
+                            ))
+                        except Exception:
+                            break
+            except Exception as _re:
+                logger.warning("Resume replay failed for user %s: %s", user_id, _re)
+
+        # Inform client which active sessions the server is currently buffering.
+        # Used by the UI to know which sessions have an in-flight run it could
+        # subscribe to even if it doesn't have any local state for them yet.
+        try:
+            active_sessions = [
+                sid for sid, b in get_run_buffer_registry()._buffers.items()
+                if b.completed_at is None and b.user_id == user_id
+            ]
+        except Exception:
+            active_sessions = []
+
         await websocket.send_text(json.dumps({
             "type": "subscribed",
             "user_id": user_id,
             "message": f"Receiving events for user {user_id}",
+            "replayed": replayed_summary,
+            "active_sessions": active_sessions,
         }, default=_json_default))
 
         # ── Stay connected until client disconnects ──
         while True:
             raw = await websocket.receive_text()
             data = json.loads(raw)
-            if data.get("type") == "disconnect":
+            mtype = data.get("type")
+            if mtype == "disconnect":
                 break
+            # Client can also request mid-session replay (e.g. when the user
+            # switches back into a session it previously left). Payload:
+            #   {"type": "resume", "session_id": "...", "last_session_seq": N}
+            if mtype == "resume":
+                sid = data.get("session_id")
+                try:
+                    last_seq_int = int(data.get("last_session_seq") or 0)
+                except (TypeError, ValueError):
+                    last_seq_int = 0
+                if isinstance(sid, str):
+                    try:
+                        reg = get_run_buffer_registry()
+                        buf = reg.get(sid)
+                        if buf is not None and (not buf.user_id or buf.user_id == user_id):
+                            for ev in buf.replay_after(last_seq_int):
+                                await websocket.send_text(json.dumps(
+                                    {**ev, "replayed": True},
+                                    default=_json_default,
+                                ))
+                    except Exception as _re2:
+                        logger.warning("Mid-session resume failed: %s", _re2)
 
     except (WebSocketDisconnect, ConnectionClosedOK):
         logger.info(f"User subscriber [{user_id}]: disconnected")
