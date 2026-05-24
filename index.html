@@ -2478,10 +2478,10 @@
           <span id="db-auto-status"></span>
         </div>
         <div id="db-panel">
-          <div style="width:180px;min-width:140px;border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;">
-            <div style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;gap:8px;position:relative;align-items:center;min-height:42px;box-sizing:border-box;">
+          <div id="db-sidebar" style="width:180px;min-width:140px;border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;">
+            <div id="db-sidebar-header" style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;gap:8px;position:relative;align-items:center;min-height:42px;box-sizing:border-box;">
               <button id="db-refresh" style="background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-1);padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">↻ Refresh</button>
-              <div style="position:relative;">
+              <div id="db-reset-wrap" style="position:relative;">
                 <button id="db-reset" style="background:#cc241d;border:1px solid #fb4934;color:#fbf1c7;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">Reset DB ▾</button>
                 <div id="db-reset-dropdown" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:var(--bg-elev);border:1px solid var(--border);border-radius:4px;padding:8px;z-index:100;min-width:180px;box-shadow:var(--shadow-md);">
                   <div style="font-size:11px;color:var(--fg-1);margin-bottom:8px;font-weight:bold;">Select tables to RESET:</div>
@@ -2489,6 +2489,7 @@
                   <button id="db-reset-apply" style="width:100%;background:#cc241d;border:1px solid #fb4934;color:#fbf1c7;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">Confirm Reset</button>
                 </div>
               </div>
+              <button id="db-sidebar-toggle" title="Collapse table list" aria-label="Collapse table list" aria-expanded="true" style="margin-left:auto;background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-3);padding:0;border-radius:4px;cursor:pointer;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;"><i data-lucide="chevrons-left" style="width:13px;height:13px;"></i></button>
             </div>
             <div id="db-table-list" style="width:100%;border-right:none;flex:1;"></div>
           </div>
