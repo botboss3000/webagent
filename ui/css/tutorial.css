@@ -73,11 +73,15 @@ body.light-mode .tutorial-badge.active {
     0 6px 16px -3px rgba(37, 99, 235, 0.4);
 }
 
-/* ── Popover panel ── */
+/* ── Popover panel ──
+   Width shrinks on narrow screens so the popover always fits.
+   JS overrides width:/maxWidth: on mobile to pin it edge-to-edge. */
 .tutorial-popover {
   position: fixed;
-  width: 290px;
-  max-width: calc(100vw - 24px);
+  width: min(290px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   background: var(--bg-1, #13132a);
   color: var(--fg-1, #c0caf5);
   border: 1px solid var(--accent, #7dcfff);
@@ -91,6 +95,7 @@ body.light-mode .tutorial-badge.active {
     0 12px 32px -8px rgba(0, 0, 0, 0.65);
   pointer-events: auto;
   z-index: 9100;
+  box-sizing: border-box;
 }
 
 body.light-mode .tutorial-popover {
@@ -224,10 +229,12 @@ body.light-mode .tutorial-popover::before {
   border-left-color: #2563eb;
   border-top-color: #2563eb;
 }
-.tutorial-popover[data-arrow="top"]::before    { top: -6px; left: 16px; transform: rotate(45deg); }
-.tutorial-popover[data-arrow="bottom"]::before { bottom: -6px; left: 16px; transform: rotate(225deg); }
-.tutorial-popover[data-arrow="left"]::before   { left: -6px; top: 16px; transform: rotate(-45deg); }
-.tutorial-popover[data-arrow="right"]::before  { right: -6px; top: 16px; transform: rotate(135deg); }
+/* Arrow position uses --tutorial-arrow-pos when JS provides one (so it
+   tracks the badge on mobile full-width popovers); falls back to 16px. */
+.tutorial-popover[data-arrow="top"]::before    { top: -6px;    left: var(--tutorial-arrow-pos, 16px); transform: rotate(45deg); }
+.tutorial-popover[data-arrow="bottom"]::before { bottom: -6px; left: var(--tutorial-arrow-pos, 16px); transform: rotate(225deg); }
+.tutorial-popover[data-arrow="left"]::before   { left: -6px;   top: var(--tutorial-arrow-pos, 16px);  transform: rotate(-45deg); }
+.tutorial-popover[data-arrow="right"]::before  { right: -6px;  top: var(--tutorial-arrow-pos, 16px);  transform: rotate(135deg); }
 
 /* ── User-management section toggles ── */
 #ac-tutorial-card .tutorial-page-list {

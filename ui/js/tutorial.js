@@ -311,29 +311,80 @@ function _repositionAll() {
 
 function _positionPopover(popover, badge) {
   const br = badge.getBoundingClientRect();
-  const pw = popover.offsetWidth || 290;
-  const ph = popover.offsetHeight || 140;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
   const margin = 8;
-  let x = br.right + margin;
-  let y = br.top;
-  let arrow = 'left';
+  const pad = 8; // min distance from viewport edge
 
-  // If it would overflow the right edge, flip to left of the badge
-  if (x + pw > window.innerWidth - 6) {
-    x = br.left - pw - margin;
-    arrow = 'right';
+  // ── Mobile / narrow viewport: pin the popover to the viewport width and
+  // stack it above or below the badge, whichever side has more room. This
+  // guarantees no horizontal clipping regardless of badge position.
+  if (vw <= 600) {
+    const width = Math.max(220, vw - pad * 2);
+    popover.style.width = width + 'px';
+    popover.style.maxWidth = 'none';
+    popover.style.left = pad + 'px';
+
+    // Need offsetHeight at the new width, so read after setting it
+    const ph = popover.offsetHeight || 160;
+
+    const roomBelow = vh - br.bottom - margin - pad;
+    const roomAbove = br.top - margin - pad;
+    let y, arrow;
+    if (roomBelow >= ph || roomBelow >= roomAbove) {
+      y = Math.min(vh - ph - pad, br.bottom + margin);
+      arrow = 'top';
+    } else {
+      y = Math.max(pad, br.top - ph - margin);
+      arrow = 'bottom';
+    }
+    popover.style.top = y + 'px';
+    popover.setAttribute('data-arrow', arrow);
+
+    // Point the arrow at the badge horizontally
+    const badgeCenter = br.left + br.width / 2;
+    const popLeft = pad;
+    const arrowOffset = Math.max(10, Math.min(width - 20, badgeCenter - popLeft - 5));
+    popover.style.setProperty('--tutorial-arrow-pos', arrowOffset + 'px');
+    return;
   }
-  // If still off-screen (badge near left edge too), place below
-  if (x < 6) {
-    x = Math.max(6, br.left);
+
+  // ── Desktop: try right of badge, then left, then below, then above.
+  // Reset any mobile-only overrides from a previous call.
+  popover.style.width = '';
+  popover.style.maxWidth = '';
+  popover.style.removeProperty('--tutorial-arrow-pos');
+
+  const pw = popover.offsetWidth || 290;
+  const ph = popover.offsetHeight || 160;
+
+  let x, y, arrow;
+
+  if (br.right + margin + pw <= vw - pad) {
+    // Fits to the right
+    x = br.right + margin;
+    y = br.top;
+    arrow = 'left';
+  } else if (br.left - margin - pw >= pad) {
+    // Fits to the left
+    x = br.left - pw - margin;
+    y = br.top;
+    arrow = 'right';
+  } else if (br.bottom + margin + ph <= vh - pad) {
+    // Stack below
+    x = Math.max(pad, Math.min(vw - pw - pad, br.left - 8));
     y = br.bottom + margin;
     arrow = 'top';
+  } else {
+    // Stack above
+    x = Math.max(pad, Math.min(vw - pw - pad, br.left - 8));
+    y = Math.max(pad, br.top - ph - margin);
+    arrow = 'bottom';
   }
-  // Clamp vertical
-  if (y + ph > window.innerHeight - 6) {
-    y = Math.max(6, window.innerHeight - ph - 6);
-  }
-  if (y < 6) y = 6;
+
+  // Final safety clamp — never let any edge escape the viewport
+  x = Math.max(pad, Math.min(vw - pw - pad, x));
+  y = Math.max(pad, Math.min(vh - ph - pad, y));
 
   popover.style.left = x + 'px';
   popover.style.top = y + 'px';
