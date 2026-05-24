@@ -142,12 +142,12 @@ _anonReady.then(() => {
   if (!isAuthenticated()) {
     showLeftOverlay();
   }
-  initStorageUi();
-  initTerminal();
-  initChat();
-  ensureAttachmentsInit();
-  initReconnect();
-  registerSessionApi();
+  _safeInit('initStorageUi',        initStorageUi);
+  _safeInit('initTerminal',         initTerminal);
+  _safeInit('initChat',             initChat);
+  _safeInit('ensureAttachmentsInit', ensureAttachmentsInit);
+  _safeInit('initReconnect',        initReconnect);
+  _safeInit('registerSessionApi',   registerSessionApi);
 
   try {
     connectTerminal();
