@@ -330,13 +330,10 @@ async def chat(request: ChatRequest, fastapi_request: Request):
         if agent is None:
             agent = await db.get_agent_for_user(request.user_id)
         if agent is None:
-            agent = await db.create_agent_for_user(request.user_id)
-            await _emit_to_visualizers(request.session_id, {
-                "type": "pipeline", "level": "pipeline",
-                "step": "agent_assigned",
-                "agent_id": agent["id"],
-                "max_turn_count": agent["max_turn_count"],
-            })
+            raise HTTPException(
+                status_code=400,
+                detail="No agent assigned. Create an agent before chatting.",
+            )
 
         # ── Agent access policy enforcement ──
         await _enforce_agent_access_policy(db, agent, request.user_id)
@@ -762,7 +759,10 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         else:
             agent = await db.get_agent_for_user(request.user_id)
         if agent is None:
-            agent = await db.create_agent_for_user(request.user_id)
+            raise HTTPException(
+                status_code=400,
+                detail="No agent assigned. Create an agent before chatting.",
+            )
 
     # ── Agent access policy enforcement ──
     await _enforce_agent_access_policy(db, agent, request.user_id)

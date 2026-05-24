@@ -200,7 +200,8 @@ async def _run_registration_agent(
         )
 
         # If we know which agent owns this channel, load it directly.
-        # Otherwise fall back to looking up (or creating) an agent for this user.
+        # Otherwise look up the user's agent. We no longer auto-create one —
+        # the user must set up an agent via the web UI before they can chat.
         if agent_id:
             agent = await db.get_agent_by_id(agent_id)
             agent_with_ctx = await db.fetch_agent_by_id_with_context(agent_id, CONTEXT_SECTION_TYPES, user_id=user_id)
@@ -209,7 +210,11 @@ async def _run_registration_agent(
         else:
             agent = await db.get_agent_for_user(user_id)
             if agent is None:
-                agent = await db.create_agent_for_user(user_id)
+                logger.info(
+                    "Registration agent: user %s has no agent assigned; skipping run",
+                    user_id,
+                )
+                return "No agent is set up for your account yet. Please create one in the web app before chatting."
             agent_with_ctx = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
             if agent_with_ctx:
                 agent = agent_with_ctx
@@ -280,7 +285,8 @@ async def _run_agent_loop(
         )
 
         # If we know which agent owns this channel, load it directly.
-        # Otherwise fall back to looking up (or creating) an agent for this user.
+        # Otherwise look up the user's agent. We no longer auto-create one —
+        # the user must set up an agent via the web UI before they can chat.
         if agent_id:
             agent = await db.get_agent_by_id(agent_id)
             agent_with_ctx = await db.fetch_agent_by_id_with_context(agent_id, CONTEXT_SECTION_TYPES, user_id=user_id)
@@ -289,7 +295,11 @@ async def _run_agent_loop(
         else:
             agent = await db.get_agent_for_user(user_id)
             if agent is None:
-                agent = await db.create_agent_for_user(user_id)
+                logger.info(
+                    "Agent loop: user %s has no agent assigned; skipping run",
+                    user_id,
+                )
+                return "No agent is set up for your account yet. Please create one in the web app before chatting."
             agent_with_ctx = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
             if agent_with_ctx:
                 agent = agent_with_ctx

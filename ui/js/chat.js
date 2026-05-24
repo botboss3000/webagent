@@ -167,6 +167,22 @@ async function sendMessage() {
   if (!_canChat()) { applyChatGate(); return; }
   const text = app.chatInput.value.trim();
   if (!text) return;
+
+  // No agent selected — open the new-agent modal instead of sending. Keep the
+  // typed text so the user can resend after picking a template + creating.
+  if (!app.currentAgentId) {
+    const sel = document.getElementById('main-tab-select');
+    if (sel) {
+      sel.value = 'agents';
+      sel.dispatchEvent(new Event('change'));
+    }
+    setTimeout(() => {
+      const newBtn = document.getElementById('btn-new-agent');
+      if (newBtn) newBtn.click();
+    }, 50);
+    return;
+  }
+
   app.chatInput.value = '';
   app.chatSend.disabled = true;
   _updateInputRowState();
