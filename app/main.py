@@ -24,7 +24,7 @@ apply_provider_config()
 import traceback
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -152,6 +152,39 @@ async def _capture_public_base_url(request, call_next):
     except Exception:
         pass
     return await call_next(request)
+
+
+@app.middleware("http")
+async def _canonical_host_redirect(request, call_next):
+    """301-redirect requests that arrive on a non-canonical host.
+
+    When the deployment sets WEBHOOK_BASE_URL (or webhook_base_url.txt) to its
+    public URL — e.g. `https://www.example.com` — any request reaching the app
+    on a different host (apex `example.com`, a preview URL, etc.) is sent a
+    301 to the same path on the canonical host. This keeps OAuth `redirect_uri`
+    values aligned with what's registered at the provider regardless of which
+    DNS name the user typed in.
+
+    No-op when no canonical URL is configured; localhost requests are exempt
+    so local development is never redirected to production."""
+    try:
+        from app.admin.integrations import _get_configured_base_url
+        canonical = _get_configured_base_url()
+        if not canonical:
+            return await call_next(request)
+        host = (request.headers.get("x-forwarded-host") or request.url.netloc or "").split(",")[0].strip()
+        if not host or host.startswith("localhost") or host.startswith("127."):
+            return await call_next(request)
+        scheme = (request.headers.get("x-forwarded-proto") or request.url.scheme or "http").split(",")[0].strip()
+        actual = f"{scheme}://{host}".rstrip("/")
+        if actual.lower() == canonical.rstrip("/").lower():
+            return await call_next(request)
+        target = canonical.rstrip("/") + request.url.path
+        if request.url.query:
+            target += "?" + request.url.query
+        return RedirectResponse(target, status_code=301)
+    except Exception:
+        return await call_next(request)
 
 
 # Include routers
