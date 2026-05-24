@@ -60,8 +60,8 @@ const TOOL_DESCRIPTIONS = {
   get_webhook_log:              'View recent webhook event log',
   run_optimizer:                'Trigger the optimizer pipeline for this session',
   run_worker_trials:            'Run simulated trial conversations (Optimizer Planner only)',
-  handoff_to_finalizer:         'Hand off optimization results to the Finalizer',
-  deploy_optimization:          'Deploy an approved optimization change (Finalizer only)',
+  handoff_to_closer:            'Hand off optimization results to the Closer',
+  deploy_optimization:          'Deploy an approved optimization change (Closer only)',
   read_source:                  'Read any file on the server filesystem',
   write_source:                 'Create or overwrite a file (with backup)',
   edit_source:                  'Replace exact text in a file',
@@ -75,7 +75,7 @@ const TOOL_DESCRIPTIONS = {
 // Tier 0: Admin-only. Never shown or toggleable for normal agents.
 const TIER_0_ADMIN = new Set([
   'read_source','write_source','edit_source','delete_source','run_command','restart_server',
-  'run_worker_trials','handoff_to_finalizer','deploy_optimization',
+  'run_worker_trials','handoff_to_closer','deploy_optimization',
 ]);
 
 // Tier 1: Always-on. Present for all agents, not shown as toggleable.
@@ -130,14 +130,14 @@ const TOOL_CATEGORIES = [
     tools: [
       'read_source','write_source','edit_source','delete_source',
       'run_command','restart_server',
-      'run_worker_trials','handoff_to_finalizer','deploy_optimization',
+      'run_worker_trials','handoff_to_closer','deploy_optimization',
     ],
   },
 ];
 
 const PIPELINE_TOOLS = {
-  opt_planner:   ['run_worker_trials','handoff_to_finalizer'],
-  opt_finalizer: ['deploy_optimization'],
+  opt_planner: ['run_worker_trials','handoff_to_closer'],
+  opt_closer:  ['deploy_optimization'],
 };
 
 const DESTRUCTIVE = new Set([
@@ -151,8 +151,8 @@ function _toolsForAgent(agent) {
     return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL,
             'read_source','write_source','edit_source','delete_source','run_command','restart_server'];
   }
-  if (id === 'opt_planner')   return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL, ...(PIPELINE_TOOLS.opt_planner || [])];
-  if (id === 'opt_finalizer') return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL, ...(PIPELINE_TOOLS.opt_finalizer || [])];
+  if (id === 'opt_planner') return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL, ...(PIPELINE_TOOLS.opt_planner || [])];
+  if (id === 'opt_closer')  return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL, ...(PIPELINE_TOOLS.opt_closer  || [])];
 
   const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
   return [
@@ -250,7 +250,7 @@ async function _loadAppSettings() {
 function _iconColor(agent) {
   if (agent.access_level === 'admin_only') return 'color-red';
   const id = (agent.id || '').toLowerCase();
-  if (id.includes('planner') || id.includes('finalizer') || id.includes('opt')) return 'color-purple';
+  if (id.includes('planner') || id.includes('closer') || id.includes('opt')) return 'color-purple';
   if (agent.source === 'custom') return 'color-blue';
   return 'color-teal';
 }

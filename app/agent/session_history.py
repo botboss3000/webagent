@@ -42,7 +42,7 @@ def interactions_to_openai_messages(
             continue
         # Skip optimizer system messages (init, prefilter) — they are metadata,
         # not conversation turns. The optimizer session should only show
-        # Planner/Finalizer responses, not server-generated boilerplate.
+        # Planner/Closer responses, not server-generated boilerplate.
         if r.role == "assistant" and (r.content or "").startswith("📊 **Optimization Analysis**"):
             continue
         if r.role == "assistant" and (r.content or "").startswith("Stats:"):

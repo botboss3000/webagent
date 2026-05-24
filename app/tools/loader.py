@@ -1390,7 +1390,7 @@ class ToolLoader:
                 },
             )
 
-        # ── Optimizer tools (Planner / Finalizer subagents) ──
+        # ── Optimizer tools (Planner / Closer subagents) ──
         from app.tools.optimizer_tools import run_worker_trials, handoff_to_closer, deploy_optimization
 
         async def _run_worker_trials_wrapper(changes_json: str = ""):
@@ -1446,7 +1446,7 @@ class ToolLoader:
             parameters={
                 "type": "object",
                 "properties": {
-                    "summary": {"type": "string", "description": "Summary of what was discussed and decided to pass to the Finalizer"},
+                    "summary": {"type": "string", "description": "Summary of what was discussed and decided to pass to the Closer"},
                     "judging_criteria": {"type": "string", "description": "Criteria used to judge worker trial quality, set by Planner + user"},
                     "baseline_transcript": {"type": "string", "description": "Original user question + agent answer transcript before optimization"},
                     "worker_results": {"type": "string", "description": "Worker trial results and transcripts for each proposed change"},
