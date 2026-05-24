@@ -70,7 +70,7 @@ function _setAgentTriggerLabel() {
   if (!labelEl) return;
   const aid = app.currentAgentId;
   const found = _agentsCache.find(a => a.id === aid);
-  const title = (found && found.name) || (window.__agentName) || aid || '—';
+  const title = (found && found.name) || (window.__agentName) || aid || 'No agent';
   labelEl.textContent = _truncate(title, 20);
   labelEl.title = (found && found.name) || title || '';
 }
@@ -122,7 +122,7 @@ export async function populateAgentSelect(userId) {
     const templatesData = templatesRes.ok ? await templatesRes.json() : { templates: [] };
     const profileData = profileRes.ok ? await profileRes.json() : {};
 
-    const defaultAgentId = profileData.default_agent_id || 'default';
+    const defaultAgentId = profileData.default_agent_id || '';
     const saved = localStorage.getItem('selectedAgentId');
     const pinned = _getPinnedAgents();
 
@@ -135,9 +135,11 @@ export async function populateAgentSelect(userId) {
     ];
     _agentsCache.sort(_agentSortFn);
 
-    // Pre-select: __agentId (public URL) > saved > default > first
+    // Pre-select: __agentId (public URL) > saved > user's stored default. No
+    // fallback to the first agent — users without a chosen agent start empty,
+    // and the chat-send flow opens the new-agent modal when they try to send.
     let target = window.__agentId || saved || defaultAgentId;
-    let found = _agentsCache.find(a => a.id === target);
+    let found = target ? _agentsCache.find(a => a.id === target) : null;
     if (!found && window.__agentId) {
       // Public agent URL — synthetic entry so chat sends correct UUID
       _agentsCache = [{
@@ -146,8 +148,6 @@ export async function populateAgentSelect(userId) {
         type: 'custom',
         pinned: false,
       }];
-      found = _agentsCache[0];
-    } else if (!found && _agentsCache.length) {
       found = _agentsCache[0];
     }
     app.currentAgentId = (found && found.id) || '';

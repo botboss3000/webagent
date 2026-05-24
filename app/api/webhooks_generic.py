@@ -104,10 +104,19 @@ async def generic_webhook_handler(webhook_id: str, request: Request):
             }),
         )
 
-        # 5. Get or create agent
+        # 5. Look up the user's agent. We no longer auto-create one — the user
+        # must set up an agent via the web UI before webhooks can run.
         agent = await db.get_agent_for_user(user_id)
         if agent is None:
-            agent = await db.create_agent_for_user(user_id)
+            logger.warning(
+                "webhook %s: user %s has no agent assigned; skipping run",
+                webhook_id, user_id,
+            )
+            return Response(
+                content='{"error":"no agent assigned for user"}',
+                status_code=400,
+                media_type="application/json",
+            )
 
         # 6. Fetch agent + context docs in one query
         agent_with_ctx = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
