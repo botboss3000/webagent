@@ -55,51 +55,11 @@ async def _create_session(db, user_id: str, agent_id: str, label: str, source: s
 
 
 async def _available_channels(db, user_id: str, agent_id: str) -> List[Dict[str, Any]]:
-    """List delivery channels the agent can reach the user on right now.
-
-    A channel is "available" if (a) the comms plugin is enabled at admin
-    level AND (b) the agent has a corresponding connection row enabled
-    AND (c) we know an external_id for this user on that channel. Webchat
-    is always available."""
-    out: List[Dict[str, Any]] = [{
-        "channel": "webchat",
-        "label": "Web chat (this session)",
-        "recipient_hint": "default: appears in the agent's chat tab",
-    }]
-    try:
-        from app.communications.manager import get_plugin_manager
-        from app.admin.integrations import get_channel_enabled_map
-        pm = get_plugin_manager()
-        admin_map = await get_channel_enabled_map()
-        agent_conns = await db.get_agent_connections(agent_id)
-        agent_conn_map = {c["connection_type"]: c for c in agent_conns}
-
-        for plugin in pm.get_all_plugins():
-            if not plugin.enabled:
-                continue
-            if plugin.name in admin_map and not admin_map.get(plugin.name):
-                continue
-            ac = agent_conn_map.get(plugin.name)
-            if not ac or not ac.get("enabled"):
-                continue
-            # Try to find a known recipient for this user on this channel.
-            recipient = None
-            try:
-                cfg = ac.get("config")
-                if isinstance(cfg, str):
-                    cfg = json.loads(cfg or "{}")
-                if isinstance(cfg, dict):
-                    recipient = cfg.get("default_recipient") or cfg.get("chat_id") or cfg.get("phone")
-            except Exception:
-                recipient = None
-            out.append({
-                "channel": plugin.name,
-                "label": plugin.name.capitalize(),
-                "recipient_hint": recipient or "ask the user for their address",
-            })
-    except Exception as e:
-        logger.debug("Could not enumerate available channels: %s", e)
-    return out
+    """Thin wrapper kept for backwards compat. Real logic lives in
+    `app.events.channels.list_available_channels` so the chat-level
+    `list_delivery_channels` tool can reuse it without importing the executor."""
+    from app.events.channels import list_available_channels
+    return await list_available_channels(db, user_id=user_id, agent_id=agent_id)
 
 
 def _format_event_block(event: NormalizedEvent) -> str:
@@ -178,7 +138,36 @@ async def execute_event_subscription(
         if not agent:
             return {"ok": False, "error": f"agent {agent_id} not found"}
 
-        session_id = await _create_session(db, user_id, agent_id, label, event.source)
+        # When the user subscribed with channel=webchat + channel_recipient=<session_id>,
+        # honor it: post the event-triggered reply back into the user's own chat
+        # session instead of spawning a fresh evt-* session that only shows up
+        # in the sidebar. Validates that the named session still exists and
+        # belongs to this user before reusing — otherwise falls back to evt-*.
+        session_id = None
+        target_recipient = (sub.get("channel_recipient") or "").strip()
+        if preferred_channel == "webchat" and target_recipient:
+            try:
+                existing = await db.get_session(target_recipient) if hasattr(db, "get_session") else None
+                if existing is None:
+                    # Some backends don't have get_session — fall back to a
+                    # raw lookup that any backend with raw_client supports.
+                    try:
+                        raw = db.get_raw_client()
+                        rows = raw.table("sessions").select("id,user_id").eq("id", target_recipient).execute()
+                        existing = (rows.data or [None])[0]
+                    except Exception:
+                        existing = None
+                if existing and (existing.get("user_id") == user_id):
+                    session_id = target_recipient
+                    logger.info(
+                        "Event sub %s reusing user session %s (channel=webchat)",
+                        sub.get("id"), session_id,
+                    )
+            except Exception as e:
+                logger.debug("Session reuse lookup failed for %s: %s", target_recipient, e)
+
+        if not session_id:
+            session_id = await _create_session(db, user_id, agent_id, label, event.source)
 
         resolved_slots = await db.resolve_prompts(agent_id, user_id=user_id)
         context_docs = [
@@ -209,8 +198,9 @@ async def execute_event_subscription(
                 f"See [EVENT TRIGGER] in your system prompt for details and decide what to do."
             )
 
+        user_interaction_id = None
         try:
-            await db.insert_interaction(
+            user_interaction_id = await db.insert_interaction(
                 user_id, session_id, role="user", content=user_message,
                 channel=f"event:{event.source}",
                 metadata=json.dumps({
@@ -224,12 +214,39 @@ async def execute_event_subscription(
         except Exception as e:
             logger.debug("Could not insert synthetic user interaction: %s", e)
 
+        # Push the synthetic user message into the user's WebSocket so the
+        # chat tab shows it as the trigger before the assistant reply
+        # streams in. Mirrors what `app/api/chat.py` emits for normal chats.
+        try:
+            from app.api.chat import _emit_to_visualizers
+            await _emit_to_visualizers(session_id, {
+                "type": "user_message",
+                "level": "user",
+                "content": user_message,
+                "id": user_interaction_id,
+                "source": "event_trigger",
+                "event_type": event.event_type,
+            }, user_id=user_id)
+        except Exception as e:
+            logger.debug("Could not broadcast synthetic user message: %s", e)
+
         raw_allowed = agent.get("allowed_tools", [])
         if isinstance(raw_allowed, str):
             try:
                 raw_allowed = json.loads(raw_allowed)
             except Exception:
                 raw_allowed = []
+
+        # Broadcast loop events to the user's WebSocket so the chat tab
+        # updates live when an event-triggered run posts a reply (without
+        # this the chat needs a manual refresh — DB has the row, UI doesn't
+        # know). Mirrors the `event_callback` the regular chat path uses.
+        async def _event_loop_callback(evt: Dict[str, Any]):
+            try:
+                from app.api.chat import _emit_to_visualizers
+                await _emit_to_visualizers(session_id, evt, user_id=user_id)
+            except Exception as e:
+                logger.debug("Event-run broadcast failed: %s", e)
 
         reply = await run_agent_loop_buffered(
             user_id=user_id,
@@ -244,6 +261,7 @@ async def execute_event_subscription(
             agent_template_id=agent.get("template_id"),
             allowed_tools=raw_allowed or None,
             max_turns=agent.get("max_turn_count", 10),
+            event_callback=_event_loop_callback,
         )
 
         # The agent itself drives delivery via tool calls (per design: no

@@ -349,7 +349,10 @@ function _renderList() {
     }
     const copyUrlBtn = card.querySelector('.agent-url-copy');
     if (copyUrlBtn) {
-      copyUrlBtn.addEventListener('click', e => {
+      // Use pointerdown — lucide replaces the inner <i> with <svg> between
+      // mousedown and mouseup, so the browser never synthesises a click event.
+      copyUrlBtn.addEventListener('pointerdown', e => {
+        e.preventDefault();
         e.stopPropagation();
         const url = `${location.origin}/${agent.id}`;
         navigator.clipboard.writeText(url).then(() => {
@@ -357,6 +360,8 @@ function _renderList() {
           setTimeout(() => { copyUrlBtn.innerHTML = icon('copy', { size: '13px' }); }, 1500);
         });
       });
+      // Swallow the stray click too so the card doesn't toggle if one fires.
+      copyUrlBtn.addEventListener('click', e => { e.stopPropagation(); });
     }
 
     card.addEventListener('click', () => _selectAgent(agent));
@@ -730,6 +735,17 @@ async function _renderAutomationTab(body, agent, panelEl) {
       saveMsg.style.color = 'var(--danger)';
     }
   });
+
+  // Expose a refresh hook so the per-user WebSocket can re-fetch tasks +
+  // event subscriptions when an `automation_updated` event arrives
+  // (e.g. the chat agent just called event_subscribe / event_unsubscribe).
+  // No-op when this tab isn't mounted for the affected agent.
+  app.refreshAutomationTab = (forAgentId) => {
+    if (forAgentId && forAgentId !== agent.id) return;
+    if (!body.isConnected) return;
+    loadTasks();
+    loadEvents();
+  };
 
   await Promise.all([loadTasks(), loadEvents()]);
 }

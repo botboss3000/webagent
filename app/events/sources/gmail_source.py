@@ -69,7 +69,31 @@ def _header(headers: List[dict], name: str) -> str:
     return ""
 
 
+async def _get_connected_email(db, owner_user_id: str, agent_id: str) -> str:
+    """Read the connected Gmail address out of the user's OAuth element."""
+    try:
+        elem = await db.auth_element_get(owner_user_id, "google", oauth_label(agent_id))
+        cfg = json.loads(elem.get("config") or "{}") if elem else {}
+        return (cfg.get("email") or "").lower()
+    except Exception:
+        return ""
+
+
 class GmailSource(EventSource):
+    """Gmail event source.
+
+    Two modes, picked automatically based on whether `EVENTS_GMAIL_PUBSUB_TOPIC`
+    is configured:
+      * **Push** (preferred) — Gmail `users.watch` → Cloud Pub/Sub → our webhook.
+        True real-time. Requires GCP setup (see docs/events-setup.md).
+      * **Poll fallback** — when the topic env var is unset. The background
+        poller calls `users.history.list` on a cadence (default 60s) and emits
+        the same `message_received` events. Quota-cheap; ~60s delivery lag.
+
+    Either way the subscription row + per-event payload look identical to the
+    rest of the system, so the router / executor / filters work unchanged.
+    """
+
     @property
     def name(self) -> str:
         return "gmail"
@@ -80,7 +104,19 @@ class GmailSource(EventSource):
 
     @property
     def supports_push(self) -> bool:
-        return True
+        # Real push only when Pub/Sub is configured.
+        return bool(_topic_name())
+
+    @property
+    def supports_poll(self) -> bool:
+        # Poll fallback whenever push is NOT configured. Mutually exclusive
+        # so each subscription is wired one way.
+        return not bool(_topic_name())
+
+    @property
+    def default_poll_interval_seconds(self) -> int:
+        # Gmail history.list quota is cheap; 60s is a comfortable cadence.
+        return 60
 
     @property
     def required_provider(self) -> Optional[str]:
@@ -88,13 +124,41 @@ class GmailSource(EventSource):
 
     @property
     def enabled(self) -> bool:
-        return bool(_topic_name())
+        # Either path works as long as the user has Google OAuth connected;
+        # provider-side wiring is handled per-subscription.
+        return True
 
     @property
     def description(self) -> str:
-        return ("Gmail inbox changes pushed via Google Cloud Pub/Sub. Filter "
-                "with Gmail search syntax in the `query` field "
-                "(e.g. `from:airlines.com`, `subject:flight`).")
+        if _topic_name():
+            return ("Gmail inbox changes pushed via Google Cloud Pub/Sub (real-time). "
+                    "Filter with Gmail search syntax in the `query` field "
+                    "(e.g. `from:airlines.com`, `subject:flight`).")
+        return ("Gmail inbox changes via poll fallback "
+                "(EVENTS_GMAIL_PUBSUB_TOPIC not configured, so we poll "
+                f"users.history.list every {self.default_poll_interval_seconds}s "
+                "instead of receiving Pub/Sub push). Filter with Gmail search "
+                "syntax in the `query` field. Set the env var + restart for "
+                "true real-time push.")
+
+    def required_scopes(self, event_type: str, filter_dict: Dict[str, Any]) -> List[List[str]]:
+        # Push (`users.watch` / `users.stop`) is gated by Gmail's modify or
+        # metadata scope (or full mail.google.com). The read-only scope is
+        # NOT enough — `watch` returns 403 with insufficient scopes.
+        if self.supports_push:
+            return [[
+                "https://www.googleapis.com/auth/gmail.modify",
+                "https://www.googleapis.com/auth/gmail.metadata",
+                "https://mail.google.com/",
+            ]]
+        # Poll fallback uses `users.history.list` + `messages.get` (metadata
+        # format) + `users.getProfile`. `gmail.readonly` is sufficient.
+        return [[
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.modify",
+            "https://www.googleapis.com/auth/gmail.metadata",
+            "https://mail.google.com/",
+        ]]
 
     def parser_schema(self) -> Dict[str, Any]:
         base = super().parser_schema()
@@ -113,9 +177,19 @@ class GmailSource(EventSource):
         self, *, owner_user_id: str, agent_id: str, event_type: str, filter_dict: Dict[str, Any]
     ) -> SubscriptionRegistration:
         topic = _topic_name()
-        if not topic:
-            raise RuntimeError("EVENTS_GMAIL_PUBSUB_TOPIC not configured")
+        if topic:
+            return await self._register_push(
+                owner_user_id=owner_user_id, agent_id=agent_id,
+                filter_dict=filter_dict, topic=topic,
+            )
+        return await self._register_poll(
+            owner_user_id=owner_user_id, agent_id=agent_id,
+            filter_dict=filter_dict,
+        )
 
+    async def _register_push(
+        self, *, owner_user_id: str, agent_id: str, filter_dict: Dict[str, Any], topic: str,
+    ) -> SubscriptionRegistration:
         labels = filter_dict.get("label_ids") or ["INBOX"]
         if isinstance(labels, str):
             labels = [s.strip() for s in labels.split(",") if s.strip()]
@@ -135,16 +209,8 @@ class GmailSource(EventSource):
         history_id = str(body_out.get("historyId") or "")
         expiration_iso = _expiration_iso_from_ms(str(body_out.get("expiration") or ""))
 
-        # Stash the user's email so Pub/Sub callbacks can find them.
-        connected_email = ""
-        try:
-            from app.db import get_db
-            db = get_db()
-            elem = await db.auth_element_get(owner_user_id, "google", oauth_label(agent_id))
-            cfg = json.loads(elem.get("config") or "{}") if elem else {}
-            connected_email = (cfg.get("email") or "").lower()
-        except Exception:
-            pass
+        from app.db import get_db
+        connected_email = await _get_connected_email(get_db(), owner_user_id, agent_id)
 
         return SubscriptionRegistration(
             external_subscription_id=connected_email or owner_user_id,  # used as lookup key
@@ -155,10 +221,56 @@ class GmailSource(EventSource):
                 "email": connected_email,
                 "labels": labels,
                 "topic": topic,
+                "mode": "push",
             },
         )
 
+    async def _register_poll(
+        self, *, owner_user_id: str, agent_id: str, filter_dict: Dict[str, Any],
+    ) -> SubscriptionRegistration:
+        """Seed a poll-mode subscription with the current historyId so the
+        first poll only sees messages that arrive *after* subscription time."""
+        from app.db import get_db
+        db = get_db()
+        connected_email = await _get_connected_email(db, owner_user_id, agent_id)
+        current_history_id = await self._fetch_current_history_id(owner_user_id, agent_id)
+
+        labels = filter_dict.get("label_ids") or ["INBOX"]
+        if isinstance(labels, str):
+            labels = [s.strip() for s in labels.split(",") if s.strip()]
+
+        return SubscriptionRegistration(
+            external_subscription_id=connected_email or owner_user_id,
+            external_resource_id=None,
+            external_expiration_at=None,  # poll mode has no provider-side TTL
+            external_metadata={
+                "history_id": current_history_id,
+                "email": connected_email,
+                "labels": labels,
+                "mode": "poll",
+            },
+            poll_cursor=current_history_id,
+        )
+
+    async def _fetch_current_history_id(self, user_id: str, agent_id: str) -> str:
+        resp = await oauth_api_call(
+            user_id, agent_id, "google", "GET",
+            f"{_GMAIL_BASE}/profile",
+        )
+        if resp.get("status") != "ok":
+            raise RuntimeError(f"Gmail profile fetch failed: {resp}")
+        return str((resp.get("body") or {}).get("historyId") or "")
+
     async def unregister_subscription(self, subscription_row: Dict[str, Any]) -> None:
+        # Only push-mode subs have a provider-side handle to stop.
+        meta = subscription_row.get("external_metadata") or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {}
+        if meta.get("mode") == "poll":
+            return
         owner_user_id = subscription_row["owner_user_id"]
         agent_id = subscription_row.get("agent_id", "")
         try:
@@ -168,6 +280,51 @@ class GmailSource(EventSource):
             )
         except Exception as e:
             logger.warning("Gmail stop failed for user %s: %s", owner_user_id[:12], e)
+
+    # ── Poll fallback ────────────────────────────────────────────────────
+
+    async def poll(self, subscription_row: Dict[str, Any]) -> Tuple[List[NormalizedEvent], Optional[str]]:
+        user_id = subscription_row["owner_user_id"]
+        agent_id = subscription_row.get("agent_id", "")
+        meta = subscription_row.get("external_metadata") or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {}
+        since = (subscription_row.get("poll_cursor")
+                 or str(meta.get("history_id") or "")).strip()
+        email = (meta.get("email") or "").lower()
+        if not email:
+            from app.db import get_db
+            email = await _get_connected_email(get_db(), user_id, agent_id)
+
+        if not since:
+            # No cursor yet — seed and emit nothing this tick.
+            current = await self._fetch_current_history_id(user_id, agent_id)
+            return [], current or None
+
+        new_msg_ids = await self._list_new_message_ids(user_id, agent_id, since)
+        if not new_msg_ids:
+            current = await self._fetch_current_history_id(user_id, agent_id)
+            return [], current or since
+
+        filter_dict = subscription_row.get("filter") or {}
+        query = (filter_dict.get("query") or "").strip()
+
+        events: List[NormalizedEvent] = []
+        for msg_id in new_msg_ids:
+            if query:
+                matched = await self._message_matches_query(user_id, agent_id, msg_id, query)
+                if not matched:
+                    continue
+            msg = await self._fetch_message_metadata(user_id, agent_id, msg_id)
+            if msg is None:
+                continue
+            events.append(self._build_event(user_id, email, msg))
+
+        new_cursor = await self._fetch_current_history_id(user_id, agent_id)
+        return events, new_cursor or since
 
     # ── Pub/Sub intake ───────────────────────────────────────────────────
 

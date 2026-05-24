@@ -3,6 +3,7 @@
 import { app } from './state.js';
 import { agentWsUrl, apiPath } from './config.js';
 import { logTool } from './toolLog.js';
+import { getAuthToken } from './left-login.js';
 
 let reconnectTimer = null;
 let reconnectAttempts = 0;
@@ -54,9 +55,13 @@ export function connectAgent() {
   app.agentWs = new WebSocket(agentWsUrl());
 
   app.agentWs.onopen = () => {
+    // Send the JWT alongside the user_id so the server can prove the caller
+    // is who they claim to be — without this the per-user broadcast
+    // registration would accept any user_id and leak cross-tenant events.
     app.agentWs.send(JSON.stringify({
       mode: 'user_subscriber',
       user_id: app.currentUserId,
+      token: getAuthToken() || '',
     }));
   };
 
@@ -94,11 +99,13 @@ export function connectAgent() {
     }
 
     // ── Chat bubble display is handled by SSE in chat.js ──
-    // WS does NOT update chat bubbles to avoid race with SSE.
-    // The only WS events that affect chat display are:
-    //   - "error" (when SSE connection failed and WS still sees error)
-    //   - "interrupted" (same)
-    // These are processed only if the event belongs to the current session.
+    // WS does NOT update chat bubbles for user-typed turns to avoid races
+    // with SSE. The only WS events that affect chat display are:
+    //   - "error" / "interrupted" — only when SSE isn't driving (error path)
+    //   - "user_message" / "response" from EVENT-TRIGGERED runs — no SSE is
+    //     running for those, so WS is the ONLY way the chat bubble can
+    //     refresh in real time. Guarded on `!window.__sseActive` so we
+    //     never collide with an in-flight user-typed turn.
 
     const eventSessionId = event.session_id || event.sessionId || '';
 
@@ -120,9 +127,40 @@ export function connectAgent() {
         app.agentBuffer = '';
         break;
 
-      // All other event types (stream, response, tool_call, tool_result,
-      // pipeline, db, attachment) are handled by:
-      //   - SSE reader in chat.js (chat bubble updates)
+      case 'user_message':
+        // Event-triggered runs inject a synthetic user message describing
+        // the event. Render it as a chat bubble so the user sees WHAT
+        // triggered the assistant reply that's about to stream in.
+        if (eventSessionId && eventSessionId !== app.currentSessionId) break;
+        if (window.__sseActive) break;
+        if (event.source === 'event_trigger' && typeof app.addChatBubble === 'function') {
+          app.addChatBubble('user', event.content || '', 'event-trigger');
+        }
+        break;
+
+      case 'response':
+        // Final assistant reply from an event-triggered run. SSE is not
+        // running for these, so the WS is the only path to a live update.
+        if (eventSessionId && eventSessionId !== app.currentSessionId) break;
+        if (window.__sseActive) break;
+        if (typeof app.addChatBubble === 'function') {
+          app.addChatBubble('agent', event.content || '');
+        }
+        break;
+
+      case 'automation_updated':
+        // Backend tool (event_subscribe / event_unsubscribe / etc.) wrote
+        // to agent_automations or agent_event_subscriptions. Tell the
+        // Automation tab to re-fetch if it's currently mounted for the
+        // affected agent.
+        if (typeof app.refreshAutomationTab === 'function') {
+          try { app.refreshAutomationTab(event.agent_id); } catch (_) { /* ignore */ }
+        }
+        break;
+
+      // All other event types (stream, tool_call, tool_result, pipeline,
+      // db, attachment) are handled by:
+      //   - SSE reader in chat.js (chat bubble updates for user turns)
       //   - app._loopHandler / app._loopVisualHandler (debug panels)
       default:
         break;

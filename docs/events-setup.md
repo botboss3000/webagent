@@ -30,9 +30,16 @@ subscriptions start working.
 
 ## What each source needs
 
-### 1. Gmail — push via Cloud Pub/Sub
+### 1. Gmail — push via Cloud Pub/Sub (or 60s poll fallback)
 
-Required env vars:
+> **Poll fallback is automatic.** If `EVENTS_GMAIL_PUBSUB_TOPIC` is not set,
+> Gmail subscriptions still work — the background poller calls
+> `users.history.list` every 60 seconds and emits the same
+> `message_received` events. Setup is then *only* the user's Google OAuth
+> connection; no GCP work needed. To upgrade to real push (no 60s lag, lower
+> request volume), do the one-time GCP setup below and set the env vars.
+
+Required env vars (push mode only — omit all three for poll fallback):
 
 | Variable | Purpose |
 |---|---|

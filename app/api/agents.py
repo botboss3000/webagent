@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from app.auth.identity import assert_caller_is
 from app.db import get_db
 
 logger = logging.getLogger(__name__)
@@ -318,7 +319,8 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest):
 
 
 @router.get("/agents/{agent_id}/slots")
-async def get_agent_slots(agent_id: str, user_id: str = Query(...)):
+async def get_agent_slots(request: Request, agent_id: str, user_id: str = Query(...)):
+    user_id = await assert_caller_is(request, user_id)
     """Return admin-base slot definitions for an agent or template.
 
     Custom agents return the rows scoped to their agent_id. System templates
@@ -344,7 +346,7 @@ async def get_agent_slots(agent_id: str, user_id: str = Query(...)):
 
 
 @router.put("/agents/{agent_id}/my-prompts")
-async def update_my_prompts(agent_id: str, req: UpdateMyPromptsRequest):
+async def update_my_prompts(request: Request, agent_id: str, req: UpdateMyPromptsRequest):
     """Write the caller's per-user override rows for one or more unlocked slots.
 
     Locked slots and unknown slot_names are rejected per slot (the rest still
@@ -354,6 +356,7 @@ async def update_my_prompts(agent_id: str, req: UpdateMyPromptsRequest):
     structured ``agent_automations`` rows and return them under
     ``automation_tasks``.
     """
+    req.user_id = await assert_caller_is(request, req.user_id)
     db = get_db()
     agent = await db.get_agent_by_id(agent_id)
     if not agent:
@@ -413,8 +416,9 @@ async def update_my_prompts(agent_id: str, req: UpdateMyPromptsRequest):
 
 
 @router.get("/agents/{agent_id}/automations")
-async def list_agent_automations(agent_id: str, user_id: str = Query(...)):
+async def list_agent_automations(request: Request, agent_id: str, user_id: str = Query(...)):
     """List parsed scheduled task rows for this user/agent."""
+    user_id = await assert_caller_is(request, user_id)
     db = get_db()
     agent = await db.get_agent_by_id(agent_id)
     if not agent:
@@ -424,8 +428,9 @@ async def list_agent_automations(agent_id: str, user_id: str = Query(...)):
 
 
 @router.post("/agents/{agent_id}/automations/parse")
-async def reparse_agent_automations(agent_id: str, user_id: str = Query(...)):
+async def reparse_agent_automations(request: Request, agent_id: str, user_id: str = Query(...)):
     """Re-run the LLM parser against the caller's resolved ``automation`` slot."""
+    user_id = await assert_caller_is(request, user_id)
     db = get_db()
     agent = await db.get_agent_by_id(agent_id)
     if not agent:
@@ -474,8 +479,9 @@ class UpdateAutomationBody(BaseModel):
 
 
 @router.patch("/agents/{agent_id}/automations/{automation_id}")
-async def patch_agent_automation(agent_id: str, automation_id: str, body: UpdateAutomationBody):
+async def patch_agent_automation(request: Request, agent_id: str, automation_id: str, body: UpdateAutomationBody):
     """Toggle enabled / channel / silent for a single task without re-parsing."""
+    body.user_id = await assert_caller_is(request, body.user_id)
     db = get_db()
     row = await db.get_automation(automation_id)
     if not row or row.get("agent_id") != agent_id:
@@ -496,8 +502,9 @@ async def patch_agent_automation(agent_id: str, automation_id: str, body: Update
 
 
 @router.post("/agents/{agent_id}/automations/{automation_id}/run-now")
-async def run_agent_automation_now(agent_id: str, automation_id: str, user_id: str = Query(...)):
+async def run_agent_automation_now(request: Request, agent_id: str, automation_id: str, user_id: str = Query(...)):
     """Fire an automation immediately. Does not affect ``next_run_at``."""
+    user_id = await assert_caller_is(request, user_id)
     db = get_db()
     row = await db.get_automation(automation_id)
     if not row or row.get("agent_id") != agent_id:
@@ -532,8 +539,9 @@ async def fire_remote_automation(automation_id: str, token: str = Query(...)):
 
 
 @router.delete("/agents/{agent_id}/automations/{automation_id}")
-async def delete_agent_automation(agent_id: str, automation_id: str, user_id: str = Query(...)):
+async def delete_agent_automation(request: Request, agent_id: str, automation_id: str, user_id: str = Query(...)):
     """Delete one automation row (the file is left untouched)."""
+    user_id = await assert_caller_is(request, user_id)
     db = get_db()
     row = await db.get_automation(automation_id)
     if not row or row.get("agent_id") != agent_id:
@@ -561,7 +569,8 @@ async def delete_agent_automation(agent_id: str, automation_id: str, user_id: st
 
 
 @router.get("/agents/{agent_id}/event-subscriptions")
-async def list_agent_event_subscriptions(agent_id: str, user_id: str = Query(...)):
+async def list_agent_event_subscriptions(request: Request, agent_id: str, user_id: str = Query(...)):
+    user_id = await assert_caller_is(request, user_id)
     """List the caller's event-trigger rows for this agent.
 
     Each row carries the same observability fields the renewer/poller write:
@@ -620,8 +629,9 @@ class UpdateEventSubscriptionBody(BaseModel):
 
 @router.patch("/agents/{agent_id}/event-subscriptions/{sub_id}")
 async def patch_agent_event_subscription(
-    agent_id: str, sub_id: str, body: UpdateEventSubscriptionBody,
+    request: Request, agent_id: str, sub_id: str, body: UpdateEventSubscriptionBody,
 ):
+    body.user_id = await assert_caller_is(request, body.user_id)
     """Edit a single event subscription without re-parsing the English file.
 
     Per option 3: the row is the active state; the Automation slot is the
@@ -672,8 +682,9 @@ async def patch_agent_event_subscription(
 
 @router.post("/agents/{agent_id}/event-subscriptions/{sub_id}/re-register")
 async def reregister_agent_event_subscription(
-    agent_id: str, sub_id: str, user_id: str = Query(...),
+    request: Request, agent_id: str, sub_id: str, user_id: str = Query(...),
 ):
+    user_id = await assert_caller_is(request, user_id)
     """Re-run the source plugin's ``register_subscription`` for this row.
 
     Used after Pub/Sub topic recreation, OAuth reconnect, or to clear a
@@ -698,8 +709,9 @@ async def reregister_agent_event_subscription(
 
 @router.post("/agents/{agent_id}/event-subscriptions/{sub_id}/test-fire")
 async def test_fire_event_subscription(
-    agent_id: str, sub_id: str, user_id: str = Query(...),
+    request: Request, agent_id: str, sub_id: str, user_id: str = Query(...),
 ):
+    user_id = await assert_caller_is(request, user_id)
     """Synthesize a fake event and run it through the router for this sub.
 
     Bypasses the source's filter (we manufacture a NormalizedEvent that
@@ -767,8 +779,9 @@ async def test_fire_event_subscription(
 
 @router.delete("/agents/{agent_id}/event-subscriptions/{sub_id}")
 async def delete_agent_event_subscription(
-    agent_id: str, sub_id: str, user_id: str = Query(...),
+    request: Request, agent_id: str, sub_id: str, user_id: str = Query(...),
 ):
+    user_id = await assert_caller_is(request, user_id)
     """Delete the row AND unregister the provider-side watch.
 
     Per option 3, the English file is left alone — a future re-parse with
@@ -830,8 +843,9 @@ async def _rereg_subscription(row: Dict[str, Any]) -> None:
 
 
 @router.delete("/agents/{agent_id}/my-prompts/{slot_name}")
-async def delete_my_prompt(agent_id: str, slot_name: str, user_id: str = Query(...)):
+async def delete_my_prompt(request: Request, agent_id: str, slot_name: str, user_id: str = Query(...)):
     """Remove the caller's override row for a single slot."""
+    user_id = await assert_caller_is(request, user_id)
     db = get_db()
     deleted = await db.delete_override(agent_id, slot_name, user_id)
     return {"deleted": bool(deleted)}
