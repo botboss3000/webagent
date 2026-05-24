@@ -1664,7 +1664,7 @@ class LocalBackend(StorageBackend):
         turn_seq: Optional[int] = None,
     ) -> str:
         await self.assert_session_owned(user_id, session_id)
-        # Optimizer/Finalizer sessions get source='optimizer' for all interactions
+        # Optimizer/Closer sessions get source='optimizer' for all interactions
         if source is None and (session_id.startswith('optimizer-') or session_id.startswith('closer-')):
             source = 'optimizer'
         async with self._write_lock:

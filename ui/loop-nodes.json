@@ -439,7 +439,7 @@
       "details": [
         { "key": "Mode",     "val": "Fire-and-forget (asyncio.create_task) — never blocks the response stream" },
         { "key": "Triggers", "val": "All exit paths: clean finish · max_turns · interrupt · unhandled error" },
-        { "key": "Output",   "val": "Optimizer session → planner → finalizer → skill updates in DB" }
+        { "key": "Output",   "val": "Optimizer session → planner → closer → skill updates in DB" }
       ]
     },
     "opt_collect": {

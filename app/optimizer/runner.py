@@ -27,7 +27,7 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
     5. Return session_id for the user to open.
 
     No direct LLM calls. No iteration loop. No auto-deploy.
-    The Planner / Finalizer agents handle those via tools in chat flow.
+    The Planner / Closer agents handle those via tools in chat flow.
     """
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     from app.optimizer.templates import seed_optimizer_templates

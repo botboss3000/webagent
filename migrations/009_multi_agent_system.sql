@@ -68,14 +68,14 @@ UPDATE agent_templates SET
 WHERE id = 'opt_planner';
 
 UPDATE agent_templates SET
-    name        = 'Optimizer Finalizer',
-    description = 'Pipeline agent — refines and finalizes optimizer output.',
-    icon        = '✅',
+    name        = 'Optimizer Closer',
+    description = 'Pipeline agent — evaluates trial results and closes out the optimization.',
+    icon        = '🔒',
     can_be_default = 0,
     is_system   = 1,
     is_pipeline = 1,
     access_level = 'all'
-WHERE id = 'opt_finalizer';
+WHERE id = 'opt_closer';
 
 -- ── Seed: admin-agent template (insert if not present) ─────────────────────
 -- system_prompt and bootstrap_tools are intentionally left blank here;
