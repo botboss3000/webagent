@@ -276,6 +276,25 @@ def resolve_user_id(authorization: str = "", token_qs: str = "") -> str:
 _LAST_SEEN_BASE_URL: str = ""
 
 
+def _get_configured_base_url() -> Optional[str]:
+    """Return the deployment-configured canonical base URL, or None if unset.
+
+    Checked sources (in order): WEBHOOK_BASE_URL env var, then
+    webhook_base_url.txt at the repo root. Returns None when neither is set,
+    so callers can distinguish "operator picked a canonical host" from
+    "fall back to request-derived host"."""
+    from pathlib import Path
+    base_url = os.environ.get("WEBHOOK_BASE_URL", "").strip()
+    if not base_url:
+        try:
+            wh_file = Path(__file__).resolve().parent.parent.parent / "webhook_base_url.txt"
+            if wh_file.exists():
+                base_url = wh_file.read_text().strip()
+        except Exception:
+            pass
+    return base_url or None
+
+
 def _get_base_url(request: Optional[Request] = None) -> str:
     """Return the configured base URL.
 
@@ -289,15 +308,7 @@ def _get_base_url(request: Optional[Request] = None) -> str:
     5. Fallback to http://localhost:8000
     """
     global _LAST_SEEN_BASE_URL
-    from pathlib import Path
-    base_url = os.environ.get("WEBHOOK_BASE_URL", "")
-    if not base_url:
-        try:
-            wh_file = Path(__file__).resolve().parent.parent.parent / "webhook_base_url.txt"
-            if wh_file.exists():
-                base_url = wh_file.read_text().strip()
-        except Exception:
-            pass
+    base_url = _get_configured_base_url() or ""
     if not base_url and request is not None:
         # Derive from the incoming request. Behind a TLS-terminating proxy (e.g.
         # Cloud Run, Caddy), the app sees http:// internally but the real scheme
