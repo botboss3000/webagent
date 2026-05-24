@@ -3,7 +3,7 @@
 import { app } from './state.js';
 import { apiPath } from './config.js';
 import { addAttachmentsToMessage, renderAttachmentElement } from './attachments.js';
-import { getAccessMode, fetchAccessMode } from './left-login.js';
+import { getAccessMode, fetchAccessMode, authHeaders } from './left-login.js';
 
 /** Returns true when the current visitor may use chat under the active access mode. */
 function _canChat() {
@@ -120,7 +120,7 @@ async function sendStopMessage() {
   try {
     await fetch(apiPath('/api/v1/chat/interrupt'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ session_id: app.currentSessionId }),
     });
   } catch (e) {
@@ -205,7 +205,7 @@ async function sendMessage() {
     // WS is a secondary/backup and will skip if __sseActive is true.
     const resp = await fetch(apiPath('/api/v1/chat/stream'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(payload),
       signal: app._sseAbortController.signal,
     });
@@ -238,6 +238,18 @@ async function sendMessage() {
           event = JSON.parse(line.slice(6));
         } catch {
           continue;
+        }
+
+        // Track highest session_seq the client has seen for this session.
+        // Used by agentWs.js on reconnect to ask the server for replay
+        // of only-newer events.
+        const _sid = event.session_id || app.currentSessionId;
+        if (_sid && typeof event.session_seq === 'number') {
+          if (!app.lastSessionSeq) app.lastSessionSeq = {};
+          const prev = app.lastSessionSeq[_sid] || 0;
+          if (event.session_seq > prev) {
+            app.lastSessionSeq[_sid] = event.session_seq;
+          }
         }
 
         // Update bubble from SSE events
@@ -311,9 +323,58 @@ export function abortChatStream() {
   if (app.chatSend) app.chatSend.disabled = false;
 }
 
+/**
+ * Append a stream chunk into the currently-active agent bubble.
+ *
+ * Used by the WS path when the SSE reader isn't driving (refresh
+ * mid-stream, session switch back into an in-flight run). Creates a
+ * placeholder bubble if none exists. Idempotent against replayed chunks
+ * — caller passes raw text; this just appends to app.agentBuffer.
+ */
+function appendStreamToActiveBubble(textChunk) {
+  if (textChunk == null) return;
+  // Make sure there's an agent bubble to write into.
+  const bubbles = app.chatMessages
+    ? app.chatMessages.querySelectorAll('.chat-bubble.agent')
+    : [];
+  if (!bubbles || bubbles.length === 0) {
+    addChatBubble('agent', '…', 'streaming');
+  }
+  if (app.agentBuffer === undefined) app.agentBuffer = '';
+  app.agentBuffer += textChunk;
+  updateLastBubble(app.agentBuffer, 'streaming');
+  app.isProcessing = true;
+}
+
+/**
+ * Finalize the active agent bubble with the full response text.
+ *
+ * Used by the WS path on `response` events when SSE isn't driving:
+ *   - event-triggered runs (no SSE was ever started)
+ *   - replayed final response after refresh / session reattach
+ */
+function finalizeAgentResponse(content, isReplayed) {
+  const bubbles = app.chatMessages
+    ? app.chatMessages.querySelectorAll('.chat-bubble.agent')
+    : [];
+  if (!bubbles || bubbles.length === 0) {
+    addChatBubble('agent', content || '');
+  } else {
+    app.agentBuffer = '';
+    updateLastBubble(content || '');
+  }
+  app.isProcessing = false;
+  if (app.chatSend) app.chatSend.disabled = false;
+  if (typeof app.populateSessionSelect === 'function') {
+    try { app.populateSessionSelect(app.currentUserId); } catch (_) {}
+  }
+}
+
 export function initChat() {
   app.addChatBubble = addChatBubble;
   app.updateLastBubble = updateLastBubble;
+  app.appendStreamToActiveBubble = appendStreamToActiveBubble;
+  app.finalizeAgentResponse = finalizeAgentResponse;
 
   app.chatSend.addEventListener('click', sendMessage);
   app.chatInput.addEventListener('keydown', (e) => {

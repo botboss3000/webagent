@@ -1,4 +1,5 @@
 {
   "extend_llm_to_agents": true,
-  "access_mode": "public_anonymous"
+  "access_mode": "public_anonymous",
+  "stream_buffer_retention_seconds": 60
 }

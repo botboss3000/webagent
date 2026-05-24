@@ -58,10 +58,16 @@ export function connectAgent() {
     // Send the JWT alongside the user_id so the server can prove the caller
     // is who they claim to be — without this the per-user broadcast
     // registration would accept any user_id and leak cross-tenant events.
+    // Also send the per-session "last session_seq" map so the server can
+    // replay any events we missed during the WS gap before going live.
+    const resume = (app.lastSessionSeq && typeof app.lastSessionSeq === 'object')
+      ? app.lastSessionSeq
+      : {};
     app.agentWs.send(JSON.stringify({
       mode: 'user_subscriber',
       user_id: app.currentUserId,
       token: getAuthToken() || '',
+      resume,
     }));
   };
 
@@ -81,7 +87,27 @@ export function connectAgent() {
       if (typeof app.populateUserSelect === 'function') {
         app.populateUserSelect();
       }
+      // Server tells us which sessions still have an in-flight run buffered.
+      // Stash it so the chat module can decide to "reattach" the bubble for
+      // the active session even if the user navigated away and back.
+      if (Array.isArray(event.active_sessions)) {
+        app._activeServerSessions = event.active_sessions;
+        if (typeof app.onActiveServerSessions === 'function') {
+          try { app.onActiveServerSessions(event.active_sessions); } catch(_) {}
+        }
+      }
       return;
+    }
+
+    // Track the highest session_seq we've ever seen per session, so the
+    // next WS reconnect can ask the server for only-newer events.
+    const _sid = event.session_id || event.sessionId || '';
+    if (_sid && typeof event.session_seq === 'number') {
+      if (!app.lastSessionSeq) app.lastSessionSeq = {};
+      const prev = app.lastSessionSeq[_sid] || 0;
+      if (event.session_seq > prev) {
+        app.lastSessionSeq[_sid] = event.session_seq;
+      }
     }
 
     // Forward to tool log panel
@@ -138,12 +164,27 @@ export function connectAgent() {
         }
         break;
 
+      case 'stream':
+        // Live (or replayed) assistant text for the current session, but
+        // ONLY when SSE isn't already driving the bubble. This is the
+        // path that lets a refresh / session-switch mid-stream reattach
+        // to the in-flight run.
+        if (eventSessionId && eventSessionId !== app.currentSessionId) break;
+        if (window.__sseActive) break;
+        if (typeof app.appendStreamToActiveBubble === 'function') {
+          try { app.appendStreamToActiveBubble(event.content || ''); } catch(_) {}
+        }
+        break;
+
       case 'response':
-        // Final assistant reply from an event-triggered run. SSE is not
+        // Final assistant reply from an event-triggered run OR replayed
+        // final from an in-flight run we reconnected to. SSE is not
         // running for these, so the WS is the only path to a live update.
         if (eventSessionId && eventSessionId !== app.currentSessionId) break;
         if (window.__sseActive) break;
-        if (typeof app.addChatBubble === 'function') {
+        if (typeof app.finalizeAgentResponse === 'function') {
+          try { app.finalizeAgentResponse(event.content || '', !!event.replayed); } catch(_) {}
+        } else if (typeof app.addChatBubble === 'function') {
           app.addChatBubble('agent', event.content || '');
         }
         break;

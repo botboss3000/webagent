@@ -546,11 +546,75 @@ function wire(m) {
   });
 }
 
+// ── Stream Buffer (in-memory event replay window) ──────────────────────────
+
+async function loadStreamBufferSetting() {
+  const sbufInput = qs('ac-storage-sbuf-seconds');
+  const sbufStatus = qs('ac-storage-sbuf-status');
+  const sbufBadge = qs('ac-storage-sbuf-badge');
+  if (!sbufInput) return;
+  try {
+    const r = await fetch(apiPath('/admin/settings/app'));
+    if (!r.ok) {
+      if (sbufStatus) sbufStatus.textContent = `Load failed: ${r.status}`;
+      return;
+    }
+    const data = await r.json();
+    const sec = (typeof data.stream_buffer_retention_seconds === 'number')
+      ? data.stream_buffer_retention_seconds
+      : 60;
+    sbufInput.value = sec;
+    if (sbufBadge) sbufBadge.textContent = `active: ${sec}s`;
+  } catch (e) {
+    if (sbufStatus) sbufStatus.textContent = 'Load failed';
+  }
+}
+
+function wireStreamBuffer() {
+  const sbufInput = qs('ac-storage-sbuf-seconds');
+  const sbufSave = qs('ac-storage-sbuf-save');
+  const sbufStatus = qs('ac-storage-sbuf-status');
+  const sbufBadge = qs('ac-storage-sbuf-badge');
+  if (!sbufSave || !sbufInput) return;
+
+  sbufSave.addEventListener('click', async () => {
+    let val = parseInt(sbufInput.value, 10);
+    if (isNaN(val) || val < 0) val = 0;
+    if (val > 3600) val = 3600;
+    sbufInput.value = val;
+    if (sbufStatus) sbufStatus.textContent = 'Saving…';
+    try {
+      // Read current settings first so we don't clobber siblings like access_mode.
+      const cur = await fetch(apiPath('/admin/settings/app'));
+      const curData = cur.ok ? await cur.json() : {};
+      curData.stream_buffer_retention_seconds = val;
+      const r = await fetch(apiPath('/admin/settings/app'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(curData),
+      });
+      if (!r.ok) {
+        if (sbufStatus) sbufStatus.textContent = `Save failed: ${r.status}`;
+        return;
+      }
+      const saved = await r.json();
+      const ssec = (typeof saved.stream_buffer_retention_seconds === 'number')
+        ? saved.stream_buffer_retention_seconds
+        : val;
+      if (sbufStatus) sbufStatus.textContent = `Saved (${ssec}s)`;
+      if (sbufBadge) sbufBadge.textContent = `active: ${ssec}s`;
+    } catch (e) {
+      if (sbufStatus) sbufStatus.textContent = `Save failed: ${e.message || e}`;
+    }
+  });
+}
+
 // ── Public entry ────────────────────────────────────────────────────────────
 
 export function initStorageUi() {
   PAGE = bindMount('ac-storage-');
   wire(PAGE);
+  wireStreamBuffer();
 
   if (PAGE) {
     renderNotes(PAGE.dbNotes, DB_NOTES, PAGE.provider && PAGE.provider.value);
@@ -565,6 +629,7 @@ export function initStorageUi() {
         loadEncryption(PAGE);
         loadTenants(PAGE);
       }
+      loadStreamBufferSetting();
     };
     setTimeout(() => { try { window.__refreshStorageSection(); } catch {} }, 200);
   }

@@ -71,6 +71,11 @@ export const app = {
 
   streamEntryCount: 0,
   streamStartTime: null,
+
+  // Per-session highest session_seq observed via WS replay / live events.
+  // Used to ask the server to replay only events newer than what we've seen
+  // when the WS reconnects (refresh, session switch back, network blip).
+  lastSessionSeq: {},          // { [sessionId]: int }
 };
 
 export function bindDom() {

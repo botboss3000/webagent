@@ -87,7 +87,7 @@ class SupabaseBackend(StorageBackend):
             await self.assert_session_owned(user_id, session_id)
             response = (
                 self._client.table("interactions")
-                .select("id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, from_id, to_id, created_at")
+                .select("id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, from_id, to_id, session_seq, turn_id, turn_seq, created_at")
                 .eq("session_id", session_id)
                 .order("created_at", desc=False)
                 .execute()
@@ -120,6 +120,9 @@ class SupabaseBackend(StorageBackend):
         output_data: Optional[str] = None,
         sender_id: Optional[str] = None,
         receiver_id: Optional[str] = None,
+        session_seq: Optional[int] = None,
+        turn_id: Optional[str] = None,
+        turn_seq: Optional[int] = None,
     ) -> str:
         try:
             await self.assert_session_owned(user_id, session_id)
@@ -137,6 +140,9 @@ class SupabaseBackend(StorageBackend):
                 "output": output_data,
                 "from_id": sender_id,
                 "to_id": receiver_id,
+                "session_seq": session_seq,
+                "turn_id": turn_id,
+                "turn_seq": turn_seq,
             }
             response = self._client.table("interactions").insert(data).execute()
             if response.data and len(response.data) > 0:
@@ -149,6 +155,76 @@ class SupabaseBackend(StorageBackend):
         except Exception as e:
             logger.error("Error inserting interaction: %s", e)
             raise
+
+    async def insert_interactions_batch(self, rows: List[Dict[str, Any]]) -> List[str]:
+        """Bulk-insert interactions via a single PostgREST request.
+
+        Each row dict may contain any column. PostgREST accepts an array body
+        and inserts in one transaction. Caller is responsible for session
+        ownership.
+        Returns inserted ids in the order Supabase returns them.
+        """
+        if not rows:
+            return []
+        try:
+            import uuid as _uuid_mod
+            payload: List[dict] = []
+            for r in rows:
+                d = {
+                    "id": r.get("id") or str(_uuid_mod.uuid4()),
+                    "session_id": r["session_id"],
+                    "role": r.get("role", "tool"),
+                    "content": r.get("content", ""),
+                    "parent_id": r.get("parent_id"),
+                    "tool_name": r.get("tool_name"),
+                    "tool_call_id": r.get("tool_call_id"),
+                    "channel": r.get("channel"),
+                    "source": r.get("source") or "user",
+                    "metadata": r.get("metadata"),
+                    "input": r.get("input"),
+                    "output": r.get("output"),
+                    "from_id": r.get("from_id"),
+                    "to_id": r.get("to_id"),
+                    "session_seq": r.get("session_seq"),
+                    "turn_id": r.get("turn_id"),
+                    "turn_seq": r.get("turn_seq"),
+                }
+                if r.get("created_at"):
+                    d["created_at"] = r["created_at"]
+                payload.append(d)
+            response = self._client.table("interactions").insert(payload).execute()
+            ids = [row["id"] for row in (response.data or [])]
+            logger.debug("Bulk inserted %d interactions (supabase)", len(ids))
+            return ids
+        except Exception as e:
+            logger.error("Error in insert_interactions_batch (supabase): %s", e)
+            raise
+
+    async def next_session_seq(self, session_id: str, count: int = 1) -> int:
+        """Return the next session_seq value to assign for this session.
+
+        Caller reserves `count` consecutive values starting from the returned
+        integer. NOTE: not atomic across concurrent runs on the same session;
+        the in-memory buffer counter in chat.py is the primary source of truth.
+        This helper is only used to bootstrap or recover after restart.
+        """
+        try:
+            response = (
+                self._client.table("interactions")
+                .select("session_seq")
+                .eq("session_id", session_id)
+                .order("session_seq", desc=True)
+                .limit(1)
+                .execute()
+            )
+            rows = response.data or []
+            current = 0
+            if rows and rows[0].get("session_seq") is not None:
+                current = int(rows[0]["session_seq"])
+            return current + 1
+        except Exception as e:
+            logger.warning("next_session_seq lookup failed: %s — starting from 1", e)
+            return 1
 
     # ---- Context Defaults ----
 
@@ -1671,10 +1747,22 @@ class SupabaseClient:
         output_data: Optional[str] = None,
         sender_id: Optional[str] = None,
         receiver_id: Optional[str] = None,
+        session_seq: Optional[int] = None,
+        turn_id: Optional[str] = None,
+        turn_seq: Optional[int] = None,
     ) -> str:
         return await SupabaseClient._get_backend().insert_interaction(
             user_id, session_id, role, content, parent_id, tool_name, tool_call_id, channel, source, metadata, input_data, output_data, sender_id, receiver_id,
+            session_seq=session_seq, turn_id=turn_id, turn_seq=turn_seq,
         )
+
+    @staticmethod
+    async def insert_interactions_batch(rows: List[Dict[str, Any]]) -> List[str]:
+        return await SupabaseClient._get_backend().insert_interactions_batch(rows)
+
+    @staticmethod
+    async def next_session_seq(session_id: str, count: int = 1) -> int:
+        return await SupabaseClient._get_backend().next_session_seq(session_id, count)
 
     @staticmethod
     async def fetch_context_defaults(context_types: List[str]) -> List[dict]:

@@ -90,6 +90,9 @@ class InteractionRecord(BaseModel):
     from_id: Optional[str] = None         # user id or agent id who sent it
     to_id: Optional[str] = None           # user id or agent id who received it
     source: Optional[str] = None          # e.g. 'optimizer:init', 'optimizer:prefilter'
+    session_seq: Optional[int] = None     # monotonic order within session (NULL on legacy rows)
+    turn_id: Optional[str] = None         # uuid of the user message that started this turn
+    turn_seq: Optional[int] = None        # order within turn (0, 1, 2, ...)
     created_at: datetime
 
 

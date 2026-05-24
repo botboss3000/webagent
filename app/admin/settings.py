@@ -327,6 +327,10 @@ class MetadataSetting(BaseModel):
 class AppSettings(BaseModel):
     extend_llm_to_agents: bool = True
     access_mode: str = "public_anonymous"  # public_anonymous | public_registered | admin_approval | private
+    # Seconds to keep a completed turn's in-memory RunBuffer around for
+    # WS-replay on reconnect. 0 = drop immediately. Default 60s gives a
+    # smooth refresh-after-completion UX without holding RAM long.
+    stream_buffer_retention_seconds: int = 60
 
 
 VALID_ACCESS_MODES = {"public_anonymous", "public_registered", "admin_approval", "private"}
@@ -731,5 +735,16 @@ async def set_app_settings(settings: AppSettings):
     """Save app-wide feature flags."""
     if settings.access_mode not in VALID_ACCESS_MODES:
         settings.access_mode = "public_anonymous"
+    # Clamp stream buffer retention to a sane range so a bad value can't
+    # exhaust RAM (huge) or break replay-after-reconnect entirely (negative).
+    try:
+        sb = int(settings.stream_buffer_retention_seconds)
+    except (TypeError, ValueError):
+        sb = 60
+    if sb < 0:
+        sb = 0
+    if sb > 3600:
+        sb = 3600
+    settings.stream_buffer_retention_seconds = sb
     _save_app_settings(settings.model_dump())
     return settings
