@@ -807,6 +807,25 @@ CREATE TABLE IF NOT EXISTS tenant_key_meta (
 CREATE INDEX IF NOT EXISTS idx_tenant_key_meta_active
     ON tenant_key_meta(user_id, status);
 
+-- ============================================================
+-- AutoAgent Pages (the page-builder workspace)
+-- Used by DatabasePageStore and HybridPageStore. In hybrid mode the
+-- `html` column stays NULL — the body lives on disk.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS pages (
+    id            TEXT PRIMARY KEY,
+    user_id       TEXT NOT NULL,
+    slug          TEXT NOT NULL,
+    title         TEXT NOT NULL,
+    agent_context TEXT NOT NULL DEFAULT '',
+    html          TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pages_user ON pages(user_id);
+
 """
 
 
@@ -4813,6 +4832,91 @@ class LocalBackend(StorageBackend):
             except Exception:
                 d[k] = {}
         return d
+
+    # ── Pages (page-builder workspace) ───────────────────────────────────
+
+    async def pages_list(self, user_id: str) -> List[dict]:
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM pages WHERE user_id = ? "
+                "ORDER BY (slug = 'home') DESC, updated_at DESC",
+                (user_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def pages_get(self, user_id: str, slug: str) -> Optional[dict]:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM pages WHERE user_id = ? AND slug = ?",
+                (user_id, slug),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def pages_upsert(
+        self,
+        user_id: str,
+        slug: str,
+        title: str,
+        agent_context: str = "",
+        html: Optional[str] = None,
+    ) -> dict:
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                now = _now_iso()
+                existing = conn.execute(
+                    "SELECT id, html FROM pages WHERE user_id = ? AND slug = ?",
+                    (user_id, slug),
+                ).fetchone()
+                if existing:
+                    # html=None means "leave body alone" (hybrid metadata update)
+                    if html is None:
+                        conn.execute(
+                            "UPDATE pages SET title = ?, agent_context = ?, "
+                            "updated_at = ? WHERE id = ?",
+                            (title, agent_context, now, existing["id"]),
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE pages SET title = ?, agent_context = ?, "
+                            "html = ?, updated_at = ? WHERE id = ?",
+                            (title, agent_context, html, now, existing["id"]),
+                        )
+                    conn.commit()
+                    return dict(conn.execute(
+                        "SELECT * FROM pages WHERE id = ?", (existing["id"],),
+                    ).fetchone())
+                row_id = _uuid()
+                conn.execute(
+                    "INSERT INTO pages (id, user_id, slug, title, agent_context, "
+                    "html, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (row_id, user_id, slug, title, agent_context, html, now, now),
+                )
+                conn.commit()
+                return dict(conn.execute(
+                    "SELECT * FROM pages WHERE id = ?", (row_id,),
+                ).fetchone())
+            finally:
+                conn.close()
+
+    async def pages_delete(self, user_id: str, slug: str) -> bool:
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "DELETE FROM pages WHERE user_id = ? AND slug = ?",
+                    (user_id, slug),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
 
     async def data_source_create(
         self,
