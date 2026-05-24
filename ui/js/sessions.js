@@ -395,6 +395,21 @@ export function registerSessionApi() {
 
 export function initSessions() {
   console.log('[initSessions] start');
+
+  // Global capture-phase click logger — shows EVERY click in the page,
+  // including ones that get swallowed before reaching their target's
+  // bubble-phase listeners.
+  document.addEventListener('click', (ev) => {
+    const path = ev.composedPath().slice(0, 6).map(n => {
+      if (!n) return n;
+      if (n === document) return 'document';
+      if (n === window) return 'window';
+      return (n.id ? '#' + n.id : '') + (n.tagName || '') + (n.className && typeof n.className === 'string' ? '.' + n.className.split(' ').join('.') : '');
+    });
+    const isPlusBtn = ev.target.closest && ev.target.closest('#session-new, #agent-new');
+    console.log(isPlusBtn ? '[doc-click PLUS]' : '[doc-click]', { target: ev.target.id || ev.target.tagName, x: ev.clientX, y: ev.clientY, path });
+  }, true);
+
   // ── Theme system ──
   const STORAGE_KEY = 'webagent_theme';
 
@@ -732,6 +747,13 @@ export function initSessions() {
   const sessionNewBtn = document.getElementById('session-new');
   console.log('[+session] wiring sessionNewBtn:', !!sessionNewBtn, sessionNewBtn);
   if (sessionNewBtn) {
+    // Capture-phase listener — runs even if some ancestor stops propagation.
+    sessionNewBtn.addEventListener('click', (ev) => {
+      console.log('[+session] CAPTURE click', { phase: ev.eventPhase, target: ev.target, path: ev.composedPath().map(n => n.id || n.tagName || n) });
+    }, true);
+    sessionNewBtn.addEventListener('pointerdown', (ev) => {
+      console.log('[+session] pointerdown', { target: ev.target, pointerType: ev.pointerType });
+    }, true);
     sessionNewBtn.addEventListener('click', (ev) => {
       console.log('[+session] click fired', { target: ev.target, currentTarget: ev.currentTarget, defaultPrevented: ev.defaultPrevented, currentSessionId: app.currentSessionId, currentUserId: app.currentUserId });
       try {
@@ -886,6 +908,12 @@ export function initSessions() {
   const agentNewBtn = document.getElementById('agent-new');
   console.log('[+agent] wiring agentNewBtn:', !!agentNewBtn, agentNewBtn);
   if (agentNewBtn) {
+    agentNewBtn.addEventListener('click', (ev) => {
+      console.log('[+agent] CAPTURE click', { phase: ev.eventPhase, target: ev.target, path: ev.composedPath().map(n => n.id || n.tagName || n) });
+    }, true);
+    agentNewBtn.addEventListener('pointerdown', (ev) => {
+      console.log('[+agent] pointerdown', { target: ev.target, pointerType: ev.pointerType });
+    }, true);
     agentNewBtn.addEventListener('click', (e) => {
       console.log('[+agent] click fired', { target: e.target, currentTarget: e.currentTarget, defaultPrevented: e.defaultPrevented });
       try {
