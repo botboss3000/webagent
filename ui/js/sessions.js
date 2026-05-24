@@ -394,6 +394,7 @@ export function registerSessionApi() {
 }
 
 export function initSessions() {
+  console.log('[initSessions] start');
   // ── Theme system ──
   const STORAGE_KEY = 'webagent_theme';
 
@@ -729,19 +730,26 @@ export function initSessions() {
   });
 
   const sessionNewBtn = document.getElementById('session-new');
+  console.log('[+session] wiring sessionNewBtn:', !!sessionNewBtn, sessionNewBtn);
   if (sessionNewBtn) {
-    sessionNewBtn.addEventListener('click', () => {
-      closeMenu();
-      abortChatStream();
-      app.currentSessionId = generateUUID();
-      localStorage.setItem('terminalSessionId', app.currentSessionId);
-      app.chatMessages.innerHTML = '';
-      app.addChatBubble('agent', 'New session. Start typing below.');
-      populateSessionSelect(app.currentUserId);
-      streamSessionChanged();
-      loopSessionChanged();
-      loopVisualSessionChanged();
-      autoAgentSessionChanged();
+    sessionNewBtn.addEventListener('click', (ev) => {
+      console.log('[+session] click fired', { target: ev.target, currentTarget: ev.currentTarget, defaultPrevented: ev.defaultPrevented, currentSessionId: app.currentSessionId, currentUserId: app.currentUserId });
+      try {
+        closeMenu();
+        abortChatStream();
+        app.currentSessionId = generateUUID();
+        localStorage.setItem('terminalSessionId', app.currentSessionId);
+        app.chatMessages.innerHTML = '';
+        app.addChatBubble('agent', 'New session. Start typing below.');
+        populateSessionSelect(app.currentUserId);
+        streamSessionChanged();
+        loopSessionChanged();
+        loopVisualSessionChanged();
+        autoAgentSessionChanged();
+        console.log('[+session] new session created:', app.currentSessionId);
+      } catch (e) {
+        console.error('[+session] handler threw:', e);
+      }
     });
   }
 
@@ -876,20 +884,28 @@ export function initSessions() {
 
   // ── + new agent button ──
   const agentNewBtn = document.getElementById('agent-new');
+  console.log('[+agent] wiring agentNewBtn:', !!agentNewBtn, agentNewBtn);
   if (agentNewBtn) {
     agentNewBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      closeAgentMenu();
-      const sel = document.getElementById('main-tab-select');
-      if (sel) {
-        sel.value = 'agents';
-        sel.dispatchEvent(new Event('change'));
+      console.log('[+agent] click fired', { target: e.target, currentTarget: e.currentTarget, defaultPrevented: e.defaultPrevented });
+      try {
+        e.stopPropagation();
+        closeAgentMenu();
+        const sel = document.getElementById('main-tab-select');
+        console.log('[+agent] main-tab-select:', !!sel, sel ? sel.value : null);
+        if (sel) {
+          sel.value = 'agents';
+          sel.dispatchEvent(new Event('change'));
+        }
+        // Defer to let startAgents() bind the create modal button before clicking
+        setTimeout(() => {
+          const btn = document.getElementById('btn-new-agent');
+          console.log('[+agent] btn-new-agent:', !!btn, btn);
+          if (btn) btn.click();
+        }, 50);
+      } catch (err) {
+        console.error('[+agent] handler threw:', err);
       }
-      // Defer to let startAgents() bind the create modal button before clicking
-      setTimeout(() => {
-        const btn = document.getElementById('btn-new-agent');
-        if (btn) btn.click();
-      }, 50);
     });
   }
 
