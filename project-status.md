@@ -1,1 +1,0 @@
-Need to figure out how to link android phone for mobile editing
