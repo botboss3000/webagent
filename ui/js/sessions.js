@@ -394,21 +394,28 @@ export function registerSessionApi() {
 }
 
 export function initSessions() {
-  console.log('[initSessions] start');
+  console.log('[initSessions] start v3');
 
-  // Global capture-phase click logger — shows EVERY click in the page,
-  // including ones that get swallowed before reaching their target's
-  // bubble-phase listeners.
-  document.addEventListener('click', (ev) => {
-    const path = ev.composedPath().slice(0, 6).map(n => {
-      if (!n) return n;
-      if (n === document) return 'document';
-      if (n === window) return 'window';
-      return (n.id ? '#' + n.id : '') + (n.tagName || '') + (n.className && typeof n.className === 'string' ? '.' + n.className.split(' ').join('.') : '');
-    });
-    const isPlusBtn = ev.target.closest && ev.target.closest('#session-new, #agent-new');
-    console.log(isPlusBtn ? '[doc-click PLUS]' : '[doc-click]', { target: ev.target.id || ev.target.tagName, x: ev.clientX, y: ev.clientY, path });
-  }, true);
+  const _describe = (n) => {
+    if (!n) return n;
+    if (n === document) return 'document';
+    if (n === window) return 'window';
+    return (n.id ? '#' + n.id : '') + (n.tagName || '') + (n.className && typeof n.className === 'string' ? '.' + n.className.split(' ').join('.') : '');
+  };
+  const _pathStr = (ev) => (ev.composedPath ? ev.composedPath().slice(0, 6).map(_describe) : 'no-path');
+
+  // Window-level capture for click + log every relevant event near the + buttons
+  ['mousedown', 'mouseup', 'pointerup', 'click'].forEach(type => {
+    window.addEventListener(type, (ev) => {
+      const isPlusBtn = ev.target.closest && ev.target.closest('#session-new, #agent-new');
+      if (isPlusBtn) {
+        console.log(`[win-${type} PLUS]`, { target: _describe(ev.target), x: ev.clientX, y: ev.clientY, defaultPrevented: ev.defaultPrevented, path: _pathStr(ev) });
+      } else if (type === 'click') {
+        // Log all clicks so we can see if a click happens nearby but on a different target
+        console.log('[win-click]', { target: _describe(ev.target), x: ev.clientX, y: ev.clientY });
+      }
+    }, true);
+  });
 
   // ── Theme system ──
   const STORAGE_KEY = 'webagent_theme';
