@@ -113,16 +113,13 @@ export async function populateAgentSelect(userId) {
   if (!userId) return;
 
   try {
-    const [agentsRes, templatesRes, profileRes] = await Promise.all([
+    const [agentsRes, templatesRes] = await Promise.all([
       fetch(apiPath(`/api/v1/agents?user_id=${encodeURIComponent(userId)}`)),
       fetch(apiPath(`/api/v1/agents/templates?user_id=${encodeURIComponent(userId)}`)),
-      fetch(apiPath(`/api/v1/user/profile?user_id=${encodeURIComponent(userId)}`)),
     ]);
     const agentsData = agentsRes.ok ? await agentsRes.json() : { agents: [] };
     const templatesData = templatesRes.ok ? await templatesRes.json() : { templates: [] };
-    const profileData = profileRes.ok ? await profileRes.json() : {};
 
-    const defaultAgentId = profileData.default_agent_id || '';
     const saved = localStorage.getItem('selectedAgentId');
     const pinned = _getPinnedAgents();
 
@@ -135,20 +132,29 @@ export async function populateAgentSelect(userId) {
     ];
     _agentsCache.sort(_agentSortFn);
 
-    // Pre-select: __agentId (public URL) > saved > user's stored default. No
-    // fallback to the first agent — users without a chosen agent start empty,
-    // and the chat-send flow opens the new-agent modal when they try to send.
-    let target = window.__agentId || saved || defaultAgentId;
-    let found = target ? _agentsCache.find(a => a.id === target) : null;
-    if (!found && window.__agentId) {
-      // Public agent URL — synthetic entry so chat sends correct UUID
-      _agentsCache = [{
-        id: window.__agentId,
-        name: window.__agentName || window.__agentId.slice(0, 12),
-        type: 'custom',
-        pinned: false,
-      }];
-      found = _agentsCache[0];
+    // Pre-select order:
+    //   1. __agentId  — viewing a public agent URL
+    //   2. saved      — last agent the user selected (localStorage)
+    //   3. first custom agent the user owns
+    //   4. empty      — chat send opens the new-agent modal
+    let found = null;
+    if (window.__agentId) {
+      found = _agentsCache.find(a => a.id === window.__agentId);
+      if (!found) {
+        // Synthetic entry so chat sends the correct UUID
+        _agentsCache = [{
+          id: window.__agentId,
+          name: window.__agentName || window.__agentId.slice(0, 12),
+          type: 'custom',
+          pinned: false,
+        }];
+        found = _agentsCache[0];
+      }
+    } else if (saved) {
+      found = _agentsCache.find(a => a.id === saved);
+    }
+    if (!found) {
+      found = _agentsCache.find(a => a.type === 'custom') || null;
     }
     app.currentAgentId = (found && found.id) || '';
 
@@ -391,6 +397,7 @@ export async function loadSessionChat(sessionId) {
 export function registerSessionApi() {
   app.populateUserSelect = populateUserSelect;
   app.populateSessionSelect = populateSessionSelect;
+  app.populateAgentSelect = populateAgentSelect;
 }
 
 export function initSessions() {

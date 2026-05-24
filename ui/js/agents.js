@@ -30,7 +30,6 @@ function _triggerKeyPlaceholder(triggerType) {
 let _agents         = [];   // full list from server
 let _expandedAgents = new Map(); // Map<agentId, { tab: string }>
 let _userIsAdmin    = false;
-let _defaultAgentId = null;
 let _extendLlmToAgents = true; // mirrors app-settings.json extend_llm_to_agents
 
 // Tool descriptions for the Tools tab (matches BUILTIN_TOOL_METADATA keys)
@@ -212,8 +211,7 @@ async function _loadProfile() {
     const res = await fetch(`/api/v1/user/profile?user_id=${encodeURIComponent(app.currentUserId)}`);
     if (res.ok) {
       const data = await res.json();
-      _userIsAdmin    = !!data.is_admin;
-      _defaultAgentId = data.default_agent_id || 'default';
+      _userIsAdmin = !!data.is_admin;
     }
   } catch (e) {
     console.warn('agents: could not load profile', e);
@@ -286,7 +284,6 @@ function _renderList() {
 
   for (const agent of _agents) {
     const isExpanded = _expandedAgents.has(agent.id);
-    const isDefault  = agent.id === _defaultAgentId;
 
     const badgeType  = agent.access_level === 'admin_only' ? 'admin'
                      : agent.source === 'custom'            ? 'custom'
@@ -301,7 +298,6 @@ function _renderList() {
     const model     = agent.model || '';
     const timeAgo   = _timeAgo(agent.updated_at || agent.created_at || '');
 
-    const canDefault = agent.can_be_default !== false && agent.can_be_default !== 0;
     const isCustom   = agent.source === 'custom';
 
     const card = document.createElement('div');
@@ -320,8 +316,6 @@ function _renderList() {
         </div>
         <div class="agent-card-badge-wrap">
           <span class="agent-badge ${badgeType}">${badgeLabel}</span>
-          ${isDefault ? '<span class="agent-badge default">Default</span>' : ''}
-          ${canDefault && !isDefault ? '<button class="agent-card-action-btn set-default-btn">Set Default</button>' : ''}
           ${isCustom ? '<button class="agent-card-action-btn delete-btn">Delete</button>' : ''}
         </div>
       </div>
@@ -339,10 +333,6 @@ function _renderList() {
     `;
 
     // Wire inline action buttons — stopPropagation so click doesn't toggle the panel
-    const setDefaultBtn = card.querySelector('.set-default-btn');
-    if (setDefaultBtn) {
-      setDefaultBtn.addEventListener('click', e => { e.stopPropagation(); _setDefault(agent); });
-    }
     const deleteBtn = card.querySelector('.delete-btn');
     if (deleteBtn) {
       deleteBtn.addEventListener('click', e => { e.stopPropagation(); _deleteAgent(agent); });
@@ -4840,23 +4830,6 @@ async function _saveChanges(agent, barEl, panelEl) {
   }
 }
 
-async function _setDefault(agent) {
-  try {
-    const res = await fetch(`/api/v1/agents/${agent.id}/set-default`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: app.currentUserId }),
-    });
-    if (res.ok) {
-      _defaultAgentId = agent.id;
-      await _loadAgents();
-      _renderList();
-    }
-  } catch (e) {
-    console.warn('agents: set-default failed', e);
-  }
-}
-
 async function _deleteAgent(agent) {
   if (agent.source !== 'custom') return;
   const displayName = _displayName(agent);
@@ -4951,6 +4924,15 @@ function _bindCreateModal() {
             _saveViewState();
           }
           _renderList();
+          // Make the new agent the active one so chat picks it up on next send.
+          const newId = data.agent && data.agent.id;
+          if (newId) {
+            app.currentAgentId = newId;
+            try { localStorage.setItem('selectedAgentId', newId); } catch (_) {}
+            if (typeof app.populateAgentSelect === 'function') {
+              try { await app.populateAgentSelect(app.currentUserId); } catch (_) {}
+            }
+          }
         }
       } catch (e) {
         console.warn('agents: create failed', e);
