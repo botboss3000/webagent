@@ -394,28 +394,6 @@ export function registerSessionApi() {
 }
 
 export function initSessions() {
-  console.log('[initSessions] start v3');
-
-  const _describe = (n) => {
-    if (!n) return n;
-    if (n === document) return 'document';
-    if (n === window) return 'window';
-    return (n.id ? '#' + n.id : '') + (n.tagName || '') + (n.className && typeof n.className === 'string' ? '.' + n.className.split(' ').join('.') : '');
-  };
-  const _pathStr = (ev) => (ev.composedPath ? ev.composedPath().slice(0, 6).map(_describe) : 'no-path');
-
-  // Window-level capture for click + log every relevant event near the + buttons
-  ['mousedown', 'mouseup', 'pointerup', 'click'].forEach(type => {
-    window.addEventListener(type, (ev) => {
-      const isPlusBtn = ev.target.closest && ev.target.closest('#session-new, #agent-new');
-      if (isPlusBtn) {
-        console.log(`[win-${type} PLUS]`, { target: _describe(ev.target), x: ev.clientX, y: ev.clientY, defaultPrevented: ev.defaultPrevented, path: _pathStr(ev) });
-      } else if (type === 'click') {
-        // Log all clicks so we can see if a click happens nearby but on a different target
-        console.log('[win-click]', { target: _describe(ev.target), x: ev.clientX, y: ev.clientY });
-      }
-    }, true);
-  });
 
   // ── Theme system ──
   const STORAGE_KEY = 'webagent_theme';
@@ -752,33 +730,22 @@ export function initSessions() {
   });
 
   const sessionNewBtn = document.getElementById('session-new');
-  console.log('[+session] wiring sessionNewBtn:', !!sessionNewBtn, sessionNewBtn);
   if (sessionNewBtn) {
-    // Capture-phase listener — runs even if some ancestor stops propagation.
-    sessionNewBtn.addEventListener('click', (ev) => {
-      console.log('[+session] CAPTURE click', { phase: ev.eventPhase, target: ev.target, path: ev.composedPath().map(n => n.id || n.tagName || n) });
-    }, true);
+    // Use pointerdown — lucide replaces the inner SVG paths between mousedown
+    // and mouseup, which prevents the browser from synthesising a click event.
     sessionNewBtn.addEventListener('pointerdown', (ev) => {
-      console.log('[+session] pointerdown', { target: ev.target, pointerType: ev.pointerType });
-    }, true);
-    sessionNewBtn.addEventListener('click', (ev) => {
-      console.log('[+session] click fired', { target: ev.target, currentTarget: ev.currentTarget, defaultPrevented: ev.defaultPrevented, currentSessionId: app.currentSessionId, currentUserId: app.currentUserId });
-      try {
-        closeMenu();
-        abortChatStream();
-        app.currentSessionId = generateUUID();
-        localStorage.setItem('terminalSessionId', app.currentSessionId);
-        app.chatMessages.innerHTML = '';
-        app.addChatBubble('agent', 'New session. Start typing below.');
-        populateSessionSelect(app.currentUserId);
-        streamSessionChanged();
-        loopSessionChanged();
-        loopVisualSessionChanged();
-        autoAgentSessionChanged();
-        console.log('[+session] new session created:', app.currentSessionId);
-      } catch (e) {
-        console.error('[+session] handler threw:', e);
-      }
+      ev.preventDefault();
+      closeMenu();
+      abortChatStream();
+      app.currentSessionId = generateUUID();
+      localStorage.setItem('terminalSessionId', app.currentSessionId);
+      app.chatMessages.innerHTML = '';
+      app.addChatBubble('agent', 'New session. Start typing below.');
+      populateSessionSelect(app.currentUserId);
+      streamSessionChanged();
+      loopSessionChanged();
+      loopVisualSessionChanged();
+      autoAgentSessionChanged();
     });
   }
 
@@ -913,34 +880,22 @@ export function initSessions() {
 
   // ── + new agent button ──
   const agentNewBtn = document.getElementById('agent-new');
-  console.log('[+agent] wiring agentNewBtn:', !!agentNewBtn, agentNewBtn);
   if (agentNewBtn) {
-    agentNewBtn.addEventListener('click', (ev) => {
-      console.log('[+agent] CAPTURE click', { phase: ev.eventPhase, target: ev.target, path: ev.composedPath().map(n => n.id || n.tagName || n) });
-    }, true);
-    agentNewBtn.addEventListener('pointerdown', (ev) => {
-      console.log('[+agent] pointerdown', { target: ev.target, pointerType: ev.pointerType });
-    }, true);
-    agentNewBtn.addEventListener('click', (e) => {
-      console.log('[+agent] click fired', { target: e.target, currentTarget: e.currentTarget, defaultPrevented: e.defaultPrevented });
-      try {
-        e.stopPropagation();
-        closeAgentMenu();
-        const sel = document.getElementById('main-tab-select');
-        console.log('[+agent] main-tab-select:', !!sel, sel ? sel.value : null);
-        if (sel) {
-          sel.value = 'agents';
-          sel.dispatchEvent(new Event('change'));
-        }
-        // Defer to let startAgents() bind the create modal button before clicking
-        setTimeout(() => {
-          const btn = document.getElementById('btn-new-agent');
-          console.log('[+agent] btn-new-agent:', !!btn, btn);
-          if (btn) btn.click();
-        }, 50);
-      } catch (err) {
-        console.error('[+agent] handler threw:', err);
+    // Use pointerdown — see note on sessionNewBtn above.
+    agentNewBtn.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      closeAgentMenu();
+      const sel = document.getElementById('main-tab-select');
+      if (sel) {
+        sel.value = 'agents';
+        sel.dispatchEvent(new Event('change'));
       }
+      // Defer to let startAgents() bind the create modal button before clicking
+      setTimeout(() => {
+        const btn = document.getElementById('btn-new-agent');
+        if (btn) btn.click();
+      }, 50);
     });
   }
 
