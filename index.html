@@ -187,27 +187,30 @@
   <!-- Tab select: hidden native <select> for JS compat + custom pill button + popup -->
   <div class="status-group tab-select-group" style="position:relative;">
     <select id="main-tab-select" style="display:none;" aria-hidden="true">
+      <option value="autoagent" selected>Dashboard</option>
       <option value="terminal">Terminal</option>
-      <option value="stream" selected>Stream</option>
+      <option value="stream">Stream</option>
       <option value="flow">Flow</option>
       <option value="loop-visual">Runtime Loop</option>
       <option value="database">Database</option>
       <option value="github">GitHub</option>
-      <option value="autoagent">AutoAgent</option>
       <option value="agents">Agents</option>
       <option value="app-config">App Config</option>
       <option value="account">Manage Account</option>
     </select>
     <button id="tab-select-btn" class="tab-select-pill" aria-haspopup="listbox">
-      <i id="tab-btn-icon" data-lucide="radio-tower" class="lucide-icon" style="width:14px;height:14px;"></i>
-      <span id="tab-select-label">Stream</span>
+      <i id="tab-btn-icon" data-lucide="palette" class="lucide-icon" style="width:14px;height:14px;"></i>
+      <span id="tab-select-label">Dashboard</span>
       <i data-lucide="chevron-down" class="lucide-icon" style="width:12px;height:12px;opacity:0.6;margin-left:2px;"></i>
     </button>
     <div id="tab-select-popup" class="tab-select-popup" style="display:none;" role="listbox">
+      <div class="tab-option active" data-value="autoagent" data-icon="palette" role="option">
+        <i data-lucide="palette" class="lucide-icon menu-icon"></i>Dashboard
+      </div>
       <div class="tab-option" data-value="terminal" data-icon="terminal" role="option">
         <i data-lucide="terminal" class="lucide-icon menu-icon"></i>Terminal
       </div>
-      <div class="tab-option active" data-value="stream" data-icon="radio-tower" role="option">
+      <div class="tab-option" data-value="stream" data-icon="radio-tower" role="option">
         <i data-lucide="radio-tower" class="lucide-icon menu-icon"></i>Stream
       </div>
       <div class="tab-option" data-value="flow" data-icon="git-branch" role="option">
@@ -221,9 +224,6 @@
       </div>
       <div class="tab-option" data-value="github" data-icon="github" role="option">
         <i data-lucide="github" class="lucide-icon menu-icon"></i>GitHub
-      </div>
-      <div class="tab-option" data-value="autoagent" data-icon="palette" role="option">
-        <i data-lucide="palette" class="lucide-icon menu-icon"></i>AutoAgent
       </div>
       <div class="tab-option" data-value="agents" data-icon="bot" role="option">
         <i data-lucide="bot" class="lucide-icon menu-icon"></i>Agents
@@ -320,7 +320,7 @@
     <div id="tab-terminal" class="tab-content">
       <div id="terminal-container"></div>
     </div>
-    <div id="tab-stream" class="tab-content active">
+    <div id="tab-stream" class="tab-content">
       <div id="stream-viewer">
         <div id="stream-toolbar">
           <span style="color:#565f89;font-size:11px;display:inline-flex;align-items:center;gap:4px;"><i data-lucide="radio" style="width:12px;height:12px;"></i> Live interactions</span>
@@ -496,7 +496,7 @@
         </div>
       </div>
     </div>
-    <div id="tab-autoagent" class="tab-content">
+    <div id="tab-autoagent" class="tab-content active">
       <div id="autoagent-container">
 
         <!-- Page nav: dropdown + new / delete buttons -->
@@ -3056,13 +3056,13 @@
   // This block drives the visible pill button + popup and stays in sync.
 
   var TABS = [
+    { id: 'autoagent',   icon: 'palette',     label: 'Dashboard'  },
     { id: 'terminal',    icon: 'terminal',    label: 'Terminal'   },
     { id: 'stream',      icon: 'radio-tower', label: 'Stream'     },
     { id: 'flow',        icon: 'git-branch',  label: 'Flow'       },
     { id: 'loop-visual', icon: 'repeat',      label: 'Runtime Loop' },
     { id: 'database',    icon: 'database',    label: 'Database'   },
     { id: 'github',      icon: 'github',      label: 'GitHub'     },
-    { id: 'autoagent',   icon: 'palette',     label: 'AutoAgent'  },
     { id: 'agents',      icon: 'bot',              label: 'Agents'     },
     { id: 'app-config',  icon: 'sliders-horizontal', label: 'App Config' },
     { id: 'account',     icon: 'user-cog',         label: 'Manage Account' },
@@ -3076,7 +3076,7 @@
   if (!nativeSelect || !btn || !popup) return;
 
   function syncBtn(tabId) {
-    var t = TABS.find(function (t) { return t.id === tabId; }) || TABS[1];
+    var t = TABS.find(function (t) { return t.id === tabId; }) || TABS[0];
     labelEl.textContent = t.label;
     btnIconEl.setAttribute('data-lucide', t.icon);
     lucide.createIcons({ nodes: [btnIconEl] });
