@@ -162,6 +162,27 @@ class EventSource(ABC):
         """
         return [], subscription_row.get("poll_cursor")
 
+    # ── OAuth scopes ─────────────────────────────────────────────────────
+
+    def required_scopes(
+        self,
+        event_type: str,
+        filter_dict: Dict[str, Any],
+    ) -> List[List[str]]:
+        """OAuth scopes the user's token must hold for this subscription to
+        actually work end-to-end.
+
+        Returned as a list of *groups* — within each group ANY one scope
+        satisfies it (alternates), but EVERY group must be satisfied. Most
+        sources return a single group of alternates (e.g. Gmail watch:
+        `gmail.modify` OR `gmail.metadata` OR `mail.google.com`).
+
+        Empty list = no scope gating (default). The chat-level
+        `event_subscribe` tool reads this and refuses with `code=scope_missing`
+        before inserting a doomed row.
+        """
+        return []
+
     # ── Filtering ─────────────────────────────────────────────────────────
 
     def matches_filter(

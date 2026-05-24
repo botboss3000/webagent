@@ -504,7 +504,13 @@ async def build_google_authorize_url(user_id: str, agent_id: str = "", request: 
         "response_type": "code",
         "scope": " ".join(scopes),
         "access_type": "offline",
+        # `prompt=consent` forces Google to redisplay every sensitive-scope
+        # checkbox so a user reconnecting can tick the ones they previously
+        # skipped (e.g. `gmail.modify` required for Gmail push subscriptions).
+        # `include_granted_scopes=true` makes the new grant *additive* over
+        # any prior grant so we never accidentally lose a scope on re-consent.
         "prompt": "consent",
+        "include_granted_scopes": "true",
         "state": state,
     }
     return f"https://accounts.google.com/o/oauth2/auth?{urlencode(params)}"
@@ -572,6 +578,11 @@ async def build_microsoft_authorize_url(user_id: str, agent_id: str = "") -> str
         "response_type": "code",
         "scope": " ".join(scopes),
         "response_mode": "query",
+        # Force the consent screen so reconnects can pick up newly-added
+        # scopes (e.g. Mail.ReadWrite for Outlook subscriptions). Microsoft
+        # does NOT honour Google's `include_granted_scopes` flag — the v2
+        # endpoint already merges scopes additively across sessions.
+        "prompt": "consent",
         "state": state,
     }
     return f"https://login.microsoftonline.com/common/oauth2/v2.0/authorize?{urlencode(params)}"

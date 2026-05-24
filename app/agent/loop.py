@@ -529,7 +529,7 @@ async def stream_agent_events(
 
     load_start = time.time()
     tools = await load_tools(user_id, agent_id=agent_id, agent_template_id=agent_template_id,
-                              allowed_tools=allowed_tools)
+                              allowed_tools=allowed_tools, session_id=session_id)
     load_duration = int((time.time() - load_start) * 1000)
 
     # ── Pipeline: tools loaded ──

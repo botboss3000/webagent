@@ -66,14 +66,31 @@ async def agent_websocket(websocket: WebSocket):
         data = json.loads(raw)
 
         mode = data.get("mode", "").strip()
-        user_id = data.get("user_id", "").strip()
+        claimed_user_id = data.get("user_id", "").strip()
+        token = (data.get("token") or "").strip()
 
-        if mode != "user_subscriber" or not user_id:
+        if mode != "user_subscriber" or not claimed_user_id:
             await websocket.send_text(json.dumps({
                 "type": "error",
-                "message": "First message must be {\"mode\": \"user_subscriber\", \"user_id\": \"<uuid>\"}",
+                "message": "First message must be {\"mode\": \"user_subscriber\", \"user_id\": \"<uuid>\", \"token\": \"<jwt>\"}",
             }, default=_json_default))
             return
+
+        # The WebSocket endpoint is exempted from the HTTP auth middleware
+        # (`PUBLIC_PREFIXES` in app/auth/middleware.py), so we have to verify
+        # the caller's identity ourselves here. Without this, an authenticated
+        # user A could subscribe with user_id=B and start receiving every
+        # event broadcast for user B — full cross-tenant leak. The handshake
+        # MUST carry a JWT whose subject matches `claimed_user_id`.
+        from app.auth.identity import verify_token_matches_user
+        verified = verify_token_matches_user(token, claimed_user_id)
+        if not verified:
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "message": "Invalid or missing token, or token subject does not match user_id",
+            }, default=_json_default))
+            return
+        user_id = verified
 
         # Register as a per-user listener — receives ALL events for this user
         register_user_listener(user_id, websocket)

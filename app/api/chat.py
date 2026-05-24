@@ -226,13 +226,19 @@ async def interrupt_chat(request: InterruptRequest):
 
 
 @router.post("", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, fastapi_request: Request):
     """
     Process a chat message with the agent.
 
     Uses the simple agent loop with tool-calling support.
     """
     try:
+        # Tenant isolation: the JWT subject must match the user_id the
+        # client says it's chatting as. Every tool wrapper down the call
+        # graph closes over this user_id, so getting it wrong here lets one
+        # authenticated user impersonate another for the whole session.
+        from app.auth.identity import assert_caller_is
+        request.user_id = await assert_caller_is(fastapi_request, request.user_id)
         db = get_db()
 
         # ── Temp DB resolution for optimizer/closer sessions ──
@@ -611,6 +617,8 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
     """
     Process a chat message using Server-Sent Events (SSE).
     """
+    from app.auth.identity import assert_caller_is
+    request.user_id = await assert_caller_is(fastapi_request, request.user_id)
     db = get_db()
 
     # ── Temp DB resolution for optimizer/closer sessions ──
