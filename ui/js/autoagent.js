@@ -345,9 +345,30 @@ function showIframe(path, title) {
     iframe.src   = url;
     iframe.style.display = 'block';
     iframe.title = title || 'Page';
+    iframe.addEventListener('load', () => postThemeToIframe(iframe), { once: true });
   }
   updateStatus(title || 'Ready');
 }
+
+function currentTheme() {
+  return document.body.classList.contains('light-mode') ? 'light' : 'dark';
+}
+
+function postThemeToIframe(iframe) {
+  if (!iframe || !iframe.contentWindow) return;
+  try { iframe.contentWindow.postMessage({ type: 'theme', value: currentTheme() }, '*'); }
+  catch (_) {}
+}
+
+// Forward theme changes to the live iframe whenever body.class toggles.
+(function watchTheme() {
+  if (typeof MutationObserver === 'undefined') return;
+  const obs = new MutationObserver(() => {
+    const iframe = document.getElementById('autoagent-iframe');
+    if (iframe && iframe.style.display !== 'none') postThemeToIframe(iframe);
+  });
+  obs.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+})();
 
 function showLoading() {
   const iframe      = document.getElementById('autoagent-iframe');
