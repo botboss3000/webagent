@@ -73,9 +73,10 @@ function linkifyText(text) {
   return frag;
 }
 
-function addChatBubble(role, text, extraClass, imageUrl) {
+function addChatBubble(role, text, extraClass, imageUrl, turnId) {
   const bubble = document.createElement('div');
   bubble.className = 'chat-bubble ' + role + (extraClass ? ' ' + extraClass : '');
+  if (turnId) bubble.setAttribute('data-turn-id', turnId);
   // Show 'You' label for user, omit for agent (already prefixed with agent name in content)
   if (role === 'user') {
     const label = document.createElement('span');
@@ -340,45 +341,98 @@ export function abortChatStream() {
 }
 
 /**
- * Append a stream chunk into the currently-active agent bubble.
+ * Find the agent bubble for a given turn_id. Returns null if none exists.
+ * Falls back to last agent bubble when no turn_id is supplied (legacy path).
+ */
+function _findAgentBubbleForTurn(turnId) {
+  if (!app.chatMessages) return null;
+  if (turnId) {
+    return app.chatMessages.querySelector(
+      `.chat-bubble.agent[data-turn-id="${CSS.escape(turnId)}"]`,
+    );
+  }
+  const bubbles = app.chatMessages.querySelectorAll('.chat-bubble.agent');
+  return bubbles[bubbles.length - 1] || null;
+}
+
+/**
+ * Update a specific bubble's text content (preserving turn_id attribute).
+ * Reuses updateLastBubble's effect but on an arbitrary bubble.
+ */
+function _setBubbleText(bubble, text, extraClass) {
+  if (!bubble) return;
+  // Keep the data-turn-id while clearing children.
+  while (bubble.firstChild) bubble.removeChild(bubble.firstChild);
+  bubble.appendChild(linkifyText(text));
+  if (extraClass === 'streaming') {
+    const stopBtn = document.createElement('button');
+    stopBtn.className = 'stop-btn';
+    stopBtn.textContent = '🛑';
+    stopBtn.title = 'Stop generation';
+    stopBtn.addEventListener('click', sendStopMessage);
+    bubble.appendChild(stopBtn);
+    bubble.className = 'chat-bubble agent streaming';
+  } else if (extraClass) {
+    bubble.className = 'chat-bubble agent ' + extraClass;
+  } else {
+    bubble.className = 'chat-bubble agent';
+  }
+  if (app.chatMessages) app.chatMessages.scrollTop = app.chatMessages.scrollHeight;
+}
+
+// Per-turn in-progress accumulator used by replayed/live WS stream chunks.
+// Keyed by turn_id (so concurrent turns from event-triggered runs don't collide).
+// For legacy events with no turn_id, falls back to the global app.agentBuffer.
+const _wsTurnBuffers = new Map();   // turnId → accumulated content string
+
+/**
+ * Append a stream chunk into the agent bubble for this turn.
  *
  * Used by the WS path when the SSE reader isn't driving (refresh
- * mid-stream, session switch back into an in-flight run). Creates a
- * placeholder bubble if none exists. Idempotent against replayed chunks
- * — caller passes raw text; this just appends to app.agentBuffer.
+ * mid-stream, session switch back into an in-flight run). Looks up the
+ * bubble by turn_id; if none exists, creates one tagged with that turn_id.
+ *
+ * Idempotent for the live path. For replays, the server resends chunks
+ * from the buffer — caller may pass the same chunk multiple times across
+ * reconnects. We keep the latest accumulated text per turn in
+ * `_wsTurnBuffers` so re-renders show the full text rather than tail.
  */
-function appendStreamToActiveBubble(textChunk) {
+function appendStreamToActiveBubble(textChunk, turnId) {
   if (textChunk == null) return;
-  // Make sure there's an agent bubble to write into.
-  const bubbles = app.chatMessages
-    ? app.chatMessages.querySelectorAll('.chat-bubble.agent')
-    : [];
-  if (!bubbles || bubbles.length === 0) {
-    addChatBubble('agent', '…', 'streaming');
+  let bubble = _findAgentBubbleForTurn(turnId);
+  if (!bubble) {
+    bubble = addChatBubble('agent', '…', 'streaming', undefined, turnId || undefined);
+    if (turnId) _wsTurnBuffers.set(turnId, '');
   }
-  if (app.agentBuffer === undefined) app.agentBuffer = '';
-  app.agentBuffer += textChunk;
-  updateLastBubble(app.agentBuffer, 'streaming');
+  if (turnId) {
+    const cur = _wsTurnBuffers.get(turnId) || '';
+    const next = cur + textChunk;
+    _wsTurnBuffers.set(turnId, next);
+    _setBubbleText(bubble, next, 'streaming');
+  } else {
+    if (app.agentBuffer === undefined) app.agentBuffer = '';
+    app.agentBuffer += textChunk;
+    _setBubbleText(bubble, app.agentBuffer, 'streaming');
+  }
   app.isProcessing = true;
 }
 
 /**
- * Finalize the active agent bubble with the full response text.
+ * Finalize the agent bubble for this turn with the full response text.
  *
  * Used by the WS path on `response` events when SSE isn't driving:
  *   - event-triggered runs (no SSE was ever started)
  *   - replayed final response after refresh / session reattach
  */
-function finalizeAgentResponse(content, isReplayed) {
-  const bubbles = app.chatMessages
-    ? app.chatMessages.querySelectorAll('.chat-bubble.agent')
-    : [];
-  if (!bubbles || bubbles.length === 0) {
-    addChatBubble('agent', content || '');
+function finalizeAgentResponse(content, turnId, isReplayed) {
+  let bubble = _findAgentBubbleForTurn(turnId);
+  if (!bubble) {
+    bubble = addChatBubble('agent', content || '', undefined, undefined, turnId || undefined);
   } else {
-    app.agentBuffer = '';
-    updateLastBubble(content || '');
+    _setBubbleText(bubble, content || '');
   }
+  if (turnId) _wsTurnBuffers.delete(turnId);
+  app.agentBuffer = '';
   app.isProcessing = false;
   if (app.chatSend) app.chatSend.disabled = false;
   if (typeof app.populateSessionSelect === 'function') {
@@ -386,11 +440,26 @@ function finalizeAgentResponse(content, isReplayed) {
   }
 }
 
+/**
+ * On reconnect / session reattach: if the server reported this session has
+ * an active turn buffered, render a placeholder streaming bubble so the
+ * user sees feedback immediately. The first replayed `stream` chunk hydrates
+ * it with the real (in-progress) text.
+ */
+function ensureStreamingBubbleForActiveTurn(turnId) {
+  if (!turnId) return;
+  let existing = _findAgentBubbleForTurn(turnId);
+  if (existing) return;
+  addChatBubble('agent', '…', 'streaming', undefined, turnId);
+  app.isProcessing = true;
+}
+
 export function initChat() {
   app.addChatBubble = addChatBubble;
   app.updateLastBubble = updateLastBubble;
   app.appendStreamToActiveBubble = appendStreamToActiveBubble;
   app.finalizeAgentResponse = finalizeAgentResponse;
+  app.ensureStreamingBubbleForActiveTurn = ensureStreamingBubbleForActiveTurn;
 
   app.chatSend.addEventListener('click', sendMessage);
   app.chatInput.addEventListener('keydown', (e) => {
