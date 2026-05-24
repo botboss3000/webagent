@@ -19,6 +19,7 @@ import { initAgents } from './agents.js';
 import { initAppConfig } from './app-config.js';
 import { initAccount } from './account.js';
 import { initChatResize } from './chatResize.js';
+import { initTutorial } from './tutorial.js';
 import { isAuthenticated, showLeftOverlay, hideLeftOverlay } from './left-login.js';
 import './icons.js'; // auto-renders Lucide icons on DOM mutations
 import { randomUUID } from './uuid.js';
@@ -168,6 +169,7 @@ _anonReady.then(() => {
   _safeInit('initAccount',     initAccount);
   _safeInit('initSessions',    initSessions);
   _safeInit('initChatResize',  initChatResize);
+  _safeInit('initTutorial',    initTutorial);
 });
 
 // ── Visibility change: reconnect when user returns to this tab ──
