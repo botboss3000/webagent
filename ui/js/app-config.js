@@ -1034,22 +1034,22 @@ async function _loadIntegrations() {
     const res = await _fetch(apiPath('/admin/integrations'));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    _applyProviderStatus('google',    data.google_configured,    data.google_client_id,    data.redirect_uri,              data.google_scopes);
-    _applyProviderStatus('microsoft', data.microsoft_configured, data.microsoft_client_id, data.microsoft_redirect_uri,    data.microsoft_scopes);
-    _applyProviderStatus('yahoo',     data.yahoo_configured,     data.yahoo_client_id,     data.yahoo_redirect_uri,        data.yahoo_scopes);
-    _applyProviderStatus('dropbox',   data.dropbox_configured,   data.dropbox_client_id,   data.dropbox_redirect_uri,      data.dropbox_scopes);
-    _applyProviderStatus('meta',      data.meta_configured,      data.meta_client_id,      data.meta_redirect_uri,         data.meta_scopes);
-    _applyProviderStatus('twitter',   data.twitter_configured,   data.twitter_client_id,   data.twitter_redirect_uri,      data.twitter_scopes);
-    _applyProviderStatus('linkedin',  data.linkedin_configured,  data.linkedin_client_id,  data.linkedin_redirect_uri,     data.linkedin_scopes);
-    _applyProviderStatus('tiktok',    data.tiktok_configured,    data.tiktok_client_id,    data.tiktok_redirect_uri,       data.tiktok_scopes);
-    _applyProviderStatus('pinterest', data.pinterest_configured, data.pinterest_client_id, data.pinterest_redirect_uri,    data.pinterest_scopes);
-    _applyProviderStatus('reddit',    data.reddit_configured,    data.reddit_client_id,    data.reddit_redirect_uri,       data.reddit_scopes);
-    _applyProviderStatus('snapchat',  data.snapchat_configured,  data.snapchat_client_id,  data.snapchat_redirect_uri,     data.snapchat_scopes);
-    _applyProviderStatus('twitch',    data.twitch_configured,    data.twitch_client_id,    data.twitch_redirect_uri,       data.twitch_scopes);
-    _applyProviderStatus('ebay',      data.ebay_configured,      data.ebay_client_id,      data.ebay_redirect_uri,         data.ebay_scopes);
-    _applyProviderStatus('etsy',      data.etsy_configured,      data.etsy_client_id,      data.etsy_redirect_uri,         data.etsy_scopes);
-    _applyProviderStatus('shopify',   data.shopify_configured,   data.shopify_client_id,   data.shopify_redirect_uri,      data.shopify_scopes);
-    _applyProviderStatus('amazon',    data.amazon_configured,    data.amazon_client_id,    data.amazon_redirect_uri,       data.amazon_scopes);
+    _applyProviderStatus('google',    data.google_configured,    data.google_client_id,    data.redirect_uri,              data.google_scopes,    data.redirect_uri_suggested);
+    _applyProviderStatus('microsoft', data.microsoft_configured, data.microsoft_client_id, data.microsoft_redirect_uri,    data.microsoft_scopes, data.microsoft_redirect_uri_suggested);
+    _applyProviderStatus('yahoo',     data.yahoo_configured,     data.yahoo_client_id,     data.yahoo_redirect_uri,        data.yahoo_scopes,     data.yahoo_redirect_uri_suggested);
+    _applyProviderStatus('dropbox',   data.dropbox_configured,   data.dropbox_client_id,   data.dropbox_redirect_uri,      data.dropbox_scopes,   data.dropbox_redirect_uri_suggested);
+    _applyProviderStatus('meta',      data.meta_configured,      data.meta_client_id,      data.meta_redirect_uri,         data.meta_scopes,      data.meta_redirect_uri_suggested);
+    _applyProviderStatus('twitter',   data.twitter_configured,   data.twitter_client_id,   data.twitter_redirect_uri,      data.twitter_scopes,   data.twitter_redirect_uri_suggested);
+    _applyProviderStatus('linkedin',  data.linkedin_configured,  data.linkedin_client_id,  data.linkedin_redirect_uri,     data.linkedin_scopes,  data.linkedin_redirect_uri_suggested);
+    _applyProviderStatus('tiktok',    data.tiktok_configured,    data.tiktok_client_id,    data.tiktok_redirect_uri,       data.tiktok_scopes,    data.tiktok_redirect_uri_suggested);
+    _applyProviderStatus('pinterest', data.pinterest_configured, data.pinterest_client_id, data.pinterest_redirect_uri,    data.pinterest_scopes, data.pinterest_redirect_uri_suggested);
+    _applyProviderStatus('reddit',    data.reddit_configured,    data.reddit_client_id,    data.reddit_redirect_uri,       data.reddit_scopes,    data.reddit_redirect_uri_suggested);
+    _applyProviderStatus('snapchat',  data.snapchat_configured,  data.snapchat_client_id,  data.snapchat_redirect_uri,     data.snapchat_scopes,  data.snapchat_redirect_uri_suggested);
+    _applyProviderStatus('twitch',    data.twitch_configured,    data.twitch_client_id,    data.twitch_redirect_uri,       data.twitch_scopes,    data.twitch_redirect_uri_suggested);
+    _applyProviderStatus('ebay',      data.ebay_configured,      data.ebay_client_id,      data.ebay_redirect_uri,         data.ebay_scopes,      data.ebay_redirect_uri_suggested);
+    _applyProviderStatus('etsy',      data.etsy_configured,      data.etsy_client_id,      data.etsy_redirect_uri,         data.etsy_scopes,      data.etsy_redirect_uri_suggested);
+    _applyProviderStatus('shopify',   data.shopify_configured,   data.shopify_client_id,   data.shopify_redirect_uri,      data.shopify_scopes,   data.shopify_redirect_uri_suggested);
+    _applyProviderStatus('amazon',    data.amazon_configured,    data.amazon_client_id,    data.amazon_redirect_uri,       data.amazon_scopes,    data.amazon_redirect_uri_suggested);
     _applyScraperStatus(data);
     _applyChannelStatus('telegram', data.telegram_configured);
     _applyAbilityStatus('codebase_admin', data.codebase_admin_configured);
@@ -1345,70 +1345,12 @@ function _bindUri(btn, getText) {
   });
 }
 
-// Returns [uri] for hosts where only one variant makes sense (localhost, IPs,
-// single-label hosts) and [uri, alt] for real domains, toggling the `www.`
-// prefix. Used so the OAuth setup UI prompts the user to register BOTH apex
-// and www callback URIs with the provider — otherwise sign-in fails for
-// whichever host they didn't register.
-function _hostVariants(uri) {
-  if (!uri) return [];
-  let parsed;
-  try { parsed = new URL(uri); } catch { return [uri]; }
-  const host = parsed.host;
-  let altHost = '';
-  if (host.startsWith('www.')) {
-    altHost = host.slice(4);
-  } else if (host.includes('.') && !host.startsWith('localhost') && !/^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/.test(host)) {
-    altHost = 'www.' + host;
-  }
-  if (!altHost || altHost === host) return [uri];
-  const altUri = `${parsed.protocol}//${altHost}${parsed.pathname}${parsed.search}${parsed.hash}`;
-  return [uri, altUri];
-}
-
 // Attaches (or updates) a Lucide copy button next to a redirect-URI <code> element.
 // Inline variant (no display:block): button inserted as sibling, parent becomes flex.
 // Block variant (display:block): <code> becomes flex row [text-span][copy-btn].
-// Multi-variant (apex + www): <code> becomes flex column with one row per URI.
 function _attachUriCopy(codeEl, uri) {
   if (!codeEl) return;
-  const variants = _hostVariants(uri);
-
-  // Multi-variant: clear & rebuild as a stacked list, one row per URI.
-  if (variants.length > 1) {
-    // Remove any orphan sibling copy button left over from a prior single-variant render.
-    const sib = codeEl.nextElementSibling;
-    if (sib && sib.classList && sib.classList.contains('ac-uri-copy-btn')) sib.remove();
-    codeEl.innerHTML = '';
-    codeEl.dataset.uriCopy = 'multi';
-    codeEl.style.display = 'flex';
-    codeEl.style.flexDirection = 'column';
-    codeEl.style.alignItems = 'stretch';
-    codeEl.style.gap = '4px';
-    variants.forEach(v => {
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;';
-      const span = document.createElement('span');
-      span.style.wordBreak = 'break-all';
-      span.textContent = v;
-      const btn = _makeCopyBtn();
-      _bindUri(btn, () => span.textContent);
-      row.appendChild(span);
-      row.appendChild(btn);
-      codeEl.appendChild(row);
-    });
-    return;
-  }
-
-  // Single-variant: original behavior, with cleanup if we previously rendered multi.
-  const single = variants[0] || '';
-  if (codeEl.dataset.uriCopy === 'multi') {
-    codeEl.innerHTML = '';
-    codeEl.dataset.uriCopy = '';
-    codeEl.style.flexDirection = '';
-    codeEl.style.alignItems = '';
-    codeEl.style.gap = '';
-  }
+  const single = uri || '';
 
   if (codeEl.dataset.uriCopy === 'block') {
     codeEl.querySelector('.ac-uri-text').textContent = single;
@@ -1450,10 +1392,41 @@ function _attachUriCopy(codeEl, uri) {
 
 // ── Provider status ───────────────────────────────────────────────────────
 
-function _applyProviderStatus(provider, configured, clientId, redirectUri, enabledScopes) {
+// Update the soft warning shown under the redirect_uri input when the host
+// in the URI differs from the host the admin is viewing the app on. The
+// host is the legitimate degree of freedom (apex vs www, tunnel, custom
+// domain), so this is informational — not blocking.
+function _refreshRedirectUriWarning(provider) {
+  const input = _qs(`ac-int-${provider}-input-redirect_uri`);
+  const warn  = _qs(`ac-int-${provider}-form-uri-warn`);
+  if (!input || !warn) return;
+  const value = (input.value || '').trim();
+  if (!value) { warn.style.display = 'none'; return; }
+  let urlHost = '';
+  try { urlHost = new URL(value).host.toLowerCase(); } catch { warn.style.display = 'none'; return; }
+  const here = (window.location.host || '').toLowerCase();
+  if (!urlHost || !here || urlHost === here) { warn.style.display = 'none'; return; }
+  warn.textContent = `Heads up: ${urlHost} differs from your current host (${here}). Make sure DNS for ${urlHost} points to this app and that you've registered the URI with the provider.`;
+  warn.style.display = 'block';
+}
+
+function _applyProviderStatus(provider, configured, clientId, redirectUri, enabledScopes, suggestedUri) {
   const badge        = _qs(`ac-int-${provider}-badge`);
   const configuredEl = _qs(`ac-int-${provider}-configured`);
   const form         = _qs(`ac-int-${provider}-form`);
+  // Populate the editable redirect-URI input with whatever the admin
+  // saved, falling back to the request-derived suggestion as a placeholder
+  // for unconfigured providers. Attach a one-time keystroke listener that
+  // shows/hides the host-mismatch warning.
+  const input = _qs(`ac-int-${provider}-input-redirect_uri`);
+  if (input) {
+    input.value = redirectUri || suggestedUri || '';
+    if (!input.dataset.warnAttached) {
+      input.addEventListener('input', () => _refreshRedirectUriWarning(provider));
+      input.dataset.warnAttached = '1';
+    }
+    _refreshRedirectUriWarning(provider);
+  }
   if (configured) {
     if (badge) { badge.textContent = 'Configured'; badge.className = 'ac-int-badge ac-int-badge-on'; }
     if (configuredEl) configuredEl.style.display = 'block';
@@ -1462,9 +1435,6 @@ function _applyProviderStatus(provider, configured, clientId, redirectUri, enabl
     if (cidEl) cidEl.textContent = clientId || '';
     const uriEl = _qs(`ac-int-${provider}-uri`);
     _attachUriCopy(uriEl, redirectUri || '');
-    // Populate form-uri too so Edit mode shows the URI with a copy button
-    const formUri = _qs(`ac-int-${provider}-form-uri`);
-    _attachUriCopy(formUri, redirectUri || '');
     // Show scope count in configured summary
     let scopeCountEl = document.getElementById(`ac-int-${provider}-scope-count`);
     if (!scopeCountEl && configuredEl) {
@@ -1482,8 +1452,6 @@ function _applyProviderStatus(provider, configured, clientId, redirectUri, enabl
     if (badge) { badge.textContent = 'Not configured'; badge.className = 'ac-int-badge ac-int-badge-off'; }
     if (configuredEl) configuredEl.style.display = 'none';
     if (form) form.style.display = 'block';
-    const formUri = _qs(`ac-int-${provider}-form-uri`);
-    _attachUriCopy(formUri, redirectUri || '');
   }
   _setScopeSelection(provider, enabledScopes || null);
 }
@@ -1512,23 +1480,36 @@ async function _saveProviderConfig(provider) {
   if (!isAdmin()) { showRestrictedModal(); return; }
   const cidInput = _qs(`ac-int-${provider}-input-cid`);
   const secInput = _qs(`ac-int-${provider}-input-secret`);
+  const uriInput = _qs(`ac-int-${provider}-input-redirect_uri`);
   const statusEl = _qs(`ac-int-${provider}-status`);
   if (!cidInput?.value?.trim() || !secInput?.value?.trim()) {
     if (statusEl) { statusEl.textContent = 'Both Client ID and Client Secret are required.'; statusEl.style.color = '#e0af68'; statusEl.style.display = 'block'; }
     return;
   }
   const selectedScopes = _getSelectedScopes(provider);
+  const body = {
+    client_id: cidInput.value.trim(),
+    client_secret: secInput.value.trim(),
+    scopes: selectedScopes,
+  };
+  const uriValue = (uriInput?.value || '').trim();
+  if (uriValue) body.redirect_uri = uriValue;
   try {
     const res = await _fetch(apiPath(`/admin/integrations/${provider}`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        client_id: cidInput.value.trim(),
-        client_secret: secInput.value.trim(),
-        scopes: selectedScopes,
-      }),
+      body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      // Surface server-side validation errors (e.g. wrong path, http instead
+      // of https) with the actual reason string from the backend.
+      let detail = `HTTP ${res.status}`;
+      try {
+        const data = await res.json();
+        if (data && data.detail) detail = String(data.detail);
+      } catch {}
+      throw new Error(detail);
+    }
     cidInput.value = '';
     secInput.value = '';
     if (statusEl) { statusEl.textContent = 'Configured successfully.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; setTimeout(() => { statusEl.style.display = 'none'; }, 3000); }

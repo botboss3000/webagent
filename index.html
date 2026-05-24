@@ -942,8 +942,9 @@
                   <input type="password" id="ac-int-google-input-secret" class="ac-input" placeholder="GOCSPX-..." autocomplete="off">
                 </div>
                 <div class="ac-field">
-                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Google Cloud Console)</label>
-                  <code id="ac-int-google-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-0);border-radius:4px;word-break:break-all;"></code>
+                  <label class="ac-label">Redirect URI (must match what you register in Google Cloud Console)</label>
+                  <input type="text" id="ac-int-google-input-redirect_uri" class="ac-input" placeholder="https://your-host/api/v1/oauth/callback/google" autocomplete="off">
+                  <small id="ac-int-google-form-uri-warn" class="ac-hint" style="display:none;color:#e0af68;margin-top:4px;"></small>
                 </div>
                 <div style="margin-top:12px;">
                   <button id="ac-int-google-save" class="ac-btn ac-btn-primary">Save</button>
@@ -1001,8 +1002,9 @@
                   <input type="password" id="ac-int-microsoft-input-secret" class="ac-input" placeholder="Client secret value (not ID)" autocomplete="off">
                 </div>
                 <div class="ac-field">
-                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Azure App Registration)</label>
-                  <code id="ac-int-microsoft-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-0);border-radius:4px;word-break:break-all;"></code>
+                  <label class="ac-label">Redirect URI (must match what you register in Azure App Registration)</label>
+                  <input type="text" id="ac-int-microsoft-input-redirect_uri" class="ac-input" placeholder="https://your-host/api/v1/oauth/callback/microsoft" autocomplete="off">
+                  <small id="ac-int-microsoft-form-uri-warn" class="ac-hint" style="display:none;color:#e0af68;margin-top:4px;"></small>
                 </div>
                 <div style="margin-top:12px;">
                   <button id="ac-int-microsoft-save" class="ac-btn ac-btn-primary">Save</button>
@@ -1060,8 +1062,9 @@
                   <input type="password" id="ac-int-yahoo-input-secret" class="ac-input" placeholder="Consumer secret" autocomplete="off">
                 </div>
                 <div class="ac-field">
-                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Yahoo Developer Console)</label>
-                  <code id="ac-int-yahoo-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-0);border-radius:4px;word-break:break-all;"></code>
+                  <label class="ac-label">Redirect URI (must match what you register in Yahoo Developer Console)</label>
+                  <input type="text" id="ac-int-yahoo-input-redirect_uri" class="ac-input" placeholder="https://your-host/api/v1/oauth/callback/yahoo" autocomplete="off">
+                  <small id="ac-int-yahoo-form-uri-warn" class="ac-hint" style="display:none;color:#e0af68;margin-top:4px;"></small>
                 </div>
                 <div style="margin-top:12px;">
                   <button id="ac-int-yahoo-save" class="ac-btn ac-btn-primary">Save</button>
@@ -1116,8 +1119,9 @@
                   <input type="password" id="ac-int-dropbox-input-secret" class="ac-input" placeholder="App secret" autocomplete="off">
                 </div>
                 <div class="ac-field">
-                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Dropbox App Console)</label>
-                  <code id="ac-int-dropbox-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-0);border-radius:4px;word-break:break-all;"></code>
+                  <label class="ac-label">Redirect URI (must match what you register in Dropbox App Console)</label>
+                  <input type="text" id="ac-int-dropbox-input-redirect_uri" class="ac-input" placeholder="https://your-host/api/v1/oauth/callback/dropbox" autocomplete="off">
+                  <small id="ac-int-dropbox-form-uri-warn" class="ac-hint" style="display:none;color:#e0af68;margin-top:4px;"></small>
                 </div>
                 <div style="margin-top:12px;">
                   <button id="ac-int-dropbox-save" class="ac-btn ac-btn-primary">Save</button>
@@ -1182,8 +1186,9 @@
                   <input type="password" id="ac-int-meta-input-secret" class="ac-input" placeholder="App secret" autocomplete="off">
                 </div>
                 <div class="ac-field">
-                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Meta App → Valid OAuth Redirect URIs)</label>
-                  <code id="ac-int-meta-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-0);border-radius:4px;word-break:break-all;"></code>
+                  <label class="ac-label">Redirect URI (must match what you register in Meta App → Valid OAuth Redirect URIs)</label>
+                  <input type="text" id="ac-int-meta-input-redirect_uri" class="ac-input" placeholder="https://your-host/api/v1/oauth/callback/meta" autocomplete="off">
+                  <small id="ac-int-meta-form-uri-warn" class="ac-hint" style="display:none;color:#e0af68;margin-top:4px;"></small>
                 </div>
                 <div style="margin-top:12px;">
                   <button id="ac-int-meta-save" class="ac-btn ac-btn-primary">Save</button>
@@ -1238,8 +1243,9 @@
                   <input type="password" id="ac-int-twitter-input-secret" class="ac-input" placeholder="Client secret" autocomplete="off">
                 </div>
                 <div class="ac-field">
-                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Twitter App → Callback URLs)</label>
-                  <code id="ac-int-twitter-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-0);border-radius:4px;word-break:break-all;"></code>
+                  <label class="ac-label">Redirect URI (must match what you register in Twitter App → Callback URLs)</label>
+                  <input type="text" id="ac-int-twitter-input-redirect_uri" class="ac-input" placeholder="https://your-host/api/v1/oauth/callback/twitter" autocomplete="off">
+                  <small id="ac-int-twitter-form-uri-warn" class="ac-hint" style="display:none;color:#e0af68;margin-top:4px;"></small>
                 </div>
                 <div style="margin-top:12px;">
                   <button id="ac-int-twitter-save" class="ac-btn ac-btn-primary">Save</button>
@@ -1294,8 +1300,9 @@
                   <input type="password" id="ac-int-linkedin-input-secret" class="ac-input" placeholder="Client secret" autocomplete="off">
                 </div>
                 <div class="ac-field">
-                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to LinkedIn App → OAuth 2.0 Authorized Redirect URLs)</label>
-                  <code id="ac-int-linkedin-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-0);border-radius:4px;word-break:break-all;"></code>
+                  <label class="ac-label">Redirect URI (must match what you register in LinkedIn App → OAuth 2.0 Authorized Redirect URLs)</label>
+                  <input type="text" id="ac-int-linkedin-input-redirect_uri" class="ac-input" placeholder="https://your-host/api/v1/oauth/callback/linkedin" autocomplete="off">
+                  <small id="ac-int-linkedin-form-uri-warn" class="ac-hint" style="display:none;color:#e0af68;margin-top:4px;"></small>
                 </div>
                 <div style="margin-top:12px;">
                   <button id="ac-int-linkedin-save" class="ac-btn ac-btn-primary">Save</button>
@@ -1350,8 +1357,9 @@
                   <input type="password" id="ac-int-tiktok-input-secret" class="ac-input" placeholder="Client secret" autocomplete="off">
                 </div>
                 <div class="ac-field">
-                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to TikTok App → Redirect URI)</label>
-                  <code id="ac-int-tiktok-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-0);border-radius:4px;word-break:break-all;"></code>
+                  <label class="ac-label">Redirect URI (must match what you register in TikTok App → Redirect URI)</label>
+                  <input type="text" id="ac-int-tiktok-input-redirect_uri" class="ac-input" placeholder="https://your-host/api/v1/oauth/callback/tiktok" autocomplete="off">
+                  <small id="ac-int-tiktok-form-uri-warn" class="ac-hint" style="display:none;color:#e0af68;margin-top:4px;"></small>
                 </div>
                 <div style="margin-top:12px;">
                   <button id="ac-int-tiktok-save" class="ac-btn ac-btn-primary">Save</button>
@@ -1405,8 +1413,9 @@
                   <input type="password" id="ac-int-pinterest-input-secret" class="ac-input" placeholder="App secret" autocomplete="off">
                 </div>
                 <div class="ac-field">
-                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Pinterest App → Redirect URIs)</label>
-                  <code id="ac-int-pinterest-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-0);border-radius:4px;word-break:break-all;"></code>
+                  <label class="ac-label">Redirect URI (must match what you register in Pinterest App → Redirect URIs)</label>
+                  <input type="text" id="ac-int-pinterest-input-redirect_uri" class="ac-input" placeholder="https://your-host/api/v1/oauth/callback/pinterest" autocomplete="off">
+                  <small id="ac-int-pinterest-form-uri-warn" class="ac-hint" style="display:none;color:#e0af68;margin-top:4px;"></small>
                 </div>
                 <div style="margin-top:12px;">
                   <button id="ac-int-pinterest-save" class="ac-btn ac-btn-primary">Save</button>
@@ -1460,8 +1469,9 @@
                   <input type="password" id="ac-int-reddit-input-secret" class="ac-input" placeholder="Client secret" autocomplete="off">
                 </div>
                 <div class="ac-field">
-                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Reddit App → Redirect URI)</label>
-                  <code id="ac-int-reddit-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-0);border-radius:4px;word-break:break-all;"></code>
+                  <label class="ac-label">Redirect URI (must match what you register in Reddit App → Redirect URI)</label>
+                  <input type="text" id="ac-int-reddit-input-redirect_uri" class="ac-input" placeholder="https://your-host/api/v1/oauth/callback/reddit" autocomplete="off">
+                  <small id="ac-int-reddit-form-uri-warn" class="ac-hint" style="display:none;color:#e0af68;margin-top:4px;"></small>
                 </div>
                 <div style="margin-top:12px;">
                   <button id="ac-int-reddit-save" class="ac-btn ac-btn-primary">Save</button>
@@ -1515,8 +1525,9 @@
                   <input type="password" id="ac-int-snapchat-input-secret" class="ac-input" placeholder="Client secret" autocomplete="off">
                 </div>
                 <div class="ac-field">
-                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Snapchat App → Redirect URIs)</label>
-                  <code id="ac-int-snapchat-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-0);border-radius:4px;word-break:break-all;"></code>
+                  <label class="ac-label">Redirect URI (must match what you register in Snapchat App → Redirect URIs)</label>
+                  <input type="text" id="ac-int-snapchat-input-redirect_uri" class="ac-input" placeholder="https://your-host/api/v1/oauth/callback/snapchat" autocomplete="off">
+                  <small id="ac-int-snapchat-form-uri-warn" class="ac-hint" style="display:none;color:#e0af68;margin-top:4px;"></small>
                 </div>
                 <div style="margin-top:12px;">
                   <button id="ac-int-snapchat-save" class="ac-btn ac-btn-primary">Save</button>
@@ -1570,8 +1581,9 @@
                   <input type="password" id="ac-int-twitch-input-secret" class="ac-input" placeholder="Client secret" autocomplete="off">
                 </div>
                 <div class="ac-field">
-                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Twitch App → OAuth Redirect URLs)</label>
-                  <code id="ac-int-twitch-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-0);border-radius:4px;word-break:break-all;"></code>
+                  <label class="ac-label">Redirect URI (must match what you register in Twitch App → OAuth Redirect URLs)</label>
+                  <input type="text" id="ac-int-twitch-input-redirect_uri" class="ac-input" placeholder="https://your-host/api/v1/oauth/callback/twitch" autocomplete="off">
+                  <small id="ac-int-twitch-form-uri-warn" class="ac-hint" style="display:none;color:#e0af68;margin-top:4px;"></small>
                 </div>
                 <div style="margin-top:12px;">
                   <button id="ac-int-twitch-save" class="ac-btn ac-btn-primary">Save</button>
@@ -1636,8 +1648,9 @@
                   <input type="password" id="ac-int-ebay-input-secret" class="ac-input" placeholder="PRD-xxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off">
                 </div>
                 <div class="ac-field">
-                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to eBay App → Auth Accepted URL)</label>
-                  <code id="ac-int-ebay-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-0);border-radius:4px;word-break:break-all;"></code>
+                  <label class="ac-label">Redirect URI (must match what you register in eBay App → Auth Accepted URL)</label>
+                  <input type="text" id="ac-int-ebay-input-redirect_uri" class="ac-input" placeholder="https://your-host/api/v1/oauth/callback/ebay" autocomplete="off">
+                  <small id="ac-int-ebay-form-uri-warn" class="ac-hint" style="display:none;color:#e0af68;margin-top:4px;"></small>
                 </div>
                 <div style="margin-top:12px;">
                   <button id="ac-int-ebay-save" class="ac-btn ac-btn-primary">Save</button>
@@ -1691,8 +1704,9 @@
                   <input type="password" id="ac-int-etsy-input-secret" class="ac-input" placeholder="Shared secret" autocomplete="off">
                 </div>
                 <div class="ac-field">
-                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Etsy App → Callback URLs)</label>
-                  <code id="ac-int-etsy-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-0);border-radius:4px;word-break:break-all;"></code>
+                  <label class="ac-label">Redirect URI (must match what you register in Etsy App → Callback URLs)</label>
+                  <input type="text" id="ac-int-etsy-input-redirect_uri" class="ac-input" placeholder="https://your-host/api/v1/oauth/callback/etsy" autocomplete="off">
+                  <small id="ac-int-etsy-form-uri-warn" class="ac-hint" style="display:none;color:#e0af68;margin-top:4px;"></small>
                 </div>
                 <div style="margin-top:12px;">
                   <button id="ac-int-etsy-save" class="ac-btn ac-btn-primary">Save</button>
@@ -1746,8 +1760,9 @@
                   <input type="password" id="ac-int-shopify-input-secret" class="ac-input" placeholder="shpss_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off">
                 </div>
                 <div class="ac-field">
-                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to Shopify App → App URL settings)</label>
-                  <code id="ac-int-shopify-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-0);border-radius:4px;word-break:break-all;"></code>
+                  <label class="ac-label">Redirect URI (must match what you register in Shopify App → App URL settings)</label>
+                  <input type="text" id="ac-int-shopify-input-redirect_uri" class="ac-input" placeholder="https://your-host/api/v1/oauth/callback/shopify" autocomplete="off">
+                  <small id="ac-int-shopify-form-uri-warn" class="ac-hint" style="display:none;color:#e0af68;margin-top:4px;"></small>
                 </div>
                 <div style="margin-top:12px;">
                   <button id="ac-int-shopify-save" class="ac-btn ac-btn-primary">Save</button>
@@ -1802,8 +1817,9 @@
                   <input type="password" id="ac-int-amazon-input-secret" class="ac-input" placeholder="amzn1.oa2-cs.v1.xxxxxxxx" autocomplete="off">
                 </div>
                 <div class="ac-field">
-                  <label class="ac-label" style="color:var(--fg-muted);">Redirect URI (add to LWA Security Profile → Allowed Return URLs)</label>
-                  <code id="ac-int-amazon-form-uri" style="font-size:11px;display:block;padding:6px 8px;background:var(--bg-0);border-radius:4px;word-break:break-all;"></code>
+                  <label class="ac-label">Redirect URI (must match what you register in LWA Security Profile → Allowed Return URLs)</label>
+                  <input type="text" id="ac-int-amazon-input-redirect_uri" class="ac-input" placeholder="https://your-host/api/v1/oauth/callback/amazon" autocomplete="off">
+                  <small id="ac-int-amazon-form-uri-warn" class="ac-hint" style="display:none;color:#e0af68;margin-top:4px;"></small>
                 </div>
                 <div style="margin-top:12px;">
                   <button id="ac-int-amazon-save" class="ac-btn ac-btn-primary">Save</button>
