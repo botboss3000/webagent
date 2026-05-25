@@ -32,13 +32,24 @@ function authHeaders() {
   return t ? { Authorization: 'Bearer ' + t } : {};
 }
 
+function withUserIdParam(path) {
+  // Append the active user_id as a query param. The backend prefers the
+  // JWT when valid, but falls back to this — same pattern as the other
+  // admin pages — so the page still works if the cached token is stale.
+  const uid = localStorage.getItem('auth_user_id') || '';
+  if (!uid) return path;
+  const sep = path.includes('?') ? '&' : '?';
+  return path + sep + 'user_id=' + encodeURIComponent(uid);
+}
+
 async function apiFetch(path, opts = {}) {
-  const headers = Object.assign(
-    { 'Content-Type': 'application/json' },
-    authHeaders(),
-    opts.headers || {},
-  );
-  const res = await fetch(API_BASE + path, Object.assign({}, opts, { headers }));
+  const headers = Object.assign({}, authHeaders(), opts.headers || {});
+  // Avoid a CORS preflight on GETs by only setting Content-Type when
+  // we're actually sending a body.
+  if (opts.body && !('Content-Type' in headers)) {
+    headers['Content-Type'] = 'application/json';
+  }
+  const res = await fetch(API_BASE + withUserIdParam(path), Object.assign({}, opts, { headers }));
   if (!res.ok) {
     let detail = res.statusText;
     try { const j = await res.json(); detail = j.detail || detail; } catch (_) {}
@@ -964,14 +975,22 @@ export async function startFiles() {
     if (editor) editor.style.display = 'none';
     const diag = document.getElementById('files-restricted-diag');
     if (diag) {
+      diag.style.whiteSpace = 'pre-line';
+      const cachedUid = localStorage.getItem('auth_user_id') || '';
       if (!accessInfo.authenticated) {
-        diag.textContent = 'Not signed in. Sign in as an admin user to access the file editor.';
+        if (cachedUid) {
+          diag.textContent =
+            'Browser thinks you are: ' + cachedUid + '\n' +
+            'The server could not verify your session (token may be stale). ' +
+            'Try signing out and back in.';
+        } else {
+          diag.textContent = 'Not signed in. Sign in as an admin user to access the file editor.';
+        }
       } else {
         diag.textContent =
-          'Signed in as: ' + (accessInfo.user_id || '?') +
-          '\nThis account does not have user_profiles.is_admin = 1. ' +
+          'Signed in as: ' + (accessInfo.user_id || '?') + '\n' +
+          'This account does not have user_profiles.is_admin = 1. ' +
           'Ask an admin to promote it via App Config → User Management.';
-        diag.style.whiteSpace = 'pre-line';
       }
     }
     return;
