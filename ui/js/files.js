@@ -160,29 +160,70 @@ function selectTreeRow(row) {
 // ── Drag-and-drop file upload ──────────────────────────────────────
 
 function wireFolderDropTarget(row, folderPath) {
+  // Counter for dragenter/leave pairs — these events fire on every child
+  // boundary crossing too, so plain add/remove is unreliable.
+  let depth = 0;
+
+  function hasFiles(e) {
+    if (!e.dataTransfer) return false;
+    const types = e.dataTransfer.types;
+    if (!types) return false;
+    // DOMStringList in Firefox, array-like elsewhere
+    for (let i = 0; i < types.length; i++) {
+      if (types[i] === 'Files') return true;
+    }
+    return false;
+  }
+
   row.addEventListener('dragenter', (e) => {
-    if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return;
+    if (!hasFiles(e)) return;
     e.preventDefault();
+    depth++;
     row.classList.add('files-drop-target');
   });
+  // dragover must preventDefault on *every* fire or the drop event never
+  // happens. We don't gate on hasFiles here because some browsers only
+  // expose `types` reliably on dragenter/drop.
   row.addEventListener('dragover', (e) => {
-    if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return;
+    if (!hasFiles(e)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
-    row.classList.add('files-drop-target');
   });
-  row.addEventListener('dragleave', (e) => {
-    // Only clear the highlight when we actually leave the row, not when
-    // we enter a child element.
-    if (e.relatedTarget && row.contains(e.relatedTarget)) return;
-    row.classList.remove('files-drop-target');
+  row.addEventListener('dragleave', () => {
+    if (depth > 0) depth--;
+    if (depth === 0) row.classList.remove('files-drop-target');
   });
   row.addEventListener('drop', async (e) => {
     if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
     e.preventDefault();
     e.stopPropagation();
+    depth = 0;
     row.classList.remove('files-drop-target');
     await uploadFilesToFolder(folderPath, Array.from(e.dataTransfer.files));
+  });
+}
+
+// Catch file drops anywhere in the Files page that *aren't* on a folder
+// row so the browser doesn't navigate to / download the dropped file
+// (which is the default behaviour when no handler preventDefaults).
+let _filesDropGuardInstalled = false;
+function installFilesDropGuard() {
+  if (_filesDropGuardInstalled) return;
+  _filesDropGuardInstalled = true;
+  const editor = document.getElementById('files-editor');
+  if (!editor) return;
+  editor.addEventListener('dragover', (e) => {
+    if (e.dataTransfer && Array.from(e.dataTransfer.types).indexOf('Files') !== -1) {
+      e.preventDefault();
+    }
+  });
+  editor.addEventListener('drop', (e) => {
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length &&
+        !(e.target.closest && e.target.closest('.files-tree-row[data-kind="dir"], .files-tree-node[data-kind="dir"] > .files-tree-row'))) {
+      // Dropped on the editor but not on a folder row — swallow so the
+      // browser doesn't navigate away from the page.
+      e.preventDefault();
+    }
   });
 }
 
@@ -1085,20 +1126,22 @@ function updateHighlightOverlay(pane) {
   // as the textarea (which always reserves a blank line for the caret).
   if (window.Prism && window.Prism.highlight) {
     const langClass = (code.className.match(/language-(\S+)/) || [])[1] || 'plain';
-    const grammar = window.Prism.languages[langClass];
-    if (grammar) {
-      try {
-        code.innerHTML = window.Prism.highlight(value + '\n', grammar, langClass);
-        return;
-      } catch (_) {}
-    } else if (window.Prism.plugins && window.Prism.plugins.autoloader) {
-      // Trigger the autoloader to fetch the language grammar, then retry.
-      window.Prism.plugins.autoloader.loadLanguages([langClass], () => {
-        if (document.body.contains(pane)) updateHighlightOverlay(pane);
-      });
+    if (langClass !== 'plain') {
+      const grammar = window.Prism.languages[langClass];
+      if (grammar) {
+        try {
+          code.innerHTML = window.Prism.highlight(value + '\n', grammar, langClass);
+          return;
+        } catch (_) {}
+      } else if (window.Prism.plugins && window.Prism.plugins.autoloader) {
+        // Trigger the autoloader to fetch the language grammar, then retry.
+        window.Prism.plugins.autoloader.loadLanguages([langClass], () => {
+          if (document.body.contains(pane)) updateHighlightOverlay(pane);
+        });
+      }
     }
   }
-  // Fallback / pre-Prism state: escape and show plain text
+  // Fallback / pre-Prism state / plain text: just show the raw value.
   code.textContent = value + '\n';
 }
 
@@ -1106,12 +1149,11 @@ function updateHighlightOverlay(pane) {
 
 function renderMarkdown(src) {
   try {
-    if (window.marked) {
-      window.marked.setOptions({ gfm: true, breaks: false });
+    if (window.marked && typeof window.marked.parse === 'function') {
       return window.marked.parse(src || '');
     }
   } catch (_) {}
-  // Fallback if marked hasn't loaded yet: show escaped raw text in a pre
+  // Fallback if marked hasn't loaded: escape and show as preformatted text.
   const escaped = (src || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   return '<pre style="white-space:pre-wrap;">' + escaped + '</pre>';
 }
@@ -1335,14 +1377,18 @@ async function openFile(path, name) {
     return;
   }
 
+  const tabName = name || path.split('/').pop();
   openTabs.push({
     path: data.path || path,
-    name: name || path.split('/').pop(),
+    name: tabName,
     content: data.content,
     dirty: false,
     binary: data.binary,
     encoding: data.encoding,
     size: data.size,
+    // .md files open in rendered preview by default; toggle in tab menu
+    // switches back to raw editing. Other types open as plain text.
+    preview: isMarkdownFile(tabName),
   });
   activeTabPath = path;
   renderTabs();
@@ -1563,6 +1609,7 @@ export function initFiles() {
 
   initSidebarResize();
   initTabCarousel();
+  installFilesDropGuard();
   renderTabs();
   renderEditorPanes();
 }
