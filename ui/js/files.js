@@ -318,6 +318,11 @@ function renderEditorPanes() {
 
   for (const tab of openTabs) {
     let pane = existing.get(tab.path);
+    if (pane && !tab.binary) {
+      // Keep the textarea in sync if tab.content changed since the pane was created
+      const ta = pane.querySelector('textarea.files-textarea');
+      if (ta && ta.value !== tab.content) ta.value = tab.content || '';
+    }
     if (!pane) {
       pane = document.createElement('div');
       pane.className = 'files-editor-pane';
@@ -413,26 +418,25 @@ async function openFile(path, name) {
     activateTab(path);
     return;
   }
-  // Insert a placeholder tab so the UI is responsive while we load
-  const placeholder = { path, name: name || path.split('/').pop(), content: '', dirty: false, binary: false, encoding: 'utf-8', size: 0, loading: true };
-  openTabs.push(placeholder);
-  activeTabPath = path;
-  renderTabs();
-  renderEditorPanes();
 
+  let data;
   try {
-    const data = await apiFetch('/read?path=' + encodeURIComponent(path));
-    placeholder.content = data.content;
-    placeholder.binary = data.binary;
-    placeholder.encoding = data.encoding;
-    placeholder.size = data.size;
-    placeholder.loading = false;
+    data = await apiFetch('/read?path=' + encodeURIComponent(path));
   } catch (e) {
-    // Remove placeholder on failure
-    openTabs = openTabs.filter((t) => t.path !== path);
-    activeTabPath = openTabs.length ? openTabs[openTabs.length - 1].path : null;
     alert('Failed to open file: ' + e.message);
+    return;
   }
+
+  openTabs.push({
+    path: data.path || path,
+    name: name || path.split('/').pop(),
+    content: data.content,
+    dirty: false,
+    binary: data.binary,
+    encoding: data.encoding,
+    size: data.size,
+  });
+  activeTabPath = path;
   renderTabs();
   renderEditorPanes();
   persistTabs();
