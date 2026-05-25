@@ -7,92 +7,104 @@
 <style>
 :root {
   color-scheme: dark light;
-  --bg-page: #0a0a0f;
-  --bg-hero: linear-gradient(180deg, rgba(122,162,247,0.05) 0%, rgba(187,154,247,0.02) 60%, transparent 100%);
+
+  /* — Dark (default) — */
+  --bg-page: #07070c;
+  --bg-page-2: #0a0b14;
   --bg-card: rgba(255,255,255,0.025);
-  --bg-card-hover: rgba(255,255,255,0.045);
-  --bg-card-open: rgba(122,162,247,0.05);
-  --bg-code: rgba(125,207,255,0.08);
-  --bg-chip: rgba(122,162,247,0.08);
-  --bg-pill: rgba(122,162,247,0.08);
+  --bg-card-hover: rgba(255,255,255,0.04);
+  --bg-card-open: rgba(122,162,247,0.045);
+  --bg-code: rgba(125,207,255,0.10);
+  --bg-chip: rgba(122,162,247,0.10);
+  --bg-pill: rgba(122,162,247,0.10);
+  --bg-icon: linear-gradient(160deg, rgba(125,207,255,0.18), rgba(187,154,247,0.10));
 
-  --border: rgba(255,255,255,0.06);
-  --border-hover: rgba(255,255,255,0.12);
-  --border-open: rgba(122,162,247,0.35);
+  --border: rgba(255,255,255,0.07);
+  --border-hover: rgba(255,255,255,0.14);
+  --border-open: rgba(125,207,255,0.45);
 
-  --fg-strong: #f0f0fa;
-  --fg-body: #c0caf5;
-  --fg-soft: #9aa3c7;
-  --fg-muted: #6e7596;
+  --fg-strong: #f4f5fb;
+  --fg-body: #c7cee6;
+  --fg-soft: #98a0bf;
+  --fg-muted: #6b7397;
   --fg-faint: #4a516e;
-  --fg-code: #7dcfff;
-  --fg-accent: #7aa2f7;
-  --fg-link: #7dcfff;
+  --fg-code: #9bdcff;
+  --fg-accent: #9bbbff;
+  --fg-link: #9bdcff;
 
-  --title-grad-from: #7dcfff;
-  --title-grad-mid:  #7aa2f7;
-  --title-grad-to:   #bb9af7;
-  --chevron: #7aa2f7;
-  --bullet: #bb9af7;
+  --title-grad-from: #d6e4ff;
+  --title-grad-mid:  #9bbbff;
+  --title-grad-to:   #c9b1ff;
+  --chevron: #9bbbff;
+  --bullet: #c9b1ff;
+
+  --ring-glow: 0 0 0 1px rgba(125,207,255,0.20), 0 18px 60px -20px rgba(122,162,247,0.35);
+  --card-shadow: 0 1px 0 rgba(255,255,255,0.04) inset, 0 12px 40px -24px rgba(0,0,0,0.6);
 }
 
 html.light {
-  --bg-page: #fffaf5;
-  --bg-hero: linear-gradient(180deg, rgba(255,140,66,0.06) 0%, rgba(255,180,120,0.02) 60%, transparent 100%);
-  --bg-card: #ffffff;
-  --bg-card-hover: #fff7f0;
-  --bg-card-open: #fff5eb;
-  --bg-code: #fff2e6;
+  --bg-page: #faf5ee;
+  --bg-page-2: #f3ebde;
+  --bg-card: rgba(255,255,255,0.72);
+  --bg-card-hover: rgba(255,255,255,0.92);
+  --bg-card-open: rgba(255,255,255,0.96);
+  --bg-code: rgba(255,140,66,0.10);
   --bg-chip: rgba(255,140,66,0.10);
   --bg-pill: rgba(255,140,66,0.10);
+  --bg-icon: linear-gradient(160deg, rgba(255,140,66,0.18), rgba(212,135,58,0.10));
 
-  --border: #f0e1d0;
-  --border-hover: #e8d4bd;
-  --border-open: #ff8c42;
+  --border: rgba(60,40,30,0.10);
+  --border-hover: rgba(60,40,30,0.18);
+  --border-open: rgba(255,140,66,0.55);
 
-  --fg-strong: #2d1f21;
-  --fg-body: #4d3a3c;
-  --fg-soft: #6f5a5b;
-  --fg-muted: #8f7a7b;
+  --fg-strong: #25181a;
+  --fg-body: #4a3739;
+  --fg-soft: #6e595a;
+  --fg-muted: #8e7878;
   --fg-faint: #c0b0a8;
   --fg-code: #b85a14;
-  --fg-accent: #ff8c42;
-  --fg-link: #ff7a2e;
+  --fg-accent: #d96f1f;
+  --fg-link: #d96f1f;
 
-  --title-grad-from: #ff8c42;
-  --title-grad-mid:  #ff7a2e;
+  --title-grad-from: #3a2018;
+  --title-grad-mid:  #c2541a;
   --title-grad-to:   #d4873a;
-  --chevron: #ff8c42;
-  --bullet: #ff8c42;
+  --chevron: #d96f1f;
+  --bullet: #d96f1f;
+
+  --ring-glow: 0 0 0 1px rgba(255,140,66,0.18), 0 18px 60px -20px rgba(255,140,66,0.30);
+  --card-shadow: 0 1px 0 rgba(255,255,255,0.6) inset, 0 10px 30px -20px rgba(80,40,10,0.18);
 }
 
-/* Auto-pick light when no parent override and OS prefers light */
 @media (prefers-color-scheme: light) {
-  html:not(.dark) {
-    --bg-page: #fffaf5;
-    --bg-hero: linear-gradient(180deg, rgba(255,140,66,0.06) 0%, rgba(255,180,120,0.02) 60%, transparent 100%);
-    --bg-card: #ffffff;
-    --bg-card-hover: #fff7f0;
-    --bg-card-open: #fff5eb;
-    --bg-code: #fff2e6;
+  html:not(.dark):not(.light) {
+    --bg-page: #faf5ee;
+    --bg-page-2: #f3ebde;
+    --bg-card: rgba(255,255,255,0.72);
+    --bg-card-hover: rgba(255,255,255,0.92);
+    --bg-card-open: rgba(255,255,255,0.96);
+    --bg-code: rgba(255,140,66,0.10);
     --bg-chip: rgba(255,140,66,0.10);
     --bg-pill: rgba(255,140,66,0.10);
-    --border: #f0e1d0;
-    --border-hover: #e8d4bd;
-    --border-open: #ff8c42;
-    --fg-strong: #2d1f21;
-    --fg-body: #4d3a3c;
-    --fg-soft: #6f5a5b;
-    --fg-muted: #8f7a7b;
+    --bg-icon: linear-gradient(160deg, rgba(255,140,66,0.18), rgba(212,135,58,0.10));
+    --border: rgba(60,40,30,0.10);
+    --border-hover: rgba(60,40,30,0.18);
+    --border-open: rgba(255,140,66,0.55);
+    --fg-strong: #25181a;
+    --fg-body: #4a3739;
+    --fg-soft: #6e595a;
+    --fg-muted: #8e7878;
     --fg-faint: #c0b0a8;
     --fg-code: #b85a14;
-    --fg-accent: #ff8c42;
-    --fg-link: #ff7a2e;
-    --title-grad-from: #ff8c42;
-    --title-grad-mid: #ff7a2e;
+    --fg-accent: #d96f1f;
+    --fg-link: #d96f1f;
+    --title-grad-from: #3a2018;
+    --title-grad-mid: #c2541a;
     --title-grad-to: #d4873a;
-    --chevron: #ff8c42;
-    --bullet: #ff8c42;
+    --chevron: #d96f1f;
+    --bullet: #d96f1f;
+    --ring-glow: 0 0 0 1px rgba(255,140,66,0.18), 0 18px 60px -20px rgba(255,140,66,0.30);
+    --card-shadow: 0 1px 0 rgba(255,255,255,0.6) inset, 0 10px 30px -20px rgba(80,40,10,0.18);
   }
 }
 
@@ -101,112 +113,286 @@ html { scroll-behavior: smooth; }
 body {
   margin: 0;
   padding: 0;
-  background: var(--bg-page);
+  min-height: 100vh;
   color: var(--fg-body);
-  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   font-size: 15px;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  transition: background 0.2s, color 0.2s;
+  background: var(--bg-page);
+  position: relative;
+  overflow-x: hidden;
+  transition: background 0.4s ease, color 0.3s ease;
 }
-.container { max-width: 760px; margin: 0 auto; padding: 0 24px; }
+
+/* —— Background layer (canvas) —— */
+.bg-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  /* Subtle vignette gradient overlay applied via ::after */
+}
+/* Soft top/bottom vignette to add depth */
+.bg-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 80% 60% at 50% 0%, transparent 0%, var(--bg-page) 90%),
+    radial-gradient(ellipse 100% 70% at 50% 100%, transparent 30%, var(--bg-page) 100%);
+  opacity: 0.55;
+  transition: background 0.4s ease, opacity 0.4s ease;
+}
+html.light .bg-overlay { opacity: 0.35; }
+
+/* Content sits above */
+.shell { position: relative; z-index: 2; }
+
+.container { max-width: 780px; margin: 0 auto; padding: 0 24px; }
 code {
   background: var(--bg-code);
-  border-radius: 4px;
+  border-radius: 5px;
   padding: 1px 6px;
   font-size: 12.5px;
   font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
   color: var(--fg-code);
 }
 
-/* Hero */
+/* —— Hero —— */
 header {
-  padding: 72px 0 56px;
+  padding: 92px 0 64px;
   text-align: center;
-  background: var(--bg-hero);
-  transition: background 0.2s;
+  position: relative;
 }
 .eyebrow {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   font-size: 11px;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--fg-accent);
   background: var(--bg-pill);
-  padding: 5px 12px;
+  padding: 6px 14px;
   border-radius: 100px;
-  margin-bottom: 20px;
+  margin-bottom: 22px;
   font-weight: 500;
+  border: 1px solid var(--border);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.eyebrow::before {
+  content: "";
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--fg-accent);
+  box-shadow: 0 0 8px var(--fg-accent);
 }
 header h1 {
-  margin: 0 0 14px;
-  font-size: 56px;
-  font-weight: 700;
-  letter-spacing: -0.025em;
-  line-height: 1.05;
-  background: linear-gradient(135deg, var(--title-grad-from) 0%, var(--title-grad-mid) 50%, var(--title-grad-to) 100%);
+  margin: 0 0 16px;
+  font-size: 64px;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  line-height: 1.0;
+  background: linear-gradient(135deg, var(--title-grad-from) 0%, var(--title-grad-mid) 25%, var(--title-grad-to) 50%, var(--title-grad-mid) 75%, var(--title-grad-from) 100%);
+  background-size: 220% 220%;
+  background-position: 0% 50%;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+  animation: titleShift 14s ease-in-out infinite;
+  display: inline-flex;
+  align-items: center;
+  gap: 18px;
 }
-header p {
+@keyframes titleShift {
+  0%, 100% { background-position: 0% 50%; }
+  50%      { background-position: 100% 50%; }
+}
+/* Hero mark — small star-cluster glyph next to wordmark */
+.hero-mark {
+  width: 46px; height: 46px;
+  flex-shrink: 0;
+  color: var(--title-grad-mid);
+  opacity: 0.85;
+  animation: heroMarkSpin 32s linear infinite;
+  -webkit-text-fill-color: currentColor; /* opt out of the wordmark's clip */
+}
+.hero-mark circle { fill: currentColor; }
+.hero-mark line { stroke: currentColor; stroke-width: 0.6; opacity: 0.5; }
+@keyframes heroMarkSpin {
+  to { transform: rotate(360deg); }
+}
+header p.tagline {
   margin: 0 auto;
   font-size: 17px;
   line-height: 1.55;
   color: var(--fg-soft);
-  max-width: 560px;
+  max-width: 580px;
+  letter-spacing: -0.005em;
 }
 
-main { padding: 24px 0 80px; }
+main { padding: 28px 0 96px; }
 
-/* Accordion */
-.stack { display: flex; flex-direction: column; gap: 8px; }
+/* —— Cards —— */
+.stack { display: flex; flex-direction: column; gap: 10px; }
 
 .card {
+  position: relative;
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 18px;
   overflow: hidden;
-  transition: background 0.2s, border-color 0.2s;
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  box-shadow: var(--card-shadow);
+  transition: background 0.25s ease, border-color 0.25s ease, transform 0.25s ease, box-shadow 0.3s ease;
+}
+.card::before {
+  /* hairline gradient highlight on top */
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 18px;
+  padding: 1px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0) 40%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0.7;
+}
+html.light .card::before {
+  background: linear-gradient(180deg, rgba(255,255,255,0.9), rgba(255,255,255,0) 50%);
+  opacity: 0.9;
 }
 .card:hover { background: var(--bg-card-hover); border-color: var(--border-hover); }
 .card.open {
   background: var(--bg-card-open);
   border-color: var(--border-open);
+  box-shadow: var(--ring-glow), var(--card-shadow);
+}
+/* Cursor-follow spotlight on the open card */
+.card.open::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    420px circle at var(--mx, 50%) var(--my, 50%),
+    color-mix(in oklab, var(--fg-accent) 14%, transparent) 0%,
+    transparent 60%
+  );
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  border-radius: 18px;
+}
+.card.open:hover::after { opacity: 1; }
+
+/* —— Per-icon micro-animations (run while card is open) —— */
+.card.open .icon-agents .eye { animation: blink 4.2s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+.card.open .icon-agents .eye-r { animation-delay: 0.05s; }
+@keyframes blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  94%, 96%      { transform: scaleY(0.1); }
+}
+
+.card.open .icon-deploy .rocket-window { animation: pulseDim 1.6s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+.card.open .icon-deploy .rocket-flame { animation: flameWobble 0.45s ease-in-out infinite; transform-origin: 5px 19px; transform-box: fill-box; }
+@keyframes pulseDim {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+@keyframes flameWobble {
+  0%, 100% { transform: scaleY(1) translateX(0); }
+  50%      { transform: scaleY(0.7) translateX(-0.5px); }
+}
+
+.card.open .icon-tenants .node { animation: nodePulse 2.4s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+.card.open .icon-tenants .node-1 { animation-delay: 0s; }
+.card.open .icon-tenants .node-2 { animation-delay: 0.4s; }
+.card.open .icon-tenants .node-3 { animation-delay: 0.8s; }
+@keyframes nodePulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50%      { transform: scale(1.25); opacity: 0.7; }
+}
+
+.card.open .icon-code .slash { animation: slashShift 2.2s ease-in-out infinite; }
+@keyframes slashShift {
+  0%, 100% { transform: translateX(0); opacity: 1; }
+  50%      { transform: translateX(1.5px); opacity: 0.5; }
+}
+
+.card.open .icon-ui .shape { animation: shimmer 2.6s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+.card.open .icon-ui .shape-1 { animation-delay: 0s; }
+.card.open .icon-ui .shape-2 { animation-delay: 0.3s; }
+.card.open .icon-ui .shape-3 { animation-delay: 0.6s; }
+@keyframes shimmer {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.3; }
+}
+
+.card.open .icon-integrations .link { animation: linkLight 2.2s ease-in-out infinite; }
+.card.open .icon-integrations .link-1 { animation-delay: 0s; }
+.card.open .icon-integrations .link-2 { animation-delay: 0.25s; }
+.card.open .icon-integrations .link-3 { animation-delay: 0.5s; }
+.card.open .icon-integrations .link-4 { animation-delay: 0.75s; }
+@keyframes linkLight {
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 1; }
 }
 
 .card-head {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 20px 22px;
+  gap: 18px;
+  padding: 22px 24px;
   cursor: pointer;
   user-select: none;
   outline: none;
+  position: relative;
 }
-.card-head:focus-visible { box-shadow: inset 0 0 0 2px var(--border-open); border-radius: 14px; }
+.card-head:focus-visible::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 14px;
+  border: 2px solid var(--border-open);
+  pointer-events: none;
+}
 
 .card-icon {
   flex-shrink: 0;
-  width: 38px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
-  background: var(--bg-chip);
-  border-radius: 10px;
-  line-height: 1;
+  background: var(--bg-icon);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--fg-accent);
+  position: relative;
+  transition: transform 0.3s cubic-bezier(.32,.72,.32,1), border-color 0.25s;
+}
+.card-icon svg { width: 20px; height: 20px; stroke-width: 1.6; }
+.card.open .card-icon {
+  border-color: var(--border-open);
+  transform: scale(1.04);
 }
 
 .card-meta { flex: 1; min-width: 0; }
 .card-title {
-  margin: 0 0 3px;
-  font-size: 16px;
+  margin: 0 0 4px;
+  font-size: 16.5px;
   font-weight: 600;
   color: var(--fg-strong);
-  letter-spacing: -0.005em;
+  letter-spacing: -0.01em;
 }
 .card-summary {
   margin: 0;
@@ -220,21 +406,22 @@ main { padding: 24px 0 80px; }
   width: 18px;
   height: 18px;
   color: var(--chevron);
-  opacity: 0.6;
-  transition: transform 0.25s ease, opacity 0.2s;
+  opacity: 0.5;
+  transition: transform 0.28s cubic-bezier(.32,.72,.32,1), opacity 0.2s;
 }
+.card:hover .chevron { opacity: 0.85; }
 .card.open .chevron { transform: rotate(180deg); opacity: 1; }
 
-/* Smooth expand: 0fr -> 1fr is animatable */
+/* Smooth expand */
 .card-body-wrap {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows 0.28s cubic-bezier(.32,.72,.32,1);
+  transition: grid-template-rows 0.32s cubic-bezier(.32,.72,.32,1);
 }
 .card.open .card-body-wrap { grid-template-rows: 1fr; }
 .card-body-inner { overflow: hidden; }
 .card-body {
-  padding: 0 22px 24px 76px;
+  padding: 4px 24px 26px 86px;
   font-size: 14px;
   color: var(--fg-soft);
   line-height: 1.65;
@@ -244,88 +431,228 @@ main { padding: 24px 0 80px; }
 .card-body strong { color: var(--fg-body); font-weight: 600; }
 .card-body em { color: var(--fg-link); font-style: normal; }
 
-/* Pill list for examples inside detail */
-.pills { margin: 6px 0 14px; display: flex; flex-wrap: wrap; gap: 6px; }
+/* Pill list */
+.pills { margin: 8px 0 16px; display: flex; flex-wrap: wrap; gap: 6px; }
 .pill {
   display: inline-block;
   font-size: 12px;
-  padding: 4px 10px;
+  padding: 4px 11px;
   border-radius: 100px;
   background: var(--bg-pill);
   color: var(--fg-accent);
   font-weight: 500;
+  border: 1px solid var(--border);
 }
 
 /* Detail bullet rows */
-.rows { margin: 6px 0 14px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
-.rows li { display: flex; gap: 10px; font-size: 13.5px; color: var(--fg-soft); }
-.rows .b { color: var(--bullet); flex-shrink: 0; font-weight: 700; }
+.rows { margin: 8px 0 14px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; }
+.rows li { display: flex; gap: 12px; font-size: 13.5px; color: var(--fg-soft); align-items: flex-start; }
+.rows .b {
+  flex-shrink: 0; width: 4px; height: 4px; border-radius: 50%;
+  background: var(--bullet); margin-top: 9px;
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--bullet) 20%, transparent);
+}
 
 /* Footer hint */
 .hint {
-  margin-top: 28px;
+  margin-top: 32px;
   text-align: center;
-  padding: 18px 16px;
+  padding: 20px 18px;
   font-size: 13px;
   color: var(--fg-muted);
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 14px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 .hint strong { color: var(--fg-link); font-weight: 600; }
 
+/* Theme toggle (sits top-right) */
+.theme-toggle {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 100px;
+  color: var(--fg-soft);
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  font: inherit;
+  font-size: 12px;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+.theme-toggle:hover { color: var(--fg-strong); border-color: var(--border-hover); }
+.theme-toggle svg { width: 14px; height: 14px; }
+
+/* —— Nav rail (left margin chapter markers) —— */
+.nav-rail {
+  position: fixed;
+  left: max(20px, calc((100vw - 780px) / 2 - 64px));
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  padding: 14px 0;
+  pointer-events: auto;
+}
+.nav-rail::before {
+  content: "";
+  position: absolute;
+  left: 50%; top: 14px; bottom: 14px;
+  width: 1px;
+  background: linear-gradient(180deg, transparent 0%, var(--border) 18%, var(--border) 82%, transparent 100%);
+  transform: translateX(-0.5px);
+  z-index: -1;
+}
+.nav-dot {
+  width: 9px; height: 9px;
+  margin: 11px 0;
+  border-radius: 50%;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: transform 0.2s ease, background 0.2s, border-color 0.2s, box-shadow 0.25s;
+  position: relative;
+}
+.nav-dot:hover { border-color: var(--border-hover); transform: scale(1.18); }
+.nav-dot.active {
+  background: var(--fg-accent);
+  border-color: var(--fg-accent);
+  transform: scale(1.4);
+  box-shadow: 0 0 0 4px color-mix(in oklab, var(--fg-accent) 18%, transparent);
+}
+.nav-dot .label {
+  position: absolute;
+  left: 22px; top: 50%;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--fg-soft);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: 6px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  backdrop-filter: blur(8px);
+}
+.nav-dot:hover .label { opacity: 1; transform: translateY(-50%) translateX(2px); }
+@media (max-width: 980px) { .nav-rail { display: none; } }
+
+/* —— Footer —— */
+.site-footer {
+  margin-top: 56px;
+  padding: 24px 0 8px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  letter-spacing: 0.02em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+.site-footer a {
+  color: var(--fg-soft);
+  text-decoration: none;
+  border-bottom: 1px dashed transparent;
+  transition: color 0.18s, border-color 0.18s;
+}
+.site-footer a:hover { color: var(--fg-link); border-bottom-color: var(--fg-link); }
+.site-footer .sep { color: var(--fg-faint); }
+
 @media (max-width: 540px) {
-  header { padding: 56px 0 40px; }
-  header h1 { font-size: 40px; }
-  header p { font-size: 15px; }
-  .card-head { padding: 16px 16px; gap: 12px; }
-  .card-icon { width: 32px; height: 32px; font-size: 17px; }
-  .card-body { padding: 0 16px 18px 60px; }
+  header { padding: 64px 0 44px; }
+  header h1 { font-size: 44px; }
+  header p.tagline { font-size: 15px; }
+  .card-head { padding: 18px 16px; gap: 14px; }
+  .card-icon { width: 38px; height: 38px; }
+  .card-icon svg { width: 17px; height: 17px; }
+  .card-body { padding: 0 16px 20px 68px; }
 }
 </style>
 </head>
 <body>
 
+<canvas class="bg-canvas" id="bg"></canvas>
+<div class="bg-overlay"></div>
+
+<button class="theme-toggle" id="themeToggle" aria-label="Toggle theme">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" id="themeIcon"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+  <span id="themeLabel">Dark</span>
+</button>
+
+<div class="shell">
+
 <header>
   <div class="container">
-    <div class="eyebrow">Open Agent Platform</div>
-    <h1>webAgent</h1>
-    <p>Build AI agents that fit your business — from a simple support chatbot to an autonomous developer that ships code — and watch every step they take.</p>
+    <h1><svg class="hero-mark" viewBox="0 0 100 100" aria-hidden="true"><line x1="30" y1="30" x2="70" y2="40"/><line x1="70" y1="40" x2="60" y2="72"/><line x1="60" y1="72" x2="25" y2="60"/><line x1="25" y1="60" x2="30" y2="30"/><line x1="30" y1="30" x2="60" y2="72"/><circle cx="30" cy="30" r="3"/><circle cx="70" cy="40" r="4"/><circle cx="60" cy="72" r="3.5"/><circle cx="25" cy="60" r="2.5"/><circle cx="50" cy="20" r="1.6"/><circle cx="80" cy="65" r="1.6"/></svg>webAgent</h1>
+    <p class="tagline">Build AI agents that fit your business — from a simple support chatbot to an autonomous developer that ships code — and watch every step they take.</p>
   </div>
 </header>
 
+<nav class="nav-rail" id="navRail" aria-label="Section navigation"></nav>
+
 <main>
   <div class="container">
-
     <div class="stack" id="stack" role="tablist" aria-label="Platform features"></div>
 
     <div class="hint">
       <strong>Try it:</strong> use the prompt bar above to say <em>"add a section about pricing"</em> or <em>"redesign the layout"</em> and the agent will edit this page directly.
     </div>
 
+    <footer class="site-footer">
+      <span>Open source · MIT</span>
+      <span class="sep">·</span>
+      <a href="#" rel="noopener">github.com/webagent</a>
+      <span class="sep">·</span>
+      <span>Press <code>1</code>–<code>6</code> to navigate</span>
+    </footer>
   </div>
 </main>
 
+</div>
+
 <script>
+/* ————————————————————————— Icons (sleek line set) ————————————————————————— */
+const ICONS = {
+  agents: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="13" rx="3"/><circle class="eye eye-l" cx="8.5" cy="13.5" r="1.2" fill="currentColor"/><circle class="eye eye-r" cx="15.5" cy="13.5" r="1.2" fill="currentColor"/><path d="M9 17h6"/><path d="M12 3v4"/><circle cx="12" cy="3" r="0.8" fill="currentColor"/></svg>',
+  deploy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path class="rocket-flame" d="M5 15l-2 6 6-2"/><path d="M14.5 4.5c4 0 5 1 5 5L13 16l-5-5L14.5 4.5z"/><circle class="rocket-window" cx="15" cy="9" r="1.5" fill="currentColor"/></svg>',
+  tenants: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle class="node node-1" cx="9" cy="8" r="3.2"/><path d="M3 19c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle class="node node-2" cx="17" cy="6.5" r="2.4"/><path d="M21 16.5c0-2.2-1.8-4-4-4"/><circle class="node node-3" cx="13.5" cy="19" r="0.8" fill="currentColor" stroke="none"/></svg>',
+  code: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><polyline points="8 7 3 12 8 17"/><polyline points="16 7 21 12 16 17"/><line class="slash" x1="14" y1="5" x2="10" y2="19"/></svg>',
+  ui: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18"/><circle class="shape shape-1" cx="6.5" cy="6.5" r="0.6" fill="currentColor"/><circle class="shape shape-2" cx="9" cy="6.5" r="0.6" fill="currentColor"/><path class="shape shape-3" d="M7 14l2.5-2.5L12 14l3-3 2 2"/></svg>',
+  integrations: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path class="link link-1" d="M8.5 6h7"/><path class="link link-2" d="M6 8.5v7"/><path class="link link-3" d="M18 8.5v7"/><path class="link link-4" d="M8.5 18h7"/></svg>'
+};
+
 const FEATURES = [
   {
     id: 'agents',
-    icon: '🛠️',
     title: 'Build Custom Agents',
     summary: 'From simple chatbots to autonomous codebase editors — pick the tools, knowledge, and personality.',
     body:
       '<p>Design an agent for any role across the full capability spectrum — pick the tools, knowledge sources, system prompt, and personality.</p>' +
       '<ul class="rows">' +
-        '<li><span class="b">•</span><span><strong>Support agent</strong> — answers questions from your docs, escalates to humans.</span></li>' +
-        '<li><span class="b">•</span><span><strong>Research agent</strong> — searches the web, builds a memory of findings.</span></li>' +
-        '<li><span class="b">•</span><span><strong>Workflow agent</strong> — triggers automations, calls webhooks on a schedule.</span></li>' +
-        '<li><span class="b">•</span><span><strong>Codebase agent</strong> — reads, edits, tests, and ships changes to a repo.</span></li>' +
+        '<li><span class="b"></span><span><strong>Support agent</strong> — answers questions from your docs, escalates to humans.</span></li>' +
+        '<li><span class="b"></span><span><strong>Research agent</strong> — searches the web, builds a memory of findings.</span></li>' +
+        '<li><span class="b"></span><span><strong>Workflow agent</strong> — triggers automations, calls webhooks on a schedule.</span></li>' +
+        '<li><span class="b"></span><span><strong>Codebase agent</strong> — reads, edits, tests, and ships changes to a repo.</span></li>' +
       '</ul>' +
       '<p>Every reasoning step, tool call, and state change streams live to the <em>Stream</em>, <em>Flow</em>, and <em>Runtime Loop</em> tabs — you can <strong>watch the agent think</strong> while it works, diagnose surprises, and tune behavior from real traces.</p>'
   },
   {
     id: 'deploy',
-    icon: '🚀',
     title: 'Deploy Anywhere',
     summary: 'Your laptop, your VPS, AWS, GCP, Azure, bare metal. No vendor lock-in on infra or LLM.',
     body:
@@ -335,25 +662,22 @@ const FEATURES = [
   },
   {
     id: 'tenants',
-    icon: '👥',
     title: 'Multi-Tenant by Design',
     summary: 'One agent, unlimited users — each with their own session, memory, and tailored experience.',
     body:
       '<p>One agent definition, unlimited users. Every user gets their own isolated session, memory, attachments, automations, and personalized agent state — but they all share the same underlying agent template you built.</p>' +
-      '<p>Per-tenant data isolation is enforced at the storage layer with <code>user_id</code> scoping on every row. Optional field-level encryption with per-tenant keys means even a DB compromise doesn’t leak one user’s data to another.</p>'
+      '<p>Per-tenant data isolation is enforced at the storage layer with <code>user_id</code> scoping on every row. Optional field-level encryption with per-tenant keys means even a DB compromise doesn\u2019t leak one user\u2019s data to another.</p>'
   },
   {
     id: 'code',
-    icon: '📝',
     title: 'Full Code Read / Write / Edit',
     summary: 'Agents read, modify, and ship code in the very codebase they live in.',
     body:
-      '<p>Agents can read, modify, and ship code in the codebase they’re embedded in. Drop webAgent into your existing website or web app and the agent immediately gets the power to edit the surrounding code — turning any product into one with AI capabilities.</p>' +
+      '<p>Agents can read, modify, and ship code in the codebase they\u2019re embedded in. Drop webAgent into your existing website or web app and the agent immediately gets the power to edit the surrounding code — turning any product into one with AI capabilities.</p>' +
       '<p>Or run it as an <strong>admin AI for your own repo</strong>: an agent that lives inside the code, ships pull requests, fixes bugs, refactors modules, and updates docs on demand. Every file the agent touches is streamed live so you can review intent and impact before merging.</p>'
   },
   {
     id: 'ui',
-    icon: '🎨',
     title: 'AI-Built UI',
     summary: 'Agents generate functional pages on demand. This one is an example.',
     body:
@@ -362,7 +686,6 @@ const FEATURES = [
   },
   {
     id: 'integrations',
-    icon: '🔌',
     title: 'Connects to Everything',
     summary: 'Messaging, productivity, social, marketplaces, web scraping — or invent new tools at runtime.',
     body:
@@ -374,20 +697,19 @@ const FEATURES = [
         '<span class="pill">Amazon</span><span class="pill">eBay</span><span class="pill">Etsy</span><span class="pill">Shopify</span>' +
         '<span class="pill">Twilio</span><span class="pill">Web scraping</span><span class="pill">Browser sessions</span>' +
       '</div>' +
-      '<p>When a built-in integration is missing, agents with the <strong>Create Tools</strong> ability can write a new tool themselves: define the schema, the API call, the auth — and the new tool drops straight into the agent’s toolbelt at runtime, no redeploy.</p>'
+      '<p>When a built-in integration is missing, agents with the <strong>Create Tools</strong> ability can write a new tool themselves: define the schema, the API call, the auth — and the new tool drops straight into the agent\u2019s toolbelt at runtime, no redeploy.</p>'
   }
 ];
 
 const stack = document.getElementById('stack');
 
-// Render the accordion
 for (const f of FEATURES) {
   const card = document.createElement('article');
   card.className = 'card';
   card.dataset.feature = f.id;
   card.innerHTML =
     '<div class="card-head" role="button" tabindex="0" aria-expanded="false">' +
-      '<div class="card-icon" aria-hidden="true">' + f.icon + '</div>' +
+      '<div class="card-icon icon-' + f.id + '" aria-hidden="true">' + (ICONS[f.id] || '') + '</div>' +
       '<div class="card-meta">' +
         '<h3 class="card-title">' + f.title + '</h3>' +
         '<p class="card-summary">' + f.summary + '</p>' +
@@ -396,6 +718,29 @@ for (const f of FEATURES) {
     '</div>' +
     '<div class="card-body-wrap"><div class="card-body-inner"><div class="card-body">' + f.body + '</div></div></div>';
   stack.appendChild(card);
+}
+
+/* —— Nav rail —— */
+const navRail = document.getElementById('navRail');
+FEATURES.forEach((f, i) => {
+  const dot = document.createElement('button');
+  dot.className = 'nav-dot';
+  dot.dataset.idx = i;
+  dot.setAttribute('aria-label', f.title);
+  dot.innerHTML = '<span class="label">' + f.title + '</span>';
+  dot.addEventListener('click', () => {
+    const cards = stack.querySelectorAll('.card');
+    openCard(cards[i]);
+    cards[i].scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
+  navRail.appendChild(dot);
+});
+function syncRail() {
+  const cards = stack.querySelectorAll('.card');
+  const dots = navRail.querySelectorAll('.nav-dot');
+  cards.forEach((c, i) => {
+    dots[i].classList.toggle('active', c.classList.contains('open'));
+  });
 }
 
 function openCard(card) {
@@ -410,6 +755,7 @@ function openCard(card) {
       head.setAttribute('aria-expanded', 'false');
     }
   }
+  syncRail();
 }
 
 stack.addEventListener('click', (e) => {
@@ -426,22 +772,424 @@ stack.addEventListener('keydown', (e) => {
   openCard(head.parentElement);
 });
 
-// Open the first card on load
+/* —— Card spotlight: track cursor inside cards —— */
+stack.addEventListener('pointermove', (e) => {
+  const card = e.target.closest('.card');
+  if (!card) return;
+  const r = card.getBoundingClientRect();
+  card.style.setProperty('--mx', ((e.clientX - r.left) / r.width * 100) + '%');
+  card.style.setProperty('--my', ((e.clientY - r.top) / r.height * 100) + '%');
+});
+
+/* —— Keyboard shortcuts: 1-6 jump, arrows navigate, Esc collapse —— */
+window.addEventListener('keydown', (e) => {
+  if (e.target.matches('input, textarea')) return;
+  const cards = Array.from(stack.querySelectorAll('.card'));
+  const openIdx = cards.findIndex(c => c.classList.contains('open'));
+  if (e.key >= '1' && e.key <= '6') {
+    const idx = parseInt(e.key, 10) - 1;
+    if (cards[idx]) {
+      // Always open (don't toggle off when re-pressed)
+      cards.forEach((c, i) => {
+        c.classList.toggle('open', i === idx);
+        c.querySelector('.card-head').setAttribute('aria-expanded', i === idx ? 'true' : 'false');
+      });
+      syncRail();
+      cards[idx].scrollIntoView({ behavior: 'smooth', block: 'center' });
+      e.preventDefault();
+    }
+  } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+    const next = openIdx < 0 ? 0 : Math.min(cards.length - 1, openIdx + 1);
+    cards.forEach((c, i) => {
+      c.classList.toggle('open', i === next);
+      c.querySelector('.card-head').setAttribute('aria-expanded', i === next ? 'true' : 'false');
+    });
+    syncRail();
+    cards[next].scrollIntoView({ behavior: 'smooth', block: 'center' });
+    e.preventDefault();
+  } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+    const prev = openIdx < 0 ? 0 : Math.max(0, openIdx - 1);
+    cards.forEach((c, i) => {
+      c.classList.toggle('open', i === prev);
+      c.querySelector('.card-head').setAttribute('aria-expanded', i === prev ? 'true' : 'false');
+    });
+    syncRail();
+    cards[prev].scrollIntoView({ behavior: 'smooth', block: 'center' });
+    e.preventDefault();
+  } else if (e.key === 'Escape') {
+    cards.forEach(c => {
+      c.classList.remove('open');
+      c.querySelector('.card-head').setAttribute('aria-expanded', 'false');
+    });
+    syncRail();
+  }
+});
+
 const first = stack.querySelector('.card');
 if (first) {
   first.classList.add('open');
   first.querySelector('.card-head').setAttribute('aria-expanded', 'true');
+  syncRail();
 }
 
-// Theme: listen for the parent app's theme via postMessage. Falls back to
-// the @media(prefers-color-scheme) rule above when opened standalone.
+/* —————————————————————— Theme handling —————————————————————— */
+const ICON_MOON = '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
+const ICON_SUN  = '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>';
+
+function applyTheme(t) {
+  const html = document.documentElement;
+  if (t === 'light') { html.classList.add('light'); html.classList.remove('dark'); }
+  else { html.classList.add('dark'); html.classList.remove('light'); }
+  const icon = document.getElementById('themeIcon');
+  const label = document.getElementById('themeLabel');
+  icon.innerHTML = (t === 'light') ? ICON_SUN : ICON_MOON;
+  label.textContent = (t === 'light') ? 'Light' : 'Dark';
+}
+
+// Listen to parent app
 window.addEventListener('message', (e) => {
   const msg = e && e.data;
   if (!msg || msg.type !== 'theme') return;
-  const html = document.documentElement;
-  if (msg.value === 'light') { html.classList.add('light'); html.classList.remove('dark'); }
-  else { html.classList.add('dark'); html.classList.remove('light'); }
+  applyTheme(msg.value === 'light' ? 'light' : 'dark');
 });
+
+// Manual toggle
+document.getElementById('themeToggle').addEventListener('click', () => {
+  const isLight = document.documentElement.classList.contains('light');
+  applyTheme(isLight ? 'dark' : 'light');
+});
+
+// Default: dark unless OS prefers light
+if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+  applyTheme('light');
+} else {
+  applyTheme('dark');
+}
+
+/* —————————————————————— Animated background —————————————————————— */
+/* A single starfield scene. In dark mode it renders as a cool-blue stargaze
+   on near-black; in light mode it renders as warm-brown stars on cream — a
+   "reverse stargaze". Both drift slowly and respond to the cursor. */
+
+const canvas = document.getElementById('bg');
+const ctx = canvas.getContext('2d');
+let DPR = Math.min(window.devicePixelRatio || 1, 2);
+let W = 0, H = 0;
+let stars = [];
+let shootingStars = [];
+let dust = [];
+let nextShootAt = 0;
+let pointerX = 0.5, pointerY = 0.5; // 0..1
+let targetX = 0.5, targetY = 0.5;
+let scrollY = 0;
+
+function resize() {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * DPR;
+  canvas.height = H * DPR;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  initStars();
+}
+
+function initStars() {
+  stars = [];
+  const count = Math.round((W * H) / 8000); // density
+  for (let i = 0; i < count; i++) {
+    const layer = Math.random() < 0.55 ? 0 : (Math.random() < 0.85 ? 1 : 2);
+    stars.push({
+      x: Math.random(),
+      y: Math.random(),
+      r: layer === 0 ? Math.random() * 0.7 + 0.3
+         : layer === 1 ? Math.random() * 0.9 + 0.5
+         : Math.random() * 1.4 + 0.8,
+      layer,
+      tw: Math.random() * Math.PI * 2,     // twinkle phase
+      twSpeed: 0.4 + Math.random() * 0.8,
+      drift: 0.01 + Math.random() * 0.04,
+      // Dual palettes — picked at draw time based on current theme
+      hueDark: Math.random() < 0.85 ? 220 : (Math.random() < 0.5 ? 260 : 200),
+      hueLight: Math.random() < 0.85 ? 22 : (Math.random() < 0.5 ? 12 : 35)
+    });
+  }
+}
+
+function drawStars(t) {
+  const isLight = document.documentElement.classList.contains('light');
+
+  if (isLight) {
+    // Warm cream wash with soft amber nebula
+    const g = ctx.createRadialGradient(W * 0.5, H * 0.28, 40, W * 0.5, H * 0.28, Math.max(W, H) * 0.9);
+    g.addColorStop(0, 'rgba(255, 200, 150, 0.22)');
+    g.addColorStop(0.5, 'rgba(220, 160, 110, 0.08)');
+    g.addColorStop(1, 'rgba(245, 220, 195, 0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    const px = pointerX - 0.5, py = pointerY - 0.5;
+    const g2 = ctx.createRadialGradient(
+      W * (0.82 + px * 0.05), H * (0.78 + py * 0.05), 30,
+      W * (0.82 + px * 0.05), H * (0.78 + py * 0.05), Math.max(W, H) * 0.6
+    );
+    g2.addColorStop(0, 'rgba(200, 120, 70, 0.16)');
+    g2.addColorStop(0.5, 'rgba(180, 100, 60, 0.05)');
+    g2.addColorStop(1, 'rgba(245, 220, 195, 0)');
+    ctx.fillStyle = g2;
+    ctx.fillRect(0, 0, W, H);
+  } else {
+    // Cool deep-blue nebula on near-black
+    const g = ctx.createRadialGradient(W * 0.5, H * 0.3, 50, W * 0.5, H * 0.3, Math.max(W, H) * 0.9);
+    g.addColorStop(0, 'rgba(60, 70, 130, 0.18)');
+    g.addColorStop(0.45, 'rgba(40, 30, 80, 0.08)');
+    g.addColorStop(1, 'rgba(8, 8, 16, 0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    const px = pointerX - 0.5, py = pointerY - 0.5;
+    const g2 = ctx.createRadialGradient(
+      W * (0.82 + px * 0.05), H * (0.78 + py * 0.05), 30,
+      W * (0.82 + px * 0.05), H * (0.78 + py * 0.05), Math.max(W, H) * 0.6
+    );
+    g2.addColorStop(0, 'rgba(125, 90, 200, 0.16)');
+    g2.addColorStop(0.5, 'rgba(80, 60, 160, 0.05)');
+    g2.addColorStop(1, 'rgba(8, 8, 16, 0)');
+    ctx.fillStyle = g2;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // Stars
+  for (const s of stars) {
+    const parallaxStrength = (s.layer + 1) * 10;
+    const x = (s.x * W) - (pointerX - 0.5) * parallaxStrength;
+    const y = (s.y * H) - (pointerY - 0.5) * parallaxStrength - (scrollY * 0.04 * (s.layer + 1));
+    const tw = (Math.sin(t * 0.001 * s.twSpeed + s.tw) + 1) * 0.5; // 0..1
+    const r = s.r * (0.9 + tw * 0.25);
+
+    if (isLight) {
+      const hue = s.hueLight;
+      // dark brown core, deeper at twinkle peak
+      const alpha = 0.45 + tw * 0.45;
+      const lightness = 18 + tw * 8; // darker brown
+      const sat = 55;
+
+      // Soft warm halo for larger stars
+      if (s.layer >= 1) {
+        const halo = ctx.createRadialGradient(x, y, 0, x, y, r * 6);
+        halo.addColorStop(0, `hsla(${hue},${sat}%,${lightness}%,${alpha * 0.35})`);
+        halo.addColorStop(1, `hsla(${hue},${sat}%,${lightness}%,0)`);
+        ctx.fillStyle = halo;
+        ctx.beginPath();
+        ctx.arc(x, y, r * 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.fillStyle = `hsla(${hue},${sat}%,${lightness}%,${alpha})`;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      const hue = s.hueDark;
+      const alpha = 0.35 + tw * 0.55;
+
+      if (s.layer >= 1) {
+        const halo = ctx.createRadialGradient(x, y, 0, x, y, r * 6);
+        halo.addColorStop(0, `hsla(${hue},90%,85%,${alpha * 0.5})`);
+        halo.addColorStop(1, `hsla(${hue},90%,85%,0)`);
+        ctx.fillStyle = halo;
+        ctx.beginPath();
+        ctx.arc(x, y, r * 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.fillStyle = `hsla(${hue},80%,${85 + tw * 10}%,${alpha})`;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // drift
+    s.x += s.drift * 0.0006;
+    if (s.x > 1.05) s.x = -0.05;
+  }
+}
+
+function spawnShooting(t) {
+  // start position: top half, going down and across
+  const fromLeft = Math.random() < 0.5;
+  const startX = fromLeft ? -50 + Math.random() * 100 : W + 50 - Math.random() * 100;
+  const startY = Math.random() * H * 0.5;
+  const speed = 0.8 + Math.random() * 0.6; // px per ms
+  const angle = (fromLeft ? 1 : -1) * (0.18 + Math.random() * 0.12) * Math.PI; // roughly diagonal
+  shootingStars.push({
+    x: startX, y: startY,
+    vx: Math.cos(angle) * speed * (fromLeft ? 1 : -1),
+    vy: Math.sin(Math.abs(angle)) * speed + 0.3,
+    life: 0,
+    maxLife: 900 + Math.random() * 500,
+    born: t,
+    trail: []
+  });
+}
+
+function drawShootingStars(t, isLight) {
+  // schedule next spawn
+  if (t > nextShootAt) {
+    spawnShooting(t);
+    nextShootAt = t + 12000 + Math.random() * 20000; // 12–32s
+  }
+  for (let i = shootingStars.length - 1; i >= 0; i--) {
+    const s = shootingStars[i];
+    const age = t - s.born;
+    if (age > s.maxLife) { shootingStars.splice(i, 1); continue; }
+    s.x += s.vx * 16; // approx step per frame
+    s.y += s.vy * 16;
+    s.trail.unshift({ x: s.x, y: s.y });
+    if (s.trail.length > 22) s.trail.length = 22;
+
+    // Draw trail as fading line segments
+    const fade = age < 150 ? age / 150 : (age > s.maxLife - 250 ? (s.maxLife - age) / 250 : 1);
+    for (let j = 0; j < s.trail.length - 1; j++) {
+      const p1 = s.trail[j], p2 = s.trail[j + 1];
+      const segAlpha = (1 - j / s.trail.length) * 0.9 * fade;
+      ctx.strokeStyle = isLight
+        ? `rgba(110, 50, 20, ${segAlpha})`
+        : `rgba(220, 230, 255, ${segAlpha})`;
+      ctx.lineWidth = (1 - j / s.trail.length) * 2 + 0.3;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.stroke();
+    }
+    // Head
+    const head = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, 8);
+    if (isLight) {
+      head.addColorStop(0, `rgba(110, 50, 20, ${0.9 * fade})`);
+      head.addColorStop(1, 'rgba(110, 50, 20, 0)');
+    } else {
+      head.addColorStop(0, `rgba(255, 255, 255, ${0.95 * fade})`);
+      head.addColorStop(1, 'rgba(180, 200, 255, 0)');
+    }
+    ctx.fillStyle = head;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, 8, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function spawnDust(x, y, isLight) {
+  // emit a few particles when the cursor moves quickly
+  for (let i = 0; i < 2; i++) {
+    dust.push({
+      x: x + (Math.random() - 0.5) * 6,
+      y: y + (Math.random() - 0.5) * 6,
+      vx: (Math.random() - 0.5) * 0.3,
+      vy: (Math.random() - 0.5) * 0.3 - 0.15,
+      r: 0.4 + Math.random() * 1.2,
+      life: 0,
+      maxLife: 600 + Math.random() * 400,
+      isLight
+    });
+  }
+}
+
+function drawDust(t, dtMs) {
+  for (let i = dust.length - 1; i >= 0; i--) {
+    const p = dust[i];
+    p.life += dtMs;
+    if (p.life > p.maxLife) { dust.splice(i, 1); continue; }
+    p.x += p.vx * dtMs * 0.06;
+    p.y += p.vy * dtMs * 0.06;
+    const a = (1 - p.life / p.maxLife);
+    ctx.fillStyle = p.isLight
+      ? `rgba(110, 60, 30, ${a * 0.55})`
+      : `rgba(220, 230, 255, ${a * 0.75})`;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r * a, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawConstellation(isLight) {
+  // Find stars near cursor, draw faint lines between the closest 4
+  const cx = pointerX * W, cy = pointerY * H;
+  const candidates = [];
+  for (const s of stars) {
+    if (s.layer < 1) continue; // only mid/large stars qualify
+    const sx = s.x * W - (pointerX - 0.5) * (s.layer + 1) * 10;
+    const sy = s.y * H - (pointerY - 0.5) * (s.layer + 1) * 10 - scrollY * 0.04 * (s.layer + 1);
+    const d = Math.hypot(sx - cx, sy - cy);
+    if (d < 220) candidates.push({ x: sx, y: sy, d });
+  }
+  candidates.sort((a, b) => a.d - b.d);
+  const pick = candidates.slice(0, 5);
+  if (pick.length < 2) return;
+  ctx.lineWidth = 0.6;
+  ctx.lineCap = 'round';
+  for (let i = 0; i < pick.length - 1; i++) {
+    const a = pick[i], b = pick[i + 1];
+    const dist = Math.hypot(a.x - b.x, a.y - b.y);
+    if (dist > 200) continue;
+    const alpha = (1 - dist / 200) * 0.45 * (1 - a.d / 220);
+    ctx.strokeStyle = isLight
+      ? `rgba(80, 40, 20, ${alpha})`
+      : `rgba(180, 200, 255, ${alpha})`;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+}
+
+let lastFrameT = 0;
+function frame(t) {
+  t = t || performance.now();
+  const dtMs = lastFrameT ? Math.min(50, t - lastFrameT) : 16;
+  lastFrameT = t;
+
+  // ease pointer
+  pointerX += (targetX - pointerX) * 0.06;
+  pointerY += (targetY - pointerY) * 0.06;
+
+  ctx.clearRect(0, 0, W, H);
+  const isLight = document.documentElement.classList.contains('light');
+  drawStars(t);
+  drawConstellation(isLight);
+  drawShootingStars(t, isLight);
+  drawDust(t, dtMs);
+
+  if (document.hidden) setTimeout(() => frame(performance.now()), 80);
+  else requestAnimationFrame(frame);
+}
+window.__drawOnce = () => frame(performance.now());
+
+let lastPointerX = 0, lastPointerY = 0;
+window.addEventListener('pointermove', (e) => {
+  targetX = e.clientX / window.innerWidth;
+  targetY = e.clientY / window.innerHeight;
+  // Emit stardust when cursor is moving with some velocity
+  const dx = e.clientX - lastPointerX, dy = e.clientY - lastPointerY;
+  const speed = Math.hypot(dx, dy);
+  if (speed > 4 && Math.random() < Math.min(0.5, speed / 60)) {
+    const isLight = document.documentElement.classList.contains('light');
+    spawnDust(e.clientX, e.clientY, isLight);
+  }
+  lastPointerX = e.clientX;
+  lastPointerY = e.clientY;
+});
+window.addEventListener('scroll', () => {
+  scrollY = window.scrollY || 0;
+}, { passive: true });
+window.addEventListener('resize', () => {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  resize();
+});
+
+resize();
+// Kick off — draw synchronously once so the canvas isn't blank if RAF is throttled
+frame(performance.now());
 </script>
 
 </body>
