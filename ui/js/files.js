@@ -12,8 +12,10 @@ let initialised = false;
 let isAdmin = false;
 let openTabs = [];          // { path, name, content, dirty, binary, encoding, size }
 let activeTabPath = null;
-let expandedDirs = new Set();  // paths of currently expanded directories
+let expandedDirs = new Set();  // absolute paths of currently expanded directories
 let dragSrcPath = null;        // path of the tab being dragged
+let currentRoot = '';          // absolute path of the directory the tree is rooted at
+let projectRoot = '';          // absolute path of the project root (server-reported)
 
 // Persisted state (across tab switches and reloads)
 const LS_SIDEBAR_WIDTH    = 'files.sidebarWidth';
@@ -21,6 +23,7 @@ const LS_SIDEBAR_COLLAPSED = 'files.sidebarCollapsed';
 const LS_OPEN_TABS         = 'files.openTabs';
 const LS_ACTIVE_TAB        = 'files.activeTab';
 const LS_EXPANDED          = 'files.expandedDirs';
+const LS_CURRENT_ROOT      = 'files.currentRoot';
 
 // ── Auth helper ────────────────────────────────────────────────────
 
@@ -174,19 +177,107 @@ async function loadRoot() {
   if (!tree) return;
   tree.innerHTML = '<div class="files-tree-loading">Loading…</div>';
   try {
-    const data = await apiFetch('/tree?path=');
+    const data = await apiFetch('/tree?path=' + encodeURIComponent(currentRoot || ''));
+    currentRoot = data.path || currentRoot;
+    if (data.project_root) projectRoot = data.project_root;
+    renderBreadcrumb(currentRoot, data.parent);
+
     tree.innerHTML = '';
     if (!data.entries.length) {
       tree.innerHTML = '<div class="files-tree-empty">Empty directory</div>';
-      return;
-    }
-    for (const entry of data.entries) {
-      tree.appendChild(renderTreeNode(entry, 0));
+    } else {
+      for (const entry of data.entries) {
+        tree.appendChild(renderTreeNode(entry, 0));
+      }
     }
     if (window.lucide) window.lucide.createIcons({ nodes: Array.from(tree.querySelectorAll('[data-lucide]:not(.lucide)')) });
+    try { localStorage.setItem(LS_CURRENT_ROOT, currentRoot); } catch (_) {}
   } catch (e) {
     tree.innerHTML = '<div class="files-tree-empty">Error: ' + (e.message || 'failed') + '</div>';
+    // If the saved root no longer exists, fall back to the project root
+    // so the user isn't stranded with a dead breadcrumb.
+    if (currentRoot && currentRoot !== projectRoot) {
+      currentRoot = '';
+      try { localStorage.removeItem(LS_CURRENT_ROOT); } catch (_) {}
+    }
   }
+}
+
+// ── Breadcrumb ────────────────────────────────────────────────────
+
+function splitPathSegments(absPath) {
+  if (!absPath) return [];
+  // Backend returns forward-slash-normalised paths, even on Windows.
+  // Detect a Windows drive (`C:`) and keep it as a single segment.
+  const parts = absPath.split('/').filter(Boolean);
+  if (parts.length && /^[A-Za-z]:$/.test(parts[0])) {
+    return parts; // first segment is the drive letter
+  }
+  return parts;
+}
+
+function buildSegmentPath(segments, idx, rootIsWindows) {
+  // Return the absolute path that should be navigated to when the user
+  // clicks segment `idx`. For Unix, prepend "/"; for Windows, the drive
+  // letter (segments[0]) already encodes the root.
+  const slice = segments.slice(0, idx + 1);
+  if (rootIsWindows) return slice.join('/');
+  return '/' + slice.join('/');
+}
+
+function renderBreadcrumb(absPath, parentPath) {
+  const segWrap = document.getElementById('files-breadcrumb-segments');
+  if (!segWrap) return;
+  segWrap.innerHTML = '';
+
+  const segments = splitPathSegments(absPath);
+  const rootIsWindows = segments.length > 0 && /^[A-Za-z]:$/.test(segments[0]);
+
+  // "Filesystem root" pill on Unix so the user can click into "/"
+  if (!rootIsWindows) {
+    const rootBtn = document.createElement('button');
+    rootBtn.className = 'files-breadcrumb-seg' + (absPath === '/' ? ' current' : '');
+    rootBtn.textContent = '/';
+    rootBtn.title = '/';
+    rootBtn.addEventListener('click', () => setRoot('/'));
+    segWrap.appendChild(rootBtn);
+  }
+
+  segments.forEach((seg, idx) => {
+    if (idx > 0 || rootIsWindows) {
+      const sep = document.createElement('span');
+      sep.className = 'files-breadcrumb-sep';
+      sep.textContent = '/';
+      segWrap.appendChild(sep);
+    }
+    const btn = document.createElement('button');
+    btn.className = 'files-breadcrumb-seg' + (idx === segments.length - 1 ? ' current' : '');
+    btn.textContent = seg;
+    btn.title = seg;
+    const targetPath = buildSegmentPath(segments, idx, rootIsWindows);
+    btn.addEventListener('click', () => setRoot(targetPath));
+    segWrap.appendChild(btn);
+  });
+
+  const upBtn = document.getElementById('files-breadcrumb-up');
+  if (upBtn) {
+    upBtn.disabled = !parentPath;
+    upBtn.onclick = () => { if (parentPath) setRoot(parentPath); };
+  }
+  const homeBtn = document.getElementById('files-breadcrumb-home');
+  if (homeBtn) {
+    homeBtn.disabled = !projectRoot || projectRoot === absPath;
+    homeBtn.onclick = () => { if (projectRoot) setRoot(projectRoot); };
+  }
+}
+
+async function setRoot(absPath) {
+  if (!absPath || absPath === currentRoot) return;
+  currentRoot = absPath;
+  // Reset the expand state so we don't try to expand stale subtrees
+  expandedDirs = new Set();
+  persistExpanded();
+  await loadRoot();
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────
@@ -217,15 +308,30 @@ function renderTabs() {
 
     const close = document.createElement('button');
     close.className = 'files-tab-close';
+    close.type = 'button';
     close.title = 'Close (middle-click also works)';
+    close.draggable = false;
     const xI = document.createElement('i');
     xI.setAttribute('data-lucide', 'x');
     xI.className = 'lucide-icon';
+    xI.style.pointerEvents = 'none';
     close.appendChild(xI);
+    // The parent `el` is draggable, which can swallow the click into a
+    // potential drag operation on some browsers. Closing on mousedown is
+    // the most reliable path; stop propagation so the tab's mousedown
+    // (middle-click handler) and dragstart don't also fire.
+    close.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+      if (e.button === 0 || e.button === 1) {
+        e.preventDefault();
+        closeTab(tab.path);
+      }
+    });
     close.addEventListener('click', (e) => {
       e.stopPropagation();
-      closeTab(tab.path);
+      e.preventDefault();
     });
+    close.addEventListener('dragstart', (e) => { e.preventDefault(); e.stopPropagation(); });
     el.appendChild(close);
 
     el.addEventListener('click', () => activateTab(tab.path));
@@ -588,6 +694,10 @@ function restoreState() {
   try {
     const saved = JSON.parse(localStorage.getItem(LS_EXPANDED) || '[]');
     if (Array.isArray(saved)) expandedDirs = new Set(saved);
+  } catch (_) {}
+  try {
+    const r = localStorage.getItem(LS_CURRENT_ROOT);
+    if (r) currentRoot = r;
   } catch (_) {}
 }
 

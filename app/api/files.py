@@ -60,26 +60,29 @@ def _require_admin(request: Request) -> None:
 
 # ── Path resolution ─────────────────────────────────────────────────
 
-def _resolve(rel_path: str) -> Path:
-    """Resolve a user-supplied relative path inside _PROJECT_ROOT.
+def _resolve(path_str: str) -> Path:
+    """Resolve a user-supplied path.
 
-    Rejects absolute paths and any resolved path that falls outside the
-    project root, even if symlinks point elsewhere.
+    - Empty string defaults to the project root.
+    - Relative paths are resolved against the project root.
+    - Absolute paths are honoured as-is, so the admin can browse anywhere
+      on the host (this matches the intent of an embeddable file base
+      editor — see also `_require_admin`, which is the access gate).
     """
-    rel = (rel_path or "").strip().lstrip("/").replace("\\", "/")
-    candidate = (_PROJECT_ROOT / rel).resolve()
-    try:
-        candidate.relative_to(_PROJECT_ROOT.resolve())
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Path escapes project root")
-    return candidate
+    s = (path_str or "").strip()
+    if not s:
+        return _PROJECT_ROOT.resolve()
+    p = Path(s)
+    if not p.is_absolute():
+        p = _PROJECT_ROOT / s.lstrip("/").lstrip("\\")
+    return p.resolve()
 
 
-def _rel(path: Path) -> str:
-    try:
-        return str(path.resolve().relative_to(_PROJECT_ROOT.resolve())).replace(os.sep, "/")
-    except ValueError:
-        return ""
+def _abs(path: Path) -> str:
+    """Stringified absolute path, normalised to forward slashes so the
+    frontend can split on `/` regardless of the host OS. Windows-style
+    paths still keep their drive letter (`C:/...`)."""
+    return str(path.resolve()).replace(os.sep, "/")
 
 
 # ── Models ──────────────────────────────────────────────────────────
@@ -116,8 +119,9 @@ async def check_access(request: Request):
 async def list_tree(request: Request, path: str = "", show_hidden: bool = False):
     """List the immediate children of the given directory.
 
-    Returns directories first (alphabetical), then files. Path is
-    relative to project root; empty string means the root itself.
+    Returns directories first (alphabetical), then files. An empty
+    `path` defaults to the project root; an absolute path browses
+    anywhere on the host filesystem.
     """
     _require_admin(request)
     target = _resolve(path)
@@ -126,33 +130,52 @@ async def list_tree(request: Request, path: str = "", show_hidden: bool = False)
     if not target.is_dir():
         raise HTTPException(status_code=400, detail="Path is not a directory")
 
+    target_str = _abs(target)
+    project_root_str = _abs(_PROJECT_ROOT)
+    is_under_project_root = (
+        target_str == project_root_str
+        or target_str.startswith(project_root_str + "/")
+    )
+
     dirs, files = [], []
     try:
         for entry in target.iterdir():
             name = entry.name
-            if not show_hidden and (name.startswith(".") or name in _HIDDEN_NAMES):
-                # Always allow .env.example since it's useful; otherwise hide
-                if name not in {".env.example", ".gitignore", ".github"}:
-                    continue
+            # Only apply the curated hide list inside the project root —
+            # outside, we mimic a normal file explorer and show everything
+            # except dotfiles (which the user can toggle with show_hidden).
+            if not show_hidden:
+                if is_under_project_root:
+                    if name.startswith(".") or name in _HIDDEN_NAMES:
+                        if name not in {".env.example", ".gitignore", ".github"}:
+                            continue
+                else:
+                    if name.startswith("."):
+                        continue
             try:
                 is_dir = entry.is_dir()
                 size = 0 if is_dir else entry.stat().st_size
             except OSError:
                 continue
-            item = {
+            (dirs if is_dir else files).append({
                 "name": name,
-                "path": _rel(entry),
+                "path": _abs(entry),
                 "is_dir": is_dir,
                 "size": size,
-            }
-            (dirs if is_dir else files).append(item)
+            })
     except PermissionError:
         raise HTTPException(status_code=403, detail="Permission denied")
 
     dirs.sort(key=lambda x: x["name"].lower())
     files.sort(key=lambda x: x["name"].lower())
+
+    parent = target.parent
+    parent_str = _abs(parent) if parent != target else None
+
     return {
-        "path": _rel(target),
+        "path": target_str,
+        "parent": parent_str,
+        "project_root": project_root_str,
         "entries": dirs + files,
     }
 
@@ -181,7 +204,7 @@ async def read_file(request: Request, path: str):
     try:
         text = raw.decode("utf-8")
         return {
-            "path": _rel(target),
+            "path": _abs(target),
             "content": text,
             "encoding": "utf-8",
             "binary": False,
@@ -190,7 +213,7 @@ async def read_file(request: Request, path: str):
         }
     except UnicodeDecodeError:
         return {
-            "path": _rel(target),
+            "path": _abs(target),
             "content": base64.b64encode(raw).decode("ascii"),
             "encoding": "base64",
             "binary": True,
@@ -220,7 +243,7 @@ async def write_file(request: Request, body: WriteRequest):
 
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)
-    return {"path": _rel(target), "size": len(data), "status": "ok"}
+    return {"path": _abs(target), "size": len(data), "status": "ok"}
 
 
 @router.post("/create")
@@ -236,7 +259,7 @@ async def create_entry(request: Request, body: CreateRequest):
     else:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.touch(exist_ok=False)
-    return {"path": _rel(target), "kind": body.kind, "status": "ok"}
+    return {"path": _abs(target), "kind": body.kind, "status": "ok"}
 
 
 @router.post("/rename")
@@ -251,7 +274,7 @@ async def rename_entry(request: Request, body: RenameRequest):
         raise HTTPException(status_code=409, detail="Destination already exists")
     dst.parent.mkdir(parents=True, exist_ok=True)
     src.rename(dst)
-    return {"from": _rel(src), "to": _rel(dst), "status": "ok"}
+    return {"from": _abs(src), "to": _abs(dst), "status": "ok"}
 
 
 @router.post("/delete")
@@ -267,4 +290,4 @@ async def delete_entry(request: Request, body: DeleteRequest):
         shutil.rmtree(target)
     else:
         target.unlink()
-    return {"path": _rel(target), "status": "deleted"}
+    return {"path": _abs(target), "status": "deleted"}
