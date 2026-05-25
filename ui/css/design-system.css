@@ -135,7 +135,6 @@ body.light-mode {
   --shadow-glow:  0 0 0 1px rgba(255,140,66,0.25), 0 12px 32px -8px rgba(255,140,66,0.45);
 }
 
-
 /* ── 3. Body ────────────────────────────────────────────────── */
 body {
   font-family: var(--font-sans);
@@ -158,17 +157,18 @@ body.light-mode {
   color: var(--fg-1);
 }
 
-code, pre, .mono, .t-mono {
+code,
+pre,
+.mono,
+.t-mono {
   font-family: var(--font-mono);
 }
-
 
 /* ── 4. App container gap ───────────────────────────────────── */
 #app-container {
   gap: 0;
   min-height: 0;
 }
-
 
 /* ── 5. Status bar → pill ───────────────────────────────────── */
 #status-bar {
@@ -187,7 +187,6 @@ body.light-mode #status-bar {
   box-shadow: none;
 }
 
-
 /* ── 6. Stage (terminal-side) → floating card ───────────────── */
 #terminal-side {
   background:
@@ -204,11 +203,11 @@ body.light-mode #terminal-side {
   border-color: rgba(180,140,90,0.10);
 }
 
-/* Tab toolbars inside stage — match card, soft divider */
+/* Tab toolbars inside stage — match card,
+soft divider */
 #stream-toolbar,
 #loop-toolbar,
 #db-toolbar,
-#gh-toolbar,
 #loop-visual-toolbar {
   background: transparent;
   border-bottom: 1px solid rgba(255,255,255,0.05);
@@ -217,7 +216,6 @@ body.light-mode #terminal-side {
 body.light-mode #stream-toolbar,
 body.light-mode #loop-toolbar,
 body.light-mode #db-toolbar,
-body.light-mode #gh-toolbar,
 body.light-mode #loop-visual-toolbar {
   background: transparent;
   border-bottom-color: rgba(180,140,90,0.12);
@@ -238,7 +236,6 @@ body.light-mode #loop-list,
 body.light-mode #stream-list {
   background: transparent;
 }
-
 
 /* ── 7. Chat rail → floating card ───────────────────────────── */
 #chat-side {
@@ -273,7 +270,6 @@ body.light-mode #chat-header {
 body.light-mode #chat-input-area {
   border-top: none;
 }
-
 
 /* ── 8. Chat bubbles — asymmetric radii + shadows ────────────── */
 .chat-bubble {
@@ -314,7 +310,6 @@ body.light-mode .chat-bubble.agent {
   color: var(--fg-2);
 }
 
-
 /* ── 9. Status dots — enhanced glow + scale pulse ────────────── */
 .status-dot.green {
   box-shadow: 0 0 10px #7dcfff, 0 0 3px #7dcfff;
@@ -325,10 +320,10 @@ body.light-mode .chat-bubble.agent {
 }
 
 @keyframes pulse-dot {
-  0%, 100% { opacity: 1;   transform: scale(1);    }
-  50%       { opacity: 0.4; transform: scale(0.82); }
+0%,
+100% { opacity: 1;   transform: scale(1);    }
+50% { opacity: 0.4; transform: scale(0.82); }
 }
-
 
 /* ── 10. Settings / config dropdown — rounded popover ───────── */
 .settings-dropdown-content {
@@ -345,8 +340,8 @@ body.light-mode .chat-bubble.agent {
 }
 
 @keyframes pop-in {
-  from { opacity: 0; transform: translateY(-6px); }
-  to   { opacity: 1; transform: translateY(0);    }
+from { opacity: 0; transform: translateY(-6px); }
+to { opacity: 1; transform: translateY(0);    }
 }
 
 .settings-menu-item {
@@ -373,7 +368,6 @@ body.light-mode .settings-menu-item:hover {
   background: var(--accent-soft);
   color: var(--fg-1);
 }
-
 
 /* ── 11. User dropdown — rounded popover ────────────────────── */
 .user-dropdown-menu {
@@ -403,7 +397,6 @@ body.light-mode .user-dropdown-menu {
   transition: 0.15s;
 }
 
-
 /* ── 12. Status select (tab dropdown) ─────────────────────────── */
 .status-select,
 #main-tab-select {
@@ -421,8 +414,8 @@ body.light-mode #main-tab-select {
   color: var(--fg-1);
 }
 
-
-/* ── 13. Scrollbars — branded, slim ─────────────────────────── */
+/* ── 13. Scrollbars — branded,
+slim ─────────────────────────── */
 * {
   scrollbar-width: thin;
   scrollbar-color: rgba(125,207,255,0.28) transparent;
@@ -482,7 +475,6 @@ body.light-mode *::-webkit-scrollbar-thumb:hover {
     rgba(255,140,66,0.42));
   background-clip: padding-box;
 }
-
 
 /* ── 14. Lucide icon baseline ───────────────────────────────── */
 /* Lucide renders inline SVG — this ensures correct sizing/alignment */
@@ -650,17 +642,18 @@ body.light-mode .main-tabs-chev.right {
   background: linear-gradient(to left, var(--bg-0) 55%, transparent 100%);
 }
 
-/* ── Agents tab — transparent bg, card-aware borders ────────── */
+/* ── Agents tab — transparent bg,
+card-aware borders ────────── */
 #tab-agents { background: transparent; }
-#agents-list-panel   { border-right-color: rgba(255,255,255,0.05); }
-#agents-list-header  { border-bottom-color: rgba(255,255,255,0.05); }
+#agents-list-panel { border-right-color: rgba(255,255,255,0.05); }
+#agents-list-header { border-bottom-color: rgba(255,255,255,0.05); }
 #agents-detail-panel { background: transparent; }
-body.light-mode #agents-list-panel  { border-right-color:  rgba(180,140,90,0.12); }
+body.light-mode #agents-list-panel { border-right-color:  rgba(180,140,90,0.12); }
 body.light-mode #agents-list-header { border-bottom-color: rgba(180,140,90,0.12); }
 
 /* ── Responsive — stack at narrow viewport ───────────────────── */
 @media (max-width: 800px) {
-  #app-container { gap: 10px; }
-  #chat-side     { border-left: none; }
-  body           { padding: 10px; gap: 10px; }
+#app-container { gap: 10px; }
+#chat-side { border-left: none; }
+body { padding: 10px; gap: 10px; }
 }

@@ -1474,6 +1474,12 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
   z-index: 1;
 }
 .fg-cd-meta { display: flex; justify-content: space-between; align-items: center; color: var(--files-text-muted); margin-bottom: 4px; }
+.fg-cd-fields { display: grid; grid-template-columns: 70px 1fr; gap: 2px 8px; margin-bottom: 6px; font-size: 11px; }
+.fg-cd-field { display: contents; }
+.fg-cd-label { color: var(--files-text-faint); text-transform: uppercase; font-size: 10px; letter-spacing: 0.04em; align-self: center; }
+.fg-cd-val { color: var(--files-text); overflow-wrap: anywhere; }
+.fg-cd-val code, code.fg-cd-val { font-family: var(--font-mono, monospace); font-size: 10px; color: var(--files-text-muted); }
+.fg-cd-subject { font-weight: 600; color: var(--files-text); margin: 4px 0; font-size: 12px; }
 .fg-cd-body { white-space: pre-wrap; font-family: var(--font-mono, monospace); font-size: 11px; color: var(--files-text); margin: 0 0 6px; background: var(--files-btn-hover); padding: 4px 6px; border-radius: 3px; }
 .fg-cd-files-title { font-size: 10px; color: var(--files-text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 4px 0; }
 .fg-cd-files { display: flex; flex-direction: column; gap: 2px; }

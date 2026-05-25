@@ -1838,9 +1838,6 @@ async function _saveGitHubToken() {
       setTimeout(() => { statusEl.style.display = 'none'; }, 3000);
     }
     if (tokenEl) tokenEl.value = '';
-    // Sync to the original GitHub tab token input if present
-    const origToken = _qs('gh-token-input');
-    if (origToken) origToken.value = '';
     await _loadGit();
   } catch (e) {
     if (statusEl) {

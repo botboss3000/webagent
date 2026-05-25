@@ -13,7 +13,6 @@ import { initLoop } from './loop.js';
 import { initLoopVisual } from './loop-logic.js';
 import { initDbViewer } from './db/index.js';
 import { registerSessionApi, initSessions } from './sessions.js';
-import { initGithub } from './github.js';
 import { initAutoAgent } from './autoagent.js';
 import { initAgents } from './agents.js';
 import { initBilling } from './billing.js';
@@ -164,7 +163,6 @@ _anonReady.then(() => {
   _safeInit('initLoop',        initLoop);
   _safeInit('initLoopVisual',  initLoopVisual);
   _safeInit('initDbViewer',    initDbViewer);
-  _safeInit('initGithub',      initGithub);
   _safeInit('initAutoAgent',   initAutoAgent);
   _safeInit('initAgents',      initAgents);
   _safeInit('initBilling',     initBilling);

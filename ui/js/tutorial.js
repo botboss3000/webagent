@@ -7,7 +7,7 @@
  *   { globalEnabled: boolean, pages: { [pageId]: boolean } }
  *
  * Pages map 1:1 to the main-tab values from index.html (terminal, stream,
- * flow, loop-visual, database, github, autoagent, agents, app-config,
+ * flow, loop-visual, database, autoagent, agents, app-config,
  * account).
  *
  * Each hint has a target CSS selector. If the selector doesn't resolve at
@@ -25,7 +25,6 @@ const PAGE_LABELS = {
   'flow':        'Flow',
   'loop-visual': 'Runtime Loop',
   'database':    'Database',
-  'github':      'GitHub',
   'autoagent':   'AutoAgent',
   'agents':      'Agents',
   'app-config':  'App Config',
@@ -81,21 +80,6 @@ const HINTS = {
       body: 'Grab a copy of the SQLite file to inspect offline in another tool.' },
     { selector: '#db-sidebar-toggle', title: 'Collapse sidebar',
       body: 'Hide the table list to give the data view more horizontal room.' },
-  ],
-
-  github: [
-    { selector: '#gh-token-section', title: 'Add a GitHub token',
-      body: 'Paste a personal access token (classic or fine-grained) so the app can push, pull and read commits. Stored locally only.' },
-    { selector: '#gh-refresh-btn', title: 'Refresh repo status',
-      body: 'Re-read the working tree — useful after editing files outside the app.' },
-    { selector: '#gh-file-list', title: 'Changed files',
-      body: 'Shows every file modified since the last commit. Click any entry to see the diff before committing.' },
-    { selector: '#gh-commit-section', title: 'Commit changes',
-      body: 'Type a message, then click Commit to record a new commit on the current branch.' },
-    { selector: '#gh-push-pull-group', title: 'Sync with remote',
-      body: 'Push your commits, pull others’ changes, or use Pull & Restart to apply backend updates and reload the server.' },
-    { selector: '#gh-log-list', title: 'Recent commits',
-      body: 'A live view of the branch history, including commits pushed by you and others.' },
   ],
 
   autoagent: [
