@@ -8,6 +8,7 @@
 
 import { openGitPanel } from './files-git.js';
 import { createTerminalInstance } from './terminal.js';
+import { randomUUID } from './uuid.js';
 
 const API_BASE = '/api/v1/files';
 const LS_SIDEBAR_VIEW = 'files.sidebarView';   // 'explorer' | 'git'
@@ -1031,7 +1032,9 @@ function buildPaneForTab(tab, mode) {
     setTimeout(() => {
       if (!document.body.contains(pane)) return;
       try {
-        tab.instance = createTerminalInstance(host);
+        // tab.path is the backend session_id (see pushTerminalTab). Passing
+        // the existing id on restore reattaches to the running shell.
+        tab.instance = createTerminalInstance(host, tab.path);
         tab.instance.fit();
         if (tab.path === activeTabPath) tab.instance.focus();
       } catch (e) {
@@ -1584,14 +1587,17 @@ function initSidebarResize() {
 
 function persistTabs() {
   try {
-    // Terminal tabs are ephemeral — their PTY state can't be restored from
-    // localStorage, so we don't try to re-open them on reload.
-    const minimal = openTabs
-      .filter((t) => t.kind !== 'terminal')
-      .map((t) => ({ path: t.path, name: t.name, wrap: !!t.wrap, preview: !!t.preview }));
+    // Terminal tabs are persisted by session_id only. On reload, the backend
+    // PTY is still alive (sessions outlive page reloads) and reconnecting
+    // with the same id reattaches us to it.
+    const minimal = openTabs.map((t) => {
+      if (t.kind === 'terminal') {
+        return { path: t.path, name: t.name, kind: 'terminal' };
+      }
+      return { path: t.path, name: t.name, wrap: !!t.wrap, preview: !!t.preview };
+    });
     localStorage.setItem(LS_OPEN_TABS, JSON.stringify(minimal));
-    const persistableActive = activeTabPath && openTabs.find((t) => t.path === activeTabPath && t.kind !== 'terminal');
-    localStorage.setItem(LS_ACTIVE_TAB, persistableActive ? activeTabPath : '');
+    localStorage.setItem(LS_ACTIVE_TAB, activeTabPath || '');
   } catch (_) {}
 }
 
@@ -1617,9 +1623,16 @@ async function restoreOpenTabs() {
     const saved = JSON.parse(localStorage.getItem(LS_OPEN_TABS) || '[]');
     const wantActive = localStorage.getItem(LS_ACTIVE_TAB) || '';
     if (!Array.isArray(saved) || !saved.length) return;
-    // Open in order, swallow failures (file may have been deleted)
+    // Open in order, swallow failures (file may have been deleted, or a
+    // terminal's backend session may have died and need to respawn).
     for (const t of saved) {
       try {
+        if (t.kind === 'terminal') {
+          // Reattach to the running PTY identified by t.path. If the shell
+          // already exited, the backend will spawn a fresh one for that id.
+          pushTerminalTab(t.path, t.name);
+          continue;
+        }
         await openFile(t.path, t.name);
         const opened = openTabs.find((o) => o.path === t.path);
         if (!opened) continue;
@@ -1682,24 +1695,26 @@ export function initFiles() {
 // Terminal tabs sit alongside file tabs in the same tab bar and share the
 // same activate / close / drag-reorder machinery.
 
-let terminalSerial = 0;
-
-function nextTerminalTabId() {
-  terminalSerial += 1;
-  return 'terminal:' + Date.now().toString(36) + ':' + terminalSerial;
+function newTerminalSessionId() {
+  return 'terminal:' + randomUUID();
 }
 
-function openNewTerminalTab() {
-  const id = nextTerminalTabId();
-  const num = openTabs.filter((t) => t.kind === 'terminal').length + 1;
+function pushTerminalTab(sessionId, name) {
   openTabs.push({
-    path: id,                 // unique tab key
-    name: 'Terminal ' + num,
+    // The tab path doubles as the backend session_id — terminal tabs use a
+    // 'terminal:<uuid>' prefix that can't collide with real file paths.
+    path: sessionId,
+    name: name || ('Terminal ' + (openTabs.filter((t) => t.kind === 'terminal').length + 1)),
     kind: 'terminal',
     instance: null,           // set by buildPaneForTab once xterm is opened
     dirty: false,
     binary: false,
   });
+}
+
+function openNewTerminalTab() {
+  const id = newTerminalSessionId();
+  pushTerminalTab(id);
   activeTabPath = id;
   renderTabs();
   renderEditorPanes();

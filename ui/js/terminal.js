@@ -4,12 +4,15 @@
 // an independent xterm + WebSocket so multiple terminal tabs can coexist in
 // the file viewer without sharing a single PTY.
 
-import { termWsUrl } from './config.js';
+import { termWsUrl, apiPath } from './config.js';
 
 const MAX_RECONNECT_DELAY = 30000; // 30s max
 const INITIAL_RECONNECT_DELAY = 500; // 500ms first retry
 
-export function createTerminalInstance(container) {
+export function createTerminalInstance(container, sessionId) {
+  if (!sessionId) {
+    throw new Error('createTerminalInstance: sessionId is required');
+  }
   const term = new Terminal({
     cursorBlink: true,
     cursorStyle: 'block',
@@ -89,7 +92,7 @@ export function createTerminalInstance(container) {
       ws.onerror = null;
       try { ws.close(); } catch (_) {}
     }
-    ws = new WebSocket(termWsUrl());
+    ws = new WebSocket(termWsUrl() + '?session_id=' + encodeURIComponent(sessionId));
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
@@ -153,6 +156,19 @@ export function createTerminalInstance(container) {
       ws = null;
     }
     try { term.dispose(); } catch (_) {}
+    // Ask the backend to reap the PTY. Fire-and-forget — if the request
+    // fails (e.g. page is unloading), the session will leak until either
+    // the shell exits or the server restarts, but the GC pass in
+    // get_or_create_session will catch dead processes eventually.
+    try {
+      const token = localStorage.getItem('auth_token');
+      const headers = token ? { Authorization: 'Bearer ' + token } : {};
+      fetch(apiPath('/api/v1/terminal/sessions/' + encodeURIComponent(sessionId)), {
+        method: 'DELETE',
+        headers,
+        keepalive: true,
+      }).catch(() => {});
+    } catch (_) {}
   }
 
   connect();
