@@ -118,16 +118,16 @@
     position: relative;
     overflow: hidden;
   }
-  /* Input row: subtle glass surface */
+  /* Input row sits directly on the page background — no wrapping glass surface */
   #chat-input-area {
-    background: color-mix(in oklab, currentColor 5%, transparent) !important;
-    border: 1px solid color-mix(in oklab, currentColor 10%, transparent) !important;
-    border-radius: 14px !important;
-    backdrop-filter: blur(14px) saturate(140%) !important;
-    -webkit-backdrop-filter: blur(14px) saturate(140%) !important;
-    margin: 8px !important;
-    position: relative;
-    overflow: hidden;
+    background: transparent !important;
+    border: none !important;
+    border-radius: 0 !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    margin: 0 !important;
+    position: absolute;
+    overflow: visible;
   }
 
   /* —— Main page area: a real panel (glass) —— */
