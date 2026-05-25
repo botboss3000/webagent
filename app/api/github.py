@@ -286,6 +286,192 @@ async def get_status(request: Request):
     }
 
 
+@router.get("/log-graph")
+async def get_log_graph(request: Request, limit: int = 80):
+    """Return a commit graph across **all** local + remote branches.
+
+    Output is shaped so the frontend can draw a VS Code style graph:
+      - `commits` is a list newest-first; each row carries its `lane`
+        (column index for the dot) and `routes` describing the line
+        segments connecting it down to the next row.
+      - `max_lane` is the total number of columns used (graph width).
+      - `branches` is a map of refname -> short hash so the frontend can
+        render branch tip labels.
+
+    The endpoint is read-only and shows commits from every ref, including
+    branches that aren't `main`, so users can see merges and side branches
+    just like the VS Code Source Control graph.
+    """
+    _cache_token(_get_token())
+
+    # Refresh remote refs so origin/* branch tips reflect what's on GitHub.
+    _run_git(["fetch", "--quiet", "--all"], timeout=20)
+
+    # Clamp limit to a sane window — big graphs become unreadable anyway.
+    try:
+        limit = max(1, min(int(limit), 500))
+    except Exception:
+        limit = 80
+
+    # 1. Walk every ref's history and collect commits with parents.
+    # %H = full sha, %P = parent shas (space-separated), %D = refnames,
+    # %an = author, %ar = relative date, %aI = iso date, %s = subject
+    _SEP = "\x1f"
+    fmt = _SEP.join(["%H", "%P", "%D", "%an", "%ar", "%aI", "%s"])
+    raw_out, _, rc = _run_git(
+        ["log", "--all", "--date-order", f"--format={fmt}", f"-{limit}"],
+        timeout=20,
+    )
+    if rc != 0:
+        raise HTTPException(status_code=500, detail="git log failed")
+
+    raw_commits = []
+    for line in raw_out.split("\n"):
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        parts = line.split(_SEP)
+        if len(parts) < 7:
+            continue
+        full_hash, parents_str, refs, author, date_rel, date_iso, subject = parts[:7]
+        parents = [p for p in parents_str.split(" ") if p]
+        raw_commits.append({
+            "full_hash": full_hash,
+            "hash": full_hash[:7],
+            "parents": parents,
+            "refs": refs,
+            "author": author,
+            "date_relative": date_rel,
+            "date_iso": date_iso,
+            "message": subject,
+        })
+
+    # 2. HEAD hash + commits already pulled (= reachable from HEAD).
+    head_hash = ""
+    h_out, _, _ = _run_git(["rev-parse", "HEAD"], timeout=5)
+    if h_out.strip():
+        head_hash = h_out.strip()
+    pulled_set: set[str] = set()
+    rev_out, _, _ = _run_git(["rev-list", "-300", "HEAD"], timeout=10)
+    if rev_out.strip():
+        pulled_set = {h.strip() for h in rev_out.strip().split("\n") if h.strip()}
+
+    # 3. Compute lanes (column positions) for the graph.
+    # `active_lanes[i]` holds the hash of the commit expected to land in
+    # lane `i` next (placed there by a child commit above). Walking the
+    # log newest-first, for each commit:
+    #   - snapshot lanes_in (what's coming into this row from above);
+    #   - find its dot lane (first matching active slot, or open a new one
+    #     if no child placed it — i.e. it's a branch tip);
+    #   - free every active slot pointing at this commit (multiple
+    #     children draw lines down to the same parent);
+    #   - place its parents into lanes — first parent re-uses the dot's
+    #     own lane when free (keeps the trunk straight), extras take new
+    #     or recycled empty slots.
+    active_lanes: list[str | None] = []
+    graph_commits = []
+    max_lane = 0
+
+    def _first_index(hash_: str) -> int:
+        for i, h in enumerate(active_lanes):
+            if h == hash_:
+                return i
+        return -1
+
+    def _open_empty_slot() -> int:
+        for i, h in enumerate(active_lanes):
+            if h is None:
+                return i
+        active_lanes.append(None)
+        return len(active_lanes) - 1
+
+    for c in raw_commits:
+        # Snapshot BEFORE any mutation — these are the lines entering the
+        # top edge of this row from rows above.
+        lanes_in = list(active_lanes)
+
+        lane = _first_index(c["full_hash"])
+        if lane < 0:
+            # Tip commit: no child placed it, claim an empty slot.
+            lane = _open_empty_slot()
+
+        # Free every slot waiting on this commit.
+        for i, h in enumerate(active_lanes):
+            if h == c["full_hash"]:
+                active_lanes[i] = None
+
+        # Assign parents to lanes.
+        parent_lanes: list[int] = []
+        for idx, p in enumerate(c["parents"]):
+            existing = _first_index(p)
+            if existing >= 0:
+                parent_lanes.append(existing)
+            elif idx == 0 and active_lanes[lane] is None:
+                active_lanes[lane] = p
+                parent_lanes.append(lane)
+            else:
+                slot = _open_empty_slot()
+                active_lanes[slot] = p
+                parent_lanes.append(slot)
+
+        lanes_out = list(active_lanes)
+        # Width = farthest non-empty lane this row touches.
+        width_in = max((i + 1 for i, h in enumerate(lanes_in) if h is not None), default=0)
+        width_out = max((i + 1 for i, h in enumerate(lanes_out) if h is not None), default=0)
+        row_width = max(width_in, width_out, lane + 1)
+        if row_width > max_lane:
+            max_lane = row_width
+
+        graph_commits.append({
+            "hash": c["hash"],
+            "full_hash": c["full_hash"],
+            "parents": [p[:7] for p in c["parents"]],
+            "refs": c["refs"],
+            "author": c["author"],
+            "date_relative": c["date_relative"],
+            "date_iso": c["date_iso"],
+            "message": c["message"],
+            "lane": lane,
+            "parent_lanes": parent_lanes,
+            # Each element is the short hash the lane was tracking, or null
+            # if the lane was empty. Frontend just checks truthy/falsy.
+            "lanes_in":  [h[:7] if h else None for h in lanes_in],
+            "lanes_out": [h[:7] if h else None for h in lanes_out],
+            # When a child placed our hash in a non-dot lane (multi-child
+            # commit) the frontend bends that line into our dot. Mark them.
+            "merge_in_lanes": [i for i, h in enumerate(lanes_in)
+                               if h == c["full_hash"] and i != lane],
+            "is_head": c["full_hash"] == head_hash,
+            "is_pulled": c["full_hash"] in pulled_set,
+        })
+
+    # 4. Map every ref name to its short hash for branch-tip badges.
+    branches: dict[str, str] = {}
+    ref_out, _, _ = _run_git(
+        ["for-each-ref", "--format=%(refname:short)\x1f%(objectname)", "refs/heads", "refs/remotes"],
+        timeout=10,
+    )
+    for line in ref_out.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        bits = line.split("\x1f")
+        if len(bits) == 2:
+            branches[bits[0]] = bits[1][:7]
+
+    # Current branch (so HEAD's lane can be tinted)
+    cur_out, _, _ = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], timeout=5)
+    current_branch = cur_out.strip()
+
+    return {
+        "commits": graph_commits,
+        "max_lane": max_lane,
+        "branches": branches,
+        "current_branch": current_branch,
+        "head_hash": head_hash,
+    }
+
+
 @router.get("/commit/{commit_hash}")
 async def get_commit_detail(commit_hash: str, request: Request):
     """Return full info about a single commit (body, files, diff stat)."""

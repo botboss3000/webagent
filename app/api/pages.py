@@ -22,6 +22,39 @@ from app.visualizer.pages import (
 router = APIRouter(prefix="/api/v1/pages", tags=["pages"])
 
 
+# Slim themed scrollbar injected into iframe pages. The parent app's global
+# scrollbar styles can't reach the sandboxed iframe, so without this the OS
+# default scrollbar would show. Uses prefers-color-scheme so it adapts to the
+# theme the agent renders the page with (orange in light docs, blue in dark).
+_SCROLLBAR_STYLE = """<style id="webagent-scrollbar-inject">
+*{scrollbar-width:thin;scrollbar-color:rgba(125,207,255,0.32) transparent;}
+*::-webkit-scrollbar{width:6px;height:6px;}
+*::-webkit-scrollbar-track{background:transparent;}
+*::-webkit-scrollbar-thumb{background:rgba(125,207,255,0.38);border-radius:999px;}
+*::-webkit-scrollbar-thumb:hover{background:rgba(125,207,255,0.62);}
+*::-webkit-scrollbar-corner{background:transparent;}
+@media (prefers-color-scheme: light){
+*{scrollbar-color:rgba(255,140,66,0.40) transparent;}
+*::-webkit-scrollbar-thumb{background:rgba(255,140,66,0.48);}
+*::-webkit-scrollbar-thumb:hover{background:rgba(255,140,66,0.72);}
+}
+</style>"""
+
+
+def _inject_scrollbar_style(html: str) -> str:
+    """Inject a slim themed scrollbar stylesheet into the iframe page so the
+    inner document doesn't render the OS default scrollbar. Inserts right
+    after <head> when present, otherwise prepends."""
+    if not html:
+        return html
+    lower = html.lower()
+    idx = lower.find("<head>")
+    if idx != -1:
+        insert_at = idx + len("<head>")
+        return html[:insert_at] + _SCROLLBAR_STYLE + html[insert_at:]
+    return _SCROLLBAR_STYLE + html
+
+
 class CreatePageRequest(BaseModel):
     user_id: str
     slug: str
@@ -76,4 +109,4 @@ async def api_get_page_html(user_id: str, slug: str):
     html = await get_page_html(user_id, slug)
     if html is None:
         raise HTTPException(status_code=404, detail=f"Page '{slug}' not found.")
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=_inject_scrollbar_style(html))

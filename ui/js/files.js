@@ -6,7 +6,10 @@
 // tab is `activeTabPath`. The directory tree is rendered lazily — each
 // folder fetches its children on first expand.
 
+import { openGitPanel } from './files-git.js';
+
 const API_BASE = '/api/v1/files';
+const LS_SIDEBAR_VIEW = 'files.sidebarView';   // 'explorer' | 'git'
 
 let initialised = false;
 let isAdmin = false;
@@ -1610,8 +1613,103 @@ export function initFiles() {
   initSidebarResize();
   initTabCarousel();
   installFilesDropGuard();
+  initSidebarViewSwitcher();
+  initSidebarMaximize();
   renderTabs();
   renderEditorPanes();
+}
+
+// ── Sidebar maximize / restore ─────────────────────────────────────
+
+const LS_SIDEBAR_MAX = 'files.sidebarMaximized';
+
+function initSidebarMaximize() {
+  const sidebar = document.getElementById('files-sidebar');
+  if (!sidebar) return;
+  // Restore prior state.
+  if (localStorage.getItem(LS_SIDEBAR_MAX) === 'true') {
+    setSidebarMaximized(true);
+  }
+  // The button appears in BOTH panel headers — delegate at sidebar level.
+  sidebar.addEventListener('click', (e) => {
+    const btn = e.target.closest('.files-maximize-btn');
+    if (!btn || !sidebar.contains(btn)) return;
+    e.stopPropagation();
+    setSidebarMaximized(!sidebar.classList.contains('maximized'));
+  });
+}
+
+function setSidebarMaximized(on) {
+  const sidebar = document.getElementById('files-sidebar');
+  if (!sidebar) return;
+  sidebar.classList.toggle('maximized', !!on);
+  // Update every maximize button's icon + title. Swap lucide name and
+  // remove the previously rendered SVG so createIcons re-renders it.
+  sidebar.querySelectorAll('.files-maximize-btn').forEach((b) => {
+    b.title = on ? 'Restore sidebar' : 'Maximize sidebar';
+    const icon = b.querySelector('i[data-lucide], i.lucide-icon');
+    if (icon) {
+      const newName = on ? 'minimize-2' : 'maximize-2';
+      icon.setAttribute('data-lucide', newName);
+      icon.classList.remove('lucide');
+      icon.innerHTML = '';
+    }
+  });
+  if (window.lucide) {
+    window.lucide.createIcons({
+      nodes: Array.from(sidebar.querySelectorAll('.files-maximize-btn i[data-lucide]:not(.lucide)')),
+    });
+  }
+  try { localStorage.setItem(LS_SIDEBAR_MAX, String(!!on)); } catch (_) {}
+}
+
+// ── Sidebar view switcher (Explorer ↔ Source Control) ─────────────
+
+function initSidebarViewSwitcher() {
+  const sidebar = document.getElementById('files-sidebar');
+  if (!sidebar) return;
+  // Restore last view (default: explorer)
+  const want = localStorage.getItem(LS_SIDEBAR_VIEW) === 'git' ? 'git' : 'explorer';
+  applySidebarView(want);
+  // The toggle icons live in BOTH panel headers (so each header has its
+  // own copy). Delegate click handling at the sidebar level so we catch
+  // whichever pair is currently rendered.
+  sidebar.addEventListener('click', (e) => {
+    const btn = e.target.closest('.files-view-toggle-btn');
+    if (!btn || !sidebar.contains(btn)) return;
+    const v = btn.dataset.view;
+    if (!v) return;
+    // Click on the currently-active (greyed-out) icon = no-op.
+    if (btn.classList.contains('active')) return;
+    applySidebarView(v);
+    try { localStorage.setItem(LS_SIDEBAR_VIEW, v); } catch (_) {}
+  });
+}
+
+function applySidebarView(view) {
+  const sidebar = document.getElementById('files-sidebar');
+  if (!sidebar) return;
+  sidebar.dataset.view = view;
+  // Update aria-selected on every toggle button in every header.
+  sidebar.querySelectorAll('.files-view-toggle-btn').forEach((b) => {
+    const active = b.dataset.view === view;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-selected', active ? 'true' : 'false');
+    if (active) {
+      b.setAttribute('aria-disabled', 'true');
+      b.title = (view === 'git' ? 'Source control' : 'Explorer') + ' (current view)';
+    } else {
+      b.removeAttribute('aria-disabled');
+      b.title = 'Switch to ' + (b.dataset.view === 'git' ? 'source control' : 'explorer');
+    }
+  });
+  sidebar.querySelectorAll('.files-sidebar-panel').forEach((p) => {
+    p.hidden = (p.dataset.view !== view);
+  });
+  if (view === 'git') {
+    // Lazy-load the git panel the first time, refresh on subsequent shows.
+    openGitPanel(sidebar);
+  }
 }
 
 export async function startFiles() {

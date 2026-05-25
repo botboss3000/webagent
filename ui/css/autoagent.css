@@ -1,15 +1,26 @@
 /* ── AutoAgent Tab ── */
 
+/* ── Footer (page nav + prompt bar, side by side) ── */
+
+#autoagent-footer {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #12121e;
+  border-top: 1px solid #1e1e3a;
+  flex-shrink: 0;
+}
+
 /* ── Page Nav Bar ── */
 
 #autoagent-page-nav {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 10px;
-  background: #0d0d1e;
-  border-bottom: 1px solid #1e1e3a;
-  flex-shrink: 0;
+  flex: 0 0 auto;
+  width: 240px;
+  min-width: 0;
 }
 
 .aa-page-select {
@@ -177,10 +188,8 @@
 #autoagent-prompt-bar {
   display: flex;
   gap: 8px;
-  padding: 10px 12px;
-  background: #12121e;
-  border-bottom: 1px solid #1e1e3a;
-  flex-shrink: 0;
+  flex: 1;
+  min-width: 0;
 }
 
 .aa-prompt-input {
@@ -297,31 +306,15 @@
   to { transform: rotate(360deg); }
 }
 
-/* ── Status Bar ── */
-
-#autoagent-status {
-  padding: 6px 12px;
-  font-size: 11px;
-  color: #565f89;
-  background: #0d0d1a;
-  border-top: 1px solid #1e1e3a;
-  min-height: 22px;
-  flex-shrink: 0;
-}
-
-.aa-status-error {
-  color: #f7768e;
-}
-
 /* ═══════════════════════════════════════════════
    LIGHT MODE OVERRIDES
    ═══════════════════════════════════════════════ */
 body.light-mode #tab-autoagent {
   background: #fffaf5;
 }
-body.light-mode #autoagent-prompt-bar {
+body.light-mode #autoagent-footer {
   background: #fff2e6;
-  border-bottom-color: #ffdec4;
+  border-top-color: #ffdec4;
 }
 body.light-mode .aa-prompt-input {
   background: #ffffff;
@@ -361,17 +354,8 @@ body.light-mode .aa-spinner {
   border-color: #ffdec4;
   border-top-color: #ff8c42;
 }
-body.light-mode #autoagent-status {
-  color: #b09580;
-  background: #fffaf5;
-  border-top-color: #ffdec4;
-}
-body.light-mode #autoagent-page-nav {
-  background: #fff7f0;
-  border-bottom-color: #ffdec4;
-}
 body.light-mode .aa-page-select {
-  background: #ffffff;
+  background-color: #ffffff;
   border-color: #ffdec4;
   color: #3d2c2e;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23cca08a'/%3E%3C/svg%3E");
