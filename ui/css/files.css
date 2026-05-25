@@ -293,6 +293,11 @@ body.light-mode {
 .files-tree-row:hover { background: var(--files-row-hover); }
 .files-tree-row.selected { background: var(--files-row-selected); }
 .files-tree-row.selected:hover { background: var(--files-row-selected-hov); }
+.files-tree-row.files-drop-target {
+  outline: 1px dashed var(--files-active-indicator);
+  outline-offset: -2px;
+  background: var(--files-row-selected);
+}
 
 .files-tree-chev {
   width: 14px;
@@ -617,11 +622,228 @@ body.light-mode {
 
 /* ── Word-wrap toggle for the editor ─────────────────────── */
 
-.files-textarea.wrap {
+.files-textarea.wrap,
+.files-code-highlight.wrap {
   white-space: pre-wrap;
   word-break: break-word;
   overflow-x: hidden;
 }
+
+/* ── Code overlay (textarea on top of a highlighted <pre>) ── */
+
+.files-code-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.files-code-highlight,
+.files-textarea-overlay {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  margin: 0;
+  padding: 8px 12px;
+  border: 0;
+  box-sizing: border-box;
+  font-family: var(--font-mono, "JetBrains Mono", "Consolas", monospace);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre;
+  word-spacing: normal;
+  letter-spacing: normal;
+  tab-size: 2;
+  overflow: auto;
+}
+
+.files-code-highlight {
+  pointer-events: none;
+  background: var(--files-textarea-bg);
+  color: var(--files-textarea-text);
+  z-index: 0;
+  /* Hide the highlight's own scrollbar — we sync from the textarea above */
+  scrollbar-width: none;
+}
+.files-code-highlight::-webkit-scrollbar { display: none; }
+.files-code-highlight > code {
+  display: block;
+  font: inherit;
+  background: transparent;
+  padding: 0;
+  white-space: inherit;
+}
+
+.files-textarea-overlay {
+  background: transparent;
+  color: transparent;
+  caret-color: var(--files-caret);
+  resize: none;
+  outline: none;
+  z-index: 1;
+}
+.files-textarea-overlay::selection {
+  background: var(--files-selection);
+  color: transparent;
+}
+
+/* Prism token colours — VS Code-ish, themed for light/dark */
+.token.comment, .token.prolog, .token.doctype, .token.cdata { color: #6a9955; font-style: italic; }
+.token.punctuation { color: var(--files-text); }
+.token.property, .token.tag, .token.boolean, .token.number, .token.constant, .token.symbol, .token.deleted { color: #b5cea8; }
+.token.selector, .token.attr-name, .token.string, .token.char, .token.builtin, .token.inserted { color: #ce9178; }
+.token.operator, .token.entity, .token.url, .language-css .token.string, .style .token.string { color: #d4d4d4; }
+.token.atrule, .token.attr-value, .token.keyword { color: #569cd6; }
+.token.function, .token.class-name { color: #dcdcaa; }
+.token.regex, .token.important, .token.variable { color: #d16969; }
+
+body.light-mode .token.comment, body.light-mode .token.prolog, body.light-mode .token.doctype, body.light-mode .token.cdata { color: #008000; }
+body.light-mode .token.punctuation { color: #333333; }
+body.light-mode .token.property, body.light-mode .token.tag, body.light-mode .token.boolean, body.light-mode .token.number, body.light-mode .token.constant, body.light-mode .token.symbol, body.light-mode .token.deleted { color: #098658; }
+body.light-mode .token.selector, body.light-mode .token.attr-name, body.light-mode .token.string, body.light-mode .token.char, body.light-mode .token.builtin, body.light-mode .token.inserted { color: #a31515; }
+body.light-mode .token.operator, body.light-mode .token.entity, body.light-mode .token.url { color: #333333; }
+body.light-mode .token.atrule, body.light-mode .token.attr-value, body.light-mode .token.keyword { color: #0000ff; }
+body.light-mode .token.function, body.light-mode .token.class-name { color: #795e26; }
+body.light-mode .token.regex, body.light-mode .token.important, body.light-mode .token.variable { color: #ee0000; }
+
+/* ── Image preview ──────────────────────────────────────── */
+
+.files-image-pane {
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  background:
+    linear-gradient(45deg, rgba(127,127,127,0.10) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(127,127,127,0.10) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(127,127,127,0.10) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(127,127,127,0.10) 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+}
+.files-image-preview {
+  max-width: 100%;
+  max-height: 100%;
+  margin: auto;
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+}
+
+/* ── Markdown preview ───────────────────────────────────── */
+
+.files-markdown-preview {
+  flex: 1;
+  overflow: auto;
+  padding: 24px 40px;
+  font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--files-textarea-text);
+  background: var(--files-textarea-bg);
+  max-width: 100%;
+}
+.files-markdown-preview h1,
+.files-markdown-preview h2,
+.files-markdown-preview h3,
+.files-markdown-preview h4 { margin: 1.4em 0 0.6em; line-height: 1.3; color: var(--files-text-strong); }
+.files-markdown-preview h1 { font-size: 1.8em; border-bottom: 1px solid var(--files-border-strong); padding-bottom: 0.3em; }
+.files-markdown-preview h2 { font-size: 1.5em; border-bottom: 1px solid var(--files-border-strong); padding-bottom: 0.2em; }
+.files-markdown-preview h3 { font-size: 1.25em; }
+.files-markdown-preview p  { margin: 0.7em 0; }
+.files-markdown-preview a  { color: var(--files-link); text-decoration: none; }
+.files-markdown-preview a:hover { text-decoration: underline; }
+.files-markdown-preview code {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.9em;
+  background: var(--files-row-hover);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.files-markdown-preview pre {
+  background: var(--files-bg-sidebar);
+  border: 1px solid var(--files-border-strong);
+  border-radius: 4px;
+  padding: 10px 12px;
+  overflow: auto;
+}
+.files-markdown-preview pre code { background: transparent; padding: 0; }
+.files-markdown-preview blockquote {
+  border-left: 3px solid var(--files-border-strong);
+  margin: 0.7em 0;
+  padding: 0.2em 1em;
+  color: var(--files-text-muted);
+}
+.files-markdown-preview ul, .files-markdown-preview ol { padding-left: 1.6em; margin: 0.5em 0; }
+.files-markdown-preview table { border-collapse: collapse; margin: 0.8em 0; }
+.files-markdown-preview th, .files-markdown-preview td {
+  border: 1px solid var(--files-border-strong);
+  padding: 4px 8px;
+}
+.files-markdown-preview img { max-width: 100%; }
+.files-markdown-preview hr { border: 0; border-top: 1px solid var(--files-border-strong); margin: 1.4em 0; }
+
+/* ── Find / Replace bar ─────────────────────────────────── */
+
+.files-findbar {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto auto auto auto;
+  grid-template-rows: auto;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--files-bg-sidebar);
+  border-bottom: 1px solid var(--files-border-strong);
+  flex-shrink: 0;
+  font-size: 12px;
+}
+.files-findbar.with-replace {
+  grid-template-columns: minmax(120px, 1fr) auto auto auto auto auto auto auto;
+}
+.files-findbar[hidden] { display: none; }
+
+/* Hide replace-only controls unless `.with-replace` is set */
+.files-findbar .files-findbar-replace,
+.files-findbar [data-act="replace"],
+.files-findbar [data-act="replace-all"] { display: none; }
+.files-findbar.with-replace .files-findbar-replace,
+.files-findbar.with-replace [data-act="replace"],
+.files-findbar.with-replace [data-act="replace-all"] { display: inline-flex; }
+
+.files-findbar-input {
+  background: var(--files-textarea-bg);
+  border: 1px solid var(--files-border-strong);
+  color: var(--files-text);
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  outline: none;
+  min-width: 80px;
+}
+.files-findbar-input:focus { border-color: var(--files-active-indicator); }
+.files-findbar-count {
+  color: var(--files-text-muted);
+  font-size: 11px;
+  min-width: 60px;
+  text-align: center;
+  white-space: nowrap;
+}
+.files-findbar-btn {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--files-text);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+.files-findbar-btn:hover { background: var(--files-btn-hover); }
+.files-findbar-btn.active { background: var(--files-row-selected); color: var(--files-text-strong); }
+.files-findbar-btn .lucide-icon { width: 13px; height: 13px; }
 
 /* ── Content area ────────────────────────────────────────── */
 
