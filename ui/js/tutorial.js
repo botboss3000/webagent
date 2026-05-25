@@ -483,7 +483,12 @@ function _openPopover(badge, hint, step, total) {
 
   pop.appendChild(footer);
 
-  document.body.appendChild(pop);
+  // Append to the overlay (a fixed, body-level container) rather than body
+  // directly. A global index.html rule forces `position: relative` on every
+  // direct body child except the stargaze canvas/overlay, which would clobber
+  // this popover's `position: fixed` and render it after the body's last block
+  // (i.e. far below the viewport, inaccessible).
+  _ensureOverlay().appendChild(pop);
   _activePopover = pop;
   _positionPopover(pop, badge);
 }

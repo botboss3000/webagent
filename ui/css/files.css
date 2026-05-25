@@ -161,6 +161,19 @@ body.light-mode {
   border-right: none;
 }
 
+/* Maximized sidebar — fills the entire #tab-files area, hiding the editor
+   pane underneath. Useful on small / mobile screens where the side-by-side
+   layout doesn't fit. The resize handle is hidden because dragging makes
+   no sense while the sidebar owns 100% width. */
+.files-sidebar.maximized {
+  width: 100% !important;
+  max-width: none !important;
+  flex: 1 1 100%;
+  border-right: none;
+}
+.files-sidebar.maximized ~ .files-resize-handle { display: none; }
+.files-sidebar.maximized ~ .files-main { display: none; }
+
 .files-sidebar-header {
   display: flex;
   align-items: center;
@@ -1007,6 +1020,400 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
   font-family: var(--font-mono, monospace);
   word-break: break-all;
 }
+
+/* ── Sidebar view switcher (Explorer ↔ Source Control) ───── */
+/* Toggle icons live INSIDE each panel's header (in place of the old
+   "EXPLORER" / "SOURCE CONTROL" title text). The icon of the currently
+   active view is greyed out and non-interactive; the other icon is the
+   click target. */
+
+.files-sidebar-panel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.files-sidebar-panel[hidden] { display: none; }
+
+.files-view-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.files-view-toggle-btn {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--files-text-strong);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0;
+}
+.files-view-toggle-btn .lucide-icon { width: 15px; height: 15px; }
+.files-view-toggle-btn:hover:not(.active) { background: var(--files-btn-hover); }
+
+/* The currently-active view's icon is greyed out and not clickable. */
+.files-view-toggle-btn.active {
+  color: var(--files-text-faint);
+  cursor: default;
+  background: transparent;
+  opacity: 0.55;
+}
+
+/* ── Source-control (GitHub) panel ───────────────────────── */
+
+.fg-body {
+  flex: 1;
+  overflow: auto;
+  padding: 0;
+  font-size: 12px;
+  color: var(--files-text);
+}
+
+.fg-loading {
+  padding: 12px;
+  color: var(--files-text-muted);
+  font-style: italic;
+  font-size: 11px;
+}
+.fg-error {
+  padding: 12px;
+  color: var(--files-danger);
+  font-size: 11px;
+  background: var(--files-danger-hov);
+  margin: 8px 8px 0 8px;
+  border-radius: 4px;
+}
+
+.fg-section {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--files-border-strong);
+}
+.fg-section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--files-text-muted);
+  margin-bottom: 6px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.fg-graph-hint {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--files-text-faint);
+  font-size: 10px;
+}
+
+/* Header (branch + remote) */
+.fg-section-header { padding-top: 10px; padding-bottom: 8px; }
+.fg-section-header.loading { opacity: 0.7; }
+.fg-branch-row {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px;
+}
+.fg-branch-row .lucide-icon { width: 14px; height: 14px; color: var(--files-icon); }
+.fg-branch-name { font-weight: 600; color: var(--files-text-strong); }
+.fg-ahead, .fg-behind { font-size: 11px; color: var(--files-text-muted); margin-left: 4px; }
+.fg-sync-clean { font-size: 11px; color: var(--files-text-faint); margin-left: auto; font-style: italic; }
+.fg-remote-row {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--files-text-faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Inputs + buttons */
+.fg-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--files-textarea-bg);
+  border: 1px solid var(--files-border-strong);
+  color: var(--files-text);
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.fg-input:focus { outline: none; border-color: var(--files-active-indicator); }
+
+.fg-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--files-btn-hover);
+  border: 1px solid var(--files-border-strong);
+  color: var(--files-text);
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.fg-btn:hover:not(:disabled) { background: var(--files-btn-hover-strong); }
+.fg-btn:disabled { opacity: 0.5; cursor: default; }
+.fg-btn .lucide-icon { width: 12px; height: 12px; }
+.fg-btn-primary {
+  background: var(--files-active-indicator);
+  border-color: var(--files-active-indicator);
+  color: #fff;
+}
+.fg-btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
+.fg-btn-deploy {
+  background: linear-gradient(90deg, #f59e0b, #ef4444);
+  border-color: transparent;
+  color: #fff;
+}
+
+/* Commit */
+.fg-commit-row { display: flex; gap: 6px; align-items: center; }
+.fg-commit-row #fg-commit-btn { width: 32px; justify-content: center; padding: 4px; }
+
+.fg-result {
+  margin-top: 6px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  background: transparent;
+}
+.fg-result.ok  { color: #10b981; }
+.fg-result.err { color: var(--files-danger); }
+.fg-result.info { color: var(--files-text-muted); }
+
+/* Sync row */
+.fg-sync { display: flex; flex-wrap: wrap; gap: 6px; }
+.fg-sync .fg-result { width: 100%; }
+
+/* Token */
+.fg-token { padding: 0; }
+.fg-token > summary {
+  list-style: none;
+  padding: 8px 10px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px;
+  color: var(--files-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+.fg-token > summary::-webkit-details-marker { display: none; }
+.fg-token[open] > summary { border-bottom: 1px solid var(--files-border-strong); margin-bottom: 8px; }
+.fg-token-row { display: flex; gap: 6px; padding: 0 10px 8px; }
+.fg-token-status { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--files-text-faint); font-size: 10px; }
+.fg-token-status.ok { color: #10b981; }
+
+/* Changes (collapsible) */
+.fg-changes { padding: 0; }
+.fg-changes > summary {
+  list-style: none;
+  padding: 8px 10px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px;
+  color: var(--files-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+.fg-changes > summary::-webkit-details-marker { display: none; }
+.fg-changes[open] > summary { border-bottom: 1px solid var(--files-border-strong); }
+.fg-count {
+  background: var(--files-btn-hover-strong);
+  color: var(--files-text);
+  border-radius: 8px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.fg-file-list { max-height: 200px; overflow: auto; padding: 4px 6px 6px; }
+.fg-clean { padding: 6px 10px 10px; color: var(--files-text-faint); font-style: italic; font-size: 11px; }
+.fg-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  cursor: default;
+  font-size: 11px;
+}
+.fg-file:hover { background: var(--files-row-hover); }
+.fg-file-path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono, monospace);
+  color: var(--files-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl; text-align: left; unicode-bidi: plaintext;
+}
+.fg-file-flag {
+  width: 18px; height: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.fg-flag-m { background: rgba(245, 158, 11, 0.25); color: #f59e0b; }
+.fg-flag-a { background: rgba(16, 185, 129, 0.25); color: #10b981; }
+.fg-flag-d { background: rgba(239, 68, 68, 0.25);  color: #ef4444; }
+.fg-flag-r { background: rgba(59, 130, 246, 0.25); color: #3b82f6; }
+.fg-flag-u { background: rgba(139, 92, 246, 0.25); color: #8b5cf6; }
+
+/* ── Commit graph ────────────────────────────────────────── */
+
+.fg-graph { padding: 8px 0 12px; }
+.fg-graph .fg-section-title { padding: 0 10px; }
+
+.fg-graph-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.fg-graph-row {
+  display: flex;
+  flex-direction: column;
+  cursor: pointer;
+  outline: none;
+  border-left: 2px solid transparent;
+}
+.fg-graph-row-head {
+  display: flex;
+  align-items: stretch;
+  min-height: var(--row-h, 44px);
+}
+.fg-graph-row-head:hover { background: var(--files-row-hover); }
+.fg-graph-row:focus-visible .fg-graph-row-head { background: var(--files-row-hover); }
+.fg-graph-row:focus-visible { border-left-color: var(--files-active-indicator); }
+.fg-graph-row.head { border-left-color: var(--files-active-indicator); }
+.fg-graph-row.unpulled { opacity: 0.85; }
+.fg-graph-row.open .fg-graph-row-head { background: var(--files-row-hover); }
+
+.fg-graph-col {
+  flex-shrink: 0;
+  min-height: var(--row-h, 44px);
+}
+.fg-graph-svg {
+  display: block;
+}
+
+.fg-graph-meta {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px 4px 4px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+}
+.fg-graph-msg-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--files-text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fg-graph-msg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fg-graph-sub {
+  display: flex;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--files-text-faint);
+  align-items: center;
+}
+.fg-hash {
+  font-family: var(--font-mono, monospace);
+  background: var(--files-btn-hover);
+  padding: 0 4px;
+  border-radius: 2px;
+  font-size: 10px;
+  color: var(--files-text-muted);
+}
+.fg-graph-author { color: var(--files-text-muted); }
+.fg-graph-date { margin-left: auto; }
+
+.fg-graph-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 700;
+  border-radius: 3px;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.fg-graph-badge.head { background: var(--files-active-indicator); color: #fff; }
+.fg-graph-badge.unpulled { background: rgba(245, 158, 11, 0.25); color: #f59e0b; }
+
+.fg-branch-tag {
+  display: inline-block;
+  padding: 1px 5px;
+  font-size: 9px;
+  border-radius: 3px;
+  background: var(--files-btn-hover-strong);
+  color: var(--files-text-muted);
+  border: 1px solid var(--files-border-strong);
+  flex-shrink: 0;
+}
+
+/* Expanded commit detail — spans the full sidebar width. Active lanes
+   from the row continue downward as thin vertical bars layered above
+   the content so the commit graph chain isn't visually broken when a
+   commit is opened. */
+.fg-graph-detail {
+  position: relative;
+  font-size: 11px;
+  background: var(--files-bg);
+  border-top: 1px solid var(--files-border-strong);
+  cursor: default;
+}
+.fg-graph-detail[hidden] { display: none; }
+.fg-graph-detail-lanes {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+.fg-graph-lane-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1.6px;
+  opacity: 0.55;
+}
+.fg-graph-detail-content {
+  padding: 6px 8px 10px 6px;
+  position: relative;
+  z-index: 1;
+}
+.fg-cd-meta { display: flex; justify-content: space-between; align-items: center; color: var(--files-text-muted); margin-bottom: 4px; }
+.fg-cd-body { white-space: pre-wrap; font-family: var(--font-mono, monospace); font-size: 11px; color: var(--files-text); margin: 0 0 6px; background: var(--files-btn-hover); padding: 4px 6px; border-radius: 3px; }
+.fg-cd-files-title { font-size: 10px; color: var(--files-text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 4px 0; }
+.fg-cd-files { display: flex; flex-direction: column; gap: 2px; }
+.fg-cd-file { display: flex; gap: 6px; font-family: var(--font-mono, monospace); font-size: 10px; color: var(--files-text); }
+.fg-cd-added { color: #10b981; min-width: 28px; text-align: right; }
+.fg-cd-removed { color: #ef4444; min-width: 28px; text-align: right; }
+.fg-cd-path { color: var(--files-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── Mobile ──────────────────────────────────────────────── */
 

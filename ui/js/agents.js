@@ -2545,7 +2545,7 @@ const _CONN_ICONS = {
 };
 
 async function _renderConnectionsTab(body, agent) {
-  body.innerHTML = '<div class="conn-loading">Loading connections…</div>';
+  body.innerHTML = '<div class="conn-loading">Loading abilities…</div>';
 
   let connections = [];
   let userRole = 'member';

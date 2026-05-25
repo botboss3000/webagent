@@ -635,13 +635,6 @@
     <div id="tab-autoagent" class="tab-content active">
       <div id="autoagent-container">
 
-        <!-- Page nav: dropdown + new / delete buttons -->
-        <div id="autoagent-page-nav">
-          <select id="autoagent-page-select" class="aa-page-select" title="Switch page"></select>
-          <button id="autoagent-new-page-btn" class="aa-icon-btn" title="New page">+</button>
-          <button id="autoagent-delete-page-btn" class="aa-icon-btn aa-delete-btn" title="Delete page" disabled><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>
-        </div>
-
         <!-- New-page dialog (hidden by default) -->
         <div id="aa-new-page-dialog">
           <div class="aa-dialog-box">
@@ -652,12 +645,6 @@
               <button id="aa-dialog-confirm" class="aa-dialog-btn aa-dialog-btn-primary">Create</button>
             </div>
           </div>
-        </div>
-
-        <!-- Prompt bar -->
-        <div id="autoagent-prompt-bar">
-          <input type="text" id="autoagent-prompt-input" class="aa-prompt-input" placeholder="Tell the page agent what to build or change..." maxlength="2000">
-          <button id="autoagent-send-btn" class="aa-send-btn" title="Send to page agent">&#9654;</button>
         </div>
 
         <!-- Viewport -->
@@ -674,7 +661,21 @@
           </div>
         </div>
 
-        <div id="autoagent-status" class="aa-status"></div>
+        <!-- Footer: page nav (left) + prompt bar (right) -->
+        <div id="autoagent-footer">
+          <!-- Page nav: dropdown + new / delete buttons -->
+          <div id="autoagent-page-nav">
+            <select id="autoagent-page-select" class="aa-page-select" title="Switch page"></select>
+            <button id="autoagent-new-page-btn" class="aa-icon-btn" title="New page">+</button>
+            <button id="autoagent-delete-page-btn" class="aa-icon-btn aa-delete-btn" title="Delete page" disabled><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>
+          </div>
+
+          <!-- Prompt bar -->
+          <div id="autoagent-prompt-bar">
+            <input type="text" id="autoagent-prompt-input" class="aa-prompt-input" placeholder="Tell the page agent what to build or change..." maxlength="2000">
+            <button id="autoagent-send-btn" class="aa-send-btn" title="Send to page agent">&#9654;</button>
+          </div>
+        </div>
       </div>
     </div>
     <div id="tab-agents" class="tab-content">
@@ -2735,23 +2736,50 @@
         </div>
       </div>
       <div id="files-editor" class="files-editor">
-        <!-- Sidebar: directory tree -->
-        <aside id="files-sidebar" class="files-sidebar">
-          <div class="files-sidebar-header">
-            <span class="files-sidebar-title">Explorer</span>
-            <div class="files-sidebar-actions">
-              <button class="files-icon-btn" id="files-new-file" title="New file"><i data-lucide="file-plus" class="lucide-icon"></i></button>
-              <button class="files-icon-btn" id="files-new-folder" title="New folder"><i data-lucide="folder-plus" class="lucide-icon"></i></button>
-              <button class="files-icon-btn" id="files-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
-              <button class="files-icon-btn" id="files-collapse-all" title="Collapse all"><i data-lucide="chevrons-down-up" class="lucide-icon"></i></button>
+        <!-- Sidebar: tabbed between Explorer (file tree) and GitHub manager.
+             The header replaces the old "EXPLORER" text with two icon
+             buttons (files + github). The icon for the current view is
+             greyed out; the other icon is the click target. -->
+        <aside id="files-sidebar" class="files-sidebar" data-view="explorer">
+          <!-- Explorer panel (file tree) -->
+          <div class="files-sidebar-panel" id="files-panel-explorer" data-view="explorer">
+            <div class="files-sidebar-header">
+              <div class="files-view-toggle" role="tablist" aria-label="Sidebar view">
+                <button class="files-view-toggle-btn active" data-view="explorer" title="Explorer (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="files" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn" data-view="git" title="Switch to source control" role="tab" aria-selected="false"><i data-lucide="github" class="lucide-icon"></i></button>
+              </div>
+              <div class="files-sidebar-actions">
+                <button class="files-icon-btn" id="files-new-file" title="New file"><i data-lucide="file-plus" class="lucide-icon"></i></button>
+                <button class="files-icon-btn" id="files-new-folder" title="New folder"><i data-lucide="folder-plus" class="lucide-icon"></i></button>
+                <button class="files-icon-btn" id="files-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
+                <button class="files-icon-btn" id="files-collapse-all" title="Collapse all"><i data-lucide="chevrons-down-up" class="lucide-icon"></i></button>
+                <button class="files-icon-btn files-maximize-btn" title="Maximize sidebar"><i data-lucide="maximize-2" class="lucide-icon"></i></button>
+              </div>
+            </div>
+            <div id="files-breadcrumb" class="files-breadcrumb" aria-label="Current path">
+              <button class="files-breadcrumb-up" id="files-breadcrumb-up" title="Go to parent directory"><i data-lucide="arrow-up" class="lucide-icon"></i></button>
+              <button class="files-breadcrumb-home" id="files-breadcrumb-home" title="Back to project root"><i data-lucide="home" class="lucide-icon"></i></button>
+              <span class="files-current-path" id="files-current-path" title=""></span>
+            </div>
+            <div id="files-tree" class="files-tree" role="tree"></div>
+          </div>
+
+          <!-- GitHub panel (source control) -->
+          <div class="files-sidebar-panel" id="files-panel-git" data-view="git" hidden>
+            <div class="files-sidebar-header">
+              <div class="files-view-toggle" role="tablist" aria-label="Sidebar view">
+                <button class="files-view-toggle-btn" data-view="explorer" title="Switch to explorer" role="tab" aria-selected="false"><i data-lucide="files" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn active" data-view="git" title="Source control (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="github" class="lucide-icon"></i></button>
+              </div>
+              <div class="files-sidebar-actions">
+                <button class="files-icon-btn" id="fg-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
+                <button class="files-icon-btn files-maximize-btn" title="Maximize sidebar"><i data-lucide="maximize-2" class="lucide-icon"></i></button>
+              </div>
+            </div>
+            <div id="fg-body" class="fg-body">
+              <div class="fg-loading">Loading…</div>
             </div>
           </div>
-          <div id="files-breadcrumb" class="files-breadcrumb" aria-label="Current path">
-            <button class="files-breadcrumb-up" id="files-breadcrumb-up" title="Go to parent directory"><i data-lucide="arrow-up" class="lucide-icon"></i></button>
-            <button class="files-breadcrumb-home" id="files-breadcrumb-home" title="Back to project root"><i data-lucide="home" class="lucide-icon"></i></button>
-            <span class="files-current-path" id="files-current-path" title=""></span>
-          </div>
-          <div id="files-tree" class="files-tree" role="tree"></div>
         </aside>
 
         <!-- Resize handle between sidebar and editor -->
