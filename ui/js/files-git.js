@@ -192,6 +192,28 @@ function renderTokenSection() {
         <button class="fg-btn fg-btn-primary" id="fg-token-save-btn">Save</button>
       </div>
       <div id="fg-token-result" class="fg-result" hidden></div>
+      <details class="fg-token-hint">
+        <summary>How to create a GitHub token →</summary>
+        <div class="fg-token-hint-body">
+          <p><strong>Classic token:</strong></p>
+          <ol>
+            <li>Go to <a href="https://github.com/settings/tokens" target="_blank" rel="noopener">github.com/settings/tokens</a></li>
+            <li>Click <strong>Generate new token (classic)</strong></li>
+            <li>Give it a name (e.g. "webAgent")</li>
+            <li>Select scope: <strong>repo</strong> (full control)</li>
+            <li>Click <strong>Generate token</strong> and copy it</li>
+          </ol>
+          <p><strong>Fine-grained token:</strong></p>
+          <ol>
+            <li>Go to <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noopener">tokens (fine-grained)</a></li>
+            <li>Click <strong>Generate new token (fine-grained)</strong></li>
+            <li>Select this repository only</li>
+            <li>Permissions → <strong>Contents: Read and write</strong></li>
+            <li>Click <strong>Generate token</strong> and copy it</li>
+          </ol>
+          <p class="fg-token-hint-foot">Paste the token above and click Save. It's stored locally in provider.json.</p>
+        </div>
+      </details>
     </details>
   `;
 }
@@ -399,6 +421,10 @@ function wireEvents(rootEl, s, g) {
 
   const tokSave = body.querySelector('#fg-token-save-btn');
   if (tokSave) tokSave.addEventListener('click', () => doSaveToken(rootEl));
+  const tokInput = body.querySelector('#fg-token-input');
+  if (tokInput) tokInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSaveToken(rootEl); }
+  });
 
   // Commit graph rows → click the header to expand commit detail. Clicks
   // inside the detail panel (selecting text, etc.) shouldn't collapse it.
