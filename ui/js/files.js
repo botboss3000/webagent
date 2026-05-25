@@ -420,11 +420,33 @@ function renderTabs() {
     iconI.setAttribute('data-lucide', tab.kind === 'terminal' ? 'terminal' : fileIconName(tab.name));
     iconI.className = 'lucide-icon';
     iconWrap.appendChild(iconI);
+    // Terminal tabs get a small connection-status dot overlaid on the icon
+    // wrap. State is driven by the xterm instance via onStateChange (see
+    // buildPaneForTab); we render an initial state here so the dot exists
+    // before the instance binds.
+    if (tab.kind === 'terminal') {
+      const dot = document.createElement('span');
+      dot.className = 'files-tab-conn-dot';
+      const initialState = (tab.instance && tab.instance.getState && tab.instance.getState()) || 'connecting';
+      dot.dataset.state = initialState;
+      dot.title = _connStateTitle(initialState);
+      iconWrap.appendChild(dot);
+    }
     el.appendChild(iconWrap);
 
     const label = document.createElement('span');
     label.className = 'files-tab-label';
     label.textContent = tab.name;
+    // Double-click the label to rename a terminal tab inline. File tabs are
+    // named after the file on disk and don't get this affordance.
+    if (tab.kind === 'terminal') {
+      label.title = 'Double-click to rename';
+      label.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        startInlineRename(tab, label);
+      });
+    }
     el.appendChild(label);
 
     // ── 3-dot "more" menu button ──
@@ -1041,6 +1063,8 @@ function buildPaneForTab(tab, mode) {
         // tab.path is the backend session_id (see pushTerminalTab). Passing
         // the existing id on restore reattaches to the running shell.
         tab.instance = createTerminalInstance(host, tab.path);
+        // Drive the per-tab status dot from the WS state machine.
+        tab.instance.onStateChange((s) => _updateTabConnDot(tab.path, s));
         tab.instance.fit();
         if (tab.path === activeTabPath) tab.instance.focus();
       } catch (e) {
@@ -1720,8 +1744,58 @@ export function initFiles() {
 // Terminal tabs sit alongside file tabs in the same tab bar and share the
 // same activate / close / drag-reorder machinery.
 
+function _connStateTitle(s) {
+  return s === 'connected'    ? 'Connected'
+       : s === 'reconnecting' ? 'Reconnecting…'
+       : s === 'error'        ? 'Disconnected — refresh to retry'
+       :                        'Connecting…';
+}
+
+function _updateTabConnDot(tabPath, state) {
+  const tabEl = document.querySelector('#files-tabs .files-tab[data-path="' + cssEscape(tabPath) + '"]');
+  if (!tabEl) return;
+  const dot = tabEl.querySelector('.files-tab-conn-dot');
+  if (!dot) return;
+  dot.dataset.state = state;
+  dot.title = _connStateTitle(state);
+}
+
 function newTerminalSessionId() {
   return 'terminal:' + randomUUID();
+}
+
+function startInlineRename(tab, labelEl) {
+  // Swap the label for a text input; commit on Enter/blur, cancel on Esc.
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'files-tab-rename-input';
+  input.value = tab.name;
+  input.spellcheck = false;
+  input.maxLength = 60;
+
+  let committed = false;
+  function finish(save) {
+    if (committed) return;
+    committed = true;
+    const v = input.value.trim();
+    if (save && v && v !== tab.name) {
+      tab.name = v;
+      persistTabs();
+    }
+    renderTabs();   // rebuild — swaps the input back to a span
+  }
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+  // Prevent the parent tab's click/drag handlers from firing while editing.
+  input.addEventListener('mousedown', (e) => e.stopPropagation());
+  input.addEventListener('click', (e) => e.stopPropagation());
+
+  labelEl.replaceWith(input);
+  input.focus();
+  input.select();
 }
 
 function pushTerminalTab(sessionId, name) {
@@ -1773,6 +1847,23 @@ function initFilesTerminalButton() {
       }
     });
   }
+
+  // Ctrl+` (Backquote) opens a new terminal tab from anywhere in the app.
+  // Capture-phase so it preempts xterm's keyboard handler when focus is in
+  // an existing terminal — without that, xterm swallows the backtick.
+  document.addEventListener('keydown', (e) => {
+    if (e.code !== 'Backquote') return;
+    if (!e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    // Switch to the Admin Tools tab if we're not already on it.
+    const tabSelect = document.getElementById('main-tab-select');
+    if (tabSelect && tabSelect.value !== 'files') {
+      tabSelect.value = 'files';
+      tabSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    openNewTerminalTab();
+  }, true);
 }
 
 export function reconnectAllTerminals() {
