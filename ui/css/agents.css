@@ -417,7 +417,7 @@ body.light-mode .agent-detail-tabs-chev.right {
   outline: none;
   font-family: inherit;
   resize: none;
-  min-height: 34px;
+  min-height: 52px;
   max-height: 160px;
 }
 #agent-builder-bar-input:focus { border: none; }
