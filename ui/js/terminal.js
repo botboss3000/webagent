@@ -46,6 +46,15 @@ export function createTerminalInstance(container, sessionId) {
   const fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
   term.loadAddon(new WebLinksAddon.WebLinksAddon());
+  // Search addon loaded lazily — if the CDN script failed, the rest of
+  // the terminal still works, just without Ctrl+F highlights.
+  let searchAddon = null;
+  try {
+    if (typeof SearchAddon !== 'undefined' && SearchAddon.SearchAddon) {
+      searchAddon = new SearchAddon.SearchAddon();
+      term.loadAddon(searchAddon);
+    }
+  } catch (_) {}
   term.open(container);
   try { fitAddon.fit(); } catch (_) {}
 
@@ -148,11 +157,15 @@ export function createTerminalInstance(container, sessionId) {
 
     ws.onclose = (ev) => {
       if (disposed) return;
-      // 4401 is the server's "auth failed" close code (see terminal.py). No
-      // amount of retrying will help — surface to the user instead of
-      // spamming reconnects.
-      if (ev && ev.code === 4401) {
-        term.write('\r\n\x1b[31m[Authentication failed — refresh and sign in again]\x1b[0m\r\n');
+      // 4401 = auth failed, 4002 = per-user session cap exceeded. Both are
+      // hard stops; retrying just spams the server with rejected handshakes.
+      if (ev && (ev.code === 4401 || ev.code === 4002)) {
+        const msg = (ev.reason && ev.reason.trim()) || (
+          ev.code === 4401
+            ? 'Authentication failed — refresh and sign in again'
+            : 'Session cap exceeded — close another terminal first'
+        );
+        term.write('\r\n\x1b[31m[' + msg + ']\x1b[0m\r\n');
         disposed = true;
         setState('error');
         return;
@@ -233,10 +246,35 @@ export function createTerminalInstance(container, sessionId) {
   }
   function getState() { return state; }
 
+  // Search — no-ops when the CDN addon failed to load. The boolean return
+  // tells the find bar whether to flag "not found" to the user.
+  function findNext(query, opts) {
+    if (!searchAddon || !query) return false;
+    try { return !!searchAddon.findNext(query, opts || {}); } catch (_) { return false; }
+  }
+  function findPrevious(query, opts) {
+    if (!searchAddon || !query) return false;
+    try { return !!searchAddon.findPrevious(query, opts || {}); } catch (_) { return false; }
+  }
+  function clearSearch() {
+    if (!searchAddon) return;
+    try { searchAddon.clearDecorations(); } catch (_) {}
+  }
+
+  // Paste arbitrary text into the PTY input stream. Used by the
+  // drag-file-onto-terminal flow in files.js — writes a properly-quoted
+  // path at the current shell prompt.
+  function paste(text) {
+    if (!text || disposed) return;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(text);
+  }
+
   connect();
 
   return {
     term, fitAddon, fit, focus, reconnect, dispose, closeBackendSession,
     onStateChange, getState,
+    findNext, findPrevious, clearSearch,
+    paste,
   };
 }

@@ -1203,6 +1203,62 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 .files-terminal-host .xterm-viewport::-webkit-scrollbar { width: 6px; }
 .files-terminal-host .xterm-viewport::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
 
+/* Drop-target highlight when the user drags a file tree row onto a terminal.
+   The host accepts text/plain (the absolute path) and pastes it shell-quoted
+   into the PTY's input stream. */
+.files-terminal-host.files-terminal-drop-target {
+  outline: 2px dashed var(--files-active-indicator);
+  outline-offset: -3px;
+}
+
+/* In-terminal find bar — Ctrl+F inside an active terminal. */
+.files-terminal-findbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: #1a1a2e;
+  border-bottom: 1px solid #2a2a4a;
+  flex-shrink: 0;
+}
+.files-terminal-findbar[hidden] { display: none; }
+.files-terminal-findbar-input {
+  flex: 1;
+  min-width: 0;
+  background: #0d0d1a;
+  border: 1px solid #2a2a4a;
+  color: #c0caf5;
+  padding: 3px 6px;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.files-terminal-findbar-input:focus { border-color: var(--files-active-indicator); }
+.files-terminal-findbar-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #c0caf5;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.files-terminal-findbar-btn:hover { background: #2a2a4a; }
+.files-terminal-findbar-btn.active { background: #2a2a4a; border-color: var(--files-active-indicator); }
+.files-terminal-findbar-btn .lucide-icon { width: 12px; height: 12px; }
+.files-terminal-findbar-status {
+  font-size: 11px;
+  color: #f7768e;
+  min-width: 60px;
+  text-align: right;
+}
+
 /* ── Source-control (GitHub) panel ───────────────────────── */
 
 .fg-body {
