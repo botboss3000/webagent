@@ -639,7 +639,7 @@ body.light-mode {
 }
 
 .files-code-highlight,
-.files-textarea-overlay {
+textarea.files-textarea-overlay {
   position: absolute;
   top: 0; left: 0;
   width: 100%; height: 100%;
@@ -674,7 +674,7 @@ body.light-mode {
   white-space: inherit;
 }
 
-.files-textarea-overlay {
+textarea.files-textarea-overlay {
   background: transparent;
   color: transparent;
   caret-color: var(--files-caret);
@@ -682,7 +682,7 @@ body.light-mode {
   outline: none;
   z-index: 1;
 }
-.files-textarea-overlay::selection {
+textarea.files-textarea-overlay::selection {
   background: var(--files-selection);
   color: transparent;
 }
