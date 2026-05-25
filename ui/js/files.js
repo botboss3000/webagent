@@ -2220,6 +2220,12 @@ function toggleSettingsView() {
     editorMain.hidden = true;
     settingsMain.hidden = false;
     try { startAppConfig(); } catch (_) {}
+    // On mobile, the sidebar may be filling the screen (state=max). Collapse
+    // to the strip so the Settings view we just opened becomes visible.
+    const sidebar = document.getElementById('files-sidebar');
+    if (sidebar && isMobileLayout() && sidebar.dataset.state === 'max') {
+      setSidebarState('strip');
+    }
   } else {
     settingsMain.hidden = true;
     editorMain.hidden = false;

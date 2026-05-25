@@ -334,13 +334,13 @@
 
   <!-- Hidden native <select> kept for tabs.js compat -->
   <select id="main-tab-select" style="display:none;" aria-hidden="true">
+    <option value="admin-tools">Admin Tools</option>
     <option value="autoagent" selected>Dashboard</option>
     <option value="stream">Stream</option>
     <option value="flow">Flow</option>
     <option value="loop-visual">Runtime Loop</option>
     <option value="database">Database</option>
     <option value="agents">Agents</option>
-    <option value="admin-tools">Admin Tools</option>
     <option value="account">Manage Account</option>
   </select>
 
@@ -348,6 +348,9 @@
   <div id="main-tabs-wrap">
     <button type="button" id="main-tabs-chev-left" class="main-tabs-chev left" aria-label="Scroll tabs left">&#10094;</button>
     <div id="main-tabs" role="tablist">
+      <button type="button" class="main-tab" data-value="admin-tools" role="tab">
+        <i data-lucide="wrench" class="lucide-icon"></i>Admin Tools
+      </button>
       <button type="button" class="main-tab active" data-value="autoagent" role="tab">
         <i data-lucide="palette" class="lucide-icon"></i>Dashboard
       </button>
@@ -365,9 +368,6 @@
       </button>
       <button type="button" class="main-tab" data-value="agents" role="tab">
         <i data-lucide="bot" class="lucide-icon"></i>Agents
-      </button>
-      <button type="button" class="main-tab" data-value="admin-tools" role="tab">
-        <i data-lucide="wrench" class="lucide-icon"></i>Admin Tools
       </button>
     </div>
     <button type="button" id="main-tabs-chev-right" class="main-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
