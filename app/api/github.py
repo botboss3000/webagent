@@ -137,7 +137,7 @@ class TokenRequest(BaseModel):
 
 @router.get("/check-access")
 async def check_access(request: Request):
-    """Check if the current user has admin access to the GitHub tab."""
+    """Check if the current user has admin access to the GitHub features."""
     user_id = _get_user_id_from_request(request)
     return {"is_admin": user_id == _ADMIN_USER_ID}
 
@@ -356,6 +356,21 @@ async def get_log_graph(request: Request, limit: int = 80):
     if rev_out.strip():
         pulled_set = {h.strip() for h in rev_out.strip().split("\n") if h.strip()}
 
+    # 2b. Commits that `git pull` would actually bring in — i.e. reachable
+    # from origin/<current-branch> but not yet in HEAD. Commits on other
+    # remote branches are NOT pullable from the current branch and should
+    # not be marked with the "↓ not pulled" badge.
+    pullable_set: set[str] = set()
+    cur_branch_out, _, _ = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], timeout=5)
+    cur_branch = cur_branch_out.strip()
+    if cur_branch and cur_branch != "HEAD":
+        pull_out, _, pull_rc = _run_git(
+            ["rev-list", "-300", f"origin/{cur_branch}", "^HEAD"],
+            timeout=10,
+        )
+        if pull_rc == 0 and pull_out.strip():
+            pullable_set = {h.strip() for h in pull_out.strip().split("\n") if h.strip()}
+
     # 3. Compute lanes (column positions) for the graph.
     # `active_lanes[i]` holds the hash of the commit expected to land in
     # lane `i` next (placed there by a child commit above). Walking the
@@ -443,6 +458,7 @@ async def get_log_graph(request: Request, limit: int = 80):
                                if h == c["full_hash"] and i != lane],
             "is_head": c["full_hash"] == head_hash,
             "is_pulled": c["full_hash"] in pulled_set,
+            "is_pullable": c["full_hash"] in pullable_set,
         })
 
     # 4. Map every ref name to its short hash for branch-tip badges.
@@ -459,15 +475,11 @@ async def get_log_graph(request: Request, limit: int = 80):
         if len(bits) == 2:
             branches[bits[0]] = bits[1][:7]
 
-    # Current branch (so HEAD's lane can be tinted)
-    cur_out, _, _ = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], timeout=5)
-    current_branch = cur_out.strip()
-
     return {
         "commits": graph_commits,
         "max_lane": max_lane,
         "branches": branches,
-        "current_branch": current_branch,
+        "current_branch": cur_branch,
         "head_hash": head_hash,
     }
 
@@ -568,7 +580,7 @@ async def push_to_remote(request: Request):
     if rc != 0:
         detail = stderr.strip()
         if "Authentication failed" in stderr or "could not read" in stderr:
-            detail += "\n\nSet your GitHub token in the GitHub tab → Settings."
+            detail += "\n\nSet your GitHub token in the File Manager sidebar (source-control view)."
         raise HTTPException(status_code=500, detail=detail)
 
     return {
@@ -588,7 +600,7 @@ async def pull_from_remote(request: Request):
     if rc != 0:
         detail = stderr.strip()
         if "Authentication failed" in stderr or "could not read" in stderr:
-            detail += "\n\nSet your GitHub token in the GitHub tab → Settings."
+            detail += "\n\nSet your GitHub token in the File Manager sidebar (source-control view)."
         raise HTTPException(status_code=500, detail=detail)
 
     return {
