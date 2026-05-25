@@ -79,6 +79,9 @@ from app.auth import router as auth_router
 # ── GitHub ──
 from app.api.github import router as github_router
 
+# ── Feedback (relayed to GitHub issues) ──
+from app.api.feedback import router as feedback_router
+
 # ── Integrations & OAuth ──
 from app.admin.integrations import router as integrations_router
 from app.api.oauth import router as oauth_router
@@ -217,6 +220,7 @@ app.include_router(data_sources_router)
 app.include_router(files_router)
 app.include_router(admin_users_router)
 app.include_router(billing_router)
+app.include_router(feedback_router)
 
 # Register auth router
 app.include_router(auth_router)
