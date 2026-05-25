@@ -706,6 +706,39 @@ class StorageBackend(ABC):
         """Return True if user_id is a member or admin of the agent."""
         ...
 
+    # ---- AutoAgent pages (page-builder workspace) ----
+
+    @abstractmethod
+    async def pages_list(self, user_id: str) -> List[dict]:
+        """Return all page rows for user_id, ordered with 'home' first then by updated_at desc.
+        Each row: id, user_id, slug, title, agent_context, html, created_at, updated_at.
+        `html` may be None when the body lives on disk (hybrid mode)."""
+        ...
+
+    @abstractmethod
+    async def pages_get(self, user_id: str, slug: str) -> Optional[dict]:
+        """Get one page row by (user_id, slug). Returns None if not found."""
+        ...
+
+    @abstractmethod
+    async def pages_upsert(
+        self,
+        user_id: str,
+        slug: str,
+        title: str,
+        agent_context: str = "",
+        html: Optional[str] = None,
+    ) -> dict:
+        """Insert or update a page. Returns the saved row. `html=None` leaves the
+        column NULL on insert and untouched on update (so hybrid mode can store
+        metadata-only rows without disturbing existing bodies)."""
+        ...
+
+    @abstractmethod
+    async def pages_delete(self, user_id: str, slug: str) -> bool:
+        """Delete one page. Returns True if a row was removed."""
+        ...
+
     # ---- Per-Agent External Data Sources ----
 
     @abstractmethod

@@ -16,10 +16,12 @@ import { registerSessionApi, initSessions } from './sessions.js';
 import { initGithub } from './github.js';
 import { initAutoAgent } from './autoagent.js';
 import { initAgents } from './agents.js';
+import { initBilling } from './billing.js';
 import { initAppConfig } from './app-config.js';
 import { initAccount } from './account.js';
 import { initFiles } from './files.js';
 import { initChatResize } from './chatResize.js';
+import { initTutorial } from './tutorial.js';
 import { isAuthenticated, showLeftOverlay, hideLeftOverlay } from './left-login.js';
 import './icons.js'; // auto-renders Lucide icons on DOM mutations
 import { randomUUID } from './uuid.js';
@@ -165,11 +167,13 @@ _anonReady.then(() => {
   _safeInit('initGithub',      initGithub);
   _safeInit('initAutoAgent',   initAutoAgent);
   _safeInit('initAgents',      initAgents);
+  _safeInit('initBilling',     initBilling);
   _safeInit('initAppConfig',   initAppConfig);
   _safeInit('initAccount',     initAccount);
   _safeInit('initFiles',       initFiles);
   _safeInit('initSessions',    initSessions);
   _safeInit('initChatResize',  initChatResize);
+  _safeInit('initTutorial',    initTutorial);
 });
 
 // ── Visibility change: reconnect when user returns to this tab ──

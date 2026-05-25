@@ -496,6 +496,146 @@ TABLES: List[Table] = [
         "PRIMARY KEY (user_id, key_version)",
         "CHECK (status IN ('active','retired'))",
     ]),
+
+    # ── Billing / monetization ──
+    # Effective config is the platform row merged with an agent-scoped row.
+    # scope: 'platform' or 'agent:<agent_id>'.
+    Table("billing_configs", [
+        Column("scope", "TEXT", nullable=False, primary_key=True),
+        Column("strategy", "TEXT", nullable=False, default="'free'"),
+        Column("allowed_strategies", "TEXT", nullable=False, default="'[]'"),
+        Column("allowed_processors", "TEXT", nullable=False, default="'[]'"),
+        Column("rate_card_default_llm", "TEXT", nullable=False, default="'{}'"),
+        Column("rate_card_byo_llm", "TEXT", nullable=False, default="'{}'"),
+        Column("platform_fee_pct", "REAL", nullable=False, default="0"),
+        Column("platform_fee_flat_cents", "INTEGER", nullable=False, default="0"),
+        Column("trial_config", "TEXT", nullable=False, default="'{}'"),
+        Column("subscription_price_cents", "INTEGER", nullable=False, default="0"),
+        Column("currency", "TEXT", nullable=False, default="'usd'"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_by", "TEXT"),
+    ], constraints=[
+        "CHECK (strategy IN ('free','credits','per_message','per_token','subscription','trial'))",
+    ]),
+
+    Table("usage_events", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("agent_id", "TEXT", nullable=False),
+        Column("user_id", "TEXT", nullable=False),
+        Column("interaction_id", "TEXT"),
+        Column("input_tokens", "INTEGER", nullable=False, default="0"),
+        Column("output_tokens", "INTEGER", nullable=False, default="0"),
+        Column("provider_cost_cents", "INTEGER", nullable=False, default="0"),
+        Column("end_user_charge_cents", "INTEGER", nullable=False, default="0"),
+        Column("platform_fee_cents", "INTEGER", nullable=False, default="0"),
+        Column("agent_admin_earnings_cents", "INTEGER", nullable=False, default="0"),
+        Column("strategy", "TEXT", nullable=False, default="'free'"),
+        Column("is_byo_llm", "INTEGER", nullable=False, default="0"),
+        Column("is_trial", "INTEGER", nullable=False, default="0"),
+        Column("is_exempt", "INTEGER", nullable=False, default="0"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ]),
+
+    Table("wallets", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("owner_type", "TEXT", nullable=False),
+        Column("owner_id", "TEXT", nullable=False),
+        Column("balance_cents", "INTEGER", nullable=False, default="0"),
+        Column("hold_cents", "INTEGER", nullable=False, default="0"),
+        Column("currency", "TEXT", nullable=False, default="'usd'"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ], constraints=[
+        "UNIQUE(owner_type, owner_id, currency)",
+        "CHECK (owner_type IN ('user','agent_admin'))",
+    ]),
+
+    Table("wallet_transactions", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("wallet_id", "TEXT", nullable=False),
+        Column("delta_cents", "INTEGER", nullable=False),
+        Column("kind", "TEXT", nullable=False),
+        Column("ref_id", "TEXT"),
+        Column("note", "TEXT"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ], constraints=[
+        "CHECK (kind IN ('purchase','usage','refund','platform_fee','earnings','hold','release'))",
+    ]),
+
+    Table("subscriptions", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("user_id", "TEXT", nullable=False),
+        Column("agent_id", "TEXT", nullable=False),
+        Column("processor", "TEXT", nullable=False),
+        Column("external_subscription_id", "TEXT"),
+        Column("status", "TEXT", nullable=False, default="'pending'"),
+        Column("current_period_end", "TIMESTAMP"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ], constraints=[
+        "UNIQUE(user_id, agent_id)",
+        "CHECK (status IN ('pending','active','past_due','cancelled','expired'))",
+    ]),
+
+    Table("trials", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("user_id", "TEXT", nullable=False),
+        Column("agent_id", "TEXT", nullable=False),
+        Column("started_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("expires_at", "TIMESTAMP"),
+        Column("messages_remaining", "INTEGER"),
+        Column("tokens_remaining", "INTEGER"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ], constraints=[
+        "UNIQUE(user_id, agent_id)",
+    ]),
+
+    Table("payment_accounts", [
+        Column("user_id", "TEXT", nullable=False),
+        Column("processor", "TEXT", nullable=False),
+        Column("external_account_id", "TEXT"),
+        Column("onboarding_complete", "INTEGER", nullable=False, default="0"),
+        Column("metadata", "TEXT", nullable=False, default="'{}'"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ], constraints=[
+        "PRIMARY KEY (user_id, processor)",
+    ]),
+
+    Table("payments", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("processor", "TEXT", nullable=False),
+        Column("external_payment_id", "TEXT"),
+        Column("user_id", "TEXT", nullable=False),
+        Column("agent_id", "TEXT"),
+        Column("amount_cents", "INTEGER", nullable=False, default="0"),
+        Column("currency", "TEXT", nullable=False, default="'usd'"),
+        Column("kind", "TEXT", nullable=False),
+        Column("status", "TEXT", nullable=False, default="'pending'"),
+        Column("metadata", "TEXT", nullable=False, default="'{}'"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ], constraints=[
+        "CHECK (kind IN ('purchase','subscription','one_off'))",
+        "CHECK (status IN ('pending','completed','failed','refunded'))",
+    ]),
+
+    # Exemption rules. Three kinds:
+    #   'agent'           — whole agent is free (agent_id set, user_id NULL)
+    #   'user'            — user is exempt globally (user_id set, agent_id NULL)
+    #   'user_for_agent'  — user is exempt for one agent (both set)
+    Table("billing_exemptions", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("kind", "TEXT", nullable=False),
+        Column("agent_id", "TEXT"),
+        Column("user_id", "TEXT"),
+        Column("granted_by_user_id", "TEXT"),
+        Column("reason", "TEXT"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ], constraints=[
+        "CHECK (kind IN ('agent','user','user_for_agent'))",
+    ]),
 ]
 
 
@@ -554,6 +694,18 @@ INDEXES: List[Index] = [
     Index("idx_tenant_key_meta_active", "tenant_key_meta", "user_id, status"),
     Index("idx_doc_chunks_source", "doc_chunks", "data_source_id"),
     Index("idx_doc_chunks_hash", "doc_chunks", "content_hash"),
+    # Billing
+    Index("idx_usage_events_agent_created", "usage_events", "agent_id, created_at"),
+    Index("idx_usage_events_user_created", "usage_events", "user_id, created_at"),
+    Index("idx_wallet_tx_wallet", "wallet_transactions", "wallet_id"),
+    Index("idx_payments_user", "payments", "user_id"),
+    Index("idx_payments_external", "payments", "processor, external_payment_id"),
+    Index("idx_subscriptions_user", "subscriptions", "user_id"),
+    Index("idx_subscriptions_agent", "subscriptions", "agent_id"),
+    Index("idx_trials_user_agent", "trials", "user_id, agent_id"),
+    Index("idx_exemptions_agent", "billing_exemptions", "agent_id"),
+    Index("idx_exemptions_user", "billing_exemptions", "user_id"),
+    Index("idx_exemptions_kind", "billing_exemptions", "kind"),
 ]
 
 

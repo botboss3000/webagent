@@ -64,7 +64,7 @@ let _intAdminWired = false;
 // ── Sidebar nav + scroll highlighting ────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────
 const _SECTION_KEY = 'appConfig_activeSection';
-const _VALID_SECTIONS = ['llm', 'integrations', 'database', 'optimizer', 'git', 'automation', 'events', 'app-settings', 'user-management'];
+const _VALID_SECTIONS = ['llm', 'integrations', 'database', 'optimizer', 'git', 'automation', 'events', 'app-settings', 'user-management', 'monetization'];
 let _activeSection = localStorage.getItem(_SECTION_KEY) || 'llm';
 
 function _showSection(section) {
@@ -75,6 +75,22 @@ function _showSection(section) {
   _activeSection = section;
   localStorage.setItem(_SECTION_KEY, section);
   _setNavActive(section);
+  if (section === 'monetization') _renderPlatformBillingPanel();
+}
+
+function _renderPlatformBillingPanel() {
+  const mount = _qs('billing-platform-panel');
+  if (!mount) return;
+  if (!isAdmin()) {
+    mount.innerHTML = '<div style="color:var(--fg-3);font-size:13px;">Platform admin access required.</div>';
+    return;
+  }
+  if (window.AppBilling && typeof window.AppBilling.renderMonetizationPanel === 'function') {
+    window.AppBilling.renderMonetizationPanel('platform', mount);
+  } else {
+    mount.innerHTML = '<div style="color:var(--fg-3);font-size:13px;">Billing module is still loading…</div>';
+    setTimeout(_renderPlatformBillingPanel, 400);
+  }
 }
 
 function _initNav() {
@@ -1888,6 +1904,19 @@ async function _saveAppSettings() {
 function _initUserManagement() {
   _qs('ac-um-save')?.addEventListener('click', _saveUserManagement);
   _qs('ac-um-users-header')?.addEventListener('click', _toggleUsersCard);
+
+  // Tutorial-hint preferences card. Lazy-import so the user-management
+  // section doesn't fail to render if tutorial.js is unavailable for any
+  // reason. Re-renders on its own when prefs change.
+  const host = _qs('ac-tutorial-card-host');
+  if (host) {
+    import('./tutorial.js').then(m => {
+      try { m.renderTutorialPrefsCard(host); } catch (_) {}
+      document.addEventListener('tutorial-prefs-changed', () => {
+        try { m.renderTutorialPrefsCard(host); } catch (_) {}
+      });
+    }).catch(() => {});
+  }
 }
 
 async function _loadUserManagement() {
