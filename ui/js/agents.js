@@ -2503,12 +2503,18 @@ async function _renderToolsTab(body, agent, panelEl) {
 
 const _CONN_ICONS = {
   // Channels
-  telegram:  'send',
-  twilio:    'phone',
-  email:     'mail',
-  whatsapp:  'message-circle',
-  discord:   'gamepad-2',
-  slack:     'briefcase',
+  telegram:    'send',
+  sent_dm:     'message-square-text',
+  telnyx:      'phone-call',
+  vonage:      'phone',
+  messagebird: 'bird',
+  plivo:       'message-circle',
+  bandwidth:   'radio-tower',
+  twilio:      'phone',
+  email:       'mail',
+  whatsapp:    'message-circle',
+  discord:     'gamepad-2',
+  slack:       'briefcase',
   // Integrations
   google:    'search',
   microsoft: 'monitor',

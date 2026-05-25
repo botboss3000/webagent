@@ -823,6 +823,156 @@
               <span id="ac-int-telegram-status" class="ac-status" style="display:none;margin-top:8px;"></span>
             </div>
 
+            <!-- sent.dm Channel (SMS / WhatsApp / RCS) -->
+            <div class="ac-card" id="ac-int-sent_dm-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <i data-lucide="message-square-text" class="lucide-icon" style="width:24px;height:24px;color:#7aa2f7;flex-shrink:0;"></i>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">sent.dm</div>
+                  <div class="ac-hint" style="margin:0;">Unified SMS, WhatsApp and RCS via sent.dm. Each agent supplies its own API key on its Abilities tab.</div>
+                </div>
+                <span id="ac-int-sent_dm-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
+              </div>
+
+              <div id="ac-int-sent_dm-configured" style="display:none;font-size:12px;">
+                <div class="ac-hint" style="margin:0;">sent.dm is available on the agent's <strong>Abilities</strong> tab. Each agent enters its own credentials there.</div>
+                <div style="margin-top:12px;display:flex;gap:8px;">
+                  <button id="ac-int-sent_dm-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                </div>
+              </div>
+
+              <div id="ac-int-sent_dm-form" style="display:block;">
+                <div class="ac-hint" style="margin:0 0 10px;">No app-level credentials needed. Enabling sent.dm exposes it as a channel option to agent admins.</div>
+                <button id="ac-int-sent_dm-save" class="ac-btn ac-btn-primary">Enable sent.dm</button>
+              </div>
+              <span id="ac-int-sent_dm-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+            </div>
+
+            <!-- Telnyx Channel (SMS / WhatsApp / RCS) -->
+            <div class="ac-card" id="ac-int-telnyx-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <i data-lucide="phone-call" class="lucide-icon" style="width:24px;height:24px;color:#00e1b0;flex-shrink:0;"></i>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Telnyx</div>
+                  <div class="ac-hint" style="margin:0;">SMS, WhatsApp and RCS via Telnyx. Each agent supplies its own API key on its Abilities tab.</div>
+                </div>
+                <span id="ac-int-telnyx-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
+              </div>
+
+              <div id="ac-int-telnyx-configured" style="display:none;font-size:12px;">
+                <div class="ac-hint" style="margin:0;">Telnyx is available on the agent's <strong>Abilities</strong> tab. Each agent enters its own credentials there.</div>
+                <div style="margin-top:12px;display:flex;gap:8px;">
+                  <button id="ac-int-telnyx-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                </div>
+              </div>
+
+              <div id="ac-int-telnyx-form" style="display:block;">
+                <div class="ac-hint" style="margin:0 0 10px;">No app-level credentials needed. Enabling Telnyx exposes it as a channel option to agent admins.</div>
+                <button id="ac-int-telnyx-save" class="ac-btn ac-btn-primary">Enable Telnyx</button>
+              </div>
+              <span id="ac-int-telnyx-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+            </div>
+
+            <!-- Vonage Channel (SMS / WhatsApp) -->
+            <div class="ac-card" id="ac-int-vonage-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <i data-lucide="phone" class="lucide-icon" style="width:24px;height:24px;color:#871FFF;flex-shrink:0;"></i>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Vonage</div>
+                  <div class="ac-hint" style="margin:0;">SMS and WhatsApp via Vonage (formerly Nexmo). Each agent supplies its own credentials on its Abilities tab.</div>
+                </div>
+                <span id="ac-int-vonage-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
+              </div>
+
+              <div id="ac-int-vonage-configured" style="display:none;font-size:12px;">
+                <div class="ac-hint" style="margin:0;">Vonage is available on the agent's <strong>Abilities</strong> tab. Each agent enters its own credentials there.</div>
+                <div style="margin-top:12px;display:flex;gap:8px;">
+                  <button id="ac-int-vonage-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                </div>
+              </div>
+
+              <div id="ac-int-vonage-form" style="display:block;">
+                <div class="ac-hint" style="margin:0 0 10px;">No app-level credentials needed. Enabling Vonage exposes it as a channel option to agent admins.</div>
+                <button id="ac-int-vonage-save" class="ac-btn ac-btn-primary">Enable Vonage</button>
+              </div>
+              <span id="ac-int-vonage-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+            </div>
+
+            <!-- MessageBird Channel (SMS / WhatsApp / RCS) -->
+            <div class="ac-card" id="ac-int-messagebird-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <i data-lucide="bird" class="lucide-icon" style="width:24px;height:24px;color:#2481D7;flex-shrink:0;"></i>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">MessageBird</div>
+                  <div class="ac-hint" style="margin:0;">SMS, WhatsApp and RCS via MessageBird (Bird). Each agent supplies its own access key on its Abilities tab.</div>
+                </div>
+                <span id="ac-int-messagebird-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
+              </div>
+
+              <div id="ac-int-messagebird-configured" style="display:none;font-size:12px;">
+                <div class="ac-hint" style="margin:0;">MessageBird is available on the agent's <strong>Abilities</strong> tab. Each agent enters its own credentials there.</div>
+                <div style="margin-top:12px;display:flex;gap:8px;">
+                  <button id="ac-int-messagebird-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                </div>
+              </div>
+
+              <div id="ac-int-messagebird-form" style="display:block;">
+                <div class="ac-hint" style="margin:0 0 10px;">No app-level credentials needed. Enabling MessageBird exposes it as a channel option to agent admins.</div>
+                <button id="ac-int-messagebird-save" class="ac-btn ac-btn-primary">Enable MessageBird</button>
+              </div>
+              <span id="ac-int-messagebird-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+            </div>
+
+            <!-- Plivo Channel (SMS) -->
+            <div class="ac-card" id="ac-int-plivo-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <i data-lucide="message-circle" class="lucide-icon" style="width:24px;height:24px;color:#56C656;flex-shrink:0;"></i>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Plivo</div>
+                  <div class="ac-hint" style="margin:0;">SMS via Plivo. Each agent supplies its own Auth ID and Token on its Abilities tab.</div>
+                </div>
+                <span id="ac-int-plivo-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
+              </div>
+
+              <div id="ac-int-plivo-configured" style="display:none;font-size:12px;">
+                <div class="ac-hint" style="margin:0;">Plivo is available on the agent's <strong>Abilities</strong> tab. Each agent enters its own credentials there.</div>
+                <div style="margin-top:12px;display:flex;gap:8px;">
+                  <button id="ac-int-plivo-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                </div>
+              </div>
+
+              <div id="ac-int-plivo-form" style="display:block;">
+                <div class="ac-hint" style="margin:0 0 10px;">No app-level credentials needed. Enabling Plivo exposes it as a channel option to agent admins.</div>
+                <button id="ac-int-plivo-save" class="ac-btn ac-btn-primary">Enable Plivo</button>
+              </div>
+              <span id="ac-int-plivo-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+            </div>
+
+            <!-- Bandwidth Channel (SMS / RCS) -->
+            <div class="ac-card" id="ac-int-bandwidth-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <i data-lucide="radio-tower" class="lucide-icon" style="width:24px;height:24px;color:#0057B8;flex-shrink:0;"></i>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Bandwidth</div>
+                  <div class="ac-hint" style="margin:0;">SMS and RCS via Bandwidth. Each agent supplies its own API credentials on its Abilities tab.</div>
+                </div>
+                <span id="ac-int-bandwidth-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
+              </div>
+
+              <div id="ac-int-bandwidth-configured" style="display:none;font-size:12px;">
+                <div class="ac-hint" style="margin:0;">Bandwidth is available on the agent's <strong>Abilities</strong> tab. Each agent enters its own credentials there.</div>
+                <div style="margin-top:12px;display:flex;gap:8px;">
+                  <button id="ac-int-bandwidth-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                </div>
+              </div>
+
+              <div id="ac-int-bandwidth-form" style="display:block;">
+                <div class="ac-hint" style="margin:0 0 10px;">No app-level credentials needed. Enabling Bandwidth exposes it as a channel option to agent admins.</div>
+                <button id="ac-int-bandwidth-save" class="ac-btn ac-btn-primary">Enable Bandwidth</button>
+              </div>
+              <span id="ac-int-bandwidth-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+            </div>
+
             <!-- WhatsApp Channel (coming soon) -->
             <div class="ac-card ac-int-coming-soon" id="ac-int-whatsapp-card">
               <div style="display:flex;align-items:center;gap:12px;">

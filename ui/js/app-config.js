@@ -833,7 +833,7 @@ function _initIntegrations() {
   _qs('ac-int-browser_session-unconfigure')?.addEventListener('click', _unconfigureBrowserSession);
 
   // Channels (admin enable/disable; per-agent creds live in the agent's Abilities tab)
-  const channels = ['telegram'];
+  const channels = ['telegram', 'sent_dm', 'telnyx', 'vonage', 'messagebird', 'plivo', 'bandwidth'];
   for (const c of channels) {
     _initCollapsible(c);
     _qs(`ac-int-${c}-save`)?.addEventListener('click', () => _enableChannel(c));
@@ -1051,14 +1051,20 @@ async function _loadIntegrations() {
     _applyProviderStatus('shopify',   data.shopify_configured,   data.shopify_client_id,   data.shopify_redirect_uri,      data.shopify_scopes,   data.shopify_redirect_uri_suggested);
     _applyProviderStatus('amazon',    data.amazon_configured,    data.amazon_client_id,    data.amazon_redirect_uri,       data.amazon_scopes,    data.amazon_redirect_uri_suggested);
     _applyScraperStatus(data);
-    _applyChannelStatus('telegram', data.telegram_configured);
+    _applyChannelStatus('telegram',    data.telegram_configured);
+    _applyChannelStatus('sent_dm',     data.sent_dm_configured);
+    _applyChannelStatus('telnyx',      data.telnyx_configured);
+    _applyChannelStatus('vonage',      data.vonage_configured);
+    _applyChannelStatus('messagebird', data.messagebird_configured);
+    _applyChannelStatus('plivo',       data.plivo_configured);
+    _applyChannelStatus('bandwidth',   data.bandwidth_configured);
     _applyAbilityStatus('codebase_admin', data.codebase_admin_configured);
     _applyAbilityStatus('create_tools',   data.create_tools_configured);
     _applyAbilityStatus('automation',     data.automation_configured);
     // Browser session is per-user — fetched from a separate endpoint.
     _loadBrowserSessionStatus();
   } catch (e) {
-    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram', 'codebase_admin', 'create_tools', 'automation']) {
+    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram', 'sent_dm', 'telnyx', 'vonage', 'messagebird', 'plivo', 'bandwidth', 'codebase_admin', 'create_tools', 'automation']) {
       const s = _qs(`ac-int-${p}-status`);
       if (s) { s.textContent = `Failed to load: ${e.message}`; s.style.color = '#f7768e'; s.style.display = 'block'; }
     }

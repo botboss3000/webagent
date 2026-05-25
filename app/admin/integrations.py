@@ -1512,7 +1512,13 @@ _CONNECTION_ADMIN_CONFIG_KEY: dict[str, str] = {
 # the platform level (the actual bot token / API key is supplied per-agent),
 # so "configured" simply means the admin has enabled the channel.
 _CHANNEL_CONFIG_KEY: dict[str, str] = {
-    "telegram": "channel_telegram",
+    "telegram":    "channel_telegram",
+    "sent_dm":     "channel_sent_dm",
+    "telnyx":      "channel_telnyx",
+    "vonage":      "channel_vonage",
+    "messagebird": "channel_messagebird",
+    "plivo":       "channel_plivo",
+    "bandwidth":   "channel_bandwidth",
 }
 
 # Agent Tools — privileged host-side capabilities (codebase admin, tool
@@ -1800,6 +1806,12 @@ async def get_integration_config(
         "scraper_host":         (scraper_cfg or {}).get("extra", {}).get("host", ""),
         # Channels (admin enable/disable; per-agent creds live in Connections)
         "telegram_configured":       channel_enabled.get("telegram", False),
+        "sent_dm_configured":        channel_enabled.get("sent_dm", False),
+        "telnyx_configured":         channel_enabled.get("telnyx", False),
+        "vonage_configured":         channel_enabled.get("vonage", False),
+        "messagebird_configured":    channel_enabled.get("messagebird", False),
+        "plivo_configured":          channel_enabled.get("plivo", False),
+        "bandwidth_configured":      channel_enabled.get("bandwidth", False),
         # Agent Tools (host-side privileged capabilities)
         "codebase_admin_configured": ability_enabled.get("codebase_admin", False),
         "create_tools_configured":   ability_enabled.get("create_tools", False),

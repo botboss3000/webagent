@@ -986,12 +986,18 @@ async def test_agent(req: TestAgentRequest):
 
 _CONNECTION_CATALOG = [
     # ── Channels ──
-    {"connection_type": "telegram",  "section": "channel",     "display_name": "Telegram",        "status": "available"},
-    {"connection_type": "twilio",    "section": "channel",     "display_name": "Twilio (SMS/Call)","status": "coming_soon"},
-    {"connection_type": "email",     "section": "channel",     "display_name": "Email",            "status": "coming_soon"},
-    {"connection_type": "whatsapp",  "section": "channel",     "display_name": "WhatsApp",         "status": "coming_soon"},
-    {"connection_type": "discord",   "section": "channel",     "display_name": "Discord",          "status": "coming_soon"},
-    {"connection_type": "slack",     "section": "channel",     "display_name": "Slack",            "status": "coming_soon"},
+    {"connection_type": "telegram",    "section": "channel",     "display_name": "Telegram",                       "status": "available"},
+    {"connection_type": "sent_dm",     "section": "channel",     "display_name": "sent.dm (SMS/WhatsApp/RCS)",     "status": "available"},
+    {"connection_type": "telnyx",      "section": "channel",     "display_name": "Telnyx (SMS/WhatsApp/RCS)",      "status": "available"},
+    {"connection_type": "vonage",      "section": "channel",     "display_name": "Vonage (SMS/WhatsApp)",          "status": "available"},
+    {"connection_type": "messagebird", "section": "channel",     "display_name": "MessageBird (SMS/WhatsApp/RCS)", "status": "available"},
+    {"connection_type": "plivo",       "section": "channel",     "display_name": "Plivo (SMS)",                    "status": "available"},
+    {"connection_type": "bandwidth",   "section": "channel",     "display_name": "Bandwidth (SMS/RCS)",            "status": "available"},
+    {"connection_type": "twilio",      "section": "channel",     "display_name": "Twilio (SMS/Call)",              "status": "coming_soon"},
+    {"connection_type": "email",       "section": "channel",     "display_name": "Email",                          "status": "coming_soon"},
+    {"connection_type": "whatsapp",    "section": "channel",     "display_name": "WhatsApp",                       "status": "coming_soon"},
+    {"connection_type": "discord",     "section": "channel",     "display_name": "Discord",                        "status": "coming_soon"},
+    {"connection_type": "slack",       "section": "channel",     "display_name": "Slack",                          "status": "coming_soon"},
     # ── Integrations ──
     {"connection_type": "google",    "section": "integration", "display_name": "Google",           "status": "available"},
     {"connection_type": "microsoft", "section": "integration", "display_name": "Microsoft 365",    "status": "available"},
