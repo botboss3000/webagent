@@ -1,10 +1,8 @@
 'use strict';
 
-import { app } from './state.js';
 import { startStream, stopStream } from './stream.js';
 import { startLoop, stopLoop, setLoopLevel, toggleAutoScroll } from './loop.js';
 import { startLoopVisual, stopLoopVisual } from './loop-logic.js';
-import { initGithub, startGithub, stopGithub } from './github.js';
 import { startAutoAgent, stopAutoAgent } from './autoagent.js';
 import { startAgents, stopAgents } from './agents.js';
 import { startAppConfig, stopAppConfig } from './app-config.js';
@@ -56,19 +54,7 @@ export function initTabs() {
       setChatSideVisible(visible);
     }
 
-    if (tabValue === 'terminal') {
-      stopStream();
-      stopLoop();
-      stopLoopVisual();
-      stopAutoAgent();
-      stopAgents();
-      stopAppConfig();
-      setTimeout(() => {
-        if (app && app.fitAddon) {
-          app.fitAddon.fit();
-        }
-      }, 50);
-    } else if (tabValue === 'stream') {
+    if (tabValue === 'stream') {
       stopLoop();
       stopLoopVisual();
       stopAutoAgent();
@@ -93,22 +79,13 @@ export function initTabs() {
       stopStream();
       stopLoop();
       stopLoopVisual();
-      stopGithub();
       stopAutoAgent();
       stopAgents();
       stopAppConfig();
-    } else if (tabValue === 'github') {
-      stopStream();
-      stopLoop();
-      stopLoopVisual();
-      stopAgents();
-      stopAppConfig();
-      startGithub();
     } else if (tabValue === 'autoagent') {
       stopStream();
       stopLoop();
       stopLoopVisual();
-      stopGithub();
       stopAgents();
       stopAppConfig();
       startAutoAgent();
@@ -116,7 +93,6 @@ export function initTabs() {
       stopStream();
       stopLoop();
       stopLoopVisual();
-      stopGithub();
       stopAutoAgent();
       stopAppConfig();
       startAgents();
@@ -124,7 +100,6 @@ export function initTabs() {
       stopStream();
       stopLoop();
       stopLoopVisual();
-      stopGithub();
       stopAutoAgent();
       stopAgents();
       startAppConfig();
@@ -132,7 +107,6 @@ export function initTabs() {
       stopStream();
       stopLoop();
       stopLoopVisual();
-      stopGithub();
       stopAutoAgent();
       stopAgents();
       stopAppConfig();
@@ -142,7 +116,6 @@ export function initTabs() {
       stopStream();
       stopLoop();
       stopLoopVisual();
-      stopGithub();
       stopAutoAgent();
       stopAgents();
       stopAppConfig();

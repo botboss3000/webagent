@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Master login overlay for the left panel (terminal, stream, loop, database, github).
+ * Master login overlay for the left panel (terminal, stream, loop, database).
  * Chat on the right side stays accessible without login.
  */
 
@@ -135,9 +135,6 @@ export function showLeftOverlay() {
 
   // Hide all tab content
   side.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
-  // Also hide github viewer if present
-  const ghViewer = document.getElementById('gh-viewer');
-  if (ghViewer) ghViewer.style.display = 'none';
 
   overlayEl = document.createElement('div');
   overlayEl.id = 'left-login-overlay';
@@ -299,8 +296,6 @@ export function hideLeftOverlay() {
     side2.querySelectorAll('.tab-content').forEach(el => {
       el.style.display = el.classList.contains('active') ? '' : 'none';
     });
-    const ghViewer = document.getElementById('gh-viewer');
-    if (ghViewer) ghViewer.style.display = '';
   }
 }
 
