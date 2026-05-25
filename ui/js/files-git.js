@@ -473,9 +473,19 @@ function renderCommitDetail(d) {
     return `<div class="fg-cd-file"><span class="fg-cd-added">${escapeHtml(added)}</span><span class="fg-cd-removed">${escapeHtml(removed)}</span><span class="fg-cd-path">${escapeHtml(f.path)}</span></div>`;
   }).join('') || '<div class="fg-loading">No file changes</div>';
   const body = (d.body || '').trim() ? `<pre class="fg-cd-body">${escapeHtml(d.body.trim())}</pre>` : '';
+  const parents = (d.parents || []).map(p => escapeHtml(p.slice(0, 7))).join(', ') || '(none)';
+  const subject = (d.subject || '').trim() ? `<div class="fg-cd-subject">${escapeHtml(d.subject)}</div>` : '';
   return `
     <div class="fg-cd">
-      <div class="fg-cd-meta"><span>${escapeHtml(d.author || '')}</span><code>${escapeHtml((d.full_hash || '').slice(0, 12))}</code></div>
+      <div class="fg-cd-fields">
+        <div class="fg-cd-field"><span class="fg-cd-label">Full hash</span><code class="fg-cd-val">${escapeHtml(d.full_hash || '')}</code></div>
+        <div class="fg-cd-field"><span class="fg-cd-label">Author</span><span class="fg-cd-val">${escapeHtml(d.author || '')}${d.author_email ? ' &lt;' + escapeHtml(d.author_email) + '&gt;' : ''}</span></div>
+        <div class="fg-cd-field"><span class="fg-cd-label">Authored</span><span class="fg-cd-val">${escapeHtml(d.author_date || '')}</span></div>
+        <div class="fg-cd-field"><span class="fg-cd-label">Committer</span><span class="fg-cd-val">${escapeHtml(d.committer || '')}${d.committer_email ? ' &lt;' + escapeHtml(d.committer_email) + '&gt;' : ''}</span></div>
+        <div class="fg-cd-field"><span class="fg-cd-label">Committed</span><span class="fg-cd-val">${escapeHtml(d.commit_date || '')}</span></div>
+        <div class="fg-cd-field"><span class="fg-cd-label">Parents</span><code class="fg-cd-val">${parents}</code></div>
+      </div>
+      ${subject}
       ${body}
       <div class="fg-cd-files-title">Files (${(d.files || []).length})</div>
       <div class="fg-cd-files">${files}</div>
