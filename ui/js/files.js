@@ -2011,7 +2011,7 @@ window.addEventListener('resize', () => {
 
 const LS_SIDEBAR_STATE = 'files.sidebarState';   // 'split' | 'max' | 'strip'
 
-function isMobileLayout() {
+export function isMobileLayout() {
   if (typeof window.__isMobileChatLayout === 'function') return window.__isMobileChatLayout();
   return window.innerWidth <= 800;
 }
@@ -2078,7 +2078,7 @@ function cycleSidebarState() {
   setSidebarState(next);
 }
 
-function setSidebarState(state) {
+export function setSidebarState(state) {
   const sidebar = document.getElementById('files-sidebar');
   if (!sidebar) return;
   if (state !== 'split' && state !== 'max' && state !== 'strip') state = 'split';
