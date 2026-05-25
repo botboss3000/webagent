@@ -54,6 +54,21 @@ export function createTerminalInstance(container, sessionId) {
   let reconnectAttempts = 0;
   let disposed = false;
 
+  // Connection state machine used to drive the per-tab status dot in the UI.
+  // 'connecting' = WS opening for the first time / scheduled reconnect in flight
+  // 'connected'  = WS open, live PTY stream
+  // 'reconnecting' = WS dropped after having been open; retry is queued
+  // 'error'      = auth failure or other permanent stop (no further retries)
+  let state = 'connecting';
+  let stateListeners = [];
+  function setState(next) {
+    if (state === next) return;
+    state = next;
+    for (const cb of stateListeners) {
+      try { cb(state); } catch (_) {}
+    }
+  }
+
   term.onData((data) => {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
   });
@@ -92,11 +107,21 @@ export function createTerminalInstance(container, sessionId) {
       ws.onerror = null;
       try { ws.close(); } catch (_) {}
     }
-    ws = new WebSocket(termWsUrl() + '?session_id=' + encodeURIComponent(sessionId));
+    // The WS endpoint enforces admin auth — pass the JWT as ?token=. We do
+    // this every connect (not just the first one) so a token refreshed in
+    // a long-lived session is picked up on the next reconnect.
+    const tokenParam = (() => {
+      try {
+        const t = localStorage.getItem('auth_token');
+        return t ? '&token=' + encodeURIComponent(t) : '';
+      } catch (_) { return ''; }
+    })();
+    ws = new WebSocket(termWsUrl() + '?session_id=' + encodeURIComponent(sessionId) + tokenParam);
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
       reconnectAttempts = 0;
+      setState('connected');
       try { term.focus(); } catch (_) {}
       try {
         ws.send(JSON.stringify({ type: 'resize', rows: term.rows, cols: term.cols }));
@@ -121,7 +146,20 @@ export function createTerminalInstance(container, sessionId) {
       }
     };
 
-    ws.onclose = () => { if (!disposed) scheduleReconnect(); };
+    ws.onclose = (ev) => {
+      if (disposed) return;
+      // 4401 is the server's "auth failed" close code (see terminal.py). No
+      // amount of retrying will help — surface to the user instead of
+      // spamming reconnects.
+      if (ev && ev.code === 4401) {
+        term.write('\r\n\x1b[31m[Authentication failed — refresh and sign in again]\x1b[0m\r\n');
+        disposed = true;
+        setState('error');
+        return;
+      }
+      setState('reconnecting');
+      scheduleReconnect();
+    };
     ws.onerror = () => { /* onclose fires after onerror; reconnect is scheduled there */ };
   }
 
@@ -184,7 +222,21 @@ export function createTerminalInstance(container, sessionId) {
     }
   }
 
+  function onStateChange(cb) {
+    if (typeof cb !== 'function') return () => {};
+    stateListeners.push(cb);
+    // Fire once immediately so subscribers don't need a separate read.
+    try { cb(state); } catch (_) {}
+    return () => {
+      stateListeners = stateListeners.filter((x) => x !== cb);
+    };
+  }
+  function getState() { return state; }
+
   connect();
 
-  return { term, fitAddon, fit, focus, reconnect, dispose, closeBackendSession };
+  return {
+    term, fitAddon, fit, focus, reconnect, dispose, closeBackendSession,
+    onStateChange, getState,
+  };
 }

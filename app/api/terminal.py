@@ -14,7 +14,10 @@ import sys
 import signal
 from typing import Dict, Optional
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+
+from app.auth.identity import _is_admin, assert_caller_is
+from app.auth.jwt import decode_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -128,12 +131,35 @@ else:
     _HAS_WINPTY = True  # Unix always works
 
 
+# Per-session scrollback ring buffer size. 64 KB ≈ ~800 lines of typical
+# shell output — enough to make a refreshed tab feel continuous, small
+# enough that 100 idle sessions cost <10 MB of RSS.
+SCROLLBACK_BYTES = 64 * 1024
+
+
 class TerminalSession:
     """A single PTY-based shell session, one per WebSocket connection."""
 
     def __init__(self):
         self._process = None  # WinPty on Windows, (master_fd, pid) tuple on Unix
         self._reader_added = False
+        # Ring buffer of recent PTY output. Replayed to any newly-attached
+        # WebSocket so a refreshed/reattached tab doesn't see a blank screen.
+        self._scrollback = bytearray()
+
+    def _append_scrollback(self, data: bytes) -> None:
+        """Append `data` to the ring buffer, evicting bytes from the front
+        once the cap is exceeded."""
+        if not data:
+            return
+        self._scrollback.extend(data)
+        overflow = len(self._scrollback) - SCROLLBACK_BYTES
+        if overflow > 0:
+            del self._scrollback[:overflow]
+
+    def get_scrollback(self) -> bytes:
+        """Return a snapshot of the current scrollback buffer."""
+        return bytes(self._scrollback)
 
     # ── Platform-specific helpers ──
 
@@ -237,9 +263,13 @@ class TerminalSession:
             return None
 
         if IS_WINDOWS:
-            return await self._read_output_windows()
+            data = await self._read_output_windows()
         else:
-            return await self._read_output_unix()
+            data = await self._read_output_unix()
+        # Mirror everything into the scrollback so a later reattach can replay.
+        if data:
+            self._append_scrollback(data)
+        return data
 
     async def _read_output_unix(self) -> Optional[bytes]:
         master_fd, pid = self._process
@@ -403,10 +433,31 @@ class TerminalSession:
 _FALLBACK_SESSION_ID = "__default__"
 
 
+async def _verify_admin_token(token: str) -> Optional[str]:
+    """Decode a JWT and confirm the subject is an admin. Returns the verified
+    user_id or None if the token is invalid / the user is not an admin."""
+    if not token:
+        return None
+    payload = decode_token(token)
+    if not payload:
+        return None
+    user_id = payload.get("user_id") or payload.get("sub")
+    if not user_id:
+        return None
+    if not await _is_admin(user_id):
+        return None
+    return user_id
+
+
 @router.delete("/api/v1/terminal/sessions/{session_id}")
-async def delete_terminal_session(session_id: str):
+async def delete_terminal_session(session_id: str, request: Request):
     """Kill a PTY by session_id. Called by the browser when the user closes
     a terminal tab so the shell doesn't outlive its UI."""
+    # Admin-only — the HTTP auth middleware already verifies the JWT and
+    # populates request.state.user_id; we just need to confirm admin.
+    uid = await assert_caller_is(request, None)
+    if not await _is_admin(uid):
+        raise HTTPException(status_code=403, detail="Admin required")
     closed = await close_session(session_id)
     return {"closed": closed}
 
@@ -414,7 +465,22 @@ async def delete_terminal_session(session_id: str):
 @router.websocket("/api/v1/terminal/ws")
 async def terminal_websocket(websocket: WebSocket):
     """WebSocket endpoint — one PTY session per `session_id` query param.
-    Multiple connects with the same id reattach to the same shell."""
+    Multiple connects with the same id reattach to the same shell.
+
+    Authentication: the browser passes a JWT as `?token=<jwt>`. The token's
+    subject must be an admin or the socket is closed before any shell is
+    spawned. The HTTP auth middleware whitelists this WS path so this
+    handler is the sole gatekeeper."""
+
+    # Decode the token BEFORE accepting the WS so a hostile client doesn't
+    # get a half-open connection.
+    token = websocket.query_params.get("token", "")
+    verified_uid = await _verify_admin_token(token)
+    if not verified_uid:
+        # 4401 = WebSocket "policy violation" close code reserved for auth
+        # failures; client-side reconnect logic treats it as a hard stop.
+        await websocket.close(code=4401)
+        return
 
     await websocket.accept()
 
@@ -441,6 +507,18 @@ async def terminal_websocket(websocket: WebSocket):
     heartbeat_task = asyncio.ensure_future(_heartbeat())
 
     session = await get_or_create_session(session_id)
+
+    # ── Replay scrollback ──
+    # A reattached tab sees a fresh xterm that knows nothing about what was
+    # on screen before. Send the last SCROLLBACK_BYTES of output before the
+    # live stream so the user picks up roughly where they left off.
+    scrollback = session.get_scrollback()
+    if scrollback:
+        try:
+            await websocket.send_bytes(scrollback)
+        except Exception:
+            pass
+
     try:
         async def reader_task():
             """Background: pump PTY output → WebSocket."""

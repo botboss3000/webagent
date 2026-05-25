@@ -566,6 +566,7 @@ body.light-mode {
   height: 14px;
   flex-shrink: 0;
   color: var(--files-icon-file);
+  position: relative;  /* anchor for the terminal connection-status dot */
 }
 .files-tab-icon .lucide-icon { width: 14px; height: 14px; }
 
@@ -609,6 +610,41 @@ body.light-mode {
 .files-tab.dirty .files-tab-close:hover::before { display: none; }
 .files-tab.dirty .files-tab-close .lucide-icon { opacity: 0; }
 .files-tab.dirty .files-tab-close:hover .lucide-icon { opacity: 1; }
+
+/* Inline rename input for terminal tabs. Sits in place of the label span
+   while the user is editing. */
+.files-tab-rename-input {
+  background: var(--files-bg);
+  border: 1px solid var(--files-active-indicator);
+  color: var(--files-text-strong);
+  font: inherit;
+  font-size: 13px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  min-width: 60px;
+  max-width: 160px;
+  outline: none;
+}
+
+/* Per-tab connection status dot for terminal tabs. Overlaid on the bottom-
+   right of the tab icon. Driven by data-state set from terminal.js. */
+.files-tab-conn-dot {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #565f89;
+  box-shadow: 0 0 0 1.5px var(--files-bg-tab);
+  pointer-events: none;
+}
+.files-tab.active .files-tab-conn-dot { box-shadow: 0 0 0 1.5px var(--files-bg); }
+.files-tab-conn-dot[data-state="connecting"],
+.files-tab-conn-dot[data-state="reconnecting"] { background: #e0af68; animation: files-conn-pulse 1.2s ease-in-out infinite; }
+.files-tab-conn-dot[data-state="connected"]    { background: #9ece6a; }
+.files-tab-conn-dot[data-state="error"]        { background: #f7768e; }
+@keyframes files-conn-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
 /* Tab is awaiting backend confirmation that its terminal session is dead.
    Visually dim the whole tab and disable interactions, and spin the close
