@@ -50,6 +50,11 @@
   gap: 12px;
   scrollbar-width: thin;
   scrollbar-color: #2a2a4a transparent;
+  /* Soft fade at the top so cards melt into the page background as they
+     scroll up under the Agent Builder bar — no hard seam between the bar
+     and the first card. */
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 24px, #000 100%);
+          mask-image: linear-gradient(to bottom, transparent 0, #000 24px, #000 100%);
 }
 #agents-grid::-webkit-scrollbar { width: 5px; }
 #agents-grid::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
