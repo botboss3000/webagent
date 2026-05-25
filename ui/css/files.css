@@ -610,6 +610,14 @@ body.light-mode {
 .files-tab.dirty .files-tab-close .lucide-icon { opacity: 0; }
 .files-tab.dirty .files-tab-close:hover .lucide-icon { opacity: 1; }
 
+/* Tab is awaiting backend confirmation that its terminal session is dead.
+   Visually dim the whole tab and disable interactions, and spin the close
+   icon (which has been swapped from x to loader-2 by the renderer). */
+.files-tab.closing { opacity: 0.55; pointer-events: none; }
+.files-tab.closing .files-tab-close { cursor: progress; opacity: 1; }
+.files-tab-spin { animation: files-tab-spin 0.9s linear infinite; transform-origin: 50% 50%; }
+@keyframes files-tab-spin { to { transform: rotate(360deg); } }
+
 /* ── Tab "more" button (3 vertical dots) ─────────────────── */
 
 .files-tab-more {

@@ -156,22 +156,35 @@ export function createTerminalInstance(container, sessionId) {
       ws = null;
     }
     try { term.dispose(); } catch (_) {}
-    // Ask the backend to reap the PTY. Fire-and-forget — if the request
-    // fails (e.g. page is unloading), the session will leak until either
-    // the shell exits or the server restarts, but the GC pass in
-    // get_or_create_session will catch dead processes eventually.
+  }
+
+  // Ask the backend to kill the PTY for this session id. Returns a promise
+  // that resolves on a clean 2xx (the shell is gone) and rejects on any
+  // network / server error so the caller can keep the tab open and let the
+  // user retry. A 10s timeout guards against a hung server pinning the UI.
+  async function closeBackendSession() {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
     try {
       const token = localStorage.getItem('auth_token');
       const headers = token ? { Authorization: 'Bearer ' + token } : {};
-      fetch(apiPath('/api/v1/terminal/sessions/' + encodeURIComponent(sessionId)), {
-        method: 'DELETE',
-        headers,
-        keepalive: true,
-      }).catch(() => {});
-    } catch (_) {}
+      const res = await fetch(
+        apiPath('/api/v1/terminal/sessions/' + encodeURIComponent(sessionId)),
+        { method: 'DELETE', headers, signal: controller.signal },
+      );
+      if (!res.ok) {
+        let detail = res.statusText || ('HTTP ' + res.status);
+        try { const j = await res.json(); if (j && j.detail) detail = j.detail; } catch (_) {}
+        throw new Error(detail);
+      }
+      // Body is { closed: true|false }. False means the backend didn't have
+      // a session under that id — also fine, the UI can drop the tab.
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   connect();
 
-  return { term, fitAddon, fit, focus, reconnect, dispose };
+  return { term, fitAddon, fit, focus, reconnect, dispose, closeBackendSession };
 }
