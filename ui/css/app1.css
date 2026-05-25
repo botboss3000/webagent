@@ -99,7 +99,7 @@
     flex-direction: column;
     padding: 8px 12px;
     border-top: none;
-    background: linear-gradient(to bottom, transparent 0%, transparent 50%, #13132a 50%, #13132a 100%);
+    background: transparent;
     gap: 6px;
     flex-shrink: 0;
     position: absolute;
@@ -901,7 +901,7 @@
 
   body.light-mode #chat-input-area {
     border-top: none;
-    background: linear-gradient(to bottom, transparent 0%, transparent 50%, #fff7f0 50%, #fff7f0 100%);
+    background: transparent;
   }
   body.light-mode #chat-input-row,
   body.light-mode #ac-int-admin-chat-input-row {
