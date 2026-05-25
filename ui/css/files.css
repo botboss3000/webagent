@@ -111,7 +111,7 @@ body.light-mode {
   --files-active-indicator:  #007acc;
 }
 
-#tab-files {
+#tab-admin-tools {
   background: var(--files-bg);
   color: var(--files-text);
   overflow: hidden;
@@ -124,11 +124,11 @@ body.light-mode {
    (new-file / new-folder / refresh / collapse-all / Up / Home /
    sidebar-toggle / tab-close / save) plus icons inside tabs and
    tree rows. */
-#tab-files .lucide-icon,
-#tab-files i[data-lucide],
-#tab-files svg { pointer-events: none; }
+#tab-admin-tools .lucide-icon,
+#tab-admin-tools i[data-lucide],
+#tab-admin-tools svg { pointer-events: none; }
 
-.files-editor {
+.admin-tools {
   display: flex;
   flex-direction: row;
   width: 100%;
@@ -161,7 +161,7 @@ body.light-mode {
   border-right: none;
 }
 
-/* Maximized sidebar — fills the entire #tab-files area, hiding the editor
+/* Maximized sidebar — fills the entire #tab-admin-tools area, hiding the editor
    pane underneath. Useful on small / mobile screens where the side-by-side
    layout doesn't fit. The resize handle is hidden because dragging makes
    no sense while the sidebar owns 100% width. */
@@ -1171,6 +1171,29 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
   margin: 0 4px;
   display: inline-block;
 }
+
+/* Settings toggle button: shares .files-view-toggle-btn styling but its
+   .active state means "Settings view is showing" — it must stay clickable
+   so the user can toggle it off, so we override the disabling rule above. */
+.files-view-toggle-btn.files-settings-toggle-btn.active,
+.files-strip-btn.files-settings-toggle-btn.active {
+  color: var(--files-text-strong);
+  background: var(--files-btn-hover);
+  opacity: 1;
+  cursor: pointer;
+}
+
+/* Settings view: takes the place of .files-main when Settings is toggled on.
+   Same flex layout so it fills the right side; scrolls its own content. */
+.files-settings-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
+}
+.files-main[hidden],
+.files-settings-main[hidden] { display: none; }
 
 /* "New terminal tab" button — not a view switcher, so it never enters the
    greyed-out active state. */

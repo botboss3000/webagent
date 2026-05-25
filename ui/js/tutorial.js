@@ -7,8 +7,7 @@
  *   { globalEnabled: boolean, pages: { [pageId]: boolean } }
  *
  * Pages map 1:1 to the main-tab values from index.html (terminal, stream,
- * flow, loop-visual, database, autoagent, agents, app-config,
- * account).
+ * flow, loop-visual, database, autoagent, agents, account).
  *
  * Each hint has a target CSS selector. If the selector doesn't resolve at
  * render time (page not loaded, element hidden, user lacks permission, etc.)
@@ -27,7 +26,6 @@ const PAGE_LABELS = {
   'database':    'Database',
   'autoagent':   'AutoAgent',
   'agents':      'Agents',
-  'app-config':  'App Config',
   'account':     'Manage Account',
   'chat':        'Chat Panel',
 };
@@ -108,17 +106,6 @@ const HINTS = {
     { selector: 'body', title: 'Step 4 — Grant abilities',
       body: 'In the Agent Tools / Abilities section you can toggle which tools the agent is allowed to call. Some require confirmation before running.',
       anchor: { selector: '#agents-grid', position: 'inside-bottom-right' } },
-  ],
-
-  'app-config': [
-    { selector: '#app-config-tabs', title: 'Config sections',
-      body: 'Switch between App Settings, User Management, default LLM, Agent Abilities, Database, Optimizer, Git, Automation and Events.' },
-    { selector: '.ac-tab[data-section="llm"]', title: 'Default LLM',
-      body: 'Pick the default model used by new agents. You can still override per-agent later.' },
-    { selector: '.ac-tab[data-section="integrations"]', title: 'Agent Abilities',
-      body: 'Enable or disable the tools (web search, code edit, automation, etc.) that agents are allowed to use.' },
-    { selector: '.ac-tab[data-section="user-management"]', title: 'User Management',
-      body: 'Control who can sign up, review existing users, and toggle these tutorial hints.' },
   ],
 
   account: [

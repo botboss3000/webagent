@@ -9,6 +9,7 @@
 import { openGitPanel } from './files-git.js';
 import { createTerminalInstance } from './terminal.js';
 import { randomUUID } from './uuid.js';
+import { startAppConfig, stopAppConfig } from './app-config.js';
 
 const API_BASE = '/api/v1/files';
 const LS_SIDEBAR_VIEW = 'files.sidebarView';   // 'explorer' | 'git'
@@ -17,6 +18,7 @@ let initialised = false;
 let isAdmin = false;
 let openTabs = [];          // { path, name, content, dirty, binary, encoding, size }
 let activeTabPath = null;
+let settingsOpen = false;   // Settings view (App Config) currently overlaying the editor area
 let expandedDirs = new Set();  // absolute paths of currently expanded directories
 let dragSrcPath = null;        // path of the tab being dragged
 let currentRoot = '';          // absolute path of the directory the tree is rooted at
@@ -225,7 +227,7 @@ let _filesDropGuardInstalled = false;
 function installFilesDropGuard() {
   if (_filesDropGuardInstalled) return;
   _filesDropGuardInstalled = true;
-  const editor = document.getElementById('files-editor');
+  const editor = document.getElementById('admin-tools');
   if (!editor) return;
   editor.addEventListener('dragover', (e) => {
     if (e.dataTransfer && Array.from(e.dataTransfer.types).indexOf('Files') !== -1) {
@@ -1655,7 +1657,7 @@ function initSidebarResize() {
   });
   document.addEventListener('mousemove', (e) => {
     if (!dragging) return;
-    const editorRect = document.getElementById('files-editor').getBoundingClientRect();
+    const editorRect = document.getElementById('admin-tools').getBoundingClientRect();
     let w = e.clientX - editorRect.left;
     w = Math.max(160, Math.min(600, w));
     sidebar.style.width = w + 'px';
@@ -1776,6 +1778,7 @@ export function initFiles() {
   initTabCarousel();
   installFilesDropGuard();
   initSidebarViewSwitcher();
+  initSettingsToggle();
   initSidebarMaximize();
   initFilesTerminalButton();
   renderTabs();
@@ -2139,8 +2142,11 @@ function applySidebarView(view) {
   if (!sidebar) return;
   sidebar.dataset.view = view;
   // Update aria-selected on every view-toggle button (in panel headers
-  // and in the strip).
-  sidebar.querySelectorAll('.files-view-toggle-btn, .files-strip-view').forEach((b) => {
+  // and in the strip). The Settings toggle button shares .files-view-toggle-btn
+  // for styling but is not part of the Explorer/Git switch, so exclude it.
+  sidebar.querySelectorAll(
+    '.files-view-toggle-btn:not(.files-settings-toggle-btn), .files-strip-view'
+  ).forEach((b) => {
     const active = b.dataset.view === view;
     b.classList.toggle('active', active);
     b.setAttribute('aria-selected', active ? 'true' : 'false');
@@ -2166,7 +2172,63 @@ function applySidebarView(view) {
   }
 }
 
-export async function startFiles() {
+// ── Settings view (App Config) ────────────────────────────────────
+//
+// The Settings sidebar button toggles a full-width view that replaces the
+// file editor area (#files-tabs + #files-content) with the App Config UI.
+// The Explorer/Git sidebar stays interactive; only the right side swaps.
+
+function initSettingsToggle() {
+  // Relocate the App Config markup (parked hidden at the bottom of #app-container
+  // by index.html) into the Settings main inside Admin Tools. Idempotent.
+  const container = document.getElementById('app-config-container');
+  const host = document.getElementById('files-settings-main');
+  if (container && host && container.parentElement !== host) {
+    host.appendChild(container);
+    container.removeAttribute('hidden');
+  }
+  // Delegated click handler covers all three Settings buttons (strip + both
+  // sidebar panel headers).
+  const sidebar = document.getElementById('files-sidebar');
+  if (sidebar && !sidebar.__settingsToggleBound) {
+    sidebar.__settingsToggleBound = true;
+    sidebar.addEventListener('click', (e) => {
+      const btn = e.target.closest('.files-settings-toggle-btn');
+      if (!btn || !sidebar.contains(btn)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      toggleSettingsView();
+    });
+  }
+  // Reflect any pre-existing settingsOpen flag on the button(s).
+  applySettingsButtonState();
+}
+
+function applySettingsButtonState() {
+  document.querySelectorAll('.files-settings-toggle-btn').forEach((b) => {
+    b.classList.toggle('active', settingsOpen);
+    b.setAttribute('aria-pressed', settingsOpen ? 'true' : 'false');
+  });
+}
+
+function toggleSettingsView() {
+  const editorMain = document.querySelector('#admin-tools .files-main:not(.files-settings-main)');
+  const settingsMain = document.getElementById('files-settings-main');
+  if (!editorMain || !settingsMain) return;
+  settingsOpen = !settingsOpen;
+  if (settingsOpen) {
+    editorMain.hidden = true;
+    settingsMain.hidden = false;
+    try { startAppConfig(); } catch (_) {}
+  } else {
+    settingsMain.hidden = true;
+    editorMain.hidden = false;
+    try { stopAppConfig(); } catch (_) {}
+  }
+  applySettingsButtonState();
+}
+
+export async function startAdminTools() {
   initFiles();
   // Check admin access; show overlay if not
   let accessInfo = { is_admin: false, user_id: '', authenticated: false };
@@ -2178,7 +2240,7 @@ export async function startFiles() {
   isAdmin = !!accessInfo.is_admin;
 
   const overlay = document.getElementById('files-restricted-overlay');
-  const editor = document.getElementById('files-editor');
+  const editor = document.getElementById('admin-tools');
   if (!isAdmin) {
     if (overlay) overlay.style.display = 'flex';
     if (editor) editor.style.display = 'none';
@@ -2193,13 +2255,13 @@ export async function startFiles() {
             'The server could not verify your session (token may be stale). ' +
             'Try signing out and back in.';
         } else {
-          diag.textContent = 'Not signed in. Sign in as an admin user to access the file editor.';
+          diag.textContent = 'Not signed in. Sign in as an admin user to access Admin Tools.';
         }
       } else {
         diag.textContent =
           'Signed in as: ' + (accessInfo.user_id || '?') + '\n' +
           'This account does not have user_profiles.is_admin = 1. ' +
-          'Ask an admin to promote it via App Config → User Management.';
+          'Ask an admin to promote it via Settings → User Management.';
       }
     }
     return;
@@ -2219,8 +2281,18 @@ export async function startFiles() {
   if (activeTab && activeTab.kind === 'terminal' && activeTab.instance) {
     setTimeout(() => activeTab.instance.fit(), 30);
   }
+
+  // If the Settings view was left open when the user navigated away, resume
+  // its background polling now that Admin Tools is active again.
+  if (settingsOpen) {
+    try { startAppConfig(); } catch (_) {}
+  }
 }
 
-export function stopFiles() {
-  // No teardown needed — tabs and state are kept so reopening the page is instant.
+export function stopAdminTools() {
+  // Quiet App Config polling while another main tab is active, but keep
+  // settingsOpen so the view restores on return.
+  if (settingsOpen) {
+    try { stopAppConfig(); } catch (_) {}
+  }
 }
