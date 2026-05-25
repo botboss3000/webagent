@@ -9,6 +9,17 @@
   overflow: hidden;
 }
 
+/* Lucide icons are stroke-painted SVGs, so clicks in the gaps between
+   strokes miss the icon entirely and the parent element never sees
+   the event. All icons in the Files tab are decorative — routing
+   their clicks to the parent fixes every button in one shot
+   (new-file / new-folder / refresh / collapse-all / Up / Home /
+   sidebar-toggle / tab-close / save) plus icons inside tabs and
+   tree rows. */
+#tab-files .lucide-icon,
+#tab-files i[data-lucide],
+#tab-files svg { pointer-events: none; }
+
 .files-editor {
   display: flex;
   flex-direction: row;
