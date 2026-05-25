@@ -83,6 +83,16 @@ function renderTreeRow(entry, depth) {
   row.className = 'files-tree-row';
   row.style.paddingLeft = (depth * 12 + 4) + 'px';
   row.dataset.path = entry.path;
+  // Make every row draggable so the user can drop its path onto a terminal
+  // pane (handled in buildPaneForTab). text/plain is the canonical type
+  // both DataTransfer.types and our drop handlers look for.
+  row.draggable = true;
+  row.addEventListener('dragstart', (e) => {
+    try {
+      e.dataTransfer.setData('text/plain', entry.path);
+      e.dataTransfer.effectAllowed = 'copy';
+    } catch (_) {}
+  });
 
   const chev = document.createElement('span');
   chev.className = 'files-tree-chev';
@@ -1050,9 +1060,34 @@ function buildPaneForTab(tab, mode) {
     pane.appendChild(md);
   } else if (mode === 'terminal') {
     pane.classList.add('files-terminal-pane');
+    // Find bar above the host — hidden until Ctrl+F. Placed before the
+    // host so it stacks on top in flex-column layout.
+    const findBar = buildTerminalFindBar();
+    pane.appendChild(findBar);
     const host = document.createElement('div');
     host.className = 'files-terminal-host';
     pane.appendChild(host);
+
+    // Drag-and-drop: dropping a file from the file tree pastes its absolute
+    // path (shell-quoted) at the current prompt. The tree marshals the path
+    // as text/plain in dragstart; here we just unpack and forward to the PTY.
+    host.addEventListener('dragover', (e) => {
+      if (e.dataTransfer && Array.from(e.dataTransfer.types).indexOf('text/plain') !== -1) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        host.classList.add('files-terminal-drop-target');
+      }
+    });
+    host.addEventListener('dragleave', () => host.classList.remove('files-terminal-drop-target'));
+    host.addEventListener('drop', (e) => {
+      host.classList.remove('files-terminal-drop-target');
+      const raw = e.dataTransfer && e.dataTransfer.getData('text/plain');
+      if (!raw || !tab.instance) return;
+      e.preventDefault();
+      tab.instance.paste(shellQuote(raw) + ' ');
+      tab.instance.focus();
+    });
+
     // xterm.open() measures its host immediately. The pane has just been
     // created (not yet appended to the document) — defer xterm creation
     // until after the pane is attached and the active class has been set,
@@ -1066,6 +1101,16 @@ function buildPaneForTab(tab, mode) {
         // Drive the per-tab status dot from the WS state machine.
         tab.instance.onStateChange((s) => _updateTabConnDot(tab.path, s));
         tab.instance.fit();
+        // Wire Ctrl+F → find bar. Capture-phase on the host so we preempt
+        // xterm's keydown handler (which otherwise forwards Ctrl+F bytes
+        // to the shell).
+        host.addEventListener('keydown', (e) => {
+          if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+            e.preventDefault();
+            e.stopPropagation();
+            openTerminalFindBar(findBar, tab.instance);
+          }
+        }, true);
         if (tab.path === activeTabPath) tab.instance.focus();
       } catch (e) {
         host.textContent = 'Failed to start terminal: ' + (e.message || e);
@@ -1762,6 +1807,80 @@ function _updateTabConnDot(tabPath, state) {
 
 function newTerminalSessionId() {
   return 'terminal:' + randomUUID();
+}
+
+// ── Drag a file from the tree onto a terminal pane ────────────────
+// Quote a path so it can be safely pasted at a POSIX shell prompt: bare
+// when only safe chars, single-quoted otherwise (with embedded ' escaped).
+function shellQuote(s) {
+  if (s == null) return '';
+  s = String(s);
+  if (/^[a-zA-Z0-9._\/\-+=:@,]+$/.test(s)) return s;
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+// ── In-terminal find bar (xterm search addon) ─────────────────────
+
+function buildTerminalFindBar() {
+  const bar = document.createElement('div');
+  bar.className = 'files-terminal-findbar';
+  bar.hidden = true;
+  bar.innerHTML =
+    '<input type="text" class="files-terminal-findbar-input" placeholder="Find in terminal" spellcheck="false">' +
+    '<button type="button" class="files-terminal-findbar-btn" data-act="case" title="Match case">Aa</button>' +
+    '<button type="button" class="files-terminal-findbar-btn" data-act="prev" title="Previous (Shift+Enter)"><i data-lucide="chevron-up" class="lucide-icon"></i></button>' +
+    '<button type="button" class="files-terminal-findbar-btn" data-act="next" title="Next (Enter)"><i data-lucide="chevron-down" class="lucide-icon"></i></button>' +
+    '<span class="files-terminal-findbar-status"></span>' +
+    '<button type="button" class="files-terminal-findbar-btn" data-act="close" title="Close (Esc)"><i data-lucide="x" class="lucide-icon"></i></button>';
+  return bar;
+}
+
+function openTerminalFindBar(bar, instance) {
+  if (!bar || !instance) return;
+  bar.hidden = false;
+  if (window.lucide) {
+    window.lucide.createIcons({ nodes: Array.from(bar.querySelectorAll('[data-lucide]:not(.lucide)')) });
+  }
+  const input = bar.querySelector('.files-terminal-findbar-input');
+  const status = bar.querySelector('.files-terminal-findbar-status');
+  const caseBtn = bar.querySelector('[data-act="case"]');
+
+  // Listeners are wired once per bar. Subsequent opens just refocus.
+  if (!bar.dataset.wired) {
+    bar.dataset.wired = '1';
+    bar._caseSensitive = false;
+
+    function find(dir) {
+      const q = input.value;
+      if (!q) { status.textContent = ''; return; }
+      const opts = { caseSensitive: bar._caseSensitive };
+      const ok = dir === 'prev'
+        ? instance.findPrevious(q, opts)
+        : instance.findNext(q, opts);
+      status.textContent = ok ? '' : 'No match';
+    }
+    function close() {
+      bar.hidden = true;
+      try { instance.clearSearch(); } catch (_) {}
+      instance.focus();
+    }
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); find(e.shiftKey ? 'prev' : 'next'); }
+      else if (e.key === 'Escape') { e.preventDefault(); close(); }
+    });
+    input.addEventListener('input', () => find('next'));
+    bar.querySelector('[data-act="next"]').addEventListener('click', () => find('next'));
+    bar.querySelector('[data-act="prev"]').addEventListener('click', () => find('prev'));
+    bar.querySelector('[data-act="close"]').addEventListener('click', close);
+    caseBtn.addEventListener('click', () => {
+      bar._caseSensitive = !bar._caseSensitive;
+      caseBtn.classList.toggle('active', bar._caseSensitive);
+      find('next');
+    });
+  }
+
+  input.focus();
+  input.select();
 }
 
 function startInlineRename(tab, labelEl) {

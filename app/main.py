@@ -301,7 +301,8 @@ async def shutdown():
     except Exception:
         pass
     try:
-        from app.api.terminal import close_persistent_session
+        from app.api.terminal import close_persistent_session, stop_idle_gc
+        stop_idle_gc()
         await close_persistent_session()
     except Exception:
         pass
@@ -411,6 +412,14 @@ async def test_interface():
 @app.on_event("startup")
 async def startup():
     """Register communication webhooks or start polling on server start."""
+    # Launch the terminal idle-session GC. Reaps PTYs whose WebSocket has
+    # been detached longer than TERMINAL_IDLE_TIMEOUT_HOURS (default 24h).
+    try:
+        from app.api.terminal import start_idle_gc
+        start_idle_gc()
+    except Exception as _gc_err:
+        logger.warning("Failed to start terminal idle GC: %s", _gc_err)
+
     # Seed agent templates from JSON (manifest-gated short-circuit makes this
     # cheap when unchanged). LocalBackend self-seeds in __init__, so this call
     # is mainly the trigger for SupabaseBackend; for Local it's still a
