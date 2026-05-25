@@ -140,56 +140,22 @@ body.light-mode .files-editor {
 .files-breadcrumb-up .lucide-icon,
 .files-breadcrumb-home .lucide-icon { width: 12px; height: 12px; }
 
-.files-breadcrumb-segments {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 2px 1px;
+/* Read-only display of where the tree is currently rooted. Truncates
+   with ellipsis on the left side so the trailing folder (the part you
+   most care about) stays visible. */
+.files-current-path {
   flex: 1;
   min-width: 0;
   font-family: var(--font-mono, "JetBrains Mono", monospace);
-  line-height: 1.4;
-  overflow: hidden;
-}
-
-.files-breadcrumb-seg {
-  background: transparent;
-  border: none;
-  color: #9cdcfe;
-  cursor: pointer;
-  padding: 1px 4px;
-  border-radius: 3px;
   font-size: 11px;
-  font-family: inherit;
+  color: #9cdcfe;
   white-space: nowrap;
-  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.files-breadcrumb-seg:hover { background: rgba(255,255,255,0.10); color: #d4d4d4; }
-.files-breadcrumb-seg.current {
-  color: #ffffff;
-  font-weight: 600;
-  background: rgba(125, 207, 255, 0.10);
-}
-/* Segments that sit between the current location and the project root
-   (i.e., the "route back home" tail). Greyed but still clickable. */
-.files-breadcrumb-seg.below-current {
-  color: #6a6a6a;
-  opacity: 0.7;
-}
-.files-breadcrumb-seg.below-current:hover {
-  color: #9cdcfe;
-  opacity: 1;
-  background: rgba(255,255,255,0.10);
-}
-.files-breadcrumb-sep {
-  color: #6a6a6a;
-  font-size: 11px;
-  user-select: none;
-}
-.files-breadcrumb-sep.below-current {
-  opacity: 0.5;
+  direction: rtl;
+  text-align: left;
+  unicode-bidi: plaintext;
+  padding: 0 4px;
 }
 
 /* ── Tree ────────────────────────────────────────────────── */
@@ -616,6 +582,15 @@ body.light-mode .files-editor {
 .files-restricted-icon { color: var(--warning, #e0af68); margin-bottom: 12px; }
 .files-restricted-title { font-size: 16px; font-weight: 600; color: var(--fg-1); margin-bottom: 8px; }
 .files-restricted-desc  { font-size: 13px; color: var(--fg-3); }
+.files-restricted-diag  {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border, #2a2a4a);
+  font-size: 11px;
+  color: var(--fg-3);
+  font-family: var(--font-mono, monospace);
+  word-break: break-all;
+}
 
 /* ── Mobile ──────────────────────────────────────────────── */
 

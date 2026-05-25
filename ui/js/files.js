@@ -204,95 +204,28 @@ async function loadRoot() {
 }
 
 // ── Breadcrumb ────────────────────────────────────────────────────
-
-function splitPathSegments(absPath) {
-  if (!absPath) return [];
-  // Backend returns forward-slash-normalised paths, even on Windows.
-  // Detect a Windows drive (`C:`) and keep it as a single segment.
-  const parts = absPath.split('/').filter(Boolean);
-  if (parts.length && /^[A-Za-z]:$/.test(parts[0])) {
-    return parts; // first segment is the drive letter
-  }
-  return parts;
-}
-
-function buildSegmentPath(segments, idx, rootIsWindows) {
-  // Return the absolute path that should be navigated to when the user
-  // clicks segment `idx`. For Unix, prepend "/"; for Windows, the drive
-  // letter (segments[0]) already encodes the root.
-  const slice = segments.slice(0, idx + 1);
-  if (rootIsWindows) return slice.join('/');
-  return '/' + slice.join('/');
-}
-
-function isAncestorOrEqual(a, b) {
-  // Returns true if path `a` is the same as or an ancestor of `b`.
-  if (!a || !b) return false;
-  if (a === b) return true;
-  const aSlash = a.endsWith('/') ? a : a + '/';
-  return b.startsWith(aSlash);
-}
+// The clickable path segments were removed in favour of the simpler
+// Up + Home buttons; we just render the current path as a read-only
+// label so the user can still see where the tree is rooted.
 
 function renderBreadcrumb(absPath, parentPath) {
-  const segWrap = document.getElementById('files-breadcrumb-segments');
-  if (!segWrap) return;
-  segWrap.innerHTML = '';
-
-  const currentSegs = splitPathSegments(absPath);
-  const projectSegs = projectRoot ? splitPathSegments(projectRoot) : [];
-
-  // The breadcrumb always extends at least down to the project root,
-  // so the user can see the route home when they navigate above it.
-  // If currentRoot is an ancestor of (or equal to) projectRoot, we show
-  // projectRoot's full path and grey the tail that's "below" the current
-  // location. Otherwise we just show currentRoot's path.
-  let displaySegs = currentSegs;
-  if (projectSegs.length > currentSegs.length && isAncestorOrEqual(absPath, projectRoot)) {
-    displaySegs = projectSegs;
+  const pathEl = document.getElementById('files-current-path');
+  if (pathEl) {
+    pathEl.textContent = absPath || '';
+    pathEl.title = absPath || '';
   }
-
-  const rootIsWindows = displaySegs.length > 0 && /^[A-Za-z]:$/.test(displaySegs[0]);
-  const currentDepth = currentSegs.length;
-
-  // Leading "/" pill on Unix
-  if (!rootIsWindows) {
-    const rootBtn = document.createElement('button');
-    rootBtn.className = 'files-breadcrumb-seg' + (absPath === '/' ? ' current' : '');
-    rootBtn.textContent = '/';
-    rootBtn.title = '/';
-    rootBtn.addEventListener('click', () => setRoot('/'));
-    segWrap.appendChild(rootBtn);
-  }
-
-  displaySegs.forEach((seg, idx) => {
-    if (idx > 0 || rootIsWindows) {
-      const sep = document.createElement('span');
-      sep.className = 'files-breadcrumb-sep' + (idx >= currentDepth ? ' below-current' : '');
-      sep.textContent = '/';
-      segWrap.appendChild(sep);
-    }
-    const btn = document.createElement('button');
-    btn.className = 'files-breadcrumb-seg';
-    if (idx === currentDepth - 1) {
-      btn.classList.add('current');
-    } else if (idx >= currentDepth) {
-      btn.classList.add('below-current');
-    }
-    btn.textContent = seg;
-    btn.title = seg;
-    const targetPath = buildSegmentPath(displaySegs, idx, rootIsWindows);
-    btn.addEventListener('click', () => setRoot(targetPath));
-    segWrap.appendChild(btn);
-  });
 
   const upBtn = document.getElementById('files-breadcrumb-up');
   if (upBtn) {
     upBtn.disabled = !parentPath;
+    upBtn.title = parentPath ? 'Go to parent: ' + parentPath : 'No parent directory';
     upBtn.onclick = () => { if (parentPath) setRoot(parentPath); };
   }
   const homeBtn = document.getElementById('files-breadcrumb-home');
   if (homeBtn) {
-    homeBtn.disabled = !projectRoot || projectRoot === absPath;
+    const atHome = !projectRoot || projectRoot === absPath;
+    homeBtn.disabled = atHome;
+    homeBtn.title = atHome ? 'Already at project root' : 'Back to project root: ' + projectRoot;
     homeBtn.onclick = () => { if (projectRoot) setRoot(projectRoot); };
   }
 }
@@ -778,17 +711,31 @@ export function initFiles() {
 export async function startFiles() {
   initFiles();
   // Check admin access; show overlay if not
+  let accessInfo = { is_admin: false, user_id: '', authenticated: false };
   try {
-    const r = await apiFetch('/check-access');
-    isAdmin = !!r.is_admin;
-  } catch (_) {
-    isAdmin = false;
+    accessInfo = await apiFetch('/check-access');
+  } catch (e) {
+    accessInfo = { is_admin: false, user_id: '', authenticated: false, error: e.message };
   }
+  isAdmin = !!accessInfo.is_admin;
+
   const overlay = document.getElementById('files-restricted-overlay');
   const editor = document.getElementById('files-editor');
   if (!isAdmin) {
     if (overlay) overlay.style.display = 'flex';
     if (editor) editor.style.display = 'none';
+    const diag = document.getElementById('files-restricted-diag');
+    if (diag) {
+      if (!accessInfo.authenticated) {
+        diag.textContent = 'Not signed in. Sign in as an admin user to access the file editor.';
+      } else {
+        diag.textContent =
+          'Signed in as: ' + (accessInfo.user_id || '?') +
+          '\nThis account does not have user_profiles.is_admin = 1. ' +
+          'Ask an admin to promote it via App Config → User Management.';
+        diag.style.whiteSpace = 'pre-line';
+      }
+    }
     return;
   }
   if (overlay) overlay.style.display = 'none';

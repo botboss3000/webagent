@@ -2600,6 +2600,7 @@
           <div class="files-restricted-icon"><i data-lucide="lock" style="width:32px;height:32px;"></i></div>
           <div class="files-restricted-title">Restricted Access</div>
           <div class="files-restricted-desc">The Files editor is only available for admin users.</div>
+          <div class="files-restricted-desc files-restricted-diag" id="files-restricted-diag"></div>
         </div>
       </div>
       <div id="files-editor" class="files-editor">
@@ -2617,7 +2618,7 @@
           <div id="files-breadcrumb" class="files-breadcrumb" aria-label="Current path">
             <button class="files-breadcrumb-up" id="files-breadcrumb-up" title="Go to parent directory"><i data-lucide="arrow-up" class="lucide-icon"></i></button>
             <button class="files-breadcrumb-home" id="files-breadcrumb-home" title="Back to project root"><i data-lucide="home" class="lucide-icon"></i></button>
-            <div class="files-breadcrumb-segments" id="files-breadcrumb-segments"></div>
+            <span class="files-current-path" id="files-current-path" title=""></span>
           </div>
           <div id="files-tree" class="files-tree" role="tree"></div>
         </aside>
