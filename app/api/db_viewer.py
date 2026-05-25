@@ -671,6 +671,60 @@ async def update_row(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class DeleteRowRequest(BaseModel):
+    """Request body for deleting a row."""
+    db: str = "local.db"
+    table: str
+    # Column-value pairs to identify the row (typically PK columns)
+    where: dict[str, object]
+
+
+@router.delete("/row")
+async def delete_row(
+    req: DeleteRowRequest,
+    _auth: dict = Depends(require_db_auth),
+):
+    """Delete a single row from a table, identified by the `where` clause."""
+    db_path = _get_db_path(req.db)
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+
+        # Verify table exists
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (req.table,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail=f"Table '{req.table}' not found")
+
+        # Get columns
+        cur.execute(f'PRAGMA table_info("{req.table}")')
+        columns = {col[1] for col in cur.fetchall()}
+
+        # Validate columns exist
+        for col in req.where.keys():
+            if col not in columns:
+                raise HTTPException(status_code=400, detail=f"Column '{col}' not found in table '{req.table}'")
+
+        if not req.where:
+            raise HTTPException(status_code=400, detail="'where' clause cannot be empty")
+
+        where_clause = " AND ".join(
+            f'"{col}" IS NULL' if val is None else f'"{col}" = ?'
+            for col, val in req.where.items()
+        )
+        params = [v for v in req.where.values() if v is not None]
+
+        query = f'DELETE FROM "{req.table}" WHERE {where_clause}'
+        cur.execute(query, params)
+        conn.commit()
+        affected = cur.rowcount
+        conn.close()
+
+        logger.info(f"Deleted {affected} row(s) from {req.table}")
+        return {"affected": affected, "success": True}
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.delete("/reset")
 async def reset_database(
     db: str = Query("local.db", description="Database filename"),

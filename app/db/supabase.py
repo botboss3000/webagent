@@ -12,12 +12,60 @@ load_dotenv()
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from supabase import create_client, Client
 from app.models.schemas import InteractionRecord
 from app.db.interface import StorageBackend
 
 logger = logging.getLogger(__name__)
+
+
+# Mirror of LocalBackend._slots_from_template_data — module-level so the
+# seeder can call it without a class reference. Kept in sync with the local
+# version (legacy key map identical).
+_VALID_MERGE_MODES = ("replace", "append")
+
+
+def _supabase_slots_from_template_data(tpl: dict) -> List[dict]:
+    raw_slots = tpl.get("slots")
+    if isinstance(raw_slots, list) and raw_slots:
+        out: List[dict] = []
+        for i, s in enumerate(raw_slots):
+            if not isinstance(s, dict):
+                continue
+            name = (s.get("slot_name") or "").strip()
+            if not name:
+                continue
+            out.append({
+                "slot_name": name,
+                "order_index": int(s.get("order_index", (i + 1) * 10)),
+                "lock": bool(s.get("lock", False)),
+                "merge_mode": s.get("merge_mode") if s.get("merge_mode") in _VALID_MERGE_MODES else "replace",
+                "content": s.get("content", "") or "",
+            })
+        return out
+    legacy_map = [
+        ("system",          "system_prompt",     10, True),
+        ("agent",           "agent_prompt",      20, False),
+        ("user",            "user_prompt",       30, False),
+        ("skills",          "skills_prompt",     40, False),
+        ("tasks",           "tasks_prompt",      50, False),
+        ("misc",            "misc_prompt",       60, False),
+        ("automation",      "automation_prompt", 70, False),
+        ("bootstrap_tools", "bootstrap_tools",   90, True),
+    ]
+    out = []
+    for slot_name, src_key, order, lock in legacy_map:
+        content = tpl.get(src_key, "") or ""
+        out.append({
+            "slot_name": slot_name,
+            "order_index": order,
+            "lock": lock,
+            "merge_mode": "replace",
+            "content": content,
+        })
+    return out
 
 
 class SupabaseBackend(StorageBackend):
@@ -341,52 +389,172 @@ class SupabaseBackend(StorageBackend):
             logger.error("Error copying defaults to agent: %s", e)
             raise
 
-    async def _seed_agent_templates_from_json_files(self) -> None:
+    async def _seed_agent_templates_from_json_files(self, force: bool = False) -> dict:
         """
-        Scan app/context/agents/*.json and seed each into
-        agent_templates table with full schema (id, system_prompt,
-        max_turn_count, model, provider, temperature, max_tokens,
-        metadata). Upserts via insert+update to preserve existing
-        rows while adding new ones.
+        Manifest-gated, non-destructive Supabase seeder.
+
+        Same contract as LocalBackend._seed_agent_templates_from_json_files:
+          - Computes a manifest hash over the JSON files.
+          - Short-circuits when app_meta['last_agent_manifest_hash'] matches.
+          - Per-slot upserts on agent_prompt_templates respecting source guard
+            ('admin' rows skipped unless force=True).
+          - Writes new hash to app_meta when work is done.
+
+        See LocalBackend for the full contract; this is the same logic against
+        the Supabase REST client. Returns the same summary dict.
         """
-        from app.context.md_seeder import scan_agent_json_files
+        import uuid as _uuid_mod
+        from app.context.md_seeder import (
+            scan_agent_json_files,
+            compute_agent_manifest_hash,
+        )
+
+        manifest_hash = compute_agent_manifest_hash()
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Short-circuit on hash match.
+        if not force:
+            try:
+                meta = (
+                    self._client.table("app_meta")
+                    .select("value")
+                    .eq("key", "last_agent_manifest_hash")
+                    .limit(1)
+                    .execute()
+                )
+                if meta.data and meta.data[0].get("value") == manifest_hash:
+                    return {
+                        "changed": 0, "skipped_admin": 0, "templates": 0,
+                        "cached": True, "manifest_hash": manifest_hash,
+                    }
+            except Exception as e:
+                # If app_meta lookup blew up (table missing on old project),
+                # fall through to the full pass — first run will create it.
+                logger.debug("Supabase app_meta lookup failed (%s) — full seed", e)
+
         templates = scan_agent_json_files()
         if not templates:
-            return
+            return {
+                "changed": 0, "skipped_admin": 0, "templates": 0,
+                "cached": False, "manifest_hash": manifest_hash,
+            }
+
+        changed = 0
+        skipped_admin = 0
+
         try:
             for tpl in templates:
-                # Check if template exists
-                existing = self._client.table("agent_templates").select(
-                    "id"
-                ).eq("id", tpl["id"]).limit(1).execute()
-                new_data = {
-                    "system_prompt": tpl["system_prompt"],
+                tpl_id = tpl["id"]
+                tpl_version = int(tpl.get("version") or 1)
+
+                # 1. agent_templates row — config only.
+                cfg_existing = (
+                    self._client.table("agent_templates")
+                    .select("id")
+                    .eq("id", tpl_id)
+                    .limit(1)
+                    .execute()
+                )
+                cfg_data = {
                     "max_turn_count": tpl["max_turn_count"],
                     "model": tpl["model"],
                     "provider": tpl["provider"],
                     "temperature": tpl["temperature"],
                     "max_tokens": tpl["max_tokens"],
                     "metadata": tpl["metadata"],
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "trigger_type": tpl.get("trigger_type", "user_input"),
+                    "trigger_key": tpl.get("trigger_key"),
+                    "loop_logic": tpl.get("loop_logic", "[]"),
+                    "updated_at": now,
                 }
-                if existing.data and len(existing.data) > 0:
-                    self._client.table("agent_templates").update(
-                        new_data
-                    ).eq("id", tpl["id"]).execute()
+                if cfg_existing.data:
+                    self._client.table("agent_templates").update(cfg_data).eq("id", tpl_id).execute()
                 else:
-                    new_data["id"] = tpl["id"]
-                    new_data["created_at"] = datetime.now(timezone.utc).isoformat()
-                    self._client.table("agent_templates").insert(
-                        new_data
+                    cfg_data["id"] = tpl_id
+                    cfg_data["created_at"] = now
+                    self._client.table("agent_templates").insert(cfg_data).execute()
+
+                # 2. agent_prompt_templates rows — per slot, version-gated.
+                # We rely on LocalBackend._slots_from_template_data shape, but
+                # SupabaseBackend has no equivalent helper. Inline a minimal
+                # conversion mirroring the local one (slots array OR legacy keys).
+                slots = _supabase_slots_from_template_data(tpl)
+
+                for s in slots:
+                    slot_name = s["slot_name"]
+                    existing = (
+                        self._client.table("agent_prompt_templates")
+                        .select("id, version, source")
+                        .eq("template_id", tpl_id)
+                        .eq("slot_name", slot_name)
+                        .limit(1)
+                        .execute()
+                    )
+                    payload = {
+                        "template_id": tpl_id,
+                        "slot_name": slot_name,
+                        "order_index": int(s.get("order_index", 0) or 0),
+                        "lock": 1 if s.get("lock") else 0,
+                        "merge_mode": s.get("merge_mode", "replace"),
+                        "content": s.get("content", "") or "",
+                        "version": tpl_version,
+                        "source": "json",
+                        "updated_at": now,
+                        "updated_by": "system" if not force else "system-force",
+                    }
+                    if not existing.data:
+                        payload["id"] = str(_uuid_mod.uuid4())
+                        self._client.table("agent_prompt_templates").insert(payload).execute()
+                        changed += 1
+                        continue
+                    row = existing.data[0]
+                    if row.get("source") == "admin" and not force:
+                        skipped_admin += 1
+                        continue
+                    if force or tpl_version > int(row.get("version") or 0):
+                        self._client.table("agent_prompt_templates").update(payload).eq("id", row["id"]).execute()
+                        changed += 1
+
+            # Stamp manifest hash so next call short-circuits.
+            try:
+                existing_meta = (
+                    self._client.table("app_meta")
+                    .select("key")
+                    .eq("key", "last_agent_manifest_hash")
+                    .limit(1)
+                    .execute()
+                )
+                if existing_meta.data:
+                    self._client.table("app_meta").update(
+                        {"value": manifest_hash, "updated_at": now}
+                    ).eq("key", "last_agent_manifest_hash").execute()
+                else:
+                    self._client.table("app_meta").insert(
+                        {"key": "last_agent_manifest_hash", "value": manifest_hash, "updated_at": now}
                     ).execute()
+            except Exception as e:
+                logger.warning("Supabase app_meta hash stamp failed: %s", e)
+
             logger.info(
-                "Seeded %d agent template(s) from app/context/agents/*.json",
-                len(templates),
+                "Supabase seeded %d agent template(s): %d slot rows changed, %d admin rows skipped%s",
+                len(templates), changed, skipped_admin,
+                " (force=True)" if force else "",
             )
+            return {
+                "changed": changed,
+                "skipped_admin": skipped_admin,
+                "templates": len(templates),
+                "cached": False,
+                "manifest_hash": manifest_hash,
+            }
         except Exception as e:
-            logger.debug(
-                "Agent template seeding from JSON files failed: %s", e
-            )
+            logger.debug("Supabase agent template seeding failed: %s", e)
+            return {
+                "changed": changed, "skipped_admin": skipped_admin,
+                "templates": len(templates),
+                "cached": False, "manifest_hash": manifest_hash,
+                "error": str(e)[:200],
+            }
 
     async def _seed_context_templates_from_md_files(self) -> None:
         """
@@ -896,8 +1064,8 @@ class SupabaseBackend(StorageBackend):
         from datetime import datetime, timezone
         import uuid
         try:
-            # Always seed from JSON files to ensure latest values
-            await self._seed_agent_templates_from_json_files()
+            # Templates are seeded at boot (manifest-gated) + on admin re-seed.
+            # No per-call re-seed: avoids round-trip churn and protects admin edits.
 
             # Fetch default template
             tpl_res = (
@@ -1002,19 +1170,13 @@ class SupabaseBackend(StorageBackend):
             logger.error("Error getting max_turn_count for agent %s: %s", agent_id, e)
             raise
 
-    async def seed_agent_templates(self) -> int:
-        """Re-seed agent_templates from app/context/agents/*.json. Returns count."""
-        await self._seed_agent_templates_from_json_files()
-        try:
-            res = (
-                self._client.table("agent_templates")
-                .select("id")
-                .execute()
-            )
-            return len(res.data) if res.data else 0
-        except Exception as e:
-            logger.error("Error counting agent templates: %s", e)
-            return 0
+    async def seed_agent_templates(self, force: bool = False) -> dict:
+        """Re-seed agent_templates + agent_prompt_templates from JSON.
+
+        force=True overrides the manifest short-circuit AND overwrites rows
+        whose source = 'admin'. See StorageBackend.seed_agent_templates docstring.
+        """
+        return await self._seed_agent_templates_from_json_files(force=force)
 
     # ---- Agent Resolution & Session Binding ----
 
@@ -1374,6 +1536,107 @@ class SupabaseBackend(StorageBackend):
             return len(res.data) > 0
         except Exception as e:
             logger.error("auth_element_delete error: %s", e)
+            return False
+
+    # ────────────────────────────────────────────────────────────────────
+    # Pages (page-builder workspace)
+    # ────────────────────────────────────────────────────────────────────
+
+    async def pages_list(self, user_id: str) -> List[dict]:
+        try:
+            res = (
+                self._client.table("pages")
+                .select("*")
+                .eq("user_id", user_id)
+                .order("updated_at", desc=True)
+                .execute()
+            )
+            rows = res.data or []
+            # Force 'home' first
+            home = [r for r in rows if r.get("slug") == "home"]
+            others = [r for r in rows if r.get("slug") != "home"]
+            return home + others
+        except Exception as e:
+            logger.error("pages_list error: %s", e)
+            return []
+
+    async def pages_get(self, user_id: str, slug: str) -> Optional[dict]:
+        try:
+            res = (
+                self._client.table("pages")
+                .select("*")
+                .eq("user_id", user_id)
+                .eq("slug", slug)
+                .limit(1)
+                .execute()
+            )
+            return res.data[0] if res.data else None
+        except Exception as e:
+            logger.error("pages_get error: %s", e)
+            return None
+
+    async def pages_upsert(
+        self,
+        user_id: str,
+        slug: str,
+        title: str,
+        agent_context: str = "",
+        html: Optional[str] = None,
+    ) -> dict:
+        import uuid
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            existing = (
+                self._client.table("pages")
+                .select("id")
+                .eq("user_id", user_id)
+                .eq("slug", slug)
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                data: dict = {
+                    "title": title,
+                    "agent_context": agent_context,
+                    "updated_at": now,
+                }
+                if html is not None:
+                    data["html"] = html
+                res = (
+                    self._client.table("pages")
+                    .update(data)
+                    .eq("id", existing.data[0]["id"])
+                    .execute()
+                )
+            else:
+                data = {
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "slug": slug,
+                    "title": title,
+                    "agent_context": agent_context,
+                    "html": html,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                res = self._client.table("pages").insert(data).execute()
+            return res.data[0] if res.data else data
+        except Exception as e:
+            logger.error("pages_upsert error: %s", e)
+            raise
+
+    async def pages_delete(self, user_id: str, slug: str) -> bool:
+        try:
+            res = (
+                self._client.table("pages")
+                .delete()
+                .eq("user_id", user_id)
+                .eq("slug", slug)
+                .execute()
+            )
+            return bool(res.data)
+        except Exception as e:
+            logger.error("pages_delete error: %s", e)
             return False
 
     # ────────────────────────────────────────────────────────────────────

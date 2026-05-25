@@ -1,4 +1,4 @@
--- 018_billing.sql
+-- 020_billing.sql
 -- Three-tier marketplace billing: app admin <- agent admin <- end user.
 -- Adds 9 tables: billing_configs, usage_events, wallets, wallet_transactions,
 -- subscriptions, trials, payment_accounts, payments, billing_exemptions.

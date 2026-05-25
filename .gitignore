@@ -48,6 +48,7 @@ nul
 
 # Temp / scratch
 temp/
+.server.pid
 
 # Local SQLite DB (runtime data, per-machine)
 app/db/local.db
@@ -61,6 +62,7 @@ local.db
 app/auth/users.json
 app/auth/users.json.bak
 app/db_mode.json
+app/pages_mode.json
 
 # FUSE / SSHFS temp leftovers
 app/db/.fuse_hidden*

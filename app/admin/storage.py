@@ -33,6 +33,12 @@ from app.secrets import (
     list_providers as list_secret_providers,
     get_secrets_status,
 )
+from app.pages_store import (
+    get_mode as get_pages_mode,
+    set_mode as set_pages_mode,
+    list_modes as list_pages_modes,
+    get_status as get_pages_status,
+)
 from app.encryption import (
     get_encryption,
     get_level as get_enc_level,
@@ -90,6 +96,11 @@ class SecretsModeBody(BaseModel):
     provider: str
 
 
+class PagesModeBody(BaseModel):
+    requesting_user_id: str
+    mode: str
+
+
 class ActivateBody(BaseModel):
     requesting_user_id: str
 
@@ -116,6 +127,7 @@ async def get_storage_config(requesting_user_id: str = Query(...)):
             "provider_meta": PROVIDER_META,
         },
         "secrets": get_secrets_status(),
+        "pages": get_pages_status(),
     }
 
 
@@ -317,6 +329,29 @@ async def test_secrets(requesting_user_id: str = Query(...)):
     await _require_admin(requesting_user_id)
     backend = get_secrets()
     return await backend.test_connection()
+
+
+# ── Routes: page store ─────────────────────────────────────────────────────
+
+
+@router.get("/pages/status")
+async def pages_status(requesting_user_id: str = Query(...)):
+    await _require_admin(requesting_user_id)
+    return get_pages_status()
+
+
+@router.post("/pages/mode")
+async def set_pages_store_mode(body: PagesModeBody):
+    await _require_admin(body.requesting_user_id)
+    if _env_locked():
+        raise HTTPException(status_code=403, detail="Config is env-locked.")
+    if body.mode not in list_pages_modes():
+        raise HTTPException(status_code=400, detail=f"Unknown mode {body.mode}")
+    try:
+        set_pages_mode(body.mode)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "mode": body.mode}
 
 
 # ── Routes: data migration ──────────────────────────────────────────────────

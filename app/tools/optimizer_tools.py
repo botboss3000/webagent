@@ -1,5 +1,5 @@
 """
-Optimizer tools for the Planner and Finalizer subagents.
+Optimizer tools for the Planner and Closer subagents.
 Loaded into the webAgent's toolset when the user is chatting in an optimizer session.
 """
 
@@ -296,7 +296,7 @@ async def run_worker_trials(changes_json: str, user_id: str, session_id: str) ->
     3. Read sim_user_prompt / planner_guidance / max_turns from the change dict
     4. Run _run_simulated_conversation: sim_user ↔ worker (with real tool execution)
     5. Store every message + tool call/result in temp DB interactions
-    6. Return full transcript + metrics so Planner and Finalizer can evaluate
+    6. Return full transcript + metrics so Planner and Closer can evaluate
 
     The planner controls the test via three new change fields:
     - sim_user_prompt: the testing goal and opening strategy for the sim user
@@ -631,7 +631,7 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
                                 worker_results: str = "") -> str:
     """Hand off the optimization to the Closer agent for review.
     Creates a new closer-<uuid8> session with all relevant data pre-injected
-    as interaction rows in the session's temp DB. The Finalizer sees the full
+    as interaction rows in the session's temp DB. The Closer sees the full
     context (criteria, baseline, trials) via its conversation history — not metadata.
     """
     import uuid as _uuid_mod
@@ -766,14 +766,14 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
             "INSERT INTO sessions (id, user_id, title, agent_id, participants, metadata, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (closer_sid, real_user_id,
-             f"Finalizer - {session_id[:12]}",
+             f"Closer - {session_id[:12]}",
              agent_id, participants_json,
              json.dumps({"opt_role": "closer", "source_optimizer_session": session_id}),
              now_sql, now_sql),
         )
         _tc2.commit()
 
-        # 8. Pre-inject all context as interaction rows so Finalizer sees them in history
+        # 8. Pre-inject all context as interaction rows so Closer sees them in history
         _iid_counter = [0]
         def _inject(role, content):
             _iid_counter[0] += 1
@@ -856,7 +856,7 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
             "INSERT OR IGNORE INTO sessions (id, user_id, title, metadata, agent_id, participants, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (closer_sid, real_user_id,
-             f"Finalizer - {session_id[:12]}",
+             f"Closer - {session_id[:12]}",
              local_meta, agent_id,
              json.dumps([{"id": real_user_id, "role": "user"}, {"id": agent_id, "role": "agent"}]),
              now_sql, now_sql),
@@ -882,7 +882,7 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
 
 async def _kickstart_closer(user_id: str, closer_sid: str, summary: str) -> None:
     """Kickstart the Closer by posting a trigger message to the chat API.
-    The Finalizer's system prompt has Auto-Start Rule: it evaluates immediately on first message.
+    The Closer's system prompt has Auto-Start Rule: it evaluates immediately on first message.
     All context (criteria, baseline, trials) is pre-injected as session history.
     """
     import httpx, os, logging as _log

@@ -9,6 +9,7 @@ import { startAutoAgent, stopAutoAgent } from './autoagent.js';
 import { startAgents, stopAgents } from './agents.js';
 import { startAppConfig, stopAppConfig } from './app-config.js';
 import { startAccount } from './account.js';
+import { refreshTutorial } from './tutorial.js';
 
 function setChatSideVisible(visible) {
   const chatSide = document.getElementById('chat-side');
@@ -136,6 +137,10 @@ export function initTabs() {
       stopAppConfig();
       startAccount();
     }
+
+    // Re-render tutorial hint badges for the newly active tab. Defer a tick
+    // so the tab's start*() routine has populated dynamic content first.
+    try { refreshTutorial(tabValue); } catch (_) {}
   }
 
   tabSelect.addEventListener('change', (e) => {

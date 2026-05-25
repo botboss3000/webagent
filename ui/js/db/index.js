@@ -5,6 +5,7 @@ import { initJsonToggle } from '../json-tree.js';
 import { setTableDeps } from './tables.js';
 import { initGlobalColumnResizeListeners } from './columnResize.js';
 import { initDbCellEditors } from './edit.js';
+import { initDbRowDelete } from './delete.js';
 import {
   initDbPaginationAndToolbar,
   runInitialDbTableLoad,
@@ -17,6 +18,7 @@ export function initDbViewer() {
   setTableDeps({ queryTable, startAutoRefresh });
   initGlobalColumnResizeListeners();
   initDbCellEditors();
+  initDbRowDelete();
   initDbPaginationAndToolbar();
   initCellModal();
   runInitialDbTableLoad();

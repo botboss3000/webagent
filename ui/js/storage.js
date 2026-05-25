@@ -34,6 +34,11 @@ function bindMount(prefix) {
     secretsTest: qs(`${prefix}secrets-test`),
     secretsSave: qs(`${prefix}secrets-save`),
     secretsOutput: qs(`${prefix}secrets-output`),
+    pagesBadge: qs(`${prefix}pages-badge`),
+    pagesMode: qs(`${prefix}pages-mode`),
+    pagesNotes: qs(`${prefix}pages-notes`),
+    pagesSave: qs(`${prefix}pages-save`),
+    pagesOutput: qs(`${prefix}pages-output`),
     encBadge: qs(`${prefix}enc-badge`),
     encVaultWarn: qs(`${prefix}enc-vault-warning`),
     encLevel: qs(`${prefix}enc-level`),
@@ -134,6 +139,24 @@ const SECRETS_NOTES = {
     ['Managed, audit-logged, IAM-controlled secrets with built-in rotation Lambdas.', 'Best fit for ECS / Lambda / EC2 deployments via IAM roles.', 'Integrates with CloudTrail for full access auditing.'],
     ['Per-secret monthly cost plus per-API-call cost.', 'Requires AWS credentials wherever the app runs.', 'Rotation Lambdas need to be written per provider.'],
     'Best for: AWS-hosted production deployments.'
+  ),
+};
+
+const PAGES_NOTES = {
+  filesystem: notesHtml(
+    ['Zero setup — pages are <code>.html</code> files in <code>visuals/users/</code>.', 'Inspectable on disk, easy to hand-edit, git-commit, or back up.', 'Fastest serving path (static file read).'],
+    ['Ephemeral on stateless cloud deploys: pages are wiped on container restart unless a persistent volume is mounted.', 'Not queryable — no search across pages by content.'],
+    'Default. Best for local-hosted use, single-server deploys, or anywhere the disk is persistent.'
+  ),
+  database: notesHtml(
+    ['Full HTML stored in the <code>pages</code> table — survives container restarts everywhere.', 'Backed up with the rest of the DB; no separate file backup needed.', 'Queryable: SQL across page content and metadata.'],
+    ['Loses the "real file on disk" feel — no direct hand-editing from a text editor.', 'Slightly slower serving (DB round-trip per request instead of static file read).'],
+    'Best for: Cloud Run / Fly.io / any stateless cloud deploy, or multi-server setups.'
+  ),
+  hybrid: notesHtml(
+    ['Page catalog (slug, title, agent_context, timestamps) in the DB; HTML body on disk.', 'Page list and search survive restarts; bodies remain hand-editable as files.'],
+    ['Bodies still ephemeral on stateless cloud unless the disk is persistent.', 'Two writes per save (DB metadata + file).'],
+    'Best for: setups that want a portable, queryable catalog plus direct file access to bodies.'
   ),
 };
 
@@ -282,8 +305,14 @@ function applyState(m, state) {
   renderNotes(m.secretsNotes, SECRETS_NOTES, m.secretsProv.value);
   m.secretsBadge.textContent = `active: ${sec.provider || 'inline_db'}`;
   m.secretsWarn.style.display = (sec.provider === 'inline_db') ? 'block' : 'none';
+  const pgs = state.pages || {};
+  if (m.pagesMode) {
+    m.pagesMode.value = pgs.mode || 'filesystem';
+    renderNotes(m.pagesNotes, PAGES_NOTES, m.pagesMode.value);
+    if (m.pagesBadge) m.pagesBadge.textContent = `active: ${pgs.mode || 'filesystem'}`;
+  }
   const lock = !!state.env_locked;
-  for (const btn of [m.btnSave, m.btnActivate, m.secretsSave, m.encSave, m.encKekGen, m.encKekRotate, m.encMigrate, m.encDecryptAll]) {
+  for (const btn of [m.btnSave, m.btnActivate, m.secretsSave, m.pagesSave, m.encSave, m.encKekGen, m.encKekRotate, m.encMigrate, m.encDecryptAll]) {
     if (btn) { btn.disabled = lock; btn.style.opacity = lock ? '0.45' : '1'; }
   }
 }
@@ -377,6 +406,12 @@ function wire(m) {
     });
   }
 
+  if (m.pagesMode) {
+    m.pagesMode.addEventListener('change', () => {
+      renderNotes(m.pagesNotes, PAGES_NOTES, m.pagesMode.value);
+    });
+  }
+
   if (m.encLevel) {
     m.encLevel.addEventListener('change', () => {
       renderNotes(m.encNotes, ENC_NOTES, m.encLevel.value);
@@ -444,6 +479,18 @@ function wire(m) {
     out(m.secretsOutput, r.body || { error: 'no response' }, !!(r.body && r.body.ok));
     m.secretsWarn.style.display = (m.secretsProv.value === 'inline_db') ? 'block' : 'none';
     m.secretsBadge.textContent = `active: ${m.secretsProv.value}`;
+  });
+
+  m.pagesSave && m.pagesSave.addEventListener('click', async () => {
+    if (!confirm(`Switch page storage to "${m.pagesMode.value}"?`)) return;
+    const r = await call('/admin/storage/pages/mode', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requesting_user_id: uid(), mode: m.pagesMode.value }),
+    });
+    out(m.pagesOutput, r.body || { error: 'no response' }, !!(r.body && r.body.ok));
+    if (r.body && r.body.ok && m.pagesBadge) {
+      m.pagesBadge.textContent = `active: ${m.pagesMode.value}`;
+    }
   });
 
   m.exportBtn && m.exportBtn.addEventListener('click', async () => {
@@ -611,10 +658,116 @@ function wireStreamBuffer() {
 
 // ── Public entry ────────────────────────────────────────────────────────────
 
+// ── Agent Prompt Templates panel ───────────────────────────────────────────
+//
+// Renders #ac-tpl-* widgets in the Storage section. Talks to
+// /admin/db/templates (GET) and /admin/db/templates/seed[-force] (POST).
+
+function _esc(s) {
+  const d = document.createElement('div');
+  d.appendChild(document.createTextNode(s == null ? '' : String(s)));
+  return d.innerHTML;
+}
+
+async function loadTemplatePanel() {
+  const listEl   = qs('ac-tpl-list');
+  const badgeEl  = qs('ac-tpl-sync-badge');
+  const hashRow  = qs('ac-tpl-hash-row');
+  if (!listEl) return;
+  try {
+    const r = await fetch(apiPath('/admin/db/templates'));
+    if (!r.ok) {
+      listEl.innerHTML = `<div class="ac-hint" style="color:var(--danger);">Failed: HTTP ${r.status}</div>`;
+      if (badgeEl) { badgeEl.textContent = 'error'; badgeEl.style.color = 'var(--danger)'; }
+      return;
+    }
+    const data = await r.json();
+    if (badgeEl) {
+      badgeEl.textContent = data.in_sync ? 'in sync with JSON' : 'JSON changed — re-seed pending';
+      badgeEl.style.color = data.in_sync ? 'var(--success)' : '#e0af68';
+    }
+    if (hashRow) {
+      const cur = (data.current_manifest_hash || '').slice(0, 12);
+      const sto = (data.stored_manifest_hash  || '').slice(0, 12) || '(none)';
+      hashRow.textContent = `JSON manifest: ${cur} · stored: ${sto}`;
+    }
+    const templates = data.templates || [];
+    if (!templates.length) {
+      listEl.innerHTML = `<div class="ac-hint">No templates seeded yet — click Re-Seed.</div>`;
+      return;
+    }
+    listEl.innerHTML = templates.map(t => {
+      const adminBadge = t.admin_edited_slots > 0
+        ? `<span style="background:#bb9af7;color:var(--bg-0);font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px;">${t.admin_edited_slots} admin-edited</span>`
+        : '';
+      const slotPills = (t.slots || []).map(s => {
+        const color = s.source === 'admin' ? '#bb9af7' : 'var(--muted)';
+        return `<span style="font-size:10px;color:${color};margin-right:8px;">${_esc(s.slot_name)} v${s.version}</span>`;
+      }).join('');
+      return `
+        <div style="border:1px solid var(--border);border-radius:6px;padding:8px 10px;background:var(--bg-elev);">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <strong style="font-size:12px;">${_esc(t.name)}</strong>
+            <span style="font-size:10px;color:var(--muted);">${_esc(t.id)}</span>
+            ${adminBadge}
+            <span style="margin-left:auto;font-size:10px;color:var(--muted);">${t.slot_count} slots · v${t.min_version}${t.min_version !== t.max_version ? '–v' + t.max_version : ''}</span>
+          </div>
+          <div style="margin-top:6px;">${slotPills}</div>
+        </div>`;
+    }).join('');
+  } catch (e) {
+    listEl.innerHTML = `<div class="ac-hint" style="color:var(--danger);">Load failed: ${_esc(e.message || e)}</div>`;
+    if (badgeEl) { badgeEl.textContent = 'error'; badgeEl.style.color = 'var(--danger)'; }
+  }
+}
+
+async function runTemplateSeed(force) {
+  const outEl = qs('ac-tpl-output');
+  if (force) {
+    const ok = window.confirm(
+      'Force Re-Seed will OVERWRITE any agent_prompt_templates rows that were edited via the admin UI ' +
+      '(source = admin). Their content + version will be reset to the on-disk JSON values.\n\n' +
+      'Continue?'
+    );
+    if (!ok) return;
+  }
+  try {
+    const r = await fetch(apiPath(force ? '/admin/db/templates/seed-force' : '/admin/db/templates/seed'), {
+      method: 'POST',
+    });
+    const body = await r.json().catch(() => ({}));
+    if (outEl) {
+      outEl.style.display = 'block';
+      outEl.style.color = r.ok ? '' : 'var(--danger)';
+      outEl.textContent = JSON.stringify(body, null, 2);
+    }
+  } catch (e) {
+    if (outEl) {
+      outEl.style.display = 'block';
+      outEl.style.color = 'var(--danger)';
+      outEl.textContent = `Request failed: ${e.message || e}`;
+    }
+  }
+  await loadTemplatePanel();
+}
+
+function wireTemplatePanel() {
+  const refresh = qs('ac-tpl-refresh-btn');
+  const seed    = qs('ac-tpl-seed-btn');
+  const force   = qs('ac-tpl-seed-force-btn');
+  if (refresh) refresh.addEventListener('click', () => loadTemplatePanel());
+  if (seed)    seed.addEventListener('click',    () => runTemplateSeed(false));
+  if (force)   force.addEventListener('click',   () => runTemplateSeed(true));
+}
+
+
+// ── Public entry ────────────────────────────────────────────────────────────
+
 export function initStorageUi() {
   PAGE = bindMount('ac-storage-');
   wire(PAGE);
   wireStreamBuffer();
+  wireTemplatePanel();
 
   if (PAGE) {
     renderNotes(PAGE.dbNotes, DB_NOTES, PAGE.provider && PAGE.provider.value);
@@ -630,6 +783,7 @@ export function initStorageUi() {
         loadTenants(PAGE);
       }
       loadStreamBufferSetting();
+      loadTemplatePanel();
     };
     setTimeout(() => { try { window.__refreshStorageSection(); } catch {} }, 200);
   }

@@ -36,6 +36,7 @@
   /* Semantic */
   --success:      #9ece6a;
   --success-soft: rgba(158,206,106,0.19);
+  --success-mid:  rgba(158,206,106,0.40);
   --warning:      #e0af68;
   --warning-soft: rgba(224,175,104,0.19);
   --danger:       #f7768e;
@@ -111,6 +112,8 @@ body.light-mode {
   --accent-line:  #ffd4a8;
 
   --success:     #5a8a4a;
+  --success-soft: rgba(90,138,74,0.12);
+  --success-mid:  rgba(90,138,74,0.38);
   --warning:     #d4873a;
   --danger:      #d44848;
   --signout:     #d44848;
