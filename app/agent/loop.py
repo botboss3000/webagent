@@ -20,6 +20,7 @@ import difflib
 import json
 import logging
 import os
+import re
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -71,18 +72,22 @@ DESTRUCTIVE_TOOLS = frozenset({"edit_source", "write_source", "delete_source",
 # ── run_command per-arg exemption: read-only shell commands skip the gate ──
 # `run_command` is destructive by default (it can do anything), but inspect-only
 # invocations like `git status`, `ls`, `cat`, `grep` are routine and pointless
-# to gate on. The guardrail node bypasses confirmation when the command both:
-#   1. starts with one of these allow-listed prefixes, AND
-#   2. contains no shell composition / redirection characters
-# Anything else still requires the confirmation flow.
+# to gate on. The guardrail node bypasses confirmation when the command:
+#   1. contains no output redirection or subshell expansion, AND
+#   2. every piece (split on safe chain separators `&&`, `||`, `;`, `|`) starts
+#      with one of these allow-listed prefixes.
+# This lets `cd /app && git status`, `git log | head`, `git status; git diff`
+# pass while still blocking `git status; rm -rf /` or `cat x > y`.
 SAFE_RUN_COMMAND_PREFIXES = (
+    # shell movement (no output, no mutation)
+    "cd",
     # git inspection
     "git status", "git log", "git diff", "git show", "git branch",
     "git ls-files", "git rev-parse", "git remote", "git stash list",
     "git config --get", "git config --list",
     # filesystem inspect
     "ls", "dir", "pwd", "tree", "stat", "file",
-    "cat", "head", "tail", "type",
+    "cat", "head", "tail", "type", "more",
     "find", "grep", "rg", "where", "which",
     "wc", "du", "df",
     # system info
@@ -95,29 +100,38 @@ SAFE_RUN_COMMAND_PREFIXES = (
     "npm list", "npm ls", "npm --version", "npm -v",
 )
 
-_UNSAFE_SHELL_TOKENS = (";", "&&", "||", ">", "<", "`", "$(", "|&")
+# These ALWAYS make a command unsafe (output redirection or subshell capture).
+_HARD_UNSAFE_TOKENS = (">", "<", "`", "$(", "|&")
+
+# Regex that splits on chain separators. `&&` and `||` are matched before `|`
+# and `;` so single-pipe / semicolon don't swallow them.
+_CHAIN_SEPARATOR_RE = re.compile(r"\s*(?:&&|\|\||;|\|)\s*")
 
 
 def _is_safe_shell_command(command: Any) -> bool:
     """
     Return True for read-only shell commands that don't need user confirmation.
 
-    Conservative: rejects any command that chains or redirects (so e.g.
-    `git status; rm -rf /` does NOT slip through), and accepts only commands
-    whose first token(s) match SAFE_RUN_COMMAND_PREFIXES.
+    Allows safe-prefix commands chained with `&&`, `||`, `;`, `|`, but rejects
+    anything containing redirection (`>`, `<`) or subshell capture (backtick,
+    `$(...)`). Each chained piece must independently be a safe prefix, so
+    `cd /app && git status` passes but `git status; rm -rf /` does not.
     """
     if not isinstance(command, str):
         return False
     stripped = command.strip()
     if not stripped:
         return False
-    if any(tok in stripped for tok in _UNSAFE_SHELL_TOKENS):
+    if any(tok in stripped for tok in _HARD_UNSAFE_TOKENS):
         return False
-    low = stripped.lower()
-    for prefix in SAFE_RUN_COMMAND_PREFIXES:
-        if low == prefix or low.startswith(prefix + " "):
-            return True
-    return False
+    for piece in _CHAIN_SEPARATOR_RE.split(stripped):
+        piece = piece.strip()
+        if not piece:
+            return False
+        low = piece.lower()
+        if not any(low == p or low.startswith(p + " ") for p in SAFE_RUN_COMMAND_PREFIXES):
+            return False
+    return True
 
 
 def _parse_safety_policy(agent_rec: Optional[Dict[str, Any]]) -> Dict[str, Any]:
