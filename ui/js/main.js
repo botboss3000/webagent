@@ -2,7 +2,6 @@
 
 import { app, bindDom } from './state.js';
 import { initStorageUi } from './storage.js';
-import { initTerminal, connectTerminal } from './terminal.js';
 import { initChat } from './chat.js';
 import { initReconnect } from './reconnect.js';
 import { ensureAttachmentsInit } from './attachments.js';
@@ -145,17 +144,15 @@ _anonReady.then(() => {
     showLeftOverlay();
   }
   _safeInit('initStorageUi',        initStorageUi);
-  _safeInit('initTerminal',         initTerminal);
   _safeInit('initChat',             initChat);
   _safeInit('ensureAttachmentsInit', ensureAttachmentsInit);
   _safeInit('initReconnect',        initReconnect);
   _safeInit('registerSessionApi',   registerSessionApi);
 
   try {
-    connectTerminal();
     connectAgent();
   } catch (e) {
-    _showJsErrorBanner(e.message, 'connectAgent/connectTerminal');
+    _showJsErrorBanner(e.message, 'connectAgent');
   }
 
   _safeInit('initTabs',        initTabs);
@@ -175,17 +172,16 @@ _anonReady.then(() => {
 });
 
 // ── Visibility change: reconnect when user returns to this tab ──
+// Terminal tabs manage their own per-instance WebSocket reconnect inside
+// createTerminalInstance — only the agent WS is global.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
-    const termOk = app.termWs && app.termWs.readyState === WebSocket.OPEN;
     const agentOk = app.agentWs && app.agentWs.readyState === WebSocket.OPEN;
-    if (!termOk) connectTerminal();
     if (!agentOk) connectAgent();
   }
 });
 
 // ── Fallback poll every 10s in case visibility change misses something ──
 setInterval(() => {
-  if (!app.termWs || app.termWs.readyState > 1) connectTerminal();
   if (!app.agentWs || app.agentWs.readyState > 1) connectAgent();
 }, 10000);

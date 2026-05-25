@@ -2610,7 +2610,7 @@
             <button class="files-strip-btn files-strip-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="explorer" title="Switch to explorer"><i data-lucide="files" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="git" title="Switch to source control"><i data-lucide="github" class="lucide-icon"></i></button>
-            <button class="files-strip-btn files-terminal-toggle" title="Toggle terminal"><i data-lucide="terminal" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
           </div>
 
           <!-- Explorer panel (file tree) -->
@@ -2620,7 +2620,7 @@
                 <button class="files-view-toggle-btn active" data-view="explorer" title="Explorer (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="files" class="lucide-icon"></i></button>
                 <button class="files-view-toggle-btn" data-view="git" title="Switch to source control" role="tab" aria-selected="false"><i data-lucide="github" class="lucide-icon"></i></button>
                 <span class="files-view-toggle-sep" aria-hidden="true"></span>
-                <button class="files-view-toggle-btn files-terminal-toggle" title="Toggle terminal in main panel" aria-pressed="false"><i data-lucide="terminal" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
               </div>
               <div class="files-sidebar-actions">
                 <button class="files-icon-btn" id="files-new-file" title="New file"><i data-lucide="file-plus" class="lucide-icon"></i></button>
@@ -2645,7 +2645,7 @@
                 <button class="files-view-toggle-btn" data-view="explorer" title="Switch to explorer" role="tab" aria-selected="false"><i data-lucide="files" class="lucide-icon"></i></button>
                 <button class="files-view-toggle-btn active" data-view="git" title="Source control (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="github" class="lucide-icon"></i></button>
                 <span class="files-view-toggle-sep" aria-hidden="true"></span>
-                <button class="files-view-toggle-btn files-terminal-toggle" title="Toggle terminal in main panel" aria-pressed="false"><i data-lucide="terminal" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
               </div>
               <div class="files-sidebar-actions">
                 <button class="files-icon-btn" id="fg-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
@@ -2686,14 +2686,6 @@
             <span id="files-status-info" class="files-status-info"></span>
           </div>
         </main>
-
-        <!-- Terminal wrap. Hidden by default; the sidebar's terminal toggle
-             shows this and hides .files-main. The #terminal-container inside
-             is the same xterm host that terminal.js initialises at app boot,
-             so toggling visibility never reconnects the underlying WebSocket. -->
-        <div id="files-terminal-wrap" class="files-terminal-wrap" hidden>
-          <div id="terminal-container"></div>
-        </div>
       </div>
     </div>
 

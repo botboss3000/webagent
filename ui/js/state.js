@@ -3,13 +3,9 @@
 import { randomUUID } from './uuid.js';
 
 export const app = {
-  container: null,
-  tDot: null,
-  tStat: null,
   aDot: null,
   aStat: null,
   chatMessages: null,
-  chatInput: null,
   chatInput: null,
   chatSend: null,
   toolLogContent: null,
@@ -17,10 +13,6 @@ export const app = {
   toolLogPanel: null,
   toolLogClose: null,
   dbToolbar: null,
-
-  term: null,
-  fitAddon: null,
-  termWs: null,
 
   agentWs: null,
   isProcessing: false,
@@ -79,9 +71,6 @@ export const app = {
 };
 
 export function bindDom() {
-  app.container = document.getElementById('terminal-container');
-  app.tDot = document.getElementById('terminal-dot');
-  app.tStat = document.getElementById('terminal-status');
   app.aDot = document.getElementById('agent-dot');
   app.aStat = document.getElementById('agent-status');
   app.chatMessages = document.getElementById('chat-messages-inner');
