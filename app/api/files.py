@@ -20,13 +20,14 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.auth.jwt import decode_token
+from app.db import get_db
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/files", tags=["files"])
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-_ADMIN_USER_ID = "admin_default"
+_BOOTSTRAP_ADMIN_ID = "admin_default"
 
 # Names to hide from the tree by default. Users can still address them
 # directly if they know the path.
@@ -53,8 +54,21 @@ def _user_id(request: Request) -> str:
     return ""
 
 
-def _require_admin(request: Request) -> None:
-    if _user_id(request) != _ADMIN_USER_ID:
+async def _is_admin(user_id: str) -> bool:
+    """Return True if the user is the bootstrap admin or has is_admin=1
+    in user_profiles. Mirrors the check used by app/admin/storage.py."""
+    if not user_id:
+        return False
+    if user_id == _BOOTSTRAP_ADMIN_ID:
+        return True
+    try:
+        return bool(await get_db().is_user_admin(user_id))
+    except Exception:
+        return False
+
+
+async def _require_admin(request: Request) -> None:
+    if not await _is_admin(_user_id(request)):
         raise HTTPException(status_code=403, detail="Admin access required")
 
 
@@ -112,7 +126,7 @@ class DeleteRequest(BaseModel):
 @router.get("/check-access")
 async def check_access(request: Request):
     """Return whether the requesting user can use the file editor."""
-    return {"is_admin": _user_id(request) == _ADMIN_USER_ID}
+    return {"is_admin": await _is_admin(_user_id(request))}
 
 
 @router.get("/tree")
@@ -123,7 +137,7 @@ async def list_tree(request: Request, path: str = "", show_hidden: bool = False)
     `path` defaults to the project root; an absolute path browses
     anywhere on the host filesystem.
     """
-    _require_admin(request)
+    await _require_admin(request)
     target = _resolve(path)
     if not target.exists():
         raise HTTPException(status_code=404, detail="Path not found")
@@ -184,7 +198,7 @@ async def list_tree(request: Request, path: str = "", show_hidden: bool = False)
 async def read_file(request: Request, path: str):
     """Read a file's contents. Returns utf-8 text when possible,
     otherwise base64-encoded bytes with `binary: true`."""
-    _require_admin(request)
+    await _require_admin(request)
     target = _resolve(path)
     if not target.exists():
         raise HTTPException(status_code=404, detail="File not found")
@@ -225,7 +239,7 @@ async def read_file(request: Request, path: str):
 @router.post("/write")
 async def write_file(request: Request, body: WriteRequest):
     """Write a file. Creates parent directories as needed."""
-    _require_admin(request)
+    await _require_admin(request)
     target = _resolve(body.path)
     if target.exists() and target.is_dir():
         raise HTTPException(status_code=400, detail="Path is a directory")
@@ -249,7 +263,7 @@ async def write_file(request: Request, body: WriteRequest):
 @router.post("/create")
 async def create_entry(request: Request, body: CreateRequest):
     """Create an empty file or a directory."""
-    _require_admin(request)
+    await _require_admin(request)
     target = _resolve(body.path)
     if target.exists():
         raise HTTPException(status_code=409, detail="Path already exists")
@@ -265,7 +279,7 @@ async def create_entry(request: Request, body: CreateRequest):
 @router.post("/rename")
 async def rename_entry(request: Request, body: RenameRequest):
     """Rename or move a file/directory inside the project root."""
-    _require_admin(request)
+    await _require_admin(request)
     src = _resolve(body.path)
     dst = _resolve(body.new_path)
     if not src.exists():
@@ -280,7 +294,7 @@ async def rename_entry(request: Request, body: RenameRequest):
 @router.post("/delete")
 async def delete_entry(request: Request, body: DeleteRequest):
     """Delete a file or directory (recursive for directories)."""
-    _require_admin(request)
+    await _require_admin(request)
     target = _resolve(body.path)
     if not target.exists():
         raise HTTPException(status_code=404, detail="Path not found")
