@@ -32,6 +32,10 @@ let _expandedAgents = new Map(); // Map<agentId, { tab: string }>
 let _userIsAdmin    = false;
 let _extendLlmToAgents = true; // mirrors app-settings.json extend_llm_to_agents
 
+// ── Agent Builder (per-detail-panel chat bar) ────────────────────────────────
+const AGENT_BUILDER_TEMPLATE_ID = 'agent-builder';
+const _agentBuilderAgentCache = new Map(); // userId → agentId
+
 // Tool descriptions for the Tools tab (matches BUILTIN_TOOL_METADATA keys)
 const TOOL_DESCRIPTIONS = {
   list_tools:                   'Discover available tools at runtime',
@@ -503,9 +507,19 @@ function _buildDetailPanel(agent) {
   }
   window.addEventListener('resize', updateChevrons);
 
-  // Scrollable body
+  // Scrollable body. Contains a persistent Agent Builder prompt bar at the top
+  // and a re-renderable tab-content sub-container. Both scroll together inside
+  // the body, so the prompt bar disappears as the user scrolls deep into a tab.
   const body = document.createElement('div');
   body.className = 'agent-detail-body';
+
+  const builderBar = _buildAgentBuilderBar(agent, panel);
+  body.appendChild(builderBar);
+
+  const tabContent = document.createElement('div');
+  tabContent.className = 'agent-detail-tab-content';
+  body.appendChild(tabContent);
+
   content.appendChild(body);
 
   // Render initial tab content
@@ -515,6 +529,132 @@ function _buildDetailPanel(agent) {
   _detectAgentAbilities(agent, panel);
 
   return panel;
+}
+
+// ── Agent Builder chat bar ────────────────────────────────────────────────────
+//
+// Persistent textarea + send button at the top of every agent detail body.
+// Submitting a prompt hands the conversation off to the built-in `agent-builder`
+// system agent (find-or-created on first send), then injects the message into
+// the main chat composer. Mirrors the dashboard Visualizer pattern in
+// ui/js/autoagent.js:129-232.
+
+async function _findAgentBuilderAgent(userId) {
+  const cached = _agentBuilderAgentCache.get(userId);
+  if (cached) return cached;
+  try {
+    const res = await fetch(`/api/v1/agents?user_id=${encodeURIComponent(userId)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const match = (data.agents || []).find(a => a.template_id === AGENT_BUILDER_TEMPLATE_ID);
+    if (match) {
+      _agentBuilderAgentCache.set(userId, match.id);
+      return match.id;
+    }
+  } catch (_) { /* fall through */ }
+  return null;
+}
+
+async function _createAgentBuilderAgent(userId) {
+  const res = await fetch('/api/v1/agents', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: userId,
+      name: 'Agent Builder',
+      description: 'Guides agent configuration — templates, prompt slots, abilities, model settings.',
+      template_id: AGENT_BUILDER_TEMPLATE_ID,
+    }),
+  });
+  if (!res.ok) throw new Error(`agent create failed (${res.status})`);
+  const data = await res.json();
+  const id = data.agent && data.agent.id;
+  if (!id) throw new Error('agent create returned no id');
+  _agentBuilderAgentCache.set(userId, id);
+  if (typeof app.populateAgentSelect === 'function') {
+    try { await app.populateAgentSelect(userId); } catch (_) {}
+  }
+  return id;
+}
+
+async function _ensureAgentBuilderAgent(userId) {
+  return (await _findAgentBuilderAgent(userId)) || (await _createAgentBuilderAgent(userId));
+}
+
+async function _sendAgentBuilderPrompt(targetAgent, panel) {
+  const input   = panel.querySelector('.agent-builder-prompt-input');
+  const sendBtn = panel.querySelector('.agent-builder-send-btn');
+  if (!input || !sendBtn) return;
+
+  const text = input.value.trim();
+  if (!text) return;
+  if (!app.currentUserId) return;
+
+  const state = _expandedAgents.get(targetAgent.id);
+  const currentTab = state?.tab || 'config';
+  const tagged =
+    `[Agent Builder Request | Target Agent: "${targetAgent.id}" | Target Name: "${targetAgent.name || ''}" | Current Tab: "${currentTab}"]: ${text}`;
+
+  sendBtn.disabled = true;
+  let builderAgentId;
+  try {
+    builderAgentId = await _ensureAgentBuilderAgent(app.currentUserId);
+  } catch (_e) {
+    sendBtn.disabled = false;
+    return;
+  }
+
+  if (typeof app.switchToAgent === 'function') {
+    app.switchToAgent(builderAgentId);
+  } else if (builderAgentId !== app.currentAgentId) {
+    app.currentAgentId = builderAgentId;
+    try { localStorage.setItem('selectedAgentId', builderAgentId); } catch (_) {}
+  }
+
+  input.value = '';
+  sendBtn.disabled = true; // empty again
+
+  if (app.chatInput && app.chatSend) {
+    app.chatInput.value = tagged;
+    app.chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+    app.chatSend.click();
+  }
+}
+
+function _buildAgentBuilderBar(agent, panel) {
+  const bar = document.createElement('div');
+  bar.className = 'agent-builder-prompt-bar';
+  bar.innerHTML = `
+    <div class="agent-builder-prompt-row">
+      <textarea class="agent-builder-prompt-input" rows="1"
+        placeholder="Ask the Agent Builder to configure, tune, or extend this agent…"
+        autocomplete="off"></textarea>
+      <button type="button" class="agent-builder-send-btn"
+        title="Send to Agent Builder" disabled>
+        <i data-lucide="send" style="width:16px;height:16px;"></i>
+      </button>
+    </div>
+  `;
+
+  const ta  = bar.querySelector('.agent-builder-prompt-input');
+  const btn = bar.querySelector('.agent-builder-send-btn');
+
+  const sync = () => { btn.disabled = ta.value.trim().length === 0; };
+  ta.addEventListener('input', sync);
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (!btn.disabled) _sendAgentBuilderPrompt(agent, panel);
+    }
+  });
+  btn.addEventListener('click', () => _sendAgentBuilderPrompt(agent, panel));
+
+  // Render the lucide icon if the library is loaded.
+  if (window.lucide && typeof window.lucide.createIcons === 'function') {
+    try { window.lucide.createIcons(); } catch (_) {}
+  }
+
+  return bar;
 }
 
 function _renderPanelBody(agent, panelEl) {
@@ -527,7 +667,11 @@ function _renderPanelBody(agent, panelEl) {
     t.classList.toggle('active', t.dataset.tab === tab);
   });
 
-  const body = panelEl.querySelector('.agent-detail-body');
+  // The tab-content sub-container lives inside .agent-detail-body alongside
+  // the persistent Agent Builder prompt bar. Tab renderers write into this
+  // sub-container so the bar survives tab switches.
+  const body = panelEl.querySelector('.agent-detail-tab-content')
+            || panelEl.querySelector('.agent-detail-body');
   if (!body) return;
   body.innerHTML = '';
 
