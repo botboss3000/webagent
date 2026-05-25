@@ -2274,6 +2274,33 @@ class LocalBackend(StorageBackend):
                     )
                     changed += 1
 
+                    # Propagate the bump into existing per-agent admin-base rows
+                    # (agent_prompts.user_id IS NULL) that have NOT been
+                    # admin-edited (updated_by = 'system'). Admin-edited rows
+                    # stay pinned; user override rows (user_id IS NOT NULL)
+                    # are untouched regardless.
+                    conn.execute(
+                        """UPDATE agent_prompts
+                           SET order_index = ?,
+                               lock = ?,
+                               merge_mode = ?,
+                               content = ?,
+                               template_version = ?,
+                               updated_at = ?,
+                               updated_by = 'system'
+                           WHERE slot_name = ?
+                             AND user_id IS NULL
+                             AND updated_by = 'system'
+                             AND (template_version IS NULL OR template_version < ?)
+                             AND agent_id IN (
+                               SELECT id FROM agents WHERE template_id = ?
+                             )""",
+                        (slot_payload[0], slot_payload[1],
+                         slot_payload[2], slot_payload[3],
+                         tpl_version, now,
+                         slot_name, tpl_version, tpl_id),
+                    )
+
         # Stamp the new manifest hash so the next call short-circuits.
         conn.execute(
             """INSERT INTO app_meta (key, value, updated_at)

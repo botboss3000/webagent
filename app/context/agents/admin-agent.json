@@ -1,6 +1,6 @@
 {
   "id": "admin-agent",
-  "version": 1,
+  "version": 2,
   "name": "Admin",
   "description": "App management agent — reads, edits, and manages the codebase and server. Admin users only.",
   "icon": "🔧",
