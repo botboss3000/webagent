@@ -1,11 +1,119 @@
 /* ============================================================
    Files tab — VS Code-style file base editor
    Sidebar + tree, draggable tabs, editor pane, status bar
+
+   All colors are routed through CSS custom properties so the page
+   tracks the global light/dark theme. Dark values are the default;
+   body.light-mode flips them to a VS Code Light+ palette.
    ============================================================ */
 
+:root {
+  --files-bg:                #1e1e1e;
+  --files-bg-sidebar:        #252526;
+  --files-bg-tab:            #2d2d2d;
+  --files-bg-tab-hover:      #2a2d2e;
+  --files-bg-menu:           #252526;
+
+  --files-border:            #1e1e1e;
+  --files-border-strong:     #3c3c3c;
+
+  --files-text:              #cccccc;
+  --files-text-strong:       #ffffff;
+  --files-text-muted:        #969696;
+  --files-text-faint:        #6a6a6a;
+  --files-text-x-faint:      #888888;
+
+  --files-icon:              #c5c5c5;
+  --files-icon-folder:       #dcb67a;
+  --files-icon-file:         #9cc7ed;
+  --files-link:              #9cdcfe;
+  --files-caret:             #aeafad;
+
+  --files-row-hover:         rgba(255,255,255,0.06);
+  --files-row-selected:      rgba(14, 99, 156, 0.45);
+  --files-row-selected-hov:  rgba(14, 99, 156, 0.55);
+
+  --files-btn-hover:         rgba(255,255,255,0.08);
+  --files-btn-hover-strong:  rgba(255,255,255,0.15);
+  --files-btn-toggle-bg:     rgba(60, 60, 60, 0.85);
+  --files-btn-toggle-hov:    rgba(80, 80, 80, 0.95);
+
+  --files-textarea-bg:       #1e1e1e;
+  --files-textarea-text:     #d4d4d4;
+  --files-selection:         rgba(38, 79, 120, 0.7);
+
+  --files-status-bg:         #007acc;
+  --files-status-text:       #ffffff;
+  --files-status-btn-bg:     rgba(255,255,255,0.15);
+  --files-status-btn-bd:     rgba(255,255,255,0.25);
+  --files-status-btn-hov:    rgba(255,255,255,0.25);
+
+  --files-resize-hov:        rgba(14, 99, 156, 0.6);
+  --files-resize-active:     rgba(14, 99, 156, 0.9);
+
+  --files-menu-shadow:       0 6px 18px rgba(0,0,0,0.4);
+  --files-menu-item-hov:     rgba(14, 99, 156, 0.45);
+  --files-danger:            #f48771;
+  --files-danger-hov:        rgba(247, 118, 142, 0.25);
+  --files-dirty-dot:         #ffcc66;
+  --files-active-indicator:  #007acc;
+}
+
+body.light-mode {
+  --files-bg:                #ffffff;
+  --files-bg-sidebar:        #f3f3f3;
+  --files-bg-tab:            #ececec;
+  --files-bg-tab-hover:      #e0e0e0;
+  --files-bg-menu:           #ffffff;
+
+  --files-border:            #e7e7e7;
+  --files-border-strong:     #cccccc;
+
+  --files-text:              #333333;
+  --files-text-strong:       #000000;
+  --files-text-muted:        #616161;
+  --files-text-faint:        #999999;
+  --files-text-x-faint:      #888888;
+
+  --files-icon:              #424242;
+  --files-icon-folder:       #c09553;
+  --files-icon-file:         #2c97cb;
+  --files-link:              #0070c1;
+  --files-caret:             #000000;
+
+  --files-row-hover:         rgba(0,0,0,0.06);
+  --files-row-selected:      rgba(0, 120, 215, 0.20);
+  --files-row-selected-hov:  rgba(0, 120, 215, 0.30);
+
+  --files-btn-hover:         rgba(0,0,0,0.06);
+  --files-btn-hover-strong:  rgba(0,0,0,0.12);
+  --files-btn-toggle-bg:     rgba(0, 0, 0, 0.08);
+  --files-btn-toggle-hov:    rgba(0, 0, 0, 0.15);
+
+  --files-textarea-bg:       #ffffff;
+  --files-textarea-text:     #1f1f1f;
+  --files-selection:         rgba(173, 214, 255, 0.7);
+
+  --files-status-bg:         #007acc;
+  --files-status-text:       #ffffff;
+  --files-status-btn-bg:     rgba(255,255,255,0.20);
+  --files-status-btn-bd:     rgba(255,255,255,0.40);
+  --files-status-btn-hov:    rgba(255,255,255,0.32);
+
+  --files-resize-hov:        rgba(0, 120, 215, 0.5);
+  --files-resize-active:     rgba(0, 120, 215, 0.8);
+
+  --files-menu-shadow:       0 6px 18px rgba(0,0,0,0.18);
+  --files-menu-item-hov:     rgba(0, 120, 215, 0.18);
+  --files-danger:            #d13438;
+  --files-danger-hov:        rgba(209, 52, 56, 0.12);
+  --files-dirty-dot:         #b58900;
+  --files-active-indicator:  #007acc;
+}
+
 #tab-files {
-  background: var(--bg-0, #1e1e1e);
-  color: var(--fg-1, #d4d4d4);
+  background: var(--files-bg);
+  color: var(--files-text);
   overflow: hidden;
 }
 
@@ -27,16 +135,9 @@
   height: 100%;
   min-height: 0;
   position: relative;
-  background: #1e1e1e;
-  color: #d4d4d4;
+  background: var(--files-bg);
+  color: var(--files-text);
   font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
-}
-
-/* Light mode tweaks — keep VS Code dark palette inside the editor, but
-   adjust restricted overlay to play well with the page chrome. */
-body.light-mode .files-editor {
-  background: #1e1e1e;
-  color: #d4d4d4;
 }
 
 /* ── Sidebar ─────────────────────────────────────────────── */
@@ -47,8 +148,8 @@ body.light-mode .files-editor {
   width: 260px;
   min-width: 160px;
   max-width: 600px;
-  background: #252526;
-  border-right: 1px solid #1e1e1e;
+  background: var(--files-bg-sidebar);
+  border-right: 1px solid var(--files-border);
   flex-shrink: 0;
   overflow: hidden;
   transition: width 0.18s ease, min-width 0.18s ease;
@@ -66,8 +167,8 @@ body.light-mode .files-editor {
   justify-content: space-between;
   padding: 0 12px;
   height: 35px;
-  background: #252526;
-  border-bottom: 1px solid #1e1e1e;
+  background: var(--files-bg-sidebar);
+  border-bottom: 1px solid var(--files-border);
   flex-shrink: 0;
 }
 
@@ -75,7 +176,7 @@ body.light-mode .files-editor {
   text-transform: uppercase;
   font-size: 11px;
   letter-spacing: 0.06em;
-  color: #cccccc;
+  color: var(--files-text);
   font-weight: 600;
 }
 
@@ -92,12 +193,12 @@ body.light-mode .files-editor {
   justify-content: center;
   background: transparent;
   border: none;
-  color: #cccccc;
+  color: var(--files-text);
   cursor: pointer;
   border-radius: 4px;
   padding: 0;
 }
-.files-icon-btn:hover { background: rgba(255,255,255,0.08); }
+.files-icon-btn:hover { background: var(--files-btn-hover); }
 .files-icon-btn .lucide-icon {
   width: 14px;
   height: 14px;
@@ -110,10 +211,10 @@ body.light-mode .files-editor {
   align-items: center;
   gap: 4px;
   padding: 4px 8px;
-  background: #1e1e1e;
-  border-bottom: 1px solid #3c3c3c;
+  background: var(--files-bg);
+  border-bottom: 1px solid var(--files-border-strong);
   font-size: 11px;
-  color: #cccccc;
+  color: var(--files-text);
   flex-shrink: 0;
   overflow: hidden;
 }
@@ -127,14 +228,14 @@ body.light-mode .files-editor {
   justify-content: center;
   background: transparent;
   border: none;
-  color: #cccccc;
+  color: var(--files-text);
   border-radius: 4px;
   cursor: pointer;
   padding: 0;
   flex-shrink: 0;
 }
 .files-breadcrumb-up:hover,
-.files-breadcrumb-home:hover { background: rgba(255,255,255,0.10); }
+.files-breadcrumb-home:hover { background: var(--files-btn-hover); }
 .files-breadcrumb-up:disabled,
 .files-breadcrumb-home:disabled { opacity: 0.35; cursor: default; background: transparent; }
 .files-breadcrumb-up .lucide-icon,
@@ -148,7 +249,7 @@ body.light-mode .files-editor {
   min-width: 0;
   font-family: var(--font-mono, "JetBrains Mono", monospace);
   font-size: 11px;
-  color: #9cdcfe;
+  color: var(--files-link);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -179,7 +280,7 @@ body.light-mode .files-editor {
   padding: 0 8px 0 0;
   cursor: pointer;
   white-space: nowrap;
-  color: #cccccc;
+  color: var(--files-text);
   position: relative;
 }
 
@@ -189,17 +290,9 @@ body.light-mode .files-editor {
    chevron, icon, and label all toggle the directory just like the row. */
 .files-tree-row > * { pointer-events: none; }
 
-.files-tree-row:hover {
-  background: rgba(255,255,255,0.06);
-}
-
-.files-tree-row.selected {
-  background: rgba(14, 99, 156, 0.45);
-}
-
-.files-tree-row.selected:hover {
-  background: rgba(14, 99, 156, 0.55);
-}
+.files-tree-row:hover { background: var(--files-row-hover); }
+.files-tree-row.selected { background: var(--files-row-selected); }
+.files-tree-row.selected:hover { background: var(--files-row-selected-hov); }
 
 .files-tree-chev {
   width: 14px;
@@ -207,7 +300,7 @@ body.light-mode .files-editor {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #cccccc;
+  color: var(--files-text);
   flex-shrink: 0;
   transition: transform 0.12s ease;
 }
@@ -232,8 +325,8 @@ body.light-mode .files-editor {
   width: 14px;
   height: 14px;
 }
-.files-tree-icon.dir { color: #dcb67a; }
-.files-tree-icon.file { color: #9cc7ed; }
+.files-tree-icon.dir  { color: var(--files-icon-folder); }
+.files-tree-icon.file { color: var(--files-icon-file); }
 
 .files-tree-label {
   font-size: 13px;
@@ -243,23 +336,19 @@ body.light-mode .files-editor {
   min-width: 0;
 }
 
-.files-tree-children {
-  display: none;
-}
-.files-tree-node.expanded > .files-tree-children {
-  display: block;
-}
+.files-tree-children { display: none; }
+.files-tree-node.expanded > .files-tree-children { display: block; }
 
 .files-tree-empty {
   padding: 16px 12px;
-  color: #888;
+  color: var(--files-text-x-faint);
   font-size: 12px;
   font-style: italic;
 }
 
 .files-tree-loading {
   padding: 6px 12px 6px 36px;
-  color: #888;
+  color: var(--files-text-x-faint);
   font-size: 12px;
   font-style: italic;
 }
@@ -274,8 +363,8 @@ body.light-mode .files-editor {
   position: relative;
   z-index: 2;
 }
-.files-resize-handle:hover { background: rgba(14, 99, 156, 0.6); }
-.files-resize-handle.dragging { background: rgba(14, 99, 156, 0.9); }
+.files-resize-handle:hover { background: var(--files-resize-hov); }
+.files-resize-handle.dragging { background: var(--files-resize-active); }
 .files-sidebar.collapsed + .files-resize-handle { display: none; }
 
 /* ── Sidebar toggle button (shows when collapsed) ────────── */
@@ -286,9 +375,9 @@ body.light-mode .files-editor {
   left: 6px;
   width: 26px;
   height: 26px;
-  background: rgba(60, 60, 60, 0.85);
-  border: 1px solid #3c3c3c;
-  color: #cccccc;
+  background: var(--files-btn-toggle-bg);
+  border: 1px solid var(--files-border-strong);
+  color: var(--files-text);
   border-radius: 4px;
   cursor: pointer;
   display: none;
@@ -297,7 +386,7 @@ body.light-mode .files-editor {
   z-index: 5;
   padding: 0;
 }
-.files-sidebar-toggle:hover { background: rgba(80, 80, 80, 0.95); }
+.files-sidebar-toggle:hover { background: var(--files-btn-toggle-hov); }
 .files-sidebar-toggle .lucide-icon { width: 14px; height: 14px; }
 .files-sidebar.collapsed ~ .files-sidebar-toggle { display: inline-flex; }
 
@@ -309,7 +398,7 @@ body.light-mode .files-editor {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  background: #1e1e1e;
+  background: var(--files-bg);
 }
 
 /* ── Tab bar (carousel with edge chevrons, no scrollbar) ──── */
@@ -318,8 +407,8 @@ body.light-mode .files-editor {
   display: flex;
   flex-direction: row;
   align-items: stretch;
-  background: #252526;
-  border-bottom: 1px solid #1e1e1e;
+  background: var(--files-bg-sidebar);
+  border-bottom: 1px solid var(--files-border);
   min-height: 35px;
   height: 35px;
   flex-shrink: 0;
@@ -332,18 +421,18 @@ body.light-mode .files-editor {
   display: none;          /* shown by JS only when the tab bar overflows */
   align-items: center;
   justify-content: center;
-  background: #252526;
+  background: var(--files-bg-sidebar);
   border: none;
-  border-right: 1px solid #1e1e1e;
-  color: #cccccc;
+  border-right: 1px solid var(--files-border);
+  color: var(--files-text);
   cursor: pointer;
   padding: 0;
   flex-shrink: 0;
   z-index: 2;
 }
-.files-tabs-chev:hover { background: #2a2d2e; color: #ffffff; }
-.files-tabs-chev:disabled { opacity: 0.35; cursor: default; background: #252526; }
-#files-tabs-next { border-right: none; border-left: 1px solid #1e1e1e; }
+.files-tabs-chev:hover { background: var(--files-bg-tab-hover); color: var(--files-text-strong); }
+.files-tabs-chev:disabled { opacity: 0.35; cursor: default; background: var(--files-bg-sidebar); }
+#files-tabs-next { border-right: none; border-left: 1px solid var(--files-border); }
 .files-tabs-chev .lucide-icon { width: 14px; height: 14px; }
 
 .files-tabs {
@@ -367,9 +456,9 @@ body.light-mode .files-editor {
   height: 35px;
   min-width: 100px;
   max-width: 220px;
-  background: #2d2d2d;
-  border-right: 1px solid #1e1e1e;
-  color: #969696;
+  background: var(--files-bg-tab);
+  border-right: 1px solid var(--files-border);
+  color: var(--files-text-muted);
   cursor: pointer;
   font-size: 13px;
   position: relative;
@@ -379,11 +468,11 @@ body.light-mode .files-editor {
   transition: background 0.05s;
 }
 
-.files-tab:hover { background: #2a2d2e; color: #cccccc; }
+.files-tab:hover { background: var(--files-bg-tab-hover); color: var(--files-text); }
 
 .files-tab.active {
-  background: #1e1e1e;
-  color: #ffffff;
+  background: var(--files-bg);
+  color: var(--files-text-strong);
 }
 
 .files-tab.active::after {
@@ -393,25 +482,21 @@ body.light-mode .files-editor {
   left: 0;
   right: 0;
   height: 1px;
-  background: #007acc;
+  background: var(--files-active-indicator);
 }
 
 .files-tab.dragging {
   opacity: 0.5;
 }
 
-.files-tab.drop-before {
-  box-shadow: inset 2px 0 0 #007acc;
-}
-.files-tab.drop-after {
-  box-shadow: inset -2px 0 0 #007acc;
-}
+.files-tab.drop-before { box-shadow: inset 2px 0 0 var(--files-active-indicator); }
+.files-tab.drop-after  { box-shadow: inset -2px 0 0 var(--files-active-indicator); }
 
 .files-tab-icon {
   width: 14px;
   height: 14px;
   flex-shrink: 0;
-  color: #9cc7ed;
+  color: var(--files-icon-file);
 }
 .files-tab-icon .lucide-icon { width: 14px; height: 14px; }
 
@@ -431,7 +516,7 @@ body.light-mode .files-editor {
   justify-content: center;
   background: transparent;
   border: none;
-  color: #c5c5c5;
+  color: var(--files-icon);
   border-radius: 4px;
   cursor: pointer;
   padding: 0;
@@ -439,20 +524,17 @@ body.light-mode .files-editor {
   opacity: 0.6;
 }
 .files-tab-close:hover {
-  background: rgba(255,255,255,0.15);
+  background: var(--files-btn-hover-strong);
   opacity: 1;
 }
 .files-tab-close .lucide-icon { width: 12px; height: 12px; }
 
-.files-tab.dirty .files-tab-close {
-  /* Show a dot for unsaved changes instead of the X (unless hovered) */
-}
 .files-tab.dirty .files-tab-close::before {
   content: "";
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #c5c5c5;
+  background: var(--files-icon);
   position: absolute;
 }
 .files-tab.dirty .files-tab-close:hover::before { display: none; }
@@ -469,7 +551,7 @@ body.light-mode .files-editor {
   justify-content: center;
   background: transparent;
   border: none;
-  color: #c5c5c5;
+  color: var(--files-icon);
   border-radius: 4px;
   cursor: pointer;
   padding: 0;
@@ -478,20 +560,20 @@ body.light-mode .files-editor {
   margin-left: 2px;
 }
 .files-tab-more:hover {
-  background: rgba(255,255,255,0.15);
+  background: var(--files-btn-hover-strong);
   opacity: 1;
 }
 .files-tab-more .lucide-icon { width: 12px; height: 12px; }
 
-/* ── Floating tab menu ──────────────────────────────────── */
+/* ── Floating menu (tab "more" + tree right-click) ──────── */
 
 .files-tab-menu {
   position: fixed;
   z-index: 1000;
-  background: #252526;
-  border: 1px solid #3c3c3c;
+  background: var(--files-bg-menu);
+  border: 1px solid var(--files-border-strong);
   border-radius: 6px;
-  box-shadow: 0 6px 18px rgba(0,0,0,0.4);
+  box-shadow: var(--files-menu-shadow);
   padding: 4px;
   min-width: 160px;
   display: flex;
@@ -504,7 +586,7 @@ body.light-mode .files-editor {
   gap: 8px;
   background: transparent;
   border: none;
-  color: #cccccc;
+  color: var(--files-text);
   font-size: 12px;
   font-family: inherit;
   padding: 6px 10px;
@@ -513,23 +595,23 @@ body.light-mode .files-editor {
   text-align: left;
   white-space: nowrap;
 }
-.files-tab-menu-item:hover { background: rgba(14, 99, 156, 0.45); color: #ffffff; }
-.files-tab-menu-item.danger { color: #f48771; }
-.files-tab-menu-item.danger:hover { background: rgba(247, 118, 142, 0.25); color: #ffffff; }
+.files-tab-menu-item:hover { background: var(--files-menu-item-hov); color: var(--files-text-strong); }
+.files-tab-menu-item.danger { color: var(--files-danger); }
+.files-tab-menu-item.danger:hover { background: var(--files-danger-hov); color: var(--files-text-strong); }
 .files-tab-menu-item .lucide-icon { width: 14px; height: 14px; flex-shrink: 0; }
 .files-tab-menu-item.checked .files-tab-menu-check {
   margin-left: auto;
-  color: #9cdcfe;
+  color: var(--files-link);
   font-size: 12px;
 }
 .files-tab-menu-item .files-tab-menu-check { margin-left: auto; visibility: hidden; }
 .files-tab-menu-item.checked .files-tab-menu-check { visibility: visible; }
 .files-tab-menu-item:disabled { opacity: 0.4; cursor: default; }
-.files-tab-menu-item:disabled:hover { background: transparent; color: #cccccc; }
+.files-tab-menu-item:disabled:hover { background: transparent; color: var(--files-text); }
 
 .files-tab-menu-sep {
   height: 1px;
-  background: #3c3c3c;
+  background: var(--files-border-strong);
   margin: 4px 6px;
 }
 
@@ -548,7 +630,7 @@ body.light-mode .files-editor {
   min-height: 0;
   overflow: hidden;
   position: relative;
-  background: #1e1e1e;
+  background: var(--files-bg);
   display: flex;
 }
 
@@ -568,8 +650,8 @@ body.light-mode .files-editor {
   border: none;
   outline: none;
   resize: none;
-  background: #1e1e1e;
-  color: #d4d4d4;
+  background: var(--files-textarea-bg);
+  color: var(--files-textarea-text);
   font-family: var(--font-mono, "JetBrains Mono", "Consolas", monospace);
   font-size: 13px;
   line-height: 1.5;
@@ -577,16 +659,16 @@ body.light-mode .files-editor {
   tab-size: 2;
   white-space: pre;
   overflow: auto;
-  caret-color: #aeafad;
+  caret-color: var(--files-caret);
 }
 
 .files-textarea::selection {
-  background: rgba(38, 79, 120, 0.7);
+  background: var(--files-selection);
 }
 
 .files-binary-msg {
   margin: auto;
-  color: #969696;
+  color: var(--files-text-muted);
   font-size: 13px;
   text-align: center;
   padding: 24px;
@@ -595,7 +677,7 @@ body.light-mode .files-editor {
   width: 36px;
   height: 36px;
   margin-bottom: 8px;
-  color: #6a6a6a;
+  color: var(--files-text-faint);
 }
 
 /* ── Welcome screen ──────────────────────────────────────── */
@@ -603,24 +685,24 @@ body.light-mode .files-editor {
 .files-welcome {
   margin: auto;
   text-align: center;
-  color: #6a6a6a;
+  color: var(--files-text-faint);
   padding: 24px;
 }
 .files-welcome-icon {
   width: 56px !important;
   height: 56px !important;
-  color: #3c3c3c;
+  color: var(--files-border-strong);
   margin-bottom: 12px;
 }
 .files-welcome-title {
   font-size: 18px;
-  color: #cccccc;
+  color: var(--files-text);
   margin-bottom: 6px;
   font-weight: 500;
 }
 .files-welcome-text {
   font-size: 12px;
-  color: #888;
+  color: var(--files-text-x-faint);
 }
 
 /* ── Status bar ──────────────────────────────────────────── */
@@ -630,8 +712,8 @@ body.light-mode .files-editor {
   align-items: center;
   gap: 16px;
   height: 22px;
-  background: #007acc;
-  color: #ffffff;
+  background: var(--files-status-bg);
+  color: var(--files-status-text);
   font-size: 12px;
   padding: 0 12px;
   flex-shrink: 0;
@@ -650,12 +732,12 @@ body.light-mode .files-editor {
 }
 .files-status-info.dirty::before {
   content: "● ";
-  color: #ffcc66;
+  color: var(--files-dirty-dot);
 }
 .files-status-info .files-save-btn {
-  background: rgba(255,255,255,0.15);
-  border: 1px solid rgba(255,255,255,0.25);
-  color: #fff;
+  background: var(--files-status-btn-bg);
+  border: 1px solid var(--files-status-btn-bd);
+  color: var(--files-status-text);
   padding: 0 10px;
   height: 18px;
   border-radius: 3px;
@@ -664,7 +746,7 @@ body.light-mode .files-editor {
   margin-left: 8px;
 }
 .files-status-info .files-save-btn:hover {
-  background: rgba(255,255,255,0.25);
+  background: var(--files-status-btn-hov);
 }
 .files-status-info .files-save-btn:disabled {
   opacity: 0.5;
