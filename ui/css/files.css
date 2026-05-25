@@ -173,7 +173,6 @@ body.light-mode {
 }
 .files-sidebar.maximized ~ .files-resize-handle { display: none; }
 .files-sidebar.maximized ~ .files-main { display: none; }
-.files-sidebar.maximized ~ .files-terminal-wrap { display: none; }
 
 /* Strip mode — sidebar collapses to a narrow column of icons. Panels are
    hidden and the dedicated `.files-sidebar-strip` becomes the only thing
@@ -1119,7 +1118,8 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 }
 
 /* Small visual separator between the Files/Git view-switch group and the
-   Terminal toggle (which is not a view but a main-panel overlay). */
+   "New terminal tab" button (which spawns a new tab rather than switching
+   the sidebar view). */
 .files-view-toggle-sep {
   width: 1px;
   height: 16px;
@@ -1128,48 +1128,36 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
   display: inline-block;
 }
 
-/* Terminal toggle inside the view-toggle row. Unlike the Files/Git toggles,
-   this one is a true on/off — when active it highlights instead of greying
-   out, since clicking it again toggles the terminal back off. */
-.files-view-toggle-btn.files-terminal-toggle {
+/* "New terminal tab" button — not a view switcher, so it never enters the
+   greyed-out active state. */
+.files-view-toggle-btn.files-terminal-new {
   opacity: 1;
   color: var(--files-text-strong);
 }
-.files-view-toggle-btn.files-terminal-toggle:hover { background: var(--files-btn-hover); }
-.files-view-toggle-btn.files-terminal-toggle.active {
-  color: var(--files-text-strong);
-  opacity: 1;
-  background: var(--files-row-selected);
-}
+.files-view-toggle-btn.files-terminal-new:hover { background: var(--files-btn-hover); }
 
-/* Strip-mode terminal toggle mirrors the active highlight. */
-.files-strip-btn.files-terminal-toggle.active {
-  color: var(--files-text-strong);
-  background: var(--files-btn-hover);
-}
+/* ── Embedded terminal pane (one per terminal tab) ──────── */
 
-/* ── Embedded terminal pane ──────────────────────────────── */
-
-.files-terminal-wrap {
-  flex: 1;
-  display: flex;
-  min-width: 0;
-  min-height: 0;
+.files-editor-pane.files-terminal-pane {
   background: #0d0d1a;
-  position: relative;
+  padding: 0;
+  display: none;
 }
-.files-terminal-wrap[hidden] { display: none; }
-.files-terminal-wrap > #terminal-container {
+.files-editor-pane.files-terminal-pane.active {
+  display: flex;
+  flex-direction: column;
+}
+.files-terminal-host {
   flex: 1;
   min-width: 0;
   min-height: 0;
   width: 100%;
   height: 100%;
 }
-
-/* When terminal is on, hide the editor main column to give the terminal the
-   full right-side space. The sidebar (and its resize handle) stays. */
-.files-editor.terminal-on .files-main { display: none; }
+.files-terminal-host .xterm { height: 100%; padding: 4px; }
+.files-terminal-host .xterm-viewport { scrollbar-width: thin; scrollbar-color: #2a2a4a transparent; }
+.files-terminal-host .xterm-viewport::-webkit-scrollbar { width: 6px; }
+.files-terminal-host .xterm-viewport::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
 
 /* ── Source-control (GitHub) panel ───────────────────────── */
 

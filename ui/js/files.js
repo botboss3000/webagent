@@ -7,11 +7,10 @@
 // folder fetches its children on first expand.
 
 import { openGitPanel } from './files-git.js';
-import { app } from './state.js';
+import { createTerminalInstance } from './terminal.js';
 
 const API_BASE = '/api/v1/files';
 const LS_SIDEBAR_VIEW = 'files.sidebarView';   // 'explorer' | 'git'
-const LS_TERMINAL_ON  = 'files.terminalOn';    // '1' if terminal pane is open
 
 let initialised = false;
 let isAdmin = false;
@@ -414,7 +413,7 @@ function renderTabs() {
     const iconWrap = document.createElement('span');
     iconWrap.className = 'files-tab-icon';
     const iconI = document.createElement('i');
-    iconI.setAttribute('data-lucide', fileIconName(tab.name));
+    iconI.setAttribute('data-lucide', tab.kind === 'terminal' ? 'terminal' : fileIconName(tab.name));
     iconI.className = 'lucide-icon';
     iconWrap.appendChild(iconI);
     el.appendChild(iconWrap);
@@ -425,26 +424,30 @@ function renderTabs() {
     el.appendChild(label);
 
     // ── 3-dot "more" menu button ──
-    const more = document.createElement('button');
-    more.className = 'files-tab-more';
-    more.type = 'button';
-    more.title = 'More actions';
-    more.draggable = false;
-    const moreI = document.createElement('i');
-    moreI.setAttribute('data-lucide', 'more-vertical');
-    moreI.className = 'lucide-icon';
-    more.appendChild(moreI);
-    // Same draggable-parent guard as the close button.
-    more.addEventListener('mousedown', (e) => {
-      e.stopPropagation();
-      if (e.button === 0) {
-        e.preventDefault();
-        showTabMenu(tab, more);
-      }
-    });
-    more.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); });
-    more.addEventListener('dragstart', (e) => { e.preventDefault(); e.stopPropagation(); });
-    el.appendChild(more);
+    // Terminal tabs have no per-tab actions (no file to rename/delete/wrap/
+    // preview/find), so the menu is omitted entirely.
+    if (tab.kind !== 'terminal') {
+      const more = document.createElement('button');
+      more.className = 'files-tab-more';
+      more.type = 'button';
+      more.title = 'More actions';
+      more.draggable = false;
+      const moreI = document.createElement('i');
+      moreI.setAttribute('data-lucide', 'more-vertical');
+      moreI.className = 'lucide-icon';
+      more.appendChild(moreI);
+      // Same draggable-parent guard as the close button.
+      more.addEventListener('mousedown', (e) => {
+        e.stopPropagation();
+        if (e.button === 0) {
+          e.preventDefault();
+          showTabMenu(tab, more);
+        }
+      });
+      more.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); });
+      more.addEventListener('dragstart', (e) => { e.preventDefault(); e.stopPropagation(); });
+      el.appendChild(more);
+    }
 
     const close = document.createElement('button');
     close.className = 'files-tab-close';
@@ -964,6 +967,7 @@ function renderEditorPanes() {
 // ── Per-tab pane mode ─────────────────────────────────────────────
 
 function paneModeForTab(tab) {
+  if (tab.kind === 'terminal') return 'terminal';
   if (isImageFile(tab.name)) return 'image';
   if (tab.binary)             return 'binary';
   if (isMarkdownFile(tab.name) && tab.preview) return 'markdown';
@@ -1015,6 +1019,25 @@ function buildPaneForTab(tab, mode) {
     md.className = 'files-markdown-preview';
     md.innerHTML = renderMarkdown(tab.content || '');
     pane.appendChild(md);
+  } else if (mode === 'terminal') {
+    pane.classList.add('files-terminal-pane');
+    const host = document.createElement('div');
+    host.className = 'files-terminal-host';
+    pane.appendChild(host);
+    // xterm.open() measures its host immediately. The pane has just been
+    // created (not yet appended to the document) — defer xterm creation
+    // until after the pane is attached and the active class has been set,
+    // otherwise fit() reads zero dimensions.
+    setTimeout(() => {
+      if (!document.body.contains(pane)) return;
+      try {
+        tab.instance = createTerminalInstance(host);
+        tab.instance.fit();
+        if (tab.path === activeTabPath) tab.instance.focus();
+      } catch (e) {
+        host.textContent = 'Failed to start terminal: ' + (e.message || e);
+      }
+    }, 0);
   } else {
     // text mode: textarea (transparent) overlaid on a <pre> for Prism
     buildTextEditorPane(pane, tab);
@@ -1349,6 +1372,16 @@ function updateStatusBar(tab) {
     info.classList.remove('dirty');
     return;
   }
+  // Terminal tabs have no path / save / dirty state — render a simple label.
+  if (tab.kind === 'terminal') {
+    path.textContent = tab.name;
+    info.classList.remove('dirty');
+    info.innerHTML = '';
+    const meta = document.createElement('span');
+    meta.textContent = 'PTY session';
+    info.appendChild(meta);
+    return;
+  }
   path.textContent = tab.path;
   info.classList.toggle('dirty', !!tab.dirty);
   info.innerHTML = '';
@@ -1414,6 +1447,15 @@ function activateTab(path) {
   }
   const tab = openTabs.find((t) => t.path === path);
   updateStatusBar(tab || null);
+  // Terminal tabs need a refit each time they regain focus — xterm can't
+  // measure while its pane is display:none, so any window resize that
+  // happened while another tab was active is unaccounted for until now.
+  if (tab && tab.kind === 'terminal' && tab.instance) {
+    setTimeout(() => {
+      tab.instance.fit();
+      tab.instance.focus();
+    }, 30);
+  }
   // Bring the activated tab into view if it's outside the visible window
   const tabEl = document.querySelector('#files-tabs .files-tab[data-path="' + cssEscape(path) + '"]');
   if (tabEl && typeof tabEl.scrollIntoView === 'function') {
@@ -1427,6 +1469,12 @@ function closeTab(path) {
   if (!tab) return;
   if (tab.dirty) {
     if (!confirm('Discard unsaved changes to ' + tab.name + '?')) return;
+  }
+  // Dispose the terminal's xterm + WebSocket before dropping the tab so the
+  // PTY actually gets reaped on the backend.
+  if (tab.kind === 'terminal' && tab.instance) {
+    try { tab.instance.dispose(); } catch (_) {}
+    tab.instance = null;
   }
   const idx = openTabs.findIndex((t) => t.path === path);
   openTabs.splice(idx, 1);
@@ -1536,9 +1584,14 @@ function initSidebarResize() {
 
 function persistTabs() {
   try {
-    const minimal = openTabs.map((t) => ({ path: t.path, name: t.name, wrap: !!t.wrap, preview: !!t.preview }));
+    // Terminal tabs are ephemeral — their PTY state can't be restored from
+    // localStorage, so we don't try to re-open them on reload.
+    const minimal = openTabs
+      .filter((t) => t.kind !== 'terminal')
+      .map((t) => ({ path: t.path, name: t.name, wrap: !!t.wrap, preview: !!t.preview }));
     localStorage.setItem(LS_OPEN_TABS, JSON.stringify(minimal));
-    localStorage.setItem(LS_ACTIVE_TAB, activeTabPath || '');
+    const persistableActive = activeTabPath && openTabs.find((t) => t.path === activeTabPath && t.kind !== 'terminal');
+    localStorage.setItem(LS_ACTIVE_TAB, persistableActive ? activeTabPath : '');
   } catch (_) {}
 }
 
@@ -1617,95 +1670,85 @@ export function initFiles() {
   installFilesDropGuard();
   initSidebarViewSwitcher();
   initSidebarMaximize();
-  initFilesTerminal();
+  initFilesTerminalButton();
   renderTabs();
   renderEditorPanes();
 }
 
-// ── In-page terminal toggle ────────────────────────────────────────
+// ── In-page terminal tabs ──────────────────────────────────────────
 //
-// The terminal lives in #files-terminal-wrap, which sits next to .files-main
-// inside the .files-editor. Toggling on hides the editor and reveals the
-// terminal pane; toggling off restores the editor. The #terminal-container
-// element inside the wrap is driven by terminal.js (xterm + WebSocket) and
-// is initialised once at app startup, independent of this toggle.
+// Each click of the "new terminal" button in the sidebar pushes a fresh
+// tab with kind === 'terminal' and spawns its own xterm + PTY WebSocket.
+// Terminal tabs sit alongside file tabs in the same tab bar and share the
+// same activate / close / drag-reorder machinery.
 
-function setFilesTerminalOn(on) {
-  const editor = document.getElementById('files-editor');
-  const wrap = document.getElementById('files-terminal-wrap');
-  if (!editor || !wrap) return;
-  editor.classList.toggle('terminal-on', !!on);
-  wrap.hidden = !on;
+let terminalSerial = 0;
 
-  // Update every toggle button (sidebar headers + strip) so they reflect
-  // the new state regardless of which one was clicked.
-  document.querySelectorAll('.files-terminal-toggle').forEach((btn) => {
-    btn.classList.toggle('active', !!on);
-    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-    btn.title = on ? 'Hide terminal' : 'Toggle terminal in main panel';
+function nextTerminalTabId() {
+  terminalSerial += 1;
+  return 'terminal:' + Date.now().toString(36) + ':' + terminalSerial;
+}
+
+function openNewTerminalTab() {
+  const id = nextTerminalTabId();
+  const num = openTabs.filter((t) => t.kind === 'terminal').length + 1;
+  openTabs.push({
+    path: id,                 // unique tab key
+    name: 'Terminal ' + num,
+    kind: 'terminal',
+    instance: null,           // set by buildPaneForTab once xterm is opened
+    dirty: false,
+    binary: false,
   });
-
-  try { localStorage.setItem(LS_TERMINAL_ON, on ? '1' : '0'); } catch (_) {}
-
-  if (on) {
-    // On mobile, the sidebar may be filling the screen (state=max). Switch
-    // to the strip so the main panel — and the terminal we just opened —
-    // becomes visible.
-    if (isMobileLayout()) {
-      const sidebar = document.getElementById('files-sidebar');
-      if (sidebar && sidebar.dataset.state === 'max') setSidebarState('strip');
-    }
-    // xterm needs a refit whenever its container's size changes (which
-    // happens both when the wrap becomes visible and when the sidebar
-    // resize toggles). Defer a tick so layout has settled.
-    fitFilesTerminal();
-  }
+  activeTabPath = id;
+  renderTabs();
+  renderEditorPanes();
+  persistTabs();
 }
 
-function fitFilesTerminal() {
-  setTimeout(() => {
-    try {
-      if (app && app.fitAddon && app.term) {
-        app.fitAddon.fit();
-        // Re-send the new geometry to the backend so the PTY agrees.
-        if (app.termWs && app.termWs.readyState === WebSocket.OPEN) {
-          app.termWs.send(JSON.stringify({ type: 'resize', rows: app.term.rows, cols: app.term.cols }));
-        }
-      }
-    } catch (_) {}
-  }, 60);
-}
-
-function initFilesTerminal() {
+function initFilesTerminalButton() {
   const sidebar = document.getElementById('files-sidebar');
   if (!sidebar) return;
 
-  // Restore last state (default: off)
-  const wantOn = localStorage.getItem(LS_TERMINAL_ON) === '1';
-  setFilesTerminalOn(wantOn);
-
-  // Delegate clicks at the sidebar — covers the buttons in both panel
-  // headers plus the one in the strip without re-binding when the view
-  // switches.
   sidebar.addEventListener('click', (e) => {
-    const btn = e.target.closest('.files-terminal-toggle');
+    const btn = e.target.closest('.files-terminal-new');
     if (!btn || !sidebar.contains(btn)) return;
     e.stopPropagation();
-    const editor = document.getElementById('files-editor');
-    const isOn = !!(editor && editor.classList.contains('terminal-on'));
-    setFilesTerminalOn(!isOn);
+    openNewTerminalTab();
+    // On mobile, the sidebar may be filling the screen (state=max). Switch
+    // to the strip so the main panel — and the terminal we just opened —
+    // becomes visible.
+    if (isMobileLayout() && sidebar.dataset.state === 'max') {
+      setSidebarState('strip');
+    }
   });
 
-  // Keep xterm's columns in sync when the user drags the sidebar resize
-  // handle (only relevant while the terminal is visible).
+  // Keep visible terminal tabs in sync with sidebar resize drags.
   const handle = document.getElementById('files-resize-handle');
   if (handle) {
     handle.addEventListener('mouseup', () => {
-      const editor = document.getElementById('files-editor');
-      if (editor && editor.classList.contains('terminal-on')) fitFilesTerminal();
+      const tab = openTabs.find((t) => t.path === activeTabPath);
+      if (tab && tab.kind === 'terminal' && tab.instance) {
+        setTimeout(() => tab.instance.fit(), 30);
+      }
     });
   }
 }
+
+export function reconnectAllTerminals() {
+  for (const t of openTabs) {
+    if (t.kind === 'terminal' && t.instance) {
+      try { t.instance.reconnect(); } catch (_) {}
+    }
+  }
+}
+
+// Refit the currently active terminal on viewport resize. Background tabs
+// refit themselves when they next become active (see activateTab).
+window.addEventListener('resize', () => {
+  const tab = openTabs.find((t) => t.path === activeTabPath);
+  if (tab && tab.kind === 'terminal' && tab.instance) tab.instance.fit();
+});
 
 // ── Sidebar state cycle: split → max → strip → split ───────────────
 //
@@ -1920,9 +1963,12 @@ export async function startFiles() {
   // Restore previously open tabs only once per session
   if (!openTabs.length) await restoreOpenTabs();
 
-  // If the embedded terminal is currently visible, refit xterm — the page
-  // was hidden until just now and xterm can't measure a display:none host.
-  if (editor && editor.classList.contains('terminal-on')) fitFilesTerminal();
+  // If the active tab is a terminal, refit xterm — it can't measure a
+  // display:none host while another main tab was active.
+  const activeTab = openTabs.find((t) => t.path === activeTabPath);
+  if (activeTab && activeTab.kind === 'terminal' && activeTab.instance) {
+    setTimeout(() => activeTab.instance.fit(), 30);
+  }
 }
 
 export function stopFiles() {

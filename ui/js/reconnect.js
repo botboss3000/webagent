@@ -1,6 +1,6 @@
 'use strict';
 
-import { connectTerminal } from './terminal.js';
+import { reconnectAllTerminals } from './files.js';
 import { connectAgent } from './agentWs.js';
 import { apiPath } from './config.js';
 
@@ -20,7 +20,7 @@ export function initReconnect() {
   const reconnectBtn = document.getElementById('btn-reconnect');
   if (reconnectBtn) {
     reconnectBtn.addEventListener('click', () => {
-      connectTerminal();
+      reconnectAllTerminals();
       connectAgent();
     });
   }
@@ -42,7 +42,7 @@ export function initReconnect() {
             clearInterval(poll);
             restartBtn.classList.remove('restarting');
             setRestartStatus('Reconnecting...');
-            connectTerminal();
+            reconnectAllTerminals();
             connectAgent();
             setTimeout(() => setRestartStatus(null), 3000);
           }
