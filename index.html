@@ -173,8 +173,7 @@
   /* Size variants */
   #terminal-side.spot { --spot-radius: 600px; --spot-color: rgba(155, 187, 255, 0.07); }
   body.light-mode #terminal-side.spot { --spot-color: rgba(217, 111, 31, 0.07); }
-  .tab-select-popup.spot { --spot-radius: 220px; }
-  .tab-option.spot       { --spot-radius: 140px; }
+  .main-tab.spot         { --spot-radius: 140px; }
   .chat-bubble.spot      { --spot-radius: 240px; }
   #chat-input-area.spot  { --spot-radius: 360px; }
 
@@ -333,73 +332,57 @@
 
 <div id="status-bar">
 
-  <!-- Tab select: hidden native <select> for JS compat + custom pill button + popup -->
-  <div class="status-group tab-select-group" style="position:relative;">
-    <select id="main-tab-select" style="display:none;" aria-hidden="true">
-      <option value="autoagent" selected>Dashboard</option>
-      <option value="terminal">Terminal</option>
-      <option value="stream">Stream</option>
-      <option value="flow">Flow</option>
-      <option value="loop-visual">Runtime Loop</option>
-      <option value="database">Database</option>
-      <option value="github">GitHub</option>
-      <option value="agents">Agents</option>
-      <option value="app-config">App Config</option>
-      <option value="files">Files</option>
-      <option value="account">Manage Account</option>
-    </select>
-    <button id="tab-select-btn" class="tab-select-pill" aria-haspopup="listbox">
-      <i id="tab-btn-icon" data-lucide="palette" class="lucide-icon" style="width:14px;height:14px;"></i>
-      <span id="tab-select-label">Dashboard</span>
-      <i data-lucide="chevron-down" class="lucide-icon" style="width:12px;height:12px;opacity:0.6;margin-left:2px;"></i>
-    </button>
-    <div id="tab-select-popup" class="tab-select-popup" style="display:none;" role="listbox">
-      <div class="tab-option active" data-value="autoagent" data-icon="palette" role="option">
-        <i data-lucide="palette" class="lucide-icon menu-icon"></i>Dashboard
-      </div>
-      <div class="tab-option" data-value="terminal" data-icon="terminal" role="option">
-        <i data-lucide="terminal" class="lucide-icon menu-icon"></i>Terminal
-      </div>
-      <div class="tab-option" data-value="stream" data-icon="radio-tower" role="option">
-        <i data-lucide="radio-tower" class="lucide-icon menu-icon"></i>Stream
-      </div>
-      <div class="tab-option" data-value="flow" data-icon="git-branch" role="option">
-        <i data-lucide="git-branch" class="lucide-icon menu-icon"></i>Flow
-      </div>
-      <div class="tab-option" data-value="loop-visual" data-icon="repeat" role="option">
-        <i data-lucide="repeat" class="lucide-icon menu-icon"></i>Runtime Loop
-      </div>
-      <div class="tab-option" data-value="database" data-icon="database" role="option">
-        <i data-lucide="database" class="lucide-icon menu-icon"></i>Database
-      </div>
-      <div class="tab-option" data-value="github" data-icon="github" role="option">
-        <i data-lucide="github" class="lucide-icon menu-icon"></i>GitHub
-      </div>
-      <div class="tab-option" data-value="agents" data-icon="bot" role="option">
-        <i data-lucide="bot" class="lucide-icon menu-icon"></i>Agents
-      </div>
-      <div class="tab-option" data-value="app-config" data-icon="sliders-horizontal" role="option">
-        <i data-lucide="sliders-horizontal" class="lucide-icon menu-icon"></i>App Config
-      </div>
-      <div class="tab-option" data-value="files" data-icon="folder-tree" role="option">
-        <i data-lucide="folder-tree" class="lucide-icon menu-icon"></i>Files
-      </div>
-      <div class="tab-option" data-value="account" data-icon="user-cog" role="option">
-        <i data-lucide="user-cog" class="lucide-icon menu-icon"></i>Manage Account
-      </div>
-    </div>
-  </div>
+  <!-- Hidden native <select> kept for tabs.js compat -->
+  <select id="main-tab-select" style="display:none;" aria-hidden="true">
+    <option value="autoagent" selected>Dashboard</option>
+    <option value="terminal">Terminal</option>
+    <option value="stream">Stream</option>
+    <option value="flow">Flow</option>
+    <option value="loop-visual">Runtime Loop</option>
+    <option value="database">Database</option>
+    <option value="github">GitHub</option>
+    <option value="agents">Agents</option>
+    <option value="app-config">App Config</option>
+    <option value="files">Files</option>
+    <option value="account">Manage Account</option>
+  </select>
 
-  <!-- Status dots + restart -->
-  <div class="status-group" style="margin-left:12px;">
-    <span class="status-dot yellow" id="terminal-dot" title="Terminal Connection"></span>
-    <span id="terminal-status" style="display:none;"></span>
-    <span class="status-dot yellow" id="agent-dot" title="Server Connection"></span>
-    <span id="agent-status" style="display:none;"></span>
-    <button id="btn-restart" class="icon-btn-pill" title="Restart the Python agent server">
-      <i data-lucide="refresh-cw" class="lucide-icon" style="width:14px;height:14px;"></i>
-    </button>
-    <span id="restart-status" style="font-size:11px;color:var(--text-muted,#888);margin-left:6px;display:none;"></span>
+  <!-- Horizontal tab strip with chevron-scroll carousel -->
+  <div id="main-tabs-wrap">
+    <button type="button" id="main-tabs-chev-left" class="main-tabs-chev left" aria-label="Scroll tabs left">&#10094;</button>
+    <div id="main-tabs" role="tablist">
+      <button type="button" class="main-tab active" data-value="autoagent" role="tab">
+        <i data-lucide="palette" class="lucide-icon"></i>Dashboard
+      </button>
+      <button type="button" class="main-tab" data-value="terminal" role="tab">
+        <i data-lucide="terminal" class="lucide-icon"></i>Terminal
+      </button>
+      <button type="button" class="main-tab" data-value="stream" role="tab">
+        <i data-lucide="radio-tower" class="lucide-icon"></i>Stream
+      </button>
+      <button type="button" class="main-tab" data-value="flow" role="tab">
+        <i data-lucide="git-branch" class="lucide-icon"></i>Flow
+      </button>
+      <button type="button" class="main-tab" data-value="loop-visual" role="tab">
+        <i data-lucide="repeat" class="lucide-icon"></i>Runtime Loop
+      </button>
+      <button type="button" class="main-tab" data-value="database" role="tab">
+        <i data-lucide="database" class="lucide-icon"></i>Database
+      </button>
+      <button type="button" class="main-tab" data-value="github" role="tab">
+        <i data-lucide="github" class="lucide-icon"></i>GitHub
+      </button>
+      <button type="button" class="main-tab" data-value="agents" role="tab">
+        <i data-lucide="bot" class="lucide-icon"></i>Agents
+      </button>
+      <button type="button" class="main-tab" data-value="app-config" role="tab">
+        <i data-lucide="sliders-horizontal" class="lucide-icon"></i>App Config
+      </button>
+      <button type="button" class="main-tab" data-value="files" role="tab">
+        <i data-lucide="folder-tree" class="lucide-icon"></i>Files
+      </button>
+    </div>
+    <button type="button" id="main-tabs-chev-right" class="main-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
   </div>
 
   <!-- User menu -->
@@ -3301,88 +3284,92 @@
 <script type="module" src="./ui/js/main.js"></script>
 <script type="module" src="./ui/js/attachments.js"></script>
 <script type="module" src="./ui/js/data-sources.js"></script>
-<!-- ── Lucide icons + custom tab-select popup ───────────────── -->
+<!-- ── Lucide icons + horizontal tab strip with carousel ───────── -->
 <script>
 (function () {
   // Render all data-lucide icons in the DOM
   lucide.createIcons();
 
-  // ── Custom tab-select popup ──────────────────────────────────
+  // ── Horizontal tab strip ─────────────────────────────────────
   // The hidden <select id="main-tab-select"> is used by tabs.js.
-  // This block drives the visible pill button + popup and stays in sync.
-
-  var TABS = [
-    { id: 'autoagent',   icon: 'palette',     label: 'Dashboard'  },
-    { id: 'terminal',    icon: 'terminal',    label: 'Terminal'   },
-    { id: 'stream',      icon: 'radio-tower', label: 'Stream'     },
-    { id: 'flow',        icon: 'git-branch',  label: 'Flow'       },
-    { id: 'loop-visual', icon: 'repeat',      label: 'Runtime Loop' },
-    { id: 'database',    icon: 'database',    label: 'Database'   },
-    { id: 'github',      icon: 'github',      label: 'GitHub'     },
-    { id: 'agents',      icon: 'bot',              label: 'Agents'     },
-    { id: 'app-config',  icon: 'sliders-horizontal', label: 'App Config' },
-    { id: 'files',       icon: 'folder-tree',      label: 'Files'      },
-    { id: 'account',     icon: 'user-cog',         label: 'Manage Account' },
-  ];
+  // This block drives the visible tab buttons + chevron carousel
+  // and stays in sync when tabs change externally.
 
   var nativeSelect = document.getElementById('main-tab-select');
-  var btn          = document.getElementById('tab-select-btn');
-  var popup        = document.getElementById('tab-select-popup');
-  var labelEl      = document.getElementById('tab-select-label');
-  var btnIconEl    = document.getElementById('tab-btn-icon');
-  if (!nativeSelect || !btn || !popup) return;
+  var tabBar       = document.getElementById('main-tabs');
+  var tabWrap      = document.getElementById('main-tabs-wrap');
+  var chevLeft     = document.getElementById('main-tabs-chev-left');
+  var chevRight    = document.getElementById('main-tabs-chev-right');
+  if (!nativeSelect || !tabBar || !tabWrap) return;
 
-  function syncBtn(tabId) {
-    var t = TABS.find(function (t) { return t.id === tabId; }) || TABS[0];
-    labelEl.textContent = t.label;
-    btnIconEl.setAttribute('data-lucide', t.icon);
-    lucide.createIcons({ nodes: [btnIconEl] });
-    popup.querySelectorAll('.tab-option').forEach(function (o) {
-      o.classList.toggle('active', o.dataset.value === tabId);
-    });
+  function updateChevrons() {
+    if (!chevLeft || !chevRight) return;
+    var overflow = tabBar.scrollWidth - tabBar.clientWidth > 1;
+    tabWrap.classList.toggle('has-overflow', overflow);
+    chevLeft.classList.toggle('visible', overflow && tabBar.scrollLeft > 1);
+    chevRight.classList.toggle('visible', overflow && tabBar.scrollLeft < tabBar.scrollWidth - tabBar.clientWidth - 1);
   }
 
-  // Open / close popup
-  btn.addEventListener('click', function (e) {
-    e.stopPropagation();
-    popup.style.display = popup.style.display === 'none' ? 'block' : 'none';
-  });
+  function syncActive(tabId) {
+    tabBar.querySelectorAll('.main-tab').forEach(function (b) {
+      b.classList.toggle('active', b.dataset.value === tabId);
+    });
+    var activeBtn = tabBar.querySelector('.main-tab.active');
+    if (activeBtn) activeBtn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    requestAnimationFrame(updateChevrons);
+    setTimeout(updateChevrons, 350); // catch end of smooth scroll
+  }
 
   // Pick a tab
-  popup.querySelectorAll('.tab-option').forEach(function (opt) {
-    opt.addEventListener('click', function () {
-      var val = opt.dataset.value;
+  tabBar.querySelectorAll('.main-tab').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var val = btn.dataset.value;
       nativeSelect.value = val;
       nativeSelect.dispatchEvent(new Event('change', { bubbles: true }));
-      popup.style.display = 'none';
-      syncBtn(val);
+      syncActive(val);
     });
   });
 
-  // Close on outside click
-  document.addEventListener('click', function (e) {
-    if (!e.target.closest('.tab-select-group')) {
-      popup.style.display = 'none';
+  // Chevron carousel (matches app-config tabs pattern)
+  if (chevLeft && chevRight) {
+    var scrollStep = function () { return Math.max(80, Math.floor(tabBar.clientWidth * 0.6)); };
+    chevLeft.addEventListener('click', function () { tabBar.scrollBy({ left: -scrollStep(), behavior: 'smooth' }); });
+    chevRight.addEventListener('click', function () { tabBar.scrollBy({ left: scrollStep(), behavior: 'smooth' }); });
+    tabBar.addEventListener('scroll', updateChevrons, { passive: true });
+
+    requestAnimationFrame(function () {
+      updateChevrons();
+      var active = tabBar.querySelector('.main-tab.active');
+      if (active) active.scrollIntoView({ inline: 'center', block: 'nearest' });
+    });
+    if (typeof ResizeObserver !== 'undefined') {
+      var roPending = false;
+      var ro = new ResizeObserver(function () {
+        if (roPending) return;
+        roPending = true;
+        requestAnimationFrame(function () { roPending = false; updateChevrons(); });
+      });
+      ro.observe(tabBar);
+      ro.observe(tabWrap);
     }
-  });
+    window.addEventListener('resize', updateChevrons);
+  }
 
   // MutationObserver: sync when tabs.js (or config menu) switches tab externally
   var tabContents = document.querySelectorAll('.tab-content');
   if (tabContents.length) {
     var observer = new MutationObserver(function () {
       var active = document.querySelector('.tab-content.active');
-      if (active) {
-        syncBtn(active.id.replace('tab-', ''));
-      }
+      if (active) syncActive(active.id.replace('tab-', ''));
     });
     tabContents.forEach(function (el) {
       observer.observe(el, { attributes: true, attributeFilter: ['class'] });
     });
   }
 
-  // Sync pill to whatever tab is currently active on load
+  // Sync to whatever tab is currently active on load
   var initActive = document.querySelector('.tab-content.active');
-  if (initActive) syncBtn(initActive.id.replace('tab-', ''));
+  if (initActive) syncActive(initActive.id.replace('tab-', ''));
 
 })();
 </script>

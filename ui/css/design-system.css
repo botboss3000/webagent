@@ -547,61 +547,78 @@ body.light-mode *::-webkit-scrollbar-thumb:hover {
   color: var(--accent);
   border-color: rgba(125,207,255,0.4);
 }
-#btn-restart { font-size: unset; line-height: unset; }
-
-/* ── Custom tab-select pill button ──────────────────────────── */
-.tab-select-pill {
+/* ── Horizontal main-tabs strip with chevron-scroll carousel ── */
+#main-tabs-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: block;
+}
+#main-tabs {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+#main-tabs::-webkit-scrollbar { display: none; }
+.main-tab {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: rgba(13,13,26,0.7);
-  border: 1px solid rgba(255,255,255,0.06);
-  color: var(--fg-1);
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--fg-2);
   padding: 6px 12px;
   border-radius: 999px;
-  font-size: 12px;
   font-family: inherit;
+  font-size: 12px;
   font-weight: 500;
   cursor: pointer;
+  white-space: nowrap;
   outline: none;
-  transition: border-color 0.15s, color 0.15s;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
-.tab-select-pill:hover {
-  border-color: rgba(125,207,255,0.3);
-  color: #fff;
-}
-
-/* ── Tab-select popup ───────────────────────────────────────── */
-.tab-select-popup {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0)),
-    var(--bg-elev);
-  border: 1px solid rgba(255,255,255,0.06);
-  border-radius: 16px;
-  box-shadow:
-    0 14px 40px -12px rgba(0,0,0,0.6),
-    0 1px 0 rgba(255,255,255,0.04) inset;
-  min-width: 200px;
-  padding: 8px;
-  z-index: 9999;
-  animation: pop-in 0.18s ease;
-}
-.tab-option {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 14px;
+.main-tab .lucide-icon { width: 14px; height: 14px; flex-shrink: 0; }
+.main-tab:hover {
   color: var(--fg-1);
-  font-size: 13px;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+  border-color: rgba(125,207,255,0.25);
 }
-.tab-option:hover  { background: rgba(125,207,255,0.10); color: #fff; }
-.tab-option.active { background: rgba(125,207,255,0.12); color: var(--accent); }
+.main-tab.active {
+  background: rgba(125,207,255,0.12);
+  color: var(--accent);
+  border-color: rgba(125,207,255,0.30);
+}
+.main-tabs-chev {
+  display: none;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 28px;
+  align-items: center;
+  border: none;
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+  z-index: 2;
+}
+.main-tabs-chev.left {
+  left: 0;
+  justify-content: flex-start;
+  background: linear-gradient(to right, var(--bg-0) 55%, transparent 100%);
+}
+.main-tabs-chev.right {
+  right: 0;
+  justify-content: flex-end;
+  background: linear-gradient(to left, var(--bg-0) 55%, transparent 100%);
+}
+.main-tabs-chev.visible { display: flex; }
+.main-tabs-chev:hover { color: var(--fg-1); }
 
 /* ── Settings menu items — gap for icon + text ──────────────── */
 .settings-menu-item { gap: 10px; }
@@ -622,10 +639,17 @@ body.light-mode .icon-btn-pill {
   border-color: rgba(180,140,90,0.12);
 }
 body.light-mode .icon-btn-pill:hover { color: var(--accent); border-color: var(--accent); }
-body.light-mode .tab-select-pill { background: var(--bg-1); border-color: var(--border); color: var(--fg-1); }
-body.light-mode .tab-select-popup { background: #ffffff; border-color: rgba(180,140,90,0.15); box-shadow: var(--shadow-lg); }
-body.light-mode .tab-option:hover  { background: var(--accent-soft); color: var(--fg-1); }
-body.light-mode .tab-option.active { background: var(--accent-soft); color: var(--accent); }
+body.light-mode .main-tab { color: var(--fg-2); }
+body.light-mode .main-tab:hover { background: var(--accent-soft); color: var(--fg-1); border-color: rgba(180,140,90,0.25); }
+body.light-mode .main-tab.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+body.light-mode .main-tabs-chev { color: var(--fg-2); }
+body.light-mode .main-tabs-chev:hover { color: var(--accent); }
+body.light-mode .main-tabs-chev.left {
+  background: linear-gradient(to right, var(--bg-0) 55%, transparent 100%);
+}
+body.light-mode .main-tabs-chev.right {
+  background: linear-gradient(to left, var(--bg-0) 55%, transparent 100%);
+}
 
 /* ── Agents tab — transparent bg, card-aware borders ────────── */
 #tab-agents { background: transparent; }
