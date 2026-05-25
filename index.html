@@ -340,8 +340,7 @@
     <option value="loop-visual">Runtime Loop</option>
     <option value="database">Database</option>
     <option value="agents">Agents</option>
-    <option value="app-config">App Config</option>
-    <option value="files">Admin Tools</option>
+    <option value="admin-tools">Admin Tools</option>
     <option value="account">Manage Account</option>
   </select>
 
@@ -367,10 +366,7 @@
       <button type="button" class="main-tab" data-value="agents" role="tab">
         <i data-lucide="bot" class="lucide-icon"></i>Agents
       </button>
-      <button type="button" class="main-tab" data-value="app-config" role="tab">
-        <i data-lucide="sliders-horizontal" class="lucide-icon"></i>App Config
-      </button>
-      <button type="button" class="main-tab" data-value="files" role="tab">
+      <button type="button" class="main-tab" data-value="admin-tools" role="tab">
         <i data-lucide="wrench" class="lucide-icon"></i>Admin Tools
       </button>
     </div>
@@ -582,13 +578,13 @@
       </div>
     </div>
 
-    <!-- App Config tab -->
-    <div id="tab-app-config" class="tab-content">
-      <div id="app-config-container">
+    <!-- App Config UI: lives inside Admin Tools as the Settings view.
+         Markup stays here at boot; files.js moves it into #files-settings-main. -->
+    <div id="app-config-container" hidden>
 
         <!-- Header -->
         <header id="app-config-header">
-          <div class="ac-page-title">App Config</div>
+          <div class="ac-page-title">Settings</div>
         </header>
 
         <!-- Tab strip with chevron-scroll carousel -->
@@ -2534,8 +2530,7 @@
           </section>
 
         </div><!-- /app-config-content -->
-      </div><!-- /app-config-container -->
-    </div><!-- /tab-app-config -->
+    </div><!-- /app-config-container -->
 
     <div id="tab-account" class="tab-content"></div>
 
@@ -2591,16 +2586,16 @@
     </div>
 
     <!-- ── Files tab: VS Code-style file editor ───────────────── -->
-    <div id="tab-files" class="tab-content">
+    <div id="tab-admin-tools" class="tab-content">
       <div id="files-restricted-overlay" style="display:none;">
         <div class="files-restricted-card">
           <div class="files-restricted-icon"><i data-lucide="lock" style="width:32px;height:32px;"></i></div>
           <div class="files-restricted-title">Restricted Access</div>
-          <div class="files-restricted-desc">The Files editor is only available for admin users.</div>
+          <div class="files-restricted-desc">Admin Tools is only available for admin users.</div>
           <div class="files-restricted-desc files-restricted-diag" id="files-restricted-diag"></div>
         </div>
       </div>
-      <div id="files-editor" class="files-editor">
+      <div id="admin-tools" class="admin-tools">
         <!-- Sidebar: tabbed between Explorer (file tree) and GitHub manager.
              The header replaces the old "EXPLORER" text with two icon
              buttons (files + github). The icon for the current view is
@@ -2616,6 +2611,7 @@
             <button class="files-strip-btn files-strip-view" data-view="explorer" title="Switch to explorer"><i data-lucide="files" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="git" title="Switch to source control"><i data-lucide="github" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
           </div>
 
           <!-- Explorer panel (file tree) -->
@@ -2626,6 +2622,7 @@
                 <button class="files-view-toggle-btn" data-view="git" title="Switch to source control" role="tab" aria-selected="false"><i data-lucide="github" class="lucide-icon"></i></button>
                 <span class="files-view-toggle-sep" aria-hidden="true"></span>
                 <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
               </div>
               <div class="files-sidebar-actions">
                 <button class="files-icon-btn" id="files-new-file" title="New file"><i data-lucide="file-plus" class="lucide-icon"></i></button>
@@ -2651,6 +2648,7 @@
                 <button class="files-view-toggle-btn active" data-view="git" title="Source control (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="github" class="lucide-icon"></i></button>
                 <span class="files-view-toggle-sep" aria-hidden="true"></span>
                 <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
               </div>
               <div class="files-sidebar-actions">
                 <button class="files-icon-btn" id="fg-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
@@ -2691,6 +2689,11 @@
             <span id="files-status-info" class="files-status-info"></span>
           </div>
         </main>
+
+        <!-- Settings view: replaces the file editor area when the Settings
+             sidebar button is toggled on. files.js moves #app-config-container
+             into here at boot. -->
+        <main class="files-main files-settings-main" id="files-settings-main" hidden></main>
       </div>
     </div>
 
