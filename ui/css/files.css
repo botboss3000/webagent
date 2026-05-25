@@ -524,6 +524,14 @@ body.light-mode .files-editor {
 }
 .files-tab-menu-item .files-tab-menu-check { margin-left: auto; visibility: hidden; }
 .files-tab-menu-item.checked .files-tab-menu-check { visibility: visible; }
+.files-tab-menu-item:disabled { opacity: 0.4; cursor: default; }
+.files-tab-menu-item:disabled:hover { background: transparent; color: #cccccc; }
+
+.files-tab-menu-sep {
+  height: 1px;
+  background: #3c3c3c;
+  margin: 4px 6px;
+}
 
 /* ── Word-wrap toggle for the editor ─────────────────────── */
 

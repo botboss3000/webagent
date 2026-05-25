@@ -115,6 +115,14 @@ function renderTreeNode(entry, depth) {
   const row = renderTreeRow(entry, depth);
   node.appendChild(row);
 
+  // Right-click → context menu with the advanced actions
+  row.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    selectTreeRow(row);
+    showTreeContextMenu(entry, e.clientX, e.clientY);
+  });
+
   if (entry.is_dir) {
     const children = document.createElement('div');
     children.className = 'files-tree-children';
@@ -385,33 +393,35 @@ function reorderTab(srcPath, destPath, before) {
   persistTabs();
 }
 
-// ── Tab "more" menu ───────────────────────────────────────────────
+// ── Floating menus (tab "more" menu + tree context menu) ──────────
 
-function closeTabMenu() {
-  const m = document.getElementById('files-tab-menu-current');
+function closeFloatingMenu() {
+  const m = document.getElementById('files-floating-menu');
   if (m) m.remove();
 }
+// Back-compat alias for older callers
+function closeTabMenu() { closeFloatingMenu(); }
 
-function showTabMenu(tab, anchorBtn) {
-  closeTabMenu();
+function _openFloatingMenu(items, top, left) {
+  closeFloatingMenu();
 
   const menu = document.createElement('div');
   menu.className = 'files-tab-menu';
-  menu.id = 'files-tab-menu-current';
-
-  const items = [
-    { icon: 'pencil',     label: 'Rename…', action: () => renameTab(tab.path) },
-    { icon: 'trash-2',    label: 'Delete…', danger: true, action: () => deleteTab(tab.path) },
-    { icon: 'refresh-cw', label: 'Refresh',  action: () => refreshTab(tab.path) },
-    { icon: 'wrap-text',  label: 'Wrap',     checked: !!tab.wrap, action: () => toggleWrap(tab.path) },
-  ];
+  menu.id = 'files-floating-menu';
 
   for (const item of items) {
+    if (item.separator) {
+      const hr = document.createElement('div');
+      hr.className = 'files-tab-menu-sep';
+      menu.appendChild(hr);
+      continue;
+    }
     const btn = document.createElement('button');
     btn.className = 'files-tab-menu-item' + (item.danger ? ' danger' : '') + (item.checked ? ' checked' : '');
     btn.type = 'button';
+    btn.disabled = !!item.disabled;
     const i = document.createElement('i');
-    i.setAttribute('data-lucide', item.icon);
+    i.setAttribute('data-lucide', item.icon || 'circle');
     i.className = 'lucide-icon';
     btn.appendChild(i);
     const lbl = document.createElement('span');
@@ -423,42 +433,188 @@ function showTabMenu(tab, anchorBtn) {
     btn.appendChild(check);
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      closeTabMenu();
-      item.action();
+      closeFloatingMenu();
+      if (!item.disabled && typeof item.action === 'function') item.action();
     });
     menu.appendChild(btn);
   }
 
   document.body.appendChild(menu);
-  // Position below the anchor button, right-aligned so the menu stays visible
-  const rect = anchorBtn.getBoundingClientRect();
+
+  // Clamp position into the viewport
   const menuWidth = 180;
-  menu.style.top = (rect.bottom + 2) + 'px';
-  menu.style.left = Math.max(8, Math.min(window.innerWidth - menuWidth - 8, rect.right - menuWidth)) + 'px';
+  const rect = menu.getBoundingClientRect();
+  const menuHeight = rect.height || 8;
+  const clampedTop  = Math.max(8, Math.min(window.innerHeight - menuHeight - 8, top));
+  const clampedLeft = Math.max(8, Math.min(window.innerWidth  - menuWidth  - 8, left));
+  menu.style.top  = clampedTop + 'px';
+  menu.style.left = clampedLeft + 'px';
 
   if (window.lucide) window.lucide.createIcons({ nodes: Array.from(menu.querySelectorAll('[data-lucide]:not(.lucide)')) });
 
-  // Dismiss on outside click / Escape. Bind capture-phase mousedown so we
-  // run before any unrelated click handlers, but check containment so
-  // clicks inside the menu still work.
   const outside = (ev) => {
     if (!menu.contains(ev.target)) {
-      closeTabMenu();
+      closeFloatingMenu();
       document.removeEventListener('mousedown', outside, true);
+      document.removeEventListener('contextmenu', outside, true);
       document.removeEventListener('keydown', onKey, true);
     }
   };
   const onKey = (ev) => {
     if (ev.key === 'Escape') {
-      closeTabMenu();
+      closeFloatingMenu();
       document.removeEventListener('mousedown', outside, true);
+      document.removeEventListener('contextmenu', outside, true);
       document.removeEventListener('keydown', onKey, true);
     }
   };
   setTimeout(() => {
     document.addEventListener('mousedown', outside, true);
+    document.addEventListener('contextmenu', outside, true);
     document.addEventListener('keydown', onKey, true);
   }, 0);
+}
+
+function showTabMenu(tab, anchorBtn) {
+  const rect = anchorBtn.getBoundingClientRect();
+  const items = [
+    { icon: 'pencil',     label: 'Rename…', action: () => renameTab(tab.path) },
+    { icon: 'trash-2',    label: 'Delete…', danger: true, action: () => deleteTab(tab.path) },
+    { icon: 'refresh-cw', label: 'Refresh',  action: () => refreshTab(tab.path) },
+    { icon: 'wrap-text',  label: 'Wrap',     checked: !!tab.wrap, action: () => toggleWrap(tab.path) },
+  ];
+  // Right-align under the button
+  _openFloatingMenu(items, rect.bottom + 2, rect.right - 180);
+}
+
+function showTreeContextMenu(entry, x, y) {
+  const isOpen = !!openTabs.find((t) => t.path === entry.path);
+
+  let items;
+  if (entry.is_dir) {
+    items = [
+      { icon: 'file-plus',   label: 'New File…',   action: () => newInFolder(entry.path, 'file') },
+      { icon: 'folder-plus', label: 'New Folder…', action: () => newInFolder(entry.path, 'dir')  },
+      { separator: true },
+      { icon: 'pencil',      label: 'Rename…',     action: () => renameEntry(entry) },
+      { icon: 'trash-2',     label: 'Delete…',     danger: true, action: () => deleteEntry(entry) },
+      { separator: true },
+      { icon: 'refresh-cw',  label: 'Refresh',     action: () => loadRoot() },
+      { icon: 'copy',        label: 'Copy path',   action: () => copyPath(entry.path) },
+    ];
+  } else {
+    items = [
+      { icon: 'file',     label: isOpen ? 'Focus tab' : 'Open', action: () => openFile(entry.path, entry.name) },
+      { separator: true },
+      { icon: 'pencil',   label: 'Rename…', action: () => renameEntry(entry) },
+      { icon: 'trash-2',  label: 'Delete…', danger: true, action: () => deleteEntry(entry) },
+      { separator: true },
+      { icon: 'copy',     label: 'Copy path', action: () => copyPath(entry.path) },
+    ];
+  }
+  _openFloatingMenu(items, y, x);
+}
+
+// ── Tree actions (rename / delete / new-in-folder / copy path) ────
+
+async function renameEntry(entry) {
+  const newName = prompt('Rename to:', entry.name);
+  if (!newName || newName === entry.name) return;
+  // Replace the basename in the absolute path
+  const parts = entry.path.split('/');
+  parts[parts.length - 1] = newName;
+  const newPath = parts.join('/');
+  try {
+    const r = await apiFetch('/rename', {
+      method: 'POST',
+      body: JSON.stringify({ path: entry.path, new_path: newPath }),
+    });
+    const finalPath = r.to || newPath;
+    // If the renamed entry (or any descendant under a renamed folder) is
+    // currently open as a tab, update those tabs in place so saves still
+    // hit the right file.
+    const prefix = entry.path + '/';
+    for (const tab of openTabs) {
+      if (tab.path === entry.path) {
+        tab.path = finalPath;
+        tab.name = finalPath.split('/').pop();
+      } else if (entry.is_dir && tab.path.startsWith(prefix)) {
+        tab.path = finalPath + tab.path.slice(entry.path.length);
+      }
+    }
+    if (activeTabPath === entry.path) activeTabPath = finalPath;
+    renderTabs();
+    renderEditorPanes();
+    persistTabs();
+    await loadRoot();
+  } catch (e) {
+    alert('Rename failed: ' + e.message);
+  }
+}
+
+async function deleteEntry(entry) {
+  const what = entry.is_dir ? 'folder (and all its contents)' : 'file';
+  if (!confirm('Delete ' + entry.name + ' ' + what + '?\n\n' + entry.path + '\n\nThis cannot be undone.')) return;
+  try {
+    await apiFetch('/delete', {
+      method: 'POST',
+      body: JSON.stringify({ path: entry.path }),
+    });
+    // Close any open tabs for this entry (or anything under it if folder)
+    const prefix = entry.path + '/';
+    const toClose = openTabs
+      .filter((t) => t.path === entry.path || (entry.is_dir && t.path.startsWith(prefix)))
+      .map((t) => t.path);
+    for (const p of toClose) {
+      const tab = openTabs.find((t) => t.path === p);
+      if (tab) tab.dirty = false;
+      closeTab(p);
+    }
+    await loadRoot();
+  } catch (e) {
+    alert('Delete failed: ' + e.message);
+  }
+}
+
+async function newInFolder(folderPath, kind) {
+  const name = prompt('New ' + (kind === 'dir' ? 'folder' : 'file') + ' name:');
+  if (!name) return;
+  const newPath = folderPath.replace(/\/+$/, '') + '/' + name;
+  try {
+    await apiFetch('/create', {
+      method: 'POST',
+      body: JSON.stringify({ path: newPath, kind }),
+    });
+    // Make sure the parent folder is expanded so the new entry is visible
+    expandedDirs.add(folderPath);
+    persistExpanded();
+    await loadRoot();
+    if (kind === 'file') openFile(newPath, name);
+  } catch (e) {
+    alert('Create failed: ' + e.message);
+  }
+}
+
+async function copyPath(path) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(path);
+      return;
+    }
+  } catch (_) {}
+  // Fallback for insecure contexts where the Clipboard API is blocked
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = path;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  } catch (_) {
+    prompt('Copy path:', path);
+  }
 }
 
 async function renameTab(path) {
