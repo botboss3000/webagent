@@ -331,6 +331,12 @@ class AppSettings(BaseModel):
     # WS-replay on reconnect. 0 = drop immediately. Default 60s gives a
     # smooth refresh-after-completion UX without holding RAM long.
     stream_buffer_retention_seconds: int = 60
+    # User feedback → GitHub issues via the webAgent relay. Cloners can flip
+    # `feedback_enabled` off to hide the form, or point `feedback_relay_url`
+    # at their own relay deployment.
+    feedback_enabled: bool = True
+    feedback_relay_url: str = ""  # empty → use built-in default
+    turnstile_site_key: str = ""  # public Cloudflare Turnstile site key
 
 
 VALID_ACCESS_MODES = {"public_anonymous", "public_registered", "admin_approval", "private"}

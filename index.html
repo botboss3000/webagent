@@ -335,15 +335,13 @@
   <!-- Hidden native <select> kept for tabs.js compat -->
   <select id="main-tab-select" style="display:none;" aria-hidden="true">
     <option value="autoagent" selected>Dashboard</option>
-    <option value="terminal">Terminal</option>
     <option value="stream">Stream</option>
     <option value="flow">Flow</option>
     <option value="loop-visual">Runtime Loop</option>
     <option value="database">Database</option>
-    <option value="github">GitHub</option>
     <option value="agents">Agents</option>
     <option value="app-config">App Config</option>
-    <option value="files">Files</option>
+    <option value="files">Admin Tools</option>
     <option value="account">Manage Account</option>
   </select>
 
@@ -353,9 +351,6 @@
     <div id="main-tabs" role="tablist">
       <button type="button" class="main-tab active" data-value="autoagent" role="tab">
         <i data-lucide="palette" class="lucide-icon"></i>Dashboard
-      </button>
-      <button type="button" class="main-tab" data-value="terminal" role="tab">
-        <i data-lucide="terminal" class="lucide-icon"></i>Terminal
       </button>
       <button type="button" class="main-tab" data-value="stream" role="tab">
         <i data-lucide="radio-tower" class="lucide-icon"></i>Stream
@@ -369,9 +364,6 @@
       <button type="button" class="main-tab" data-value="database" role="tab">
         <i data-lucide="database" class="lucide-icon"></i>Database
       </button>
-      <button type="button" class="main-tab" data-value="github" role="tab">
-        <i data-lucide="github" class="lucide-icon"></i>GitHub
-      </button>
       <button type="button" class="main-tab" data-value="agents" role="tab">
         <i data-lucide="bot" class="lucide-icon"></i>Agents
       </button>
@@ -379,7 +371,7 @@
         <i data-lucide="sliders-horizontal" class="lucide-icon"></i>App Config
       </button>
       <button type="button" class="main-tab" data-value="files" role="tab">
-        <i data-lucide="folder-tree" class="lucide-icon"></i>Files
+        <i data-lucide="wrench" class="lucide-icon"></i>Admin Tools
       </button>
     </div>
     <button type="button" id="main-tabs-chev-right" class="main-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
@@ -431,6 +423,11 @@
 
         <div class="user-dropdown-divider"></div>
 
+        <button id="btn-send-feedback" class="user-dropdown-action" style="display:none;">
+          <i data-lucide="message-circle" class="lucide-icon" style="width:15px;height:15px;"></i>
+          Send feedback
+        </button>
+
         <button id="btn-signout-header" class="user-dropdown-action">
           <i data-lucide="log-out" class="lucide-icon" style="width:15px;height:15px;"></i>
           Sign Out
@@ -453,9 +450,6 @@
   <!-- Terminal side -->
   <div id="terminal-side">
     <!-- Tab content -->
-    <div id="tab-terminal" class="tab-content">
-      <div id="terminal-container"></div>
-    </div>
     <div id="tab-stream" class="tab-content">
       <div id="stream-viewer">
         <div id="stream-toolbar">
@@ -500,135 +494,6 @@
         </div>
         <div id="loop-visual-graph-area">
           <div class="loop-visual-hint">Agent loop visualizer — connect to see events light up the graph</div>
-        </div>
-      </div>
-    </div>
-    <div id="tab-github" class="tab-content">
-      <div id="gh-restricted-overlay" style="display:none;">
-        <div class="gh-restricted-card">
-          <div class="gh-restricted-icon"><i data-lucide="lock" style="width:32px;height:32px;"></i></div>
-          <div class="gh-restricted-title">Restricted Access</div>
-          <div class="gh-restricted-desc">The GitHub tab is only available for admin users.</div>
-          <div class="gh-restricted-desc" style="margin-top:8px;font-size:12px;color:#565f89;">
-            Log in as <strong>admin</strong> to manage the repository.
-          </div>
-        </div>
-      </div>
-      <div id="gh-viewer" style="display:none;">
-        <div id="gh-toolbar">
-          <span style="color:#565f89;font-size:11px;display:inline-flex;align-items:center;gap:4px;"><i data-lucide="github" style="width:12px;height:12px;"></i> GitHub Repository</span>
-          <span id="gh-repo-badge" style="color:#565f89;font-size:11px;margin-left:8px;">
-            <span id="gh-branch-display"><span id="gh-branch">—</span></span>
-          </span>
-          <span style="margin-left:auto;display:flex;gap:6px;align-items:center;">
-            <button id="gh-refresh-btn" class="gh-btn gh-btn-sm">↻ Refresh</button>
-            <span id="gh-refresh-spinner" class="gh-spinner" style="display:none;">⟳</span>
-          </span>
-        </div>
-
-        <div id="gh-body">
-          <!-- Left column: status + actions -->
-          <div id="gh-left">
-            <!-- Repo status card -->
-            <div class="gh-card">
-              <div class="gh-card-title">Repository</div>
-              <div class="gh-status-grid">
-                <div class="gh-status-item">
-                  <span class="gh-label">Remote</span>
-                  <span id="gh-remote-url" class="gh-value">—</span>
-                </div>
-                <div class="gh-status-item">
-                  <span class="gh-label">Last Commit</span>
-                  <span id="gh-last-commit" class="gh-value">—</span>
-                </div>
-                <div class="gh-status-item">
-                  <span class="gh-label">Sync</span>
-                  <span id="gh-ahead-behind" class="gh-value">—</span>
-                </div>
-                <div class="gh-status-item">
-                  <span class="gh-label">Files</span>
-                  <span id="gh-file-count" class="gh-value">—</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- Changed files -->
-            <div class="gh-card">
-              <div class="gh-card-title">Changed Files</div>
-              <div id="gh-file-list" class="gh-file-list">
-                <div class="gh-meta">Loading...</div>
-              </div>
-            </div>
-
-            <!-- Commit area -->
-            <div id="gh-commit-section" class="gh-card" style="display:none;">
-              <div class="gh-card-title">Commit</div>
-              <div class="gh-commit-row">
-                <input type="text" id="gh-commit-msg" class="gh-input" placeholder="Commit message..." maxlength="200">
-                <button id="gh-commit-btn" class="gh-btn gh-btn-primary">Commit</button>
-                <span id="gh-commit-spinner" class="gh-spinner" style="display:none;">⟳</span>
-              </div>
-              <div id="gh-commit-result" class="gh-result" style="display:none;"></div>
-            </div>
-
-            <!-- Push / Pull -->
-            <div id="gh-push-pull-group" class="gh-card" style="display:none;">
-              <div class="gh-card-title">Sync</div>
-              <div class="gh-sync-row">
-                <button id="gh-push-btn" class="gh-btn gh-btn-primary" style="display:inline-flex;align-items:center;gap:4px;"><i data-lucide="arrow-up" style="width:13px;height:13px;"></i> Push</button>
-                <span id="gh-push-spinner" class="gh-spinner" style="display:none;">⟳</span>
-                <span id="gh-push-result" class="gh-result" style="display:none;"></span>
-                <button id="gh-pull-btn" class="gh-btn" style="display:inline-flex;align-items:center;gap:4px;"><i data-lucide="arrow-down" style="width:13px;height:13px;"></i> Pull</button>
-                <span id="gh-pull-spinner" class="gh-spinner" style="display:none;">⟳</span>
-                <span id="gh-pull-result" class="gh-result" style="display:none;"></span>
-                <button id="gh-pull-restart-btn" class="gh-btn gh-btn-deploy" style="display:inline-flex;align-items:center;gap:4px;" title="Pull latest from remote, then restart the server so backend changes take effect"><i data-lucide="rocket" style="width:13px;height:13px;"></i> Pull &amp; Restart</button>
-                <span id="gh-pull-restart-spinner" class="gh-spinner" style="display:none;">⟳</span>
-                <span id="gh-pull-restart-result" class="gh-result" style="display:none;"></span>
-              </div>
-            </div>
-
-            <!-- Token config -->
-            <div id="gh-token-section" class="gh-card">
-              <div class="gh-card-title">GitHub Token <span id="gh-token-configured" style="font-weight:400;font-size:11px;color:#565f89;margin-left:8px;">—</span></div>
-              <div class="gh-token-row">
-                <input type="password" id="gh-token-input" class="gh-input" placeholder="ghp_... or github_pat_...">
-                <button id="gh-token-save-btn" class="gh-btn gh-btn-primary">Save</button>
-              </div>
-              <div id="gh-token-status" class="gh-result" style="display:none;"></div>
-              <details class="gh-hint-details">
-                <summary style="cursor:pointer;color:#7dcfff;font-size:11px;font-weight:500;">How to create a GitHub token →</summary>
-                <div class="gh-hint-steps">
-                  <p><strong>Classic token:</strong></p>
-                  <ol>
-                    <li>Go to <a href="https://github.com/settings/tokens" target="_blank" style="color:#7dcfff;">github.com/settings/tokens</a></li>
-                    <li>Click <strong>Generate new token (classic)</strong></li>
-                    <li>Give it a name (e.g. "webAgent")</li>
-                    <li>Select scope: <strong>repo</strong> (full control)</li>
-                    <li>Click <strong>Generate token</strong> and copy it</li>
-                  </ol>
-                  <p style="margin-top:6px;"><strong>Fine-grained token:</strong></p>
-                  <ol>
-                    <li>Go to <a href="https://github.com/settings/tokens?type=beta" target="_blank" style="color:#7dcfff;">github.com/settings/tokens</a></li>
-                    <li>Click <strong>Generate new token (fine-grained)</strong></li>
-                    <li>Select this repository only</li>
-                    <li>Permissions → <strong>Contents: Read and write</strong></li>
-                    <li>Click <strong>Generate token</strong> and copy it</li>
-                  </ol>
-                  <p style="margin-top:6px;color:#e0af68;">Paste the token above and click Save. It's stored locally in provider.json.</p>
-                </div>
-              </details>
-            </div>
-          </div>
-
-          <!-- Right column: commit log -->
-          <div id="gh-right">
-            <div class="gh-card">
-              <div class="gh-card-title">Recent Commits</div>
-              <div id="gh-log-list" class="gh-log-list">
-                <div class="gh-meta">Loading...</div>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
     </div>
@@ -2443,7 +2308,7 @@
             </div>
 
             <div class="ac-info-banner">
-              For full commit/push/pull controls, switch to the <a class="ac-tab-link" data-tab="github">GitHub tab</a>.
+              For full commit/push/pull controls, open the <a class="ac-tab-link" data-tab="files">Admin Tools</a> and switch its sidebar to the source-control view.
             </div>
           </section>
 
@@ -2750,6 +2615,7 @@
             <button class="files-strip-btn files-strip-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="explorer" title="Switch to explorer"><i data-lucide="files" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="git" title="Switch to source control"><i data-lucide="github" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
           </div>
 
           <!-- Explorer panel (file tree) -->
@@ -2758,6 +2624,8 @@
               <div class="files-view-toggle" role="tablist" aria-label="Sidebar view">
                 <button class="files-view-toggle-btn active" data-view="explorer" title="Explorer (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="files" class="lucide-icon"></i></button>
                 <button class="files-view-toggle-btn" data-view="git" title="Switch to source control" role="tab" aria-selected="false"><i data-lucide="github" class="lucide-icon"></i></button>
+                <span class="files-view-toggle-sep" aria-hidden="true"></span>
+                <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
               </div>
               <div class="files-sidebar-actions">
                 <button class="files-icon-btn" id="files-new-file" title="New file"><i data-lucide="file-plus" class="lucide-icon"></i></button>
@@ -2781,6 +2649,8 @@
               <div class="files-view-toggle" role="tablist" aria-label="Sidebar view">
                 <button class="files-view-toggle-btn" data-view="explorer" title="Switch to explorer" role="tab" aria-selected="false"><i data-lucide="files" class="lucide-icon"></i></button>
                 <button class="files-view-toggle-btn active" data-view="git" title="Source control (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="github" class="lucide-icon"></i></button>
+                <span class="files-view-toggle-sep" aria-hidden="true"></span>
+                <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
               </div>
               <div class="files-sidebar-actions">
                 <button class="files-icon-btn" id="fg-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
@@ -2920,6 +2790,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm/lib/xterm.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit/lib/addon-fit.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-search/lib/addon-search.js"></script>
 <script>
   document.addEventListener('DOMContentLoaded', function() {
     // ── Custom db-select dropdown ──
@@ -3775,5 +3646,90 @@
   }, true);
 })();
 </script>
+
+<!-- ── Feedback modal (rendered hidden; opened by ui/js/feedback.js) ── -->
+<div id="feedback-modal" class="feedback-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="feedback-modal-title">
+  <div class="feedback-modal-backdrop" data-feedback-close></div>
+  <div class="feedback-modal-card">
+    <div class="feedback-modal-head">
+      <h3 id="feedback-modal-title">Send feedback</h3>
+      <button class="feedback-modal-close" data-feedback-close aria-label="Close">&times;</button>
+    </div>
+    <form id="feedback-form" class="feedback-modal-body">
+      <fieldset class="feedback-type-group">
+        <legend>What kind of feedback?</legend>
+        <label class="feedback-type-opt">
+          <input type="radio" name="feedback-type" value="bug" checked>
+          <span><strong>Bug report</strong> — something is broken</span>
+        </label>
+        <label class="feedback-type-opt">
+          <input type="radio" name="feedback-type" value="feature">
+          <span><strong>Feature request</strong> — an idea or improvement</span>
+        </label>
+        <label class="feedback-type-opt">
+          <input type="radio" name="feedback-type" value="message">
+          <span><strong>Message to admin</strong> — anything else</span>
+        </label>
+      </fieldset>
+
+      <label class="feedback-field">
+        <span class="feedback-label">Details</span>
+        <textarea id="feedback-body" name="body" rows="6" required maxlength="8000" placeholder="Describe what happened, what you expected, and any steps to reproduce."></textarea>
+        <span class="feedback-counter"><span id="feedback-body-count">0</span> / 8000</span>
+      </label>
+
+      <label class="feedback-field">
+        <span class="feedback-label">Your email <span class="feedback-optional">(optional, only if you want a reply)</span></span>
+        <input id="feedback-email" name="email" type="email" maxlength="254" placeholder="you@example.com" autocomplete="email">
+      </label>
+
+      <div id="feedback-turnstile" class="feedback-turnstile"></div>
+
+      <div id="feedback-status" class="feedback-status" aria-live="polite"></div>
+
+      <div class="feedback-modal-actions">
+        <button type="button" class="feedback-btn-ghost" data-feedback-close>Cancel</button>
+        <button type="submit" id="feedback-submit-btn" class="feedback-btn-primary">Send</button>
+      </div>
+
+      <p class="feedback-disclosure">
+        Submissions create a GitHub issue in the webAgent feedback repo. Don't include passwords or other secrets. Your email, if provided, is stored in the issue body so the admin can reply.
+      </p>
+    </form>
+  </div>
+</div>
+
+<style>
+  .feedback-modal { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; }
+  .feedback-modal-backdrop { position: absolute; inset: 0; background: rgba(8, 10, 22, 0.65); backdrop-filter: blur(2px); }
+  .feedback-modal-card { position: relative; background: var(--surface, #11142b); color: var(--text, #e6e8ef); border: 1px solid #2a2a4a; border-radius: 10px; width: min(560px, 92vw); max-height: 90vh; overflow: auto; box-shadow: 0 16px 48px rgba(0,0,0,0.4); }
+  .feedback-modal-head { display:flex; align-items:center; justify-content:space-between; padding: 14px 18px; border-bottom: 1px solid #2a2a4a; }
+  .feedback-modal-head h3 { margin:0; font-size: 15px; font-weight: 600; }
+  .feedback-modal-close { background:none; border:0; color:inherit; font-size:22px; line-height:1; cursor:pointer; padding:4px 8px; }
+  .feedback-modal-body { padding: 16px 18px 18px; display:flex; flex-direction:column; gap:14px; }
+  .feedback-type-group { border:0; padding:0; margin:0; display:flex; flex-direction:column; gap:6px; }
+  .feedback-type-group legend { padding:0; margin: 0 0 4px; font-size:12px; color:#9ba1bd; }
+  .feedback-type-opt { display:flex; gap:8px; align-items:flex-start; font-size:13px; cursor:pointer; padding:6px 8px; border-radius:6px; }
+  .feedback-type-opt:hover { background: rgba(255,255,255,0.04); }
+  .feedback-type-opt input { margin-top: 2px; }
+  .feedback-field { display:flex; flex-direction:column; gap:5px; position:relative; }
+  .feedback-label { font-size:12px; color:#9ba1bd; }
+  .feedback-optional { color:#6e7493; font-weight:400; }
+  .feedback-field textarea, .feedback-field input[type=email] { background:#0d1024; color:inherit; border:1px solid #2a2a4a; border-radius:6px; padding:8px 10px; font: inherit; resize: vertical; }
+  .feedback-field textarea:focus, .feedback-field input[type=email]:focus { outline: 2px solid #4c6cff; outline-offset: -1px; }
+  .feedback-counter { position:absolute; right:6px; bottom:6px; font-size:10px; color:#6e7493; pointer-events:none; }
+  .feedback-turnstile { min-height: 0; }
+  .feedback-turnstile:not(:empty) { min-height: 65px; }
+  .feedback-status { font-size: 12px; min-height: 1em; }
+  .feedback-status.error { color: #ff7a7a; }
+  .feedback-status.success { color: #5cd6a8; }
+  .feedback-modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top: 4px; }
+  .feedback-btn-ghost { background:transparent; color:#c5cae3; border:1px solid #2a2a4a; border-radius:6px; padding:6px 14px; cursor:pointer; font: inherit; }
+  .feedback-btn-primary { background:#4c6cff; color:#fff; border:0; border-radius:6px; padding:6px 16px; cursor:pointer; font: inherit; }
+  .feedback-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .feedback-disclosure { font-size: 11px; color: #6e7493; margin: 0; line-height: 1.5; }
+</style>
+
+<script type="module" src="./ui/js/feedback.js"></script>
 </body>
 </html>

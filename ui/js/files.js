@@ -7,6 +7,8 @@
 // folder fetches its children on first expand.
 
 import { openGitPanel } from './files-git.js';
+import { createTerminalInstance } from './terminal.js';
+import { randomUUID } from './uuid.js';
 
 const API_BASE = '/api/v1/files';
 const LS_SIDEBAR_VIEW = 'files.sidebarView';   // 'explorer' | 'git'
@@ -81,6 +83,16 @@ function renderTreeRow(entry, depth) {
   row.className = 'files-tree-row';
   row.style.paddingLeft = (depth * 12 + 4) + 'px';
   row.dataset.path = entry.path;
+  // Make every row draggable so the user can drop its path onto a terminal
+  // pane (handled in buildPaneForTab). text/plain is the canonical type
+  // both DataTransfer.types and our drop handlers look for.
+  row.draggable = true;
+  row.addEventListener('dragstart', (e) => {
+    try {
+      e.dataTransfer.setData('text/plain', entry.path);
+      e.dataTransfer.effectAllowed = 'copy';
+    } catch (_) {}
+  });
 
   const chev = document.createElement('span');
   chev.className = 'files-tree-chev';
@@ -404,7 +416,10 @@ function renderTabs() {
   bar.innerHTML = '';
   for (const tab of openTabs) {
     const el = document.createElement('div');
-    el.className = 'files-tab' + (tab.path === activeTabPath ? ' active' : '') + (tab.dirty ? ' dirty' : '');
+    el.className = 'files-tab'
+      + (tab.path === activeTabPath ? ' active' : '')
+      + (tab.dirty ? ' dirty' : '')
+      + (tab.closing ? ' closing' : '');
     el.dataset.path = tab.path;
     el.draggable = true;
     el.title = tab.path;
@@ -412,46 +427,75 @@ function renderTabs() {
     const iconWrap = document.createElement('span');
     iconWrap.className = 'files-tab-icon';
     const iconI = document.createElement('i');
-    iconI.setAttribute('data-lucide', fileIconName(tab.name));
+    iconI.setAttribute('data-lucide', tab.kind === 'terminal' ? 'terminal' : fileIconName(tab.name));
     iconI.className = 'lucide-icon';
     iconWrap.appendChild(iconI);
+    // Terminal tabs get a small connection-status dot overlaid on the icon
+    // wrap. State is driven by the xterm instance via onStateChange (see
+    // buildPaneForTab); we render an initial state here so the dot exists
+    // before the instance binds.
+    if (tab.kind === 'terminal') {
+      const dot = document.createElement('span');
+      dot.className = 'files-tab-conn-dot';
+      const initialState = (tab.instance && tab.instance.getState && tab.instance.getState()) || 'connecting';
+      dot.dataset.state = initialState;
+      dot.title = _connStateTitle(initialState);
+      iconWrap.appendChild(dot);
+    }
     el.appendChild(iconWrap);
 
     const label = document.createElement('span');
     label.className = 'files-tab-label';
     label.textContent = tab.name;
+    // Double-click the label to rename a terminal tab inline. File tabs are
+    // named after the file on disk and don't get this affordance.
+    if (tab.kind === 'terminal') {
+      label.title = 'Double-click to rename';
+      label.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        startInlineRename(tab, label);
+      });
+    }
     el.appendChild(label);
 
     // ── 3-dot "more" menu button ──
-    const more = document.createElement('button');
-    more.className = 'files-tab-more';
-    more.type = 'button';
-    more.title = 'More actions';
-    more.draggable = false;
-    const moreI = document.createElement('i');
-    moreI.setAttribute('data-lucide', 'more-vertical');
-    moreI.className = 'lucide-icon';
-    more.appendChild(moreI);
-    // Same draggable-parent guard as the close button.
-    more.addEventListener('mousedown', (e) => {
-      e.stopPropagation();
-      if (e.button === 0) {
-        e.preventDefault();
-        showTabMenu(tab, more);
-      }
-    });
-    more.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); });
-    more.addEventListener('dragstart', (e) => { e.preventDefault(); e.stopPropagation(); });
-    el.appendChild(more);
+    // Terminal tabs have no per-tab actions (no file to rename/delete/wrap/
+    // preview/find), so the menu is omitted entirely.
+    if (tab.kind !== 'terminal') {
+      const more = document.createElement('button');
+      more.className = 'files-tab-more';
+      more.type = 'button';
+      more.title = 'More actions';
+      more.draggable = false;
+      const moreI = document.createElement('i');
+      moreI.setAttribute('data-lucide', 'more-vertical');
+      moreI.className = 'lucide-icon';
+      more.appendChild(moreI);
+      // Same draggable-parent guard as the close button.
+      more.addEventListener('mousedown', (e) => {
+        e.stopPropagation();
+        if (e.button === 0) {
+          e.preventDefault();
+          showTabMenu(tab, more);
+        }
+      });
+      more.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); });
+      more.addEventListener('dragstart', (e) => { e.preventDefault(); e.stopPropagation(); });
+      el.appendChild(more);
+    }
 
     const close = document.createElement('button');
     close.className = 'files-tab-close';
     close.type = 'button';
-    close.title = 'Close (middle-click also works)';
+    close.title = tab.closing ? 'Closing…' : 'Close (middle-click also works)';
     close.draggable = false;
+    close.disabled = !!tab.closing;
     const xI = document.createElement('i');
-    xI.setAttribute('data-lucide', 'x');
-    xI.className = 'lucide-icon';
+    // Swap the X for a spinner while the backend DELETE is in flight so the
+    // user can see the close is being verified.
+    xI.setAttribute('data-lucide', tab.closing ? 'loader-2' : 'x');
+    xI.className = 'lucide-icon' + (tab.closing ? ' files-tab-spin' : '');
     xI.style.pointerEvents = 'none';
     close.appendChild(xI);
     // The parent `el` is draggable, which can swallow the click into a
@@ -962,6 +1006,7 @@ function renderEditorPanes() {
 // ── Per-tab pane mode ─────────────────────────────────────────────
 
 function paneModeForTab(tab) {
+  if (tab.kind === 'terminal') return 'terminal';
   if (isImageFile(tab.name)) return 'image';
   if (tab.binary)             return 'binary';
   if (isMarkdownFile(tab.name) && tab.preview) return 'markdown';
@@ -1013,6 +1058,64 @@ function buildPaneForTab(tab, mode) {
     md.className = 'files-markdown-preview';
     md.innerHTML = renderMarkdown(tab.content || '');
     pane.appendChild(md);
+  } else if (mode === 'terminal') {
+    pane.classList.add('files-terminal-pane');
+    // Find bar above the host — hidden until Ctrl+F. Placed before the
+    // host so it stacks on top in flex-column layout.
+    const findBar = buildTerminalFindBar();
+    pane.appendChild(findBar);
+    const host = document.createElement('div');
+    host.className = 'files-terminal-host';
+    pane.appendChild(host);
+
+    // Drag-and-drop: dropping a file from the file tree pastes its absolute
+    // path (shell-quoted) at the current prompt. The tree marshals the path
+    // as text/plain in dragstart; here we just unpack and forward to the PTY.
+    host.addEventListener('dragover', (e) => {
+      if (e.dataTransfer && Array.from(e.dataTransfer.types).indexOf('text/plain') !== -1) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        host.classList.add('files-terminal-drop-target');
+      }
+    });
+    host.addEventListener('dragleave', () => host.classList.remove('files-terminal-drop-target'));
+    host.addEventListener('drop', (e) => {
+      host.classList.remove('files-terminal-drop-target');
+      const raw = e.dataTransfer && e.dataTransfer.getData('text/plain');
+      if (!raw || !tab.instance) return;
+      e.preventDefault();
+      tab.instance.paste(shellQuote(raw) + ' ');
+      tab.instance.focus();
+    });
+
+    // xterm.open() measures its host immediately. The pane has just been
+    // created (not yet appended to the document) — defer xterm creation
+    // until after the pane is attached and the active class has been set,
+    // otherwise fit() reads zero dimensions.
+    setTimeout(() => {
+      if (!document.body.contains(pane)) return;
+      try {
+        // tab.path is the backend session_id (see pushTerminalTab). Passing
+        // the existing id on restore reattaches to the running shell.
+        tab.instance = createTerminalInstance(host, tab.path);
+        // Drive the per-tab status dot from the WS state machine.
+        tab.instance.onStateChange((s) => _updateTabConnDot(tab.path, s));
+        tab.instance.fit();
+        // Wire Ctrl+F → find bar. Capture-phase on the host so we preempt
+        // xterm's keydown handler (which otherwise forwards Ctrl+F bytes
+        // to the shell).
+        host.addEventListener('keydown', (e) => {
+          if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+            e.preventDefault();
+            e.stopPropagation();
+            openTerminalFindBar(findBar, tab.instance);
+          }
+        }, true);
+        if (tab.path === activeTabPath) tab.instance.focus();
+      } catch (e) {
+        host.textContent = 'Failed to start terminal: ' + (e.message || e);
+      }
+    }, 0);
   } else {
     // text mode: textarea (transparent) overlaid on a <pre> for Prism
     buildTextEditorPane(pane, tab);
@@ -1347,6 +1450,16 @@ function updateStatusBar(tab) {
     info.classList.remove('dirty');
     return;
   }
+  // Terminal tabs have no path / save / dirty state — render a simple label.
+  if (tab.kind === 'terminal') {
+    path.textContent = tab.name;
+    info.classList.remove('dirty');
+    info.innerHTML = '';
+    const meta = document.createElement('span');
+    meta.textContent = 'PTY session';
+    info.appendChild(meta);
+    return;
+  }
   path.textContent = tab.path;
   info.classList.toggle('dirty', !!tab.dirty);
   info.innerHTML = '';
@@ -1412,6 +1525,15 @@ function activateTab(path) {
   }
   const tab = openTabs.find((t) => t.path === path);
   updateStatusBar(tab || null);
+  // Terminal tabs need a refit each time they regain focus — xterm can't
+  // measure while its pane is display:none, so any window resize that
+  // happened while another tab was active is unaccounted for until now.
+  if (tab && tab.kind === 'terminal' && tab.instance) {
+    setTimeout(() => {
+      tab.instance.fit();
+      tab.instance.focus();
+    }, 30);
+  }
   // Bring the activated tab into view if it's outside the visible window
   const tabEl = document.querySelector('#files-tabs .files-tab[data-path="' + cssEscape(path) + '"]');
   if (tabEl && typeof tabEl.scrollIntoView === 'function') {
@@ -1420,13 +1542,38 @@ function activateTab(path) {
   try { localStorage.setItem(LS_ACTIVE_TAB, path); } catch (_) {}
 }
 
-function closeTab(path) {
+async function closeTab(path) {
   const tab = openTabs.find((t) => t.path === path);
   if (!tab) return;
+  if (tab.closing) return;          // already in-flight; ignore repeat clicks
   if (tab.dirty) {
     if (!confirm('Discard unsaved changes to ' + tab.name + '?')) return;
   }
+
+  // Terminal tabs: only remove from the UI after the backend confirms the
+  // PTY is gone. If the DELETE fails (network blip, server down, …) we keep
+  // the tab open so the user can retry instead of silently leaking the
+  // still-running shell.
+  if (tab.kind === 'terminal' && tab.instance) {
+    tab.closing = true;
+    renderTabs();
+    try {
+      await tab.instance.closeBackendSession();
+    } catch (e) {
+      tab.closing = false;
+      renderTabs();
+      alert(
+        'Could not close terminal "' + tab.name + '":\n\n' + (e.message || e) +
+        '\n\nThe shell may still be running on the server. Try again.',
+      );
+      return;
+    }
+    try { tab.instance.dispose(); } catch (_) {}
+    tab.instance = null;
+  }
+
   const idx = openTabs.findIndex((t) => t.path === path);
+  if (idx < 0) return;              // another close finished first
   openTabs.splice(idx, 1);
   // Remove pane
   const content = document.getElementById('files-content');
@@ -1534,7 +1681,15 @@ function initSidebarResize() {
 
 function persistTabs() {
   try {
-    const minimal = openTabs.map((t) => ({ path: t.path, name: t.name, wrap: !!t.wrap, preview: !!t.preview }));
+    // Terminal tabs are persisted by session_id only. On reload, the backend
+    // PTY is still alive (sessions outlive page reloads) and reconnecting
+    // with the same id reattaches us to it.
+    const minimal = openTabs.map((t) => {
+      if (t.kind === 'terminal') {
+        return { path: t.path, name: t.name, kind: 'terminal' };
+      }
+      return { path: t.path, name: t.name, wrap: !!t.wrap, preview: !!t.preview };
+    });
     localStorage.setItem(LS_OPEN_TABS, JSON.stringify(minimal));
     localStorage.setItem(LS_ACTIVE_TAB, activeTabPath || '');
   } catch (_) {}
@@ -1562,9 +1717,16 @@ async function restoreOpenTabs() {
     const saved = JSON.parse(localStorage.getItem(LS_OPEN_TABS) || '[]');
     const wantActive = localStorage.getItem(LS_ACTIVE_TAB) || '';
     if (!Array.isArray(saved) || !saved.length) return;
-    // Open in order, swallow failures (file may have been deleted)
+    // Open in order, swallow failures (file may have been deleted, or a
+    // terminal's backend session may have died and need to respawn).
     for (const t of saved) {
       try {
+        if (t.kind === 'terminal') {
+          // Reattach to the running PTY identified by t.path. If the shell
+          // already exited, the backend will spawn a fresh one for that id.
+          pushTerminalTab(t.path, t.name);
+          continue;
+        }
         await openFile(t.path, t.name);
         const opened = openTabs.find((o) => o.path === t.path);
         if (!opened) continue;
@@ -1615,9 +1777,228 @@ export function initFiles() {
   installFilesDropGuard();
   initSidebarViewSwitcher();
   initSidebarMaximize();
+  initFilesTerminalButton();
   renderTabs();
   renderEditorPanes();
 }
+
+// ── In-page terminal tabs ──────────────────────────────────────────
+//
+// Each click of the "new terminal" button in the sidebar pushes a fresh
+// tab with kind === 'terminal' and spawns its own xterm + PTY WebSocket.
+// Terminal tabs sit alongside file tabs in the same tab bar and share the
+// same activate / close / drag-reorder machinery.
+
+function _connStateTitle(s) {
+  return s === 'connected'    ? 'Connected'
+       : s === 'reconnecting' ? 'Reconnecting…'
+       : s === 'error'        ? 'Disconnected — refresh to retry'
+       :                        'Connecting…';
+}
+
+function _updateTabConnDot(tabPath, state) {
+  const tabEl = document.querySelector('#files-tabs .files-tab[data-path="' + cssEscape(tabPath) + '"]');
+  if (!tabEl) return;
+  const dot = tabEl.querySelector('.files-tab-conn-dot');
+  if (!dot) return;
+  dot.dataset.state = state;
+  dot.title = _connStateTitle(state);
+}
+
+function newTerminalSessionId() {
+  return 'terminal:' + randomUUID();
+}
+
+// ── Drag a file from the tree onto a terminal pane ────────────────
+// Quote a path so it can be safely pasted at a POSIX shell prompt: bare
+// when only safe chars, single-quoted otherwise (with embedded ' escaped).
+function shellQuote(s) {
+  if (s == null) return '';
+  s = String(s);
+  if (/^[a-zA-Z0-9._\/\-+=:@,]+$/.test(s)) return s;
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+// ── In-terminal find bar (xterm search addon) ─────────────────────
+
+function buildTerminalFindBar() {
+  const bar = document.createElement('div');
+  bar.className = 'files-terminal-findbar';
+  bar.hidden = true;
+  bar.innerHTML =
+    '<input type="text" class="files-terminal-findbar-input" placeholder="Find in terminal" spellcheck="false">' +
+    '<button type="button" class="files-terminal-findbar-btn" data-act="case" title="Match case">Aa</button>' +
+    '<button type="button" class="files-terminal-findbar-btn" data-act="prev" title="Previous (Shift+Enter)"><i data-lucide="chevron-up" class="lucide-icon"></i></button>' +
+    '<button type="button" class="files-terminal-findbar-btn" data-act="next" title="Next (Enter)"><i data-lucide="chevron-down" class="lucide-icon"></i></button>' +
+    '<span class="files-terminal-findbar-status"></span>' +
+    '<button type="button" class="files-terminal-findbar-btn" data-act="close" title="Close (Esc)"><i data-lucide="x" class="lucide-icon"></i></button>';
+  return bar;
+}
+
+function openTerminalFindBar(bar, instance) {
+  if (!bar || !instance) return;
+  bar.hidden = false;
+  if (window.lucide) {
+    window.lucide.createIcons({ nodes: Array.from(bar.querySelectorAll('[data-lucide]:not(.lucide)')) });
+  }
+  const input = bar.querySelector('.files-terminal-findbar-input');
+  const status = bar.querySelector('.files-terminal-findbar-status');
+  const caseBtn = bar.querySelector('[data-act="case"]');
+
+  // Listeners are wired once per bar. Subsequent opens just refocus.
+  if (!bar.dataset.wired) {
+    bar.dataset.wired = '1';
+    bar._caseSensitive = false;
+
+    function find(dir) {
+      const q = input.value;
+      if (!q) { status.textContent = ''; return; }
+      const opts = { caseSensitive: bar._caseSensitive };
+      const ok = dir === 'prev'
+        ? instance.findPrevious(q, opts)
+        : instance.findNext(q, opts);
+      status.textContent = ok ? '' : 'No match';
+    }
+    function close() {
+      bar.hidden = true;
+      try { instance.clearSearch(); } catch (_) {}
+      instance.focus();
+    }
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); find(e.shiftKey ? 'prev' : 'next'); }
+      else if (e.key === 'Escape') { e.preventDefault(); close(); }
+    });
+    input.addEventListener('input', () => find('next'));
+    bar.querySelector('[data-act="next"]').addEventListener('click', () => find('next'));
+    bar.querySelector('[data-act="prev"]').addEventListener('click', () => find('prev'));
+    bar.querySelector('[data-act="close"]').addEventListener('click', close);
+    caseBtn.addEventListener('click', () => {
+      bar._caseSensitive = !bar._caseSensitive;
+      caseBtn.classList.toggle('active', bar._caseSensitive);
+      find('next');
+    });
+  }
+
+  input.focus();
+  input.select();
+}
+
+function startInlineRename(tab, labelEl) {
+  // Swap the label for a text input; commit on Enter/blur, cancel on Esc.
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'files-tab-rename-input';
+  input.value = tab.name;
+  input.spellcheck = false;
+  input.maxLength = 60;
+
+  let committed = false;
+  function finish(save) {
+    if (committed) return;
+    committed = true;
+    const v = input.value.trim();
+    if (save && v && v !== tab.name) {
+      tab.name = v;
+      persistTabs();
+    }
+    renderTabs();   // rebuild — swaps the input back to a span
+  }
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+  // Prevent the parent tab's click/drag handlers from firing while editing.
+  input.addEventListener('mousedown', (e) => e.stopPropagation());
+  input.addEventListener('click', (e) => e.stopPropagation());
+
+  labelEl.replaceWith(input);
+  input.focus();
+  input.select();
+}
+
+function pushTerminalTab(sessionId, name) {
+  openTabs.push({
+    // The tab path doubles as the backend session_id — terminal tabs use a
+    // 'terminal:<uuid>' prefix that can't collide with real file paths.
+    path: sessionId,
+    name: name || ('Terminal ' + (openTabs.filter((t) => t.kind === 'terminal').length + 1)),
+    kind: 'terminal',
+    instance: null,           // set by buildPaneForTab once xterm is opened
+    dirty: false,
+    binary: false,
+  });
+}
+
+function openNewTerminalTab() {
+  const id = newTerminalSessionId();
+  pushTerminalTab(id);
+  activeTabPath = id;
+  renderTabs();
+  renderEditorPanes();
+  persistTabs();
+}
+
+function initFilesTerminalButton() {
+  const sidebar = document.getElementById('files-sidebar');
+  if (!sidebar) return;
+
+  sidebar.addEventListener('click', (e) => {
+    const btn = e.target.closest('.files-terminal-new');
+    if (!btn || !sidebar.contains(btn)) return;
+    e.stopPropagation();
+    openNewTerminalTab();
+    // On mobile, the sidebar may be filling the screen (state=max). Switch
+    // to the strip so the main panel — and the terminal we just opened —
+    // becomes visible.
+    if (isMobileLayout() && sidebar.dataset.state === 'max') {
+      setSidebarState('strip');
+    }
+  });
+
+  // Keep visible terminal tabs in sync with sidebar resize drags.
+  const handle = document.getElementById('files-resize-handle');
+  if (handle) {
+    handle.addEventListener('mouseup', () => {
+      const tab = openTabs.find((t) => t.path === activeTabPath);
+      if (tab && tab.kind === 'terminal' && tab.instance) {
+        setTimeout(() => tab.instance.fit(), 30);
+      }
+    });
+  }
+
+  // Ctrl+` (Backquote) opens a new terminal tab from anywhere in the app.
+  // Capture-phase so it preempts xterm's keyboard handler when focus is in
+  // an existing terminal — without that, xterm swallows the backtick.
+  document.addEventListener('keydown', (e) => {
+    if (e.code !== 'Backquote') return;
+    if (!e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    // Switch to the Admin Tools tab if we're not already on it.
+    const tabSelect = document.getElementById('main-tab-select');
+    if (tabSelect && tabSelect.value !== 'files') {
+      tabSelect.value = 'files';
+      tabSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    openNewTerminalTab();
+  }, true);
+}
+
+export function reconnectAllTerminals() {
+  for (const t of openTabs) {
+    if (t.kind === 'terminal' && t.instance && !t.closing) {
+      try { t.instance.reconnect(); } catch (_) {}
+    }
+  }
+}
+
+// Refit the currently active terminal on viewport resize. Background tabs
+// refit themselves when they next become active (see activateTab).
+window.addEventListener('resize', () => {
+  const tab = openTabs.find((t) => t.path === activeTabPath);
+  if (tab && tab.kind === 'terminal' && tab.instance) tab.instance.fit();
+});
 
 // ── Sidebar state cycle: split → max → strip → split ───────────────
 //
@@ -1831,6 +2212,13 @@ export async function startFiles() {
 
   // Restore previously open tabs only once per session
   if (!openTabs.length) await restoreOpenTabs();
+
+  // If the active tab is a terminal, refit xterm — it can't measure a
+  // display:none host while another main tab was active.
+  const activeTab = openTabs.find((t) => t.path === activeTabPath);
+  if (activeTab && activeTab.kind === 'terminal' && activeTab.instance) {
+    setTimeout(() => activeTab.instance.fit(), 30);
+  }
 }
 
 export function stopFiles() {

@@ -566,6 +566,7 @@ body.light-mode {
   height: 14px;
   flex-shrink: 0;
   color: var(--files-icon-file);
+  position: relative;  /* anchor for the terminal connection-status dot */
 }
 .files-tab-icon .lucide-icon { width: 14px; height: 14px; }
 
@@ -609,6 +610,49 @@ body.light-mode {
 .files-tab.dirty .files-tab-close:hover::before { display: none; }
 .files-tab.dirty .files-tab-close .lucide-icon { opacity: 0; }
 .files-tab.dirty .files-tab-close:hover .lucide-icon { opacity: 1; }
+
+/* Inline rename input for terminal tabs. Sits in place of the label span
+   while the user is editing. */
+.files-tab-rename-input {
+  background: var(--files-bg);
+  border: 1px solid var(--files-active-indicator);
+  color: var(--files-text-strong);
+  font: inherit;
+  font-size: 13px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  min-width: 60px;
+  max-width: 160px;
+  outline: none;
+}
+
+/* Per-tab connection status dot for terminal tabs. Overlaid on the bottom-
+   right of the tab icon. Driven by data-state set from terminal.js. */
+.files-tab-conn-dot {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #565f89;
+  box-shadow: 0 0 0 1.5px var(--files-bg-tab);
+  pointer-events: none;
+}
+.files-tab.active .files-tab-conn-dot { box-shadow: 0 0 0 1.5px var(--files-bg); }
+.files-tab-conn-dot[data-state="connecting"],
+.files-tab-conn-dot[data-state="reconnecting"] { background: #e0af68; animation: files-conn-pulse 1.2s ease-in-out infinite; }
+.files-tab-conn-dot[data-state="connected"]    { background: #9ece6a; }
+.files-tab-conn-dot[data-state="error"]        { background: #f7768e; }
+@keyframes files-conn-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* Tab is awaiting backend confirmation that its terminal session is dead.
+   Visually dim the whole tab and disable interactions, and spin the close
+   icon (which has been swapped from x to loader-2 by the renderer). */
+.files-tab.closing { opacity: 0.55; pointer-events: none; }
+.files-tab.closing .files-tab-close { cursor: progress; opacity: 1; }
+.files-tab-spin { animation: files-tab-spin 0.9s linear infinite; transform-origin: 50% 50%; }
+@keyframes files-tab-spin { to { transform: rotate(360deg); } }
 
 /* ── Tab "more" button (3 vertical dots) ─────────────────── */
 
@@ -1117,6 +1161,104 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
   opacity: 0.55;
 }
 
+/* Small visual separator between the Files/Git view-switch group and the
+   "New terminal tab" button (which spawns a new tab rather than switching
+   the sidebar view). */
+.files-view-toggle-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--files-border);
+  margin: 0 4px;
+  display: inline-block;
+}
+
+/* "New terminal tab" button — not a view switcher, so it never enters the
+   greyed-out active state. */
+.files-view-toggle-btn.files-terminal-new {
+  opacity: 1;
+  color: var(--files-text-strong);
+}
+.files-view-toggle-btn.files-terminal-new:hover { background: var(--files-btn-hover); }
+
+/* ── Embedded terminal pane (one per terminal tab) ──────── */
+
+.files-editor-pane.files-terminal-pane {
+  background: #0d0d1a;
+  padding: 0;
+  display: none;
+}
+.files-editor-pane.files-terminal-pane.active {
+  display: flex;
+  flex-direction: column;
+}
+.files-terminal-host {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+.files-terminal-host .xterm { height: 100%; padding: 4px; }
+.files-terminal-host .xterm-viewport { scrollbar-width: thin; scrollbar-color: #2a2a4a transparent; }
+.files-terminal-host .xterm-viewport::-webkit-scrollbar { width: 6px; }
+.files-terminal-host .xterm-viewport::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+
+/* Drop-target highlight when the user drags a file tree row onto a terminal.
+   The host accepts text/plain (the absolute path) and pastes it shell-quoted
+   into the PTY's input stream. */
+.files-terminal-host.files-terminal-drop-target {
+  outline: 2px dashed var(--files-active-indicator);
+  outline-offset: -3px;
+}
+
+/* In-terminal find bar — Ctrl+F inside an active terminal. */
+.files-terminal-findbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: #1a1a2e;
+  border-bottom: 1px solid #2a2a4a;
+  flex-shrink: 0;
+}
+.files-terminal-findbar[hidden] { display: none; }
+.files-terminal-findbar-input {
+  flex: 1;
+  min-width: 0;
+  background: #0d0d1a;
+  border: 1px solid #2a2a4a;
+  color: #c0caf5;
+  padding: 3px 6px;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.files-terminal-findbar-input:focus { border-color: var(--files-active-indicator); }
+.files-terminal-findbar-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #c0caf5;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.files-terminal-findbar-btn:hover { background: #2a2a4a; }
+.files-terminal-findbar-btn.active { background: #2a2a4a; border-color: var(--files-active-indicator); }
+.files-terminal-findbar-btn .lucide-icon { width: 12px; height: 12px; }
+.files-terminal-findbar-status {
+  font-size: 11px;
+  color: #f7768e;
+  min-width: 60px;
+  text-align: right;
+}
+
 /* ── Source-control (GitHub) panel ───────────────────────── */
 
 .fg-body {
@@ -1166,7 +1308,7 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 }
 
 /* Header (branch + remote) */
-.fg-section-header { padding-top: 10px; padding-bottom: 8px; }
+.fg-section-header { padding-top: 10px; padding-bottom: 8px; position: relative; }
 .fg-section-header.loading { opacity: 0.7; }
 .fg-branch-row {
   display: flex; align-items: center; gap: 6px;
@@ -1174,6 +1316,18 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 }
 .fg-branch-row .lucide-icon { width: 14px; height: 14px; color: var(--files-icon); }
 .fg-branch-name { font-weight: 600; color: var(--files-text-strong); }
+.fg-branch-chev { width: 12px; height: 12px; color: var(--files-text-faint); }
+.fg-branch-picker-trigger {
+  width: 100%;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 2px 4px;
+  margin: 0 -4px;
+  cursor: pointer;
+  text-align: left;
+}
+.fg-branch-picker-trigger:hover { background: var(--files-row-hover); border-color: var(--files-border-strong); }
 .fg-ahead, .fg-behind { font-size: 11px; color: var(--files-text-muted); margin-left: 4px; }
 .fg-sync-clean { font-size: 11px; color: var(--files-text-faint); margin-left: auto; font-style: italic; }
 .fg-remote-row {
@@ -1182,6 +1336,56 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
   color: var(--files-text-faint);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+
+/* Branch picker / merge picker menu (shared styles) */
+.fg-branch-menu, .fg-merge-menu {
+  position: absolute;
+  left: 8px; right: 8px;
+  z-index: 10;
+  margin-top: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--files-bg-elev, var(--files-bg, #1a1a2a));
+  border: 1px solid var(--files-border-strong);
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  padding: 4px;
+}
+.fg-merge-menu { left: 10px; right: 10px; }
+.fg-branch-menu-loading, .fg-branch-menu-empty, .fg-branch-menu-err {
+  padding: 8px;
+  font-size: 11px;
+  color: var(--files-text-muted);
+  text-align: center;
+}
+.fg-branch-menu-err { color: var(--files-danger); }
+.fg-branch-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--files-text);
+  cursor: pointer;
+  text-align: left;
+}
+.fg-branch-item:hover:not(:disabled) { background: var(--files-row-hover); }
+.fg-branch-item:disabled { opacity: 0.6; cursor: default; }
+.fg-branch-item-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fg-branch-item-meta { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--files-text-faint); }
+.fg-branch-item-meta code { font-family: var(--font-mono, monospace); font-size: 10px; color: var(--files-text-muted); }
+.fg-branch-tag-local, .fg-branch-tag-remote, .fg-branch-tag-cur {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+.fg-branch-tag-local { background: var(--files-btn-hover); color: var(--files-text-muted); }
+.fg-branch-tag-remote { background: rgba(245, 158, 11, 0.18); color: #f59e0b; }
+.fg-branch-tag-cur { background: var(--files-active-indicator); color: #fff; }
 
 /* Inputs + buttons */
 .fg-input {
@@ -1238,7 +1442,7 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 .fg-result.info { color: var(--files-text-muted); }
 
 /* Sync row */
-.fg-sync { display: flex; flex-wrap: wrap; gap: 6px; }
+.fg-sync { display: flex; flex-wrap: wrap; gap: 6px; position: relative; }
 .fg-sync .fg-result { width: 100%; }
 
 /* Token */
@@ -1259,6 +1463,22 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 .fg-token-row { display: flex; gap: 6px; padding: 0 10px 8px; }
 .fg-token-status { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--files-text-faint); font-size: 10px; }
 .fg-token-status.ok { color: #10b981; }
+.fg-token-hint { padding: 0 10px 10px; }
+.fg-token-hint > summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--files-accent, #7dcfff);
+  font-weight: 500;
+  padding: 4px 0;
+}
+.fg-token-hint > summary::-webkit-details-marker { display: none; }
+.fg-token-hint-body { font-size: 11px; color: var(--files-text-muted); line-height: 1.45; }
+.fg-token-hint-body p { margin: 6px 0 4px; }
+.fg-token-hint-body ol { margin: 0; padding-left: 18px; }
+.fg-token-hint-body li { margin: 2px 0; }
+.fg-token-hint-body a { color: var(--files-accent, #7dcfff); }
+.fg-token-hint-foot { color: var(--files-text-faint); margin-top: 6px !important; }
 
 /* Changes (collapsible) */
 .fg-changes { padding: 0; }
@@ -1348,6 +1568,7 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 .fg-graph-row:focus-visible { border-left-color: var(--files-active-indicator); }
 .fg-graph-row.head { border-left-color: var(--files-active-indicator); }
 .fg-graph-row.unpulled { opacity: 0.85; }
+.fg-graph-row.other-branch { opacity: 0.7; }
 .fg-graph-row.open .fg-graph-row-head { background: var(--files-row-hover); }
 
 .fg-graph-col {
@@ -1458,6 +1679,12 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
   z-index: 1;
 }
 .fg-cd-meta { display: flex; justify-content: space-between; align-items: center; color: var(--files-text-muted); margin-bottom: 4px; }
+.fg-cd-fields { display: grid; grid-template-columns: 70px 1fr; gap: 2px 8px; margin-bottom: 6px; font-size: 11px; }
+.fg-cd-field { display: contents; }
+.fg-cd-label { color: var(--files-text-faint); text-transform: uppercase; font-size: 10px; letter-spacing: 0.04em; align-self: center; }
+.fg-cd-val { color: var(--files-text); overflow-wrap: anywhere; }
+.fg-cd-val code, code.fg-cd-val { font-family: var(--font-mono, monospace); font-size: 10px; color: var(--files-text-muted); }
+.fg-cd-subject { font-weight: 600; color: var(--files-text); margin: 4px 0; font-size: 12px; }
 .fg-cd-body { white-space: pre-wrap; font-family: var(--font-mono, monospace); font-size: 11px; color: var(--files-text); margin: 0 0 6px; background: var(--files-btn-hover); padding: 4px 6px; border-radius: 3px; }
 .fg-cd-files-title { font-size: 10px; color: var(--files-text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 4px 0; }
 .fg-cd-files { display: flex; flex-direction: column; gap: 2px; }

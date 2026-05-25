@@ -123,12 +123,16 @@ function renderHeader(s) {
   }
   return `
     <div class="fg-section fg-section-header">
-      <div class="fg-branch-row">
+      <button type="button" class="fg-branch-row fg-branch-picker-trigger" id="fg-branch-picker-trigger" title="Switch branch">
         <i data-lucide="git-branch" class="lucide-icon"></i>
-        <span class="fg-branch-name" title="current branch">${branch}</span>
+        <span class="fg-branch-name">${branch}</span>
+        <i data-lucide="chevron-down" class="lucide-icon fg-branch-chev"></i>
         ${sync}
-      </div>
+      </button>
       <div class="fg-remote-row" title="${remote}">${remote}</div>
+      <div class="fg-branch-menu" id="fg-branch-menu" hidden role="listbox" aria-label="Switch branch">
+        <div class="fg-branch-menu-loading">Loading branches…</div>
+      </div>
     </div>
   `;
 }
@@ -175,10 +179,13 @@ function renderSyncSection(s) {
   if (!s.has_remote) return '';
   return `
     <div class="fg-section fg-sync">
-      <button class="fg-btn" id="fg-pull-btn" title="git pull"><i data-lucide="arrow-down" class="lucide-icon"></i> Pull</button>
-      <button class="fg-btn" id="fg-push-btn" title="git push"><i data-lucide="arrow-up" class="lucide-icon"></i> Push</button>
-      <button class="fg-btn fg-btn-deploy" id="fg-pull-restart-btn" title="Pull + restart server"><i data-lucide="rocket" class="lucide-icon"></i> Pull &amp; Restart</button>
+      <button class="fg-btn" id="fg-pull-btn" title="Pull current branch (restarts server if backend changed)"><i data-lucide="arrow-down" class="lucide-icon"></i> Pull</button>
+      <button class="fg-btn" id="fg-push-btn" title="Push current branch"><i data-lucide="arrow-up" class="lucide-icon"></i> Push</button>
+      <button class="fg-btn" id="fg-merge-btn" title="Merge another branch into the current branch"><i data-lucide="git-merge" class="lucide-icon"></i> Merge…</button>
       <div id="fg-sync-result" class="fg-result" hidden></div>
+      <div class="fg-merge-menu" id="fg-merge-menu" hidden role="listbox" aria-label="Pick branch to merge in">
+        <div class="fg-branch-menu-loading">Loading branches…</div>
+      </div>
     </div>
   `;
 }
@@ -192,6 +199,28 @@ function renderTokenSection() {
         <button class="fg-btn fg-btn-primary" id="fg-token-save-btn">Save</button>
       </div>
       <div id="fg-token-result" class="fg-result" hidden></div>
+      <details class="fg-token-hint">
+        <summary>How to create a GitHub token →</summary>
+        <div class="fg-token-hint-body">
+          <p><strong>Classic token:</strong></p>
+          <ol>
+            <li>Go to <a href="https://github.com/settings/tokens" target="_blank" rel="noopener">github.com/settings/tokens</a></li>
+            <li>Click <strong>Generate new token (classic)</strong></li>
+            <li>Give it a name (e.g. "webAgent")</li>
+            <li>Select scope: <strong>repo</strong> (full control)</li>
+            <li>Click <strong>Generate token</strong> and copy it</li>
+          </ol>
+          <p><strong>Fine-grained token:</strong></p>
+          <ol>
+            <li>Go to <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noopener">tokens (fine-grained)</a></li>
+            <li>Click <strong>Generate new token (fine-grained)</strong></li>
+            <li>Select this repository only</li>
+            <li>Permissions → <strong>Contents: Read and write</strong></li>
+            <li>Click <strong>Generate token</strong> and copy it</li>
+          </ol>
+          <p class="fg-token-hint-foot">Paste the token above and click Save. It's stored locally in provider.json.</p>
+        </div>
+      </details>
     </details>
   `;
 }
@@ -212,12 +241,16 @@ function renderGraphSection(s, g) {
 }
 
 function renderGraphRow(c, idx, g) {
-  const cls = c.is_head ? 'fg-graph-row head' : (c.is_pulled ? 'fg-graph-row pulled' : 'fg-graph-row unpulled');
+  const cls = c.is_head
+    ? 'fg-graph-row head'
+    : (c.is_pullable
+        ? 'fg-graph-row unpulled'
+        : (c.is_pulled ? 'fg-graph-row pulled' : 'fg-graph-row other-branch'));
   const badge = c.is_head
     ? '<span class="fg-graph-badge head">HEAD</span>'
-    : (c.is_pulled
-        ? ''
-        : '<span class="fg-graph-badge unpulled" title="Not yet pulled to this VM">↓</span>');
+    : (c.is_pullable
+        ? '<span class="fg-graph-badge unpulled" title="On origin/' + escapeHtml(g.current_branch || 'current branch') + ' but not yet pulled — click Pull to bring it in">↓</span>'
+        : '');
   // Branch tip labels — show every branch whose tip is this commit.
   const branchLabels = (g.branches && Object.keys(g.branches).length)
     ? Object.entries(g.branches)
@@ -391,14 +424,43 @@ function wireEvents(rootEl, s, g) {
   });
 
   const pushBtn = body.querySelector('#fg-push-btn');
-  if (pushBtn) pushBtn.addEventListener('click', () => doSync(rootEl, 'push'));
+  if (pushBtn) pushBtn.addEventListener('click', () => doPush(rootEl));
   const pullBtn = body.querySelector('#fg-pull-btn');
-  if (pullBtn) pullBtn.addEventListener('click', () => doSync(rootEl, 'pull'));
-  const prBtn = body.querySelector('#fg-pull-restart-btn');
-  if (prBtn) prBtn.addEventListener('click', () => doPullRestart(rootEl));
+  if (pullBtn) pullBtn.addEventListener('click', () => doPull(rootEl));
+  const mergeBtn = body.querySelector('#fg-merge-btn');
+  if (mergeBtn) mergeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleMergeMenu(rootEl);
+  });
+  const branchTrig = body.querySelector('#fg-branch-picker-trigger');
+  if (branchTrig) branchTrig.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleBranchMenu(rootEl);
+  });
+
+  // Close any open picker menu when clicking outside
+  if (!body.__fgMenuCloser) {
+    body.__fgMenuCloser = (ev) => {
+      const inMerge = ev.target.closest('#fg-merge-menu') || ev.target.closest('#fg-merge-btn');
+      const inBranch = ev.target.closest('#fg-branch-menu') || ev.target.closest('#fg-branch-picker-trigger');
+      if (!inMerge) {
+        const m = body.querySelector('#fg-merge-menu');
+        if (m) m.hidden = true;
+      }
+      if (!inBranch) {
+        const b = body.querySelector('#fg-branch-menu');
+        if (b) b.hidden = true;
+      }
+    };
+    document.addEventListener('click', body.__fgMenuCloser);
+  }
 
   const tokSave = body.querySelector('#fg-token-save-btn');
   if (tokSave) tokSave.addEventListener('click', () => doSaveToken(rootEl));
+  const tokInput = body.querySelector('#fg-token-input');
+  if (tokInput) tokInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSaveToken(rootEl); }
+  });
 
   // Commit graph rows → click the header to expand commit detail. Clicks
   // inside the detail panel (selecting text, etc.) shouldn't collapse it.
@@ -447,14 +509,106 @@ function renderCommitDetail(d) {
     return `<div class="fg-cd-file"><span class="fg-cd-added">${escapeHtml(added)}</span><span class="fg-cd-removed">${escapeHtml(removed)}</span><span class="fg-cd-path">${escapeHtml(f.path)}</span></div>`;
   }).join('') || '<div class="fg-loading">No file changes</div>';
   const body = (d.body || '').trim() ? `<pre class="fg-cd-body">${escapeHtml(d.body.trim())}</pre>` : '';
+  const parents = (d.parents || []).map(p => escapeHtml(p.slice(0, 7))).join(', ') || '(none)';
+  const subject = (d.subject || '').trim() ? `<div class="fg-cd-subject">${escapeHtml(d.subject)}</div>` : '';
   return `
     <div class="fg-cd">
-      <div class="fg-cd-meta"><span>${escapeHtml(d.author || '')}</span><code>${escapeHtml((d.full_hash || '').slice(0, 12))}</code></div>
+      <div class="fg-cd-fields">
+        <div class="fg-cd-field"><span class="fg-cd-label">Full hash</span><code class="fg-cd-val">${escapeHtml(d.full_hash || '')}</code></div>
+        <div class="fg-cd-field"><span class="fg-cd-label">Author</span><span class="fg-cd-val">${escapeHtml(d.author || '')}${d.author_email ? ' &lt;' + escapeHtml(d.author_email) + '&gt;' : ''}</span></div>
+        <div class="fg-cd-field"><span class="fg-cd-label">Authored</span><span class="fg-cd-val">${escapeHtml(d.author_date || '')}</span></div>
+        <div class="fg-cd-field"><span class="fg-cd-label">Committer</span><span class="fg-cd-val">${escapeHtml(d.committer || '')}${d.committer_email ? ' &lt;' + escapeHtml(d.committer_email) + '&gt;' : ''}</span></div>
+        <div class="fg-cd-field"><span class="fg-cd-label">Committed</span><span class="fg-cd-val">${escapeHtml(d.commit_date || '')}</span></div>
+        <div class="fg-cd-field"><span class="fg-cd-label">Parents</span><code class="fg-cd-val">${parents}</code></div>
+      </div>
+      ${subject}
       ${body}
       <div class="fg-cd-files-title">Files (${(d.files || []).length})</div>
       <div class="fg-cd-files">${files}</div>
     </div>
   `;
+}
+
+// ── Branch picker / merge picker ───────────────────────────────────
+
+async function fetchBranches() {
+  return ghFetch('/api/v1/github/branches');
+}
+
+function renderBranchMenu(menu, data, opts) {
+  const { current, branches } = data;
+  const { mode, onPick } = opts; // mode: 'switch' | 'merge'
+  const items = (branches || []).filter(b => {
+    if (mode === 'merge') return b.name !== current;
+    return true;
+  });
+  if (!items.length) {
+    menu.innerHTML = '<div class="fg-branch-menu-empty">No other branches</div>';
+    return;
+  }
+  menu.innerHTML = items.map((b) => {
+    const isCurrent = b.name === current;
+    const tag = b.local && b.remote
+      ? '<span class="fg-branch-tag-local" title="local + remote">local</span>'
+      : (b.local
+          ? '<span class="fg-branch-tag-local" title="local only">local only</span>'
+          : '<span class="fg-branch-tag-remote" title="remote only">remote</span>');
+    const cur = isCurrent ? '<span class="fg-branch-tag-cur">current</span>' : '';
+    return `
+      <button type="button" class="fg-branch-item${isCurrent ? ' is-current' : ''}" data-branch="${escapeHtml(b.name)}" ${isCurrent && mode === 'switch' ? 'disabled' : ''}>
+        <span class="fg-branch-item-name">${escapeHtml(b.name)}</span>
+        <span class="fg-branch-item-meta">${cur}${tag}<code>${escapeHtml(b.hash || '')}</code></span>
+      </button>
+    `;
+  }).join('');
+  menu.querySelectorAll('.fg-branch-item').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const name = btn.dataset.branch;
+      if (!name) return;
+      menu.hidden = true;
+      onPick(name);
+    });
+  });
+}
+
+async function toggleBranchMenu(rootEl) {
+  const menu = rootEl.querySelector('#fg-branch-menu');
+  if (!menu) return;
+  // Close the other menu if open
+  const otherMenu = rootEl.querySelector('#fg-merge-menu');
+  if (otherMenu) otherMenu.hidden = true;
+  if (!menu.hidden) { menu.hidden = true; return; }
+  menu.hidden = false;
+  menu.innerHTML = '<div class="fg-branch-menu-loading">Loading branches…</div>';
+  try {
+    const data = await fetchBranches();
+    renderBranchMenu(menu, data, {
+      mode: 'switch',
+      onPick: (name) => doCheckout(rootEl, name),
+    });
+  } catch (e) {
+    menu.innerHTML = `<div class="fg-branch-menu-err">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function toggleMergeMenu(rootEl) {
+  const menu = rootEl.querySelector('#fg-merge-menu');
+  if (!menu) return;
+  const otherMenu = rootEl.querySelector('#fg-branch-menu');
+  if (otherMenu) otherMenu.hidden = true;
+  if (!menu.hidden) { menu.hidden = true; return; }
+  menu.hidden = false;
+  menu.innerHTML = '<div class="fg-branch-menu-loading">Loading branches…</div>';
+  try {
+    const data = await fetchBranches();
+    renderBranchMenu(menu, data, {
+      mode: 'merge',
+      onPick: (name) => doMerge(rootEl, name),
+    });
+  } catch (e) {
+    menu.innerHTML = `<div class="fg-branch-menu-err">${escapeHtml(e.message)}</div>`;
+  }
 }
 
 // ── Actions ────────────────────────────────────────────────────────
@@ -492,31 +646,78 @@ async function doCommit(rootEl) {
   }
 }
 
-async function doSync(rootEl, kind) {
+async function doPush(rootEl) {
   const body = rootEl.querySelector('#fg-body');
   const result = body.querySelector('#fg-sync-result');
-  showResult(result, kind === 'push' ? 'Pushing…' : 'Pulling…', 'info');
+  showResult(result, 'Pushing…', 'info');
   try {
-    const r = await ghFetch(`/api/v1/github/${kind}`, { method: 'POST' });
-    showResult(result, r.message || (kind === 'push' ? 'Push successful' : 'Pull successful'), 'success');
+    const r = await ghFetch('/api/v1/github/push', { method: 'POST' });
+    showResult(result, r.message || 'Push successful', 'success');
     await refreshGit(rootEl);
   } catch (e) {
-    showResult(result, `${kind === 'push' ? 'Push' : 'Pull'} failed: ${e.message}`, 'error');
+    showResult(result, `Push failed: ${e.message}`, 'error');
   }
 }
 
-async function doPullRestart(rootEl) {
-  if (!confirm('Pull latest and restart the server?\n\nIn-flight requests and the agent WebSocket will be dropped while the server restarts.')) return;
+async function doPull(rootEl) {
   const body = rootEl.querySelector('#fg-body');
   const result = body.querySelector('#fg-sync-result');
   showResult(result, 'Pulling…', 'info');
+  let r;
   try {
-    await ghFetch('/api/v1/github/pull', { method: 'POST' });
+    r = await ghFetch('/api/v1/github/pull', { method: 'POST' });
   } catch (e) {
     showResult(result, `Pull failed: ${e.message}`, 'error');
     return;
   }
-  showResult(result, 'Pulled. Restarting…', 'info');
+  await applyPostSync(rootEl, result, r, 'Pulled');
+}
+
+async function doMerge(rootEl, branch) {
+  const body = rootEl.querySelector('#fg-body');
+  const result = body.querySelector('#fg-sync-result');
+  showResult(result, `Merging ${branch}…`, 'info');
+  let r;
+  try {
+    r = await ghFetch('/api/v1/github/merge', {
+      method: 'POST',
+      body: JSON.stringify({ branch }),
+    });
+  } catch (e) {
+    showResult(result, `Merge failed: ${e.message}`, 'error');
+    return;
+  }
+  await applyPostSync(rootEl, result, r, `Merged ${branch}`);
+}
+
+async function doCheckout(rootEl, branch) {
+  const body = rootEl.querySelector('#fg-body');
+  const result = body.querySelector('#fg-sync-result');
+  showResult(result, `Switching to ${branch}…`, 'info');
+  let r;
+  try {
+    r = await ghFetch('/api/v1/github/checkout', {
+      method: 'POST',
+      body: JSON.stringify({ branch }),
+    });
+  } catch (e) {
+    showResult(result, `Checkout failed: ${e.message}`, 'error');
+    return;
+  }
+  await applyPostSync(rootEl, result, r, `Switched to ${branch}`);
+}
+
+// Shared follow-through for any action that may have brought in backend
+// code: if the response says backend_changed, restart the server and wait
+// for /health to come back; otherwise just refresh the sidebar.
+async function applyPostSync(rootEl, resultEl, response, doneLabel) {
+  const summary = response.message || `${doneLabel} successful`;
+  if (!response.backend_changed) {
+    showResult(resultEl, `${summary} (no restart needed)`, 'success');
+    await refreshGit(rootEl);
+    return;
+  }
+  showResult(resultEl, `${summary} — restarting server…`, 'info');
   try {
     await fetch(apiPath('/api/v1/restart'), { method: 'POST', headers: authHeaders() });
   } catch (_) { /* expected: server cut the connection */ }
@@ -524,15 +725,15 @@ async function doPullRestart(rootEl) {
   while (Date.now() - start < 60000) {
     await new Promise(r => setTimeout(r, 1000));
     try {
-      const r = await fetch(apiPath('/health'));
-      if (r.ok) {
-        showResult(result, 'Server back up — refreshing', 'success');
+      const h = await fetch(apiPath('/health'));
+      if (h.ok) {
+        showResult(resultEl, `${doneLabel} — server back up`, 'success');
         await refreshGit(rootEl);
         return;
       }
     } catch (_) {}
   }
-  showResult(result, 'Timed out waiting for server', 'error');
+  showResult(resultEl, 'Timed out waiting for server', 'error');
 }
 
 async function doSaveToken(rootEl) {

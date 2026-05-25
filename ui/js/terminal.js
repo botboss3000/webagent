@@ -1,43 +1,19 @@
 'use strict';
 
-import { app } from './state.js';
-import { termWsUrl } from './config.js';
+// Per-instance terminal factory. Each call to `createTerminalInstance` spawns
+// an independent xterm + WebSocket so multiple terminal tabs can coexist in
+// the file viewer without sharing a single PTY.
 
-let reconnectTimer = null;
-let reconnectAttempts = 0;
+import { termWsUrl, apiPath } from './config.js';
+
 const MAX_RECONNECT_DELAY = 30000; // 30s max
 const INITIAL_RECONNECT_DELAY = 500; // 500ms first retry
 
-export function setTermStatus(state) {
-  if (!app.tDot || !app.tStat) return;
-  app.tDot.className = 'status-dot ' + state;
-  app.tStat.textContent =
-    state === 'green' ? 'Terminal' : state === 'yellow' ? 'Connecting...' : 'Disconnected';
-}
-
-export function cancelTermReconnect() {
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
+export function createTerminalInstance(container, sessionId) {
+  if (!sessionId) {
+    throw new Error('createTerminalInstance: sessionId is required');
   }
-  reconnectAttempts = 0;
-}
-
-function scheduleTermReconnect() {
-  cancelTermReconnect();
-  const delay = Math.min(
-    INITIAL_RECONNECT_DELAY * Math.pow(2, reconnectAttempts),
-    MAX_RECONNECT_DELAY
-  );
-  reconnectAttempts++;
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    connectTerminal();
-  }, delay);
-}
-
-export function initTerminal() {
-  app.term = new Terminal({
+  const term = new Terminal({
     cursorBlink: true,
     cursorStyle: 'block',
     fontSize: 14,
@@ -67,70 +43,238 @@ export function initTerminal() {
       brightWhite: '#c0caf5',
     },
   });
-  app.fitAddon = new FitAddon.FitAddon();
-  app.term.loadAddon(app.fitAddon);
-  app.term.loadAddon(new WebLinksAddon.WebLinksAddon());
-  app.term.open(app.container);
-  app.fitAddon.fit();
-
-  app.term.onData((data) => {
-    if (app.termWs && app.termWs.readyState === WebSocket.OPEN) app.termWs.send(data);
-  });
-  app.term.onResize(({ rows, cols }) => {
-    if (app.termWs && app.termWs.readyState === WebSocket.OPEN) {
-      app.termWs.send(JSON.stringify({ type: 'resize', rows, cols }));
+  const fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.loadAddon(new WebLinksAddon.WebLinksAddon());
+  // Search addon loaded lazily — if the CDN script failed, the rest of
+  // the terminal still works, just without Ctrl+F highlights.
+  let searchAddon = null;
+  try {
+    if (typeof SearchAddon !== 'undefined' && SearchAddon.SearchAddon) {
+      searchAddon = new SearchAddon.SearchAddon();
+      term.loadAddon(searchAddon);
     }
-  });
-  window.addEventListener('resize', () => app.fitAddon.fit());
-}
+  } catch (_) {}
+  term.open(container);
+  try { fitAddon.fit(); } catch (_) {}
 
-export function connectTerminal() {
-  setTermStatus('yellow');
-  cancelTermReconnect();
-  if (app.termWs) {
-    app.termWs.onclose = null;
-    app.termWs.onerror = null;
-    app.termWs.close();
+  let ws = null;
+  let reconnectTimer = null;
+  let reconnectAttempts = 0;
+  let disposed = false;
+
+  // Connection state machine used to drive the per-tab status dot in the UI.
+  // 'connecting' = WS opening for the first time / scheduled reconnect in flight
+  // 'connected'  = WS open, live PTY stream
+  // 'reconnecting' = WS dropped after having been open; retry is queued
+  // 'error'      = auth failure or other permanent stop (no further retries)
+  let state = 'connecting';
+  let stateListeners = [];
+  function setState(next) {
+    if (state === next) return;
+    state = next;
+    for (const cb of stateListeners) {
+      try { cb(state); } catch (_) {}
+    }
   }
-  app.termWs = new WebSocket(termWsUrl());
-  app.termWs.binaryType = 'arraybuffer';
 
-  app.termWs.onopen = () => {
-    setTermStatus('green');
-    reconnectAttempts = 0; // Reset backoff on successful connection
-    app.term.focus();
-    app.termWs.send(
-      JSON.stringify({ type: 'resize', rows: app.term.rows, cols: app.term.cols }),
-    );
-  };
-
-  app.termWs.onmessage = (ev) => {
-    if (ev.data instanceof ArrayBuffer) {
-      const data = new Uint8Array(ev.data);
-      if (data.length === 0) {
-        app.term.write(
-          '\r\n\x1b[31m[Process exited — refresh to reconnect]\x1b[0m\r\n',
-        );
-      } else {
-        app.term.write(data);
-      }
-    } else if (typeof ev.data === 'string') {
-      // Handle JSON messages (e.g., server heartbeat pings)
-      try {
-        const msg = JSON.parse(ev.data);
-        if (msg.type === 'ping') return; // Ignore heartbeats
-      } catch {
-        app.term.write(ev.data);
-      }
+  term.onData((data) => {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
+  });
+  term.onResize(({ rows, cols }) => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'resize', rows, cols }));
     }
-  };
+  });
 
-  app.termWs.onclose = () => {
-    setTermStatus('red');
-    scheduleTermReconnect();
-  };
-  app.termWs.onerror = () => {
-    setTermStatus('red');
-    // onclose fires after onerror, which triggers scheduleTermReconnect
+  function cancelReconnect() {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  }
+
+  function scheduleReconnect() {
+    if (disposed) return;
+    cancelReconnect();
+    const delay = Math.min(
+      INITIAL_RECONNECT_DELAY * Math.pow(2, reconnectAttempts),
+      MAX_RECONNECT_DELAY,
+    );
+    reconnectAttempts++;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, delay);
+  }
+
+  function connect() {
+    if (disposed) return;
+    cancelReconnect();
+    if (ws) {
+      ws.onclose = null;
+      ws.onerror = null;
+      try { ws.close(); } catch (_) {}
+    }
+    // The WS endpoint enforces admin auth — pass the JWT as ?token=. We do
+    // this every connect (not just the first one) so a token refreshed in
+    // a long-lived session is picked up on the next reconnect.
+    const tokenParam = (() => {
+      try {
+        const t = localStorage.getItem('auth_token');
+        return t ? '&token=' + encodeURIComponent(t) : '';
+      } catch (_) { return ''; }
+    })();
+    ws = new WebSocket(termWsUrl() + '?session_id=' + encodeURIComponent(sessionId) + tokenParam);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => {
+      reconnectAttempts = 0;
+      setState('connected');
+      try { term.focus(); } catch (_) {}
+      try {
+        ws.send(JSON.stringify({ type: 'resize', rows: term.rows, cols: term.cols }));
+      } catch (_) {}
+    };
+
+    ws.onmessage = (ev) => {
+      if (ev.data instanceof ArrayBuffer) {
+        const data = new Uint8Array(ev.data);
+        if (data.length === 0) {
+          term.write('\r\n\x1b[31m[Process exited — reconnecting]\x1b[0m\r\n');
+        } else {
+          term.write(data);
+        }
+      } else if (typeof ev.data === 'string') {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'ping') return;
+        } catch {
+          term.write(ev.data);
+        }
+      }
+    };
+
+    ws.onclose = (ev) => {
+      if (disposed) return;
+      // 4401 = auth failed, 4002 = per-user session cap exceeded. Both are
+      // hard stops; retrying just spams the server with rejected handshakes.
+      if (ev && (ev.code === 4401 || ev.code === 4002)) {
+        const msg = (ev.reason && ev.reason.trim()) || (
+          ev.code === 4401
+            ? 'Authentication failed — refresh and sign in again'
+            : 'Session cap exceeded — close another terminal first'
+        );
+        term.write('\r\n\x1b[31m[' + msg + ']\x1b[0m\r\n');
+        disposed = true;
+        setState('error');
+        return;
+      }
+      setState('reconnecting');
+      scheduleReconnect();
+    };
+    ws.onerror = () => { /* onclose fires after onerror; reconnect is scheduled there */ };
+  }
+
+  function fit() {
+    try {
+      fitAddon.fit();
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'resize', rows: term.rows, cols: term.cols }));
+      }
+    } catch (_) {}
+  }
+
+  function focus() {
+    try { term.focus(); } catch (_) {}
+  }
+
+  function reconnect() {
+    if (disposed) return;
+    reconnectAttempts = 0;
+    connect();
+  }
+
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    cancelReconnect();
+    if (ws) {
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.onmessage = null;
+      try { ws.close(); } catch (_) {}
+      ws = null;
+    }
+    try { term.dispose(); } catch (_) {}
+  }
+
+  // Ask the backend to kill the PTY for this session id. Returns a promise
+  // that resolves on a clean 2xx (the shell is gone) and rejects on any
+  // network / server error so the caller can keep the tab open and let the
+  // user retry. A 10s timeout guards against a hung server pinning the UI.
+  async function closeBackendSession() {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+      const token = localStorage.getItem('auth_token');
+      const headers = token ? { Authorization: 'Bearer ' + token } : {};
+      const res = await fetch(
+        apiPath('/api/v1/terminal/sessions/' + encodeURIComponent(sessionId)),
+        { method: 'DELETE', headers, signal: controller.signal },
+      );
+      if (!res.ok) {
+        let detail = res.statusText || ('HTTP ' + res.status);
+        try { const j = await res.json(); if (j && j.detail) detail = j.detail; } catch (_) {}
+        throw new Error(detail);
+      }
+      // Body is { closed: true|false }. False means the backend didn't have
+      // a session under that id — also fine, the UI can drop the tab.
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function onStateChange(cb) {
+    if (typeof cb !== 'function') return () => {};
+    stateListeners.push(cb);
+    // Fire once immediately so subscribers don't need a separate read.
+    try { cb(state); } catch (_) {}
+    return () => {
+      stateListeners = stateListeners.filter((x) => x !== cb);
+    };
+  }
+  function getState() { return state; }
+
+  // Search — no-ops when the CDN addon failed to load. The boolean return
+  // tells the find bar whether to flag "not found" to the user.
+  function findNext(query, opts) {
+    if (!searchAddon || !query) return false;
+    try { return !!searchAddon.findNext(query, opts || {}); } catch (_) { return false; }
+  }
+  function findPrevious(query, opts) {
+    if (!searchAddon || !query) return false;
+    try { return !!searchAddon.findPrevious(query, opts || {}); } catch (_) { return false; }
+  }
+  function clearSearch() {
+    if (!searchAddon) return;
+    try { searchAddon.clearDecorations(); } catch (_) {}
+  }
+
+  // Paste arbitrary text into the PTY input stream. Used by the
+  // drag-file-onto-terminal flow in files.js — writes a properly-quoted
+  // path at the current shell prompt.
+  function paste(text) {
+    if (!text || disposed) return;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(text);
+  }
+
+  connect();
+
+  return {
+    term, fitAddon, fit, focus, reconnect, dispose, closeBackendSession,
+    onStateChange, getState,
+    findNext, findPrevious, clearSearch,
+    paste,
   };
 }
