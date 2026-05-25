@@ -10,9 +10,10 @@ import { openGitPanel } from './files-git.js';
 import { createTerminalInstance } from './terminal.js';
 import { randomUUID } from './uuid.js';
 import { startAppConfig, stopAppConfig } from './app-config.js';
+import { startAutoRefresh, stopAutoRefresh } from './db/pagination.js';
 
 const API_BASE = '/api/v1/files';
-const LS_SIDEBAR_VIEW = 'files.sidebarView';   // 'explorer' | 'git'
+const LS_SIDEBAR_VIEW = 'files.sidebarView';   // 'explorer' | 'git' | 'database'
 
 let initialised = false;
 let isAdmin = false;
@@ -2120,7 +2121,8 @@ function initSidebarViewSwitcher() {
   const sidebar = document.getElementById('files-sidebar');
   if (!sidebar) return;
   // Restore last view (default: explorer)
-  const want = localStorage.getItem(LS_SIDEBAR_VIEW) === 'git' ? 'git' : 'explorer';
+  const stored = localStorage.getItem(LS_SIDEBAR_VIEW);
+  const want = (stored === 'git' || stored === 'database') ? stored : 'explorer';
   applySidebarView(want);
   // The toggle icons live in BOTH panel headers (so each header has its
   // own copy). Delegate click handling at the sidebar level so we catch
@@ -2137,13 +2139,18 @@ function initSidebarViewSwitcher() {
   });
 }
 
+const VIEW_TITLE = { explorer: 'Explorer', git: 'Source control', database: 'Database' };
+const VIEW_SWITCH = { explorer: 'explorer', git: 'source control', database: 'database' };
+
 function applySidebarView(view) {
   const sidebar = document.getElementById('files-sidebar');
   if (!sidebar) return;
+  if (view !== 'explorer' && view !== 'git' && view !== 'database') view = 'explorer';
   sidebar.dataset.view = view;
   // Update aria-selected on every view-toggle button (in panel headers
   // and in the strip). The Settings toggle button shares .files-view-toggle-btn
-  // for styling but is not part of the Explorer/Git switch, so exclude it.
+  // for styling but is not part of the Explorer/Git/Database switch, so exclude
+  // it.
   sidebar.querySelectorAll(
     '.files-view-toggle-btn:not(.files-settings-toggle-btn), .files-strip-view'
   ).forEach((b) => {
@@ -2153,14 +2160,14 @@ function applySidebarView(view) {
     if (b.classList.contains('files-view-toggle-btn')) {
       if (active) {
         b.setAttribute('aria-disabled', 'true');
-        b.title = (view === 'git' ? 'Source control' : 'Explorer') + ' (current view)';
+        b.title = VIEW_TITLE[view] + ' (current view)';
       } else {
         b.removeAttribute('aria-disabled');
-        b.title = 'Switch to ' + (b.dataset.view === 'git' ? 'source control' : 'explorer');
+        b.title = 'Switch to ' + (VIEW_SWITCH[b.dataset.view] || 'explorer');
       }
     }
   });
-  // In strip mode both panels stay hidden; otherwise the matching panel
+  // In strip mode all panels stay hidden; otherwise the matching panel
   // shows.
   const state = sidebar.dataset.state || 'split';
   sidebar.querySelectorAll('.files-sidebar-panel').forEach((p) => {
@@ -2169,6 +2176,24 @@ function applySidebarView(view) {
   if (view === 'git' && state !== 'strip') {
     // Lazy-load the git panel the first time, refresh on subsequent shows.
     openGitPanel(sidebar);
+  }
+  // Right-pane swap: Database view replaces the file editor with the relocated
+  // db table view. Settings is an independent overlay that wins, so leave the
+  // pane swap alone whenever Settings is open.
+  const dbMain = document.getElementById('files-database-main');
+  const editorMain = document.querySelector(
+    '#admin-tools .files-main:not(.files-settings-main):not(.files-database-main)'
+  );
+  if (!settingsOpen) {
+    if (view === 'database') {
+      if (editorMain) editorMain.hidden = true;
+      if (dbMain) dbMain.hidden = false;
+      try { startAutoRefresh(); } catch (_) {}
+    } else {
+      if (dbMain) dbMain.hidden = true;
+      if (editorMain) editorMain.hidden = false;
+      try { stopAutoRefresh(); } catch (_) {}
+    }
   }
 }
 
@@ -2212,26 +2237,73 @@ function applySettingsButtonState() {
 }
 
 function toggleSettingsView() {
-  const editorMain = document.querySelector('#admin-tools .files-main:not(.files-settings-main)');
+  const editorMain = document.querySelector(
+    '#admin-tools .files-main:not(.files-settings-main):not(.files-database-main)'
+  );
   const settingsMain = document.getElementById('files-settings-main');
+  const dbMain = document.getElementById('files-database-main');
   if (!editorMain || !settingsMain) return;
+  const sidebar = document.getElementById('files-sidebar');
+  const currentView = sidebar?.dataset.view || 'explorer';
   settingsOpen = !settingsOpen;
   if (settingsOpen) {
     editorMain.hidden = true;
+    if (dbMain) dbMain.hidden = true;
     settingsMain.hidden = false;
     try { startAppConfig(); } catch (_) {}
+    try { stopAutoRefresh(); } catch (_) {}
     // On mobile, the sidebar may be filling the screen (state=max). Collapse
     // to the strip so the Settings view we just opened becomes visible.
-    const sidebar = document.getElementById('files-sidebar');
     if (sidebar && isMobileLayout() && sidebar.dataset.state === 'max') {
       setSidebarState('strip');
     }
   } else {
     settingsMain.hidden = true;
-    editorMain.hidden = false;
     try { stopAppConfig(); } catch (_) {}
+    if (currentView === 'database') {
+      if (dbMain) dbMain.hidden = false;
+      try { startAutoRefresh(); } catch (_) {}
+    } else {
+      editorMain.hidden = false;
+    }
   }
   applySettingsButtonState();
+}
+
+// Relocate detached markup (App Config and the Database viewer) into the
+// Admin Tools layout. The originals are parked at the bottom of #app-container
+// in index.html so this module owns their final mount point. Idempotent.
+export function relocateAdminToolsContainers() {
+  // App Config — Settings view host
+  const acHost = document.getElementById('files-settings-main');
+  const acContainer = document.getElementById('app-config-container');
+  if (acHost && acContainer && acContainer.parentElement !== acHost) {
+    acHost.appendChild(acContainer);
+    acContainer.removeAttribute('hidden');
+  }
+  // Database viewer — sidebar host receives #db-sidebar; main host receives
+  // #db-toolbar then #db-table-view. The empty #db-panel and #db-viewer
+  // wrappers are dropped once their children have been moved.
+  const dbSbHost = document.getElementById('db-sidebar-host');
+  const dbMainHost = document.getElementById('files-database-main');
+  const dbSidebar = document.getElementById('db-sidebar');
+  const dbToolbar = document.getElementById('db-toolbar');
+  const dbTableView = document.getElementById('db-table-view');
+  if (dbSbHost && dbSidebar && dbSidebar.parentElement !== dbSbHost) {
+    dbSbHost.appendChild(dbSidebar);
+  }
+  if (dbMainHost && dbToolbar && dbToolbar.parentElement !== dbMainHost) {
+    dbMainHost.appendChild(dbToolbar);
+  }
+  if (dbMainHost && dbTableView && dbTableView.parentElement !== dbMainHost) {
+    dbMainHost.appendChild(dbTableView);
+  }
+  const dbPanel = document.getElementById('db-panel');
+  if (dbPanel && !dbPanel.children.length) dbPanel.remove();
+  const dbViewer = document.getElementById('db-viewer');
+  if (dbViewer && !dbViewer.children.length) dbViewer.remove();
+  const dbPark = document.getElementById('db-viewer-park');
+  if (dbPark && !dbPark.children.length) dbPark.remove();
 }
 
 export async function startAdminTools() {
@@ -2293,6 +2365,12 @@ export async function startAdminTools() {
   if (settingsOpen) {
     try { startAppConfig(); } catch (_) {}
   }
+  // If the Database sidebar view is active (and Settings isn't covering it),
+  // resume the 1s auto-refresh now that Admin Tools is back on screen.
+  const sb = document.getElementById('files-sidebar');
+  if (!settingsOpen && sb && sb.dataset.view === 'database') {
+    try { startAutoRefresh(); } catch (_) {}
+  }
 }
 
 export function stopAdminTools() {
@@ -2301,4 +2379,7 @@ export function stopAdminTools() {
   if (settingsOpen) {
     try { stopAppConfig(); } catch (_) {}
   }
+  // Always stop the database auto-refresh; whatever sub-view is active is
+  // about to be hidden by the top-level tab swap.
+  try { stopAutoRefresh(); } catch (_) {}
 }

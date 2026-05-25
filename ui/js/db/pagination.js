@@ -317,7 +317,9 @@ export function runInitialDbTableLoad() {
     if (tableToLoad) {
       app.dbSelectedTable = tableToLoad;
       renderTableList();
-      queryTable(tableToLoad).then(() => startAutoRefresh());
+      // Auto-refresh is started by applySidebarView('database') in files.js
+      // when the user actually opens the Database view inside Admin Tools.
+      queryTable(tableToLoad);
     }
   });
 }

@@ -339,7 +339,6 @@
     <option value="stream">Stream</option>
     <option value="flow">Flow</option>
     <option value="loop-visual">Runtime Loop</option>
-    <option value="database">Database</option>
     <option value="agents">Agents</option>
     <option value="account">Manage Account</option>
   </select>
@@ -362,9 +361,6 @@
       </button>
       <button type="button" class="main-tab" data-value="loop-visual" role="tab">
         <i data-lucide="repeat" class="lucide-icon"></i>Runtime Loop
-      </button>
-      <button type="button" class="main-tab" data-value="database" role="tab">
-        <i data-lucide="database" class="lucide-icon"></i>Database
       </button>
       <button type="button" class="main-tab" data-value="agents" role="tab">
         <i data-lucide="bot" class="lucide-icon"></i>Agents
@@ -2547,7 +2543,10 @@
 
     <div id="tab-account" class="tab-content"></div>
 
-    <div id="tab-database" class="tab-content">
+    <!-- Database viewer markup, parked here so relocateAdminToolsContainers()
+         (in files.js) can move the pieces into the Admin Tools sidebar/main
+         hosts at boot. Hidden until then. -->
+    <div id="db-viewer-park" hidden>
       <div id="db-viewer">
         <div id="db-toolbar" style="display:none;">
           <button id="db-show-hidden-btn" style="background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-3);padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;margin-left:auto;display:inline-flex;align-items:center;gap:4px;"><i data-lucide="eye" style="width:12px;height:12px;"></i> Hide hidden</button>
@@ -2623,6 +2622,7 @@
             <button class="files-strip-btn files-strip-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="explorer" title="Switch to explorer"><i data-lucide="files" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="git" title="Switch to source control"><i data-lucide="github" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-strip-view" data-view="database" title="Switch to database"><i data-lucide="database" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
           </div>
@@ -2633,6 +2633,7 @@
               <div class="files-view-toggle" role="tablist" aria-label="Sidebar view">
                 <button class="files-view-toggle-btn active" data-view="explorer" title="Explorer (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="files" class="lucide-icon"></i></button>
                 <button class="files-view-toggle-btn" data-view="git" title="Switch to source control" role="tab" aria-selected="false"><i data-lucide="github" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn" data-view="database" title="Switch to database" role="tab" aria-selected="false"><i data-lucide="database" class="lucide-icon"></i></button>
                 <span class="files-view-toggle-sep" aria-hidden="true"></span>
                 <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
                 <button class="files-view-toggle-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
@@ -2659,6 +2660,7 @@
               <div class="files-view-toggle" role="tablist" aria-label="Sidebar view">
                 <button class="files-view-toggle-btn" data-view="explorer" title="Switch to explorer" role="tab" aria-selected="false"><i data-lucide="files" class="lucide-icon"></i></button>
                 <button class="files-view-toggle-btn active" data-view="git" title="Source control (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="github" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn" data-view="database" title="Switch to database" role="tab" aria-selected="false"><i data-lucide="database" class="lucide-icon"></i></button>
                 <span class="files-view-toggle-sep" aria-hidden="true"></span>
                 <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
                 <button class="files-view-toggle-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
@@ -2671,6 +2673,27 @@
             <div id="fg-body" class="fg-body">
               <div class="fg-loading">Loading…</div>
             </div>
+          </div>
+
+          <!-- Database panel: hosts the relocated #db-sidebar (table list +
+               refresh/reset/collapse toolbar). The panel header below carries
+               the explorer/git/database view toggles; #db-sidebar carries its
+               own internal toolbar. -->
+          <div class="files-sidebar-panel" id="files-panel-database" data-view="database" hidden>
+            <div class="files-sidebar-header">
+              <div class="files-view-toggle" role="tablist" aria-label="Sidebar view">
+                <button class="files-view-toggle-btn" data-view="explorer" title="Switch to explorer" role="tab" aria-selected="false"><i data-lucide="files" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn" data-view="git" title="Switch to source control" role="tab" aria-selected="false"><i data-lucide="github" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn active" data-view="database" title="Database (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="database" class="lucide-icon"></i></button>
+                <span class="files-view-toggle-sep" aria-hidden="true"></span>
+                <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
+              </div>
+              <div class="files-sidebar-actions">
+                <button class="files-icon-btn files-maximize-btn" title="Maximize sidebar"><i data-lucide="maximize-2" class="lucide-icon"></i></button>
+              </div>
+            </div>
+            <div id="db-sidebar-host" class="db-sidebar-host"></div>
           </div>
         </aside>
 
@@ -2707,6 +2730,11 @@
              sidebar button is toggled on. files.js moves #app-config-container
              into here at boot. -->
         <main class="files-main files-settings-main" id="files-settings-main" hidden></main>
+
+        <!-- Database view: replaces the file editor area when the Database
+             sidebar view is active. files.js moves #db-table-view (and the
+             #db-toolbar) into here at boot. -->
+        <main class="files-main files-database-main" id="files-database-main" hidden></main>
       </div>
     </div>
 

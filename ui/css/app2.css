@@ -391,14 +391,6 @@
   }
 
   /* ── Database viewer ── */
-  #db-viewer {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    background: var(--bg-0);
-    font-size: 12px;
-    min-height: 0;
-  }
   #db-toolbar {
     display: flex;
     gap: 8px;
@@ -429,12 +421,6 @@
     font-family: inherit;
   }
   #db-refresh:hover { border-color: var(--accent); color: var(--accent); }
-  #db-panel {
-    flex: 1;
-    display: flex;
-    min-height: 0;
-    overflow: hidden;
-  }
   #db-table-list {
     width: 180px;
     min-width: 140px;

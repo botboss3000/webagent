@@ -223,7 +223,6 @@ body.light-mode #loop-visual-toolbar {
 
 #stream-viewer,
 #loop-container,
-#db-viewer,
 #loop-visual-container,
 #autoagent-container {
   background: transparent;
@@ -231,7 +230,6 @@ body.light-mode #loop-visual-toolbar {
 
 body.light-mode #stream-viewer,
 body.light-mode #loop-container,
-body.light-mode #db-viewer,
 body.light-mode #loop-list,
 body.light-mode #stream-list {
   background: transparent;

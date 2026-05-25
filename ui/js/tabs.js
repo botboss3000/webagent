@@ -29,6 +29,12 @@ export function initTabs() {
     // Back-compat: 'files' was the legacy id for what is now 'admin-tools'.
     // Saved state in older browsers will still hold 'files'.
     if (tabValue === 'files') tabValue = 'admin-tools';
+    // Back-compat: 'database' was its own top-level tab; it now lives as a
+    // sidebar view inside Admin Tools. Redirect and request that sub-view.
+    if (tabValue === 'database') {
+      tabValue = 'admin-tools';
+      try { localStorage.setItem('files.sidebarView', 'database'); } catch (_) {}
+    }
 
     document.querySelectorAll('.tab-content').forEach((c) => c.classList.remove('active'));
     const targetContent = document.getElementById('tab-' + tabValue);
@@ -78,13 +84,6 @@ export function initTabs() {
       stopAgents();
       stopAdminTools();
       startLoopVisual();
-    } else if (tabValue === 'database') {
-      stopStream();
-      stopLoop();
-      stopLoopVisual();
-      stopAutoAgent();
-      stopAgents();
-      stopAdminTools();
     } else if (tabValue === 'autoagent') {
       stopStream();
       stopLoop();
