@@ -573,9 +573,9 @@ async function _ensureAgentBuilderAgent(userId) {
 }
 
 async function _sendAgentBuilderPrompt() {
-  const input   = document.getElementById('agent-builder-bar-input');
-  const sendBtn = document.getElementById('agent-builder-bar-send');
-  if (!input || !sendBtn) return;
+  const input = document.getElementById('agent-builder-bar-input');
+  const row   = document.getElementById('agent-builder-bar-row');
+  if (!input) return;
 
   const text = input.value.trim();
   if (!text) return;
@@ -583,12 +583,10 @@ async function _sendAgentBuilderPrompt() {
 
   const tagged = `[Agent Builder Request | Source: Agents Page]: ${text}`;
 
-  sendBtn.disabled = true;
   let builderAgentId;
   try {
     builderAgentId = await _ensureAgentBuilderAgent(app.currentUserId);
   } catch (_e) {
-    sendBtn.disabled = false;
     return;
   }
 
@@ -600,7 +598,7 @@ async function _sendAgentBuilderPrompt() {
   }
 
   input.value = '';
-  sendBtn.disabled = true; // empty again
+  if (row) row.classList.remove('has-text');
 
   if (app.chatInput && app.chatSend) {
     app.chatInput.value = tagged;
@@ -612,20 +610,44 @@ async function _sendAgentBuilderPrompt() {
 let _agentBuilderBarBound = false;
 function _bindAgentBuilderBar() {
   if (_agentBuilderBarBound) return;
-  const input   = document.getElementById('agent-builder-bar-input');
-  const sendBtn = document.getElementById('agent-builder-bar-send');
-  if (!input || !sendBtn) return;
+  const row      = document.getElementById('agent-builder-bar-row');
+  const input    = document.getElementById('agent-builder-bar-input');
+  const attachBtn = document.getElementById('agent-builder-bar-attach');
+  const voiceBtn = document.getElementById('agent-builder-bar-voice');
+  const sendBtn  = document.getElementById('agent-builder-bar-send');
+  if (!row || !input) return;
   _agentBuilderBarBound = true;
 
-  const sync = () => { sendBtn.disabled = input.value.trim().length === 0; };
+  // has-text class swaps the visible right-side button between voice (idle)
+  // and send (typing). Mirrors #chat-input-row behavior.
+  const sync = () => {
+    const hasText = input.value.trim().length > 0;
+    row.classList.toggle('has-text', hasText);
+  };
   input.addEventListener('input', sync);
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (!sendBtn.disabled) _sendAgentBuilderPrompt();
+      if (input.value.trim().length > 0) _sendAgentBuilderPrompt();
     }
   });
-  sendBtn.addEventListener('click', () => _sendAgentBuilderPrompt());
+  if (sendBtn) sendBtn.addEventListener('click', () => _sendAgentBuilderPrompt());
+
+  // Forward attach and voice to the main chat composer's existing handlers.
+  // We reuse them rather than duplicating the file-picker / recorder logic.
+  if (attachBtn) {
+    attachBtn.addEventListener('click', () => {
+      const mainAttach = document.getElementById('chat-attach-btn');
+      if (mainAttach) mainAttach.click();
+    });
+  }
+  if (voiceBtn) {
+    voiceBtn.addEventListener('click', () => {
+      const mainVoice = document.getElementById('chat-voice-btn');
+      if (mainVoice) mainVoice.click();
+    });
+  }
+
   sync();
 
   if (window.lucide && typeof window.lucide.createIcons === 'function') {
