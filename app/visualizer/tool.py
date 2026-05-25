@@ -23,8 +23,8 @@ async def render_visual(
     Returns:
         JSON string with path, title, page_name, size_bytes
     """
-    ensure_home_page(user_id)
-    url_path = save_page_html(user_id, page_name, html)
+    await ensure_home_page(user_id)
+    url_path = await save_page_html(user_id, page_name, html)
     result = {
         "status": "ok",
         "path": url_path,

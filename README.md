@@ -270,12 +270,27 @@ Provider, API key, and model can **also** be configured at runtime via the ⚙�
 1. Clone the repository and enter the directory.
 
 2. **Windows quick path:** double-click **`webAgent.bat`**. It will:
-   - Detect Python on `PATH` (rejects versions outside 3.11–3.12 with a clear message)
-   - Create `.venv` if missing
-   - Install / update `requirements.txt` (drift-detected via hash stamp in `.venv\.req-stamp`; skipped on subsequent boots if unchanged)
-   - Start the server with auto-restart
+   - Install **uv** (Astral's Python + venv manager) if missing — via the official PowerShell installer.
+   - Run `uv sync`, which downloads a matching Python (3.11 or 3.12) into uv's cache if you don't have one, creates `.venv` in the project root, and installs all deps from `pyproject.toml` / `uv.lock`.
+   - If the existing `.venv` was built with an unsupported Python, the script removes it so uv can rebuild cleanly.
+   - Start the server with auto-restart on exit.
 
-   **Manual / non-Windows:**
+   On subsequent boots, `uv sync` is idempotent and near-instant when deps haven't changed.
+
+   **Manual / non-Windows (uv path, recommended):**
+
+```bash
+# Install uv if not already present
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Sync deps + Python (idempotent)
+uv sync
+
+# Run the server
+uv run python run.py
+```
+
+   **Manual / non-Windows (legacy pip path):** still works — `requirements.txt` is maintained alongside `pyproject.toml`.
 
 ```bash
 python -m venv .venv
