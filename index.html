@@ -2740,7 +2740,18 @@
              The header replaces the old "EXPLORER" text with two icon
              buttons (files + github). The icon for the current view is
              greyed out; the other icon is the click target. -->
-        <aside id="files-sidebar" class="files-sidebar" data-view="explorer">
+        <aside id="files-sidebar" class="files-sidebar" data-view="explorer" data-state="split">
+          <!-- Collapsed strip: only visible when data-state="strip". A narrow
+               column showing the expand toggle, refresh, and the two view
+               icons so the user can still drive the sidebar without giving
+               up the full editor width. -->
+          <div class="files-sidebar-strip" hidden aria-label="Sidebar collapsed strip">
+            <button class="files-strip-btn files-maximize-btn" title="Expand sidebar"><i data-lucide="panel-left-open" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-strip-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-strip-view" data-view="explorer" title="Switch to explorer"><i data-lucide="files" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-strip-view" data-view="git" title="Switch to source control"><i data-lucide="github" class="lucide-icon"></i></button>
+          </div>
+
           <!-- Explorer panel (file tree) -->
           <div class="files-sidebar-panel" id="files-panel-explorer" data-view="explorer">
             <div class="files-sidebar-header">
