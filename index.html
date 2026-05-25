@@ -2633,7 +2633,11 @@
 
         <!-- Main editor area: tabs + content -->
         <main class="files-main">
-          <div id="files-tabs" class="files-tabs" role="tablist"></div>
+          <div class="files-tabs-wrap">
+            <button id="files-tabs-prev" class="files-tabs-chev" title="Scroll tabs left"><i data-lucide="chevron-left" class="lucide-icon"></i></button>
+            <div id="files-tabs" class="files-tabs" role="tablist"></div>
+            <button id="files-tabs-next" class="files-tabs-chev" title="Scroll tabs right"><i data-lucide="chevron-right" class="lucide-icon"></i></button>
+          </div>
           <div id="files-content" class="files-content">
             <div class="files-welcome">
               <i data-lucide="folder-tree" class="lucide-icon files-welcome-icon"></i>

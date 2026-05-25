@@ -265,6 +265,28 @@ function renderTabs() {
     label.textContent = tab.name;
     el.appendChild(label);
 
+    // ── 3-dot "more" menu button ──
+    const more = document.createElement('button');
+    more.className = 'files-tab-more';
+    more.type = 'button';
+    more.title = 'More actions';
+    more.draggable = false;
+    const moreI = document.createElement('i');
+    moreI.setAttribute('data-lucide', 'more-vertical');
+    moreI.className = 'lucide-icon';
+    more.appendChild(moreI);
+    // Same draggable-parent guard as the close button.
+    more.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+      if (e.button === 0) {
+        e.preventDefault();
+        showTabMenu(tab, more);
+      }
+    });
+    more.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); });
+    more.addEventListener('dragstart', (e) => { e.preventDefault(); e.stopPropagation(); });
+    el.appendChild(more);
+
     const close = document.createElement('button');
     close.className = 'files-tab-close';
     close.type = 'button';
@@ -337,6 +359,7 @@ function renderTabs() {
     bar.appendChild(el);
   }
   if (window.lucide) window.lucide.createIcons({ nodes: Array.from(bar.querySelectorAll('[data-lucide]:not(.lucide)')) });
+  updateTabCarousel();
 }
 
 function reorderTab(srcPath, destPath, before) {
@@ -349,6 +372,206 @@ function reorderTab(srcPath, destPath, before) {
   openTabs.splice(insertAt, 0, src);
   renderTabs();
   persistTabs();
+}
+
+// ── Tab "more" menu ───────────────────────────────────────────────
+
+function closeTabMenu() {
+  const m = document.getElementById('files-tab-menu-current');
+  if (m) m.remove();
+}
+
+function showTabMenu(tab, anchorBtn) {
+  closeTabMenu();
+
+  const menu = document.createElement('div');
+  menu.className = 'files-tab-menu';
+  menu.id = 'files-tab-menu-current';
+
+  const items = [
+    { icon: 'pencil',     label: 'Rename…', action: () => renameTab(tab.path) },
+    { icon: 'trash-2',    label: 'Delete…', danger: true, action: () => deleteTab(tab.path) },
+    { icon: 'refresh-cw', label: 'Refresh',  action: () => refreshTab(tab.path) },
+    { icon: 'wrap-text',  label: 'Wrap',     checked: !!tab.wrap, action: () => toggleWrap(tab.path) },
+  ];
+
+  for (const item of items) {
+    const btn = document.createElement('button');
+    btn.className = 'files-tab-menu-item' + (item.danger ? ' danger' : '') + (item.checked ? ' checked' : '');
+    btn.type = 'button';
+    const i = document.createElement('i');
+    i.setAttribute('data-lucide', item.icon);
+    i.className = 'lucide-icon';
+    btn.appendChild(i);
+    const lbl = document.createElement('span');
+    lbl.textContent = item.label;
+    btn.appendChild(lbl);
+    const check = document.createElement('span');
+    check.className = 'files-tab-menu-check';
+    check.textContent = '✓';
+    btn.appendChild(check);
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeTabMenu();
+      item.action();
+    });
+    menu.appendChild(btn);
+  }
+
+  document.body.appendChild(menu);
+  // Position below the anchor button, right-aligned so the menu stays visible
+  const rect = anchorBtn.getBoundingClientRect();
+  const menuWidth = 180;
+  menu.style.top = (rect.bottom + 2) + 'px';
+  menu.style.left = Math.max(8, Math.min(window.innerWidth - menuWidth - 8, rect.right - menuWidth)) + 'px';
+
+  if (window.lucide) window.lucide.createIcons({ nodes: Array.from(menu.querySelectorAll('[data-lucide]:not(.lucide)')) });
+
+  // Dismiss on outside click / Escape. Bind capture-phase mousedown so we
+  // run before any unrelated click handlers, but check containment so
+  // clicks inside the menu still work.
+  const outside = (ev) => {
+    if (!menu.contains(ev.target)) {
+      closeTabMenu();
+      document.removeEventListener('mousedown', outside, true);
+      document.removeEventListener('keydown', onKey, true);
+    }
+  };
+  const onKey = (ev) => {
+    if (ev.key === 'Escape') {
+      closeTabMenu();
+      document.removeEventListener('mousedown', outside, true);
+      document.removeEventListener('keydown', onKey, true);
+    }
+  };
+  setTimeout(() => {
+    document.addEventListener('mousedown', outside, true);
+    document.addEventListener('keydown', onKey, true);
+  }, 0);
+}
+
+async function renameTab(path) {
+  const tab = openTabs.find((t) => t.path === path);
+  if (!tab) return;
+  const newPath = prompt('Rename to (absolute or relative to project root):', tab.path);
+  if (!newPath || newPath === tab.path) return;
+  try {
+    const r = await apiFetch('/rename', {
+      method: 'POST',
+      body: JSON.stringify({ path: tab.path, new_path: newPath }),
+    });
+    const newAbs = r.to || newPath;
+    // Update the tab in place
+    tab.path = newAbs;
+    tab.name = newAbs.split('/').pop();
+    if (activeTabPath === path) activeTabPath = newAbs;
+    // The editor pane keys panes by data-path; update it too
+    const pane = document.querySelector('.files-editor-pane[data-path="' + cssEscape(path) + '"]');
+    if (pane) pane.dataset.path = newAbs;
+    renderTabs();
+    renderEditorPanes();
+    persistTabs();
+    await loadRoot();
+  } catch (e) {
+    alert('Rename failed: ' + e.message);
+  }
+}
+
+async function deleteTab(path) {
+  const tab = openTabs.find((t) => t.path === path);
+  if (!tab) return;
+  if (!confirm('Delete ' + tab.name + ' from disk?\n\n' + tab.path + '\n\nThis cannot be undone.')) return;
+  try {
+    await apiFetch('/delete', {
+      method: 'POST',
+      body: JSON.stringify({ path: tab.path }),
+    });
+    // File is gone — drop the dirty flag so closeTab doesn't prompt
+    tab.dirty = false;
+    closeTab(path);
+    await loadRoot();
+  } catch (e) {
+    alert('Delete failed: ' + e.message);
+  }
+}
+
+async function refreshTab(path) {
+  const tab = openTabs.find((t) => t.path === path);
+  if (!tab) return;
+  if (tab.dirty && !confirm('Discard unsaved changes and reload from disk?')) return;
+  try {
+    const data = await apiFetch('/read?path=' + encodeURIComponent(tab.path));
+    tab.content = data.content;
+    tab.binary = data.binary;
+    tab.encoding = data.encoding;
+    tab.size = data.size;
+    tab.dirty = false;
+    // Replace the pane so the textarea picks up the new content cleanly
+    const pane = document.querySelector('.files-editor-pane[data-path="' + cssEscape(path) + '"]');
+    if (pane) pane.remove();
+    renderTabs();
+    renderEditorPanes();
+  } catch (e) {
+    alert('Refresh failed: ' + e.message);
+  }
+}
+
+function toggleWrap(path) {
+  const tab = openTabs.find((t) => t.path === path);
+  if (!tab) return;
+  tab.wrap = !tab.wrap;
+  const pane = document.querySelector('.files-editor-pane[data-path="' + cssEscape(path) + '"]');
+  const ta = pane && pane.querySelector('textarea.files-textarea');
+  if (ta) ta.classList.toggle('wrap', tab.wrap);
+  persistTabs();
+}
+
+// ── Tab carousel ──────────────────────────────────────────────────
+
+function updateTabCarousel() {
+  const bar = document.getElementById('files-tabs');
+  const prev = document.getElementById('files-tabs-prev');
+  const next = document.getElementById('files-tabs-next');
+  if (!bar || !prev || !next) return;
+  const overflow = bar.scrollWidth > bar.clientWidth + 1;
+  if (!overflow) {
+    prev.style.display = 'none';
+    next.style.display = 'none';
+    return;
+  }
+  prev.style.display = 'inline-flex';
+  next.style.display = 'inline-flex';
+  prev.disabled = bar.scrollLeft <= 0;
+  next.disabled = bar.scrollLeft + bar.clientWidth >= bar.scrollWidth - 1;
+}
+
+function initTabCarousel() {
+  const bar = document.getElementById('files-tabs');
+  const prev = document.getElementById('files-tabs-prev');
+  const next = document.getElementById('files-tabs-next');
+  if (!bar || !prev || !next) return;
+
+  const SCROLL_STEP = 160;
+  prev.addEventListener('click', () => { bar.scrollBy({ left: -SCROLL_STEP, behavior: 'smooth' }); });
+  next.addEventListener('click', () => { bar.scrollBy({ left:  SCROLL_STEP, behavior: 'smooth' }); });
+  bar.addEventListener('scroll', updateTabCarousel, { passive: true });
+
+  // Auto-scroll while dragging a tab past either edge
+  ['files-tabs-prev', 'files-tabs-next'].forEach((id) => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      const dir = id === 'files-tabs-prev' ? -1 : 1;
+      bar.scrollBy({ left: dir * 40, behavior: 'auto' });
+    });
+  });
+
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(updateTabCarousel).observe(bar);
+  } else {
+    window.addEventListener('resize', updateTabCarousel);
+  }
 }
 
 function renderEditorPanes() {
@@ -403,7 +626,7 @@ function renderEditorPanes() {
         if (window.lucide) window.lucide.createIcons({ nodes: Array.from(pane.querySelectorAll('[data-lucide]:not(.lucide)')) });
       } else {
         const ta = document.createElement('textarea');
-        ta.className = 'files-textarea';
+        ta.className = 'files-textarea' + (tab.wrap ? ' wrap' : '');
         ta.spellcheck = false;
         ta.autocomplete = 'off';
         ta.autocapitalize = 'off';
@@ -520,6 +743,11 @@ function activateTab(path) {
   }
   const tab = openTabs.find((t) => t.path === path);
   updateStatusBar(tab || null);
+  // Bring the activated tab into view if it's outside the visible window
+  const tabEl = document.querySelector('#files-tabs .files-tab[data-path="' + cssEscape(path) + '"]');
+  if (tabEl && typeof tabEl.scrollIntoView === 'function') {
+    tabEl.scrollIntoView({ inline: 'nearest', block: 'nearest', behavior: 'smooth' });
+  }
   try { localStorage.setItem(LS_ACTIVE_TAB, path); } catch (_) {}
 }
 
@@ -637,7 +865,7 @@ function initSidebarResize() {
 
 function persistTabs() {
   try {
-    const minimal = openTabs.map((t) => ({ path: t.path, name: t.name }));
+    const minimal = openTabs.map((t) => ({ path: t.path, name: t.name, wrap: !!t.wrap }));
     localStorage.setItem(LS_OPEN_TABS, JSON.stringify(minimal));
     localStorage.setItem(LS_ACTIVE_TAB, activeTabPath || '');
   } catch (_) {}
@@ -669,6 +897,15 @@ async function restoreOpenTabs() {
     for (const t of saved) {
       try {
         await openFile(t.path, t.name);
+        if (t.wrap) {
+          const opened = openTabs.find((o) => o.path === t.path);
+          if (opened && !opened.wrap) {
+            opened.wrap = true;
+            const pane = document.querySelector('.files-editor-pane[data-path="' + cssEscape(opened.path) + '"]');
+            const ta = pane && pane.querySelector('textarea.files-textarea');
+            if (ta) ta.classList.add('wrap');
+          }
+        }
       } catch (_) {}
     }
     if (wantActive && openTabs.find((t) => t.path === wantActive)) {
@@ -704,6 +941,7 @@ export function initFiles() {
   }
 
   initSidebarResize();
+  initTabCarousel();
   renderTabs();
   renderEditorPanes();
 }
