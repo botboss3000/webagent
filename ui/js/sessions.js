@@ -816,6 +816,10 @@ export function initSessions() {
     closeAgentMenu();
   }
 
+  // Expose so other modules (e.g. the Dashboard prompt bar) can drive the
+  // right-side chat agent without duplicating session/teardown logic.
+  app.switchToAgent = switchToAgent;
+
   function openAgentRowActions(aid, row) {
     closeAgentActionsPopup();
     const agent = _agentsCache.find(a => a.id === aid);
