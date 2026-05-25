@@ -1,6 +1,5 @@
 'use strict';
 
-import { app } from './state.js';
 import { startStream, stopStream } from './stream.js';
 import { startLoop, stopLoop, setLoopLevel, toggleAutoScroll } from './loop.js';
 import { startLoopVisual, stopLoopVisual } from './loop-logic.js';
@@ -55,19 +54,7 @@ export function initTabs() {
       setChatSideVisible(visible);
     }
 
-    if (tabValue === 'terminal') {
-      stopStream();
-      stopLoop();
-      stopLoopVisual();
-      stopAutoAgent();
-      stopAgents();
-      stopAppConfig();
-      setTimeout(() => {
-        if (app && app.fitAddon) {
-          app.fitAddon.fit();
-        }
-      }, 50);
-    } else if (tabValue === 'stream') {
+    if (tabValue === 'stream') {
       stopLoop();
       stopLoopVisual();
       stopAutoAgent();

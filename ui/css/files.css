@@ -173,6 +173,7 @@ body.light-mode {
 }
 .files-sidebar.maximized ~ .files-resize-handle { display: none; }
 .files-sidebar.maximized ~ .files-main { display: none; }
+.files-sidebar.maximized ~ .files-terminal-wrap { display: none; }
 
 /* Strip mode — sidebar collapses to a narrow column of icons. Panels are
    hidden and the dedicated `.files-sidebar-strip` becomes the only thing
@@ -1116,6 +1117,59 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
   background: transparent;
   opacity: 0.55;
 }
+
+/* Small visual separator between the Files/Git view-switch group and the
+   Terminal toggle (which is not a view but a main-panel overlay). */
+.files-view-toggle-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--files-border);
+  margin: 0 4px;
+  display: inline-block;
+}
+
+/* Terminal toggle inside the view-toggle row. Unlike the Files/Git toggles,
+   this one is a true on/off — when active it highlights instead of greying
+   out, since clicking it again toggles the terminal back off. */
+.files-view-toggle-btn.files-terminal-toggle {
+  opacity: 1;
+  color: var(--files-text-strong);
+}
+.files-view-toggle-btn.files-terminal-toggle:hover { background: var(--files-btn-hover); }
+.files-view-toggle-btn.files-terminal-toggle.active {
+  color: var(--files-text-strong);
+  opacity: 1;
+  background: var(--files-row-selected);
+}
+
+/* Strip-mode terminal toggle mirrors the active highlight. */
+.files-strip-btn.files-terminal-toggle.active {
+  color: var(--files-text-strong);
+  background: var(--files-btn-hover);
+}
+
+/* ── Embedded terminal pane ──────────────────────────────── */
+
+.files-terminal-wrap {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  background: #0d0d1a;
+  position: relative;
+}
+.files-terminal-wrap[hidden] { display: none; }
+.files-terminal-wrap > #terminal-container {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* When terminal is on, hide the editor main column to give the terminal the
+   full right-side space. The sidebar (and its resize handle) stays. */
+.files-editor.terminal-on .files-main { display: none; }
 
 /* ── Source-control (GitHub) panel ───────────────────────── */
 

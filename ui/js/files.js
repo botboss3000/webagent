@@ -7,9 +7,11 @@
 // folder fetches its children on first expand.
 
 import { openGitPanel } from './files-git.js';
+import { app } from './state.js';
 
 const API_BASE = '/api/v1/files';
 const LS_SIDEBAR_VIEW = 'files.sidebarView';   // 'explorer' | 'git'
+const LS_TERMINAL_ON  = 'files.terminalOn';    // '1' if terminal pane is open
 
 let initialised = false;
 let isAdmin = false;
@@ -1615,8 +1617,94 @@ export function initFiles() {
   installFilesDropGuard();
   initSidebarViewSwitcher();
   initSidebarMaximize();
+  initFilesTerminal();
   renderTabs();
   renderEditorPanes();
+}
+
+// ── In-page terminal toggle ────────────────────────────────────────
+//
+// The terminal lives in #files-terminal-wrap, which sits next to .files-main
+// inside the .files-editor. Toggling on hides the editor and reveals the
+// terminal pane; toggling off restores the editor. The #terminal-container
+// element inside the wrap is driven by terminal.js (xterm + WebSocket) and
+// is initialised once at app startup, independent of this toggle.
+
+function setFilesTerminalOn(on) {
+  const editor = document.getElementById('files-editor');
+  const wrap = document.getElementById('files-terminal-wrap');
+  if (!editor || !wrap) return;
+  editor.classList.toggle('terminal-on', !!on);
+  wrap.hidden = !on;
+
+  // Update every toggle button (sidebar headers + strip) so they reflect
+  // the new state regardless of which one was clicked.
+  document.querySelectorAll('.files-terminal-toggle').forEach((btn) => {
+    btn.classList.toggle('active', !!on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.title = on ? 'Hide terminal' : 'Toggle terminal in main panel';
+  });
+
+  try { localStorage.setItem(LS_TERMINAL_ON, on ? '1' : '0'); } catch (_) {}
+
+  if (on) {
+    // On mobile, the sidebar may be filling the screen (state=max). Switch
+    // to the strip so the main panel — and the terminal we just opened —
+    // becomes visible.
+    if (isMobileLayout()) {
+      const sidebar = document.getElementById('files-sidebar');
+      if (sidebar && sidebar.dataset.state === 'max') setSidebarState('strip');
+    }
+    // xterm needs a refit whenever its container's size changes (which
+    // happens both when the wrap becomes visible and when the sidebar
+    // resize toggles). Defer a tick so layout has settled.
+    fitFilesTerminal();
+  }
+}
+
+function fitFilesTerminal() {
+  setTimeout(() => {
+    try {
+      if (app && app.fitAddon && app.term) {
+        app.fitAddon.fit();
+        // Re-send the new geometry to the backend so the PTY agrees.
+        if (app.termWs && app.termWs.readyState === WebSocket.OPEN) {
+          app.termWs.send(JSON.stringify({ type: 'resize', rows: app.term.rows, cols: app.term.cols }));
+        }
+      }
+    } catch (_) {}
+  }, 60);
+}
+
+function initFilesTerminal() {
+  const sidebar = document.getElementById('files-sidebar');
+  if (!sidebar) return;
+
+  // Restore last state (default: off)
+  const wantOn = localStorage.getItem(LS_TERMINAL_ON) === '1';
+  setFilesTerminalOn(wantOn);
+
+  // Delegate clicks at the sidebar — covers the buttons in both panel
+  // headers plus the one in the strip without re-binding when the view
+  // switches.
+  sidebar.addEventListener('click', (e) => {
+    const btn = e.target.closest('.files-terminal-toggle');
+    if (!btn || !sidebar.contains(btn)) return;
+    e.stopPropagation();
+    const editor = document.getElementById('files-editor');
+    const isOn = !!(editor && editor.classList.contains('terminal-on'));
+    setFilesTerminalOn(!isOn);
+  });
+
+  // Keep xterm's columns in sync when the user drags the sidebar resize
+  // handle (only relevant while the terminal is visible).
+  const handle = document.getElementById('files-resize-handle');
+  if (handle) {
+    handle.addEventListener('mouseup', () => {
+      const editor = document.getElementById('files-editor');
+      if (editor && editor.classList.contains('terminal-on')) fitFilesTerminal();
+    });
+  }
 }
 
 // ── Sidebar state cycle: split → max → strip → split ───────────────
@@ -1831,6 +1919,10 @@ export async function startFiles() {
 
   // Restore previously open tabs only once per session
   if (!openTabs.length) await restoreOpenTabs();
+
+  // If the embedded terminal is currently visible, refit xterm — the page
+  // was hidden until just now and xterm can't measure a display:none host.
+  if (editor && editor.classList.contains('terminal-on')) fitFilesTerminal();
 }
 
 export function stopFiles() {
