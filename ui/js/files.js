@@ -1619,48 +1619,115 @@ export function initFiles() {
   renderEditorPanes();
 }
 
-// ── Sidebar maximize / restore ─────────────────────────────────────
+// ── Sidebar state cycle: split → max → strip → split ───────────────
+//
+// Desktop has all three states. Mobile skips 'split' (no usable split
+// view on small screens) and cycles strip ↔ max only.
 
-const LS_SIDEBAR_MAX = 'files.sidebarMaximized';
+const LS_SIDEBAR_STATE = 'files.sidebarState';   // 'split' | 'max' | 'strip'
+
+function isMobileLayout() {
+  if (typeof window.__isMobileChatLayout === 'function') return window.__isMobileChatLayout();
+  return window.innerWidth <= 800;
+}
 
 function initSidebarMaximize() {
   const sidebar = document.getElementById('files-sidebar');
   if (!sidebar) return;
-  // Restore prior state.
-  if (localStorage.getItem(LS_SIDEBAR_MAX) === 'true') {
-    setSidebarMaximized(true);
-  }
-  // The button appears in BOTH panel headers — delegate at sidebar level.
+  // Restore prior state. On mobile, fold 'split' into 'strip'.
+  let saved = localStorage.getItem(LS_SIDEBAR_STATE) || 'split';
+  if (saved !== 'split' && saved !== 'max' && saved !== 'strip') saved = 'split';
+  if (isMobileLayout() && saved === 'split') saved = 'strip';
+  setSidebarState(saved);
+
+  // Delegate clicks on the cycle button (in panel headers AND the strip),
+  // the strip's refresh button, and the strip's view-switch buttons.
   sidebar.addEventListener('click', (e) => {
-    const btn = e.target.closest('.files-maximize-btn');
-    if (!btn || !sidebar.contains(btn)) return;
-    e.stopPropagation();
-    setSidebarMaximized(!sidebar.classList.contains('maximized'));
+    const cycle = e.target.closest('.files-maximize-btn');
+    if (cycle && sidebar.contains(cycle)) {
+      e.stopPropagation();
+      cycleSidebarState();
+      return;
+    }
+    const stripRefresh = e.target.closest('.files-strip-refresh');
+    if (stripRefresh && sidebar.contains(stripRefresh)) {
+      e.stopPropagation();
+      const view = sidebar.dataset.view || 'explorer';
+      if (view === 'git') {
+        import('./files-git.js').then(m => m.refreshGit(sidebar)).catch(() => {});
+      } else {
+        const r = document.getElementById('files-refresh');
+        if (r) r.click();
+      }
+      return;
+    }
+    const stripView = e.target.closest('.files-strip-view');
+    if (stripView && sidebar.contains(stripView)) {
+      e.stopPropagation();
+      const v = stripView.dataset.view;
+      if (!v) return;
+      // Switching view from the strip also expands the sidebar so the
+      // chosen view is actually visible.
+      applySidebarView(v);
+      try { localStorage.setItem(LS_SIDEBAR_VIEW, v); } catch (_) {}
+      setSidebarState(isMobileLayout() ? 'max' : 'split');
+    }
   });
 }
 
-function setSidebarMaximized(on) {
+function cycleSidebarState() {
   const sidebar = document.getElementById('files-sidebar');
   if (!sidebar) return;
-  sidebar.classList.toggle('maximized', !!on);
-  // Update every maximize button's icon + title. Swap lucide name and
-  // remove the previously rendered SVG so createIcons re-renders it.
+  const cur = sidebar.dataset.state || 'split';
+  const mobile = isMobileLayout();
+  let next;
+  if (mobile) {
+    // 2-stage: strip ↔ max
+    next = (cur === 'max') ? 'strip' : 'max';
+  } else {
+    // 3-stage: split → max → strip → split → …
+    next = (cur === 'split') ? 'max'
+         : (cur === 'max')   ? 'strip'
+         : 'split';
+  }
+  setSidebarState(next);
+}
+
+function setSidebarState(state) {
+  const sidebar = document.getElementById('files-sidebar');
+  if (!sidebar) return;
+  if (state !== 'split' && state !== 'max' && state !== 'strip') state = 'split';
+  if (isMobileLayout() && state === 'split') state = 'strip';
+  sidebar.dataset.state = state;
+  sidebar.classList.toggle('maximized', state === 'max');
+  sidebar.classList.toggle('strip',     state === 'strip');
+
+  // Update the cycle button's icon + title in every spot it appears
+  // (panel headers AND the strip). The icon hints at the NEXT action,
+  // not the current state.
+  const iconName = state === 'split' ? 'maximize-2'
+                 : state === 'max'   ? 'chevrons-left'
+                 :                     'panel-left-open';
+  const title    = state === 'split' ? 'Maximize sidebar'
+                 : state === 'max'   ? 'Collapse sidebar'
+                 :                     'Expand sidebar';
   sidebar.querySelectorAll('.files-maximize-btn').forEach((b) => {
-    b.title = on ? 'Restore sidebar' : 'Maximize sidebar';
-    const icon = b.querySelector('i[data-lucide], i.lucide-icon');
-    if (icon) {
-      const newName = on ? 'minimize-2' : 'maximize-2';
-      icon.setAttribute('data-lucide', newName);
-      icon.classList.remove('lucide');
-      icon.innerHTML = '';
-    }
+    b.title = title;
+    b.innerHTML = '<i data-lucide="' + iconName + '" class="lucide-icon"></i>';
   });
+
+  // Strip is visible only when state=strip; panels follow the current
+  // view (via applySidebarView) but stay hidden when in strip mode.
+  const strip = sidebar.querySelector('.files-sidebar-strip');
+  if (strip) strip.hidden = (state !== 'strip');
+  applySidebarView(sidebar.dataset.view || 'explorer');
+
   if (window.lucide) {
     window.lucide.createIcons({
-      nodes: Array.from(sidebar.querySelectorAll('.files-maximize-btn i[data-lucide]:not(.lucide)')),
+      nodes: Array.from(sidebar.querySelectorAll('[data-lucide]:not(.lucide)')),
     });
   }
-  try { localStorage.setItem(LS_SIDEBAR_MAX, String(!!on)); } catch (_) {}
+  try { localStorage.setItem(LS_SIDEBAR_STATE, state); } catch (_) {}
 }
 
 // ── Sidebar view switcher (Explorer ↔ Source Control) ─────────────
@@ -1690,23 +1757,29 @@ function applySidebarView(view) {
   const sidebar = document.getElementById('files-sidebar');
   if (!sidebar) return;
   sidebar.dataset.view = view;
-  // Update aria-selected on every toggle button in every header.
-  sidebar.querySelectorAll('.files-view-toggle-btn').forEach((b) => {
+  // Update aria-selected on every view-toggle button (in panel headers
+  // and in the strip).
+  sidebar.querySelectorAll('.files-view-toggle-btn, .files-strip-view').forEach((b) => {
     const active = b.dataset.view === view;
     b.classList.toggle('active', active);
     b.setAttribute('aria-selected', active ? 'true' : 'false');
-    if (active) {
-      b.setAttribute('aria-disabled', 'true');
-      b.title = (view === 'git' ? 'Source control' : 'Explorer') + ' (current view)';
-    } else {
-      b.removeAttribute('aria-disabled');
-      b.title = 'Switch to ' + (b.dataset.view === 'git' ? 'source control' : 'explorer');
+    if (b.classList.contains('files-view-toggle-btn')) {
+      if (active) {
+        b.setAttribute('aria-disabled', 'true');
+        b.title = (view === 'git' ? 'Source control' : 'Explorer') + ' (current view)';
+      } else {
+        b.removeAttribute('aria-disabled');
+        b.title = 'Switch to ' + (b.dataset.view === 'git' ? 'source control' : 'explorer');
+      }
     }
   });
+  // In strip mode both panels stay hidden; otherwise the matching panel
+  // shows.
+  const state = sidebar.dataset.state || 'split';
   sidebar.querySelectorAll('.files-sidebar-panel').forEach((p) => {
-    p.hidden = (p.dataset.view !== view);
+    p.hidden = (state === 'strip') || (p.dataset.view !== view);
   });
-  if (view === 'git') {
+  if (view === 'git' && state !== 'strip') {
     // Lazy-load the git panel the first time, refresh on subsequent shows.
     openGitPanel(sidebar);
   }

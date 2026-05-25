@@ -97,7 +97,7 @@
   #chat-input-area {
     display: flex;
     flex-direction: column;
-    padding: 8px 12px;
+    padding: 8px 12px 0;
     border-top: none;
     background: transparent;
     gap: 6px;
