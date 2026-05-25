@@ -9,6 +9,7 @@ const MAX_RECONNECT_DELAY = 30000; // 30s max
 const INITIAL_RECONNECT_DELAY = 500; // 500ms first retry
 
 export function setTermStatus(state) {
+  if (!app.tDot || !app.tStat) return;
   app.tDot.className = 'status-dot ' + state;
   app.tStat.textContent =
     state === 'green' ? 'Terminal' : state === 'yellow' ? 'Connecting...' : 'Disconnected';
