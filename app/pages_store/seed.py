@@ -18,29 +18,23 @@ def home_page_html() -> str:
 :root {
   color-scheme: dark light;
   --bg-page: #0a0a0f;
-  --bg-header-from: #0d0d1e;
-  --bg-header-to: #160a28;
-  --bg-card: #0d0d1e;
-  --bg-card-hover: #11112a;
-  --bg-card-active-from: rgba(122,162,247,0.08);
-  --bg-card-active-to: rgba(187,154,247,0.06);
-  --bg-detail-from: #0e0e22;
-  --bg-detail-to: #0c0c1b;
-  --bg-code: #1a1a2e;
-  --bg-badge: rgba(122,162,247,0.10);
+  --bg-hero: linear-gradient(180deg, rgba(122,162,247,0.05) 0%, rgba(187,154,247,0.02) 60%, transparent 100%);
+  --bg-card: rgba(255,255,255,0.025);
+  --bg-card-hover: rgba(255,255,255,0.045);
+  --bg-card-open: rgba(122,162,247,0.05);
+  --bg-code: rgba(125,207,255,0.08);
+  --bg-chip: rgba(122,162,247,0.08);
+  --bg-pill: rgba(122,162,247,0.08);
 
-  --border: #1e1e3a;
-  --border-hover: #3d3d6e;
-  --border-active: #7aa2f7;
-  --border-code: #2a2a4a;
-  --border-badge: rgba(122,162,247,0.25);
-  --active-glow: rgba(122,162,247,0.18);
+  --border: rgba(255,255,255,0.06);
+  --border-hover: rgba(255,255,255,0.12);
+  --border-open: rgba(122,162,247,0.35);
 
-  --fg-strong: #e0def4;
+  --fg-strong: #f0f0fa;
   --fg-body: #c0caf5;
-  --fg-soft: #a9b1d6;
-  --fg-muted: #6272a4;
-  --fg-faint: #565f89;
+  --fg-soft: #9aa3c7;
+  --fg-muted: #6e7596;
+  --fg-faint: #4a516e;
   --fg-code: #7dcfff;
   --fg-accent: #7aa2f7;
   --fg-link: #7dcfff;
@@ -48,34 +42,29 @@ def home_page_html() -> str:
   --title-grad-from: #7dcfff;
   --title-grad-mid:  #7aa2f7;
   --title-grad-to:   #bb9af7;
+  --chevron: #7aa2f7;
   --bullet: #bb9af7;
 }
 
 html.light {
   --bg-page: #fffaf5;
-  --bg-header-from: #ffffff;
-  --bg-header-to: #fff5eb;
+  --bg-hero: linear-gradient(180deg, rgba(255,140,66,0.06) 0%, rgba(255,180,120,0.02) 60%, transparent 100%);
   --bg-card: #ffffff;
-  --bg-card-hover: #fff5eb;
-  --bg-card-active-from: rgba(255,140,66,0.10);
-  --bg-card-active-to: rgba(255,180,120,0.06);
-  --bg-detail-from: #ffffff;
-  --bg-detail-to: #fff7f0;
+  --bg-card-hover: #fff7f0;
+  --bg-card-open: #fff5eb;
   --bg-code: #fff2e6;
-  --bg-badge: rgba(255,140,66,0.10);
+  --bg-chip: rgba(255,140,66,0.10);
+  --bg-pill: rgba(255,140,66,0.10);
 
-  --border: #ffdec4;
-  --border-hover: #ffb380;
-  --border-active: #ff8c42;
-  --border-code: #ffd4a8;
-  --border-badge: rgba(255,140,66,0.30);
-  --active-glow: rgba(255,140,66,0.22);
+  --border: #f0e1d0;
+  --border-hover: #e8d4bd;
+  --border-open: #ff8c42;
 
-  --fg-strong: #3d2c2e;
+  --fg-strong: #2d1f21;
   --fg-body: #4d3a3c;
-  --fg-soft: #5c4a4a;
-  --fg-muted: #8a6f5c;
-  --fg-faint: #b09580;
+  --fg-soft: #6f5a5b;
+  --fg-muted: #8f7a7b;
+  --fg-faint: #c0b0a8;
   --fg-code: #b85a14;
   --fg-accent: #ff8c42;
   --fg-link: #ff7a2e;
@@ -83,6 +72,7 @@ html.light {
   --title-grad-from: #ff8c42;
   --title-grad-mid:  #ff7a2e;
   --title-grad-to:   #d4873a;
+  --chevron: #ff8c42;
   --bullet: #ff8c42;
 }
 
@@ -90,126 +80,225 @@ html.light {
 @media (prefers-color-scheme: light) {
   html:not(.dark) {
     --bg-page: #fffaf5;
-    --bg-header-from: #ffffff;
-    --bg-header-to: #fff5eb;
+    --bg-hero: linear-gradient(180deg, rgba(255,140,66,0.06) 0%, rgba(255,180,120,0.02) 60%, transparent 100%);
     --bg-card: #ffffff;
-    --bg-card-hover: #fff5eb;
-    --bg-card-active-from: rgba(255,140,66,0.10);
-    --bg-card-active-to: rgba(255,180,120,0.06);
-    --bg-detail-from: #ffffff;
-    --bg-detail-to: #fff7f0;
+    --bg-card-hover: #fff7f0;
+    --bg-card-open: #fff5eb;
     --bg-code: #fff2e6;
-    --bg-badge: rgba(255,140,66,0.10);
-    --border: #ffdec4;
-    --border-hover: #ffb380;
-    --border-active: #ff8c42;
-    --border-code: #ffd4a8;
-    --border-badge: rgba(255,140,66,0.30);
-    --active-glow: rgba(255,140,66,0.22);
-    --fg-strong: #3d2c2e;
+    --bg-chip: rgba(255,140,66,0.10);
+    --bg-pill: rgba(255,140,66,0.10);
+    --border: #f0e1d0;
+    --border-hover: #e8d4bd;
+    --border-open: #ff8c42;
+    --fg-strong: #2d1f21;
     --fg-body: #4d3a3c;
-    --fg-soft: #5c4a4a;
-    --fg-muted: #8a6f5c;
-    --fg-faint: #b09580;
+    --fg-soft: #6f5a5b;
+    --fg-muted: #8f7a7b;
+    --fg-faint: #c0b0a8;
     --fg-code: #b85a14;
     --fg-accent: #ff8c42;
     --fg-link: #ff7a2e;
     --title-grad-from: #ff8c42;
     --title-grad-mid: #ff7a2e;
     --title-grad-to: #d4873a;
+    --chevron: #ff8c42;
     --bullet: #ff8c42;
   }
 }
 
 *, *::before, *::after { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
-body { margin: 0; padding: 0; background: var(--bg-page); color: var(--fg-body);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  font-size: 15px; line-height: 1.6;
-  transition: background 0.18s, color 0.18s; }
-.container { max-width: 980px; margin: 0 auto; padding: 0 24px; }
-code { background: var(--bg-code); border: 1px solid var(--border-code); border-radius: 4px;
-  padding: 1px 6px; font-size: 12px; font-family: 'Fira Code', monospace; color: var(--fg-code); }
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg-page);
+  color: var(--fg-body);
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  transition: background 0.2s, color 0.2s;
+}
+.container { max-width: 760px; margin: 0 auto; padding: 0 24px; }
+code {
+  background: var(--bg-code);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 12.5px;
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  color: var(--fg-code);
+}
 
 /* Hero */
-header { background: linear-gradient(135deg, var(--bg-header-from) 0%, var(--bg-header-to) 100%);
-  border-bottom: 1px solid var(--border); padding: 48px 0 40px; text-align: center;
-  transition: background 0.18s, border-color 0.18s; }
-.badge { display: inline-block; background: var(--bg-badge);
-  border: 1px solid var(--border-badge); border-radius: 20px; padding: 4px 14px;
-  font-size: 11px; color: var(--fg-accent); letter-spacing: 0.08em; text-transform: uppercase;
-  margin-bottom: 16px; }
-header h1 { margin: 0 0 12px; font-size: 46px; font-weight: 700;
-  background: linear-gradient(135deg, var(--title-grad-from) 0%, var(--title-grad-mid) 50%, var(--title-grad-to) 100%);
-  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-header p { margin: 0 auto; font-size: 16px; color: var(--fg-soft); max-width: 600px; }
-
-main { padding: 40px 0 56px; }
-
-/* Card grid */
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 14px;
-  margin-bottom: 28px;
+header {
+  padding: 72px 0 56px;
+  text-align: center;
+  background: var(--bg-hero);
+  transition: background 0.2s;
 }
+.eyebrow {
+  display: inline-block;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg-accent);
+  background: var(--bg-pill);
+  padding: 5px 12px;
+  border-radius: 100px;
+  margin-bottom: 20px;
+  font-weight: 500;
+}
+header h1 {
+  margin: 0 0 14px;
+  font-size: 56px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.05;
+  background: linear-gradient(135deg, var(--title-grad-from) 0%, var(--title-grad-mid) 50%, var(--title-grad-to) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+header p {
+  margin: 0 auto;
+  font-size: 17px;
+  line-height: 1.55;
+  color: var(--fg-soft);
+  max-width: 560px;
+}
+
+main { padding: 24px 0 80px; }
+
+/* Accordion */
+.stack { display: flex; flex-direction: column; gap: 8px; }
+
 .card {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 18px 16px;
+  border-radius: 14px;
+  overflow: hidden;
+  transition: background 0.2s, border-color 0.2s;
+}
+.card:hover { background: var(--bg-card-hover); border-color: var(--border-hover); }
+.card.open {
+  background: var(--bg-card-open);
+  border-color: var(--border-open);
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 22px;
   cursor: pointer;
   user-select: none;
-  transition: border-color 0.18s, transform 0.15s, background 0.18s;
   outline: none;
 }
-.card:hover, .card:focus-visible {
-  border-color: var(--border-hover);
-  transform: translateY(-2px);
-  background: var(--bg-card-hover);
-}
-.card.active {
-  border-color: var(--border-active);
-  background: linear-gradient(135deg, var(--bg-card-active-from), var(--bg-card-active-to));
-  box-shadow: 0 0 0 1px var(--active-glow);
-}
-.card .icon { font-size: 22px; margin-bottom: 10px; line-height: 1; }
-.card h3 { margin: 0 0 5px; font-size: 14px; font-weight: 600; color: var(--fg-strong); }
-.card p { margin: 0; font-size: 12.5px; color: var(--fg-muted); line-height: 1.5; }
+.card-head:focus-visible { box-shadow: inset 0 0 0 2px var(--border-open); border-radius: 14px; }
 
-/* Detail panel */
-.detail {
-  background: linear-gradient(180deg, var(--bg-detail-from) 0%, var(--bg-detail-to) 100%);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 28px 28px 24px;
-  margin-bottom: 24px;
-  transition: background 0.18s, border-color 0.18s;
+.card-icon {
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  background: var(--bg-chip);
+  border-radius: 10px;
+  line-height: 1;
 }
-.detail-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
-.detail-head .icon { font-size: 28px; line-height: 1; }
-.detail-head h2 { margin: 0; font-size: 22px; font-weight: 600; color: var(--fg-strong); }
-.detail-body { font-size: 14px; color: var(--fg-soft); }
-.detail-body p { margin: 0 0 12px; }
-.detail-body p:last-child { margin: 0; }
-.detail-body strong { color: var(--fg-body); }
-.detail-body em { color: var(--fg-link); font-style: normal; }
-.detail-list { margin: 6px 0 14px; padding: 0; list-style: none; display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px 18px; }
-.detail-list li { display: flex; gap: 8px; font-size: 13px; color: var(--fg-soft); }
-.detail-list .b { color: var(--bullet); flex-shrink: 0; font-weight: 700; }
+
+.card-meta { flex: 1; min-width: 0; }
+.card-title {
+  margin: 0 0 3px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--fg-strong);
+  letter-spacing: -0.005em;
+}
+.card-summary {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--fg-soft);
+  line-height: 1.45;
+}
+
+.chevron {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  color: var(--chevron);
+  opacity: 0.6;
+  transition: transform 0.25s ease, opacity 0.2s;
+}
+.card.open .chevron { transform: rotate(180deg); opacity: 1; }
+
+/* Smooth expand: 0fr -> 1fr is animatable */
+.card-body-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.28s cubic-bezier(.32,.72,.32,1);
+}
+.card.open .card-body-wrap { grid-template-rows: 1fr; }
+.card-body-inner { overflow: hidden; }
+.card-body {
+  padding: 0 22px 24px 76px;
+  font-size: 14px;
+  color: var(--fg-soft);
+  line-height: 1.65;
+}
+.card-body p { margin: 0 0 12px; }
+.card-body p:last-child { margin: 0; }
+.card-body strong { color: var(--fg-body); font-weight: 600; }
+.card-body em { color: var(--fg-link); font-style: normal; }
+
+/* Pill list for examples inside detail */
+.pills { margin: 6px 0 14px; display: flex; flex-wrap: wrap; gap: 6px; }
+.pill {
+  display: inline-block;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 100px;
+  background: var(--bg-pill);
+  color: var(--fg-accent);
+  font-weight: 500;
+}
+
+/* Detail bullet rows */
+.rows { margin: 6px 0 14px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.rows li { display: flex; gap: 10px; font-size: 13.5px; color: var(--fg-soft); }
+.rows .b { color: var(--bullet); flex-shrink: 0; font-weight: 700; }
 
 /* Footer hint */
-.hint { text-align: center; padding: 20px 0; font-size: 13px; color: var(--fg-muted);
-  border-top: 1px solid var(--border); }
+.hint {
+  margin-top: 28px;
+  text-align: center;
+  padding: 18px 16px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
 .hint strong { color: var(--fg-link); font-weight: 600; }
+
+@media (max-width: 540px) {
+  header { padding: 56px 0 40px; }
+  header h1 { font-size: 40px; }
+  header p { font-size: 15px; }
+  .card-head { padding: 16px 16px; gap: 12px; }
+  .card-icon { width: 32px; height: 32px; font-size: 17px; }
+  .card-body { padding: 0 16px 18px 60px; }
+}
 </style>
 </head>
 <body>
 
 <header>
   <div class="container">
-    <div class="badge">Open Agent Platform</div>
+    <div class="eyebrow">Open Agent Platform</div>
     <h1>webAgent</h1>
     <p>Build AI agents that fit your business — from a simple support chatbot to an autonomous developer that ships code — and watch every step they take.</p>
   </div>
@@ -218,46 +307,7 @@ main { padding: 40px 0 56px; }
 <main>
   <div class="container">
 
-    <div class="grid" id="grid" role="tablist" aria-label="Platform features">
-      <div class="card" role="tab" tabindex="0" data-feature="agents" aria-selected="true">
-        <div class="icon">🛠️</div>
-        <h3>Build Custom Agents</h3>
-        <p>From simple chatbots to autonomous codebase editors — pick the tools, knowledge, and personality.</p>
-      </div>
-      <div class="card" role="tab" tabindex="0" data-feature="hosting">
-        <div class="icon">☁️</div>
-        <h3>Self-Host Anywhere</h3>
-        <p>Deploy to AWS, GCP, Azure, or bare metal. No vendor lock-in on infra or LLM.</p>
-      </div>
-      <div class="card" role="tab" tabindex="0" data-feature="tenants">
-        <div class="icon">👥</div>
-        <h3>Multi-Tenant by Design</h3>
-        <p>One agent, unlimited users — each with their own isolated session, memory, and tailored experience.</p>
-      </div>
-      <div class="card" role="tab" tabindex="0" data-feature="local">
-        <div class="icon">💻</div>
-        <h3>Run Locally</h3>
-        <p>Clone, set an API key, and run on your laptop in minutes. Works offline with a local model.</p>
-      </div>
-      <div class="card" role="tab" tabindex="0" data-feature="code">
-        <div class="icon">📝</div>
-        <h3>Full Code Read / Write / Edit</h3>
-        <p>Agents read, modify, and ship code in the very codebase they live in. Drop into any app for instant AI.</p>
-      </div>
-      <div class="card" role="tab" tabindex="0" data-feature="ui">
-        <div class="icon">🎨</div>
-        <h3>AI-Built UI</h3>
-        <p>Agents generate functional pages on demand. This one is an example — edit it with a prompt above.</p>
-      </div>
-    </div>
-
-    <div class="detail" id="detail" role="tabpanel" aria-live="polite">
-      <div class="detail-head">
-        <div class="icon" id="detail-icon">🛠️</div>
-        <h2 id="detail-title">Build Custom Agents</h2>
-      </div>
-      <div class="detail-body" id="detail-body"></div>
-    </div>
+    <div class="stack" id="stack" role="tablist" aria-label="Platform features"></div>
 
     <div class="hint">
       <strong>Try it:</strong> use the prompt bar above to say <em>"add a section about pricing"</em> or <em>"redesign the layout"</em> and the agent will edit this page directly.
@@ -267,13 +317,15 @@ main { padding: 40px 0 56px; }
 </main>
 
 <script>
-const DETAILS = {
-  agents: {
-    icon: "🛠️",
-    title: "Build Custom Agents",
+const FEATURES = [
+  {
+    id: 'agents',
+    icon: '🛠️',
+    title: 'Build Custom Agents',
+    summary: 'From simple chatbots to autonomous codebase editors — pick the tools, knowledge, and personality.',
     body:
       '<p>Design an agent for any role across the full capability spectrum — pick the tools, knowledge sources, system prompt, and personality.</p>' +
-      '<ul class="detail-list">' +
+      '<ul class="rows">' +
         '<li><span class="b">•</span><span><strong>Support agent</strong> — answers questions from your docs, escalates to humans.</span></li>' +
         '<li><span class="b">•</span><span><strong>Research agent</strong> — searches the web, builds a memory of findings.</span></li>' +
         '<li><span class="b">•</span><span><strong>Workflow agent</strong> — triggers automations, calls webhooks on a schedule.</span></li>' +
@@ -281,73 +333,115 @@ const DETAILS = {
       '</ul>' +
       '<p>Every reasoning step, tool call, and state change streams live to the <em>Stream</em>, <em>Flow</em>, and <em>Runtime Loop</em> tabs — you can <strong>watch the agent think</strong> while it works, diagnose surprises, and tune behavior from real traces.</p>'
   },
-  hosting: {
-    icon: "☁️",
-    title: "Self-Host Anywhere",
+  {
+    id: 'deploy',
+    icon: '🚀',
+    title: 'Deploy Anywhere',
+    summary: 'Your laptop, your VPS, AWS, GCP, Azure, bare metal. No vendor lock-in on infra or LLM.',
     body:
-      '<p>Deploy to any provider you already trust — AWS, GCP, Azure, Cloud Run, Fly.io, your own bare metal — or run it inside your existing app. The codebase is plain Python + FastAPI with a Dockerfile included.</p>' +
-      '<p>No lock-in on the LLM either: swap between OpenRouter, OpenAI, Anthropic, local Llama models, or anything else with an OpenAI-compatible API. Provider keys live in a pluggable secrets vault (env vars, OS keyring, GCP Secret Manager, or AWS Secrets Manager).</p>'
+      '<p>Local-first is the default — clone the repo, set one API key, run <code>python run.py</code>, and you have a full agent platform on your laptop in minutes. SQLite ships in the box so nothing external is required.</p>' +
+      '<p>Same code runs in production. Drop the included Dockerfile into AWS, GCP, Azure, Cloud Run, Fly.io, or your own bare metal — no fork, no rewrite, no proprietary runtime.</p>' +
+      '<p>LLM stays portable too: swap between OpenRouter, OpenAI, Anthropic, or a <strong>local Llama model for fully-offline operation</strong>. Provider keys live in a pluggable secrets vault (env vars, OS keyring, GCP Secret Manager, AWS Secrets Manager).</p>'
   },
-  tenants: {
-    icon: "👥",
-    title: "Multi-Tenant by Design",
+  {
+    id: 'tenants',
+    icon: '👥',
+    title: 'Multi-Tenant by Design',
+    summary: 'One agent, unlimited users — each with their own session, memory, and tailored experience.',
     body:
       '<p>One agent definition, unlimited users. Every user gets their own isolated session, memory, attachments, automations, and personalized agent state — but they all share the same underlying agent template you built.</p>' +
       '<p>Per-tenant data isolation is enforced at the storage layer with <code>user_id</code> scoping on every row. Optional field-level encryption with per-tenant keys means even a DB compromise doesn\\'t leak one user\\'s data to another.</p>'
   },
-  local: {
-    icon: "💻",
-    title: "Run Locally",
-    body:
-      '<p>Local-first is the default. Clone the repo, copy <code>.env.example</code> to <code>.env</code>, set a single API key, run <code>python run.py</code>, and you have a full agent platform on your laptop in minutes.</p>' +
-      '<p>SQLite ships as the default database, so there\\'s nothing external to provision. Point it at a local Llama model and the whole thing runs offline — useful for private data, air-gapped environments, or just developing without burning API credits.</p>'
-  },
-  code: {
-    icon: "📝",
-    title: "Full Code Read / Write / Edit",
+  {
+    id: 'code',
+    icon: '📝',
+    title: 'Full Code Read / Write / Edit',
+    summary: 'Agents read, modify, and ship code in the very codebase they live in.',
     body:
       '<p>Agents can read, modify, and ship code in the codebase they\\'re embedded in. Drop webAgent into your existing website or web app and the agent immediately gets the power to edit the surrounding code — turning any product into one with AI capabilities.</p>' +
       '<p>Or run it as an <strong>admin AI for your own repo</strong>: an agent that lives inside the code, ships pull requests, fixes bugs, refactors modules, and updates docs on demand. Every file the agent touches is streamed live so you can review intent and impact before merging.</p>'
   },
-  ui: {
-    icon: "🎨",
-    title: "AI-Built UI",
+  {
+    id: 'ui',
+    icon: '🎨',
+    title: 'AI-Built UI',
+    summary: 'Agents generate functional pages on demand. This one is an example.',
     body:
       '<p>Agents generate functional HTML pages on demand. This is one of them. Use the prompt bar above the iframe to say <em>"add a pricing section"</em> or <em>"make it lighter"</em> and the agent rewrites the page in place.</p>' +
       '<p>Add brand-new pages by describing what you want — a dashboard, a notes app, a generative-art sketch, an internal admin tool. Each page gets its own dedicated agent that knows its purpose, so you can iterate on pages independently without losing context.</p>'
+  },
+  {
+    id: 'integrations',
+    icon: '🔌',
+    title: 'Connects to Everything',
+    summary: 'Messaging, productivity, social, marketplaces, web scraping — or invent new tools at runtime.',
+    body:
+      '<p>Out of the box, agents can plug into a long list of third-party services through the <strong>Agent Abilities</strong> page in App Config. Enable a category app-wide, then turn it on per agent.</p>' +
+      '<div class="pills">' +
+        '<span class="pill">Telegram</span><span class="pill">WhatsApp</span><span class="pill">Slack</span><span class="pill">Discord</span><span class="pill">Email</span>' +
+        '<span class="pill">Google</span><span class="pill">Microsoft</span><span class="pill">Dropbox</span>' +
+        '<span class="pill">Twitter</span><span class="pill">LinkedIn</span><span class="pill">Reddit</span><span class="pill">TikTok</span><span class="pill">Pinterest</span><span class="pill">Snapchat</span><span class="pill">Twitch</span><span class="pill">Meta</span>' +
+        '<span class="pill">Amazon</span><span class="pill">eBay</span><span class="pill">Etsy</span><span class="pill">Shopify</span>' +
+        '<span class="pill">Twilio</span><span class="pill">Web scraping</span><span class="pill">Browser sessions</span>' +
+      '</div>' +
+      '<p>When a built-in integration is missing, agents with the <strong>Create Tools</strong> ability can write a new tool themselves: define the schema, the API call, the auth — and the new tool drops straight into the agent\\'s toolbelt at runtime, no redeploy.</p>'
   }
-};
+];
 
-const grid = document.getElementById('grid');
-const detailIcon = document.getElementById('detail-icon');
-const detailTitle = document.getElementById('detail-title');
-const detailBody = document.getElementById('detail-body');
+const stack = document.getElementById('stack');
 
-function select(featureId) {
-  const data = DETAILS[featureId];
-  if (!data) return;
-  detailIcon.textContent = data.icon;
-  detailTitle.textContent = data.title;
-  detailBody.innerHTML = data.body;
-  for (const card of grid.querySelectorAll('.card')) {
-    const isActive = card.dataset.feature === featureId;
-    card.classList.toggle('active', isActive);
-    card.setAttribute('aria-selected', isActive ? 'true' : 'false');
+// Render the accordion
+for (const f of FEATURES) {
+  const card = document.createElement('article');
+  card.className = 'card';
+  card.dataset.feature = f.id;
+  card.innerHTML =
+    '<div class="card-head" role="button" tabindex="0" aria-expanded="false">' +
+      '<div class="card-icon" aria-hidden="true">' + f.icon + '</div>' +
+      '<div class="card-meta">' +
+        '<h3 class="card-title">' + f.title + '</h3>' +
+        '<p class="card-summary">' + f.summary + '</p>' +
+      '</div>' +
+      '<svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>' +
+    '</div>' +
+    '<div class="card-body-wrap"><div class="card-body-inner"><div class="card-body">' + f.body + '</div></div></div>';
+  stack.appendChild(card);
+}
+
+function openCard(card) {
+  for (const c of stack.querySelectorAll('.card')) {
+    const head = c.querySelector('.card-head');
+    if (c === card) {
+      const wasOpen = c.classList.contains('open');
+      c.classList.toggle('open', !wasOpen);
+      head.setAttribute('aria-expanded', wasOpen ? 'false' : 'true');
+    } else {
+      c.classList.remove('open');
+      head.setAttribute('aria-expanded', 'false');
+    }
   }
 }
 
-grid.addEventListener('click', (e) => {
-  const card = e.target.closest('.card');
-  if (card) select(card.dataset.feature);
+stack.addEventListener('click', (e) => {
+  const head = e.target.closest('.card-head');
+  if (!head) return;
+  openCard(head.parentElement);
 });
 
-grid.addEventListener('keydown', (e) => {
+stack.addEventListener('keydown', (e) => {
   if (e.key !== 'Enter' && e.key !== ' ') return;
-  const card = e.target.closest('.card');
-  if (!card) return;
+  const head = e.target.closest('.card-head');
+  if (!head) return;
   e.preventDefault();
-  select(card.dataset.feature);
+  openCard(head.parentElement);
 });
+
+// Open the first card on load
+const first = stack.querySelector('.card');
+if (first) {
+  first.classList.add('open');
+  first.querySelector('.card-head').setAttribute('aria-expanded', 'true');
+}
 
 // Theme: listen for the parent app's theme via postMessage. Falls back to
 // the @media(prefers-color-scheme) rule above when opened standalone.
@@ -358,9 +452,6 @@ window.addEventListener('message', (e) => {
   if (msg.value === 'light') { html.classList.add('light'); html.classList.remove('dark'); }
   else { html.classList.add('dark'); html.classList.remove('light'); }
 });
-
-// Prepopulate with the first card
-select('agents');
 </script>
 
 </body>
