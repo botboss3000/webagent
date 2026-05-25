@@ -423,6 +423,11 @@
 
         <div class="user-dropdown-divider"></div>
 
+        <button id="btn-send-feedback" class="user-dropdown-action" style="display:none;">
+          <i data-lucide="message-circle" class="lucide-icon" style="width:15px;height:15px;"></i>
+          Send feedback
+        </button>
+
         <button id="btn-signout-header" class="user-dropdown-action">
           <i data-lucide="log-out" class="lucide-icon" style="width:15px;height:15px;"></i>
           Sign Out
@@ -3641,5 +3646,90 @@
   }, true);
 })();
 </script>
+
+<!-- ── Feedback modal (rendered hidden; opened by ui/js/feedback.js) ── -->
+<div id="feedback-modal" class="feedback-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="feedback-modal-title">
+  <div class="feedback-modal-backdrop" data-feedback-close></div>
+  <div class="feedback-modal-card">
+    <div class="feedback-modal-head">
+      <h3 id="feedback-modal-title">Send feedback</h3>
+      <button class="feedback-modal-close" data-feedback-close aria-label="Close">&times;</button>
+    </div>
+    <form id="feedback-form" class="feedback-modal-body">
+      <fieldset class="feedback-type-group">
+        <legend>What kind of feedback?</legend>
+        <label class="feedback-type-opt">
+          <input type="radio" name="feedback-type" value="bug" checked>
+          <span><strong>Bug report</strong> — something is broken</span>
+        </label>
+        <label class="feedback-type-opt">
+          <input type="radio" name="feedback-type" value="feature">
+          <span><strong>Feature request</strong> — an idea or improvement</span>
+        </label>
+        <label class="feedback-type-opt">
+          <input type="radio" name="feedback-type" value="message">
+          <span><strong>Message to admin</strong> — anything else</span>
+        </label>
+      </fieldset>
+
+      <label class="feedback-field">
+        <span class="feedback-label">Details</span>
+        <textarea id="feedback-body" name="body" rows="6" required maxlength="8000" placeholder="Describe what happened, what you expected, and any steps to reproduce."></textarea>
+        <span class="feedback-counter"><span id="feedback-body-count">0</span> / 8000</span>
+      </label>
+
+      <label class="feedback-field">
+        <span class="feedback-label">Your email <span class="feedback-optional">(optional, only if you want a reply)</span></span>
+        <input id="feedback-email" name="email" type="email" maxlength="254" placeholder="you@example.com" autocomplete="email">
+      </label>
+
+      <div id="feedback-turnstile" class="feedback-turnstile"></div>
+
+      <div id="feedback-status" class="feedback-status" aria-live="polite"></div>
+
+      <div class="feedback-modal-actions">
+        <button type="button" class="feedback-btn-ghost" data-feedback-close>Cancel</button>
+        <button type="submit" id="feedback-submit-btn" class="feedback-btn-primary">Send</button>
+      </div>
+
+      <p class="feedback-disclosure">
+        Submissions create a GitHub issue in the webAgent feedback repo. Don't include passwords or other secrets. Your email, if provided, is stored in the issue body so the admin can reply.
+      </p>
+    </form>
+  </div>
+</div>
+
+<style>
+  .feedback-modal { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; }
+  .feedback-modal-backdrop { position: absolute; inset: 0; background: rgba(8, 10, 22, 0.65); backdrop-filter: blur(2px); }
+  .feedback-modal-card { position: relative; background: var(--surface, #11142b); color: var(--text, #e6e8ef); border: 1px solid #2a2a4a; border-radius: 10px; width: min(560px, 92vw); max-height: 90vh; overflow: auto; box-shadow: 0 16px 48px rgba(0,0,0,0.4); }
+  .feedback-modal-head { display:flex; align-items:center; justify-content:space-between; padding: 14px 18px; border-bottom: 1px solid #2a2a4a; }
+  .feedback-modal-head h3 { margin:0; font-size: 15px; font-weight: 600; }
+  .feedback-modal-close { background:none; border:0; color:inherit; font-size:22px; line-height:1; cursor:pointer; padding:4px 8px; }
+  .feedback-modal-body { padding: 16px 18px 18px; display:flex; flex-direction:column; gap:14px; }
+  .feedback-type-group { border:0; padding:0; margin:0; display:flex; flex-direction:column; gap:6px; }
+  .feedback-type-group legend { padding:0; margin: 0 0 4px; font-size:12px; color:#9ba1bd; }
+  .feedback-type-opt { display:flex; gap:8px; align-items:flex-start; font-size:13px; cursor:pointer; padding:6px 8px; border-radius:6px; }
+  .feedback-type-opt:hover { background: rgba(255,255,255,0.04); }
+  .feedback-type-opt input { margin-top: 2px; }
+  .feedback-field { display:flex; flex-direction:column; gap:5px; position:relative; }
+  .feedback-label { font-size:12px; color:#9ba1bd; }
+  .feedback-optional { color:#6e7493; font-weight:400; }
+  .feedback-field textarea, .feedback-field input[type=email] { background:#0d1024; color:inherit; border:1px solid #2a2a4a; border-radius:6px; padding:8px 10px; font: inherit; resize: vertical; }
+  .feedback-field textarea:focus, .feedback-field input[type=email]:focus { outline: 2px solid #4c6cff; outline-offset: -1px; }
+  .feedback-counter { position:absolute; right:6px; bottom:6px; font-size:10px; color:#6e7493; pointer-events:none; }
+  .feedback-turnstile { min-height: 0; }
+  .feedback-turnstile:not(:empty) { min-height: 65px; }
+  .feedback-status { font-size: 12px; min-height: 1em; }
+  .feedback-status.error { color: #ff7a7a; }
+  .feedback-status.success { color: #5cd6a8; }
+  .feedback-modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top: 4px; }
+  .feedback-btn-ghost { background:transparent; color:#c5cae3; border:1px solid #2a2a4a; border-radius:6px; padding:6px 14px; cursor:pointer; font: inherit; }
+  .feedback-btn-primary { background:#4c6cff; color:#fff; border:0; border-radius:6px; padding:6px 16px; cursor:pointer; font: inherit; }
+  .feedback-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .feedback-disclosure { font-size: 11px; color: #6e7493; margin: 0; line-height: 1.5; }
+</style>
+
+<script type="module" src="./ui/js/feedback.js"></script>
 </body>
 </html>
