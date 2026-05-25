@@ -839,7 +839,6 @@ body.light-mode #terminal-container,
 body.light-mode #terminal-side,
 body.light-mode #stream-viewer,
 body.light-mode #loop-container,
-body.light-mode #db-viewer,
 body.light-mode #loop-list,
 body.light-mode #stream-list {
     background: #fffaf5;

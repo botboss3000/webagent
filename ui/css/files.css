@@ -1192,8 +1192,44 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
   min-width: 0;
   overflow: auto;
 }
+/* Database view: takes the place of .files-main when the Database sidebar
+   view is active. Hosts the relocated #db-toolbar + #db-table-view. */
+.files-database-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
 .files-main[hidden],
-.files-settings-main[hidden] { display: none; }
+.files-settings-main[hidden],
+.files-database-main[hidden] { display: none; }
+
+/* Database sidebar panel: hosts the relocated #db-sidebar (with its own
+   refresh / reset / collapse toolbar). The panel header above carries the
+   explorer/git/database view toggles. */
+#files-panel-database .db-sidebar-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#files-panel-database #db-sidebar {
+  width: 100% !important;
+  min-width: 0 !important;
+  border-right: none;
+  flex: 1;
+  min-height: 0;
+}
+/* The original collapse animation shrunk #db-sidebar to 32px; inside the
+   new sidebar host we keep the panel filling 100% and rely on the existing
+   `.collapsed *` rules to hide the inner refresh/reset/list elements. */
+#files-panel-database #db-sidebar.collapsed {
+  width: 100% !important;
+  min-width: 0 !important;
+}
 
 /* "New terminal tab" button — not a view switcher, so it never enters the
    greyed-out active state. */

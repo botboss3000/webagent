@@ -17,7 +17,7 @@ import { initAgents } from './agents.js';
 import { initBilling } from './billing.js';
 import { initAppConfig } from './app-config.js';
 import { initAccount } from './account.js';
-import { initFiles } from './files.js';
+import { initFiles, relocateAdminToolsContainers } from './files.js';
 import { initChatResize } from './chatResize.js';
 import { initTutorial } from './tutorial.js';
 import { isAuthenticated, showLeftOverlay, hideLeftOverlay } from './left-login.js';
@@ -159,6 +159,10 @@ _anonReady.then(() => {
   _safeInit('initStream',      initStream);
   _safeInit('initLoop',        initLoop);
   _safeInit('initLoopVisual',  initLoopVisual);
+  // Move parked Admin Tools markup (App Config + Database viewer) into the
+  // admin-tools layout BEFORE the db viewer initializes, so its
+  // getElementById() lookups hit the final DOM positions.
+  _safeInit('relocateAdminToolsContainers', relocateAdminToolsContainers);
   _safeInit('initDbViewer',    initDbViewer);
   _safeInit('initAutoAgent',   initAutoAgent);
   _safeInit('initAgents',      initAgents);
