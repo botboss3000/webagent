@@ -136,6 +136,10 @@ function renderTreeNode(entry, depth) {
       e.stopPropagation();
       toggleDir(node, entry.path, depth);
     });
+    // ── Drag-and-drop file upload from the OS ──
+    // The user drags one or more files from their OS file manager onto
+    // a folder row in the tree; we upload each via /api/v1/files/write.
+    wireFolderDropTarget(row, entry.path);
   } else {
     row.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -151,6 +155,96 @@ function selectTreeRow(row) {
   if (!tree) return;
   tree.querySelectorAll('.files-tree-row.selected').forEach((r) => r.classList.remove('selected'));
   if (row) row.classList.add('selected');
+}
+
+// ── Drag-and-drop file upload ──────────────────────────────────────
+
+function wireFolderDropTarget(row, folderPath) {
+  row.addEventListener('dragenter', (e) => {
+    if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return;
+    e.preventDefault();
+    row.classList.add('files-drop-target');
+  });
+  row.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    row.classList.add('files-drop-target');
+  });
+  row.addEventListener('dragleave', (e) => {
+    // Only clear the highlight when we actually leave the row, not when
+    // we enter a child element.
+    if (e.relatedTarget && row.contains(e.relatedTarget)) return;
+    row.classList.remove('files-drop-target');
+  });
+  row.addEventListener('drop', async (e) => {
+    if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+    e.preventDefault();
+    e.stopPropagation();
+    row.classList.remove('files-drop-target');
+    await uploadFilesToFolder(folderPath, Array.from(e.dataTransfer.files));
+  });
+}
+
+async function uploadFilesToFolder(folderPath, fileList) {
+  // Make sure the destination folder is expanded so the user can see
+  // the new entries arrive after the tree refresh below.
+  expandedDirs.add(folderPath);
+  persistExpanded();
+
+  let okCount = 0;
+  let failCount = 0;
+  const errors = [];
+
+  for (const file of fileList) {
+    const destPath = folderPath.replace(/\/+$/, '') + '/' + file.name;
+    try {
+      const { content, encoding } = await readFileForUpload(file);
+      await apiFetch('/write', {
+        method: 'POST',
+        body: JSON.stringify({ path: destPath, content, encoding }),
+      });
+      okCount++;
+    } catch (err) {
+      failCount++;
+      errors.push(file.name + ': ' + (err.message || err));
+    }
+  }
+
+  await loadRoot();
+
+  if (failCount) {
+    alert(
+      'Uploaded ' + okCount + ' of ' + fileList.length + ' file' + (fileList.length === 1 ? '' : 's') + '.\n\n' +
+      'Failed:\n' + errors.join('\n')
+    );
+  }
+}
+
+function readFileForUpload(file) {
+  return new Promise((resolve, reject) => {
+    // Decide text-vs-binary up front from MIME type. Text-ish types go
+    // up as utf-8, everything else as base64. The backend accepts both.
+    const looksTexty =
+      !file.type ||
+      file.type.startsWith('text/') ||
+      /\b(json|xml|javascript|x-sh|x-python|yaml|toml|csv|svg\+xml)\b/.test(file.type);
+
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('read failed'));
+    if (looksTexty) {
+      reader.onload = () => resolve({ content: String(reader.result || ''), encoding: 'utf-8' });
+      reader.readAsText(file);
+    } else {
+      reader.onload = () => {
+        // readAsDataURL returns "data:<mime>;base64,<payload>"; strip the prefix
+        const s = String(reader.result || '');
+        const comma = s.indexOf(',');
+        resolve({ content: comma >= 0 ? s.slice(comma + 1) : s, encoding: 'base64' });
+      };
+      reader.readAsDataURL(file);
+    }
+  });
 }
 
 async function loadDirInto(path, container, depth) {
@@ -483,8 +577,29 @@ function showTabMenu(tab, anchorBtn) {
     { icon: 'refresh-cw', label: 'Refresh',  action: () => refreshTab(tab.path) },
     { icon: 'wrap-text',  label: 'Wrap',     checked: !!tab.wrap, action: () => toggleWrap(tab.path) },
   ];
+  if (isMarkdownFile(tab.name)) {
+    items.push({ icon: 'eye', label: 'Markdown preview', checked: !!tab.preview, action: () => togglePreview(tab.path) });
+  }
+  const findDisabled = !!tab.binary || isImageFile(tab.name) || (isMarkdownFile(tab.name) && tab.preview);
+  items.push({ icon: 'search', label: 'Find / Replace…', disabled: findDisabled, action: () => openFindBarForActiveTab(tab.path, false) });
   // Right-align under the button
   _openFloatingMenu(items, rect.bottom + 2, rect.right - 180);
+}
+
+function togglePreview(path) {
+  const tab = openTabs.find((t) => t.path === path);
+  if (!tab) return;
+  tab.preview = !tab.preview;
+  // Rebuild this pane on next render
+  const pane = document.querySelector('.files-editor-pane[data-path="' + cssEscape(path) + '"]');
+  if (pane) pane.remove();
+  renderEditorPanes();
+  persistTabs();
+}
+
+function openFindBarForActiveTab(path, withReplace) {
+  const pane = document.querySelector('.files-editor-pane[data-path="' + cssEscape(path) + '"]');
+  if (pane) openFindBar(pane, !!withReplace);
 }
 
 function showTreeContextMenu(entry, x, y) {
@@ -690,6 +805,9 @@ function toggleWrap(path) {
   const pane = document.querySelector('.files-editor-pane[data-path="' + cssEscape(path) + '"]');
   const ta = pane && pane.querySelector('textarea.files-textarea');
   if (ta) ta.classList.toggle('wrap', tab.wrap);
+  // Highlight overlay also needs to wrap so it lines up with the textarea
+  const hl = pane && pane.querySelector('.files-code-highlight');
+  if (hl) hl.classList.toggle('wrap', tab.wrap);
   persistTabs();
 }
 
@@ -773,64 +891,399 @@ function renderEditorPanes() {
 
   for (const tab of openTabs) {
     let pane = existing.get(tab.path);
-    if (pane && !tab.binary) {
-      // Keep the textarea in sync if tab.content changed since the pane was created
+    const wantMode = paneModeForTab(tab);
+    if (pane && pane.dataset.mode !== wantMode) {
+      // The right kind of pane no longer matches the tab (e.g. preview
+      // toggled, or refresh changed binary-ness) — drop and rebuild.
+      pane.remove();
+      pane = null;
+    }
+    if (pane && wantMode === 'text') {
       const ta = pane.querySelector('textarea.files-textarea');
-      if (ta && ta.value !== tab.content) ta.value = tab.content || '';
+      if (ta && ta.value !== tab.content) {
+        ta.value = tab.content || '';
+        updateHighlightOverlay(pane);
+      }
     }
     if (!pane) {
-      pane = document.createElement('div');
-      pane.className = 'files-editor-pane';
-      pane.dataset.path = tab.path;
-
-      if (tab.binary) {
-        pane.innerHTML = `
-          <div class="files-binary-msg">
-            <i data-lucide="file-warning" class="lucide-icon"></i>
-            <div>Binary file (${formatBytes(tab.size)})</div>
-            <div style="margin-top:6px;font-size:11px;color:#888;">Editing binary files is not supported here.</div>
-          </div>`;
-        if (window.lucide) window.lucide.createIcons({ nodes: Array.from(pane.querySelectorAll('[data-lucide]:not(.lucide)')) });
-      } else {
-        const ta = document.createElement('textarea');
-        ta.className = 'files-textarea' + (tab.wrap ? ' wrap' : '');
-        ta.spellcheck = false;
-        ta.autocomplete = 'off';
-        ta.autocapitalize = 'off';
-        ta.value = tab.content || '';
-        ta.addEventListener('input', () => {
-          tab.content = ta.value;
-          if (!tab.dirty) {
-            tab.dirty = true;
-            renderTabs();
-          }
-          updateStatusBar(tab);
-        });
-        ta.addEventListener('keydown', (e) => {
-          if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-            e.preventDefault();
-            saveTab(tab.path);
-          }
-          // Tab key inserts two spaces instead of changing focus
-          if (e.key === 'Tab' && !e.shiftKey) {
-            e.preventDefault();
-            const start = ta.selectionStart;
-            const end = ta.selectionEnd;
-            ta.value = ta.value.slice(0, start) + '  ' + ta.value.slice(end);
-            ta.selectionStart = ta.selectionEnd = start + 2;
-            tab.content = ta.value;
-            if (!tab.dirty) { tab.dirty = true; renderTabs(); }
-            updateStatusBar(tab);
-          }
-        });
-        pane.appendChild(ta);
-      }
+      pane = buildPaneForTab(tab, wantMode);
       content.appendChild(pane);
     }
     pane.classList.toggle('active', tab.path === activeTabPath);
   }
   const active = openTabs.find((t) => t.path === activeTabPath);
   updateStatusBar(active || null);
+}
+
+// ── Per-tab pane mode ─────────────────────────────────────────────
+
+function paneModeForTab(tab) {
+  if (isImageFile(tab.name)) return 'image';
+  if (tab.binary)             return 'binary';
+  if (isMarkdownFile(tab.name) && tab.preview) return 'markdown';
+  return 'text';
+}
+
+function isImageFile(name) {
+  return /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(name);
+}
+function isMarkdownFile(name) {
+  return /\.(md|markdown|mdx)$/i.test(name);
+}
+
+function imageDataUrl(tab) {
+  const ext = (tab.name.split('.').pop() || '').toLowerCase();
+  const mime = {
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+    gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+    ico: 'image/x-icon', svg: 'image/svg+xml', avif: 'image/avif',
+  }[ext] || 'application/octet-stream';
+  if (tab.encoding === 'base64') return 'data:' + mime + ';base64,' + tab.content;
+  // utf-8 SVG: percent-encode and inline
+  return 'data:' + mime + ';utf8,' + encodeURIComponent(tab.content || '');
+}
+
+function buildPaneForTab(tab, mode) {
+  const pane = document.createElement('div');
+  pane.className = 'files-editor-pane';
+  pane.dataset.path = tab.path;
+  pane.dataset.mode = mode;
+
+  if (mode === 'image') {
+    pane.classList.add('files-image-pane');
+    const img = document.createElement('img');
+    img.className = 'files-image-preview';
+    img.alt = tab.name;
+    img.src = imageDataUrl(tab);
+    pane.appendChild(img);
+  } else if (mode === 'binary') {
+    pane.innerHTML =
+      '<div class="files-binary-msg">' +
+        '<i data-lucide="file-warning" class="lucide-icon"></i>' +
+        '<div>Binary file (' + formatBytes(tab.size) + ')</div>' +
+        '<div style="margin-top:6px;font-size:11px;opacity:0.7;">Editing binary files is not supported here.</div>' +
+      '</div>';
+    if (window.lucide) window.lucide.createIcons({ nodes: Array.from(pane.querySelectorAll('[data-lucide]:not(.lucide)')) });
+  } else if (mode === 'markdown') {
+    const md = document.createElement('div');
+    md.className = 'files-markdown-preview';
+    md.innerHTML = renderMarkdown(tab.content || '');
+    pane.appendChild(md);
+  } else {
+    // text mode: textarea (transparent) overlaid on a <pre> for Prism
+    buildTextEditorPane(pane, tab);
+  }
+  return pane;
+}
+
+// ── Text editor pane (textarea + Prism overlay + find bar) ────────
+
+function buildTextEditorPane(pane, tab) {
+  const findBar = buildFindBar(tab);
+  pane.appendChild(findBar);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'files-code-wrap';
+
+  const highlight = document.createElement('pre');
+  highlight.className = 'files-code-highlight';
+  highlight.setAttribute('aria-hidden', 'true');
+  const code = document.createElement('code');
+  code.className = 'language-' + getPrismLang(tab.name);
+  highlight.appendChild(code);
+  wrap.appendChild(highlight);
+
+  const ta = document.createElement('textarea');
+  ta.className = 'files-textarea files-textarea-overlay' + (tab.wrap ? ' wrap' : '');
+  ta.spellcheck = false;
+  ta.autocomplete = 'off';
+  ta.autocapitalize = 'off';
+  ta.value = tab.content || '';
+
+  ta.addEventListener('input', () => {
+    tab.content = ta.value;
+    if (!tab.dirty) {
+      tab.dirty = true;
+      renderTabs();
+    }
+    updateStatusBar(tab);
+    scheduleHighlight(pane);
+  });
+  ta.addEventListener('scroll', () => {
+    highlight.scrollTop = ta.scrollTop;
+    highlight.scrollLeft = ta.scrollLeft;
+  });
+  ta.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      saveTab(tab.path);
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+      e.preventDefault();
+      openFindBar(pane, /* withReplace */ false);
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'h') {
+      e.preventDefault();
+      openFindBar(pane, /* withReplace */ true);
+      return;
+    }
+    if (e.key === 'Tab' && !e.shiftKey) {
+      e.preventDefault();
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      ta.value = ta.value.slice(0, start) + '  ' + ta.value.slice(end);
+      ta.selectionStart = ta.selectionEnd = start + 2;
+      tab.content = ta.value;
+      if (!tab.dirty) { tab.dirty = true; renderTabs(); }
+      updateStatusBar(tab);
+      scheduleHighlight(pane);
+    }
+  });
+  wrap.appendChild(ta);
+  pane.appendChild(wrap);
+
+  // Initial highlight pass — done lazily so the autoloader has a tick
+  // to fetch the grammar.
+  scheduleHighlight(pane);
+}
+
+// ── Syntax highlighting (Prism, debounced) ────────────────────────
+
+function getPrismLang(name) {
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  return {
+    js: 'javascript', mjs: 'javascript', cjs: 'javascript',
+    ts: 'typescript', tsx: 'tsx', jsx: 'jsx',
+    py: 'python', rb: 'ruby', go: 'go', rs: 'rust', java: 'java',
+    c: 'c', cpp: 'cpp', cc: 'cpp', h: 'c', hpp: 'cpp',
+    html: 'markup', htm: 'markup', xml: 'markup', svg: 'markup',
+    css: 'css', scss: 'scss', sass: 'sass', less: 'less',
+    json: 'json', json5: 'json5', yaml: 'yaml', yml: 'yaml', toml: 'toml',
+    md: 'markdown', mdx: 'markdown',
+    sh: 'bash', bash: 'bash', zsh: 'bash',
+    sql: 'sql', php: 'php', swift: 'swift', kt: 'kotlin',
+    dockerfile: 'docker', makefile: 'makefile',
+  }[ext] || 'plain';
+}
+
+const _highlightTimers = new WeakMap();
+function scheduleHighlight(pane) {
+  const prev = _highlightTimers.get(pane);
+  if (prev) cancelAnimationFrame(prev);
+  const id = requestAnimationFrame(() => updateHighlightOverlay(pane));
+  _highlightTimers.set(pane, id);
+}
+
+function updateHighlightOverlay(pane) {
+  const code = pane && pane.querySelector('.files-code-highlight > code');
+  const ta = pane && pane.querySelector('textarea.files-textarea-overlay');
+  if (!code || !ta) return;
+  const value = ta.value;
+  // Append a newline so the highlight has the same trailing-line height
+  // as the textarea (which always reserves a blank line for the caret).
+  if (window.Prism && window.Prism.highlight) {
+    const langClass = (code.className.match(/language-(\S+)/) || [])[1] || 'plain';
+    const grammar = window.Prism.languages[langClass];
+    if (grammar) {
+      try {
+        code.innerHTML = window.Prism.highlight(value + '\n', grammar, langClass);
+        return;
+      } catch (_) {}
+    } else if (window.Prism.plugins && window.Prism.plugins.autoloader) {
+      // Trigger the autoloader to fetch the language grammar, then retry.
+      window.Prism.plugins.autoloader.loadLanguages([langClass], () => {
+        if (document.body.contains(pane)) updateHighlightOverlay(pane);
+      });
+    }
+  }
+  // Fallback / pre-Prism state: escape and show plain text
+  code.textContent = value + '\n';
+}
+
+// ── Markdown rendering ────────────────────────────────────────────
+
+function renderMarkdown(src) {
+  try {
+    if (window.marked) {
+      window.marked.setOptions({ gfm: true, breaks: false });
+      return window.marked.parse(src || '');
+    }
+  } catch (_) {}
+  // Fallback if marked hasn't loaded yet: show escaped raw text in a pre
+  const escaped = (src || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  return '<pre style="white-space:pre-wrap;">' + escaped + '</pre>';
+}
+
+// ── Find / Replace bar ────────────────────────────────────────────
+
+function buildFindBar(tab) {
+  const bar = document.createElement('div');
+  bar.className = 'files-findbar';
+  bar.hidden = true;
+  bar.innerHTML =
+    '<input type="text" class="files-findbar-input files-findbar-find"    placeholder="Find" spellcheck="false">' +
+    '<span class="files-findbar-count">0 / 0</span>' +
+    '<button type="button" class="files-findbar-btn" data-act="prev"  title="Previous (Shift+Enter)"><i data-lucide="chevron-up" class="lucide-icon"></i></button>' +
+    '<button type="button" class="files-findbar-btn" data-act="next"  title="Next (Enter)"><i data-lucide="chevron-down" class="lucide-icon"></i></button>' +
+    '<button type="button" class="files-findbar-btn" data-act="case"  title="Match case">Aa</button>' +
+    '<input type="text" class="files-findbar-input files-findbar-replace" placeholder="Replace" spellcheck="false">' +
+    '<button type="button" class="files-findbar-btn" data-act="replace"     title="Replace">↩</button>' +
+    '<button type="button" class="files-findbar-btn" data-act="replace-all" title="Replace all">↩↩</button>' +
+    '<button type="button" class="files-findbar-btn" data-act="close" title="Close (Esc)"><i data-lucide="x" class="lucide-icon"></i></button>';
+
+  const findInput    = bar.querySelector('.files-findbar-find');
+  const replaceInput = bar.querySelector('.files-findbar-replace');
+  const countEl      = bar.querySelector('.files-findbar-count');
+  const caseBtn      = bar.querySelector('[data-act="case"]');
+  let caseSensitive = false;
+
+  function getTextarea() {
+    const pane = bar.closest('.files-editor-pane');
+    return pane && pane.querySelector('textarea.files-textarea-overlay');
+  }
+
+  function allMatches() {
+    const ta = getTextarea();
+    const needle = findInput.value;
+    if (!ta || !needle) return [];
+    const hay = caseSensitive ? ta.value : ta.value.toLowerCase();
+    const n   = caseSensitive ? needle   : needle.toLowerCase();
+    const out = [];
+    let i = 0;
+    while ((i = hay.indexOf(n, i)) !== -1) {
+      out.push(i);
+      i += Math.max(1, n.length);
+    }
+    return out;
+  }
+
+  function refresh(active) {
+    const matches = allMatches();
+    countEl.textContent = matches.length ? ((typeof active === 'number' ? active + 1 : 1) + ' / ' + matches.length) : '0 / 0';
+    return matches;
+  }
+
+  function findCurrentIndex(matches) {
+    const ta = getTextarea();
+    if (!ta || !matches.length) return -1;
+    const caret = ta.selectionStart;
+    for (let i = 0; i < matches.length; i++) {
+      if (matches[i] >= caret) return i;
+    }
+    return matches.length - 1;
+  }
+
+  function jumpTo(matches, idx) {
+    const ta = getTextarea();
+    if (!ta || !matches.length) return;
+    const i = ((idx % matches.length) + matches.length) % matches.length;
+    const start = matches[i];
+    const end = start + findInput.value.length;
+    ta.focus();
+    ta.setSelectionRange(start, end);
+    // Make sure the selection is visible (textarea doesn't auto-scroll on programmatic selection)
+    const before = ta.value.slice(0, start);
+    const line = before.split('\n').length;
+    const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 18;
+    const target = (line - 3) * lineHeight;
+    if (ta.scrollTop > target || ta.scrollTop + ta.clientHeight < target + lineHeight * 4) {
+      ta.scrollTop = Math.max(0, target);
+    }
+    refresh(i);
+  }
+
+  function next() {
+    const matches = refresh();
+    if (!matches.length) return;
+    jumpTo(matches, findCurrentIndex(matches));
+  }
+  function prev() {
+    const matches = refresh();
+    if (!matches.length) return;
+    const cur = findCurrentIndex(matches);
+    jumpTo(matches, cur - 1);
+  }
+  function replaceOne() {
+    const ta = getTextarea();
+    if (!ta || !findInput.value) return;
+    const selected = ta.value.substring(ta.selectionStart, ta.selectionEnd);
+    const eq = caseSensitive ? selected === findInput.value : selected.toLowerCase() === findInput.value.toLowerCase();
+    if (eq) {
+      const start = ta.selectionStart;
+      const replacement = replaceInput.value;
+      ta.setRangeText(replacement, start, ta.selectionEnd, 'end');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    next();
+  }
+  function replaceAll() {
+    const ta = getTextarea();
+    if (!ta || !findInput.value) return;
+    const needle = findInput.value;
+    const flags = caseSensitive ? 'g' : 'gi';
+    const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(escaped, flags);
+    const newVal = ta.value.replace(re, replaceInput.value);
+    if (newVal !== ta.value) {
+      ta.value = newVal;
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      refresh();
+    }
+  }
+
+  findInput.addEventListener('input', () => refresh());
+  findInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter')  { e.preventDefault(); e.shiftKey ? prev() : next(); }
+    if (e.key === 'Escape') { e.preventDefault(); closeFindBar(bar); }
+  });
+  replaceInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter')  { e.preventDefault(); replaceOne(); }
+    if (e.key === 'Escape') { e.preventDefault(); closeFindBar(bar); }
+  });
+  bar.querySelector('[data-act="next"]').addEventListener('click', next);
+  bar.querySelector('[data-act="prev"]').addEventListener('click', prev);
+  bar.querySelector('[data-act="replace"]').addEventListener('click', replaceOne);
+  bar.querySelector('[data-act="replace-all"]').addEventListener('click', replaceAll);
+  bar.querySelector('[data-act="close"]').addEventListener('click', () => closeFindBar(bar));
+  caseBtn.addEventListener('click', () => {
+    caseSensitive = !caseSensitive;
+    caseBtn.classList.toggle('active', caseSensitive);
+    refresh();
+  });
+  return bar;
+}
+
+function openFindBar(pane, withReplace) {
+  const bar = pane && pane.querySelector('.files-findbar');
+  if (!bar) return;
+  const wasHidden = bar.hidden;
+  bar.classList.toggle('with-replace', !!withReplace);
+  bar.hidden = false;
+  if (window.lucide) window.lucide.createIcons({ nodes: Array.from(bar.querySelectorAll('[data-lucide]:not(.lucide)')) });
+  const input = withReplace
+    ? bar.querySelector('.files-findbar-replace')
+    : bar.querySelector('.files-findbar-find');
+  // Pre-fill find input with the current selection only when opening fresh
+  if (wasHidden) {
+    const ta = pane.querySelector('textarea.files-textarea-overlay');
+    if (ta) {
+      const sel = ta.value.substring(ta.selectionStart, ta.selectionEnd);
+      if (sel && !sel.includes('\n')) {
+        bar.querySelector('.files-findbar-find').value = sel;
+      }
+    }
+  }
+  setTimeout(() => { if (input) { input.focus(); input.select(); } }, 0);
+}
+
+function closeFindBar(bar) {
+  bar.hidden = true;
+  bar.classList.remove('with-replace');
+  const pane = bar.closest('.files-editor-pane');
+  const ta = pane && pane.querySelector('textarea.files-textarea-overlay');
+  if (ta) ta.focus();
 }
 
 function formatBytes(n) {
@@ -1032,7 +1485,7 @@ function initSidebarResize() {
 
 function persistTabs() {
   try {
-    const minimal = openTabs.map((t) => ({ path: t.path, name: t.name, wrap: !!t.wrap }));
+    const minimal = openTabs.map((t) => ({ path: t.path, name: t.name, wrap: !!t.wrap, preview: !!t.preview }));
     localStorage.setItem(LS_OPEN_TABS, JSON.stringify(minimal));
     localStorage.setItem(LS_ACTIVE_TAB, activeTabPath || '');
   } catch (_) {}
@@ -1064,17 +1517,18 @@ async function restoreOpenTabs() {
     for (const t of saved) {
       try {
         await openFile(t.path, t.name);
-        if (t.wrap) {
-          const opened = openTabs.find((o) => o.path === t.path);
-          if (opened && !opened.wrap) {
-            opened.wrap = true;
-            const pane = document.querySelector('.files-editor-pane[data-path="' + cssEscape(opened.path) + '"]');
-            const ta = pane && pane.querySelector('textarea.files-textarea');
-            if (ta) ta.classList.add('wrap');
-          }
+        const opened = openTabs.find((o) => o.path === t.path);
+        if (!opened) continue;
+        if (t.wrap)    opened.wrap = true;
+        if (t.preview) opened.preview = true;
+        if (t.wrap || t.preview) {
+          // Re-render so the wrap class / preview mode get applied
+          const pane = document.querySelector('.files-editor-pane[data-path="' + cssEscape(opened.path) + '"]');
+          if (pane) pane.remove();
         }
       } catch (_) {}
     }
+    renderEditorPanes();
     if (wantActive && openTabs.find((t) => t.path === wantActive)) {
       activateTab(wantActive);
     }
