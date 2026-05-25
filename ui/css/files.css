@@ -1259,6 +1259,22 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 .fg-token-row { display: flex; gap: 6px; padding: 0 10px 8px; }
 .fg-token-status { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--files-text-faint); font-size: 10px; }
 .fg-token-status.ok { color: #10b981; }
+.fg-token-hint { padding: 0 10px 10px; }
+.fg-token-hint > summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--files-accent, #7dcfff);
+  font-weight: 500;
+  padding: 4px 0;
+}
+.fg-token-hint > summary::-webkit-details-marker { display: none; }
+.fg-token-hint-body { font-size: 11px; color: var(--files-text-muted); line-height: 1.45; }
+.fg-token-hint-body p { margin: 6px 0 4px; }
+.fg-token-hint-body ol { margin: 0; padding-left: 18px; }
+.fg-token-hint-body li { margin: 2px 0; }
+.fg-token-hint-body a { color: var(--files-accent, #7dcfff); }
+.fg-token-hint-foot { color: var(--files-text-faint); margin-top: 6px !important; }
 
 /* Changes (collapsible) */
 .fg-changes { padding: 0; }
