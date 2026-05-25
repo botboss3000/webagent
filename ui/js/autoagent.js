@@ -126,6 +126,55 @@ function updateDeleteButton() {
 
 // ── Sending prompts ───────────────────────────────────────────────────────────
 
+const VISUALIZER_TEMPLATE_ID = 'visualizer';
+
+// Per-user cache so we don't re-list agents on every prompt. Keyed by
+// app.currentUserId so account switches don't bleed.
+const _visualizerAgentCache = new Map();   // userId → agentId
+
+async function _findVisualizerAgent(userId) {
+  const cached = _visualizerAgentCache.get(userId);
+  if (cached) return cached;
+  try {
+    const res = await fetch(apiPath(`/api/v1/agents?user_id=${encodeURIComponent(userId)}`));
+    if (!res.ok) return null;
+    const data = await res.json();
+    const match = (data.agents || []).find(a => a.template_id === VISUALIZER_TEMPLATE_ID);
+    if (match) {
+      _visualizerAgentCache.set(userId, match.id);
+      return match.id;
+    }
+  } catch (_) { /* fall through */ }
+  return null;
+}
+
+async function _createVisualizerAgent(userId) {
+  const res = await fetch(apiPath('/api/v1/agents'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: userId,
+      name: 'Visualizer',
+      description: 'Builds and edits the HTML pages shown in the Dashboard.',
+      template_id: VISUALIZER_TEMPLATE_ID,
+    }),
+  });
+  if (!res.ok) throw new Error(`agent create failed (${res.status})`);
+  const data = await res.json();
+  const id = data.agent && data.agent.id;
+  if (!id) throw new Error('agent create returned no id');
+  _visualizerAgentCache.set(userId, id);
+  // Refresh the agent dropdown so the new agent shows up immediately.
+  if (typeof app.populateAgentSelect === 'function') {
+    try { await app.populateAgentSelect(userId); } catch (_) {}
+  }
+  return id;
+}
+
+async function _ensureVisualizerAgent(userId) {
+  return (await _findVisualizerAgent(userId)) || (await _createVisualizerAgent(userId));
+}
+
 async function sendPrompt() {
   const input   = document.getElementById('autoagent-prompt-input');
   const sendBtn = document.getElementById('autoagent-send-btn');
@@ -134,59 +183,51 @@ async function sendPrompt() {
   const text = input.value.trim();
   if (!text) return;
 
-  // Tag the prompt with the current page context so the agent knows its role
-  const pageLabel   = currentPage ? currentPage.slug : 'home';
-  const pageTitle   = currentPage ? currentPage.title : 'Home';
-  const agentCtx    = currentPage ? (currentPage.agent_context || '') : '';
+  if (!app.currentUserId) {
+    updateStatus('Sign in to send a prompt', 'error');
+    return;
+  }
+
+  // Tag the prompt with the current page context so the Visualizer knows
+  // which page it is editing.
+  const pageSlug = currentPage ? currentPage.slug : 'home';
+  const agentCtx = currentPage ? (currentPage.agent_context || '') : '';
   const taggedPrompt = agentCtx
-    ? `[User → UI Agent → Page: "${pageTitle}" | Context: "${agentCtx}"]: ${text}`
-    : `[User → UI Agent → Page: "${pageTitle}"]: ${text}`;
+    ? `[User → UI Agent → Page: "${pageSlug}" | Context: "${agentCtx}"]: ${text}`
+    : `[User → UI Agent → Page: "${pageSlug}"]: ${text}`;
 
-  input.value = '';
   sendBtn.disabled = true;
-  showLoading();
-  updateStatus('Sending to page agent...');
+  updateStatus('Starting Visualizer...');
 
-  const payload = {
-    message: taggedPrompt,
-    session_id: app.currentSessionId,
-    user_id: app.currentUserId,
-  };
-  if (app.currentAgentId) payload.agent_id = app.currentAgentId;
-
+  let agentId;
   try {
-    const resp = await fetch(apiPath('/api/v1/chat/stream'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    if (!resp.ok) { showError(`Server error: ${resp.status}`); return; }
-
-    const reader  = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer    = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6));
-            if (data.done) updateStatus(data.reply ? 'Complete' : 'Finished');
-          } catch (_) { /* ignore */ }
-        }
-      }
-    }
-    sendBtn.disabled = false;
-    updateStatus('Ready');
+    agentId = await _ensureVisualizerAgent(app.currentUserId);
   } catch (e) {
     sendBtn.disabled = false;
-    showError(`Failed to send: ${e.message}`);
+    updateStatus(`Could not start Visualizer: ${e.message}`, 'error');
+    return;
+  }
+
+  // Hand the conversation off to the right-side web chat.
+  if (typeof app.switchToAgent === 'function') {
+    app.switchToAgent(agentId);
+  } else if (agentId !== app.currentAgentId) {
+    // Fallback: at least set the current agent so the next chat send uses it.
+    app.currentAgentId = agentId;
+    try { localStorage.setItem('selectedAgentId', agentId); } catch (_) {}
+  }
+
+  // Clear the dashboard input and drive the main chat input.
+  input.value = '';
+  sendBtn.disabled = false;
+  updateStatus('Visualizer is on the chat →');
+
+  if (app.chatInput && app.chatSend) {
+    app.chatInput.value = taggedPrompt;
+    // Notify the chat's input listener so the send button enables and
+    // the input row picks up the `has-text` class.
+    app.chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+    app.chatSend.click();
   }
 }
 
