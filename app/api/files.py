@@ -55,15 +55,18 @@ def _user_id(request: Request) -> str:
 
 
 async def _is_admin(user_id: str) -> bool:
-    """Return True if the user is the bootstrap admin or has is_admin=1
-    in user_profiles. Mirrors the check used by app/admin/storage.py."""
+    """Return True only when user_profiles.is_admin = 1 for this user.
+
+    No bootstrap shortcut — the admin_default user is already promoted
+    by the DB migration in app/db/local.py, so the table is the single
+    source of truth.
+    """
     if not user_id:
         return False
-    if user_id == _BOOTSTRAP_ADMIN_ID:
-        return True
     try:
         return bool(await get_db().is_user_admin(user_id))
-    except Exception:
+    except Exception as e:
+        logger.warning("is_user_admin lookup failed for %s: %s", user_id, e)
         return False
 
 
@@ -125,8 +128,18 @@ class DeleteRequest(BaseModel):
 
 @router.get("/check-access")
 async def check_access(request: Request):
-    """Return whether the requesting user can use the file editor."""
-    return {"is_admin": await _is_admin(_user_id(request))}
+    """Return whether the requesting user can use the file editor.
+
+    Also reports the user_id we resolved from the JWT so the frontend
+    can surface a helpful message ("you're signed in as <X>, not admin")
+    when access is denied.
+    """
+    uid = _user_id(request)
+    return {
+        "is_admin": await _is_admin(uid),
+        "user_id": uid,
+        "authenticated": bool(uid),
+    }
 
 
 @router.get("/tree")
