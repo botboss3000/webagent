@@ -94,6 +94,9 @@
   #chat-header button:hover { color: #7dcfff; }
 
   /* ── Chat input area ── */
+  /* Bottom aligns with #terminal-side (which has 8px margin), so the pill
+     sits level with the pages card instead of pushed to the bottom of the
+     chat rail. */
   #chat-input-area {
     display: flex;
     flex-direction: column;
@@ -105,7 +108,7 @@
     position: absolute;
     left: 0;
     right: 0;
-    bottom: 0;
+    bottom: 8px;
     z-index: 5;
     min-height: 0;
   }
