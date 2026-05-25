@@ -549,6 +549,19 @@
         <button id="btn-new-agent">+ New agent</button>
       </div>
 
+      <!-- Agent Builder chat bar — page-level assistant for creating and modifying agents -->
+      <div id="agent-builder-bar">
+        <div id="agent-builder-bar-row">
+          <textarea id="agent-builder-bar-input" rows="1"
+            placeholder="Ask Agent Builder to create a new agent or modify an existing one…"
+            autocomplete="off"></textarea>
+          <button type="button" id="agent-builder-bar-send"
+            title="Send to Agent Builder" disabled>
+            <i data-lucide="send" style="width:16px;height:16px;"></i>
+          </button>
+        </div>
+      </div>
+
       <!-- Card grid -->
       <div id="agents-grid"></div>
 
