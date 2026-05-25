@@ -406,7 +406,10 @@ function renderTabs() {
   bar.innerHTML = '';
   for (const tab of openTabs) {
     const el = document.createElement('div');
-    el.className = 'files-tab' + (tab.path === activeTabPath ? ' active' : '') + (tab.dirty ? ' dirty' : '');
+    el.className = 'files-tab'
+      + (tab.path === activeTabPath ? ' active' : '')
+      + (tab.dirty ? ' dirty' : '')
+      + (tab.closing ? ' closing' : '');
     el.dataset.path = tab.path;
     el.draggable = true;
     el.title = tab.path;
@@ -453,11 +456,14 @@ function renderTabs() {
     const close = document.createElement('button');
     close.className = 'files-tab-close';
     close.type = 'button';
-    close.title = 'Close (middle-click also works)';
+    close.title = tab.closing ? 'Closing…' : 'Close (middle-click also works)';
     close.draggable = false;
+    close.disabled = !!tab.closing;
     const xI = document.createElement('i');
-    xI.setAttribute('data-lucide', 'x');
-    xI.className = 'lucide-icon';
+    // Swap the X for a spinner while the backend DELETE is in flight so the
+    // user can see the close is being verified.
+    xI.setAttribute('data-lucide', tab.closing ? 'loader-2' : 'x');
+    xI.className = 'lucide-icon' + (tab.closing ? ' files-tab-spin' : '');
     xI.style.pointerEvents = 'none';
     close.appendChild(xI);
     // The parent `el` is draggable, which can swallow the click into a
@@ -1467,19 +1473,38 @@ function activateTab(path) {
   try { localStorage.setItem(LS_ACTIVE_TAB, path); } catch (_) {}
 }
 
-function closeTab(path) {
+async function closeTab(path) {
   const tab = openTabs.find((t) => t.path === path);
   if (!tab) return;
+  if (tab.closing) return;          // already in-flight; ignore repeat clicks
   if (tab.dirty) {
     if (!confirm('Discard unsaved changes to ' + tab.name + '?')) return;
   }
-  // Dispose the terminal's xterm + WebSocket before dropping the tab so the
-  // PTY actually gets reaped on the backend.
+
+  // Terminal tabs: only remove from the UI after the backend confirms the
+  // PTY is gone. If the DELETE fails (network blip, server down, …) we keep
+  // the tab open so the user can retry instead of silently leaking the
+  // still-running shell.
   if (tab.kind === 'terminal' && tab.instance) {
+    tab.closing = true;
+    renderTabs();
+    try {
+      await tab.instance.closeBackendSession();
+    } catch (e) {
+      tab.closing = false;
+      renderTabs();
+      alert(
+        'Could not close terminal "' + tab.name + '":\n\n' + (e.message || e) +
+        '\n\nThe shell may still be running on the server. Try again.',
+      );
+      return;
+    }
     try { tab.instance.dispose(); } catch (_) {}
     tab.instance = null;
   }
+
   const idx = openTabs.findIndex((t) => t.path === path);
+  if (idx < 0) return;              // another close finished first
   openTabs.splice(idx, 1);
   // Remove pane
   const content = document.getElementById('files-content');
@@ -1752,7 +1777,7 @@ function initFilesTerminalButton() {
 
 export function reconnectAllTerminals() {
   for (const t of openTabs) {
-    if (t.kind === 'terminal' && t.instance) {
+    if (t.kind === 'terminal' && t.instance && !t.closing) {
       try { t.instance.reconnect(); } catch (_) {}
     }
   }
