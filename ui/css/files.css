@@ -312,22 +312,52 @@ body.light-mode .files-editor {
   background: #1e1e1e;
 }
 
-/* ── Tab bar ─────────────────────────────────────────────── */
+/* ── Tab bar (carousel with edge chevrons, no scrollbar) ──── */
 
-.files-tabs {
+.files-tabs-wrap {
   display: flex;
   flex-direction: row;
+  align-items: stretch;
   background: #252526;
   border-bottom: 1px solid #1e1e1e;
   min-height: 35px;
   height: 35px;
   flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.files-tabs-chev {
+  width: 26px;
+  display: none;          /* shown by JS only when the tab bar overflows */
+  align-items: center;
+  justify-content: center;
+  background: #252526;
+  border: none;
+  border-right: 1px solid #1e1e1e;
+  color: #cccccc;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  z-index: 2;
+}
+.files-tabs-chev:hover { background: #2a2d2e; color: #ffffff; }
+.files-tabs-chev:disabled { opacity: 0.35; cursor: default; background: #252526; }
+#files-tabs-next { border-right: none; border-left: 1px solid #1e1e1e; }
+.files-tabs-chev .lucide-icon { width: 14px; height: 14px; }
+
+.files-tabs {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-width: thin;
+  scrollbar-width: none;        /* Firefox */
+  -ms-overflow-style: none;     /* IE / Edge legacy */
+  scroll-behavior: smooth;
 }
-.files-tabs::-webkit-scrollbar { height: 4px; }
-.files-tabs::-webkit-scrollbar-thumb { background: #3c3c3c; }
+.files-tabs::-webkit-scrollbar { display: none; }  /* Chromium / WebKit */
 
 .files-tab {
   display: inline-flex;
@@ -428,6 +458,80 @@ body.light-mode .files-editor {
 .files-tab.dirty .files-tab-close:hover::before { display: none; }
 .files-tab.dirty .files-tab-close .lucide-icon { opacity: 0; }
 .files-tab.dirty .files-tab-close:hover .lucide-icon { opacity: 1; }
+
+/* ── Tab "more" button (3 vertical dots) ─────────────────── */
+
+.files-tab-more {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: #c5c5c5;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  opacity: 0.6;
+  margin-left: 2px;
+}
+.files-tab-more:hover {
+  background: rgba(255,255,255,0.15);
+  opacity: 1;
+}
+.files-tab-more .lucide-icon { width: 12px; height: 12px; }
+
+/* ── Floating tab menu ──────────────────────────────────── */
+
+.files-tab-menu {
+  position: fixed;
+  z-index: 1000;
+  background: #252526;
+  border: 1px solid #3c3c3c;
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.4);
+  padding: 4px;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.files-tab-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  color: #cccccc;
+  font-size: 12px;
+  font-family: inherit;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+.files-tab-menu-item:hover { background: rgba(14, 99, 156, 0.45); color: #ffffff; }
+.files-tab-menu-item.danger { color: #f48771; }
+.files-tab-menu-item.danger:hover { background: rgba(247, 118, 142, 0.25); color: #ffffff; }
+.files-tab-menu-item .lucide-icon { width: 14px; height: 14px; flex-shrink: 0; }
+.files-tab-menu-item.checked .files-tab-menu-check {
+  margin-left: auto;
+  color: #9cdcfe;
+  font-size: 12px;
+}
+.files-tab-menu-item .files-tab-menu-check { margin-left: auto; visibility: hidden; }
+.files-tab-menu-item.checked .files-tab-menu-check { visibility: visible; }
+
+/* ── Word-wrap toggle for the editor ─────────────────────── */
+
+.files-textarea.wrap {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: hidden;
+}
 
 /* ── Content area ────────────────────────────────────────── */
 
