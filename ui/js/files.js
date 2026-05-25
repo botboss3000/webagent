@@ -225,15 +225,36 @@ function buildSegmentPath(segments, idx, rootIsWindows) {
   return '/' + slice.join('/');
 }
 
+function isAncestorOrEqual(a, b) {
+  // Returns true if path `a` is the same as or an ancestor of `b`.
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const aSlash = a.endsWith('/') ? a : a + '/';
+  return b.startsWith(aSlash);
+}
+
 function renderBreadcrumb(absPath, parentPath) {
   const segWrap = document.getElementById('files-breadcrumb-segments');
   if (!segWrap) return;
   segWrap.innerHTML = '';
 
-  const segments = splitPathSegments(absPath);
-  const rootIsWindows = segments.length > 0 && /^[A-Za-z]:$/.test(segments[0]);
+  const currentSegs = splitPathSegments(absPath);
+  const projectSegs = projectRoot ? splitPathSegments(projectRoot) : [];
 
-  // "Filesystem root" pill on Unix so the user can click into "/"
+  // The breadcrumb always extends at least down to the project root,
+  // so the user can see the route home when they navigate above it.
+  // If currentRoot is an ancestor of (or equal to) projectRoot, we show
+  // projectRoot's full path and grey the tail that's "below" the current
+  // location. Otherwise we just show currentRoot's path.
+  let displaySegs = currentSegs;
+  if (projectSegs.length > currentSegs.length && isAncestorOrEqual(absPath, projectRoot)) {
+    displaySegs = projectSegs;
+  }
+
+  const rootIsWindows = displaySegs.length > 0 && /^[A-Za-z]:$/.test(displaySegs[0]);
+  const currentDepth = currentSegs.length;
+
+  // Leading "/" pill on Unix
   if (!rootIsWindows) {
     const rootBtn = document.createElement('button');
     rootBtn.className = 'files-breadcrumb-seg' + (absPath === '/' ? ' current' : '');
@@ -243,18 +264,23 @@ function renderBreadcrumb(absPath, parentPath) {
     segWrap.appendChild(rootBtn);
   }
 
-  segments.forEach((seg, idx) => {
+  displaySegs.forEach((seg, idx) => {
     if (idx > 0 || rootIsWindows) {
       const sep = document.createElement('span');
-      sep.className = 'files-breadcrumb-sep';
+      sep.className = 'files-breadcrumb-sep' + (idx >= currentDepth ? ' below-current' : '');
       sep.textContent = '/';
       segWrap.appendChild(sep);
     }
     const btn = document.createElement('button');
-    btn.className = 'files-breadcrumb-seg' + (idx === segments.length - 1 ? ' current' : '');
+    btn.className = 'files-breadcrumb-seg';
+    if (idx === currentDepth - 1) {
+      btn.classList.add('current');
+    } else if (idx >= currentDepth) {
+      btn.classList.add('below-current');
+    }
     btn.textContent = seg;
     btn.title = seg;
-    const targetPath = buildSegmentPath(segments, idx, rootIsWindows);
+    const targetPath = buildSegmentPath(displaySegs, idx, rootIsWindows);
     btn.addEventListener('click', () => setRoot(targetPath));
     segWrap.appendChild(btn);
   });
@@ -274,9 +300,9 @@ function renderBreadcrumb(absPath, parentPath) {
 async function setRoot(absPath) {
   if (!absPath || absPath === currentRoot) return;
   currentRoot = absPath;
-  // Reset the expand state so we don't try to expand stale subtrees
-  expandedDirs = new Set();
-  persistExpanded();
+  // Keep expandedDirs intact — entries are keyed by absolute path, so
+  // a stale path simply doesn't match anything in the new tree, while
+  // navigating up then back down preserves the user's expanded folders.
   await loadRoot();
 }
 

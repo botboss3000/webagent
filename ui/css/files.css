@@ -161,10 +161,24 @@ body.light-mode .files-editor {
   font-weight: 600;
   background: rgba(125, 207, 255, 0.10);
 }
+/* Segments that sit between the current location and the project root
+   (i.e., the "route back home" tail). Greyed but still clickable. */
+.files-breadcrumb-seg.below-current {
+  color: #6a6a6a;
+  opacity: 0.7;
+}
+.files-breadcrumb-seg.below-current:hover {
+  color: #9cdcfe;
+  opacity: 1;
+  background: rgba(255,255,255,0.10);
+}
 .files-breadcrumb-sep {
   color: #6a6a6a;
   font-size: 11px;
   user-select: none;
+}
+.files-breadcrumb-sep.below-current {
+  opacity: 0.5;
 }
 
 /* ── Tree ────────────────────────────────────────────────── */
@@ -191,6 +205,12 @@ body.light-mode .files-editor {
   color: #cccccc;
   position: relative;
 }
+
+/* Lucide SVGs paint by stroke, so clicks in the gaps between strokes
+   miss the SVG entirely. Disable pointer events on everything inside
+   the row so the row itself is always the click target — that way the
+   chevron, icon, and label all toggle the directory just like the row. */
+.files-tree-row > * { pointer-events: none; }
 
 .files-tree-row:hover {
   background: rgba(255,255,255,0.06);
