@@ -172,6 +172,7 @@ export async function initAgents() {
   await Promise.all([_loadProfile(), _loadAgents(), _loadAppSettings()]);
   _renderList();
   _bindCreateModal();
+  _bindAgentBuilderBar();
   _restoreViewState();
 }
 
@@ -507,19 +508,9 @@ function _buildDetailPanel(agent) {
   }
   window.addEventListener('resize', updateChevrons);
 
-  // Scrollable body. Contains a persistent Agent Builder prompt bar at the top
-  // and a re-renderable tab-content sub-container. Both scroll together inside
-  // the body, so the prompt bar disappears as the user scrolls deep into a tab.
+  // Scrollable body
   const body = document.createElement('div');
   body.className = 'agent-detail-body';
-
-  const builderBar = _buildAgentBuilderBar(agent, panel);
-  body.appendChild(builderBar);
-
-  const tabContent = document.createElement('div');
-  tabContent.className = 'agent-detail-tab-content';
-  body.appendChild(tabContent);
-
   content.appendChild(body);
 
   // Render initial tab content
@@ -581,19 +572,16 @@ async function _ensureAgentBuilderAgent(userId) {
   return (await _findAgentBuilderAgent(userId)) || (await _createAgentBuilderAgent(userId));
 }
 
-async function _sendAgentBuilderPrompt(targetAgent, panel) {
-  const input   = panel.querySelector('.agent-builder-prompt-input');
-  const sendBtn = panel.querySelector('.agent-builder-send-btn');
+async function _sendAgentBuilderPrompt() {
+  const input   = document.getElementById('agent-builder-bar-input');
+  const sendBtn = document.getElementById('agent-builder-bar-send');
   if (!input || !sendBtn) return;
 
   const text = input.value.trim();
   if (!text) return;
   if (!app.currentUserId) return;
 
-  const state = _expandedAgents.get(targetAgent.id);
-  const currentTab = state?.tab || 'config';
-  const tagged =
-    `[Agent Builder Request | Target Agent: "${targetAgent.id}" | Target Name: "${targetAgent.name || ''}" | Current Tab: "${currentTab}"]: ${text}`;
+  const tagged = `[Agent Builder Request | Source: Agents Page]: ${text}`;
 
   sendBtn.disabled = true;
   let builderAgentId;
@@ -621,40 +609,28 @@ async function _sendAgentBuilderPrompt(targetAgent, panel) {
   }
 }
 
-function _buildAgentBuilderBar(agent, panel) {
-  const bar = document.createElement('div');
-  bar.className = 'agent-builder-prompt-bar';
-  bar.innerHTML = `
-    <div class="agent-builder-prompt-row">
-      <textarea class="agent-builder-prompt-input" rows="1"
-        placeholder="Ask the Agent Builder to configure, tune, or extend this agent…"
-        autocomplete="off"></textarea>
-      <button type="button" class="agent-builder-send-btn"
-        title="Send to Agent Builder" disabled>
-        <i data-lucide="send" style="width:16px;height:16px;"></i>
-      </button>
-    </div>
-  `;
+let _agentBuilderBarBound = false;
+function _bindAgentBuilderBar() {
+  if (_agentBuilderBarBound) return;
+  const input   = document.getElementById('agent-builder-bar-input');
+  const sendBtn = document.getElementById('agent-builder-bar-send');
+  if (!input || !sendBtn) return;
+  _agentBuilderBarBound = true;
 
-  const ta  = bar.querySelector('.agent-builder-prompt-input');
-  const btn = bar.querySelector('.agent-builder-send-btn');
-
-  const sync = () => { btn.disabled = ta.value.trim().length === 0; };
-  ta.addEventListener('input', sync);
-  ta.addEventListener('keydown', (e) => {
+  const sync = () => { sendBtn.disabled = input.value.trim().length === 0; };
+  input.addEventListener('input', sync);
+  input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (!btn.disabled) _sendAgentBuilderPrompt(agent, panel);
+      if (!sendBtn.disabled) _sendAgentBuilderPrompt();
     }
   });
-  btn.addEventListener('click', () => _sendAgentBuilderPrompt(agent, panel));
+  sendBtn.addEventListener('click', () => _sendAgentBuilderPrompt());
+  sync();
 
-  // Render the lucide icon if the library is loaded.
   if (window.lucide && typeof window.lucide.createIcons === 'function') {
     try { window.lucide.createIcons(); } catch (_) {}
   }
-
-  return bar;
 }
 
 function _renderPanelBody(agent, panelEl) {
@@ -667,11 +643,7 @@ function _renderPanelBody(agent, panelEl) {
     t.classList.toggle('active', t.dataset.tab === tab);
   });
 
-  // The tab-content sub-container lives inside .agent-detail-body alongside
-  // the persistent Agent Builder prompt bar. Tab renderers write into this
-  // sub-container so the bar survives tab switches.
-  const body = panelEl.querySelector('.agent-detail-tab-content')
-            || panelEl.querySelector('.agent-detail-body');
+  const body = panelEl.querySelector('.agent-detail-body');
   if (!body) return;
   body.innerHTML = '';
 
