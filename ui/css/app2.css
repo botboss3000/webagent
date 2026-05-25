@@ -443,6 +443,29 @@
     padding: 4px 0;
     flex-shrink: 0;
   }
+  #db-sidebar {
+    transition: width 0.18s ease, min-width 0.18s ease;
+  }
+  #db-sidebar-toggle:hover {
+    color: var(--accent) !important;
+    border-color: var(--accent) !important;
+  }
+  #db-sidebar.collapsed {
+    width: 32px !important;
+    min-width: 32px !important;
+  }
+  #db-sidebar.collapsed #db-refresh,
+  #db-sidebar.collapsed #db-reset-wrap,
+  #db-sidebar.collapsed #db-table-list {
+    display: none !important;
+  }
+  #db-sidebar.collapsed #db-sidebar-header {
+    padding: 8px 4px;
+    justify-content: center;
+  }
+  #db-sidebar.collapsed #db-sidebar-toggle {
+    margin: 0 auto;
+  }
   .db-table-item {
     padding: 6px 14px;
     cursor: pointer;

@@ -107,40 +107,52 @@ async def agent_websocket(websocket: WebSocket):
         logger.info(f"User subscriber registered for user {user_id}")
 
         # ── Replay buffered events from active in-flight runs ──
-        # If the client knows about active turns it was watching before the
-        # reconnect, replay anything it missed BEFORE confirming the
-        # subscription. This way the client never sees a gap between its
-        # "last seen seq" and the next live event.
+        # On (re)connect we ALWAYS try to replay events for any session this
+        # user owns that has a live or recently-completed RunBuffer. The
+        # client's optional `resume` map gives us per-session "last seq I
+        # already saw" so we can skip events the client already rendered;
+        # any session NOT in the map gets replayed from seq=0 (the client
+        # has nothing locally — common case after a hard refresh).
         resume_map = data.get("resume") or {}
+        if not isinstance(resume_map, dict):
+            resume_map = {}
         replayed_summary: dict = {}
-        if isinstance(resume_map, dict) and resume_map:
-            try:
-                reg = get_run_buffer_registry()
-                for sid, last_seq in resume_map.items():
-                    if not isinstance(sid, str):
-                        continue
+        try:
+            reg = get_run_buffer_registry()
+            # Union of (a) sessions the client asked about and (b) sessions
+            # the server is currently buffering for this user.
+            candidate_sids = set(k for k in resume_map.keys() if isinstance(k, str))
+            for sid, buf in reg._buffers.items():
+                if buf.user_id == user_id:
+                    candidate_sids.add(sid)
+            for sid in candidate_sids:
+                buf = reg.get(sid)
+                if buf is None:
+                    continue
+                if buf.user_id and buf.user_id != user_id:
+                    # Tenancy guard.
+                    continue
+                try:
+                    last_seq_int = int(resume_map.get(sid, 0) or 0)
+                except (TypeError, ValueError):
+                    last_seq_int = 0
+                missed = buf.replay_after(last_seq_int)
+                if not missed:
+                    continue
+                replayed_summary[sid] = len(missed)
+                for ev in missed:
                     try:
-                        last_seq_int = int(last_seq)
-                    except (TypeError, ValueError):
-                        last_seq_int = 0
-                    buf = reg.get(sid)
-                    if buf is None:
-                        continue
-                    # Optional tenancy guard: only replay buffers owned by this user.
-                    if buf.user_id and buf.user_id != user_id:
-                        continue
-                    missed = buf.replay_after(last_seq_int)
-                    replayed_summary[sid] = len(missed)
-                    for ev in missed:
-                        try:
-                            await websocket.send_text(json.dumps(
-                                {**ev, "replayed": True},
-                                default=_json_default,
-                            ))
-                        except Exception:
-                            break
-            except Exception as _re:
-                logger.warning("Resume replay failed for user %s: %s", user_id, _re)
+                        await websocket.send_text(json.dumps(
+                            # Always include session_id on replayed events so
+                            # the client can filter/route them; live events
+                            # already carry it via _emit_to_visualizers.
+                            {**ev, "replayed": True, "session_id": sid},
+                            default=_json_default,
+                        ))
+                    except Exception:
+                        break
+        except Exception as _re:
+            logger.warning("Resume replay failed for user %s: %s", user_id, _re)
 
         # Inform client which active sessions the server is currently buffering.
         # Used by the UI to know which sessions have an in-flight run it could

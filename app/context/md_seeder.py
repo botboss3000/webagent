@@ -299,8 +299,29 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
         except (TypeError, json.JSONDecodeError):
             meta_str = "{}"
 
+        # Version is required for the manifest-hash short-circuit + the
+        # per-slot version-gated upsert in the seeder. Missing → default to 1
+        # but log a warning so authors know to add it.
+        version = data.get("version")
+        if version is None:
+            logger.warning(
+                "Agent JSON %s has no 'version' field — defaulting to 1. "
+                "Add a top-level integer 'version' so future bumps trigger re-seed.",
+                fname,
+            )
+            version = 1
+        try:
+            version = int(version)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Agent JSON %s has non-integer 'version' (%r) — coercing to 1",
+                fname, version,
+            )
+            version = 1
+
         row = {
             "id": agent_id,
+            "version": version,
             "name": data.get("name", agent_id),
             "description": data.get("description", ""),
             "icon": data.get("icon", ""),
@@ -343,3 +364,53 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
         logger.debug("No .json files found in %s", directory)
 
     return results
+
+
+def compute_agent_manifest_hash(directory: Optional[str] = None) -> str:
+    """
+    Compute a stable hash over the agent JSON files in *directory*.
+
+    Hashes (filename, declared version, raw bytes) per file in sorted-filename
+    order. The result is the short-circuit key for the seeder: if it matches
+    what's already stored in app_meta, the seeder skips the entire JSON →
+    DB upsert pass and returns immediately.
+
+    Returned as a hex SHA-256 string. Empty directory → empty-input hash
+    (still stable). Returned hash is intentionally byte-sensitive so a JSON
+    edit without a version bump still triggers a re-seed pass (which will
+    then no-op per-row because the version match short-circuits inside).
+    """
+    import hashlib
+    if directory is None:
+        directory = DEFAULT_AGENTS_DIR
+
+    h = hashlib.sha256()
+    if not os.path.isdir(directory):
+        return h.hexdigest()
+
+    for fname in sorted(os.listdir(directory)):
+        if fname.startswith(".") or not fname.lower().endswith(".json"):
+            continue
+        fpath = os.path.join(directory, fname)
+        if not os.path.isfile(fpath):
+            continue
+        try:
+            with open(fpath, "rb") as f:
+                raw = f.read()
+        except OSError:
+            continue
+        # Pull declared version cheaply (best-effort parse).
+        version: Any = 1
+        try:
+            doc = json.loads(raw.decode("utf-8"))
+            if isinstance(doc, dict) and "version" in doc:
+                version = doc["version"]
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            pass
+        h.update(fname.encode("utf-8"))
+        h.update(b"\x00")
+        h.update(str(version).encode("utf-8"))
+        h.update(b"\x00")
+        h.update(raw)
+        h.update(b"\x00")
+    return h.hexdigest()

@@ -168,11 +168,12 @@ export function connectAgent() {
         // Live (or replayed) assistant text for the current session, but
         // ONLY when SSE isn't already driving the bubble. This is the
         // path that lets a refresh / session-switch mid-stream reattach
-        // to the in-flight run.
+        // to the in-flight run. Route to the bubble for this event's
+        // turn_id so we don't accidentally append to an old turn's bubble.
         if (eventSessionId && eventSessionId !== app.currentSessionId) break;
         if (window.__sseActive) break;
         if (typeof app.appendStreamToActiveBubble === 'function') {
-          try { app.appendStreamToActiveBubble(event.content || ''); } catch(_) {}
+          try { app.appendStreamToActiveBubble(event.content || '', event.turn_id); } catch(_) {}
         }
         break;
 
@@ -183,7 +184,7 @@ export function connectAgent() {
         if (eventSessionId && eventSessionId !== app.currentSessionId) break;
         if (window.__sseActive) break;
         if (typeof app.finalizeAgentResponse === 'function') {
-          try { app.finalizeAgentResponse(event.content || '', !!event.replayed); } catch(_) {}
+          try { app.finalizeAgentResponse(event.content || '', event.turn_id, !!event.replayed); } catch(_) {}
         } else if (typeof app.addChatBubble === 'function') {
           app.addChatBubble('agent', event.content || '');
         }

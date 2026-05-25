@@ -1904,6 +1904,19 @@ async function _saveAppSettings() {
 function _initUserManagement() {
   _qs('ac-um-save')?.addEventListener('click', _saveUserManagement);
   _qs('ac-um-users-header')?.addEventListener('click', _toggleUsersCard);
+
+  // Tutorial-hint preferences card. Lazy-import so the user-management
+  // section doesn't fail to render if tutorial.js is unavailable for any
+  // reason. Re-renders on its own when prefs change.
+  const host = _qs('ac-tutorial-card-host');
+  if (host) {
+    import('./tutorial.js').then(m => {
+      try { m.renderTutorialPrefsCard(host); } catch (_) {}
+      document.addEventListener('tutorial-prefs-changed', () => {
+        try { m.renderTutorialPrefsCard(host); } catch (_) {}
+      });
+    }).catch(() => {});
+  }
 }
 
 async function _loadUserManagement() {

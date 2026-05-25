@@ -296,7 +296,7 @@ async def chat(request: ChatRequest, fastapi_request: Request):
         _session_title = (request.message or "").strip()[:60] or None
         await _ensure_session(db, request.user_id, request.session_id, title=_session_title)
 
-        # ── Optimizer / Finalizer session: route to dedicated agent ──
+        # ── Optimizer / Closer session: route to dedicated agent ──
         agent = None
         opt_role = None
         opt_template_id = None
@@ -363,7 +363,7 @@ async def chat(request: ChatRequest, fastapi_request: Request):
             await db.add_session_participant(request.session_id, agent["id"], 'agent')
 
         # Save user message and get its ID for parent linking
-        # Optimizer/Finalizer sessions get source='optimizer' to distinguish from normal chats
+        # Optimizer/Closer sessions get source='optimizer' to distinguish from normal chats
         is_opt = request.session_id.startswith('optimizer-') or request.session_id.startswith('closer-')
         user_interaction_id = await db.insert_interaction(
             request.user_id, request.session_id, role="user", content=request.message,
@@ -709,7 +709,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
     _session_title = (request.message or "").strip()[:60] or None
     await _ensure_session(db, request.user_id, request.session_id, title=_session_title)
 
-    # ── Optimizer / Finalizer session: route to dedicated agent ──
+    # ── Optimizer / Closer session: route to dedicated agent ──
     opt_template_id = None
     opt_metadata = {}
     if request.session_id.startswith('optimizer-') or request.session_id.startswith('closer-'):
@@ -996,6 +996,15 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                         agent_template_id=agent.get("template_id"),
                         allowed_tools=_raw_at or None,
                     ):
+                        # Stamp + buffer + broadcast to WS listeners FIRST so the
+                        # RunBuffer is populated even if the SSE client (this
+                        # request) disconnects mid-stream. Without this, events
+                        # would only stamp/buffer via the SSE outer-loop call to
+                        # _emit_to_visualizers, which stops being invoked once
+                        # the client closes the response stream.
+                        await _emit_to_visualizers(
+                            request.session_id, event, user_id=request.user_id,
+                        )
                         await q.put(event)
 
                         if event["type"] == "response":
@@ -1044,10 +1053,11 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                     continue
                 if event is None:
                     break
-                # Broadcast to WebSocket listeners (session + user). This also
-                # stamps the event with session_seq/turn_id/turn_seq via the
-                # RunBuffer, so the event yielded below carries those fields.
-                await _emit_to_visualizers(request.session_id, event, user_id=request.user_id)
+                # Note: _emit_to_visualizers is already called inside
+                # run_agent_task BEFORE q.put(event), so the event we yield
+                # here already carries session_seq/turn_id/turn_seq and has
+                # been broadcast to WS listeners + appended to RunBuffer.
+                # Doing it here too would double-stamp seq numbers.
                 yield f"data: {json.dumps(event)}\n\n"
         finally:
             # End the run buffer for this turn — starts the retention countdown.

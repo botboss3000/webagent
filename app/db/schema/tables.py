@@ -160,8 +160,44 @@ TABLES: List[Table] = [
         Column("lock", "INTEGER"),
         Column("merge_mode", "TEXT"),
         Column("content", "TEXT", nullable=False, default="''"),
+        # Origin version this row was cloned from (in agent_prompt_templates).
+        # NULL on user-override rows and on legacy rows pre-versioning.
+        Column("template_version", "INTEGER"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_by", "TEXT"),
+    ]),
+
+    # Canonical prompt-slot templates. Source of truth for slot defaults.
+    # JSON files in app/context/agents/*.json seed this table; admin edits
+    # promoted here are protected from JSON re-seed via source='admin'.
+    # When a new agent is created from a template, rows here are cloned
+    # into agent_prompts under that agent's id.
+    Table("agent_prompt_templates", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("template_id", "TEXT", nullable=False),
+        Column("slot_name", "TEXT", nullable=False),
+        Column("order_index", "INTEGER", nullable=False, default="0"),
+        Column("lock", "INTEGER", nullable=False, default="0"),
+        Column("merge_mode", "TEXT", nullable=False, default="'replace'"),
+        Column("content", "TEXT", nullable=False, default="''"),
+        Column("version", "INTEGER", nullable=False, default="1"),
+        # 'json' = seeded from JSON file (re-seed may overwrite).
+        # 'admin' = promoted from admin UI edit (re-seed SKIPS this row).
+        Column("source", "TEXT", nullable=False, default="'json'"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_by", "TEXT", nullable=False, default="'system'"),
+    ], constraints=[
+        "UNIQUE(template_id, slot_name)",
+        "CHECK (source IN ('json','admin'))",
+    ]),
+
+    # Generic key/value store for cross-cutting runtime metadata
+    # (manifest hashes, schema versions, feature toggles, etc.).
+    # Use sparingly — prefer typed tables for domain data.
+    Table("app_meta", [
+        Column("key", "TEXT", nullable=False, primary_key=True),
+        Column("value", "TEXT", nullable=False, default="''"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
 
     Table("agent_connections", [
@@ -613,6 +649,7 @@ INDEXES: List[Index] = [
     Index("idx_summaries_user", "session_summaries", "user_id"),
     Index("idx_agent_prompts_agent", "agent_prompts", "agent_id"),
     Index("idx_agent_prompts_user", "agent_prompts", "user_id"),
+    Index("idx_agent_prompt_templates_tpl", "agent_prompt_templates", "template_id"),
     Index("idx_agent_conn_agent", "agent_connections", "agent_id"),
     Index("idx_agent_conn_type", "agent_connections", "connection_type"),
     Index("idx_memories_user", "memories", "user_id"),

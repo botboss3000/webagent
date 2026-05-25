@@ -93,6 +93,16 @@ class UpsertConnectionRequest(BaseModel):
     config: Optional[Dict[str, Any]] = None
 
 
+class SaveAsTemplateRequest(BaseModel):
+    user_id: str
+    template_id: str
+    name: str
+    description: Optional[str] = ""
+    icon: Optional[str] = ""
+    discoverable: Optional[bool] = False
+    access_level: Optional[str] = "all"
+
+
 class AnonSessionRequest(BaseModel):
     browser_id: Optional[str] = None
 
@@ -345,6 +355,47 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest):
         from app.agent import trigger_index
         trigger_index.build()
     return {"agent": _safe_agent(updated)}
+
+
+@router.post("/agents/{agent_id}/save-as-template")
+async def save_agent_as_template(agent_id: str, req: SaveAsTemplateRequest):
+    """
+    Snapshot a custom agent's current config + admin-base prompt slots into a
+    new reusable template (rows in agent_templates + agent_prompt_templates).
+    Admin-only.
+    """
+    db = get_db()
+    await _require_admin(db, req.user_id)
+
+    import re
+    slug = (req.template_id or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,63}", slug):
+        raise HTTPException(
+            status_code=400,
+            detail="template_id must be 2-64 chars: lowercase letters, digits, '_' or '-'.",
+        )
+    if not req.name or not req.name.strip():
+        raise HTTPException(status_code=400, detail="Template name is required.")
+
+    try:
+        tpl = await db.save_agent_as_template(
+            agent_id=agent_id,
+            template_id=slug,
+            name=req.name.strip(),
+            description=(req.description or "").strip(),
+            icon=(req.icon or "").strip(),
+            discoverable=bool(req.discoverable),
+            access_level=req.access_level or "all",
+            updated_by=f"admin:{req.user_id}",
+        )
+    except ValueError as e:
+        msg = str(e)
+        status = 409 if "already exists" in msg else 400
+        if "not found" in msg:
+            status = 404
+        raise HTTPException(status_code=status, detail=msg)
+
+    return {"template": _safe_agent(tpl)}
 
 
 @router.get("/agents/{agent_id}/slots")

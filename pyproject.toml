@@ -3,7 +3,7 @@ name = "webagent"
 version = "0.2.0"
 description = "webAgent — FastAPI service with Supabase and dynamic tool loading"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "fastapi==0.104.1",
     "uvicorn[standard]==0.24.0",

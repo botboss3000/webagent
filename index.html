@@ -32,6 +32,7 @@
 <link rel="stylesheet" href="./ui/css/loop-visual.css">
 <link rel="stylesheet" href="./ui/css/autoagent.css">
 <link rel="stylesheet" href="./ui/css/agents.css">
+<link rel="stylesheet" href="./ui/css/tutorial.css">
 <!-- Design system tokens + visual overrides (loaded last to take effect) -->
 <link rel="stylesheet" href="./ui/css/design-system.css">
 </head>
@@ -186,27 +187,30 @@
   <!-- Tab select: hidden native <select> for JS compat + custom pill button + popup -->
   <div class="status-group tab-select-group" style="position:relative;">
     <select id="main-tab-select" style="display:none;" aria-hidden="true">
+      <option value="autoagent" selected>Dashboard</option>
       <option value="terminal">Terminal</option>
-      <option value="stream" selected>Stream</option>
+      <option value="stream">Stream</option>
       <option value="flow">Flow</option>
       <option value="loop-visual">Runtime Loop</option>
       <option value="database">Database</option>
       <option value="github">GitHub</option>
-      <option value="autoagent">AutoAgent</option>
       <option value="agents">Agents</option>
       <option value="app-config">App Config</option>
       <option value="account">Manage Account</option>
     </select>
     <button id="tab-select-btn" class="tab-select-pill" aria-haspopup="listbox">
-      <i id="tab-btn-icon" data-lucide="radio-tower" class="lucide-icon" style="width:14px;height:14px;"></i>
-      <span id="tab-select-label">Stream</span>
+      <i id="tab-btn-icon" data-lucide="palette" class="lucide-icon" style="width:14px;height:14px;"></i>
+      <span id="tab-select-label">Dashboard</span>
       <i data-lucide="chevron-down" class="lucide-icon" style="width:12px;height:12px;opacity:0.6;margin-left:2px;"></i>
     </button>
     <div id="tab-select-popup" class="tab-select-popup" style="display:none;" role="listbox">
+      <div class="tab-option active" data-value="autoagent" data-icon="palette" role="option">
+        <i data-lucide="palette" class="lucide-icon menu-icon"></i>Dashboard
+      </div>
       <div class="tab-option" data-value="terminal" data-icon="terminal" role="option">
         <i data-lucide="terminal" class="lucide-icon menu-icon"></i>Terminal
       </div>
-      <div class="tab-option active" data-value="stream" data-icon="radio-tower" role="option">
+      <div class="tab-option" data-value="stream" data-icon="radio-tower" role="option">
         <i data-lucide="radio-tower" class="lucide-icon menu-icon"></i>Stream
       </div>
       <div class="tab-option" data-value="flow" data-icon="git-branch" role="option">
@@ -220,9 +224,6 @@
       </div>
       <div class="tab-option" data-value="github" data-icon="github" role="option">
         <i data-lucide="github" class="lucide-icon menu-icon"></i>GitHub
-      </div>
-      <div class="tab-option" data-value="autoagent" data-icon="palette" role="option">
-        <i data-lucide="palette" class="lucide-icon menu-icon"></i>AutoAgent
       </div>
       <div class="tab-option" data-value="agents" data-icon="bot" role="option">
         <i data-lucide="bot" class="lucide-icon menu-icon"></i>Agents
@@ -319,7 +320,7 @@
     <div id="tab-terminal" class="tab-content">
       <div id="terminal-container"></div>
     </div>
-    <div id="tab-stream" class="tab-content active">
+    <div id="tab-stream" class="tab-content">
       <div id="stream-viewer">
         <div id="stream-toolbar">
           <span style="color:#565f89;font-size:11px;display:inline-flex;align-items:center;gap:4px;"><i data-lucide="radio" style="width:12px;height:12px;"></i> Live interactions</span>
@@ -495,7 +496,7 @@
         </div>
       </div>
     </div>
-    <div id="tab-autoagent" class="tab-content">
+    <div id="tab-autoagent" class="tab-content active">
       <div id="autoagent-container">
 
         <!-- Page nav: dropdown + new / delete buttons -->
@@ -2058,6 +2059,29 @@
               <pre id="ac-storage-secrets-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;display:none;"></pre>
             </div>
 
+            <!-- ── Page Storage ── -->
+            <div class="ac-card">
+              <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
+                <i data-lucide="layout-template" class="lucide-icon" style="width:14px;height:14px;color:#9ece6a;"></i>
+                Page Storage
+                <span id="ac-storage-pages-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+              </div>
+
+              <label class="ac-label" style="margin-top:10px;">Mode</label>
+              <select id="ac-storage-pages-mode" class="ac-input">
+                <option value="filesystem">Filesystem (default — files on disk)</option>
+                <option value="database">Database (full HTML in DB; survives restarts)</option>
+                <option value="hybrid">Hybrid (metadata in DB, body on disk)</option>
+              </select>
+
+              <div id="ac-storage-pages-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--bg-elev);border:1px solid var(--border);border-left:3px solid #9ece6a;border-radius:4px;font-size:11px;line-height:1.55;"></div>
+
+              <div style="display:flex;gap:6px;margin-top:12px;">
+                <button id="ac-storage-pages-save" class="ac-btn ac-btn-primary">Activate</button>
+              </div>
+              <pre id="ac-storage-pages-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;display:none;"></pre>
+            </div>
+
             <!-- ── Encryption ── -->
             <div class="ac-card">
               <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
@@ -2113,6 +2137,26 @@
                 <button id="ac-storage-sbuf-save" class="ac-btn ac-btn-primary">Save</button>
                 <span id="ac-storage-sbuf-status" class="ac-hint" style="margin-left:6px;"></span>
               </div>
+            </div>
+
+            <!-- ── Agent Prompt Templates ── -->
+            <div class="ac-card">
+              <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
+                <i data-lucide="file-stack" class="lucide-icon" style="width:14px;height:14px;color:#9ece6a;"></i>
+                Agent Prompt Templates
+                <span id="ac-tpl-sync-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+              </div>
+              <div class="ac-hint" style="margin-top:8px;">
+                Templates seed from <code>app/context/agents/*.json</code> at boot. Re-seed never overwrites slots edited from the admin UI (<code>source = admin</code>) unless you click <strong>Force Re-Seed</strong>.
+              </div>
+              <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">
+                <button id="ac-tpl-refresh-btn" class="ac-btn">Refresh</button>
+                <button id="ac-tpl-seed-btn" class="ac-btn ac-btn-primary">Re-Seed from JSON</button>
+                <button id="ac-tpl-seed-force-btn" class="ac-btn" style="border-color:#f7768e;color:#f7768e;">Force Re-Seed (overwrite admin)</button>
+              </div>
+              <div id="ac-tpl-hash-row" class="ac-hint" style="margin-top:8px;font-family:var(--mono,monospace);font-size:10px;word-break:break-all;"></div>
+              <div id="ac-tpl-list" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;"></div>
+              <pre id="ac-tpl-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:240px;overflow-y:auto;display:none;"></pre>
             </div>
 
             <!-- ── Data Migration ── -->
@@ -2455,6 +2499,9 @@
                 </div>
               </div>
             </div>
+
+            <!-- Tutorial hints prefs (rendered by tutorial.js) -->
+            <div id="ac-tutorial-card-host" style="margin-top:14px;"></div>
           </section>
 
           <!-- ── App Settings ── -->
@@ -2497,10 +2544,10 @@
           <span id="db-auto-status"></span>
         </div>
         <div id="db-panel">
-          <div style="width:180px;min-width:140px;border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;">
-            <div style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;gap:8px;position:relative;align-items:center;min-height:42px;box-sizing:border-box;">
+          <div id="db-sidebar" style="width:180px;min-width:140px;border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;">
+            <div id="db-sidebar-header" style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;gap:8px;position:relative;align-items:center;min-height:42px;box-sizing:border-box;">
               <button id="db-refresh" style="background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-1);padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">↻ Refresh</button>
-              <div style="position:relative;">
+              <div id="db-reset-wrap" style="position:relative;">
                 <button id="db-reset" style="background:#cc241d;border:1px solid #fb4934;color:#fbf1c7;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">Reset DB ▾</button>
                 <div id="db-reset-dropdown" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:var(--bg-elev);border:1px solid var(--border);border-radius:4px;padding:8px;z-index:100;min-width:180px;box-shadow:var(--shadow-md);">
                   <div style="font-size:11px;color:var(--fg-1);margin-bottom:8px;font-weight:bold;">Select tables to RESET:</div>
@@ -2508,6 +2555,7 @@
                   <button id="db-reset-apply" style="width:100%;background:#cc241d;border:1px solid #fb4934;color:#fbf1c7;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">Confirm Reset</button>
                 </div>
               </div>
+              <button id="db-sidebar-toggle" title="Collapse table list" aria-label="Collapse table list" aria-expanded="true" style="margin-left:auto;background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-3);padding:0;border-radius:4px;cursor:pointer;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;"><i data-lucide="chevrons-left" style="width:13px;height:13px;"></i></button>
             </div>
             <div id="db-table-list" style="width:100%;border-right:none;flex:1;"></div>
           </div>
@@ -3050,13 +3098,13 @@
   // This block drives the visible pill button + popup and stays in sync.
 
   var TABS = [
+    { id: 'autoagent',   icon: 'palette',     label: 'Dashboard'  },
     { id: 'terminal',    icon: 'terminal',    label: 'Terminal'   },
     { id: 'stream',      icon: 'radio-tower', label: 'Stream'     },
     { id: 'flow',        icon: 'git-branch',  label: 'Flow'       },
     { id: 'loop-visual', icon: 'repeat',      label: 'Runtime Loop' },
     { id: 'database',    icon: 'database',    label: 'Database'   },
     { id: 'github',      icon: 'github',      label: 'GitHub'     },
-    { id: 'autoagent',   icon: 'palette',     label: 'AutoAgent'  },
     { id: 'agents',      icon: 'bot',              label: 'Agents'     },
     { id: 'app-config',  icon: 'sliders-horizontal', label: 'App Config' },
     { id: 'account',     icon: 'user-cog',         label: 'Manage Account' },
@@ -3070,7 +3118,7 @@
   if (!nativeSelect || !btn || !popup) return;
 
   function syncBtn(tabId) {
-    var t = TABS.find(function (t) { return t.id === tabId; }) || TABS[1];
+    var t = TABS.find(function (t) { return t.id === tabId; }) || TABS[0];
     labelEl.textContent = t.label;
     btnIconEl.setAttribute('data-lucide', t.icon);
     lucide.createIcons({ nodes: [btnIconEl] });

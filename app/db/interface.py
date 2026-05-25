@@ -422,11 +422,25 @@ class StorageBackend(ABC):
         ...
 
     @abstractmethod
-    async def seed_agent_templates(self) -> int:
+    async def seed_agent_templates(self, force: bool = False) -> dict:
         """
-        Re-seed agent_templates from app/context/agents/*.json.
-        Upserts all template rows so JSON changes take effect.
-        Returns the number of templates seeded.
+        Re-seed agent_templates + agent_prompt_templates from app/context/agents/*.json.
+
+        Behavior:
+          - Computes a manifest hash over the JSON files.
+          - If hash matches app_meta['last_agent_manifest_hash'] AND force is False,
+            returns immediately with cached=True (no DB writes).
+          - Otherwise per-template per-slot upserts respecting the source guard:
+            existing rows with source='admin' are skipped unless force=True.
+
+        Returns a summary dict:
+            {
+              "changed": int,         # slot rows inserted/updated
+              "skipped_admin": int,   # admin-sourced rows left alone
+              "templates": int,       # config rows upserted
+              "cached": bool,         # whether the manifest short-circuit fired
+              "manifest_hash": str,
+            }
         """
         ...
 
@@ -624,6 +638,26 @@ class StorageBackend(ABC):
         ...
 
     @abstractmethod
+    async def save_agent_as_template(
+        self,
+        agent_id: str,
+        template_id: str,
+        name: str,
+        description: str = "",
+        icon: str = "",
+        discoverable: bool = False,
+        access_level: str = "all",
+        updated_by: str = "admin",
+    ) -> dict:
+        """
+        Snapshot a custom agent's config + admin-base prompt slots into a new
+        agent_templates row plus matching agent_prompt_templates rows
+        (source='admin' so JSON re-seed won't clobber them).
+        Raises ValueError if the agent is missing or template_id already exists.
+        """
+        ...
+
+    @abstractmethod
     async def delete_custom_agent(self, agent_id: str, user_id: str) -> bool:
         """
         Delete a custom agent. Caller must be in admin_users.
@@ -670,6 +704,39 @@ class StorageBackend(ABC):
     @abstractmethod
     async def is_agent_member(self, agent_id: str, user_id: str) -> bool:
         """Return True if user_id is a member or admin of the agent."""
+        ...
+
+    # ---- AutoAgent pages (page-builder workspace) ----
+
+    @abstractmethod
+    async def pages_list(self, user_id: str) -> List[dict]:
+        """Return all page rows for user_id, ordered with 'home' first then by updated_at desc.
+        Each row: id, user_id, slug, title, agent_context, html, created_at, updated_at.
+        `html` may be None when the body lives on disk (hybrid mode)."""
+        ...
+
+    @abstractmethod
+    async def pages_get(self, user_id: str, slug: str) -> Optional[dict]:
+        """Get one page row by (user_id, slug). Returns None if not found."""
+        ...
+
+    @abstractmethod
+    async def pages_upsert(
+        self,
+        user_id: str,
+        slug: str,
+        title: str,
+        agent_context: str = "",
+        html: Optional[str] = None,
+    ) -> dict:
+        """Insert or update a page. Returns the saved row. `html=None` leaves the
+        column NULL on insert and untouched on update (so hybrid mode can store
+        metadata-only rows without disturbing existing bodies)."""
+        ...
+
+    @abstractmethod
+    async def pages_delete(self, user_id: str, slug: str) -> bool:
+        """Delete one page. Returns True if a row was removed."""
         ...
 
     # ---- Per-Agent External Data Sources ----

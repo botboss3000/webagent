@@ -60,8 +60,8 @@ const TOOL_DESCRIPTIONS = {
   get_webhook_log:              'View recent webhook event log',
   run_optimizer:                'Trigger the optimizer pipeline for this session',
   run_worker_trials:            'Run simulated trial conversations (Optimizer Planner only)',
-  handoff_to_finalizer:         'Hand off optimization results to the Finalizer',
-  deploy_optimization:          'Deploy an approved optimization change (Finalizer only)',
+  handoff_to_closer:            'Hand off optimization results to the Closer',
+  deploy_optimization:          'Deploy an approved optimization change (Closer only)',
   read_source:                  'Read any file on the server filesystem',
   write_source:                 'Create or overwrite a file (with backup)',
   edit_source:                  'Replace exact text in a file',
@@ -75,7 +75,7 @@ const TOOL_DESCRIPTIONS = {
 // Tier 0: Admin-only. Never shown or toggleable for normal agents.
 const TIER_0_ADMIN = new Set([
   'read_source','write_source','edit_source','delete_source','run_command','restart_server',
-  'run_worker_trials','handoff_to_finalizer','deploy_optimization',
+  'run_worker_trials','handoff_to_closer','deploy_optimization',
 ]);
 
 // Tier 1: Always-on. Present for all agents, not shown as toggleable.
@@ -130,14 +130,14 @@ const TOOL_CATEGORIES = [
     tools: [
       'read_source','write_source','edit_source','delete_source',
       'run_command','restart_server',
-      'run_worker_trials','handoff_to_finalizer','deploy_optimization',
+      'run_worker_trials','handoff_to_closer','deploy_optimization',
     ],
   },
 ];
 
 const PIPELINE_TOOLS = {
-  opt_planner:   ['run_worker_trials','handoff_to_finalizer'],
-  opt_finalizer: ['deploy_optimization'],
+  opt_planner: ['run_worker_trials','handoff_to_closer'],
+  opt_closer:  ['deploy_optimization'],
 };
 
 const DESTRUCTIVE = new Set([
@@ -151,8 +151,8 @@ function _toolsForAgent(agent) {
     return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL,
             'read_source','write_source','edit_source','delete_source','run_command','restart_server'];
   }
-  if (id === 'opt_planner')   return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL, ...(PIPELINE_TOOLS.opt_planner || [])];
-  if (id === 'opt_finalizer') return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL, ...(PIPELINE_TOOLS.opt_finalizer || [])];
+  if (id === 'opt_planner') return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL, ...(PIPELINE_TOOLS.opt_planner || [])];
+  if (id === 'opt_closer')  return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL, ...(PIPELINE_TOOLS.opt_closer  || [])];
 
   const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
   return [
@@ -250,7 +250,7 @@ async function _loadAppSettings() {
 function _iconColor(agent) {
   if (agent.access_level === 'admin_only') return 'color-red';
   const id = (agent.id || '').toLowerCase();
-  if (id.includes('planner') || id.includes('finalizer') || id.includes('opt')) return 'color-purple';
+  if (id.includes('planner') || id.includes('closer') || id.includes('opt')) return 'color-purple';
   if (agent.source === 'custom') return 'color-blue';
   return 'color-teal';
 }
@@ -1698,9 +1698,141 @@ function _renderConfigTab(body, agent, panelEl) {
     msg.className = 'agents-save-msg';
     saveBtn.addEventListener('click', () => _saveChanges(agent, bar, panelEl));
     bar.appendChild(saveBtn);
+    if (_userIsAdmin) {
+      const tplBtn = _btn('Save as Template', 'agents-btn');
+      tplBtn.title = 'Save this agent\'s config and prompts as a reusable template (admin only).';
+      tplBtn.addEventListener('click', () => _openSaveAsTemplateModal(agent, bar));
+      bar.appendChild(tplBtn);
+    }
     bar.appendChild(msg);
     if (content) content.appendChild(bar);
   }
+}
+
+// ── Save-as-template modal ────────────────────────────────────────────────────
+
+function _openSaveAsTemplateModal(agent, hostBar) {
+  const existing = document.getElementById('agents-save-as-template-modal');
+  if (existing) existing.remove();
+
+  const backdrop = document.createElement('div');
+  backdrop.id = 'agents-save-as-template-modal';
+  backdrop.style.cssText =
+    'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9000;' +
+    'display:flex;align-items:center;justify-content:center;';
+
+  const panel = document.createElement('div');
+  panel.style.cssText =
+    'background:var(--bg-elev);color:var(--fg-1);' +
+    'border:1px solid var(--border);border-radius:8px;' +
+    'padding:18px 20px;width:420px;max-width:92vw;box-shadow:0 8px 24px rgba(0,0,0,0.4);';
+
+  const defaultSlug = (agent.name || agent.id || 'template')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64) || 'template';
+
+  panel.innerHTML = `
+    <div style="font-size:15px;font-weight:600;margin-bottom:4px;">Save as Template</div>
+    <div style="font-size:12px;color:var(--fg-3);margin-bottom:14px;">
+      Snapshots this agent's config and admin-base prompts into a reusable template.
+      Future new agents can be created from it.
+    </div>
+    <label style="display:block;font-size:12px;color:var(--fg-2);margin-bottom:2px;">Template ID (slug)</label>
+    <input id="sat-tpl-id" type="text" class="agents-input" style="width:100%;margin-bottom:10px;"
+      value="${_esc(defaultSlug)}" placeholder="my_template">
+    <label style="display:block;font-size:12px;color:var(--fg-2);margin-bottom:2px;">Name</label>
+    <input id="sat-tpl-name" type="text" class="agents-input" style="width:100%;margin-bottom:10px;"
+      value="${_esc(agent.name || '')}" placeholder="Display name">
+    <label style="display:block;font-size:12px;color:var(--fg-2);margin-bottom:2px;">Description</label>
+    <textarea id="sat-tpl-desc" class="agents-textarea" rows="2" style="width:100%;margin-bottom:10px;"
+      placeholder="Short description shown in the template list">${_esc(agent.description || '')}</textarea>
+    <label style="display:block;font-size:12px;color:var(--fg-2);margin-bottom:2px;">Icon (emoji, optional)</label>
+    <input id="sat-tpl-icon" type="text" class="agents-input" style="width:100px;margin-bottom:12px;"
+      value="${_esc(agent.icon || '')}" placeholder="🤖" maxlength="4">
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--fg-2);margin-bottom:6px;cursor:pointer;">
+      <input id="sat-tpl-discoverable" type="checkbox">
+      Discoverable in the "New Agent" menu
+    </label>
+    <div id="sat-tpl-msg" style="font-size:12px;color:var(--danger,#f7768e);min-height:16px;margin-top:8px;"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
+      <button id="sat-tpl-cancel" class="agents-btn">Cancel</button>
+      <button id="sat-tpl-save" class="agents-btn primary">Save Template</button>
+    </div>
+  `;
+  backdrop.appendChild(panel);
+  document.body.appendChild(backdrop);
+
+  const slugIn = panel.querySelector('#sat-tpl-id');
+  const nameIn = panel.querySelector('#sat-tpl-name');
+  const descIn = panel.querySelector('#sat-tpl-desc');
+  const iconIn = panel.querySelector('#sat-tpl-icon');
+  const discCb = panel.querySelector('#sat-tpl-discoverable');
+  const msgEl  = panel.querySelector('#sat-tpl-msg');
+  const saveBtn = panel.querySelector('#sat-tpl-save');
+  const cancelBtn = panel.querySelector('#sat-tpl-cancel');
+
+  function _close() { backdrop.remove(); }
+  cancelBtn.addEventListener('click', _close);
+  backdrop.addEventListener('click', e => { if (e.target === backdrop) _close(); });
+
+  saveBtn.addEventListener('click', async () => {
+    msgEl.textContent = '';
+    msgEl.style.color = 'var(--danger,#f7768e)';
+    const slug = (slugIn.value || '').trim().toLowerCase();
+    const name = (nameIn.value || '').trim();
+    if (!slug || !/^[a-z0-9][a-z0-9_-]{1,63}$/.test(slug)) {
+      msgEl.textContent = 'Template ID must be 2-64 chars: lowercase letters, digits, "_" or "-".';
+      return;
+    }
+    if (!name) {
+      msgEl.textContent = 'Template name is required.';
+      return;
+    }
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+    try {
+      const res = await fetch(`/api/v1/agents/${encodeURIComponent(agent.id)}/save-as-template`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: app.currentUserId,
+          template_id: slug,
+          name,
+          description: (descIn.value || '').trim(),
+          icon: (iconIn.value || '').trim(),
+          discoverable: !!discCb.checked,
+          access_level: 'all',
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        msgEl.textContent = data.detail || `Save failed (HTTP ${res.status}).`;
+        saveBtn.disabled = false;
+        saveBtn.textContent = 'Save Template';
+        return;
+      }
+      msgEl.style.color = 'var(--success,#9ece6a)';
+      msgEl.textContent = '✓ Template saved.';
+      if (hostBar) {
+        const sm = hostBar.querySelector('.agents-save-msg');
+        if (sm) { sm.textContent = `✓ Saved as template "${slug}"`; sm.className = 'agents-save-msg'; }
+      }
+      setTimeout(() => {
+        _close();
+        // Refresh the agents list so the new template surfaces.
+        _loadAgents().then(_renderList).catch(() => {});
+      }, 700);
+    } catch (e) {
+      msgEl.textContent = `Error: ${e.message}`;
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Save Template';
+    }
+  });
+
+  slugIn.focus();
+  slugIn.select();
 }
 
 async function _loadAndRenderSlots(panelEl, agent, _isEditable) {
