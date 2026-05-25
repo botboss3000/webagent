@@ -234,12 +234,16 @@ function renderGraphSection(s, g) {
 }
 
 function renderGraphRow(c, idx, g) {
-  const cls = c.is_head ? 'fg-graph-row head' : (c.is_pulled ? 'fg-graph-row pulled' : 'fg-graph-row unpulled');
+  const cls = c.is_head
+    ? 'fg-graph-row head'
+    : (c.is_pullable
+        ? 'fg-graph-row unpulled'
+        : (c.is_pulled ? 'fg-graph-row pulled' : 'fg-graph-row other-branch'));
   const badge = c.is_head
     ? '<span class="fg-graph-badge head">HEAD</span>'
-    : (c.is_pulled
-        ? ''
-        : '<span class="fg-graph-badge unpulled" title="Not yet pulled to this VM">↓</span>');
+    : (c.is_pullable
+        ? '<span class="fg-graph-badge unpulled" title="On origin/' + escapeHtml(g.current_branch || 'current branch') + ' but not yet pulled — click Pull to bring it in">↓</span>'
+        : '');
   // Branch tip labels — show every branch whose tip is this commit.
   const branchLabels = (g.branches && Object.keys(g.branches).length)
     ? Object.entries(g.branches)
