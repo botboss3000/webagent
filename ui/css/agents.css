@@ -14,7 +14,6 @@
   align-items: center;
   justify-content: space-between;
   padding: 14px 20px 12px;
-  border-bottom: 1px solid #1e1e3a;
   flex-shrink: 0;
 }
 #agents-toolbar-title {
@@ -390,7 +389,7 @@ body.light-mode .agent-detail-tabs-chev.right {
    mirrors the main #chat-input-row pill (attach + textarea + voice/send
    inside a rounded container). */
 #agent-builder-bar {
-  margin: 0 0 14px 0;
+  margin: 0 20px 14px;
 }
 #agent-builder-bar-row {
   display: flex;
@@ -769,7 +768,6 @@ body.light-mode .agents-test-loop .lv-node.lv-error  { border-color: #cc4455 !im
 
 /* ── Light mode ── */
 body.light-mode #tab-agents           { background: #fffaf5; }
-body.light-mode #agents-toolbar       { border-bottom-color: #ffdec4; }
 body.light-mode #agents-toolbar-title { color: #3d2c2e; }
 body.light-mode #agents-toolbar-sub   { color: #d0b0a0; }
 body.light-mode #btn-new-agent        { background: #ff8c42; color: #fff; }
