@@ -12,44 +12,88 @@ import logging
 import os
 import sys
 import signal
-from typing import Optional
+from typing import Dict, Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# ── Persistent terminal session (survives page reloads) ──
-_persistent_session: Optional["TerminalSession"] = None
-_persistent_session_lock = asyncio.Lock()
+# ── Keyed persistent terminal sessions ──
+#
+# Each browser-side terminal tab passes a client-generated session_id when it
+# opens the WebSocket. A PTY is spawned on first connect for that id and kept
+# alive across WS reconnects (refresh / network blip), so a long-running
+# command keeps going even if the user closes their tab and comes back later.
+# Sessions are reaped when:
+#   • the shell exits naturally (e.g. user types `exit`) — caught lazily on
+#     the next lookup that touches that id, or proactively on each new
+#     session creation,
+#   • the browser explicitly DELETEs the session (close-tab path), or
+#   • the server shuts down.
+_sessions: Dict[str, "TerminalSession"] = {}
+_sessions_lock = asyncio.Lock()
 
 
-async def get_or_create_session() -> "TerminalSession":
-    """Return the one persistent shell session. Creates on first call.
-    Re-spawns if the underlying process has exited (e.g. user typed 'exit').
-    Lives until server shutdown. WebSocket attach/detach doesn't kill it."""
-    global _persistent_session
-    async with _persistent_session_lock:
-        if _persistent_session is None or not _persistent_session.is_alive:
-            if _persistent_session is not None:
-                _persistent_session.close()
-                logger.info("Re-spawning dead terminal session")
-            _persistent_session = TerminalSession()
-            _persistent_session.spawn()
-            _persistent_session.write_input(b"\r")
-            logger.info("Persistent terminal session created")
-        return _persistent_session
+def _reap_dead_locked() -> None:
+    """Drop any sessions whose shell process has exited. Caller MUST hold the lock."""
+    for sid, s in list(_sessions.items()):
+        if not s.is_alive:
+            try:
+                s.close()
+            except Exception:
+                pass
+            del _sessions[sid]
+            logger.info("Reaped dead terminal session %s", sid)
 
 
-async def close_persistent_session():
-    """Close the session on server shutdown. Called from main.py shutdown."""
-    global _persistent_session
-    if _persistent_session is not None:
-        _persistent_session.close()
-        _persistent_session = None
-        logger.info("Persistent terminal session closed")
+async def get_or_create_session(session_id: str) -> "TerminalSession":
+    """Return the PTY session for session_id, spawning it if it doesn't exist
+    yet or if its previous shell has died."""
+    async with _sessions_lock:
+        _reap_dead_locked()
+        sess = _sessions.get(session_id)
+        if sess is not None and sess.is_alive:
+            return sess
+        sess = TerminalSession()
+        sess.spawn()
+        sess.write_input(b"\r")
+        _sessions[session_id] = sess
+        logger.info("Created terminal session %s", session_id)
+        return sess
+
+
+async def close_session(session_id: str) -> bool:
+    """Kill a session by id and drop it from the map. Returns True if a
+    session existed for that id."""
+    async with _sessions_lock:
+        sess = _sessions.pop(session_id, None)
+        if sess is None:
+            return False
+        try:
+            sess.close()
+        except Exception:
+            pass
+        logger.info("Closed terminal session %s on client request", session_id)
+        return True
+
+
+async def close_all_sessions():
+    """Close every live session. Called on server shutdown."""
+    async with _sessions_lock:
+        for sid, s in list(_sessions.items()):
+            try:
+                s.close()
+            except Exception:
+                pass
+        _sessions.clear()
+        logger.info("Closed all terminal sessions")
     if IS_WINDOWS:
         _close_winpty_executor()
+
+
+# Backwards-compatible name retained because main.py imports it on shutdown.
+close_persistent_session = close_all_sessions
 
 
 # ── Platform detection ──
@@ -356,11 +400,28 @@ class TerminalSession:
         self._process = None
 
 
+_FALLBACK_SESSION_ID = "__default__"
+
+
+@router.delete("/api/v1/terminal/sessions/{session_id}")
+async def delete_terminal_session(session_id: str):
+    """Kill a PTY by session_id. Called by the browser when the user closes
+    a terminal tab so the shell doesn't outlive its UI."""
+    closed = await close_session(session_id)
+    return {"closed": closed}
+
+
 @router.websocket("/api/v1/terminal/ws")
 async def terminal_websocket(websocket: WebSocket):
-    """WebSocket endpoint — one PTY session per connection."""
+    """WebSocket endpoint — one PTY session per `session_id` query param.
+    Multiple connects with the same id reattach to the same shell."""
 
     await websocket.accept()
+
+    # Each terminal tab in the browser generates its own session_id (a UUID)
+    # and includes it as a query param. If a legacy client connects without
+    # one, fall back to a shared id so the page still works.
+    session_id = websocket.query_params.get("session_id") or _FALLBACK_SESSION_ID
 
     # ── Heartbeat ping to keep connection alive ──
     HEARTBEAT_INTERVAL = 25  # seconds
@@ -379,7 +440,7 @@ async def terminal_websocket(websocket: WebSocket):
 
     heartbeat_task = asyncio.ensure_future(_heartbeat())
 
-    session = await get_or_create_session()
+    session = await get_or_create_session(session_id)
     try:
         async def reader_task():
             """Background: pump PTY output → WebSocket."""
@@ -433,5 +494,7 @@ async def terminal_websocket(websocket: WebSocket):
             await heartbeat_task
         except asyncio.CancelledError:
             pass
-        # Do NOT close the session — it's persistent across page reloads
-        logger.info("Terminal WebSocket detached (persistent session keeps running)")
+        # Do NOT close the session — it's persistent across page reloads.
+        # Sessions are only closed by an explicit DELETE from the client,
+        # by the shell exiting on its own, or on server shutdown.
+        logger.info("Terminal WebSocket detached for session %s (session keeps running)", session_id)
