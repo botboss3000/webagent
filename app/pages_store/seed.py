@@ -1,5 +1,5 @@
 """Seed content for the default `home` page rendered into a new user's
-Dashboard iframe on first visit.
+Pages tab iframe on first visit.
 
 The actual template lives next to this file as `home.html` — a plain
 self-contained HTML document so it can be opened in a browser, edited

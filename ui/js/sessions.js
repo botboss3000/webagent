@@ -812,7 +812,7 @@ export function initSessions() {
     closeAgentMenu();
   }
 
-  // Expose so other modules (e.g. the Dashboard prompt bar) can drive the
+  // Expose so other modules (e.g. the Pages prompt bar) can drive the
   // right-side chat agent without duplicating session/teardown logic.
   app.switchToAgent = switchToAgent;
 

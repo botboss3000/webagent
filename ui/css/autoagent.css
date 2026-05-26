@@ -41,7 +41,7 @@
 
 body.light-mode #aa-page-label { color: #b09580; }
 
-/* The page selector lives at the bottom of the dashboard, so flip the menu
+/* The page selector lives at the bottom of the Pages tab, so flip the menu
    upward to keep it on-screen. */
 #autoagent-page-dropdown-menu {
   top: auto;

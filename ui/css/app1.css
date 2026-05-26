@@ -239,7 +239,7 @@ body {
      #chat-input-row              (web chat — chat.js)
      #ac-int-admin-chat-input-row (integration admin chat)
      #agent-builder-bar-row       (agents page — agents.js)
-     #autoagent-prompt-row        (dashboard — autoagent.js)
+     #autoagent-prompt-row        (Pages tab — autoagent.js)
    When tweaking, change here and every pill in the app updates. */
 
 .chat-pill {
