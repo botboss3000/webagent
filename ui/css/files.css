@@ -144,7 +144,7 @@ body.light-mode {
 
 .files-sidebar {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   width: 260px;
   min-width: 160px;
   max-width: 600px;
@@ -192,10 +192,11 @@ body.light-mode {
   align-items: center;
   padding: 6px 0;
   gap: 4px;
-  width: 100%;
+  width: 38px;
+  height: 100%;
   background: var(--files-bg-sidebar);
   border-right: 1px solid var(--files-border);
-  flex: 1;
+  flex: 0 0 38px;
 }
 .files-sidebar-strip[hidden] { display: none; }
 
