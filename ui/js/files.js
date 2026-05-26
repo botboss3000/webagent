@@ -13,6 +13,8 @@ import { createTerminalInstance } from './terminal.js';
 import { randomUUID } from './uuid.js';
 import { startAppConfig, stopAppConfig } from './app-config.js';
 import { startAutoRefresh, stopAutoRefresh } from './db/pagination.js';
+import { startLoop, stopLoop } from './loop.js';
+import { startLoopVisual, stopLoopVisual } from './loop-logic.js';
 
 const API_BASE = '/api/v1/files';
 const LS_SIDEBAR_VIEW = 'files.sidebarView';   // 'explorer' | 'git' | 'database'
@@ -2560,18 +2562,36 @@ function initSidebarViewSwitcher() {
   });
 }
 
-const VIEW_TITLE = { explorer: 'Explorer', git: 'Source control', database: 'Database', terminal: 'Terminal launchers', settings: 'Admin Configuration' };
-const VIEW_SWITCH = { explorer: 'explorer', git: 'source control', database: 'database', terminal: 'terminal launchers', settings: 'admin configuration' };
+const VIEW_TITLE = {
+  explorer: 'File Manager',
+  git: 'Source control',
+  database: 'Database',
+  terminal: 'Terminal launchers',
+  settings: 'Admin Configuration',
+  interactions: 'Interactions',
+  'runtime-loop': 'Runtime Loop',
+};
+const VIEW_SWITCH = {
+  explorer: 'file manager',
+  git: 'source control',
+  database: 'database',
+  terminal: 'terminal launchers',
+  settings: 'admin configuration',
+  interactions: 'interactions',
+  'runtime-loop': 'runtime loop',
+};
 
 // Each sidebar view has a dedicated <main> on the right side. Switching
 // the strip swaps which main is visible. The Settings view is just
 // another entry — no overlay/toggle special-case.
 const VIEW_MAIN_ID = {
-  explorer: 'files-explorer-main',
-  git:      'files-git-main',
-  database: 'files-database-main',
-  terminal: 'files-terminal-main',
-  settings: 'files-settings-main',
+  explorer:       'files-explorer-main',
+  git:            'files-git-main',
+  database:       'files-database-main',
+  terminal:       'files-terminal-main',
+  settings:       'files-settings-main',
+  interactions:   'files-interactions-main',
+  'runtime-loop': 'files-runtime-loop-main',
 };
 
 function applySidebarView(view) {
@@ -2631,6 +2651,16 @@ function applySidebarView(view) {
     try { startAppConfig(); } catch (_) {}
   } else {
     try { stopAppConfig(); } catch (_) {}
+  }
+  if (view === 'interactions') {
+    try { startLoop(); } catch (_) {}
+  } else {
+    try { stopLoop(); } catch (_) {}
+  }
+  if (view === 'runtime-loop') {
+    try { startLoopVisual(); } catch (_) {}
+  } else {
+    try { stopLoopVisual(); } catch (_) {}
   }
   if (view === 'git') {
     try { renderGitMain(); } catch (_) {}
@@ -2883,11 +2913,10 @@ export async function startAdminTools() {
   // restart its loop now that Admin Tools is on screen again.
   const sb = document.getElementById('files-sidebar');
   const view = sb?.dataset.view;
-  if (view === 'settings') {
-    try { startAppConfig(); } catch (_) {}
-  } else if (view === 'database') {
-    try { startAutoRefresh(); } catch (_) {}
-  }
+  if (view === 'settings')          try { startAppConfig(); } catch (_) {}
+  else if (view === 'database')     try { startAutoRefresh(); } catch (_) {}
+  else if (view === 'interactions') try { startLoop(); } catch (_) {}
+  else if (view === 'runtime-loop') try { startLoopVisual(); } catch (_) {}
 }
 
 export function stopAdminTools() {
@@ -2895,4 +2924,6 @@ export function stopAdminTools() {
   // resumes when the user returns.
   try { stopAppConfig(); } catch (_) {}
   try { stopAutoRefresh(); } catch (_) {}
+  try { stopLoop(); } catch (_) {}
+  try { stopLoopVisual(); } catch (_) {}
 }

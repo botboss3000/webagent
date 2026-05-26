@@ -1,7 +1,6 @@
 'use strict';
 
-import { startLoop, stopLoop, setLoopLevel, toggleAutoScroll } from './loop.js';
-import { startLoopVisual, stopLoopVisual } from './loop-logic.js';
+import { setLoopLevel, toggleAutoScroll } from './loop.js';
 import { startAutoAgent, stopAutoAgent } from './autoagent.js';
 import { startAgents, stopAgents } from './agents.js';
 import { startAccount } from './account.js';
@@ -34,8 +33,16 @@ export function initTabs() {
       tabValue = 'admin-tools';
       try { localStorage.setItem('files.sidebarView', 'database'); } catch (_) {}
     }
-    // Back-compat: 'stream' was removed in favor of 'flow', which is better.
-    if (tabValue === 'stream') tabValue = 'flow';
+    // Back-compat: 'flow' and 'loop-visual' top-level tabs moved into Admin
+    // Tools as the Interactions and Runtime Loop strip views.
+    if (tabValue === 'stream' || tabValue === 'flow') {
+      tabValue = 'admin-tools';
+      try { localStorage.setItem('files.sidebarView', 'interactions'); } catch (_) {}
+    }
+    if (tabValue === 'loop-visual') {
+      tabValue = 'admin-tools';
+      try { localStorage.setItem('files.sidebarView', 'runtime-loop'); } catch (_) {}
+    }
 
     document.querySelectorAll('.tab-content').forEach((c) => c.classList.remove('active'));
     const targetContent = document.getElementById('tab-' + tabValue);
@@ -64,40 +71,22 @@ export function initTabs() {
       setChatSideVisible(visible);
     }
 
-    if (tabValue === 'flow') {
-      stopLoopVisual();
-      stopAutoAgent();
-      stopAgents();
-      stopAdminTools();
-      startLoop();
-    } else if (tabValue === 'loop-visual') {
-      stopLoop();
-      stopAutoAgent();
-      stopAgents();
-      stopAdminTools();
-      startLoopVisual();
-    } else if (tabValue === 'autoagent') {
-      stopLoop();
-      stopLoopVisual();
+    // Flow + Runtime Loop are now sidebar views inside Admin Tools, so
+    // stopAdminTools() owns their lifecycle when leaving admin-tools.
+    if (tabValue === 'autoagent') {
       stopAgents();
       stopAdminTools();
       startAutoAgent();
     } else if (tabValue === 'agents') {
-      stopLoop();
-      stopLoopVisual();
       stopAutoAgent();
       stopAdminTools();
       startAgents();
     } else if (tabValue === 'account') {
-      stopLoop();
-      stopLoopVisual();
       stopAutoAgent();
       stopAgents();
       stopAdminTools();
       startAccount();
     } else if (tabValue === 'admin-tools') {
-      stopLoop();
-      stopLoopVisual();
       stopAutoAgent();
       stopAgents();
       startAdminTools();
