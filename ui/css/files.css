@@ -1173,17 +1173,6 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
   display: inline-block;
 }
 
-/* Settings toggle button: shares .files-view-toggle-btn styling but its
-   .active state means "Settings view is showing" — it must stay clickable
-   so the user can toggle it off, so we override the disabling rule above. */
-.files-view-toggle-btn.files-settings-toggle-btn.active,
-.files-strip-btn.files-settings-toggle-btn.active {
-  color: var(--files-text-strong);
-  background: var(--files-btn-hover);
-  opacity: 1;
-  cursor: pointer;
-}
-
 /* Settings view: takes the place of .files-main when Settings is toggled on.
    Same flex layout so it fills the right side; scrolls its own content. */
 .files-settings-main {
@@ -2026,3 +2015,20 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
     max-width: 160px;
   }
 }
+
+/* ── Admin Configuration view ────────────────────────────
+   When Settings is the active view there's no sidebar panel — only the
+   strip. The settings main takes the remaining width. These rules sit
+   late in the cascade so they override .maximized (mobile) and the
+   user's persisted split width without touching data-state. */
+.files-sidebar[data-view="settings"] {
+  width: 38px !important;
+  min-width: 38px !important;
+  max-width: 38px !important;
+  flex: 0 0 38px;
+}
+.files-sidebar[data-view="settings"] ~ .files-resize-handle { display: none; }
+.files-sidebar[data-view="settings"] .files-sidebar-panel { display: none; }
+/* Mobile .maximized normally hides the right side; for settings we want
+   the settings main visible. */
+.files-sidebar[data-view="settings"].maximized ~ .files-main:not([hidden]) { display: flex; }
