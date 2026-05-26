@@ -6,6 +6,8 @@ Injects the following tools into the agent's tool registry:
   list_pages      -- list all pages for the current user
   create_page     -- create a new named page
   delete_page     -- delete a page (home page is protected)
+  get_page        -- read the current HTML content of a page
+  rename_page     -- rename a page's display title
 
 Call register_tools(tools, user_id) from app/tools/loader.py.
 """
@@ -22,6 +24,8 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str) -> None:
         list_pages as _list_pages,
         create_page as _create_page,
         delete_page as _delete_page,
+        get_page_html as _get_page_html,
+        rename_page as _rename_page,
     )
 
     # -- render_visual ---------------------------------------------------------
@@ -75,6 +79,33 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str) -> None:
             "type": "object",
             "properties": {},
             "required": [],
+        },
+    )
+
+    # -- get_page --------------------------------------------------------------
+    async def _get_page_wrapper(slug: str):
+        html = await _get_page_html(user_id=user_id, slug=slug)
+        if html is None:
+            return json.dumps({"status": "error", "message": "Page '{}' not found.".format(slug)})
+        return json.dumps({
+            "status": "ok",
+            "page_name": slug,
+            "html": html,
+            "size_bytes": len(html),
+        })
+
+    tools["get_page"] = ToolInfo(
+        name="get_page",
+        handler=_get_page_wrapper,
+        parameters={
+            "type": "object",
+            "properties": {
+                "slug": {
+                    "type": "string",
+                    "description": "Slug of the page to read (e.g. 'home', 'dashboard', 'notes').",
+                },
+            },
+            "required": ["slug"],
         },
     )
 
@@ -149,5 +180,31 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str) -> None:
                 },
             },
             "required": ["slug"],
+        },
+    )
+
+    # -- rename_page -----------------------------------------------------------
+    async def _rename_page_wrapper(slug: str, title: str):
+        ok = await _rename_page(user_id=user_id, slug=slug, new_title=title)
+        if ok:
+            return json.dumps({"status": "ok", "message": "Page '{}' renamed to '{}'.".format(slug, title)})
+        return json.dumps({"status": "error", "message": "Page '{}' not found.".format(slug)})
+
+    tools["rename_page"] = ToolInfo(
+        name="rename_page",
+        handler=_rename_page_wrapper,
+        parameters={
+            "type": "object",
+            "properties": {
+                "slug": {
+                    "type": "string",
+                    "description": "Slug of the page to rename (e.g. 'dashboard', 'notes').",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "New human-readable display title for the page.",
+                },
+            },
+            "required": ["slug", "title"],
         },
     )
