@@ -1239,6 +1239,101 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 }
 .files-view-toggle-btn.files-terminal-new:hover { background: var(--files-btn-hover); }
 
+/* ── Terminal launchers sidebar panel ──────────────────── */
+
+#files-panel-terminal .ft-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.ft-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ft-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--files-text-muted);
+  padding: 0 12px 4px;
+}
+.ft-list { display: flex; flex-direction: column; }
+.ft-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border: none;
+  background: transparent;
+  color: var(--files-text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+  min-height: 26px;
+}
+.ft-row:hover { background: var(--files-row-hover); }
+.ft-row-icon { width: 14px; height: 14px; flex-shrink: 0; color: var(--files-text-muted); }
+.ft-row-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ft-row-meta { color: var(--files-text-faint); font-size: 11px; flex-shrink: 0; }
+.ft-row-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--files-text-faint);
+  flex-shrink: 0;
+}
+.ft-row-dot-on { background: #6bd968; }
+
+.ft-empty {
+  color: var(--files-text-faint);
+  font-size: 12px;
+  padding: 4px 12px 6px;
+  font-style: italic;
+}
+.ft-error { color: var(--files-text); font-style: normal; }
+
+.ft-hints {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--files-text);
+  line-height: 1.5;
+}
+.ft-hints kbd {
+  font-family: "Fira Code", Menlo, Monaco, monospace;
+  font-size: 11px;
+  background: var(--files-btn-hover);
+  border: 1px solid var(--files-border-strong);
+  border-radius: 3px;
+  padding: 1px 5px;
+  color: var(--files-text-strong);
+}
+.ft-hints code {
+  font-family: "Fira Code", Menlo, Monaco, monospace;
+  font-size: 11px;
+  background: var(--files-btn-hover);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+.ft-hint-note {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--files-border);
+  color: var(--files-text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 /* ── Embedded terminal pane (one per terminal tab) ──────── */
 
 .files-editor-pane.files-terminal-pane {

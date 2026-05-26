@@ -54,6 +54,37 @@ IDLE_TIMEOUT_SECS = int(os.environ.get("TERMINAL_IDLE_TIMEOUT_HOURS", "0")) * 36
 # stale sessions quickly without burning cycles.
 IDLE_GC_INTERVAL_SECS = 300
 
+# Sidebar quick-launch shortcuts. Each entry opens a new terminal tab and
+# types `command` followed by Enter into the freshly-spawned shell. Override
+# the whole list at boot via env var QUICK_LAUNCHES_JSON='[{...}, {...}]'.
+DEFAULT_QUICK_LAUNCHES: List[Dict[str, str]] = [
+    {"name": "Claude Remote Control",
+     "command": "tmux new -As cc 'claude remote-control --spawn=worktree'",
+     "icon": "smartphone"},
+    {"name": "Attach to 'cc'",
+     "command": "tmux attach -t cc",
+     "icon": "link"},
+    {"name": "List tmux sessions",
+     "command": "tmux ls",
+     "icon": "list"},
+    {"name": "Plain shell",
+     "command": "",
+     "icon": "terminal"},
+]
+
+
+def _load_quick_launches() -> List[Dict[str, str]]:
+    raw = os.environ.get("QUICK_LAUNCHES_JSON")
+    if not raw:
+        return DEFAULT_QUICK_LAUNCHES
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return [d for d in data if isinstance(d, dict) and "name" in d]
+    except Exception as e:
+        logger.warning("Bad QUICK_LAUNCHES_JSON, using defaults: %s", e)
+    return DEFAULT_QUICK_LAUNCHES
+
 
 def _reap_dead_locked() -> None:
     """Drop any sessions whose shell process has exited. Caller MUST hold the lock."""
@@ -610,6 +641,59 @@ async def list_terminal_sessions(request: Request) -> List[Dict[str, Any]]:
                 "age_secs": int(now - s.created_at),
                 "scrollback_bytes": s.scrollback_size(),
             })
+    return out
+
+
+@router.get("/api/v1/terminal/quick-launches")
+async def list_quick_launches(request: Request) -> List[Dict[str, str]]:
+    """Return the configured quick-launch shortcuts shown in the sidebar.
+    Each entry has `name`, `command` (typed into a new shell), and `icon`."""
+    uid = await assert_caller_is(request, None)
+    if not await _is_admin(uid):
+        raise HTTPException(status_code=403, detail="Admin required")
+    return _load_quick_launches()
+
+
+@router.get("/api/v1/terminal/tmux-sessions")
+async def list_tmux_sessions(request: Request) -> List[Dict[str, Any]]:
+    """List live tmux sessions on the host (whatever user the webagent runs
+    as). Used by the sidebar to show running sessions you can attach to.
+    Returns [] if tmux isn't installed or no server is running."""
+    uid = await assert_caller_is(request, None)
+    if not await _is_admin(uid):
+        raise HTTPException(status_code=403, detail="Admin required")
+    fmt = "#{session_name}|#{session_windows}|#{session_attached}|#{session_created}"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "tmux", "ls", "-F", fmt,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        return []
+    try:
+        stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=3.0)
+    except asyncio.TimeoutError:
+        try: proc.kill()
+        except Exception: pass
+        return []
+    if proc.returncode != 0:
+        # rc=1 with "no server running" is the normal empty case.
+        return []
+    out: List[Dict[str, Any]] = []
+    for line in stdout.decode("utf-8", errors="replace").splitlines():
+        parts = line.split("|")
+        if len(parts) < 4:
+            continue
+        try:
+            out.append({
+                "name": parts[0],
+                "windows": int(parts[1]),
+                "attached": parts[2] == "1",
+                "created": int(parts[3]),
+            })
+        except ValueError:
+            continue
     return out
 
 
