@@ -535,19 +535,21 @@
             </span>
           </div>
 
-          <!-- Prompt bar — mirrors #agent-builder-bar pill (attach + textarea + voice/send swap) -->
+          <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #chat-input-row,
+               #ac-int-admin-chat-input-row, #agent-builder-bar-row. Style rules
+               live in ui/css/app1.css under the "Chat-pill" block. -->
           <div id="autoagent-prompt-bar">
-            <div id="autoagent-prompt-row">
-              <button type="button" id="autoagent-attach-btn" title="Attach files">
+            <div id="autoagent-prompt-row" class="chat-pill">
+              <button type="button" id="autoagent-attach-btn" class="chat-pill-attach" title="Attach files">
                 <i data-lucide="paperclip" style="width:18px;height:18px;"></i>
               </button>
-              <textarea id="autoagent-prompt-input" rows="2"
+              <textarea id="autoagent-prompt-input" class="chat-pill-input" rows="2"
                 placeholder="Tell the page agent what to build or change..."
                 maxlength="2000" autocomplete="off"></textarea>
-              <button type="button" id="autoagent-voice-btn" title="Record voice">
+              <button type="button" id="autoagent-voice-btn" class="chat-pill-voice" title="Record voice">
                 <i data-lucide="mic" style="width:18px;height:18px;"></i>
               </button>
-              <button type="button" id="autoagent-send-btn" title="Send to page agent">
+              <button type="button" id="autoagent-send-btn" class="chat-pill-send" title="Send to page agent">
                 <i data-lucide="send" style="width:16px;height:16px;"></i>
               </button>
             </div>
@@ -566,18 +568,21 @@
       </div>
 
       <!-- Agent Builder chat bar — page-level assistant for creating and modifying agents -->
+      <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #chat-input-row,
+           #ac-int-admin-chat-input-row, #autoagent-prompt-row. Style rules live
+           in ui/css/app1.css under the "Chat-pill" block. -->
       <div id="agent-builder-bar">
-        <div id="agent-builder-bar-row">
-          <button type="button" id="agent-builder-bar-attach" title="Attach files">
+        <div id="agent-builder-bar-row" class="chat-pill">
+          <button type="button" id="agent-builder-bar-attach" class="chat-pill-attach" title="Attach files">
             <i data-lucide="paperclip" style="width:18px;height:18px;"></i>
           </button>
-          <textarea id="agent-builder-bar-input" rows="2"
+          <textarea id="agent-builder-bar-input" class="chat-pill-input" rows="2"
             placeholder="use AI to create your agent or manage your fleet"
             autocomplete="off"></textarea>
-          <button type="button" id="agent-builder-bar-voice" title="Record voice">
+          <button type="button" id="agent-builder-bar-voice" class="chat-pill-voice" title="Record voice">
             <i data-lucide="mic" style="width:18px;height:18px;"></i>
           </button>
-          <button type="button" id="agent-builder-bar-send" title="Send to Agent Builder">
+          <button type="button" id="agent-builder-bar-send" class="chat-pill-send" title="Send to Agent Builder">
             <i data-lucide="send" style="width:16px;height:16px;"></i>
           </button>
         </div>
@@ -730,9 +735,11 @@
             <div id="ac-int-admin-chat-card" style="margin-bottom:16px;">
               <div class="ac-label" style="margin-bottom:6px;">Use AI to create or customize an existing integration</div>
               <div id="ac-int-admin-chat-messages" style="max-height:280px;overflow-y:auto;display:none;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px;font-size:13px;"></div>
-              <div id="ac-int-admin-chat-input-row">
-                <textarea id="ac-int-admin-chat-input" rows="2" placeholder="e.g. Create a Slack integration with send_message and list_channels tools" autocomplete="off"></textarea>
-                <button id="ac-int-admin-chat-send" title="Send message" disabled><i data-lucide="send" style="width:18px;height:18px;"></i></button>
+              <!-- CHAT-PILL-SYNC: see ui/css/app1.css ".chat-pill" block. No
+                   attach/voice; .no-voice keeps the send button always visible. -->
+              <div id="ac-int-admin-chat-input-row" class="chat-pill no-voice">
+                <textarea id="ac-int-admin-chat-input" class="chat-pill-input" rows="2" placeholder="e.g. Create a Slack integration with send_message and list_channels tools" autocomplete="off"></textarea>
+                <button id="ac-int-admin-chat-send" class="chat-pill-send" title="Send message" disabled><i data-lucide="send" style="width:18px;height:18px;"></i></button>
               </div>
               <div id="ac-int-admin-chat-error" class="ac-hint" style="display:none;margin-top:6px;color:#f7768e;"></div>
             </div>
@@ -2808,11 +2815,14 @@
     <div id="chat-input-area" class="chat-footer-drop-target">
       <button id="chat-expand-btn" title="Expand input" class="chat-expand-btn">↗</button>
       <div id="chat-preview-bar" style="display:none;"></div>
-      <div id="chat-input-row">
-        <button id="chat-attach-btn" title="Attach files (or drag & drop onto chat)"><i data-lucide="paperclip" style="width:18px;height:18px;"></i></button>
-        <textarea id="chat-input" rows="2" placeholder="Chat with the agent" autocomplete="off"></textarea>
-        <button id="chat-voice-btn" title="Record voice"><i data-lucide="mic" style="width:18px;height:18px;"></i></button>
-        <button id="chat-send" title="Send message" disabled><i data-lucide="send" style="width:18px;height:18px;"></i></button>
+      <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #ac-int-admin-chat-input-row,
+           #agent-builder-bar-row, #autoagent-prompt-row. Style rules live in
+           ui/css/app1.css under the "Chat-pill" block. -->
+      <div id="chat-input-row" class="chat-pill">
+        <button id="chat-attach-btn" class="chat-pill-attach" title="Attach files (or drag & drop onto chat)"><i data-lucide="paperclip" style="width:18px;height:18px;"></i></button>
+        <textarea id="chat-input" class="chat-pill-input" rows="2" placeholder="Chat with the agent" autocomplete="off"></textarea>
+        <button id="chat-voice-btn" class="chat-pill-voice" title="Record voice"><i data-lucide="mic" style="width:18px;height:18px;"></i></button>
+        <button id="chat-send" class="chat-pill-send" title="Send message" disabled><i data-lucide="send" style="width:18px;height:18px;"></i></button>
         <input type="file" id="chat-file-input" multiple accept="image/*,audio/*,video/*,.pdf,.txt,.md,.csv,.json" hidden>
       </div>
       <div id="chat-footer-drop-overlay">

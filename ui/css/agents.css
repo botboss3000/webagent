@@ -387,111 +387,21 @@ body.light-mode .agent-detail-tabs-chev.right {
 .agent-detail-body::-webkit-scrollbar { width: 5px; }
 .agent-detail-body::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
 
-/* ── Agent Builder page-level chat bar ── */
-/* Sits between #agents-toolbar and #agents-grid. A page-wide chat entry
-   that hands the conversation off to the built-in `agent-builder` system
-   agent for creating new agents and modifying existing ones. Visually
-   mirrors the main #chat-input-row pill (attach + textarea + voice/send
-   inside a rounded container). */
+/* ── Agent Builder page-level chat bar ──
+   Sits between #agents-toolbar and #agents-grid, page-wide chat entry that
+   hands off to the built-in agent-builder system agent.
+   CHAT-PILL-SYNC: pill geometry, focus state, attach/voice/send buttons,
+   has-text swap, and light-mode colors all come from the shared .chat-pill*
+   block in ui/css/app1.css. Only wrapper-specific rules belong here. */
 #agent-builder-bar {
   margin: 0 20px;
 }
-#agent-builder-bar-row {
-  display: flex;
-  gap: 4px;
-  align-items: flex-end;
-  width: 100%;
-  background: #0d0d1a;
-  border: 1px solid #2a2a4a;
-  border-radius: 18px;
-  padding: 4px;
-  transition: border-color 0.15s;
-}
-#agent-builder-bar-row:focus-within { border-color: #7dcfff; }
-
+/* Two-line tall textarea for the page-level builder bar (taller than the
+   web chat default). */
 #agent-builder-bar-input {
-  flex: 1;
-  min-width: 0;
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  padding: 8px 6px;
-  color: #c0caf5;
-  font-size: 13px;
-  outline: none;
-  font-family: inherit;
-  resize: none;
   min-height: 52px;
   max-height: 160px;
 }
-#agent-builder-bar-input:focus { border: none; }
-#agent-builder-bar-input::placeholder { color: #3b4261; }
-
-/* Send vs voice swap, mirroring #chat-input-row */
-#agent-builder-bar-row #agent-builder-bar-send { display: none; }
-#agent-builder-bar-row.has-text #agent-builder-bar-send { display: inline-flex; }
-#agent-builder-bar-row.has-text #agent-builder-bar-voice { display: none; }
-
-#agent-builder-bar-attach,
-#agent-builder-bar-voice {
-  background: none;
-  border: none;
-  color: #565f89;
-  cursor: pointer;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border-radius: 50%;
-  transition: 0.15s;
-  align-self: flex-end;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-#agent-builder-bar-attach:hover,
-#agent-builder-bar-voice:hover {
-  color: #7dcfff;
-  background: #7dcfff15;
-}
-#agent-builder-bar-attach i,
-#agent-builder-bar-voice i { pointer-events: none; }
-
-#agent-builder-bar-send {
-  background: #7dcfff;
-  border: none;
-  border-radius: 50%;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  color: #0d0d1a;
-  cursor: pointer;
-  transition: 0.15s;
-  align-self: flex-end;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-#agent-builder-bar-send:hover { background: #89ddff; }
-#agent-builder-bar-send:disabled { opacity: 0.4; cursor: default; }
-#agent-builder-bar-send i { pointer-events: none; }
-
-body.light-mode #agent-builder-bar-row {
-  background: #fffaf5;
-  border-color: #ffcfa1;
-}
-body.light-mode #agent-builder-bar-row:focus-within { border-color: #ff8c42; }
-body.light-mode #agent-builder-bar-input { color: #3a2400; }
-body.light-mode #agent-builder-bar-input::placeholder { color: #c08858; }
-body.light-mode #agent-builder-bar-attach,
-body.light-mode #agent-builder-bar-voice { color: #c08858; }
-body.light-mode #agent-builder-bar-attach:hover,
-body.light-mode #agent-builder-bar-voice:hover {
-  color: #ff8c42;
-  background: #ff8c4215;
-}
-body.light-mode #agent-builder-bar-send { background: #ff8c42; color: #fff; }
-body.light-mode #agent-builder-bar-send:hover { background: #ff7a2a; }
 
 /* ── Config fields ── */
 .agents-field-group { margin-bottom: 20px; }

@@ -607,6 +607,10 @@ async function _sendAgentBuilderPrompt() {
   }
 }
 
+// CHAT-PILL-SYNC: binds the Agents-page chat pill. The same wiring pattern
+// (has-text toggle, attach/voice forwarders, enter-to-send) lives in
+// ui/js/chat.js (web chat) and ui/js/autoagent.js (dashboard). Shared CSS
+// for all three pills is in ui/css/app1.css under ".chat-pill".
 let _agentBuilderBarBound = false;
 function _bindAgentBuilderBar() {
   if (_agentBuilderBarBound) return;
