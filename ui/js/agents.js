@@ -297,13 +297,7 @@ function _renderList() {
                      : agent.source === 'custom'            ? 'Custom'
                      : 'System';
 
-    const toolCount = _toolsForAgent(agent).length;
-    const temp      = agent.temperature != null ? agent.temperature : '—';
-    const turns     = agent.max_turn_count || '—';
-    const model     = agent.model || '';
-    const timeAgo   = _timeAgo(agent.updated_at || agent.created_at || '');
-
-    const isCustom   = agent.source === 'custom';
+    const isCustom = agent.source === 'custom';
 
     const card = document.createElement('div');
     card.className = 'agent-card' + (isExpanded ? ' active' : '');
@@ -313,27 +307,17 @@ function _renderList() {
           ${agent.icon || icon('bot', { size: '20px' })}
         </div>
         <div class="agent-card-meta">
-          <div class="agent-card-name-row">
-            <span class="agent-card-name">${_esc(_displayName(agent))}</span>
-            <span class="agent-status-dot"></span>
-          </div>
-          ${model ? `<div class="agent-card-model">${_esc(model)}</div>` : ''}
+          ${isExpanded
+            ? '<div class="agent-card-tabs" role="tablist"></div>'
+            : `<div class="agent-card-name-row">
+                 <span class="agent-card-name">${_esc(_displayName(agent))}</span>
+                 <span class="agent-status-dot"></span>
+               </div>`}
         </div>
         <div class="agent-card-badge-wrap">
           <span class="agent-badge ${badgeType}">${badgeLabel}</span>
           ${isCustom ? '<button class="agent-card-action-btn delete-btn">Delete</button>' : ''}
         </div>
-      </div>
-      ${agent.description ? `<div class="agent-card-desc">${_esc(agent.description)}</div>` : ''}
-      <div class="agent-card-url">
-        <span class="agent-url-text">${location.origin}/${agent.id}</span>
-        <button class="agent-url-copy" title="Copy URL">${icon('copy', { size: '13px' })}</button>
-      </div>
-      <div class="agent-card-stats">
-        <span class="agent-stat"><span class="agent-stat-icon">↻</span>${turns} turns</span>
-        <span class="agent-stat"><span class="agent-stat-icon">⋮</span>${temp}</span>
-        <span class="agent-stat"><span class="agent-stat-icon">${icon('wrench', { size: '11px' })}</span>${toolCount} tools</span>
-        ${timeAgo ? `<span class="agent-stat agent-stat-time"><span class="agent-stat-icon">${icon('clock', { size: '11px' })}</span>${timeAgo}</span>` : ''}
       </div>
     `;
 
@@ -341,22 +325,6 @@ function _renderList() {
     const deleteBtn = card.querySelector('.delete-btn');
     if (deleteBtn) {
       deleteBtn.addEventListener('click', e => { e.stopPropagation(); _deleteAgent(agent); });
-    }
-    const copyUrlBtn = card.querySelector('.agent-url-copy');
-    if (copyUrlBtn) {
-      // Use pointerdown — lucide replaces the inner <i> with <svg> between
-      // mousedown and mouseup, so the browser never synthesises a click event.
-      copyUrlBtn.addEventListener('pointerdown', e => {
-        e.preventDefault();
-        e.stopPropagation();
-        const url = `${location.origin}/${agent.id}`;
-        navigator.clipboard.writeText(url).then(() => {
-          copyUrlBtn.innerHTML = icon('check', { size: '13px' });
-          setTimeout(() => { copyUrlBtn.innerHTML = icon('copy', { size: '13px' }); }, 1500);
-        });
-      });
-      // Swallow the stray click too so the card doesn't toggle if one fires.
-      copyUrlBtn.addEventListener('click', e => { e.stopPropagation(); });
     }
 
     card.addEventListener('click', () => _selectAgent(agent));
@@ -368,7 +336,11 @@ function _renderList() {
     row.appendChild(card);
 
     if (isExpanded) {
-      row.appendChild(_buildDetailPanel(agent));
+      const panel = _buildDetailPanel(agent);
+      row.appendChild(panel);
+      // Populate the in-card tab carousel now that the panel exists
+      const cardTabBar = card.querySelector('.agent-card-tabs');
+      if (cardTabBar) _populateAgentTabBar(cardTabBar, agent, panel);
     }
 
     grid.appendChild(row);
@@ -402,9 +374,13 @@ function _populateAgentTabBar(tabBar, agent, panel) {
     btn.className = 'agents-detail-tab' + (activeTab === key ? ' active' : '');
     btn.dataset.tab = key;
     btn.textContent = label;
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
       const entry = _expandedAgents.get(agent.id);
       if (entry) entry.tab = key;
+      tabBar.querySelectorAll('.agents-detail-tab').forEach(b => {
+        b.classList.toggle('active', b.dataset.tab === key);
+      });
       _renderPanelBody(agent, panel);
       _saveViewState();
       btn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
@@ -414,10 +390,11 @@ function _populateAgentTabBar(tabBar, agent, panel) {
 }
 
 function _refreshAgentTabBar(agent) {
-  const panel = document.querySelector(`.agent-detail-panel[data-agent-id="${agent.id}"]`);
-  if (!panel) return;
-  const tabBar = panel.querySelector('.agent-detail-tabs');
-  if (tabBar) _populateAgentTabBar(tabBar, agent, panel);
+  const row = document.querySelector(`.agent-row[data-agent-id="${agent.id}"]`);
+  if (!row) return;
+  const tabBar = row.querySelector('.agent-card-tabs');
+  const panel = row.querySelector('.agent-detail-panel');
+  if (tabBar && panel) _populateAgentTabBar(tabBar, agent, panel);
 }
 
 async function _detectAgentAbilities(agent, panel) {
@@ -443,9 +420,6 @@ async function _detectAgentAbilities(agent, panel) {
 }
 
 function _buildDetailPanel(agent) {
-  const state = _expandedAgents.get(agent.id);
-  const activeTab = state?.tab || 'config';
-
   const panel = document.createElement('div');
   panel.className = 'agent-detail-panel';
   panel.dataset.agentId = agent.id;
@@ -454,61 +428,7 @@ function _buildDetailPanel(agent) {
   content.className = 'agent-detail-content';
   panel.appendChild(content);
 
-  // Tab bar (wrapped in chevron-scroll carousel for narrow screens)
-  const tabWrap = document.createElement('div');
-  tabWrap.className = 'agent-detail-tabs-wrap';
-
-  const chevLeft = document.createElement('button');
-  chevLeft.type = 'button';
-  chevLeft.className = 'agent-detail-tabs-chev left';
-  chevLeft.setAttribute('aria-label', 'Scroll tabs left');
-  chevLeft.innerHTML = '&#10094;';
-
-  const chevRight = document.createElement('button');
-  chevRight.type = 'button';
-  chevRight.className = 'agent-detail-tabs-chev right';
-  chevRight.setAttribute('aria-label', 'Scroll tabs right');
-  chevRight.innerHTML = '&#10095;';
-
-  const tabBar = document.createElement('div');
-  tabBar.className = 'agent-detail-tabs';
-  _populateAgentTabBar(tabBar, agent, panel);
-
-  const updateChevrons = () => {
-    const overflow = tabBar.scrollWidth - tabBar.clientWidth > 1;
-    tabWrap.classList.toggle('has-overflow', overflow);
-    chevLeft.classList.toggle('visible', overflow && tabBar.scrollLeft > 1);
-    chevRight.classList.toggle('visible', overflow && tabBar.scrollLeft < tabBar.scrollWidth - tabBar.clientWidth - 1);
-  };
-  const scrollStep = () => Math.max(80, Math.floor(tabBar.clientWidth * 0.6));
-  chevLeft.addEventListener('click', () => tabBar.scrollBy({ left: -scrollStep(), behavior: 'smooth' }));
-  chevRight.addEventListener('click', () => tabBar.scrollBy({ left: scrollStep(), behavior: 'smooth' }));
-  tabBar.addEventListener('scroll', updateChevrons, { passive: true });
-
-  tabWrap.appendChild(chevLeft);
-  tabWrap.appendChild(tabBar);
-  tabWrap.appendChild(chevRight);
-  content.appendChild(tabWrap);
-
-  // Recompute on mount and on resize. ResizeObserver catches container width changes.
-  requestAnimationFrame(() => {
-    updateChevrons();
-    const active = tabBar.querySelector('.agents-detail-tab.active');
-    if (active) active.scrollIntoView({ inline: 'center', block: 'nearest' });
-  });
-  if (typeof ResizeObserver !== 'undefined') {
-    let roPending = false;
-    const ro = new ResizeObserver(() => {
-      if (roPending) return;
-      roPending = true;
-      requestAnimationFrame(() => { roPending = false; updateChevrons(); });
-    });
-    ro.observe(tabBar);
-    ro.observe(tabWrap);
-  }
-  window.addEventListener('resize', updateChevrons);
-
-  // Scrollable body
+  // Scrollable body (the tab carousel now lives in the card header above)
   const body = document.createElement('div');
   body.className = 'agent-detail-body';
   content.appendChild(body);
@@ -664,10 +584,13 @@ function _renderPanelBody(agent, panelEl) {
   let tab = state?.tab || 'config';
   if (tab === 'automation' && !state?.automationEnabled) tab = 'config';
 
-  // Sync tab-button active states
-  panelEl.querySelectorAll('.agents-detail-tab').forEach(t => {
-    t.classList.toggle('active', t.dataset.tab === tab);
-  });
+  // Sync tab-button active states (the tab carousel lives in the sibling card)
+  const row = panelEl.closest('.agent-row');
+  if (row) {
+    row.querySelectorAll('.agent-card-tabs .agents-detail-tab').forEach(t => {
+      t.classList.toggle('active', t.dataset.tab === tab);
+    });
+  }
 
   const body = panelEl.querySelector('.agent-detail-body');
   if (!body) return;
