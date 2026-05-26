@@ -851,10 +851,6 @@ body.light-mode .db-table-item.active {
     background: #ffe4cc;
     color: #cc6a28;
   }
-body.light-mode .db-table th {
-    background: #fff2e6;
-    color: #cc6a28;
-  }
 body.light-mode .db-table td {
     color: #3d2c2e;
     border-bottom-color: #ffeee0;
