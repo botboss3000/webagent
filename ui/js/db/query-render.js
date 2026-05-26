@@ -452,6 +452,40 @@ function ensureCellOverlayDelegation(container) {
   });
 }
 
+// Lazy chunked rendering: render dbRenderLimit rows initially, then grow
+// the limit by dbRenderStep when the user scrolls near the bottom of the
+// table viewport. Browser preserves scrollTop across the re-render since
+// we only append new rows below the existing ones.
+let _scrollGrowDelegated = false;
+function ensureScrollGrowDelegation(container) {
+  if (_scrollGrowDelegated || !container) return;
+  _scrollGrowDelegated = true;
+  let growPending = false;
+  container.addEventListener('scroll', () => {
+    if (growPending) return;
+    const result = app.dbCurrentResult;
+    if (!result || !result.rows) return;
+    if (app.dbRenderLimit >= result.rows.length) return;
+    const nearBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 300;
+    if (!nearBottom) return;
+    growPending = true;
+    requestAnimationFrame(() => {
+      app.dbRenderLimit = Math.min(
+        result.rows.length,
+        (app.dbRenderLimit || 0) + (app.dbRenderStep || 30),
+      );
+      renderTableData(result, true);
+      growPending = false;
+    });
+  });
+}
+
+// Slice the fetched rows down to the current render window.
+function visibleRows(result) {
+  const limit = app.dbRenderLimit || result.rows.length;
+  return result.rows.length <= limit ? result.rows : result.rows.slice(0, limit);
+}
+
 // Single delegated mousedown listener for row-resize handles. Attached once
 // per table container so newly inserted rows work without per-render rebinding.
 let _rowResizeDelegated = false;
@@ -629,6 +663,9 @@ function renderTableData(result, silent) {
     }
   }
 
+  // Rows actually rendered into the DOM (chunked window over result.rows).
+  const renderedRows = visibleRows(result);
+
   if (silent) {
     const tbody = data.querySelector('table.db-table tbody');
     if (tbody && pkCols && pkCols.length) {
@@ -654,8 +691,8 @@ function renderTableData(result, silent) {
       const targetOrder = [];   // sequence of either { kind: 'reuse', pk } or { kind: 'new', idx }
       let pendingNewIdx = 0;
 
-      for (let ri = 0; ri < result.rows.length; ri++) {
-        const row = result.rows[ri];
+      for (let ri = 0; ri < renderedRows.length; ri++) {
+        const row = renderedRows[ri];
         const pk = rowPkKey(row, pkCols);
         const existing = pk !== null ? existingPairs.get(pk) : null;
         if (existing) {
@@ -723,8 +760,8 @@ function renderTableData(result, silent) {
     // diff. If row count differs, do a full rebuild.
     if (tbody) {
       const existingRows = tbody.querySelectorAll('tr.db-row');
-      for (let ri = 0; ri < result.rows.length && ri < existingRows.length; ri++) {
-        const row = result.rows[ri];
+      for (let ri = 0; ri < renderedRows.length && ri < existingRows.length; ri++) {
+        const row = renderedRows[ri];
         const cells = existingRows[ri].querySelectorAll('td.db-cell');
         for (let ci = 0; ci < displayCols.length && ci < cells.length; ci++) {
           const col = displayCols[ci];
@@ -737,7 +774,7 @@ function renderTableData(result, silent) {
           }
         }
       }
-      if (result.rows.length !== existingRows.length) {
+      if (renderedRows.length !== existingRows.length) {
         return renderTableData(result, false);
       }
       updateHeaderSortArrows(tableName);
@@ -785,8 +822,8 @@ function renderTableData(result, silent) {
 
   html += '</thead><tbody>';
 
-  for (let ri = 0; ri < result.rows.length; ri++) {
-    const row = result.rows[ri];
+  for (let ri = 0; ri < renderedRows.length; ri++) {
+    const row = renderedRows[ri];
     const pk = rowPkKey(row, pkCols);
     html += buildRowPairHtml(row, ri, pk);
   }
@@ -884,6 +921,8 @@ function renderTableData(result, silent) {
   ensureRowResizeDelegation(data);
   // Hover overlay for edit/expand buttons: one delegated mouseover listener.
   ensureCellOverlayDelegation(data);
+  // Lazy-render: extend the rendered window when the user scrolls down.
+  ensureScrollGrowDelegation(data);
 
   initColumnResize();
   ensurePopupOutsideHandler();
@@ -960,6 +999,9 @@ async function queryTable(tableName, opts) {
     } else {
       app.dbPageOffset = 0;
     }
+    // Any non-silent reload (table change, sort, filter, prev/next) starts
+    // with a fresh chunked render window at the top of the table.
+    app.dbRenderLimit = app.dbRenderStep || 30;
   }
 
   const exclParams = getExclusionParams(tableName);
