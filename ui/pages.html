@@ -1,0 +1,66 @@
+<div id="autoagent-container">
+
+  <!-- New-page dialog (hidden by default) -->
+  <div id="aa-new-page-dialog">
+    <div class="aa-dialog-box">
+      <h3>New Page</h3>
+      <input type="text" id="aa-dialog-input" class="aa-dialog-input" placeholder="Page title (e.g. Dashboard, Notes)" maxlength="60">
+      <div class="aa-dialog-actions">
+        <button id="aa-dialog-cancel" class="aa-dialog-btn aa-dialog-btn-cancel">Cancel</button>
+        <button id="aa-dialog-confirm" class="aa-dialog-btn aa-dialog-btn-primary">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Viewport -->
+  <div id="autoagent-viewport">
+    <div id="autoagent-placeholder" class="aa-placeholder">
+      <span class="aa-placeholder-icon"><i data-lucide="palette" style="width:48px;height:48px;"></i></span>
+      <span class="aa-placeholder-text">Loading your pages...</span>
+      <span class="aa-placeholder-hint">Each page has its own dedicated agent</span>
+    </div>
+    <iframe id="autoagent-iframe" class="aa-iframe" sandbox="allow-scripts" style="display:none;" title="Page output"></iframe>
+    <div id="autoagent-loading" class="aa-loading" style="display:none;">
+      <span class="aa-spinner"></span>
+      <span>Page agent is working...</span>
+    </div>
+  </div>
+
+  <!-- Footer: page nav (left) + prompt bar (right) -->
+  <div id="autoagent-footer">
+    <!-- Page nav: custom dropdown mirroring the chat-header agent/session
+         dropdowns, with a per-row ⋮ menu (Rename / Delete). -->
+    <div id="autoagent-page-nav">
+      <span id="aa-page-label">Page:
+        <div id="autoagent-page-dropdown" class="session-dropdown">
+          <button id="autoagent-page-dropdown-trigger" type="button" class="status-select session-dropdown-trigger">
+            <span id="autoagent-page-dropdown-label">—</span>
+            <i data-lucide="chevron-down" style="width:12px;height:12px;flex-shrink:0;"></i>
+          </button>
+          <div id="autoagent-page-dropdown-menu" class="session-dropdown-menu" hidden></div>
+        </div>
+        <button id="autoagent-new-page-btn" title="New page" class="header-plus-btn"><i data-lucide="plus" style="width:14px;height:14px;"></i></button>
+      </span>
+    </div>
+
+    <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #chat-input-row,
+         #ac-int-admin-chat-input-row, #agent-builder-bar-row. Style rules
+         live in ui/css/app1.css under the "Chat-pill" block. -->
+    <div id="autoagent-prompt-bar">
+      <div id="autoagent-prompt-row" class="chat-pill">
+        <button type="button" id="autoagent-attach-btn" class="chat-pill-attach" title="Attach files">
+          <i data-lucide="paperclip" style="width:18px;height:18px;"></i>
+        </button>
+        <textarea id="autoagent-prompt-input" class="chat-pill-input" rows="2"
+          placeholder="Tell the page agent what to build or change..."
+          maxlength="2000" autocomplete="off"></textarea>
+        <button type="button" id="autoagent-voice-btn" class="chat-pill-voice" title="Record voice">
+          <i data-lucide="mic" style="width:18px;height:18px;"></i>
+        </button>
+        <button type="button" id="autoagent-send-btn" class="chat-pill-send" title="Send to page agent">
+          <i data-lucide="send" style="width:16px;height:16px;"></i>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

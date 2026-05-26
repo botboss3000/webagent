@@ -1,0 +1,57 @@
+<!-- Toolbar -->
+<div id="agents-toolbar">
+  <div id="agents-toolbar-left">
+    <span id="agents-toolbar-title">Agents</span>
+    <span id="agents-toolbar-sub"> &middot; Agent templates &middot; system prompts &middot; model assignments</span>
+  </div>
+  <button id="btn-new-agent">+ New agent</button>
+</div>
+
+<!-- Agent Builder chat bar — page-level assistant for creating and modifying agents -->
+<!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #chat-input-row,
+     #ac-int-admin-chat-input-row, #autoagent-prompt-row. Style rules live
+     in ui/css/app1.css under the "Chat-pill" block. -->
+<div id="agent-builder-bar">
+  <div id="agent-builder-bar-row" class="chat-pill">
+    <button type="button" id="agent-builder-bar-attach" class="chat-pill-attach" title="Attach files">
+      <i data-lucide="paperclip" style="width:18px;height:18px;"></i>
+    </button>
+    <textarea id="agent-builder-bar-input" class="chat-pill-input" rows="2"
+      placeholder="use AI to create your agent or manage your fleet"
+      autocomplete="off"></textarea>
+    <button type="button" id="agent-builder-bar-voice" class="chat-pill-voice" title="Record voice">
+      <i data-lucide="mic" style="width:18px;height:18px;"></i>
+    </button>
+    <button type="button" id="agent-builder-bar-send" class="chat-pill-send" title="Send to Agent Builder">
+      <i data-lucide="send" style="width:16px;height:16px;"></i>
+    </button>
+  </div>
+</div>
+
+<!-- Card grid -->
+<div id="agents-grid"></div>
+
+<!-- Per-agent inline panels are generated dynamically by agents.js -->
+<div id="agents-create-modal" class="hidden">
+  <div id="agents-create-box">
+    <h3>New Agent</h3>
+    <div class="agents-create-row">
+      <label for="agents-create-name">Name</label>
+      <input type="text" id="agents-create-name" class="agents-input" placeholder="My Custom Agent" maxlength="60">
+    </div>
+    <div class="agents-create-row">
+      <label for="agents-create-desc">Description</label>
+      <input type="text" id="agents-create-desc" class="agents-input" placeholder="Optional description" maxlength="200">
+    </div>
+    <div class="agents-create-row">
+      <label for="agents-create-template">Template</label>
+      <select id="agents-create-template" class="agents-input">
+        <option value="">— No template —</option>
+      </select>
+    </div>
+    <div id="agents-create-actions">
+      <button class="agents-btn" id="btn-create-cancel">Cancel</button>
+      <button class="agents-btn primary" id="btn-create-confirm">Create</button>
+    </div>
+  </div>
+</div>
