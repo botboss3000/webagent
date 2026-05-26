@@ -382,20 +382,15 @@ function _populateAgentTabBar(tabBar, agent, panel) {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const entry = _expandedAgents.get(agent.id);
-      if (!entry) {
-        // Collapsed → expand to the clicked tab. Full re-render attaches the panel.
+      if (entry) {
+        // Card is open → any tab click collapses it.
+        _expandedAgents.delete(agent.id);
+      } else {
+        // Collapsed → expand to the clicked tab.
         _expandedAgents.set(agent.id, { tab: key });
-        _renderList();
-        _saveViewState();
-        return;
       }
-      entry.tab = key;
-      tabBar.querySelectorAll('.agents-detail-tab').forEach(b => {
-        b.classList.toggle('active', b.dataset.tab === key);
-      });
-      if (panel) _renderPanelBody(agent, panel);
+      _renderList();
       _saveViewState();
-      btn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
     });
     tabBar.appendChild(btn);
   }
