@@ -1,0 +1,62 @@
+<template data-slot="#files-sidebar">
+  <!-- Terminal launchers panel: quick-launch shortcuts, live tmux
+       sessions list, and a static hints/cheat-sheet section. The
+       panel itself doesn't host any terminal — clicking a row opens
+       a new terminal tab in the main pane. -->
+          <div class="files-sidebar-panel" id="files-panel-terminal" data-view="terminal" hidden>
+            <div class="files-sidebar-header">
+              <div class="files-sidebar-actions">
+                <button class="files-icon-btn" id="ft-refresh" title="Refresh tmux sessions"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
+              </div>
+            </div>
+            <div id="ft-body" class="ft-body">
+              <div class="ft-section ft-section-action">
+                <button type="button" id="ft-new-terminal" class="ft-new-btn" title="Open a new blank terminal tab">
+                  <i data-lucide="plus" class="lucide-icon"></i>
+                  <span>New terminal</span>
+                </button>
+              </div>
+              <div class="ft-section">
+                <div class="ft-section-title">Quick launches</div>
+                <div class="ft-list" id="ft-list-launches"><div class="ft-empty">Loading…</div></div>
+              </div>
+              <div class="ft-section">
+                <div class="ft-section-title">Running tmux sessions</div>
+                <div class="ft-list" id="ft-list-tmux"><div class="ft-empty">—</div></div>
+              </div>
+              <div class="ft-section">
+                <div class="ft-section-title">Shortcuts &amp; hints</div>
+                <div class="ft-hints">
+                  <div><kbd>Ctrl-b</kbd> <kbd>d</kbd> — detach tmux (session keeps running)</div>
+                  <div><kbd>tmux ls</kbd> — list sessions</div>
+                  <div><kbd>tmux attach -t NAME</kbd> — re-attach</div>
+                  <div><kbd>Ctrl-`</kbd> — new terminal tab from anywhere</div>
+                  <div><kbd>Ctrl-F</kbd> — find in terminal output</div>
+                  <div class="ft-hint-note">PTY sessions survive tab close, refresh, and webagent restarts when wrapped in <code>tmux</code>. Idle GC disabled by default.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+</template>
+
+<template data-slot="#admin-tools">
+  <!-- Terminal main: dedicated tabs and content area for PTY
+       sessions, independent of the file editor's tabs. The strip's
+       zap (Terminal Launcher) button activates this view; new tabs
+       open via the launcher panel's "New terminal" button, the
+       quick-launch / tmux rows, or the Ctrl+` shortcut. -->
+        <main class="files-main" id="files-terminal-main" data-view="terminal" hidden>
+          <div class="files-tabs-wrap">
+            <button id="files-term-tabs-prev" class="files-tabs-chev" title="Scroll tabs left"><i data-lucide="chevron-left" class="lucide-icon"></i></button>
+            <div id="files-term-tabs" class="files-tabs" role="tablist"></div>
+            <button id="files-term-tabs-next" class="files-tabs-chev" title="Scroll tabs right"><i data-lucide="chevron-right" class="lucide-icon"></i></button>
+          </div>
+          <div id="files-term-content" class="files-content">
+            <div class="files-welcome">
+              <i data-lucide="terminal" class="lucide-icon files-welcome-icon"></i>
+              <div class="files-welcome-title">Terminal</div>
+              <div class="files-welcome-text">Open a session from the launcher on the left, or press <kbd>Ctrl</kbd>+<kbd>`</kbd>.</div>
+            </div>
+          </div>
+        </main>
+</template>
