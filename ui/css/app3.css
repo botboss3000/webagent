@@ -54,6 +54,26 @@
 #db-table-data *::-webkit-scrollbar-corner {
     background: transparent;
   }
+
+/* Light-mode override — same selectors as the dark-mode block above so the
+   `#db-table-data *` rule (descendant scrollbars like .db-cell) doesn't keep
+   the dark thumb color on a light background. Uses the warm peach used by
+   the rest of the light theme. */
+body.light-mode #db-table-data,
+body.light-mode #db-table-data *,
+body.light-mode #db-table-list {
+    scrollbar-color: #ffd4a8 transparent;
+  }
+body.light-mode #db-table-data::-webkit-scrollbar-thumb,
+body.light-mode #db-table-data *::-webkit-scrollbar-thumb,
+body.light-mode #db-table-list::-webkit-scrollbar-thumb {
+    background: #ffd4a8;
+  }
+body.light-mode #db-table-data::-webkit-scrollbar-thumb:hover,
+body.light-mode #db-table-data *::-webkit-scrollbar-thumb:hover,
+body.light-mode #db-table-list::-webkit-scrollbar-thumb:hover {
+    background: #ffb47a;
+  }
 .db-table .col-pk { color: #e0af68; }
 .db-table .col-null { color: #565f89; font-style: italic; }
 .db-cell-pre {
