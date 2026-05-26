@@ -2622,16 +2622,19 @@
         </div>
       </div>
       <div id="admin-tools" class="admin-tools">
-        <!-- Sidebar: tabbed between Explorer (file tree) and GitHub manager.
-             The header replaces the old "EXPLORER" text with two icon
-             buttons (files + github). The icon for the current view is
-             greyed out; the other icon is the click target. -->
+        <!-- Sidebar: a persistent left strip with view-switch icons, plus a
+             panel to its right showing the active view (Explorer / Source
+             control / Database / Terminal launchers). The collapse toggle
+             in the strip flips between split (strip + panel) and strip
+             (icon column only). -->
         <aside id="files-sidebar" class="files-sidebar" data-view="explorer" data-state="split">
-          <!-- Collapsed strip: only visible when data-state="strip". A narrow
-               column showing the expand toggle, refresh, and the two view
-               icons so the user can still drive the sidebar without giving
-               up the full editor width. -->
-          <div class="files-sidebar-strip" hidden aria-label="Sidebar collapsed strip">
+          <!-- Persistent left strip: always visible. The narrow column hosts
+               the expand/collapse toggle, refresh, the view-switch icons
+               (files / github / database / zap), terminal-new and the
+               settings toggle. It's the canonical home for these controls;
+               the panel header to the right carries only contextual actions
+               (new file, refresh, collapse-all, etc.). -->
+          <div class="files-sidebar-strip" aria-label="Sidebar strip">
             <button class="files-strip-btn files-maximize-btn" title="Expand sidebar"><i data-lucide="panel-left-open" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="explorer" title="Switch to explorer"><i data-lucide="files" class="lucide-icon"></i></button>
@@ -2645,21 +2648,11 @@
           <!-- Explorer panel (file tree) -->
           <div class="files-sidebar-panel" id="files-panel-explorer" data-view="explorer">
             <div class="files-sidebar-header">
-              <div class="files-view-toggle" role="tablist" aria-label="Sidebar view">
-                <button class="files-view-toggle-btn active" data-view="explorer" title="Explorer (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="files" class="lucide-icon"></i></button>
-                <button class="files-view-toggle-btn" data-view="git" title="Switch to source control" role="tab" aria-selected="false"><i data-lucide="github" class="lucide-icon"></i></button>
-                <button class="files-view-toggle-btn" data-view="database" title="Switch to database" role="tab" aria-selected="false"><i data-lucide="database" class="lucide-icon"></i></button>
-                <button class="files-view-toggle-btn" data-view="terminal" title="Switch to terminal launchers" role="tab" aria-selected="false"><i data-lucide="zap" class="lucide-icon"></i></button>
-                <span class="files-view-toggle-sep" aria-hidden="true"></span>
-                <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
-                <button class="files-view-toggle-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
-              </div>
               <div class="files-sidebar-actions">
                 <button class="files-icon-btn" id="files-new-file" title="New file"><i data-lucide="file-plus" class="lucide-icon"></i></button>
                 <button class="files-icon-btn" id="files-new-folder" title="New folder"><i data-lucide="folder-plus" class="lucide-icon"></i></button>
                 <button class="files-icon-btn" id="files-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
                 <button class="files-icon-btn" id="files-collapse-all" title="Collapse all"><i data-lucide="chevrons-down-up" class="lucide-icon"></i></button>
-                <button class="files-icon-btn files-maximize-btn" title="Maximize sidebar"><i data-lucide="maximize-2" class="lucide-icon"></i></button>
               </div>
             </div>
             <div id="files-breadcrumb" class="files-breadcrumb" aria-label="Current path">
@@ -2673,18 +2666,8 @@
           <!-- GitHub panel (source control) -->
           <div class="files-sidebar-panel" id="files-panel-git" data-view="git" hidden>
             <div class="files-sidebar-header">
-              <div class="files-view-toggle" role="tablist" aria-label="Sidebar view">
-                <button class="files-view-toggle-btn" data-view="explorer" title="Switch to explorer" role="tab" aria-selected="false"><i data-lucide="files" class="lucide-icon"></i></button>
-                <button class="files-view-toggle-btn active" data-view="git" title="Source control (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="github" class="lucide-icon"></i></button>
-                <button class="files-view-toggle-btn" data-view="database" title="Switch to database" role="tab" aria-selected="false"><i data-lucide="database" class="lucide-icon"></i></button>
-                <button class="files-view-toggle-btn" data-view="terminal" title="Switch to terminal launchers" role="tab" aria-selected="false"><i data-lucide="zap" class="lucide-icon"></i></button>
-                <span class="files-view-toggle-sep" aria-hidden="true"></span>
-                <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
-                <button class="files-view-toggle-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
-              </div>
               <div class="files-sidebar-actions">
                 <button class="files-icon-btn" id="fg-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
-                <button class="files-icon-btn files-maximize-btn" title="Maximize sidebar"><i data-lucide="maximize-2" class="lucide-icon"></i></button>
               </div>
             </div>
             <div id="fg-body" class="fg-body">
@@ -2693,23 +2676,12 @@
           </div>
 
           <!-- Database panel: hosts the relocated #db-sidebar (table list +
-               refresh/reset/collapse toolbar). The panel header below carries
-               the explorer/git/database view toggles; #db-sidebar carries its
-               own internal toolbar. -->
+               refresh/reset/collapse toolbar). View switching happens in the
+               persistent strip on the left; #db-sidebar carries its own
+               internal toolbar. -->
           <div class="files-sidebar-panel" id="files-panel-database" data-view="database" hidden>
             <div class="files-sidebar-header">
-              <div class="files-view-toggle" role="tablist" aria-label="Sidebar view">
-                <button class="files-view-toggle-btn" data-view="explorer" title="Switch to explorer" role="tab" aria-selected="false"><i data-lucide="files" class="lucide-icon"></i></button>
-                <button class="files-view-toggle-btn" data-view="git" title="Switch to source control" role="tab" aria-selected="false"><i data-lucide="github" class="lucide-icon"></i></button>
-                <button class="files-view-toggle-btn active" data-view="database" title="Database (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="database" class="lucide-icon"></i></button>
-                <button class="files-view-toggle-btn" data-view="terminal" title="Switch to terminal launchers" role="tab" aria-selected="false"><i data-lucide="zap" class="lucide-icon"></i></button>
-                <span class="files-view-toggle-sep" aria-hidden="true"></span>
-                <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
-                <button class="files-view-toggle-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
-              </div>
-              <div class="files-sidebar-actions">
-                <button class="files-icon-btn files-maximize-btn" title="Maximize sidebar"><i data-lucide="maximize-2" class="lucide-icon"></i></button>
-              </div>
+              <div class="files-sidebar-actions"></div>
             </div>
             <div id="db-sidebar-host" class="db-sidebar-host"></div>
           </div>
@@ -2720,18 +2692,8 @@
                a new terminal tab in the main pane. -->
           <div class="files-sidebar-panel" id="files-panel-terminal" data-view="terminal" hidden>
             <div class="files-sidebar-header">
-              <div class="files-view-toggle" role="tablist" aria-label="Sidebar view">
-                <button class="files-view-toggle-btn" data-view="explorer" title="Switch to explorer" role="tab" aria-selected="false"><i data-lucide="files" class="lucide-icon"></i></button>
-                <button class="files-view-toggle-btn" data-view="git" title="Switch to source control" role="tab" aria-selected="false"><i data-lucide="github" class="lucide-icon"></i></button>
-                <button class="files-view-toggle-btn" data-view="database" title="Switch to database" role="tab" aria-selected="false"><i data-lucide="database" class="lucide-icon"></i></button>
-                <button class="files-view-toggle-btn active" data-view="terminal" title="Terminal launchers (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="zap" class="lucide-icon"></i></button>
-                <span class="files-view-toggle-sep" aria-hidden="true"></span>
-                <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
-                <button class="files-view-toggle-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
-              </div>
               <div class="files-sidebar-actions">
                 <button class="files-icon-btn" id="ft-refresh" title="Refresh tmux sessions"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
-                <button class="files-icon-btn files-maximize-btn" title="Maximize sidebar"><i data-lucide="maximize-2" class="lucide-icon"></i></button>
               </div>
             </div>
             <div id="ft-body" class="ft-body">

@@ -2339,10 +2339,13 @@ window.addEventListener('resize', () => {
   if (tab && tab.kind === 'terminal' && tab.instance) tab.instance.fit();
 });
 
-// ── Sidebar state cycle: split → max → strip → split ───────────────
+// ── Sidebar state cycle ───────────────────────────────────────────
 //
-// Desktop has all three states. Mobile skips 'split' (no usable split
-// view on small screens) and cycles strip ↔ max only.
+// Desktop toggles split ↔ strip (no "max" — the editor is always visible
+// alongside the sidebar). Mobile cycles strip ↔ max (no usable split view
+// on small screens). The strip column itself is always rendered; in strip
+// state it's the only thing visible, in split/max it's the left rail next
+// to the active panel.
 
 const LS_SIDEBAR_STATE = 'files.sidebarState';   // 'split' | 'max' | 'strip'
 
@@ -2405,10 +2408,8 @@ function cycleSidebarState() {
     // 2-stage: strip ↔ max
     next = (cur === 'max') ? 'strip' : 'max';
   } else {
-    // 3-stage: split → max → strip → split → …
-    next = (cur === 'split') ? 'max'
-         : (cur === 'max')   ? 'strip'
-         : 'split';
+    // 2-stage: split ↔ strip (max removed on desktop)
+    next = (cur === 'strip') ? 'split' : 'strip';
   }
   setSidebarState(next);
 }
@@ -2418,28 +2419,23 @@ export function setSidebarState(state) {
   if (!sidebar) return;
   if (state !== 'split' && state !== 'max' && state !== 'strip') state = 'split';
   if (isMobileLayout() && state === 'split') state = 'strip';
+  // 'max' only exists on mobile — coerce stale localStorage to 'split' on desktop.
+  if (!isMobileLayout() && state === 'max') state = 'split';
   sidebar.dataset.state = state;
   sidebar.classList.toggle('maximized', state === 'max');
   sidebar.classList.toggle('strip',     state === 'strip');
 
-  // Update the cycle button's icon + title in every spot it appears
-  // (panel headers AND the strip). The icon hints at the NEXT action,
-  // not the current state.
-  const iconName = state === 'split' ? 'maximize-2'
-                 : state === 'max'   ? 'chevrons-left'
-                 :                     'panel-left-open';
-  const title    = state === 'split' ? 'Maximize sidebar'
-                 : state === 'max'   ? 'Collapse sidebar'
-                 :                     'Expand sidebar';
+  // Update the cycle button's icon + title (lives in the strip). The icon
+  // hints at the NEXT action, not the current state.
+  const iconName = state === 'strip' ? 'panel-left-open' : 'chevrons-left';
+  const title    = state === 'strip' ? 'Expand sidebar'  : 'Collapse sidebar';
   sidebar.querySelectorAll('.files-maximize-btn').forEach((b) => {
     b.title = title;
     b.innerHTML = '<i data-lucide="' + iconName + '" class="lucide-icon"></i>';
   });
 
-  // Strip is visible only when state=strip; panels follow the current
-  // view (via applySidebarView) but stay hidden when in strip mode.
-  const strip = sidebar.querySelector('.files-sidebar-strip');
-  if (strip) strip.hidden = (state !== 'strip');
+  // Strip is always rendered now; panels follow the current view (via
+  // applySidebarView) but stay hidden when in strip mode.
   applySidebarView(sidebar.dataset.view || 'explorer');
 
   if (window.lucide) {
