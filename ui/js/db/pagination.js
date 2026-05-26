@@ -2,32 +2,44 @@
 
 import { app } from '../state.js';
 import { queryTable, updatePageInfo, cancelEditing, loadPersistedDbState, getSortForTable } from './query-render.js';
-import { fetchTables, renderTableList } from './tables.js';
+import { fetchTables, renderTableList, updateTableCounts } from './tables.js';
 import { apiPath } from '../config.js';
 import { authUrl } from '../left-login.js';
 import { randomUUID } from '../uuid.js';
 
-const AUTO_REFRESH_MS = 1000;
+const QUERY_REFRESH_MS = 3000;
+const TABLES_REFRESH_MS = 20000;
 
 export function stopAutoRefresh() {
   if (app.autoRefreshInterval) {
     clearInterval(app.autoRefreshInterval);
     app.autoRefreshInterval = null;
   }
-  document.getElementById('db-auto-status').textContent = '';
+  if (app.autoRefreshTablesInterval) {
+    clearInterval(app.autoRefreshTablesInterval);
+    app.autoRefreshTablesInterval = null;
+  }
+  const status = document.getElementById('db-auto-status');
+  if (status) status.textContent = '';
 }
 
 export function startAutoRefresh() {
   stopAutoRefresh();
   if (!app.dbSelectedTable) return;
-  document.getElementById('db-auto-status').textContent = '⟳ auto 1s';
+  const status = document.getElementById('db-auto-status');
+  if (status) status.textContent = '⟳ auto 3s';
+
   app.autoRefreshInterval = setInterval(() => {
+    if (document.hidden) return;
     if (app.dbSelectedTable && !app.editingCell) {
       queryTable(app.dbSelectedTable, { silent: true });
     }
-    const dbName = document.getElementById('db-select').value;
-    fetchTables(dbName);
-  }, AUTO_REFRESH_MS);
+  }, QUERY_REFRESH_MS);
+
+  app.autoRefreshTablesInterval = setInterval(() => {
+    if (document.hidden) return;
+    updateTableCounts();
+  }, TABLES_REFRESH_MS);
 }
 
 export function restartAutoRefresh() {

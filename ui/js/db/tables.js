@@ -77,6 +77,21 @@ export async function updateTableCounts() {
       });
     });
     if (!merged.size) return;
+
+    // If the set of tables changed (added/removed), fall back to a full re-render.
+    const freshNames = Array.from(merged.keys()).sort();
+    const knownNames = app.dbTables.map((t) => t.name).slice().sort();
+    const setChanged =
+      freshNames.length !== knownNames.length ||
+      freshNames.some((n, i) => n !== knownNames[i]);
+
+    if (setChanged) {
+      app.dbTables = Array.from(merged.values()).sort((a, b) => a.name.localeCompare(b.name));
+      renderTableList();
+      return;
+    }
+
+    // Same set of tables — just patch the row_count and the count span in place.
     for (const fresh of merged.values()) {
       const existing = app.dbTables.find((t) => t.name === fresh.name);
       if (existing) existing.row_count = fresh.row_count;
@@ -86,7 +101,9 @@ export async function updateTableCounts() {
       const t = app.dbTables.find((x) => x.name === name);
       if (t) {
         const countSpan = item.querySelector('.count');
-        if (countSpan) countSpan.textContent = t.row_count;
+        if (countSpan && countSpan.textContent !== String(t.row_count)) {
+          countSpan.textContent = t.row_count;
+        }
       }
     });
   } catch (e) {

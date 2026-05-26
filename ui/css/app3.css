@@ -2,6 +2,10 @@
     border-bottom: 1px solid #2a2a4a;
     white-space: nowrap;
   }
+.db-table {
+    table-layout: fixed;
+    border-collapse: collapse;
+  }
 .db-table td {
     padding: 4px 10px;
     border-bottom: 1px solid #1a1a2e;
