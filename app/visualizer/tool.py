@@ -23,6 +23,11 @@ async def render_visual(
     Returns:
         JSON string with path, title, page_name, size_bytes
     """
+    if not html or not html.strip():
+        return json.dumps({
+            "status": "error",
+            "message": "Empty HTML rejected. Put the COMPLETE HTML document string in the `html` parameter. The page was NOT updated.",
+        })
     await ensure_home_page(user_id)
     url_path = await save_page_html(user_id, page_name, html)
     result = {

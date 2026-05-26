@@ -88,10 +88,12 @@
   /* —— Make body bg let the canvas show through —— */
   html, body { background: #07070c !important; }
   body.light-mode { background: #faf5ee !important; }
-  body > *:not(.stargaze-canvas):not(.stargaze-overlay) {
-    position: relative;
-    z-index: 2;
-  }
+  /* Lift the main layout shell above the stargaze canvas/overlay. Scoped to the
+     actual layout containers — NOT `body > *` — so dynamically-appended popups
+     (.tutorial-popover, .session-row-actions, .feedback-modal, etc.) keep their
+     own `position: fixed` instead of being forced into `position: relative`. */
+  #app-container { position: relative; z-index: 2; }
+  #status-bar { position: relative; }
 
   /* —— Chat side: transparent — sits on the background directly —— */
   #chat-side,
