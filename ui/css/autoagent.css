@@ -1,13 +1,13 @@
 /* ── AutoAgent Tab ── */
 
-/* ── Footer (page nav + prompt bar, side by side) ──
+/* ── Footer (page nav above prompt bar, mirroring the web-chat header) ──
    Background intentionally matches #tab-autoagent so the bottom-faded
    iframe melts into the footer with no visible seam. */
 
 #autoagent-footer {
   display: flex;
-  align-items: flex-end;
-  gap: 10px;
+  flex-direction: column;
+  gap: 8px;
   padding: 0 20px 12px;
   background: transparent;
   flex-shrink: 0;
@@ -15,72 +15,38 @@
 
 /* ── Page Nav Bar ── */
 
-#autoagent-page-nav {
+#autoagent-page-nav { width: 100%; }
+
+#aa-page-label {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
-  width: 240px;
+  gap: 4px;
+  color: #565f89;
+  font-size: 11px;
+  width: 100%;
+}
+#aa-page-label .session-dropdown { flex: 1 1 auto; min-width: 0; }
+
+/* The shared .session-dropdown-trigger #session-dropdown-label rule in
+   app1.css uses an ID descendant selector that doesn't pick up our new
+   label id — re-declare the truncation rules here. */
+#autoagent-page-dropdown-trigger #autoagent-page-dropdown-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
   min-width: 0;
+  text-align: left;
 }
 
-.aa-page-select {
-  flex: 1;
-  min-width: 0;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
-  border-radius: 5px;
-  color: #c0caf5;
-  padding: 4px 8px;
-  font-size: 12px;
-  font-family: inherit;
-  cursor: pointer;
-  outline: none;
-  appearance: none;
-  -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23565f89'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 8px center;
-  padding-right: 24px;
-}
+body.light-mode #aa-page-label { color: #b09580; }
 
-.aa-page-select:focus {
-  border-color: #7aa2f7;
+/* The page selector lives at the bottom of the dashboard, so flip the menu
+   upward to keep it on-screen. */
+#autoagent-page-dropdown-menu {
+  top: auto;
+  bottom: calc(100% + 4px);
 }
-
-.aa-icon-btn {
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
-  border-radius: 5px;
-  color: #7aa2f7;
-  width: 26px;
-  height: 26px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: background 0.15s, border-color 0.15s;
-  padding: 0;
-}
-
-.aa-icon-btn:hover {
-  background: #222240;
-  border-color: #7aa2f7;
-}
-
-.aa-icon-btn:disabled {
-  color: #3b3f66;
-  border-color: #1e1e3a;
-  cursor: not-allowed;
-  background: #12121e;
-}
-
-.aa-delete-btn { color: #f7768e; }
-.aa-delete-btn:hover { border-color: #f7768e; background: #1e1218; }
-.aa-delete-btn:disabled { color: #3b3f66; }
 
 /* ── New Page Dialog ── */
 
@@ -207,7 +173,7 @@
 }
 #autoagent-prompt-row:focus-within { border-color: #7dcfff; }
 
-.aa-prompt-input {
+#autoagent-prompt-input {
   flex: 1;
   min-width: 0;
   background: transparent;
@@ -221,9 +187,12 @@
   resize: none;
   min-height: 52px;
   max-height: 160px;
+  -webkit-appearance: none;
+          appearance: none;
+  box-shadow: none;
 }
-.aa-prompt-input:focus { border: none; }
-.aa-prompt-input::placeholder { color: #3b4261; }
+#autoagent-prompt-input:focus { border: none; outline: none; box-shadow: none; }
+#autoagent-prompt-input::placeholder { color: #3b4261; }
 
 /* Send vs voice swap, mirroring #agent-builder-bar-row */
 #autoagent-prompt-row #autoagent-send-btn { display: none; }
@@ -362,8 +331,8 @@ body.light-mode #autoagent-prompt-row {
   border-color: #ffcfa1;
 }
 body.light-mode #autoagent-prompt-row:focus-within { border-color: #ff8c42; }
-body.light-mode .aa-prompt-input { color: #3a2400; }
-body.light-mode .aa-prompt-input::placeholder { color: #c08858; }
+body.light-mode #autoagent-prompt-input { color: #3a2400; }
+body.light-mode #autoagent-prompt-input::placeholder { color: #c08858; }
 body.light-mode #autoagent-attach-btn,
 body.light-mode #autoagent-voice-btn { color: #c08858; }
 body.light-mode #autoagent-attach-btn:hover,
@@ -390,28 +359,6 @@ body.light-mode .aa-spinner {
   border-color: #ffdec4;
   border-top-color: #ff8c42;
 }
-body.light-mode .aa-page-select {
-  background-color: #ffffff;
-  border-color: #ffdec4;
-  color: #3d2c2e;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23cca08a'/%3E%3C/svg%3E");
-}
-body.light-mode .aa-icon-btn {
-  background: #ffffff;
-  border-color: #ffdec4;
-  color: #cc6a28;
-}
-body.light-mode .aa-icon-btn:hover {
-  background: #fff2e6;
-  border-color: #ff8c42;
-}
-body.light-mode .aa-icon-btn:disabled {
-  color: #cca08a;
-  background: #fffaf5;
-  border-color: #ffdec4;
-}
-body.light-mode .aa-delete-btn { color: #d95c5c; }
-body.light-mode .aa-delete-btn:hover { border-color: #d95c5c; background: #fff0f0; }
 body.light-mode .aa-dialog-box {
   background: #ffffff;
   border-color: #ffdec4;
@@ -432,20 +379,3 @@ body.light-mode .aa-dialog-btn-cancel {
   color: #b09580;
 }
 body.light-mode .aa-dialog-btn-cancel:hover { background: #fff2e6; color: #3d2c2e; }
-
-/* ═══════════════════════════════════════════════
-   MOBILE: stack page nav above prompt bar
-   ═══════════════════════════════════════════════ */
-@media (max-width: 800px) {
-  #autoagent-footer {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 8px;
-  }
-  #autoagent-page-nav {
-    width: 100%;
-  }
-  #autoagent-prompt-bar {
-    width: 100%;
-  }
-}

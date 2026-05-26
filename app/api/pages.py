@@ -16,6 +16,7 @@ from app.visualizer.pages import (
     list_pages,
     create_page,
     delete_page,
+    rename_page,
     get_page_html,
 )
 
@@ -63,6 +64,10 @@ class CreatePageRequest(BaseModel):
     initial_html: Optional[str] = ""
 
 
+class RenamePageRequest(BaseModel):
+    title: str
+
+
 @router.get("")
 async def api_list_pages(user_id: str = Query(..., description="User ID")):
     """Return all pages for the given user. Seeds the home page if missing."""
@@ -95,6 +100,22 @@ async def api_delete_page(slug: str, user_id: str = Query(..., description="User
     if not ok:
         raise HTTPException(status_code=404, detail=f"Page '{slug}' not found.")
     return {"status": "ok", "message": f"Page '{slug}' deleted."}
+
+
+@router.patch("/{slug}")
+async def api_rename_page(
+    slug: str,
+    body: RenamePageRequest,
+    user_id: str = Query(..., description="User ID"),
+):
+    """Rename a page's display title. The slug (URL) is preserved."""
+    new_title = (body.title or "").strip()
+    if not new_title:
+        raise HTTPException(status_code=400, detail="Title cannot be empty.")
+    ok = await rename_page(user_id=user_id, slug=slug, new_title=new_title)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Page '{slug}' not found.")
+    return {"status": "ok", "title": new_title}
 
 
 @router.get("/{user_id}/{slug}/html", response_class=HTMLResponse)

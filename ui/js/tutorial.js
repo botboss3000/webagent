@@ -83,10 +83,8 @@ const HINTS = {
   autoagent: [
     { selector: '#autoagent-new-page-btn', title: 'New AutoAgent page',
       body: 'Create a new generated page. Each page is built and updated by the agent from your prompts.' },
-    { selector: '#autoagent-page-select', title: 'Switch pages',
-      body: 'Hop between your existing generated pages.' },
-    { selector: '#autoagent-delete-page-btn', title: 'Delete page',
-      body: 'Permanently remove the currently selected page.' },
+    { selector: '#autoagent-page-dropdown-trigger', title: 'Switch pages',
+      body: 'Hop between your existing generated pages. Each row has a ⋮ menu for rename and delete.' },
     { selector: '#autoagent-prompt-input', title: 'Describe what to build',
       body: 'Type a natural-language instruction — e.g. "add a dashboard with three stat cards" — and the agent will edit the page for you.' },
     { selector: '#autoagent-send-btn', title: 'Send to the agent',
