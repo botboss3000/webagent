@@ -35,6 +35,11 @@ export const app = {
   editingCell: null,
   dbPageOffset: 0,
   dbPageLimit: 200,
+  // Chunked client-side rendering inside a server-fetched page. We render
+  // dbRenderLimit rows initially and grow by dbRenderStep when the user
+  // scrolls near the bottom of the table viewport.
+  dbRenderLimit: 30,
+  dbRenderStep: 30,
   dbTotalRows: 0,
   dbFilters: {},
   dbColumnOrder: {},
