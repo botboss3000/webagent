@@ -247,29 +247,6 @@
     padding: 4px 0;
     flex-shrink: 0;
   }
-  #db-sidebar {
-    transition: width 0.18s ease, min-width 0.18s ease;
-  }
-  #db-sidebar-toggle:hover {
-    color: var(--accent) !important;
-    border-color: var(--accent) !important;
-  }
-  #db-sidebar.collapsed {
-    width: 32px !important;
-    min-width: 32px !important;
-  }
-  #db-sidebar.collapsed #db-refresh,
-  #db-sidebar.collapsed #db-reset-wrap,
-  #db-sidebar.collapsed #db-table-list {
-    display: none !important;
-  }
-  #db-sidebar.collapsed #db-sidebar-header {
-    padding: 8px 4px;
-    justify-content: center;
-  }
-  #db-sidebar.collapsed #db-sidebar-toggle {
-    margin: 0 auto;
-  }
   .db-table-item {
     padding: 6px 14px;
     cursor: pointer;
@@ -309,17 +286,30 @@
     min-height: 0;
     position: relative;
   }
-  #db-table-header {
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--border);
+  #db-table-footer {
+    padding: 6px 12px;
+    border-top: 1px solid var(--border);
     color: var(--fg-3);
     font-size: 11px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 36px;
     flex-shrink: 0;
+    box-sizing: border-box;
+  }
+  #db-table-footer #db-page-info {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    min-height: 42px;
-    box-sizing: border-box;
+    min-width: 0;
+  }
+  #db-table-footer .db-table-footer-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
   }
   #db-table-data {
     flex: 1;
@@ -350,3 +340,165 @@
     top: 0;
     z-index: 10;
   }
+
+  /* ── DB file-selector dropdown (sidebar header) ─────────────
+     Mirrors the .session-dropdown / .agent-dropdown look-and-feel
+     in app1.css. Driven entirely by CSS variables so light-mode
+     parity comes for free. The menu is position:fixed so it can
+     escape the narrow ~180px sidebar column without clipping. */
+  .db-select-dropdown {
+    position: relative;
+    display: flex;
+    width: 100%;
+    min-width: 0;
+  }
+  .db-select-dropdown-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    color: var(--fg-1);
+    padding: 0 8px;
+    height: 24px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    box-sizing: border-box;
+  }
+  .db-select-dropdown-trigger:hover { border-color: var(--accent); }
+  .db-select-dropdown-trigger > * { pointer-events: none; }
+  .db-select-dropdown-trigger #db-select-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+  }
+  .db-select-dropdown-menu {
+    position: fixed;
+    top: 0;
+    left: 0;
+    margin: 0;
+    padding: 4px;
+    list-style: none;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: var(--shadow-md);
+    z-index: 9999;
+    min-width: 240px;
+    max-width: 320px;
+    max-height: 360px;
+    overflow-y: auto;
+    font-size: 11px;
+  }
+  .db-select-dropdown-menu[hidden] { display: none; }
+
+  /* In-menu header row: "All databases" master toggle + delete-all */
+  .db-row-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 4px;
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 11px;
+  }
+  .db-row-header-label {
+    flex: 1;
+    cursor: pointer;
+  }
+  .db-row-header-trash {
+    background: transparent;
+    border: none;
+    color: var(--fg-3);
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .db-row-header-trash > * { pointer-events: none; }
+  .db-row-header-trash:hover {
+    color: var(--danger);
+    background: var(--danger-soft);
+  }
+
+  /* Per-database row */
+  .db-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--fg-1);
+  }
+  .db-row:hover { background: var(--bg-elev); }
+  .db-row.selected { background: var(--bg-tint); }
+  .db-row-cb {
+    margin: 0;
+    cursor: pointer;
+    accent-color: var(--accent);
+    flex-shrink: 0;
+  }
+  .db-row-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .db-row-kebab {
+    background: none;
+    border: none;
+    color: var(--fg-3);
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .db-row-kebab > * { pointer-events: none; }
+  .db-row-kebab:hover {
+    background: var(--bg-elev);
+    color: var(--fg-1);
+  }
+
+  /* Kebab popup (parallel to .session-row-actions) */
+  .db-row-actions {
+    position: fixed;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: var(--shadow-md);
+    z-index: 10000;
+    min-width: 140px;
+    padding: 4px;
+  }
+  .db-row-action {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    padding: 6px 8px;
+    border-radius: 4px;
+    text-align: left;
+  }
+  .db-row-action:hover { background: var(--bg-elev); }
+  .db-row-action.danger { color: var(--danger); }
+  .db-row-action.danger:hover { background: var(--danger-soft); }
