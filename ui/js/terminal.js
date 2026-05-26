@@ -9,6 +9,10 @@ import { termWsUrl, apiPath } from './config.js';
 const MAX_RECONNECT_DELAY = 30000; // 30s max
 const INITIAL_RECONNECT_DELAY = 500; // 500ms first retry
 
+const DEFAULT_FONT_SIZE = 14;
+const MIN_FONT_SIZE = 8;
+const MAX_FONT_SIZE = 32;
+
 export function createTerminalInstance(container, sessionId, opts) {
   if (!sessionId) {
     throw new Error('createTerminalInstance: sessionId is required');
@@ -19,10 +23,13 @@ export function createTerminalInstance(container, sessionId, opts) {
   // has it in its history.
   const initialCommand = typeof opts.initialCommand === 'string' ? opts.initialCommand : '';
   let initialCommandSent = false;
+  const initialFontSize = (typeof opts.fontSize === 'number' && opts.fontSize >= MIN_FONT_SIZE && opts.fontSize <= MAX_FONT_SIZE)
+    ? opts.fontSize : DEFAULT_FONT_SIZE;
+
   const term = new Terminal({
     cursorBlink: true,
     cursorStyle: 'block',
-    fontSize: 14,
+    fontSize: initialFontSize,
     fontFamily:
       '"Fira Code", Menlo, Monaco, "Courier New", monospace',
     allowTransparency: true,
@@ -62,7 +69,8 @@ export function createTerminalInstance(container, sessionId, opts) {
     }
   } catch (_) {}
   term.open(container);
-  try { fitAddon.fit(); } catch (_) {}
+  // First fit happens further down, after the wrap/fontSize state is
+  // declared (so the no-wrap path can pin cols correctly on restore).
 
   let ws = null;
   let reconnectTimer = null;
@@ -191,14 +199,52 @@ export function createTerminalInstance(container, sessionId, opts) {
     ws.onerror = () => { /* onclose fires after onerror; reconnect is scheduled there */ };
   }
 
+  let wrap = opts.wrap !== false;   // default true
+  let fontSize = initialFontSize;
+
+  function _sendResize() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'resize', rows: term.rows, cols: term.cols }));
+    }
+  }
+
   function fit() {
+    // Always size to the host element. In WRAP mode the host width equals
+    // the scroll wrapper, so cols match the visible area and shell output
+    // wraps naturally. In NO-WRAP mode the host is sized wider than its
+    // parent via CSS (.files-terminal-host-nowrap), so fitAddon computes
+    // a larger cols value and the scroll wrapper exposes the overflow as
+    // a horizontal scrollbar.
     try {
       fitAddon.fit();
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'resize', rows: term.rows, cols: term.cols }));
-      }
+      _sendResize();
     } catch (_) {}
   }
+
+  function setWrap(on) {
+    // Wrap mode is now driven entirely by CSS classes on the host + its
+    // scroll wrapper (set by files.js). This setter just tracks the
+    // current state so getWrap() reports correctly and a subsequent fit()
+    // measures the updated host width.
+    wrap = !!on;
+    fit();
+  }
+  function getWrap() { return wrap; }
+
+  function setFontSize(n) {
+    n = Math.round(n);
+    if (!Number.isFinite(n)) return;
+    if (n < MIN_FONT_SIZE) n = MIN_FONT_SIZE;
+    if (n > MAX_FONT_SIZE) n = MAX_FONT_SIZE;
+    if (n === fontSize) return;
+    fontSize = n;
+    try { term.options.fontSize = n; } catch (_) {}
+    fit();
+  }
+  function getFontSize() { return fontSize; }
+  function zoomIn()   { setFontSize(fontSize + 1); }
+  function zoomOut()  { setFontSize(fontSize - 1); }
+  function resetZoom() { setFontSize(DEFAULT_FONT_SIZE); }
 
   function focus() {
     try { term.focus(); } catch (_) {}
@@ -284,6 +330,11 @@ export function createTerminalInstance(container, sessionId, opts) {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(text);
   }
 
+  // CSS classes for wrap mode are applied by the caller (files.js) on the
+  // host and its scroll wrapper before term.open() runs, so the initial
+  // fit() below already measures the right host width.
+  fit();
+
   connect();
 
   return {
@@ -291,5 +342,7 @@ export function createTerminalInstance(container, sessionId, opts) {
     onStateChange, getState,
     findNext, findPrevious, clearSearch,
     paste,
+    setWrap, getWrap,
+    setFontSize, getFontSize, zoomIn, zoomOut, resetZoom,
   };
 }

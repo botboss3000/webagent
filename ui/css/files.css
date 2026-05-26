@@ -1357,6 +1357,82 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 .files-terminal-host .xterm-viewport::-webkit-scrollbar { width: 6px; }
 .files-terminal-host .xterm-viewport::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
 
+/* Wrapper that owns the horizontal scrollbar in no-wrap mode. The host
+   element sits inside this and is sized wider than the wrapper when no-wrap
+   is on, producing a real horizontal scrollbar at the bottom of the pane
+   that the user can swipe / drag to see off-screen content. */
+.files-terminal-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;          /* WRAP mode: clip nothing because host fits */
+  display: flex;
+  flex-direction: column;
+  /* Don't stretch the host across the cross-axis — in no-wrap mode the
+     host sets its own explicit width: 300% to overflow horizontally. */
+  align-items: flex-start;
+}
+.files-terminal-scroll.files-terminal-scroll-nowrap {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #2a2a4a transparent;
+}
+.files-terminal-scroll.files-terminal-scroll-nowrap::-webkit-scrollbar { height: 14px; }
+.files-terminal-scroll.files-terminal-scroll-nowrap::-webkit-scrollbar-thumb { background: #565f89; border-radius: 4px; min-width: 40px; }
+.files-terminal-scroll.files-terminal-scroll-nowrap::-webkit-scrollbar-thumb:hover { background: #7aa2f7; }
+.files-terminal-scroll.files-terminal-scroll-nowrap::-webkit-scrollbar-track { background: #1a1a2e; }
+
+/* No-wrap mode: force the host to be wider than its scroll wrapper. The
+   fitAddon measures the host (not the wrapper) so xterm gets enough cols
+   to render long lines unwrapped, and the wrapper's overflow-x exposes
+   the off-screen portion as a horizontal scroll. 300% gives 3x the visible
+   width — wide enough for almost any real shell output. */
+.files-terminal-host.files-terminal-host-nowrap {
+  width: 300%;
+  min-width: 300%;
+  flex: 1;
+}
+
+/* Mobile long-press context menu (Copy / Paste / Select all / Clear).
+   Floats above the terminal, positioned near the touch point. */
+.files-terminal-ctxmenu {
+  position: fixed;
+  z-index: 10000;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+}
+.files-terminal-ctxmenu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: transparent;
+  border: none;
+  color: #c0caf5;
+  text-align: left;
+  padding: 9px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+}
+.files-terminal-ctxmenu-item:hover,
+.files-terminal-ctxmenu-item:active { background: #2a2a4a; }
+.files-terminal-ctxmenu-item.disabled,
+.files-terminal-ctxmenu-item[disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+.files-terminal-ctxmenu-item .lucide-icon { width: 16px; height: 16px; flex-shrink: 0; }
+
 /* Drop-target highlight when the user drags a file tree row onto a terminal.
    The host accepts text/plain (the absolute path) and pastes it shell-quoted
    into the PTY's input stream. */
