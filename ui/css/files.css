@@ -1895,14 +1895,10 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 
 /* ── Git main panel (commit / diff / compare detail) ─── */
 
-#files-git-main {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
+/* Inherits flex layout from .files-main; only add the bits that differ.
+   IDs would out-specificity .files-main[hidden] { display:none } and
+   make the panel show on top of other mains. */
+#files-git-main { overflow: hidden; }
 .fg-main-header {
   display: flex;
   align-items: center;
