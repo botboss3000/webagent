@@ -2363,25 +2363,12 @@ function initSidebarMaximize() {
   if (isMobileLayout() && saved === 'split') saved = 'strip';
   setSidebarState(saved);
 
-  // Delegate clicks on the cycle button (in panel headers AND the strip),
-  // the strip's refresh button, and the strip's view-switch buttons.
+  // Delegate clicks on the cycle button and the strip's view-switch buttons.
   sidebar.addEventListener('click', (e) => {
     const cycle = e.target.closest('.files-maximize-btn');
     if (cycle && sidebar.contains(cycle)) {
       e.stopPropagation();
       cycleSidebarState();
-      return;
-    }
-    const stripRefresh = e.target.closest('.files-strip-refresh');
-    if (stripRefresh && sidebar.contains(stripRefresh)) {
-      e.stopPropagation();
-      const view = sidebar.dataset.view || 'explorer';
-      if (view === 'git') {
-        import('./files-git.js').then(m => m.refreshGit(sidebar)).catch(() => {});
-      } else {
-        const r = document.getElementById('files-refresh');
-        if (r) r.click();
-      }
       return;
     }
     const stripView = e.target.closest('.files-strip-view');
@@ -2427,8 +2414,8 @@ export function setSidebarState(state) {
 
   // Update the cycle button's icon + title (lives in the strip). The icon
   // hints at the NEXT action, not the current state.
-  const iconName = state === 'strip' ? 'panel-left-open' : 'chevrons-left';
-  const title    = state === 'strip' ? 'Expand sidebar'  : 'Collapse sidebar';
+  const iconName = state === 'strip' ? 'chevrons-right' : 'chevrons-left';
+  const title    = state === 'strip' ? 'Expand sidebar' : 'Collapse sidebar';
   sidebar.querySelectorAll('.files-maximize-btn').forEach((b) => {
     b.title = title;
     b.innerHTML = '<i data-lucide="' + iconName + '" class="lucide-icon"></i>';
