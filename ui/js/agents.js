@@ -318,7 +318,7 @@ function _renderList() {
           ${isCustom ? '<button class="agent-card-action-btn delete-btn">Delete</button>' : ''}
         </div>
       </div>
-      ${isExpanded ? '<div class="agent-card-tabs" role="tablist"></div>' : ''}
+      <div class="agent-card-tabs" role="tablist"></div>
     `;
 
     // Wire inline action buttons — stopPropagation so click doesn't toggle the panel
@@ -335,13 +335,16 @@ function _renderList() {
     row.dataset.agentId = agent.id;
     row.appendChild(card);
 
+    let panel = null;
     if (isExpanded) {
-      const panel = _buildDetailPanel(agent);
+      panel = _buildDetailPanel(agent);
       row.appendChild(panel);
-      // Populate the in-card tab carousel now that the panel exists
-      const cardTabBar = card.querySelector('.agent-card-tabs');
-      if (cardTabBar) _populateAgentTabBar(cardTabBar, agent, panel);
     }
+
+    // Tabs render in both collapsed and expanded states; clicking a tab on a
+    // collapsed card expands it to that tab.
+    const cardTabBar = card.querySelector('.agent-card-tabs');
+    if (cardTabBar) _populateAgentTabBar(cardTabBar, agent, panel);
 
     grid.appendChild(row);
   }
@@ -363,7 +366,9 @@ function _selectAgent(agent) {
 
 function _populateAgentTabBar(tabBar, agent, panel) {
   const state = _expandedAgents.get(agent.id);
-  const activeTab = state?.tab || 'config';
+  // Highlight a tab only when the card is open — a collapsed card has no
+  // active content, so no tab should look selected.
+  const activeTab = state ? (state.tab || 'config') : null;
   tabBar.innerHTML = '';
   const tabs = [['config','Config'],['tools','Tools'],['test','Agent Loop'],['connections','Abilities']];
   if (state?.automationEnabled) tabs.push(['automation','Automation']);
@@ -377,11 +382,18 @@ function _populateAgentTabBar(tabBar, agent, panel) {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const entry = _expandedAgents.get(agent.id);
-      if (entry) entry.tab = key;
+      if (!entry) {
+        // Collapsed → expand to the clicked tab. Full re-render attaches the panel.
+        _expandedAgents.set(agent.id, { tab: key });
+        _renderList();
+        _saveViewState();
+        return;
+      }
+      entry.tab = key;
       tabBar.querySelectorAll('.agents-detail-tab').forEach(b => {
         b.classList.toggle('active', b.dataset.tab === key);
       });
-      _renderPanelBody(agent, panel);
+      if (panel) _renderPanelBody(agent, panel);
       _saveViewState();
       btn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
     });
