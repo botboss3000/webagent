@@ -1834,6 +1834,35 @@
     padding: 24px;
     text-align: center;
   }
+  .account-pref-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    cursor: pointer;
+    padding: 4px 0;
+  }
+  .account-pref-row input[type="checkbox"] {
+    margin-top: 3px;
+    flex-shrink: 0;
+    cursor: pointer;
+  }
+  .account-pref-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .account-pref-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #c0caf5;
+  }
+  .account-pref-desc {
+    font-size: 11px;
+    color: #565f89;
+    line-height: 1.4;
+  }
+  body.light-mode .account-pref-title { color: #3d2c2e; }
+  body.light-mode .account-pref-desc { color: #a07955; }
 
   /* Light-mode for Manage Account tab */
   body.light-mode .account-header { border-bottom-color: #ffdec4; }
