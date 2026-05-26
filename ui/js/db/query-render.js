@@ -383,6 +383,69 @@ async function queryWithFilters() {
   if (app.dbSelectedTable) await queryTable(app.dbSelectedTable);
 }
 
+function rowPkKey(row, pkCols) {
+  if (!pkCols || !pkCols.length) return null;
+  return pkCols
+    .map((c) => (row[c] === null || row[c] === undefined ? '' : String(row[c])))
+    .join('␟');
+}
+
+// Single delegated mousedown listener for row-resize handles. Attached once
+// per table container so newly inserted rows work without per-render rebinding.
+let _rowResizeDelegated = false;
+function ensureRowResizeDelegation(container) {
+  if (_rowResizeDelegated || !container) return;
+  _rowResizeDelegated = true;
+
+  let resizeHandle = null;
+  let resizeStartY = 0;
+  let resizeStartHeight = 0;
+  let resizeRow = null;
+
+  function onMouseMove(e) {
+    if (!resizeHandle) return;
+    const delta = e.clientY - resizeStartY;
+    const newHeight = Math.max(24, resizeStartHeight + delta);
+    resizeRow.querySelectorAll('td').forEach((td) => {
+      td.style.height = newHeight + 'px';
+      td.style.maxHeight = 'none';
+    });
+    resizeRow.querySelectorAll('.db-cell-pre').forEach((pre) => {
+      pre.style.maxHeight = 'none';
+    });
+  }
+
+  function onMouseUp() {
+    if (resizeHandle) {
+      resizeHandle.classList.remove('resizing');
+      resizeHandle = null;
+      resizeRow = null;
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    }
+  }
+
+  container.addEventListener('mousedown', (e) => {
+    const handle = e.target.closest('.db-row-resize-handle');
+    if (!handle || !container.contains(handle)) return;
+    e.preventDefault();
+    const ri = parseInt(handle.dataset.ri, 10);
+    const row = container.querySelector(`.db-row[data-ri="${ri}"]`);
+    if (!row) return;
+    resizeHandle = handle;
+    resizeRow = row;
+    resizeStartY = e.clientY;
+    resizeStartHeight = row.getBoundingClientRect().height;
+    handle.classList.add('resizing');
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  });
+}
+
 function renderTableData(result, silent) {
   const data = document.getElementById('db-table-data');
   const pkCols = getPKColumns(result.table);
@@ -421,8 +484,155 @@ function renderTableData(result, silent) {
     return `<button class="db-cell-edit" title="Edit inline">✎</button>${inner}<button class="db-cell-expand" title="Open full viewer">↗</button>`;
   }
 
+  // Column width strategy
+  function getColWidth(table, col) {
+    if (app.COL_WIDTHS[col]) return app.COL_WIDTHS[col];
+    const contentTables = ['interactions', 'context_defaults', 'context_templates', 'context'];
+    if (table === 'interactions' && col === 'input') return '300px';
+    if (contentTables.includes(table) && col === 'content') return '300px';
+    const px = Math.max(40, col.length * 7.5 + 20);
+    return Math.round(px) + 'px';
+  }
+
+  function buildRowPairHtml(row, ri, pk) {
+    const rowClass = ri % 2 === 0 ? 'db-row' : 'db-row db-row-even';
+    const isInteractions = result.table === 'interactions';
+    const trStyle = isInteractions ? ' style="height:100px"' : '';
+    const pkAttr = pk !== null && pk !== undefined ? ` data-pk="${String(pk).replace(/"/g, '&quot;')}"` : '';
+    let h = `<tr class="${rowClass}" data-ri="${ri}"${pkAttr}${trStyle}>`;
+    h += `<td class="db-row-delete-td"><button class="db-row-delete" data-ri="${ri}" title="Delete row">🗑</button></td>`;
+    for (const col of displayCols) {
+      const val = row[col];
+      const w = getColWidth(result.table, col);
+      const style = w ? ` style="width:${w};min-width:${w};max-width:${w}"` : '';
+      const cls = val === null ? 'col-null' : '';
+      const { html: display, isJson } = fmtCell(val);
+      const safeVal = String(val).replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      h += `<td class="db-cell ${cls}"${style} data-row="${ri}" data-col="${col}" data-val="${safeVal}">
+        <button class="db-cell-edit" title="Edit inline">✎</button>
+        ${isJson ? `<div class="db-cell-json">${display}</div>` : `<pre class="db-cell-pre">${display}</pre>`}
+        <button class="db-cell-expand" title="Open full viewer">↗</button>
+      </td>`;
+    }
+    h += '</tr>';
+    h += `<tr class="db-row-resize-row" data-ri="${ri}"${pkAttr}><td colspan="${displayCols.length + 1}" class="db-row-resize-td"><div class="db-row-resize-handle" data-ri="${ri}"></div></td></tr>`;
+    return h;
+  }
+
+  function patchExistingRow(tr, row, ri) {
+    // Update positional attrs + even/odd styling
+    tr.dataset.ri = String(ri);
+    const baseClass = ri % 2 === 0 ? 'db-row' : 'db-row db-row-even';
+    if (tr.className !== baseClass) tr.className = baseClass;
+    const delBtn = tr.querySelector('.db-row-delete');
+    if (delBtn) delBtn.dataset.ri = String(ri);
+    const cells = tr.querySelectorAll('td.db-cell');
+    for (let ci = 0; ci < displayCols.length && ci < cells.length; ci++) {
+      const col = displayCols[ci];
+      const val = row[col];
+      const cell = cells[ci];
+      const newKey = val === null ? 'null' : String(val);
+      if (cell.dataset.val !== newKey) {
+        cell.innerHTML = cellInnerHtml(val);
+        cell.dataset.val = newKey;
+        cell.className = 'db-cell' + (val === null ? ' col-null' : '');
+      }
+      if (cell.dataset.row !== String(ri)) cell.dataset.row = String(ri);
+    }
+  }
+
   if (silent) {
     const tbody = data.querySelector('table.db-table tbody');
+    if (tbody && pkCols && pkCols.length) {
+      // PK-keyed reconciliation: reuse existing TRs across reorderings and
+      // row count changes, only building new TRs for genuinely new PKs.
+      const existingPairs = new Map(); // pk → { dataTr, resizeTr }
+      let cursor = tbody.firstElementChild;
+      while (cursor) {
+        if (cursor.classList.contains('db-row')) {
+          const pk = cursor.dataset.pk;
+          const next = cursor.nextElementSibling;
+          if (pk && next && next.classList.contains('db-row-resize-row')) {
+            existingPairs.set(pk, { dataTr: cursor, resizeTr: next });
+            cursor = next.nextElementSibling;
+            continue;
+          }
+        }
+        cursor = cursor.nextElementSibling;
+      }
+
+      const newRowsHtml = [];
+      const reused = []; // [{ pair, row, ri }]
+      const targetOrder = [];   // sequence of either { kind: 'reuse', pk } or { kind: 'new', idx }
+      let pendingNewIdx = 0;
+
+      for (let ri = 0; ri < result.rows.length; ri++) {
+        const row = result.rows[ri];
+        const pk = rowPkKey(row, pkCols);
+        const existing = pk !== null ? existingPairs.get(pk) : null;
+        if (existing) {
+          existingPairs.delete(pk);
+          reused.push({ pair: existing, row, ri });
+          targetOrder.push({ kind: 'reuse', pk });
+        } else {
+          newRowsHtml.push(buildRowPairHtml(row, ri, pk));
+          targetOrder.push({ kind: 'new', idx: pendingNewIdx++ });
+        }
+      }
+
+      // Materialise new rows in a single innerHTML parse, then collect their TR pairs.
+      let newPairs = [];
+      if (newRowsHtml.length) {
+        const tmp = document.createElement('tbody');
+        tmp.innerHTML = newRowsHtml.join('');
+        const newDataTrs = tmp.querySelectorAll('tr.db-row');
+        const newResizeTrs = tmp.querySelectorAll('tr.db-row-resize-row');
+        for (let i = 0; i < newDataTrs.length; i++) {
+          newPairs.push({ dataTr: newDataTrs[i], resizeTr: newResizeTrs[i] });
+        }
+      }
+
+      // Patch cells on reused rows before reordering (cheaper while detached? no — they're still attached, that's fine).
+      for (const { pair, row, ri } of reused) {
+        patchExistingRow(pair.dataTr, row, ri);
+        // Keep resize TR's positional attrs in sync
+        pair.resizeTr.dataset.ri = String(ri);
+        const handle = pair.resizeTr.querySelector('.db-row-resize-handle');
+        if (handle) handle.dataset.ri = String(ri);
+      }
+
+      // Assemble target order into a fragment, then swap into tbody in one shot.
+      const frag = document.createDocumentFragment();
+      const reusedByPk = new Map();
+      for (const r of reused) reusedByPk.set(rowPkKey(r.row, pkCols), r.pair);
+      for (const entry of targetOrder) {
+        if (entry.kind === 'reuse') {
+          const pair = reusedByPk.get(entry.pk);
+          if (pair) {
+            frag.appendChild(pair.dataTr);
+            frag.appendChild(pair.resizeTr);
+          }
+        } else {
+          const pair = newPairs[entry.idx];
+          if (pair) {
+            frag.appendChild(pair.dataTr);
+            frag.appendChild(pair.resizeTr);
+          }
+        }
+      }
+
+      // Old TRs not consumed (existingPairs still has entries) drop on the floor
+      // when we replace tbody contents. Row-resize handles use event delegation
+      // (ensureRowResizeDelegation), so new TRs work without rebinding.
+      tbody.replaceChildren(frag);
+
+      updateHeaderSortArrows(tableName);
+      updateFilterIndicators(tableName);
+      return;
+    }
+
+    // No PK columns (or no tbody yet): fall back to the legacy position-based
+    // diff. If row count differs, do a full rebuild.
     if (tbody) {
       const existingRows = tbody.querySelectorAll('tr.db-row');
       for (let ri = 0; ri < result.rows.length && ri < existingRows.length; ri++) {
@@ -442,25 +652,13 @@ function renderTableData(result, silent) {
       if (result.rows.length !== existingRows.length) {
         return renderTableData(result, false);
       }
-      // Update header arrows (sort state may have changed)
       updateHeaderSortArrows(tableName);
-      // Update filter indicators
       updateFilterIndicators(tableName);
       return;
     }
   }
 
   // ── Full render ──
-
-  // Column width strategy
-  function getColWidth(table, col) {
-    if (app.COL_WIDTHS[col]) return app.COL_WIDTHS[col];
-    const contentTables = ['interactions', 'context_defaults', 'context_templates', 'context'];
-    if (table === 'interactions' && col === 'input') return '300px';
-    if (contentTables.includes(table) && col === 'content') return '300px';
-    const px = Math.max(40, col.length * 7.5 + 20);
-    return Math.round(px) + 'px';
-  }
 
   let html = '<table class="db-table"><thead>';
 
@@ -501,26 +699,8 @@ function renderTableData(result, silent) {
 
   for (let ri = 0; ri < result.rows.length; ri++) {
     const row = result.rows[ri];
-    const rowClass = ri % 2 === 0 ? 'db-row' : 'db-row db-row-even';
-    const isInteractions = result.table === 'interactions';
-    const trStyle = isInteractions ? ' style="height:100px"' : '';
-    html += `<tr class="${rowClass}" data-ri="${ri}"${trStyle}>`;
-    html += `<td class="db-row-delete-td"><button class="db-row-delete" data-ri="${ri}" title="Delete row">🗑</button></td>`;
-    for (const col of displayCols) {
-      const val = row[col];
-      const w = getColWidth(result.table, col);
-      const style = w ? ` style="width:${w};min-width:${w};max-width:${w}"` : '';
-      const cls = val === null ? 'col-null' : '';
-      const { html: display, isJson } = fmtCell(val);
-      const safeVal = String(val).replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      html += `<td class="db-cell ${cls}"${style} data-row="${ri}" data-col="${col}" data-val="${safeVal}">
-        <button class="db-cell-edit" title="Edit inline">✎</button>
-        ${isJson ? `<div class="db-cell-json">${display}</div>` : `<pre class="db-cell-pre">${display}</pre>`}
-        <button class="db-cell-expand" title="Open full viewer">↗</button>
-      </td>`;
-    }
-    html += '</tr>';
-    html += `<tr class="db-row-resize-row" data-ri="${ri}"><td colspan="${displayCols.length + 1}" class="db-row-resize-td"><div class="db-row-resize-handle" data-ri="${ri}"></div></td></tr>`;
+    const pk = rowPkKey(row, pkCols);
+    html += buildRowPairHtml(row, ri, pk);
   }
   html += '</tbody></table>';
   data.innerHTML = html;
@@ -612,54 +792,8 @@ function renderTableData(result, silent) {
     });
   });
 
-  // ── Drag row resize handles ──
-  let resizeHandle = null;
-  let resizeStartY = 0;
-  let resizeStartHeight = 0;
-  let resizeRow = null;
-
-  function onMouseMove(e) {
-    if (!resizeHandle) return;
-    const delta = e.clientY - resizeStartY;
-    const newHeight = Math.max(24, resizeStartHeight + delta);
-    resizeRow.querySelectorAll('td').forEach(td => {
-      td.style.height = newHeight + 'px';
-      td.style.maxHeight = 'none';
-    });
-    resizeRow.querySelectorAll('.db-cell-pre').forEach(pre => {
-      pre.style.maxHeight = 'none';
-    });
-  }
-
-  function onMouseUp() {
-    if (resizeHandle) {
-      resizeHandle.classList.remove('resizing');
-      resizeHandle = null;
-      resizeRow = null;
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    }
-  }
-
-  data.querySelectorAll('.db-row-resize-handle').forEach(handle => {
-    handle.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      const ri = parseInt(handle.dataset.ri);
-      const row = data.querySelector(`.db-row[data-ri="${ri}"]`);
-      if (!row) return;
-      resizeHandle = handle;
-      resizeRow = row;
-      resizeStartY = e.clientY;
-      resizeStartHeight = row.getBoundingClientRect().height;
-      handle.classList.add('resizing');
-      document.body.style.cursor = 'row-resize';
-      document.body.style.userSelect = 'none';
-      document.addEventListener('mousemove', onMouseMove);
-      document.addEventListener('mouseup', onMouseUp);
-    });
-  });
+  // Row-resize handles: one delegated listener on the container (idempotent).
+  ensureRowResizeDelegation(data);
 
   initColumnResize();
   ensurePopupOutsideHandler();
