@@ -520,11 +520,19 @@
 
         <!-- Footer: page nav (left) + prompt bar (right) -->
         <div id="autoagent-footer">
-          <!-- Page nav: dropdown + new / delete buttons -->
+          <!-- Page nav: custom dropdown mirroring the chat-header agent/session
+               dropdowns, with a per-row ⋮ menu (Rename / Delete). -->
           <div id="autoagent-page-nav">
-            <select id="autoagent-page-select" class="aa-page-select" title="Switch page"></select>
-            <button id="autoagent-new-page-btn" class="aa-icon-btn" title="New page">+</button>
-            <button id="autoagent-delete-page-btn" class="aa-icon-btn aa-delete-btn" title="Delete page" disabled><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>
+            <span id="aa-page-label">Page:
+              <div id="autoagent-page-dropdown" class="session-dropdown">
+                <button id="autoagent-page-dropdown-trigger" type="button" class="status-select session-dropdown-trigger">
+                  <span id="autoagent-page-dropdown-label">—</span>
+                  <i data-lucide="chevron-down" style="width:12px;height:12px;flex-shrink:0;"></i>
+                </button>
+                <div id="autoagent-page-dropdown-menu" class="session-dropdown-menu" hidden></div>
+              </div>
+              <button id="autoagent-new-page-btn" title="New page" class="header-plus-btn"><i data-lucide="plus" style="width:14px;height:14px;"></i></button>
+            </span>
           </div>
 
           <!-- Prompt bar — mirrors #agent-builder-bar pill (attach + textarea + voice/send swap) -->
