@@ -204,6 +204,40 @@ body {
 .stop-btn:hover {
   opacity: 0.7;
 }
+
+/* Per-bubble action row: read-aloud (TTS) + copy. Rendered by
+   chat.js _addBubbleActions for every finalized bubble. */
+.bubble-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
+}
+.chat-bubble:hover .bubble-actions,
+.chat-bubble:focus-within .bubble-actions { opacity: 1; }
+.chat-bubble.user .bubble-actions { justify-content: flex-end; }
+.bubble-action-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 3px 6px;
+  cursor: pointer;
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+.bubble-action-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+.bubble-action-btn.copied { color: #9ece6a; }
+.bubble-action-btn[data-speaking="true"] { color: #7dcfff; }
+
 .chat-bubble.error {
     background: #f7768e15;
     border: 1px solid #f7768e40;
@@ -884,6 +918,11 @@ body.light-mode .chat-bubble.error {
     color: #cc4444;
   }
 body.light-mode .chat-bubble .label { color: #b09580; }
+body.light-mode .bubble-actions { border-top-color: rgba(0, 0, 0, 0.08); }
+body.light-mode .bubble-action-btn:hover {
+  background: rgba(0, 0, 0, 0.04);
+  border-color: rgba(0, 0, 0, 0.10);
+}
 
 body.light-mode #chat-input-area {
     border-top: none;

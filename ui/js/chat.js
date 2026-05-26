@@ -116,7 +116,137 @@ function addChatBubble(role, text, extraClass, imageUrl, turnId) {
   }
   app.chatMessages.appendChild(bubble);
   app.chatMessages.scrollTop = app.chatMessages.scrollHeight;
+  _addBubbleActions(bubble);
   return bubble;
+}
+
+// \u2500\u2500 Per-bubble action row (read-aloud + copy) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// Extracts the readable text from a bubble, excluding the 'You' label,
+// the action buttons themselves, and the streaming stop button.
+function _getBubbleText(bubble) {
+  if (!bubble) return '';
+  const clone = bubble.cloneNode(true);
+  clone.querySelectorAll('.label, .bubble-actions, .stop-btn').forEach(el => el.remove());
+  return clone.textContent.trim();
+}
+
+function _setActionIcon(btn, iconName) {
+  const i = btn.querySelector('i');
+  if (!i) return;
+  i.setAttribute('data-lucide', iconName);
+  // Reset so lucide can re-render this node (lucide skips nodes already marked .lucide)
+  i.classList.remove('lucide');
+  i.removeAttribute('stroke');
+  while (i.firstChild) i.removeChild(i.firstChild);
+  if (window.lucide && typeof window.lucide.createIcons === 'function') {
+    try { window.lucide.createIcons({ nodes: [i] }); } catch (_) {}
+  }
+}
+
+function _speakBubble(btn, bubble) {
+  if (!('speechSynthesis' in window)) {
+    alert('Text-to-speech is not supported in this browser.');
+    return;
+  }
+  const synth = window.speechSynthesis;
+  if (btn.dataset.speaking === 'true') {
+    try { synth.cancel(); } catch (_) {}
+    return;
+  }
+  const text = _getBubbleText(bubble);
+  if (!text) return;
+  try { synth.cancel(); } catch (_) {}
+  // Reset state on any other action buttons that may still be marked speaking.
+  document.querySelectorAll('.bubble-action-btn[data-speaking="true"]').forEach((other) => {
+    delete other.dataset.speaking;
+    other.title = 'Read aloud';
+    _setActionIcon(other, 'volume-2');
+  });
+  const u = new SpeechSynthesisUtterance(text);
+  const restore = () => {
+    delete btn.dataset.speaking;
+    btn.title = 'Read aloud';
+    _setActionIcon(btn, 'volume-2');
+  };
+  u.onend = restore;
+  u.onerror = restore;
+  btn.dataset.speaking = 'true';
+  btn.title = 'Stop reading';
+  _setActionIcon(btn, 'square');
+  synth.speak(u);
+}
+
+async function _copyBubble(btn, bubble) {
+  const text = _getBubbleText(bubble);
+  if (!text) return;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } finally { ta.remove(); }
+    }
+    const origTitle = btn.title;
+    btn.title = 'Copied!';
+    btn.classList.add('copied');
+    _setActionIcon(btn, 'check');
+    setTimeout(() => {
+      btn.title = origTitle;
+      btn.classList.remove('copied');
+      _setActionIcon(btn, 'copy');
+    }, 1200);
+  } catch (e) {
+    console.warn('Copy failed:', e);
+  }
+}
+
+function _addBubbleActions(bubble) {
+  if (!bubble) return;
+  // Don't render actions while the bubble is still streaming.
+  if (bubble.classList.contains('streaming')) return;
+  const txt = _getBubbleText(bubble);
+  if (!txt || txt === '\u2026') return;
+  // Avoid double-adding.
+  if (bubble.querySelector(':scope > .bubble-actions')) return;
+
+  const actions = document.createElement('div');
+  actions.className = 'bubble-actions';
+
+  const speakBtn = document.createElement('button');
+  speakBtn.type = 'button';
+  speakBtn.className = 'bubble-action-btn';
+  speakBtn.title = 'Read aloud';
+  speakBtn.innerHTML = '<i data-lucide="volume-2" style="width:14px;height:14px;"></i>';
+  speakBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    _speakBubble(speakBtn, bubble);
+  });
+  actions.appendChild(speakBtn);
+
+  const copyBtn = document.createElement('button');
+  copyBtn.type = 'button';
+  copyBtn.className = 'bubble-action-btn';
+  copyBtn.title = 'Copy text';
+  copyBtn.innerHTML = '<i data-lucide="copy" style="width:14px;height:14px;"></i>';
+  copyBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    _copyBubble(copyBtn, bubble);
+  });
+  actions.appendChild(copyBtn);
+
+  bubble.appendChild(actions);
+  if (window.lucide && typeof window.lucide.createIcons === 'function') {
+    try {
+      window.lucide.createIcons({
+        nodes: Array.from(actions.querySelectorAll('[data-lucide]:not(.lucide)')),
+      });
+    } catch (_) {}
+  }
 }
 
 async function sendStopMessage() {
@@ -165,7 +295,9 @@ function updateLastBubble(text, extraClass, imageUrl) {
     last.appendChild(stopBtn);
   }
   if (extraClass) last.className = 'chat-bubble agent ' + extraClass;
+  else last.classList.remove('streaming');
   app.chatMessages.scrollTop = app.chatMessages.scrollHeight;
+  _addBubbleActions(last);
 }
 
 async function sendMessage() {
@@ -382,6 +514,7 @@ function _setBubbleText(bubble, text, extraClass) {
     bubble.className = 'chat-bubble agent';
   }
   if (app.chatMessages) app.chatMessages.scrollTop = app.chatMessages.scrollHeight;
+  _addBubbleActions(bubble);
 }
 
 // Per-turn in-progress accumulator used by replayed/live WS stream chunks.
