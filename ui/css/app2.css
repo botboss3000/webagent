@@ -399,7 +399,7 @@
   .db-select-dropdown-menu[hidden] { display: none; }
 
   /* In-menu header row: "All databases" master toggle + delete-all */
-  .db-row-header {
+  .db-pick-header {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -410,11 +410,11 @@
     font-weight: 600;
     font-size: 11px;
   }
-  .db-row-header-label {
+  .db-pick-header-label {
     flex: 1;
     cursor: pointer;
   }
-  .db-row-header-trash {
+  .db-pick-header-trash {
     background: transparent;
     border: none;
     color: var(--fg-3);
@@ -425,14 +425,14 @@
     align-items: center;
     flex-shrink: 0;
   }
-  .db-row-header-trash > * { pointer-events: none; }
-  .db-row-header-trash:hover {
+  .db-pick-header-trash > * { pointer-events: none; }
+  .db-pick-header-trash:hover {
     color: var(--danger);
     background: var(--danger-soft);
   }
 
   /* Per-database row */
-  .db-row {
+  .db-pick-row {
     position: relative;
     display: flex;
     align-items: center;
@@ -442,22 +442,22 @@
     cursor: pointer;
     color: var(--fg-1);
   }
-  .db-row:hover { background: var(--bg-elev); }
-  .db-row.selected { background: var(--bg-tint); }
-  .db-row-cb {
+  .db-pick-row:hover { background: var(--bg-elev); }
+  .db-pick-row.selected { background: var(--bg-tint); }
+  .db-pick-cb {
     margin: 0;
     cursor: pointer;
     accent-color: var(--accent);
     flex-shrink: 0;
   }
-  .db-row-title {
+  .db-pick-title {
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .db-row-kebab {
+  .db-pick-kebab {
     background: none;
     border: none;
     color: var(--fg-3);
@@ -468,14 +468,14 @@
     align-items: center;
     flex-shrink: 0;
   }
-  .db-row-kebab > * { pointer-events: none; }
-  .db-row-kebab:hover {
+  .db-pick-kebab > * { pointer-events: none; }
+  .db-pick-kebab:hover {
     background: var(--bg-elev);
     color: var(--fg-1);
   }
 
   /* Kebab popup (parallel to .session-row-actions) */
-  .db-row-actions {
+  .db-pick-actions {
     position: fixed;
     background: var(--bg-1);
     border: 1px solid var(--border);
@@ -485,7 +485,7 @@
     min-width: 140px;
     padding: 4px;
   }
-  .db-row-action {
+  .db-pick-action {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -499,6 +499,6 @@
     border-radius: 4px;
     text-align: left;
   }
-  .db-row-action:hover { background: var(--bg-elev); }
-  .db-row-action.danger { color: var(--danger); }
-  .db-row-action.danger:hover { background: var(--danger-soft); }
+  .db-pick-action:hover { background: var(--bg-elev); }
+  .db-pick-action.danger { color: var(--danger); }
+  .db-pick-action.danger:hover { background: var(--danger-soft); }
