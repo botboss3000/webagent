@@ -10,7 +10,7 @@
   "access_level": "all",
   "discoverable": true,
   "system_prompt": "You are a customer service agent for an online store. Be helpful, polite, and concise.",
-  "max_turn_count": 50,
+  "max_turn_count": 9999,
   "model": null,
   "provider": null,
   "temperature": 0.3,

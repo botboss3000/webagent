@@ -1,0 +1,16 @@
+{
+  "name": "webagent-feedback-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker that relays webAgent user feedback into GitHub issues.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250501.0",
+    "typescript": "^5.4.0",
+    "wrangler": "^3.50.0"
+  }
+}

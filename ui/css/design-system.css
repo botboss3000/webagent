@@ -135,7 +135,6 @@ body.light-mode {
   --shadow-glow:  0 0 0 1px rgba(255,140,66,0.25), 0 12px 32px -8px rgba(255,140,66,0.45);
 }
 
-
 /* ── 3. Body ────────────────────────────────────────────────── */
 body {
   font-family: var(--font-sans);
@@ -158,17 +157,18 @@ body.light-mode {
   color: var(--fg-1);
 }
 
-code, pre, .mono, .t-mono {
+code,
+pre,
+.mono,
+.t-mono {
   font-family: var(--font-mono);
 }
-
 
 /* ── 4. App container gap ───────────────────────────────────── */
 #app-container {
   gap: 0;
   min-height: 0;
 }
-
 
 /* ── 5. Status bar → pill ───────────────────────────────────── */
 #status-bar {
@@ -187,7 +187,6 @@ body.light-mode #status-bar {
   box-shadow: none;
 }
 
-
 /* ── 6. Stage (terminal-side) → floating card ───────────────── */
 #terminal-side {
   background:
@@ -204,13 +203,12 @@ body.light-mode #terminal-side {
   border-color: rgba(180,140,90,0.10);
 }
 
-/* Tab toolbars inside stage — match card, soft divider */
+/* Tab toolbars inside stage — match card,
+soft divider */
 #stream-toolbar,
 #loop-toolbar,
 #db-toolbar,
-#gh-toolbar,
-#loop-visual-toolbar,
-#autoagent-page-nav {
+#loop-visual-toolbar {
   background: transparent;
   border-bottom: 1px solid rgba(255,255,255,0.05);
 }
@@ -218,7 +216,6 @@ body.light-mode #terminal-side {
 body.light-mode #stream-toolbar,
 body.light-mode #loop-toolbar,
 body.light-mode #db-toolbar,
-body.light-mode #gh-toolbar,
 body.light-mode #loop-visual-toolbar {
   background: transparent;
   border-bottom-color: rgba(180,140,90,0.12);
@@ -226,7 +223,6 @@ body.light-mode #loop-visual-toolbar {
 
 #stream-viewer,
 #loop-container,
-#db-viewer,
 #loop-visual-container,
 #autoagent-container {
   background: transparent;
@@ -234,12 +230,10 @@ body.light-mode #loop-visual-toolbar {
 
 body.light-mode #stream-viewer,
 body.light-mode #loop-container,
-body.light-mode #db-viewer,
 body.light-mode #loop-list,
 body.light-mode #stream-list {
   background: transparent;
 }
-
 
 /* ── 7. Chat rail → floating card ───────────────────────────── */
 #chat-side {
@@ -274,7 +268,6 @@ body.light-mode #chat-header {
 body.light-mode #chat-input-area {
   border-top: none;
 }
-
 
 /* ── 8. Chat bubbles — asymmetric radii + shadows ────────────── */
 .chat-bubble {
@@ -315,7 +308,6 @@ body.light-mode .chat-bubble.agent {
   color: var(--fg-2);
 }
 
-
 /* ── 9. Status dots — enhanced glow + scale pulse ────────────── */
 .status-dot.green {
   box-shadow: 0 0 10px #7dcfff, 0 0 3px #7dcfff;
@@ -326,10 +318,10 @@ body.light-mode .chat-bubble.agent {
 }
 
 @keyframes pulse-dot {
-  0%, 100% { opacity: 1;   transform: scale(1);    }
-  50%       { opacity: 0.4; transform: scale(0.82); }
+0%,
+100% { opacity: 1;   transform: scale(1);    }
+50% { opacity: 0.4; transform: scale(0.82); }
 }
-
 
 /* ── 10. Settings / config dropdown — rounded popover ───────── */
 .settings-dropdown-content {
@@ -346,8 +338,8 @@ body.light-mode .chat-bubble.agent {
 }
 
 @keyframes pop-in {
-  from { opacity: 0; transform: translateY(-6px); }
-  to   { opacity: 1; transform: translateY(0);    }
+from { opacity: 0; transform: translateY(-6px); }
+to { opacity: 1; transform: translateY(0);    }
 }
 
 .settings-menu-item {
@@ -374,7 +366,6 @@ body.light-mode .settings-menu-item:hover {
   background: var(--accent-soft);
   color: var(--fg-1);
 }
-
 
 /* ── 11. User dropdown — rounded popover ────────────────────── */
 .user-dropdown-menu {
@@ -404,7 +395,6 @@ body.light-mode .user-dropdown-menu {
   transition: 0.15s;
 }
 
-
 /* ── 12. Status select (tab dropdown) ─────────────────────────── */
 .status-select,
 #main-tab-select {
@@ -422,8 +412,8 @@ body.light-mode #main-tab-select {
   color: var(--fg-1);
 }
 
-
-/* ── 13. Scrollbars — branded, slim ─────────────────────────── */
+/* ── 13. Scrollbars — branded,
+slim ─────────────────────────── */
 * {
   scrollbar-width: thin;
   scrollbar-color: rgba(125,207,255,0.28) transparent;
@@ -483,7 +473,6 @@ body.light-mode *::-webkit-scrollbar-thumb:hover {
     rgba(255,140,66,0.42));
   background-clip: padding-box;
 }
-
 
 /* ── 14. Lucide icon baseline ───────────────────────────────── */
 /* Lucide renders inline SVG — this ensures correct sizing/alignment */
@@ -547,61 +536,78 @@ body.light-mode *::-webkit-scrollbar-thumb:hover {
   color: var(--accent);
   border-color: rgba(125,207,255,0.4);
 }
-#btn-restart { font-size: unset; line-height: unset; }
-
-/* ── Custom tab-select pill button ──────────────────────────── */
-.tab-select-pill {
+/* ── Horizontal main-tabs strip with chevron-scroll carousel ── */
+#main-tabs-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: block;
+}
+#main-tabs {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+#main-tabs::-webkit-scrollbar { display: none; }
+.main-tab {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: rgba(13,13,26,0.7);
-  border: 1px solid rgba(255,255,255,0.06);
-  color: var(--fg-1);
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--fg-2);
   padding: 6px 12px;
   border-radius: 999px;
-  font-size: 12px;
   font-family: inherit;
+  font-size: 12px;
   font-weight: 500;
   cursor: pointer;
+  white-space: nowrap;
   outline: none;
-  transition: border-color 0.15s, color 0.15s;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
-.tab-select-pill:hover {
-  border-color: rgba(125,207,255,0.3);
-  color: #fff;
-}
-
-/* ── Tab-select popup ───────────────────────────────────────── */
-.tab-select-popup {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0)),
-    var(--bg-elev);
-  border: 1px solid rgba(255,255,255,0.06);
-  border-radius: 16px;
-  box-shadow:
-    0 14px 40px -12px rgba(0,0,0,0.6),
-    0 1px 0 rgba(255,255,255,0.04) inset;
-  min-width: 200px;
-  padding: 8px;
-  z-index: 9999;
-  animation: pop-in 0.18s ease;
-}
-.tab-option {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 14px;
+.main-tab .lucide-icon { width: 14px; height: 14px; flex-shrink: 0; }
+.main-tab:hover {
   color: var(--fg-1);
-  font-size: 13px;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+  border-color: rgba(125,207,255,0.25);
 }
-.tab-option:hover  { background: rgba(125,207,255,0.10); color: #fff; }
-.tab-option.active { background: rgba(125,207,255,0.12); color: var(--accent); }
+.main-tab.active {
+  background: rgba(125,207,255,0.12);
+  color: var(--accent);
+  border-color: rgba(125,207,255,0.30);
+}
+.main-tabs-chev {
+  display: none;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 28px;
+  align-items: center;
+  border: none;
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+  z-index: 2;
+}
+.main-tabs-chev.left {
+  left: 0;
+  justify-content: flex-start;
+  background: linear-gradient(to right, var(--bg-0) 55%, transparent 100%);
+}
+.main-tabs-chev.right {
+  right: 0;
+  justify-content: flex-end;
+  background: linear-gradient(to left, var(--bg-0) 55%, transparent 100%);
+}
+.main-tabs-chev.visible { display: flex; }
+.main-tabs-chev:hover { color: var(--fg-1); }
 
 /* ── Settings menu items — gap for icon + text ──────────────── */
 .settings-menu-item { gap: 10px; }
@@ -622,22 +628,30 @@ body.light-mode .icon-btn-pill {
   border-color: rgba(180,140,90,0.12);
 }
 body.light-mode .icon-btn-pill:hover { color: var(--accent); border-color: var(--accent); }
-body.light-mode .tab-select-pill { background: var(--bg-1); border-color: var(--border); color: var(--fg-1); }
-body.light-mode .tab-select-popup { background: #ffffff; border-color: rgba(180,140,90,0.15); box-shadow: var(--shadow-lg); }
-body.light-mode .tab-option:hover  { background: var(--accent-soft); color: var(--fg-1); }
-body.light-mode .tab-option.active { background: var(--accent-soft); color: var(--accent); }
+body.light-mode .main-tab { color: var(--fg-2); }
+body.light-mode .main-tab:hover { background: var(--accent-soft); color: var(--fg-1); border-color: rgba(180,140,90,0.25); }
+body.light-mode .main-tab.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+body.light-mode .main-tabs-chev { color: var(--fg-2); }
+body.light-mode .main-tabs-chev:hover { color: var(--accent); }
+body.light-mode .main-tabs-chev.left {
+  background: linear-gradient(to right, var(--bg-0) 55%, transparent 100%);
+}
+body.light-mode .main-tabs-chev.right {
+  background: linear-gradient(to left, var(--bg-0) 55%, transparent 100%);
+}
 
-/* ── Agents tab — transparent bg, card-aware borders ────────── */
+/* ── Agents tab — transparent bg,
+card-aware borders ────────── */
 #tab-agents { background: transparent; }
-#agents-list-panel   { border-right-color: rgba(255,255,255,0.05); }
-#agents-list-header  { border-bottom-color: rgba(255,255,255,0.05); }
+#agents-list-panel { border-right-color: rgba(255,255,255,0.05); }
+#agents-list-header { border-bottom-color: rgba(255,255,255,0.05); }
 #agents-detail-panel { background: transparent; }
-body.light-mode #agents-list-panel  { border-right-color:  rgba(180,140,90,0.12); }
+body.light-mode #agents-list-panel { border-right-color:  rgba(180,140,90,0.12); }
 body.light-mode #agents-list-header { border-bottom-color: rgba(180,140,90,0.12); }
 
 /* ── Responsive — stack at narrow viewport ───────────────────── */
 @media (max-width: 800px) {
-  #app-container { gap: 10px; }
-  #chat-side     { border-left: none; }
-  body           { padding: 10px; gap: 10px; }
+#app-container { gap: 10px; }
+#chat-side { border-left: none; }
+body { padding: 10px; gap: 10px; }
 }

@@ -14,7 +14,6 @@
   align-items: center;
   justify-content: space-between;
   padding: 14px 20px 12px;
-  border-bottom: 1px solid #1e1e3a;
   flex-shrink: 0;
 }
 #agents-toolbar-title {
@@ -51,6 +50,11 @@
   gap: 12px;
   scrollbar-width: thin;
   scrollbar-color: #2a2a4a transparent;
+  /* Soft fade at the top so cards melt into the page background as they
+     scroll up under the Agent Builder bar — no hard seam between the bar
+     and the first card. */
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 20px, #000 100%);
+          mask-image: linear-gradient(to bottom, transparent 0, #000 20px, #000 100%);
 }
 #agents-grid::-webkit-scrollbar { width: 5px; }
 #agents-grid::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
@@ -141,12 +145,6 @@
 }
 .agent-status-dot.inactive { background: #3a3a5a; }
 
-.agent-card-model {
-  font-size: 11px;
-  color: #565f89;
-  font-family: 'SF Mono', 'Fira Code', monospace;
-}
-
 .agent-card-badge-wrap {
   flex-shrink: 0;
   display: flex;
@@ -159,57 +157,53 @@
   font-size: 12px;
   color: #7a8ab0;
   line-height: 1.5;
-  padding-left: 56px;
-}
-.agent-card-url {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding-left: 56px;
-  margin-top: 4px;
-}
-.agent-url-text {
-  font-size: 11px;
-  color: #565f89;
-  font-family: 'JetBrains Mono', monospace;
+  margin-top: 2px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 340px;
-  user-select: all;
+  overflow-wrap: anywhere;
 }
-.agent-url-copy {
-  background: none;
-  border: 1px solid #2a2a4a;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 12px;
-  padding: 1px 5px;
-  line-height: 1;
-  color: #7a8ab0;
-  transition: border-color 0.15s;
-}
-.agent-url-copy:hover {
-  border-color: #5a6aaa;
-}
+body.light-mode .agent-card-desc { color: #7a5a4a; }
 
-.agent-card-stats {
+/* ── In-card tab carousel (shown when card is expanded) ── */
+.agent-card-tabs {
   display: flex;
   align-items: center;
-  gap: 18px;
-  padding-left: 56px;
-  flex-wrap: wrap;
+  gap: 0;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  min-width: 0;
+  margin: 4px -18px -16px;
+  padding: 0 12px;
+  border-top: 1px solid #1e1e3a;
 }
-.agent-stat {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11px;
+body.light-mode .agent-card-tabs { border-top-color: #ffdec4; }
+.agent-card-tabs::-webkit-scrollbar { display: none; }
+.agent-card-tabs .agents-detail-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
   color: #565f89;
-  font-weight: 500;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
-.agent-stat-icon { font-size: 12px; opacity: 0.7; }
-.agent-stat-time { margin-left: auto; }
+.agent-card-tabs .agents-detail-tab:hover  { color: #c0caf5; }
+.agent-card-tabs .agents-detail-tab.active { color: #7aa2f7; border-bottom-color: #7aa2f7; }
+
+body.light-mode .agent-card-tabs .agents-detail-tab        { color: #b09580; }
+body.light-mode .agent-card-tabs .agents-detail-tab:hover  { color: #3d2c2e; }
+body.light-mode .agent-card-tabs .agents-detail-tab.active { color: #ff8c42; border-bottom-color: #ff8c42; }
 
 /* ── Badges ── */
 .agent-badge {
@@ -297,81 +291,6 @@ body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; co
 .agents-btn.danger:hover { background: #2a1a1a; }
 .agents-btn.default-active { border-color: #7dcfff; color: #7dcfff; background: #1a2a2a; }
 
-.agent-detail-tabs-wrap {
-  position: relative;
-  display: block;
-  border-bottom: 1px solid #2a2a4a;
-  flex-shrink: 0;
-}
-.agent-detail-tabs {
-  display: flex;
-  min-width: 0;
-  padding: 0 18px;
-  overflow-x: auto;
-  scroll-behavior: smooth;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-.agent-detail-tabs::-webkit-scrollbar { display: none; }
-.agents-detail-tab {
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: #565f89;
-  padding: 8px 14px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  font-family: inherit;
-  transition: color 0.15s, border-color 0.15s;
-  margin-bottom: -1px;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-.agents-detail-tab:hover { color: #c0caf5; }
-.agents-detail-tab.active { color: #7aa2f7; border-bottom-color: #7aa2f7; }
-
-.agent-detail-tabs-chev {
-  display: none;
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  color: #7aa2f7;
-  cursor: pointer;
-  font-size: 14px;
-  width: 36px;
-  padding: 0;
-  font-family: inherit;
-  z-index: 2;
-}
-.agent-detail-tabs-chev.left {
-  left: 0;
-  justify-content: flex-start;
-  padding-left: 4px;
-  background: linear-gradient(to right, #0f0f22 50%, rgba(15, 15, 34, 0) 100%);
-}
-.agent-detail-tabs-chev.right {
-  right: 0;
-  justify-content: flex-end;
-  padding-right: 4px;
-  background: linear-gradient(to left, #0f0f22 50%, rgba(15, 15, 34, 0) 100%);
-}
-.agent-detail-tabs-chev.visible { display: flex; }
-.agent-detail-tabs-chev:hover { color: #c0caf5; }
-
-body.light-mode .agent-detail-tabs-wrap { border-bottom-color: #ffdec4; }
-body.light-mode .agent-detail-tabs-chev { color: #ff8c42; }
-body.light-mode .agent-detail-tabs-chev:hover { color: #cc6a28; }
-body.light-mode .agent-detail-tabs-chev.left {
-  background: linear-gradient(to right, #fff7f0 55%, rgba(255, 247, 240, 0) 100%);
-}
-body.light-mode .agent-detail-tabs-chev.right {
-  background: linear-gradient(to left, #fff7f0 55%, rgba(255, 247, 240, 0) 100%);
-}
-
 .agent-detail-body {
   flex: 1;
   min-height: 0; /* required for overflow-y: auto to work inside a flex child */
@@ -382,6 +301,22 @@ body.light-mode .agent-detail-tabs-chev.right {
 }
 .agent-detail-body::-webkit-scrollbar { width: 5px; }
 .agent-detail-body::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+
+/* ── Agent Builder page-level chat bar ──
+   Sits between #agents-toolbar and #agents-grid, page-wide chat entry that
+   hands off to the built-in agent-builder system agent.
+   CHAT-PILL-SYNC: pill geometry, focus state, attach/voice/send buttons,
+   has-text swap, and light-mode colors all come from the shared .chat-pill*
+   block in ui/css/app1.css. Only wrapper-specific rules belong here. */
+#agent-builder-bar {
+  margin: 0 20px;
+}
+/* Two-line tall textarea for the page-level builder bar (taller than the
+   web chat default). */
+#agent-builder-bar-input {
+  min-height: 52px;
+  max-height: 160px;
+}
 
 /* ── Config fields ── */
 .agents-field-group { margin-bottom: 20px; }
@@ -663,7 +598,6 @@ body.light-mode .agents-test-loop .lv-node.lv-error  { border-color: #cc4455 !im
 
 /* ── Light mode ── */
 body.light-mode #tab-agents           { background: #fffaf5; }
-body.light-mode #agents-toolbar       { border-bottom-color: #ffdec4; }
 body.light-mode #agents-toolbar-title { color: #3d2c2e; }
 body.light-mode #agents-toolbar-sub   { color: #d0b0a0; }
 body.light-mode #btn-new-agent        { background: #ff8c42; color: #fff; }
@@ -674,12 +608,6 @@ body.light-mode .agent-card.active    { border-color: #ff8c42; }
 body.light-mode .agent-row .agent-card.active { border-bottom-color: #ffdec4; }
 body.light-mode .agent-detail-panel   { background: #fff7f0; border-color: #ff8c42; }
 body.light-mode .agent-card-name      { color: #3d2c2e; }
-body.light-mode .agent-card-model     { color: #b09080; }
-body.light-mode .agent-card-desc      { color: #7a5a4a; }
-body.light-mode .agent-url-text       { color: #9a8a7a; }
-body.light-mode .agent-url-copy       { border-color: #d0c0b0; color: #7a5a4a; }
-body.light-mode .agent-url-copy:hover { border-color: #a08060; }
-body.light-mode .agent-stat           { color: #b09080; }
 body.light-mode .agent-badge.system   { background: #f0fff0; color: #3a7a3a; border-color: #c0e0c0; }
 body.light-mode .agent-badge.custom   { background: #fff2e6; color: #cc6a28; border-color: #ffdec4; }
 body.light-mode .agent-badge.admin    { background: #fff0f0; color: #cc3333; border-color: #ffcccc; }
@@ -690,9 +618,6 @@ body.light-mode .agents-btn:hover     { background: #ffeee0; border-color: #ff8c
 body.light-mode .agents-btn.primary   { background: #fff2e6; border-color: #ff8c42; color: #cc6a28; }
 body.light-mode .agents-btn.danger    { border-color: #cc3333; color: #cc3333; }
 body.light-mode .agents-btn.default-active { border-color: #2288aa; color: #2288aa; background: #e6f8ff; }
-body.light-mode .agent-detail-tabs    { border-bottom-color: #ffdec4; }
-body.light-mode .agents-detail-tab    { color: #b09580; }
-body.light-mode .agents-detail-tab.active { color: #ff8c42; border-bottom-color: #ff8c42; }
 body.light-mode .agents-field-label   { color: #cc6a28; }
 body.light-mode .agents-textarea      { background: #fffaf5; border-color: #ffdec4; color: #3d2c2e; }
 body.light-mode .agents-textarea:focus { border-color: #ff8c42; }

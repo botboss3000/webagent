@@ -10,7 +10,7 @@
   "access_level": "all",
   "discoverable": true,
   "system_prompt": "You are a personal productivity assistant. Help manage email, calendar, tasks, and research.",
-  "max_turn_count": 100,
+  "max_turn_count": 9999,
   "model": null,
   "provider": null,
   "temperature": 0.5,

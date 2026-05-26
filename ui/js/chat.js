@@ -16,6 +16,10 @@ function _canChat() {
 const _CHAT_LOCK_PLACEHOLDER = 'Sign in to chat — this app does not allow anonymous use.';
 let _origChatPlaceholder = '';
 
+// CHAT-PILL-SYNC: this is the web chat's has-text toggle. The same pattern is
+// implemented for #agent-builder-bar-row in ui/js/agents.js (_bindAgentBuilderBar)
+// and for #autoagent-prompt-row in ui/js/autoagent.js (initAutoAgent). All four
+// pills share the .chat-pill* CSS in ui/css/app1.css.
 function _updateInputRowState() {
   if (!app.chatInput) return;
   const row = document.getElementById('chat-input-row');
