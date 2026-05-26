@@ -18,8 +18,11 @@ let pages = [];
 export function initAutoAgent() {
   app._autoAgentHandler = handleEvent;
 
-  const input   = document.getElementById('autoagent-prompt-input');
-  const sendBtn = document.getElementById('autoagent-send-btn');
+  const input    = document.getElementById('autoagent-prompt-input');
+  const row      = document.getElementById('autoagent-prompt-row');
+  const sendBtn  = document.getElementById('autoagent-send-btn');
+  const attachBtn = document.getElementById('autoagent-attach-btn');
+  const voiceBtn  = document.getElementById('autoagent-voice-btn');
   const newBtn  = document.getElementById('autoagent-new-page-btn');
   const delBtn  = document.getElementById('autoagent-delete-page-btn');
   const select  = document.getElementById('autoagent-page-select');
@@ -30,6 +33,30 @@ export function initAutoAgent() {
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendPrompt(); }
   });
+
+  // Swap voice/send button visibility based on whether the textarea has
+  // content. Mirrors #agent-builder-bar-row and #chat-input-row behavior.
+  if (row) {
+    const sync = () => {
+      row.classList.toggle('has-text', input.value.trim().length > 0);
+    };
+    input.addEventListener('input', sync);
+  }
+
+  // Forward attach and voice to the main chat composer's existing handlers
+  // so we don't duplicate the file-picker / recorder logic.
+  if (attachBtn) {
+    attachBtn.addEventListener('click', () => {
+      const mainAttach = document.getElementById('chat-attach-btn');
+      if (mainAttach) mainAttach.click();
+    });
+  }
+  if (voiceBtn) {
+    voiceBtn.addEventListener('click', () => {
+      const mainVoice = document.getElementById('chat-voice-btn');
+      if (mainVoice) mainVoice.click();
+    });
+  }
 
   if (newBtn)  newBtn.addEventListener('click', () => showNewPageDialog());
   if (delBtn)  delBtn.addEventListener('click', () => confirmDeletePage());
@@ -219,6 +246,8 @@ async function sendPrompt() {
 
   // Clear the dashboard input and drive the main chat input.
   input.value = '';
+  const row = document.getElementById('autoagent-prompt-row');
+  if (row) row.classList.remove('has-text');
   sendBtn.disabled = false;
   updateStatus('Visualizer is on the chat →');
 
