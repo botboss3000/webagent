@@ -1262,6 +1262,17 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 .files-terminal-host .xterm-viewport::-webkit-scrollbar { width: 6px; }
 .files-terminal-host .xterm-viewport::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
 
+/* No-wrap mode: xterm's cols are pinned wide (NOWRAP_COLS in terminal.js),
+   so the .xterm element renders wider than the host. Letting the host
+   scroll horizontally exposes the off-screen content. */
+.files-terminal-host.files-terminal-host-nowrap {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.files-terminal-host.files-terminal-host-nowrap::-webkit-scrollbar { height: 8px; }
+.files-terminal-host.files-terminal-host-nowrap::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+.files-terminal-host.files-terminal-host-nowrap { scrollbar-width: thin; scrollbar-color: #2a2a4a transparent; }
+
 /* Drop-target highlight when the user drags a file tree row onto a terminal.
    The host accepts text/plain (the absolute path) and pastes it shell-quoted
    into the PTY's input stream. */
