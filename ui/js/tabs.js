@@ -1,6 +1,5 @@
 'use strict';
 
-import { startStream, stopStream } from './stream.js';
 import { startLoop, stopLoop, setLoopLevel, toggleAutoScroll } from './loop.js';
 import { startLoopVisual, stopLoopVisual } from './loop-logic.js';
 import { startAutoAgent, stopAutoAgent } from './autoagent.js';
@@ -35,6 +34,8 @@ export function initTabs() {
       tabValue = 'admin-tools';
       try { localStorage.setItem('files.sidebarView', 'database'); } catch (_) {}
     }
+    // Back-compat: 'stream' was removed in favor of 'flow', which is better.
+    if (tabValue === 'stream') tabValue = 'flow';
 
     document.querySelectorAll('.tab-content').forEach((c) => c.classList.remove('active'));
     const targetContent = document.getElementById('tab-' + tabValue);
@@ -63,43 +64,31 @@ export function initTabs() {
       setChatSideVisible(visible);
     }
 
-    if (tabValue === 'stream') {
-      stopLoop();
-      stopLoopVisual();
-      stopAutoAgent();
-      stopAgents();
-      stopAdminTools();
-      startStream();
-    } else if (tabValue === 'flow') {
-      stopStream();
+    if (tabValue === 'flow') {
       stopLoopVisual();
       stopAutoAgent();
       stopAgents();
       stopAdminTools();
       startLoop();
     } else if (tabValue === 'loop-visual') {
-      stopStream();
       stopLoop();
       stopAutoAgent();
       stopAgents();
       stopAdminTools();
       startLoopVisual();
     } else if (tabValue === 'autoagent') {
-      stopStream();
       stopLoop();
       stopLoopVisual();
       stopAgents();
       stopAdminTools();
       startAutoAgent();
     } else if (tabValue === 'agents') {
-      stopStream();
       stopLoop();
       stopLoopVisual();
       stopAutoAgent();
       stopAdminTools();
       startAgents();
     } else if (tabValue === 'account') {
-      stopStream();
       stopLoop();
       stopLoopVisual();
       stopAutoAgent();
@@ -107,7 +96,6 @@ export function initTabs() {
       stopAdminTools();
       startAccount();
     } else if (tabValue === 'admin-tools') {
-      stopStream();
       stopLoop();
       stopLoopVisual();
       stopAutoAgent();

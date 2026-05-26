@@ -207,7 +207,6 @@ body.light-mode #terminal-side {
 
 /* Tab toolbars inside stage — match card,
 soft divider */
-#stream-toolbar,
 #loop-toolbar,
 #db-toolbar,
 #loop-visual-toolbar {
@@ -215,7 +214,6 @@ soft divider */
   border-bottom: 1px solid rgba(255,255,255,0.05);
 }
 
-body.light-mode #stream-toolbar,
 body.light-mode #loop-toolbar,
 body.light-mode #db-toolbar,
 body.light-mode #loop-visual-toolbar {
@@ -223,17 +221,14 @@ body.light-mode #loop-visual-toolbar {
   border-bottom-color: rgba(180,140,90,0.12);
 }
 
-#stream-viewer,
 #loop-container,
 #loop-visual-container,
 #autoagent-container {
   background: transparent;
 }
 
-body.light-mode #stream-viewer,
 body.light-mode #loop-container,
-body.light-mode #loop-list,
-body.light-mode #stream-list {
+body.light-mode #loop-list {
   background: transparent;
 }
 
