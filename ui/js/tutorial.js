@@ -119,6 +119,9 @@ export function setPageEnabled(pageId, enabled) {
 export function setGlobalEnabled(enabled) {
   const p = _loadPrefs();
   p.globalEnabled = !!enabled;
+  // Re-enabling globally wipes any per-page dismissals from the popover's
+  // "Hide hints on this page" checkbox, so the user sees every hint again.
+  if (p.globalEnabled) p.pages = {};
   _savePrefs(p);
   refreshTutorial(_currentPage);
 }
