@@ -28,74 +28,41 @@ const PAGE_LABELS = {
   'chat':        'Chat Panel',
 };
 
+// Hints are deliberately sparse — at most two per page, each one covering a
+// cluster of related features. The bar for adding a new hint is: would a
+// first-time user be stuck without it? Obvious things (text inputs, send
+// buttons, paperclip = attach, mic = voice, save buttons that say "Save") get
+// no hint. We point at things that are non-obvious or have consequences.
 const HINTS = {
   'admin-tools': [
-    { selector: '.files-strip-view[data-view="explorer"]', title: 'File manager',
-      body: 'Browse the project tree. Click any file to open it in the editor; right-click for rename, delete and other actions.' },
-    { selector: '.files-strip-view[data-view="git"]', title: 'Source control',
-      body: 'See changed files, commit with a message, push, pull, switch branches and view recent commit history — all in one panel.' },
-    { selector: '.files-strip-view[data-view="database"]', title: 'Database viewer',
-      body: 'Inspect tables, refresh rows after the agent writes, switch between local databases and reset selected tables.' },
-    { selector: '.files-strip-view[data-view="terminal"]', title: 'Terminal launcher',
-      body: 'Opens the launcher panel with quick launches, live tmux sessions, and a "New terminal" button. Terminal tabs live in their own main panel, independent of the file editor.' },
-    { selector: '.files-strip-view[data-view="interactions"]', title: 'Interactions',
-      body: 'Step-by-step view of what the agent is doing — model calls, tool invocations, results. Toggle Basic / Detailed / Debug to control the noise.' },
-    { selector: '.files-strip-view[data-view="runtime-loop"]', title: 'Runtime loop',
-      body: 'Live graph of the agent loop. Nodes light up as the agent reaches them — handy for spotting branches and loops at a glance.' },
+    { selector: '.files-sidebar-strip', title: 'Sidebar views',
+      body: 'These icons switch between the file explorer, source control, database viewer, terminal launcher, interactions log and the runtime-loop graph. Each one opens in its own main panel, so you can leave a terminal running while you browse files.' },
     { selector: '.files-settings-toggle-btn', title: 'Admin configuration',
-      body: 'App Settings, User Management, default LLM, Agent Abilities, Optimizer, Git, Automation, Events.' },
-    { selector: '#files-new-file', title: 'New file',
-      body: 'Create a new file in the currently selected folder.' },
-    { selector: '#files-new-folder', title: 'New folder',
-      body: 'Create a new folder under the currently selected directory.' },
+      body: 'Behind the gear: App Settings, User Management, default LLM, Agent Abilities, Optimizer, Git, Automation and Events — most of the global app config lives here.' },
   ],
 
   autoagent: [
-    { selector: '#autoagent-new-page-btn', title: 'New AutoAgent page',
-      body: 'Create a new generated page. Each page is built and updated by the agent from your prompts.' },
-    { selector: '#autoagent-page-dropdown-trigger', title: 'Switch pages',
-      body: 'Hop between your existing generated pages. Each row has a ⋮ menu for rename and delete.' },
-    { selector: '#autoagent-prompt-input', title: 'Describe what to build',
-      body: 'Type a natural-language instruction — e.g. "add a dashboard with three stat cards" — and the agent will edit the page for you.' },
-    { selector: '#autoagent-send-btn', title: 'Send to the agent',
-      body: 'Submits your prompt. Watch the iframe below update as the agent applies the change.' },
-    { selector: '#autoagent-iframe', title: 'Live preview',
-      body: 'The current state of your page renders here. Refreshes automatically after each agent edit.' },
+    { selector: '#autoagent-page-dropdown-trigger', title: 'Pages',
+      body: 'Switch between your generated pages here, or use + to start a new one. Each row has a ⋮ menu for rename and delete.' },
+    { selector: '#autoagent-prompt-input', title: 'Build with prompts',
+      body: 'Describe a change in plain English — e.g. "add a dashboard with three stat cards" — and the agent edits the page. The preview below refreshes automatically after each change.' },
   ],
 
   agents: [
-    { selector: '#btn-new-agent', title: 'Step 1 — Create an agent',
-      body: 'Click here to create a new agent. Pick a template to start from a known-good config, or start blank for full control.' },
-    { selector: '#agents-grid', title: 'Step 2 — Open an agent card',
-      body: 'Each card represents one agent. Click any card to expand it and see its prompts, abilities, model and stats.' },
-    { selector: 'body', title: 'Step 3 — Edit the system prompt',
-      body: 'Inside an expanded agent you can edit slot-based prompts (persona, instructions, etc.) and save per-user overrides.',
-      anchor: { selector: '#agents-grid', position: 'inside-top-right' } },
-    { selector: 'body', title: 'Step 4 — Grant abilities',
-      body: 'In the Agent Tools / Abilities section you can toggle which tools the agent is allowed to call. Some require confirmation before running.',
-      anchor: { selector: '#agents-grid', position: 'inside-bottom-right' } },
+    { selector: '#btn-new-agent', title: 'Create an agent',
+      body: 'Start from a template for a known-good config (model, abilities and system prompts pre-filled), or start blank for full control.' },
+    { selector: '#agents-grid', title: 'Customize an agent',
+      body: 'Click any card to expand it. Inside you can edit slot-based system prompts (persona, instructions, etc.), toggle which abilities the agent is allowed to call, and pick its model. Some abilities require confirmation before each run.' },
   ],
 
   account: [
-    { selector: '#account-save-profile', title: 'Update your profile',
-      body: 'Change your email/username or display name, then click Save changes.' },
-    { selector: '#account-change-password', title: 'Change password',
-      body: 'Type your current password and a new one (twice). Other browsers stay signed in until they expire.' },
-    { selector: '#account-delete-trigger', title: 'Delete your account',
-      body: 'Permanently removes your account, sessions and data. Requires password confirmation — no undo.' },
+    { selector: '#account-delete-trigger', title: 'Delete account',
+      body: 'Permanently removes your account, sessions and data. Requires your password — no undo. (Profile and password changes above just need their Save buttons.)' },
   ],
 
   chat: [
-    { selector: '#agent-dropdown-trigger', title: 'Pick the agent',
-      body: 'Choose which agent this chat sends to. Switch any time — the conversation stays in the current session.' },
-    { selector: '#session-dropdown-trigger', title: 'Sessions',
-      body: 'Each session is a separate conversation thread with its own history. Create a new one to start fresh.' },
-    { selector: '#chat-attach-btn', title: 'Attach files',
-      body: 'Send images, audio, PDFs or text files alongside your prompt. You can also drag-and-drop into the chat.' },
-    { selector: '#chat-input', title: 'Talk to the agent',
-      body: 'Type your message. Enter sends; Shift+Enter inserts a newline. Click the expand button (top-right) for a full-screen editor.' },
-    { selector: '#chat-voice-btn', title: 'Voice input',
-      body: 'Record a voice message and the agent will transcribe and respond.' },
+    { selector: '#agent-dropdown-trigger', title: 'Agent + sessions',
+      body: 'The top dropdowns pick which agent answers and which session (a separate conversation thread with its own history) you’re in. Switching agents mid-session is fine — the thread stays put.' },
   ],
 };
 
