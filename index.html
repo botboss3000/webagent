@@ -336,10 +336,10 @@
   <select id="main-tab-select" style="display:none;" aria-hidden="true">
     <option value="admin-tools">Admin Tools</option>
     <option value="autoagent" selected>Dashboard</option>
+    <option value="agents">Agents</option>
     <option value="stream">Stream</option>
     <option value="flow">Flow</option>
     <option value="loop-visual">Runtime Loop</option>
-    <option value="agents">Agents</option>
     <option value="account">Manage Account</option>
   </select>
 
@@ -353,6 +353,9 @@
       <button type="button" class="main-tab active" data-value="autoagent" role="tab">
         <i data-lucide="palette" class="lucide-icon"></i>Dashboard
       </button>
+      <button type="button" class="main-tab" data-value="agents" role="tab">
+        <i data-lucide="bot" class="lucide-icon"></i>Agents
+      </button>
       <button type="button" class="main-tab" data-value="stream" role="tab">
         <i data-lucide="radio-tower" class="lucide-icon"></i>Stream
       </button>
@@ -361,9 +364,6 @@
       </button>
       <button type="button" class="main-tab" data-value="loop-visual" role="tab">
         <i data-lucide="repeat" class="lucide-icon"></i>Runtime Loop
-      </button>
-      <button type="button" class="main-tab" data-value="agents" role="tab">
-        <i data-lucide="bot" class="lucide-icon"></i>Agents
       </button>
     </div>
     <button type="button" id="main-tabs-chev-right" class="main-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
