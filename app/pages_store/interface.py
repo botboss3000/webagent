@@ -2,7 +2,7 @@
 Abstract page-store backend.
 
 A PageStore owns the persistence of AutoAgent pages — the per-user HTML
-documents rendered into the Dashboard iframe and edited via the page-builder.
+documents rendered into the Pages tab iframe and edited via the page-builder.
 
 Implementations:
   - FilesystemPageStore   files on disk at visuals/users/{uid}/{slug}.html

@@ -22,7 +22,7 @@ const TICK_MS = 500;
 
 const PAGE_LABELS = {
   'admin-tools': 'Admin Tools',
-  'autoagent':   'Dashboard',
+  'autoagent':   'Pages',
   'agents':      'Agents',
   'account':     'Manage Account',
   'chat':        'Chat Panel',

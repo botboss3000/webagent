@@ -25,7 +25,7 @@ function _icon(name) { return _ICON_SVGS[name] || ''; }
 
 // ── Init & lifecycle ──────────────────────────────────────────────────────────
 
-// CHAT-PILL-SYNC: this init wires the dashboard's chat pill. The same wiring
+// CHAT-PILL-SYNC: this init wires the Pages tab's chat pill. The same wiring
 // pattern (has-text toggle, attach/voice forwarders, enter-to-send) lives in
 // ui/js/chat.js (web chat) and ui/js/agents.js (_bindAgentBuilderBar). Shared
 // CSS for all three pills is in ui/css/app1.css under ".chat-pill".
@@ -392,7 +392,7 @@ async function _createVisualizerAgent(userId) {
     body: JSON.stringify({
       user_id: userId,
       name: 'Visualizer',
-      description: 'Builds and edits the HTML pages shown in the Dashboard.',
+      description: 'Builds and edits the HTML pages shown in the Pages tab.',
       template_id: VISUALIZER_TEMPLATE_ID,
     }),
   });
@@ -454,7 +454,7 @@ async function sendPrompt() {
     try { localStorage.setItem('selectedAgentId', agentId); } catch (_) {}
   }
 
-  // Clear the dashboard input and drive the main chat input.
+  // Clear the Pages tab input and drive the main chat input.
   input.value = '';
   const row = document.getElementById('autoagent-prompt-row');
   if (row) row.classList.remove('has-text');

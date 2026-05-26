@@ -454,7 +454,7 @@ function _buildDetailPanel(agent) {
 // Persistent textarea + send button at the top of every agent detail body.
 // Submitting a prompt hands the conversation off to the built-in `agent-builder`
 // system agent (find-or-created on first send), then injects the message into
-// the main chat composer. Mirrors the dashboard Visualizer pattern in
+// the main chat composer. Mirrors the Pages tab Visualizer pattern in
 // ui/js/autoagent.js:129-232.
 
 async function _findAgentBuilderAgent(userId) {
@@ -536,7 +536,7 @@ async function _sendAgentBuilderPrompt() {
 
 // CHAT-PILL-SYNC: binds the Agents-page chat pill. The same wiring pattern
 // (has-text toggle, attach/voice forwarders, enter-to-send) lives in
-// ui/js/chat.js (web chat) and ui/js/autoagent.js (dashboard). Shared CSS
+// ui/js/chat.js (web chat) and ui/js/autoagent.js (Pages tab). Shared CSS
 // for all three pills is in ui/css/app1.css under ".chat-pill".
 let _agentBuilderBarBound = false;
 function _bindAgentBuilderBar() {
