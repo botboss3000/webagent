@@ -12,11 +12,6 @@ const INITIAL_RECONNECT_DELAY = 500; // 500ms first retry
 const DEFAULT_FONT_SIZE = 14;
 const MIN_FONT_SIZE = 8;
 const MAX_FONT_SIZE = 32;
-// When wrap is OFF we lock xterm's cols to this width so long lines extend
-// beyond the visible area; the host CSS adds a horizontal scrollbar so the
-// user can pan to the rest. 200 is wide enough for almost any real output
-// without producing a giant DOM.
-const NOWRAP_COLS = 200;
 
 export function createTerminalInstance(container, sessionId, opts) {
   if (!sessionId) {
@@ -200,31 +195,24 @@ export function createTerminalInstance(container, sessionId, opts) {
   }
 
   function fit() {
+    // Always size to the host element. In WRAP mode the host width equals
+    // the scroll wrapper, so cols match the visible area and shell output
+    // wraps naturally. In NO-WRAP mode the host is sized wider than its
+    // parent via CSS (.files-terminal-host-nowrap), so fitAddon computes
+    // a larger cols value and the scroll wrapper exposes the overflow as
+    // a horizontal scrollbar.
     try {
-      if (wrap) {
-        fitAddon.fit();
-      } else {
-        // No-wrap mode: pin cols at NOWRAP_COLS so the shell stops wrapping;
-        // we still need to keep rows in sync with the host's vertical size,
-        // so ask the fitter for what it WOULD set and use just the rows.
-        const proposed = fitAddon.proposeDimensions();
-        const rows = (proposed && proposed.rows && proposed.rows > 0) ? proposed.rows : term.rows;
-        term.resize(NOWRAP_COLS, rows);
-      }
+      fitAddon.fit();
       _sendResize();
     } catch (_) {}
   }
 
   function setWrap(on) {
-    const next = !!on;
-    if (next === wrap) return;
-    wrap = next;
-    // Toggle the host CSS class that switches overflow-x. The class lives
-    // on the parent of the xterm root, which is the container we were
-    // given at construction time.
-    if (container && container.classList) {
-      container.classList.toggle('files-terminal-host-nowrap', !wrap);
-    }
+    // Wrap mode is now driven entirely by CSS classes on the host + its
+    // scroll wrapper (set by files.js). This setter just tracks the
+    // current state so getWrap() reports correctly and a subsequent fit()
+    // measures the updated host width.
+    wrap = !!on;
     fit();
   }
   function getWrap() { return wrap; }
@@ -328,13 +316,9 @@ export function createTerminalInstance(container, sessionId, opts) {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(text);
   }
 
-  // Apply initial wrap state to the host class (matches the renderer's
-  // overflow-x rule). Defer until after term.open() has wired up the DOM.
-  if (!wrap && container && container.classList) {
-    container.classList.add('files-terminal-host-nowrap');
-  }
-  // First sizing — uses the wrap-aware path so a restored no-wrap tab
-  // starts with locked cols.
+  // CSS classes for wrap mode are applied by the caller (files.js) on the
+  // host and its scroll wrapper before term.open() runs, so the initial
+  // fit() below already measures the right host width.
   fit();
 
   connect();
