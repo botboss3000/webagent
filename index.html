@@ -2685,6 +2685,52 @@
               </div>
             </div>
           </div>
+
+          <!-- Interactions panel: event-type filter toggles + turn list.
+               loop.js populates the lists; click a turn to scroll the main
+               timeline to it. -->
+          <div class="files-sidebar-panel" id="files-panel-interactions" data-view="interactions" hidden>
+            <div class="files-sidebar-header">
+              <div class="files-sidebar-actions">
+                <button class="files-icon-btn" id="ix-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
+              </div>
+            </div>
+            <div class="ix-body">
+              <div class="ix-section">
+                <div class="ix-section-title">Event types</div>
+                <div class="ix-filters" id="ix-filters"></div>
+              </div>
+              <div class="ix-section">
+                <div class="ix-section-title">Turns</div>
+                <div class="ix-turns" id="ix-turns">
+                  <div class="ix-empty">No turns yet</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Runtime Loop panel: run-history scrubber + node list.
+               loop-logic.js populates both. Click a run to replay that
+               page; click a node to focus + open its overlay. -->
+          <div class="files-sidebar-panel" id="files-panel-runtime-loop" data-view="runtime-loop" hidden>
+            <div class="files-sidebar-header">
+              <div class="files-sidebar-actions">
+                <button class="files-icon-btn" id="rl-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
+              </div>
+            </div>
+            <div class="rl-body">
+              <div class="rl-section">
+                <div class="rl-section-title">Run history</div>
+                <div class="rl-pages" id="rl-pages">
+                  <div class="rl-empty">No runs yet</div>
+                </div>
+              </div>
+              <div class="rl-section">
+                <div class="rl-section-title">Nodes</div>
+                <div class="rl-nodes" id="rl-nodes"></div>
+              </div>
+            </div>
+          </div>
         </aside>
 
         <!-- Resize handle between sidebar and editor -->

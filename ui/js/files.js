@@ -13,8 +13,8 @@ import { createTerminalInstance } from './terminal.js';
 import { randomUUID } from './uuid.js';
 import { startAppConfig, stopAppConfig } from './app-config.js';
 import { startAutoRefresh, stopAutoRefresh } from './db/pagination.js';
-import { startLoop, stopLoop } from './loop.js';
-import { startLoopVisual, stopLoopVisual } from './loop-logic.js';
+import { startLoop, stopLoop, renderInteractionsSidebar } from './loop.js';
+import { startLoopVisual, stopLoopVisual, renderRuntimeLoopSidebar } from './loop-logic.js';
 
 const API_BASE = '/api/v1/files';
 const LS_SIDEBAR_VIEW = 'files.sidebarView';   // 'explorer' | 'git' | 'database'
@@ -2654,11 +2654,13 @@ function applySidebarView(view) {
   }
   if (view === 'interactions') {
     try { startLoop(); } catch (_) {}
+    try { renderInteractionsSidebar(); } catch (_) {}
   } else {
     try { stopLoop(); } catch (_) {}
   }
   if (view === 'runtime-loop') {
     try { startLoopVisual(); } catch (_) {}
+    try { renderRuntimeLoopSidebar(); } catch (_) {}
   } else {
     try { stopLoopVisual(); } catch (_) {}
   }

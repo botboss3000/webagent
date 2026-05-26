@@ -92,6 +92,7 @@ export function startLoopVisual() {
 
   area.innerHTML = '<div class="loop-visual-hint">Loading loop historyâ€¦</div>';
   pagesContainer.innerHTML = '';
+  try { renderRuntimeLoopSidebar(); } catch (_) {}
 
   fetchLoopHistory();
 }
@@ -149,6 +150,7 @@ function processEvent(event) {
       _renderTimer = null;
       renderPage(currentPageIdx);
       updatePageSummary(currentPageIdx);
+      try { renderRuntimeLoopSidebar(); } catch (_) {}
     });
   }
 }
@@ -271,6 +273,7 @@ function startNewPage(turnNum) {
   renderPage(currentPageIdx);
   updatePageSummary(currentPageIdx);
   selectPage(currentPageIdx);
+  try { renderRuntimeLoopSidebar(); } catch (_) {}
 }
 
 function selectPage(idx) {
@@ -284,6 +287,7 @@ function selectPage(idx) {
   hideToolPanel(); // close panel on explicit page switch
   renderPage(idx);
   updatePageSummary(idx);
+  try { renderRuntimeLoopSidebar(); } catch (_) {}
 }
 
 function renderPageButtons() {
@@ -898,4 +902,104 @@ export function loopVisualSessionChanged() {
   eventBuffer = [];
 
   fetchLoopHistory();
+  renderRuntimeLoopSidebar();
+}
+
+// ── Runtime Loop sidebar ──────────────────────────────────────────
+//
+// Two lists: run-history scrubber (each row replays a past page) and a
+// node directory (click a row to scroll the node into view + open its
+// overlay panel). Cheap to re-render — called on every page boundary
+// and on selectPage.
+
+function _rlEscape(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function _rlRelativeTime(ts) {
+  if (!ts) return '';
+  const dt = Date.now() - ts;
+  if (dt < 0) return 'now';
+  const s = Math.floor(dt / 1000);
+  if (s < 60) return s + 's ago';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ago';
+  return Math.floor(h / 24) + 'd ago';
+}
+
+function renderRunHistoryList() {
+  const host = document.getElementById('rl-pages');
+  if (!host) return;
+  if (!pages.length) {
+    host.innerHTML = '<div class="rl-empty">No runs yet</div>';
+    return;
+  }
+  host.innerHTML = '';
+  pages.forEach((p, i) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'rl-row rl-page-row' + (i === currentPageIdx ? ' active' : '');
+    row.dataset.idx = String(i);
+    const label = p.turnNum <= 1 ? 'Initial' : ('Turn ' + (p.turnNum - 1));
+    row.innerHTML =
+      '<span class="rl-row-num">#' + _rlEscape(String(p.turnNum)) + '</span>' +
+      '<span class="rl-row-label">' + _rlEscape(label) + '</span>' +
+      '<span class="rl-row-meta">' + (p.events ? p.events.length : 0) + ' ev · ' + _rlEscape(_rlRelativeTime(p.ts)) + '</span>';
+    row.addEventListener('click', () => selectPage(i));
+    host.appendChild(row);
+  });
+}
+
+function renderNodesList() {
+  const host = document.getElementById('rl-nodes');
+  if (!host) return;
+  const page = pages[currentPageIdx];
+  const stateMap = (page && page.nodeStates) || currentNodeStates;
+  host.innerHTML = '';
+  for (const nd of LOOP_NODES) {
+    const state = (stateMap && stateMap.get(nd.id)) || 'idle';
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'rl-row rl-node-row rl-state-' + _rlEscape(state);
+    row.dataset.nodeId = nd.id;
+    row.innerHTML =
+      '<span class="rl-node-dot" data-state="' + _rlEscape(state) + '"></span>' +
+      '<span class="rl-row-label">' + _rlEscape(nd.label) + '</span>' +
+      '<span class="rl-row-meta">' + _rlEscape(state) + '</span>';
+    row.addEventListener('click', () => _focusNode(nd.id));
+    host.appendChild(row);
+  }
+}
+
+// Click on a sidebar node row → scroll its graph element into view and
+// open the same overlay panel the in-graph click would have. Reuses the
+// existing showToolPanel / hideToolPanel functions defined above.
+function _focusNode(nodeId) {
+  const root = document.getElementById('loop-visual-graph-area');
+  if (!root) return;
+  const el = root.querySelector('.lv-node[data-id="' + (window.CSS && CSS.escape ? CSS.escape(nodeId) : nodeId) + '"]');
+  if (el && typeof el.scrollIntoView === 'function') {
+    el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+  }
+  const nodeDef = LOOP_NODES.find((n) => n.id === nodeId);
+  if (!nodeDef) return;
+  // Toggle: a second click on the same row closes the panel.
+  if (_activePanelNodeId === nodeId) hideToolPanel();
+  else showToolPanel(nodeDef, el, root);
+}
+
+// Public re-render entry — called from startLoopVisual, startNewPage,
+// selectPage and the session-changed handler.
+export function renderRuntimeLoopSidebar() {
+  renderRunHistoryList();
+  renderNodesList();
+  const btn = document.getElementById('rl-refresh');
+  if (btn && !btn.dataset.wired) {
+    btn.dataset.wired = '1';
+    btn.addEventListener('click', () => { try { startLoopVisual(); } catch (_) {} });
+  }
 }
