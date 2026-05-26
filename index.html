@@ -527,10 +527,22 @@
             <button id="autoagent-delete-page-btn" class="aa-icon-btn aa-delete-btn" title="Delete page" disabled><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>
           </div>
 
-          <!-- Prompt bar -->
+          <!-- Prompt bar — mirrors #agent-builder-bar pill (attach + textarea + voice/send swap) -->
           <div id="autoagent-prompt-bar">
-            <input type="text" id="autoagent-prompt-input" class="aa-prompt-input" placeholder="Tell the page agent what to build or change..." maxlength="2000">
-            <button id="autoagent-send-btn" class="aa-send-btn" title="Send to page agent">&#9654;</button>
+            <div id="autoagent-prompt-row">
+              <button type="button" id="autoagent-attach-btn" title="Attach files">
+                <i data-lucide="paperclip" style="width:18px;height:18px;"></i>
+              </button>
+              <textarea id="autoagent-prompt-input" rows="2"
+                placeholder="Tell the page agent what to build or change..."
+                maxlength="2000" autocomplete="off"></textarea>
+              <button type="button" id="autoagent-voice-btn" title="Record voice">
+                <i data-lucide="mic" style="width:18px;height:18px;"></i>
+              </button>
+              <button type="button" id="autoagent-send-btn" title="Send to page agent">
+                <i data-lucide="send" style="width:16px;height:16px;"></i>
+              </button>
+            </div>
           </div>
         </div>
       </div>

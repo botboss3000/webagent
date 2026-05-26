@@ -1,14 +1,15 @@
 /* ── AutoAgent Tab ── */
 
-/* ── Footer (page nav + prompt bar, side by side) ── */
+/* ── Footer (page nav + prompt bar, side by side) ──
+   Background intentionally matches #tab-autoagent so the bottom-faded
+   iframe melts into the footer with no visible seam. */
 
 #autoagent-footer {
   display: flex;
-  align-items: stretch;
+  align-items: flex-end;
   gap: 10px;
-  padding: 10px 12px;
-  background: #12121e;
-  border-top: 1px solid #1e1e3a;
+  padding: 0 20px 12px;
+  background: transparent;
   flex-shrink: 0;
 }
 
@@ -183,65 +184,106 @@
   width: 100%;
 }
 
-/* ── Prompt Bar ── */
+/* ── Prompt Bar ──
+   Pill row that mirrors #agent-builder-bar: attach (left), two-line
+   textarea (middle), voice/send swap (right). Send is shown only when
+   the textarea has text; voice is shown otherwise. */
 
 #autoagent-prompt-bar {
-  display: flex;
-  gap: 8px;
   flex: 1;
   min-width: 0;
 }
 
+#autoagent-prompt-row {
+  display: flex;
+  gap: 4px;
+  align-items: flex-end;
+  width: 100%;
+  background: #0d0d1a;
+  border: 1px solid #2a2a4a;
+  border-radius: 18px;
+  padding: 4px;
+  transition: border-color 0.15s;
+}
+#autoagent-prompt-row:focus-within { border-color: #7dcfff; }
+
 .aa-prompt-input {
   flex: 1;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
-  border-radius: 6px;
-  color: #c0caf5;
-  padding: 8px 12px;
-  font-size: 13px;
-  font-family: inherit;
-  outline: none;
-  transition: border-color 0.2s;
-}
-
-.aa-prompt-input:focus {
-  border-color: #7dcfff;
-}
-
-.aa-prompt-input::placeholder {
-  color: #3b3f66;
-}
-
-.aa-send-btn {
-  background: #7dcfff;
+  min-width: 0;
+  background: transparent;
   border: none;
-  border-radius: 6px;
-  color: #0a0a0f;
-  padding: 8px 16px;
-  font-size: 14px;
+  border-radius: 0;
+  padding: 8px 6px;
+  color: #c0caf5;
+  font-size: 13px;
+  outline: none;
+  font-family: inherit;
+  resize: none;
+  min-height: 52px;
+  max-height: 160px;
+}
+.aa-prompt-input:focus { border: none; }
+.aa-prompt-input::placeholder { color: #3b4261; }
+
+/* Send vs voice swap, mirroring #agent-builder-bar-row */
+#autoagent-prompt-row #autoagent-send-btn { display: none; }
+#autoagent-prompt-row.has-text #autoagent-send-btn { display: inline-flex; }
+#autoagent-prompt-row.has-text #autoagent-voice-btn { display: none; }
+
+#autoagent-attach-btn,
+#autoagent-voice-btn {
+  background: none;
+  border: none;
+  color: #565f89;
   cursor: pointer;
-  font-weight: 600;
-  transition: background 0.2s, opacity 0.2s;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+  transition: 0.15s;
+  align-self: flex-end;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
 }
-
-.aa-send-btn:hover {
-  background: #9ddbff;
+#autoagent-attach-btn:hover,
+#autoagent-voice-btn:hover {
+  color: #7dcfff;
+  background: #7dcfff15;
 }
+#autoagent-attach-btn i,
+#autoagent-voice-btn i { pointer-events: none; }
 
-.aa-send-btn:disabled {
-  background: #2a2a4a;
-  color: #565f89;
-  cursor: not-allowed;
+#autoagent-send-btn {
+  background: #7dcfff;
+  border: none;
+  border-radius: 50%;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  color: #0d0d1a;
+  cursor: pointer;
+  transition: 0.15s;
+  align-self: flex-end;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
+#autoagent-send-btn:hover { background: #89ddff; }
+#autoagent-send-btn:disabled { opacity: 0.4; cursor: default; }
+#autoagent-send-btn i { pointer-events: none; }
 
-/* ── Viewport (iframe area) ── */
+/* ── Viewport (iframe area) ──
+   Soft fade at the bottom so iframe content melts into the footer area
+   as it approaches the prompt bar — mirrors #agents-grid's top fade. */
 
 #autoagent-viewport {
   flex: 1;
   position: relative;
   overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 24px), transparent 100%);
+          mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 24px), transparent 100%);
 }
 
 .aa-iframe {
@@ -313,31 +355,25 @@ body.light-mode #tab-autoagent {
   background: #fffaf5;
 }
 body.light-mode #autoagent-footer {
-  background: #fff2e6;
-  border-top-color: #ffdec4;
+  background: transparent;
 }
-body.light-mode .aa-prompt-input {
-  background: #ffffff;
-  border-color: #ffdec4;
-  color: #3d2c2e;
+body.light-mode #autoagent-prompt-row {
+  background: #fffaf5;
+  border-color: #ffcfa1;
 }
-body.light-mode .aa-prompt-input:focus {
-  border-color: #ff8c42;
+body.light-mode #autoagent-prompt-row:focus-within { border-color: #ff8c42; }
+body.light-mode .aa-prompt-input { color: #3a2400; }
+body.light-mode .aa-prompt-input::placeholder { color: #c08858; }
+body.light-mode #autoagent-attach-btn,
+body.light-mode #autoagent-voice-btn { color: #c08858; }
+body.light-mode #autoagent-attach-btn:hover,
+body.light-mode #autoagent-voice-btn:hover {
+  color: #ff8c42;
+  background: #ff8c4215;
 }
-body.light-mode .aa-prompt-input::placeholder {
-  color: #cca08a;
-}
-body.light-mode .aa-send-btn {
-  background: #ff8c42;
-  color: #ffffff;
-}
-body.light-mode .aa-send-btn:hover {
-  background: #ff7a2e;
-}
-body.light-mode .aa-send-btn:disabled {
-  background: #ffdec4;
-  color: #cca08a;
-}
+body.light-mode #autoagent-send-btn { background: #ff8c42; color: #fff; }
+body.light-mode #autoagent-send-btn:hover { background: #ff7a2a; }
+body.light-mode #autoagent-send-btn:disabled { opacity: 0.4; }
 body.light-mode .aa-iframe {
   background: #fffaf5;
 }
@@ -403,6 +439,7 @@ body.light-mode .aa-dialog-btn-cancel:hover { background: #fff2e6; color: #3d2c2
 @media (max-width: 800px) {
   #autoagent-footer {
     flex-direction: column;
+    align-items: stretch;
     gap: 8px;
   }
   #autoagent-page-nav {
