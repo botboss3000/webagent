@@ -722,9 +722,24 @@ function toggleTerminalWrap(tabPath) {
     if (host)       host.classList.toggle('files-terminal-host-nowrap', !tab.wrap);
   }
   if (tab.instance && tab.instance.setWrap) tab.instance.setWrap(tab.wrap);
-  // Refit after the layout change — the host now has a different effective
-  // width so xterm needs to recompute cols.
-  setTimeout(() => { if (tab.instance) tab.instance.fit(); }, 30);
+  // Refit after the layout change. Two rAF ticks guarantee the browser has
+  // applied the new width to the host BEFORE fitAddon measures — on mobile
+  // a 30ms setTimeout sometimes fires before layout has reflowed, so xterm
+  // keeps its old cols and wrap appears not to work.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (!tab.instance) return;
+    tab.instance.fit();
+    // Print a one-line confirmation so the user can see the toggle took
+    // effect and what cols xterm is now using. Future shell output will
+    // wrap (or not) at this column count.
+    try {
+      const cols = (tab.instance.term && tab.instance.term.cols) || '?';
+      const msg = tab.wrap
+        ? '\r\n\x1b[2;33m[wrap ON — ' + cols + ' cols, lines wrap to next row]\x1b[0m\r\n'
+        : '\r\n\x1b[2;33m[wrap OFF — ' + cols + ' cols, swipe horizontally to see overflow]\x1b[0m\r\n';
+      tab.instance.term.write(msg);
+    } catch (_) {}
+  }));
   persistTabs();
 }
 
@@ -1168,12 +1183,17 @@ function buildPaneForTab(tab, mode) {
     // Long-press on mobile → context menu with Copy / Paste / Select all.
     // Fires after a 500ms hold that didn't move; cancelled on move / lift.
     wireTerminalLongPress(host, () => tab.instance);
+    // Two-finger pinch → adjust the global terminal font size.
+    wireTerminalPinchZoom(host);
 
     // xterm.open() measures its host immediately. The pane has just been
     // created (not yet appended to the document) — defer xterm creation
-    // until after the pane is attached and the active class has been set,
-    // otherwise fit() reads zero dimensions.
-    setTimeout(() => {
+    // until after the pane is attached AND the browser has reflowed, so
+    // fit() sees the final host width. Without the rAF, on slow mobile
+    // browsers the host can still report a stale width and xterm picks
+    // too many cols, making the shell think it has more room than it
+    // does and wrap behaviour appears broken.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
       if (!document.body.contains(pane)) return;
       try {
         // tab.path is the backend session_id (see pushTerminalTab). Passing
@@ -1185,6 +1205,9 @@ function buildPaneForTab(tab, mode) {
         // Drive the per-tab status dot from the WS state machine.
         tab.instance.onStateChange((s) => _updateTabConnDot(tab.path, s));
         tab.instance.fit();
+        // Belt-and-braces second fit after another paint — covers any
+        // late layout shift from the address bar settling on iOS Safari.
+        setTimeout(() => { if (tab.instance) tab.instance.fit(); }, 150);
         // Wire Ctrl+F → find bar. Capture-phase on the host so we preempt
         // xterm's keydown handler (which otherwise forwards Ctrl+F bytes
         // to the shell).
@@ -1199,7 +1222,7 @@ function buildPaneForTab(tab, mode) {
       } catch (e) {
         host.textContent = 'Failed to start terminal: ' + (e.message || e);
       }
-    }, 0);
+    }));
   } else {
     // text mode: textarea (transparent) overlaid on a <pre> for Prism
     buildTextEditorPane(pane, tab);
@@ -1919,7 +1942,8 @@ function wireTerminalLongPress(host, getInstance) {
   }
 
   host.addEventListener('touchstart', (e) => {
-    if (!e.touches || e.touches.length !== 1) return;
+    // Multi-touch (e.g. pinch-to-zoom) cancels the long-press intent.
+    if (!e.touches || e.touches.length !== 1) { cancel(); return; }
     const t = e.touches[0];
     startX = t.clientX;
     startY = t.clientY;
@@ -1942,6 +1966,52 @@ function wireTerminalLongPress(host, getInstance) {
 
   host.addEventListener('touchend',    cancel, { passive: true });
   host.addEventListener('touchcancel', cancel, { passive: true });
+}
+
+// ── Mobile pinch-to-zoom ──────────────────────────────────────────
+//
+// Two-finger pinch on the terminal host adjusts the global font size.
+// Uses the same setter as the menu's Zoom in / out items so the new size
+// propagates to every open terminal and persists in localStorage.
+
+function wireTerminalPinchZoom(host) {
+  let startDist = 0;
+  let startFontSize = 0;
+  let lastApplied = 0;
+
+  function dist(t0, t1) {
+    const dx = t0.clientX - t1.clientX;
+    const dy = t0.clientY - t1.clientY;
+    return Math.hypot(dx, dy);
+  }
+
+  host.addEventListener('touchstart', (e) => {
+    if (!e.touches || e.touches.length < 2) return;
+    // Prevent the OS-level pinch zoom from kicking in on top of ours.
+    if (e.cancelable) e.preventDefault();
+    startDist = dist(e.touches[0], e.touches[1]);
+    startFontSize = getTerminalFontSize();
+    lastApplied = startFontSize;
+  }, { passive: false });
+
+  host.addEventListener('touchmove', (e) => {
+    if (!e.touches || e.touches.length < 2 || startDist === 0) return;
+    if (e.cancelable) e.preventDefault();
+    const d = dist(e.touches[0], e.touches[1]);
+    if (d === 0) return;
+    const ratio = d / startDist;
+    let next = Math.round(startFontSize * ratio);
+    if (next < 8) next = 8;
+    if (next > 32) next = 32;
+    if (next !== lastApplied) {
+      setTerminalFontSize(next);
+      lastApplied = next;
+    }
+  }, { passive: false });
+
+  function end() { startDist = 0; }
+  host.addEventListener('touchend',    end, { passive: true });
+  host.addEventListener('touchcancel', end, { passive: true });
 }
 
 function showTerminalContextMenu(x, y, instance) {
