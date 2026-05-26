@@ -78,21 +78,20 @@ async def google_callback(
     if not code or not state:
         return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
 
-    from app.admin.integrations import decode_state_token, get_google_creds, get_redirect_uri
+    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_redirect_uri
     state_data = decode_state_token(state, provider="google")
     if not state_data or not state_data.get("user_id"):
         return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
 
-    user_id = state_data["user_id"]
-    agent_id = state_data.get("agent_id", "")
+    user_id, agent_id, source = _extract_state(state_data)
     if not agent_id:
         return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
 
-    client_id, client_secret = await get_google_creds()
+    client_id, client_secret = await resolve_oauth_creds("google", agent_id, source=source)
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Google OAuth not configured on server.", status_code=500)
 
-    redirect_uri = await get_redirect_uri(request)
+    redirect_uri = await get_redirect_uri(request, agent_id=agent_id, source=source)
 
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(
@@ -128,6 +127,7 @@ async def google_callback(
         "name": userinfo.get("name", ""),
         "picture": userinfo.get("picture", ""),
         "scopes": token_data.get("scope", "").split(),
+        "source": source,
         "connected_at": datetime.now(timezone.utc).isoformat(),
     }
     secret = {
@@ -164,6 +164,7 @@ async def google_callback(
 
 @router.get("/callback/microsoft")
 async def microsoft_callback(
+    request: Request,
     code: str = QueryParam(None),
     state: str = QueryParam(None),
     error: str = QueryParam(None),
@@ -174,21 +175,20 @@ async def microsoft_callback(
     if not code or not state:
         return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
 
-    from app.admin.integrations import decode_state_token, get_microsoft_creds, get_microsoft_redirect_uri
+    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_microsoft_redirect_uri
     state_data = decode_state_token(state, provider="microsoft")
     if not state_data or not state_data.get("user_id"):
         return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
 
-    user_id = state_data["user_id"]
-    agent_id = state_data.get("agent_id", "")
+    user_id, agent_id, source = _extract_state(state_data)
     if not agent_id:
         return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
 
-    client_id, client_secret = await get_microsoft_creds()
+    client_id, client_secret = await resolve_oauth_creds("microsoft", agent_id, source=source)
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Microsoft OAuth not configured on server.", status_code=500)
 
-    redirect_uri = await get_microsoft_redirect_uri(request)
+    redirect_uri = await get_microsoft_redirect_uri(request, agent_id=agent_id, source=source)
 
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(
@@ -226,6 +226,7 @@ async def microsoft_callback(
         "name": name,
         "picture": "",
         "scopes": token_data.get("scope", "").split(),
+        "source": source,
         "connected_at": datetime.now(timezone.utc).isoformat(),
     }
     secret = {
@@ -262,6 +263,7 @@ async def microsoft_callback(
 
 @router.get("/callback/yahoo")
 async def yahoo_callback(
+    request: Request,
     code: str = QueryParam(None),
     state: str = QueryParam(None),
     error: str = QueryParam(None),
@@ -271,21 +273,20 @@ async def yahoo_callback(
     if not code or not state:
         return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
 
-    from app.admin.integrations import decode_state_token, get_yahoo_creds, get_yahoo_redirect_uri
+    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_yahoo_redirect_uri
     state_data = decode_state_token(state, provider="yahoo")
     if not state_data or not state_data.get("user_id"):
         return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
 
-    user_id = state_data["user_id"]
-    agent_id = state_data.get("agent_id", "")
+    user_id, agent_id, source = _extract_state(state_data)
     if not agent_id:
         return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
 
-    client_id, client_secret = await get_yahoo_creds()
+    client_id, client_secret = await resolve_oauth_creds("yahoo", agent_id, source=source)
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Yahoo OAuth not configured on server.", status_code=500)
 
-    redirect_uri = await get_yahoo_redirect_uri(request)
+    redirect_uri = await get_yahoo_redirect_uri(request, agent_id=agent_id, source=source)
 
     import base64
     credentials = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
@@ -329,6 +330,8 @@ async def yahoo_callback(
         "name": name,
         "picture": userinfo.get("picture", ""),
         "yahoo_guid": token_data.get("xoauth_yahoo_guid", ""),
+        "scopes": (token_data.get("scope", "") or "").split(),
+        "source": source,
         "connected_at": datetime.now(timezone.utc).isoformat(),
     }
     secret = {
@@ -365,6 +368,7 @@ async def yahoo_callback(
 
 @router.get("/callback/dropbox")
 async def dropbox_callback(
+    request: Request,
     code: str = QueryParam(None),
     state: str = QueryParam(None),
     error: str = QueryParam(None),
@@ -375,21 +379,20 @@ async def dropbox_callback(
     if not code or not state:
         return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
 
-    from app.admin.integrations import decode_state_token, get_dropbox_creds, get_dropbox_redirect_uri
+    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_dropbox_redirect_uri
     state_data = decode_state_token(state, provider="dropbox")
     if not state_data or not state_data.get("user_id"):
         return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
 
-    user_id = state_data["user_id"]
-    agent_id = state_data.get("agent_id", "")
+    user_id, agent_id, source = _extract_state(state_data)
     if not agent_id:
         return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
 
-    client_id, client_secret = await get_dropbox_creds()
+    client_id, client_secret = await resolve_oauth_creds("dropbox", agent_id, source=source)
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Dropbox OAuth not configured on server.", status_code=500)
 
-    redirect_uri = await get_dropbox_redirect_uri(request)
+    redirect_uri = await get_dropbox_redirect_uri(request, agent_id=agent_id, source=source)
 
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(
@@ -433,6 +436,8 @@ async def dropbox_callback(
         "name": name,
         "picture": picture,
         "account_id": acct.get("account_id", ""),
+        "scopes": (token_data.get("scope", "") or "").split(),
+        "source": source,
         "connected_at": datetime.now(timezone.utc).isoformat(),
     }
     secret = {
@@ -468,17 +473,27 @@ async def dropbox_callback(
 # ── Shared helper ─────────────────────────────────────────────────────────
 
 async def _store_oauth(db, user_id: str, service: str, config: dict, secret: dict,
-                       agent_id: str, connection_type: str, section: str = "social"):
-    """Store tokens + upsert agent connection — both scoped to the calling agent."""
+                       agent_id: str, connection_type: str, section: str = "social",
+                       *, source: str = "platform", token_data: dict | None = None):
+    """Store tokens + upsert agent connection — both scoped to the calling agent.
+
+    When `token_data` is supplied, the granted scopes (from `token_data["scope"]`)
+    and the OAuth source ("platform" vs "byo") are persisted into config so
+    refresh + ability gating can resolve the right creds and capabilities later.
+    """
+    cfg = {**config}
+    cfg["source"] = source
+    if token_data and "scope" in token_data and "scopes" not in cfg:
+        cfg["scopes"] = (token_data.get("scope", "") or "").split()
     await db.auth_element_set(
-        user_id=user_id, service=service, config=config,
+        user_id=user_id, service=service, config=cfg,
         secret_ref=json.dumps(secret), label=oauth_label(agent_id),
     )
     try:
         await db.upsert_agent_connection(
             agent_id=agent_id, connection_type=connection_type, section=section,
             enabled=True,
-            config={"connected_user_id": user_id, "email": config.get("email", ""), "name": config.get("name", "")},
+            config={"connected_user_id": user_id, "email": cfg.get("email", ""), "name": cfg.get("name", "")},
         )
     except Exception as e:
         logger.warning("Failed to update agent_connections for %s, agent %s: %s", service, agent_id, e)
@@ -493,10 +508,20 @@ def _token_secret(token_data: dict) -> dict:
     }
 
 
+def _extract_state(state_data: dict) -> tuple[str, str, str]:
+    """Pull (user_id, agent_id, source) out of a decoded state token."""
+    return (
+        state_data.get("user_id", ""),
+        state_data.get("agent_id", "") or "",
+        state_data.get("source") or "platform",
+    )
+
+
 # ── Meta (Facebook + Instagram) ───────────────────────────────────────────
 
 @router.get("/callback/meta")
 async def meta_callback(
+    request: Request,
     code: str = QueryParam(None),
     state: str = QueryParam(None),
     error: str = QueryParam(None),
@@ -507,20 +532,19 @@ async def meta_callback(
     if not code or not state:
         return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
 
-    from app.admin.integrations import decode_state_token, get_meta_creds, get_meta_redirect_uri
+    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_meta_redirect_uri
     state_data = decode_state_token(state, provider="meta")
     if not state_data or not state_data.get("user_id"):
         return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
 
-    user_id = state_data["user_id"]
-    agent_id = state_data.get("agent_id", "")
+    user_id, agent_id, source = _extract_state(state_data)
     if not agent_id:
         return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-    client_id, client_secret = await get_meta_creds()
+    client_id, client_secret = await resolve_oauth_creds("meta", agent_id, source=source)
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Meta OAuth not configured on server.", status_code=500)
 
-    redirect_uri = await get_meta_redirect_uri(request)
+    redirect_uri = await get_meta_redirect_uri(request, agent_id=agent_id, source=source)
     async with httpx.AsyncClient() as c:
         token_resp = await c.get(
             "https://graph.facebook.com/v19.0/oauth/access_token",
@@ -554,9 +578,10 @@ async def meta_callback(
     secret = _token_secret(token_data)
 
     # Store under "meta" (parent) + aliases for facebook and instagram, all scoped per-agent.
-    await _store_oauth(db, user_id, "meta", config, secret, agent_id, "facebook", section="social")
-    await db.auth_element_set(user_id=user_id, service="facebook", config=config, secret_ref=json.dumps(secret), label=oauth_label(agent_id))
-    await db.auth_element_set(user_id=user_id, service="instagram", config=config, secret_ref=json.dumps(secret), label=oauth_label(agent_id))
+    await _store_oauth(db, user_id, "meta", config, secret, agent_id, "facebook", section="social", source=source, token_data=token_data)
+    cfg_aliased = {**config, "scopes": (token_data.get("scope", "") or "").split(), "source": source}
+    await db.auth_element_set(user_id=user_id, service="facebook", config=cfg_aliased, secret_ref=json.dumps(secret), label=oauth_label(agent_id))
+    await db.auth_element_set(user_id=user_id, service="instagram", config=cfg_aliased, secret_ref=json.dumps(secret), label=oauth_label(agent_id))
     try:
         await db.upsert_agent_connection(agent_id=agent_id, connection_type="instagram", section="social",
             enabled=True, config={"connected_user_id": user_id, "email": config["email"], "name": config["name"]})
@@ -571,6 +596,7 @@ async def meta_callback(
 
 @router.get("/callback/twitter")
 async def twitter_callback(
+    request: Request,
     code: str = QueryParam(None),
     state: str = QueryParam(None),
     error: str = QueryParam(None),
@@ -582,22 +608,21 @@ async def twitter_callback(
         return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
 
     import base64 as _b64
-    from app.admin.integrations import decode_state_token, get_twitter_creds, get_twitter_redirect_uri
+    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_twitter_redirect_uri
     state_data = decode_state_token(state, provider="twitter")
     if not state_data or not state_data.get("user_id"):
         return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
 
-    user_id = state_data["user_id"]
-    agent_id = state_data.get("agent_id", "")
+    user_id, agent_id, source = _extract_state(state_data)
     if not agent_id:
         return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
     pkce_verifier = state_data.get("pkce_verifier", "")
 
-    client_id, client_secret = await get_twitter_creds()
+    client_id, client_secret = await resolve_oauth_creds("twitter", agent_id, source=source)
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Twitter OAuth not configured on server.", status_code=500)
 
-    redirect_uri = await get_twitter_redirect_uri(request)
+    redirect_uri = await get_twitter_redirect_uri(request, agent_id=agent_id, source=source)
     creds_b64 = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
 
     async with httpx.AsyncClient() as c:
@@ -631,7 +656,7 @@ async def twitter_callback(
         "email": "",
         "connected_at": datetime.now(timezone.utc).isoformat(),
     }
-    await _store_oauth(db, user_id, "twitter", config, _token_secret(token_data), agent_id, "twitter")
+    await _store_oauth(db, user_id, "twitter", config, _token_secret(token_data), agent_id, "twitter", source=source, token_data=token_data)
     logger.info("Twitter OAuth connected for user %s (@%s), agent=%s", user_id[:12], me.get("username", "?"), agent_id or "none")
     return HTMLResponse(_success_html("Twitter / X", "twitter-oauth-success"))
 
@@ -640,6 +665,7 @@ async def twitter_callback(
 
 @router.get("/callback/linkedin")
 async def linkedin_callback(
+    request: Request,
     code: str = QueryParam(None),
     state: str = QueryParam(None),
     error: str = QueryParam(None),
@@ -650,20 +676,19 @@ async def linkedin_callback(
     if not code or not state:
         return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
 
-    from app.admin.integrations import decode_state_token, get_linkedin_creds, get_linkedin_redirect_uri
+    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_linkedin_redirect_uri
     state_data = decode_state_token(state, provider="linkedin")
     if not state_data or not state_data.get("user_id"):
         return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
 
-    user_id = state_data["user_id"]
-    agent_id = state_data.get("agent_id", "")
+    user_id, agent_id, source = _extract_state(state_data)
     if not agent_id:
         return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-    client_id, client_secret = await get_linkedin_creds()
+    client_id, client_secret = await resolve_oauth_creds("linkedin", agent_id, source=source)
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "LinkedIn OAuth not configured on server.", status_code=500)
 
-    redirect_uri = await get_linkedin_redirect_uri(request)
+    redirect_uri = await get_linkedin_redirect_uri(request, agent_id=agent_id, source=source)
     async with httpx.AsyncClient() as c:
         token_resp = await c.post(
             "https://www.linkedin.com/oauth/v2/accessToken",
@@ -693,7 +718,7 @@ async def linkedin_callback(
         "picture": me.get("picture", ""),
         "connected_at": datetime.now(timezone.utc).isoformat(),
     }
-    await _store_oauth(db, user_id, "linkedin", config, _token_secret(token_data), agent_id, "linkedin")
+    await _store_oauth(db, user_id, "linkedin", config, _token_secret(token_data), agent_id, "linkedin", source=source, token_data=token_data)
     logger.info("LinkedIn OAuth connected for user %s (%s), agent=%s", user_id[:12], config["email"] or "?", agent_id or "none")
     return HTMLResponse(_success_html("LinkedIn", "linkedin-oauth-success"))
 
@@ -702,6 +727,7 @@ async def linkedin_callback(
 
 @router.get("/callback/tiktok")
 async def tiktok_callback(
+    request: Request,
     code: str = QueryParam(None),
     state: str = QueryParam(None),
     error: str = QueryParam(None),
@@ -712,22 +738,21 @@ async def tiktok_callback(
     if not code or not state:
         return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
 
-    from app.admin.integrations import decode_state_token, get_tiktok_creds, get_tiktok_redirect_uri
+    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_tiktok_redirect_uri
     state_data = decode_state_token(state, provider="tiktok")
     if not state_data or not state_data.get("user_id"):
         return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
 
-    user_id = state_data["user_id"]
-    agent_id = state_data.get("agent_id", "")
+    user_id, agent_id, source = _extract_state(state_data)
     if not agent_id:
         return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
     pkce_verifier = state_data.get("pkce_verifier", "")
 
-    client_id, client_secret = await get_tiktok_creds()
+    client_id, client_secret = await resolve_oauth_creds("tiktok", agent_id, source=source)
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "TikTok OAuth not configured on server.", status_code=500)
 
-    redirect_uri = await get_tiktok_redirect_uri(request)
+    redirect_uri = await get_tiktok_redirect_uri(request, agent_id=agent_id, source=source)
     async with httpx.AsyncClient() as c:
         token_resp = await c.post(
             "https://open.tiktokapis.com/v2/oauth/token/",
@@ -759,7 +784,7 @@ async def tiktok_callback(
         "email": "",
         "connected_at": datetime.now(timezone.utc).isoformat(),
     }
-    await _store_oauth(db, user_id, "tiktok", config, _token_secret(token_data), agent_id, "tiktok")
+    await _store_oauth(db, user_id, "tiktok", config, _token_secret(token_data), agent_id, "tiktok", source=source, token_data=token_data)
     logger.info("TikTok OAuth connected for user %s (%s), agent=%s", user_id[:12], config["name"] or "?", agent_id or "none")
     return HTMLResponse(_success_html("TikTok", "tiktok-oauth-success"))
 
@@ -768,6 +793,7 @@ async def tiktok_callback(
 
 @router.get("/callback/pinterest")
 async def pinterest_callback(
+    request: Request,
     code: str = QueryParam(None),
     state: str = QueryParam(None),
     error: str = QueryParam(None),
@@ -777,20 +803,19 @@ async def pinterest_callback(
     if not code or not state:
         return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
 
-    from app.admin.integrations import decode_state_token, get_pinterest_creds, get_pinterest_redirect_uri
+    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_pinterest_redirect_uri
     state_data = decode_state_token(state, provider="pinterest")
     if not state_data or not state_data.get("user_id"):
         return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
 
-    user_id = state_data["user_id"]
-    agent_id = state_data.get("agent_id", "")
+    user_id, agent_id, source = _extract_state(state_data)
     if not agent_id:
         return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-    client_id, client_secret = await get_pinterest_creds()
+    client_id, client_secret = await resolve_oauth_creds("pinterest", agent_id, source=source)
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Pinterest OAuth not configured on server.", status_code=500)
 
-    redirect_uri = await get_pinterest_redirect_uri(request)
+    redirect_uri = await get_pinterest_redirect_uri(request, agent_id=agent_id, source=source)
     import base64 as _b64
     creds_b64 = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
     async with httpx.AsyncClient() as c:
@@ -821,7 +846,7 @@ async def pinterest_callback(
         "email": "",
         "connected_at": datetime.now(timezone.utc).isoformat(),
     }
-    await _store_oauth(db, user_id, "pinterest", config, _token_secret(token_data), agent_id, "pinterest")
+    await _store_oauth(db, user_id, "pinterest", config, _token_secret(token_data), agent_id, "pinterest", source=source, token_data=token_data)
     logger.info("Pinterest OAuth connected for user %s (%s), agent=%s", user_id[:12], config["name"] or "?", agent_id or "none")
     return HTMLResponse(_success_html("Pinterest", "pinterest-oauth-success"))
 
@@ -830,6 +855,7 @@ async def pinterest_callback(
 
 @router.get("/callback/reddit")
 async def reddit_callback(
+    request: Request,
     code: str = QueryParam(None),
     state: str = QueryParam(None),
     error: str = QueryParam(None),
@@ -839,21 +865,20 @@ async def reddit_callback(
     if not code or not state:
         return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
 
-    from app.admin.integrations import decode_state_token, get_reddit_creds, get_reddit_redirect_uri
+    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_reddit_redirect_uri
     import base64 as _b64
     state_data = decode_state_token(state, provider="reddit")
     if not state_data or not state_data.get("user_id"):
         return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
 
-    user_id = state_data["user_id"]
-    agent_id = state_data.get("agent_id", "")
+    user_id, agent_id, source = _extract_state(state_data)
     if not agent_id:
         return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-    client_id, client_secret = await get_reddit_creds()
+    client_id, client_secret = await resolve_oauth_creds("reddit", agent_id, source=source)
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Reddit OAuth not configured on server.", status_code=500)
 
-    redirect_uri = await get_reddit_redirect_uri(request)
+    redirect_uri = await get_reddit_redirect_uri(request, agent_id=agent_id, source=source)
     creds_b64 = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
     async with httpx.AsyncClient() as c:
         token_resp = await c.post(
@@ -884,7 +909,7 @@ async def reddit_callback(
         "email": "",
         "connected_at": datetime.now(timezone.utc).isoformat(),
     }
-    await _store_oauth(db, user_id, "reddit", config, _token_secret(token_data), agent_id, "reddit")
+    await _store_oauth(db, user_id, "reddit", config, _token_secret(token_data), agent_id, "reddit", source=source, token_data=token_data)
     logger.info("Reddit OAuth connected for user %s (u/%s), agent=%s", user_id[:12], config["name"] or "?", agent_id or "none")
     return HTMLResponse(_success_html("Reddit", "reddit-oauth-success"))
 
@@ -893,6 +918,7 @@ async def reddit_callback(
 
 @router.get("/callback/snapchat")
 async def snapchat_callback(
+    request: Request,
     code: str = QueryParam(None),
     state: str = QueryParam(None),
     error: str = QueryParam(None),
@@ -902,20 +928,19 @@ async def snapchat_callback(
     if not code or not state:
         return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
 
-    from app.admin.integrations import decode_state_token, get_snapchat_creds, get_snapchat_redirect_uri
+    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_snapchat_redirect_uri
     state_data = decode_state_token(state, provider="snapchat")
     if not state_data or not state_data.get("user_id"):
         return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
 
-    user_id = state_data["user_id"]
-    agent_id = state_data.get("agent_id", "")
+    user_id, agent_id, source = _extract_state(state_data)
     if not agent_id:
         return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-    client_id, client_secret = await get_snapchat_creds()
+    client_id, client_secret = await resolve_oauth_creds("snapchat", agent_id, source=source)
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Snapchat OAuth not configured on server.", status_code=500)
 
-    redirect_uri = await get_snapchat_redirect_uri(request)
+    redirect_uri = await get_snapchat_redirect_uri(request, agent_id=agent_id, source=source)
     import base64 as _b64
     creds_b64 = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
     async with httpx.AsyncClient() as c:
@@ -947,7 +972,7 @@ async def snapchat_callback(
         "email": "",
         "connected_at": datetime.now(timezone.utc).isoformat(),
     }
-    await _store_oauth(db, user_id, "snapchat", config, _token_secret(token_data), agent_id, "snapchat")
+    await _store_oauth(db, user_id, "snapchat", config, _token_secret(token_data), agent_id, "snapchat", source=source, token_data=token_data)
     logger.info("Snapchat OAuth connected for user %s (%s), agent=%s", user_id[:12], config["name"] or "?", agent_id or "none")
     return HTMLResponse(_success_html("Snapchat", "snapchat-oauth-success"))
 
@@ -956,6 +981,7 @@ async def snapchat_callback(
 
 @router.get("/callback/twitch")
 async def twitch_callback(
+    request: Request,
     code: str = QueryParam(None),
     state: str = QueryParam(None),
     error: str = QueryParam(None),
@@ -966,20 +992,19 @@ async def twitch_callback(
     if not code or not state:
         return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
 
-    from app.admin.integrations import decode_state_token, get_twitch_creds, get_twitch_redirect_uri
+    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_twitch_redirect_uri
     state_data = decode_state_token(state, provider="twitch")
     if not state_data or not state_data.get("user_id"):
         return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
 
-    user_id = state_data["user_id"]
-    agent_id = state_data.get("agent_id", "")
+    user_id, agent_id, source = _extract_state(state_data)
     if not agent_id:
         return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-    client_id, client_secret = await get_twitch_creds()
+    client_id, client_secret = await resolve_oauth_creds("twitch", agent_id, source=source)
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Twitch OAuth not configured on server.", status_code=500)
 
-    redirect_uri = await get_twitch_redirect_uri(request)
+    redirect_uri = await get_twitch_redirect_uri(request, agent_id=agent_id, source=source)
     async with httpx.AsyncClient() as c:
         token_resp = await c.post(
             "https://id.twitch.tv/oauth2/token",
@@ -1008,7 +1033,7 @@ async def twitch_callback(
         "email": me.get("email", ""),
         "connected_at": datetime.now(timezone.utc).isoformat(),
     }
-    await _store_oauth(db, user_id, "twitch", config, _token_secret(token_data), agent_id, "twitch")
+    await _store_oauth(db, user_id, "twitch", config, _token_secret(token_data), agent_id, "twitch", source=source, token_data=token_data)
     logger.info("Twitch OAuth connected for user %s (%s), agent=%s", user_id[:12], config["name"] or "?", agent_id or "none")
     return HTMLResponse(_success_html("Twitch", "twitch-oauth-success"))
 
@@ -1029,20 +1054,19 @@ async def ebay_callback(
         return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
 
     import base64 as _b64
-    from app.admin.integrations import decode_state_token, get_ebay_creds, get_ebay_redirect_uri
+    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_ebay_redirect_uri
     state_data = decode_state_token(state, provider="ebay")
     if not state_data or not state_data.get("user_id"):
         return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
 
-    user_id = state_data["user_id"]
-    agent_id = state_data.get("agent_id", "")
+    user_id, agent_id, source = _extract_state(state_data)
     if not agent_id:
         return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-    client_id, client_secret = await get_ebay_creds()
+    client_id, client_secret = await resolve_oauth_creds("ebay", agent_id, source=source)
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "eBay OAuth not configured on server.", status_code=500)
 
-    redirect_uri = await get_ebay_redirect_uri(request)
+    redirect_uri = await get_ebay_redirect_uri(request, agent_id=agent_id, source=source)
     creds_b64 = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
     async with httpx.AsyncClient() as c:
         token_resp = await c.post(
@@ -1079,7 +1103,7 @@ async def ebay_callback(
         "picture": "",
         "connected_at": datetime.now(timezone.utc).isoformat(),
     }
-    await _store_oauth(db, user_id, "ebay", config, _token_secret(token_data), agent_id, "ebay", section="marketplace")
+    await _store_oauth(db, user_id, "ebay", config, _token_secret(token_data), agent_id, "ebay", section="marketplace", source=source, token_data=token_data)
     logger.info("eBay OAuth connected for user %s (%s), agent=%s", user_id[:12], name or "?", agent_id or "none")
     return HTMLResponse(_success_html("eBay", "ebay-oauth-success"))
 
@@ -1098,22 +1122,21 @@ async def etsy_callback(
     if not code or not state:
         return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
 
-    from app.admin.integrations import decode_state_token, get_etsy_creds, get_etsy_redirect_uri
+    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_etsy_redirect_uri
     state_data = decode_state_token(state, provider="etsy")
     if not state_data or not state_data.get("user_id"):
         return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
 
-    user_id = state_data["user_id"]
-    agent_id = state_data.get("agent_id", "")
+    user_id, agent_id, source = _extract_state(state_data)
     if not agent_id:
         return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
     pkce_verifier = state_data.get("pkce_verifier", "")
 
-    client_id, client_secret = await get_etsy_creds()
+    client_id, client_secret = await resolve_oauth_creds("etsy", agent_id, source=source)
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Etsy OAuth not configured on server.", status_code=500)
 
-    redirect_uri = await get_etsy_redirect_uri(request)
+    redirect_uri = await get_etsy_redirect_uri(request, agent_id=agent_id, source=source)
     async with httpx.AsyncClient() as c:
         token_resp = await c.post(
             "https://api.etsy.com/v3/public/oauth/token",
@@ -1173,7 +1196,7 @@ async def etsy_callback(
         "shop_id": shop_id,
         "connected_at": datetime.now(timezone.utc).isoformat(),
     }
-    await _store_oauth(db, user_id, "etsy", config, _token_secret(token_data), agent_id, "etsy", section="marketplace")
+    await _store_oauth(db, user_id, "etsy", config, _token_secret(token_data), agent_id, "etsy", section="marketplace", source=source, token_data=token_data)
     logger.info("Etsy OAuth connected for user %s (%s, shop=%s), agent=%s", user_id[:12], name or "?", shop_id or "-", agent_id or "none")
     return HTMLResponse(_success_html("Etsy", "etsy-oauth-success"))
 
@@ -1194,20 +1217,19 @@ async def shopify_callback(
     if not code or not state or not shop:
         return HTMLResponse(_ERROR_HTML % "Missing code, state, or shop parameter.", status_code=400)
 
-    from app.admin.integrations import decode_state_token, get_shopify_creds
+    from app.admin.integrations import decode_state_token, resolve_oauth_creds
     state_data = decode_state_token(state, provider="shopify")
     if not state_data or not state_data.get("user_id"):
         return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
 
-    user_id = state_data["user_id"]
-    agent_id = state_data.get("agent_id", "")
+    user_id, agent_id, source = _extract_state(state_data)
     if not agent_id:
         return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
     expected_shop = (state_data.get("shop") or "").lower()
     if expected_shop and expected_shop != shop.lower():
         return HTMLResponse(_ERROR_HTML % "Shop domain mismatch.", status_code=400)
 
-    client_id, client_secret = await get_shopify_creds()
+    client_id, client_secret = await resolve_oauth_creds("shopify", agent_id, source=source)
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Shopify OAuth not configured on server.", status_code=500)
 
@@ -1258,7 +1280,7 @@ async def shopify_callback(
         "shop": shop,
         "connected_at": datetime.now(timezone.utc).isoformat(),
     }
-    await _store_oauth(db, user_id, "shopify", config, secret, agent_id, "shopify", section="marketplace")
+    await _store_oauth(db, user_id, "shopify", config, secret, agent_id, "shopify", section="marketplace", source=source, token_data=token_data)
     logger.info("Shopify OAuth connected for user %s (%s), agent=%s", user_id[:12], shop, agent_id or "none")
     return HTMLResponse(_success_html("Shopify", "shopify-oauth-success"))
 
@@ -1279,22 +1301,21 @@ async def amazon_callback(
     if not spapi_oauth_code or not state:
         return HTMLResponse(_ERROR_HTML % "Missing spapi_oauth_code or state parameter.", status_code=400)
 
-    from app.admin.integrations import decode_state_token, get_amazon_creds, get_amazon_redirect_uri
+    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_amazon_redirect_uri
     state_data = decode_state_token(state, provider="amazon")
     if not state_data or not state_data.get("user_id"):
         return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
 
-    user_id = state_data["user_id"]
-    agent_id = state_data.get("agent_id", "")
+    user_id, agent_id, source = _extract_state(state_data)
     if not agent_id:
         return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
     region = (state_data.get("region") or "NA").upper()
 
-    client_id, client_secret = await get_amazon_creds()
+    client_id, client_secret = await resolve_oauth_creds("amazon", agent_id, source=source)
     if not client_id or not client_secret:
         return HTMLResponse(_ERROR_HTML % "Amazon LWA not configured on server.", status_code=500)
 
-    redirect_uri = await get_amazon_redirect_uri(request)
+    redirect_uri = await get_amazon_redirect_uri(request, agent_id=agent_id, source=source)
     async with httpx.AsyncClient() as c:
         token_resp = await c.post(
             "https://api.amazon.com/auth/o2/token",
@@ -1323,7 +1344,7 @@ async def amazon_callback(
         "region": region,
         "connected_at": datetime.now(timezone.utc).isoformat(),
     }
-    await _store_oauth(db, user_id, "amazon", config, _token_secret(token_data), agent_id, "amazon", section="marketplace")
+    await _store_oauth(db, user_id, "amazon", config, _token_secret(token_data), agent_id, "amazon", section="marketplace", source=source, token_data=token_data)
     logger.info("Amazon SP-API connected for user %s (sp_id=%s, region=%s), agent=%s",
                 user_id[:12], selling_partner_id or "?", region, agent_id or "none")
     return HTMLResponse(_success_html("Amazon", "amazon-oauth-success"))

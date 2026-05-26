@@ -258,6 +258,133 @@ async def _get_enabled_scopes(config_service: str, default_scopes: list) -> list
     return default_scopes
 
 
+# ── Ability-aware scope resolution (3-tier OAuth) ─────────────────────────
+#
+# Key under auth_elements for per-ability admin policy: one row per ability.
+#   user_id  = "__admin__"
+#   service  = f"oauth_ability:{ability_id}"        # e.g. "oauth_ability:google.gmail_read"
+#   label    = "default"
+#   config   = {"mode": "platform_only"|"byo_only"|"both"|"disabled",
+#               "platform_scopes": [scope, ...],    # platform-OAuth scope subset
+#               "max_byo_scopes":  [scope, ...]}    # cap on what BYO can request
+# This namespace is distinct from `_ABILITY_CONFIG_KEY` (the legacy
+# host-side abilities — codebase_admin, create_tools, automation) so the two
+# concepts never collide.
+OAUTH_ABILITY_SERVICE_PREFIX = "oauth_ability:"
+
+_OAUTH_ABILITY_MODES = ("disabled", "platform_only", "byo_only", "both")
+
+
+def _oauth_ability_service(ability_id: str) -> str:
+    return f"{OAUTH_ABILITY_SERVICE_PREFIX}{ability_id}"
+
+
+async def get_oauth_ability_config(ability_id: str) -> dict:
+    """Return the admin policy for an ability, with sensible defaults.
+
+    Defaults preserve current behaviour: every registered ability is available
+    under platform OAuth with its full registry scope set. Admin can tighten
+    later without touching agent rows."""
+    from app.integrations.ability_registry import get_ability
+    ab = get_ability(ability_id)
+    default_scopes = list(ab.scopes) if ab else []
+    cfg = {
+        "mode": "platform_only",
+        "platform_scopes": default_scopes,
+        "max_byo_scopes": default_scopes,
+    }
+    try:
+        from app.db import get_db
+        db = get_db()
+        elem = await db.auth_element_get(_ADMIN_USER, _oauth_ability_service(ability_id), "default")
+        if elem and elem.get("config"):
+            stored = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
+            if isinstance(stored, dict):
+                cfg.update({k: v for k, v in stored.items() if k in cfg})
+    except Exception:
+        pass
+    if cfg["mode"] not in _OAUTH_ABILITY_MODES:
+        cfg["mode"] = "platform_only"
+    return cfg
+
+
+async def compute_required_scopes(
+    agent_id: str,
+    provider: str,
+    *,
+    source: str = "platform",
+    legacy_fallback: Optional[list] = None,
+) -> list[str]:
+    """Resolve the OAuth scopes to request for an agent's authorize URL.
+
+    Algorithm:
+      1. Find the abilities this agent has enabled for `provider`.
+      2. Union the scopes of each ability after intersecting with the
+         app-admin policy for that ability:
+           - `platform_only` mode: use `platform_scopes`
+           - `byo_only` / `both`: use `max_byo_scopes` when source="byo",
+             else `platform_scopes`
+           - `disabled`: skipped entirely (treated as not enabled)
+      3. Always include the provider's implicit abilities (profile / sign-in).
+
+    When the agent has no enabled abilities (typical for legacy agents
+    pre-migration), fall back to the legacy admin-configured scope list so
+    every existing connection keeps working unchanged.
+    """
+    from app.integrations.ability_registry import (
+        abilities_for_provider,
+        implicit_abilities,
+        get_ability,
+    )
+    p = (provider or "").lower()
+
+    enabled_ability_ids: list[str] = []
+    if agent_id:
+        try:
+            from app.db import get_db
+            db = get_db()
+            if hasattr(db, "get_agent_abilities"):
+                rows = await db.get_agent_abilities(agent_id)
+                enabled_ability_ids = [
+                    r["ability_id"]
+                    for r in rows
+                    if r.get("enabled") and (r.get("source") or "platform") == source
+                ]
+        except Exception as e:
+            logger.debug("get_agent_abilities(%s) failed: %s", agent_id, e)
+
+    enabled_ability_ids = [
+        aid for aid in enabled_ability_ids
+        if (ab := get_ability(aid)) is not None and ab.provider == p
+    ]
+
+    if not enabled_ability_ids:
+        # No per-agent ability rows yet — preserve the pre-existing behaviour
+        # by handing back the admin's legacy scope list. Any new code path
+        # populates ability rows so this branch only fires for unmigrated agents.
+        if legacy_fallback is not None:
+            return legacy_fallback
+        return list({s for aid in abilities_for_provider(p) for s in (get_ability(aid).scopes if get_ability(aid) else ())})
+
+    # Always include implicit abilities (sign-in) so we can identify the user.
+    union_ids = list(dict.fromkeys(implicit_abilities(p) + enabled_ability_ids))
+    scopes: list[str] = []
+    for aid in union_ids:
+        ab = get_ability(aid)
+        if not ab:
+            continue
+        policy = await get_oauth_ability_config(aid)
+        if policy["mode"] == "disabled" and not ab.implicit:
+            continue
+        cap = policy["max_byo_scopes"] if source == "byo" else policy["platform_scopes"]
+        # Intersect ability's full scope set with the admin's cap.
+        allowed = set(cap or [])
+        for s in ab.scopes:
+            if s in allowed and s not in scopes:
+                scopes.append(s)
+    return scopes
+
+
 # ── Shared helpers (used by app/api/agents.py and app/api/oauth.py) ──────
 
 def resolve_user_id(authorization: str = "", token_qs: str = "") -> str:
@@ -338,6 +465,89 @@ def _get_base_url(request: Optional[Request] = None) -> str:
 
 
 # ── Per-provider stored redirect URI ──────────────────────────────────────
+
+def per_agent_redirect_uri(provider: str, agent_id: str, request: Optional[Request] = None) -> str:
+    """The stable per-agent OAuth landing URL.
+
+    Agent admins running BYO OAuth register this URI in their own Google /
+    Microsoft / etc. project so every per-agent flow lands here. The handler
+    at this path does the full token exchange against the agent's BYO creds
+    (Phase 3) — under platform OAuth (Phase 2) it 302s to the standard
+    `/api/v1/oauth/callback/{provider}` endpoint.
+    """
+    base = _get_base_url(request).rstrip("/")
+    return f"{base}/agents/{agent_id}/oauth/callback/{provider}"
+
+
+async def _provider_redirect_uri(
+    provider: str,
+    service_key: str,
+    request: Optional[Request],
+    agent_id: str,
+    source: str,
+) -> str:
+    """Shared resolver: per-agent URI for BYO, admin-stored or derived URI otherwise."""
+    if source == "byo" and agent_id:
+        return per_agent_redirect_uri(provider, agent_id, request)
+    stored = await get_stored_oauth_redirect_uri(service_key)
+    if stored:
+        return stored
+    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/{provider}"
+
+
+# ── Cred resolver: platform vs BYO ─────────────────────────────────────────
+
+_PROVIDER_PLATFORM_CRED_FN = {
+    # Provider name → name of the get_*_creds function on this module.
+    "google":    "get_google_creds",
+    "microsoft": "get_microsoft_creds",
+    "yahoo":     "get_yahoo_creds",
+    "dropbox":   "get_dropbox_creds",
+    "meta":      "get_meta_creds",
+    "twitter":   "get_twitter_creds",
+    "linkedin":  "get_linkedin_creds",
+    "tiktok":    "get_tiktok_creds",
+    "pinterest": "get_pinterest_creds",
+    "reddit":    "get_reddit_creds",
+    "snapchat":  "get_snapchat_creds",
+    "twitch":    "get_twitch_creds",
+    "ebay":      "get_ebay_creds",
+    "etsy":      "get_etsy_creds",
+    "shopify":   "get_shopify_creds",
+    "amazon":    "get_amazon_creds",
+}
+
+
+async def resolve_oauth_creds(
+    provider: str, agent_id: str = "", *, source: str = "platform",
+) -> tuple[str, str]:
+    """Return (client_id, client_secret) for an authorize / callback flow.
+
+    For `source="platform"`, returns the app-admin's platform creds.
+    For `source="byo"`, returns the agent admin's BYO creds (configured per
+    agent in the abilities tab). Returns ("","") when BYO is selected but
+    no creds are configured — callers should surface a setup error.
+    """
+    p = (provider or "").lower()
+    if source == "byo" and agent_id:
+        try:
+            from app.db import get_db
+            db = get_db()
+            if hasattr(db, "get_agent_byo_creds"):
+                cid, csec = await db.get_agent_byo_creds(agent_id, p)
+                if cid and csec:
+                    return (cid, csec)
+        except Exception as e:
+            logger.warning("BYO cred lookup failed for %s/%s: %s", p, agent_id, e)
+        return ("", "")
+    fn_name = _PROVIDER_PLATFORM_CRED_FN.get(p)
+    if not fn_name:
+        return ("", "")
+    fn = globals().get(fn_name)
+    if not fn:
+        return ("", "")
+    return await fn()
+
 
 async def get_stored_oauth_redirect_uri(service_key: str) -> Optional[str]:
     """Return the admin-saved redirect URI for a provider, or None if unset.
@@ -485,19 +695,25 @@ def get_google_creds_sync() -> tuple[str, str]:
     )
 
 
-async def get_redirect_uri(request: Optional[Request] = None) -> str:
-    stored = await get_stored_oauth_redirect_uri("google_oauth_config")
-    if stored:
-        return stored
-    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/google"
+async def get_redirect_uri(
+    request: Optional[Request] = None, *,
+    agent_id: str = "", source: str = "platform",
+) -> str:
+    return await _provider_redirect_uri("google", "google_oauth_config", request, agent_id, source)
 
 
-async def build_google_authorize_url(user_id: str, agent_id: str = "", request: Optional[Request] = None) -> str:
+async def build_google_authorize_url(
+    user_id: str, agent_id: str = "", request: Optional[Request] = None,
+    *, source: str = "platform",
+) -> str:
     """Build the full Google OAuth authorization URL."""
     client_id, _ = await get_google_creds()
-    redirect_uri = await get_redirect_uri(request)
-    state = make_state_token(user_id, agent_id, provider="google")
-    scopes = await _get_enabled_scopes("google_oauth_config", GOOGLE_SCOPES)
+    redirect_uri = await get_redirect_uri(request, agent_id=agent_id, source=source)
+    state = make_state_token(user_id, agent_id, provider="google", source=source)
+    legacy = await _get_enabled_scopes("google_oauth_config", GOOGLE_SCOPES)
+    scopes = await compute_required_scopes(
+        agent_id, "google", source=source, legacy_fallback=legacy,
+    )
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -559,19 +775,25 @@ async def get_microsoft_creds() -> tuple[str, str]:
     )
 
 
-async def get_microsoft_redirect_uri(request: Optional[Request] = None) -> str:
-    stored = await get_stored_oauth_redirect_uri("microsoft_oauth_config")
-    if stored:
-        return stored
-    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/microsoft"
+async def get_microsoft_redirect_uri(
+    request: Optional[Request] = None, *,
+    agent_id: str = "", source: str = "platform",
+) -> str:
+    return await _provider_redirect_uri("microsoft", "microsoft_oauth_config", request, agent_id, source)
 
 
-async def build_microsoft_authorize_url(user_id: str, agent_id: str = "") -> str:
+async def build_microsoft_authorize_url(
+    user_id: str, agent_id: str = "", request: Optional[Request] = None,
+    *, source: str = "platform",
+) -> str:
     """Build the full Microsoft OAuth authorization URL (common / multi-tenant)."""
     client_id, _ = await get_microsoft_creds()
-    redirect_uri = await get_microsoft_redirect_uri()
-    state = make_state_token(user_id, agent_id, provider="microsoft")
-    scopes = await _get_enabled_scopes("microsoft_oauth_config", MICROSOFT_SCOPES)
+    redirect_uri = await get_microsoft_redirect_uri(request, agent_id=agent_id, source=source)
+    state = make_state_token(user_id, agent_id, provider="microsoft", source=source)
+    legacy = await _get_enabled_scopes("microsoft_oauth_config", MICROSOFT_SCOPES)
+    scopes = await compute_required_scopes(
+        agent_id, "microsoft", source=source, legacy_fallback=legacy,
+    )
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -617,19 +839,25 @@ async def get_yahoo_creds() -> tuple[str, str]:
     )
 
 
-async def get_yahoo_redirect_uri(request: Optional[Request] = None) -> str:
-    stored = await get_stored_oauth_redirect_uri("yahoo_oauth_config")
-    if stored:
-        return stored
-    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/yahoo"
+async def get_yahoo_redirect_uri(
+    request: Optional[Request] = None, *,
+    agent_id: str = "", source: str = "platform",
+) -> str:
+    return await _provider_redirect_uri("yahoo", "yahoo_oauth_config", request, agent_id, source)
 
 
-async def build_yahoo_authorize_url(user_id: str, agent_id: str = "") -> str:
+async def build_yahoo_authorize_url(
+    user_id: str, agent_id: str = "", request: Optional[Request] = None,
+    *, source: str = "platform",
+) -> str:
     """Build the Yahoo OAuth authorization URL."""
     client_id, _ = await get_yahoo_creds()
-    redirect_uri = await get_yahoo_redirect_uri()
-    state = make_state_token(user_id, agent_id, provider="yahoo")
-    scopes = await _get_enabled_scopes("yahoo_oauth_config", YAHOO_SCOPES)
+    redirect_uri = await get_yahoo_redirect_uri(request, agent_id=agent_id, source=source)
+    state = make_state_token(user_id, agent_id, provider="yahoo", source=source)
+    legacy = await _get_enabled_scopes("yahoo_oauth_config", YAHOO_SCOPES)
+    scopes = await compute_required_scopes(
+        agent_id, "yahoo", source=source, legacy_fallback=legacy,
+    )
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -669,19 +897,25 @@ async def get_dropbox_creds() -> tuple[str, str]:
     )
 
 
-async def get_dropbox_redirect_uri(request: Optional[Request] = None) -> str:
-    stored = await get_stored_oauth_redirect_uri("dropbox_oauth_config")
-    if stored:
-        return stored
-    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/dropbox"
+async def get_dropbox_redirect_uri(
+    request: Optional[Request] = None, *,
+    agent_id: str = "", source: str = "platform",
+) -> str:
+    return await _provider_redirect_uri("dropbox", "dropbox_oauth_config", request, agent_id, source)
 
 
-async def build_dropbox_authorize_url(user_id: str, agent_id: str = "") -> str:
+async def build_dropbox_authorize_url(
+    user_id: str, agent_id: str = "", request: Optional[Request] = None,
+    *, source: str = "platform",
+) -> str:
     """Build the Dropbox OAuth authorization URL."""
     client_id, _ = await get_dropbox_creds()
-    redirect_uri = await get_dropbox_redirect_uri()
-    state = make_state_token(user_id, agent_id, provider="dropbox")
-    scopes = await _get_enabled_scopes("dropbox_oauth_config", DROPBOX_SCOPES)
+    redirect_uri = await get_dropbox_redirect_uri(request, agent_id=agent_id, source=source)
+    state = make_state_token(user_id, agent_id, provider="dropbox", source=source)
+    legacy = await _get_enabled_scopes("dropbox_oauth_config", DROPBOX_SCOPES)
+    scopes = await compute_required_scopes(
+        agent_id, "dropbox", source=source, legacy_fallback=legacy,
+    )
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -732,18 +966,24 @@ async def get_meta_creds() -> tuple[str, str]:
     return (os.environ.get("META_APP_ID", ""), os.environ.get("META_APP_SECRET", ""))
 
 
-async def get_meta_redirect_uri(request: Optional[Request] = None) -> str:
-    stored = await get_stored_oauth_redirect_uri("meta_oauth_config")
-    if stored:
-        return stored
-    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/meta"
+async def get_meta_redirect_uri(
+    request: Optional[Request] = None, *,
+    agent_id: str = "", source: str = "platform",
+) -> str:
+    return await _provider_redirect_uri("meta", "meta_oauth_config", request, agent_id, source)
 
 
-async def build_meta_authorize_url(user_id: str, agent_id: str = "") -> str:
+async def build_meta_authorize_url(
+    user_id: str, agent_id: str = "", request: Optional[Request] = None,
+    *, source: str = "platform",
+) -> str:
     client_id, _ = await get_meta_creds()
-    redirect_uri = await get_meta_redirect_uri()
-    state = make_state_token(user_id, agent_id, provider="meta")
-    scopes = await _get_enabled_scopes("meta_oauth_config", META_SCOPES)
+    redirect_uri = await get_meta_redirect_uri(request, agent_id=agent_id, source=source)
+    state = make_state_token(user_id, agent_id, provider="meta", source=source)
+    legacy = await _get_enabled_scopes("meta_oauth_config", META_SCOPES)
+    scopes = await compute_required_scopes(
+        agent_id, "meta", source=source, legacy_fallback=legacy,
+    )
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -795,20 +1035,26 @@ async def get_twitter_creds() -> tuple[str, str]:
     return (os.environ.get("TWITTER_CLIENT_ID", ""), os.environ.get("TWITTER_CLIENT_SECRET", ""))
 
 
-async def get_twitter_redirect_uri(request: Optional[Request] = None) -> str:
-    stored = await get_stored_oauth_redirect_uri("twitter_oauth_config")
-    if stored:
-        return stored
-    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/twitter"
+async def get_twitter_redirect_uri(
+    request: Optional[Request] = None, *,
+    agent_id: str = "", source: str = "platform",
+) -> str:
+    return await _provider_redirect_uri("twitter", "twitter_oauth_config", request, agent_id, source)
 
 
-async def build_twitter_authorize_url(user_id: str, agent_id: str = "") -> tuple[str, str]:
+async def build_twitter_authorize_url(
+    user_id: str, agent_id: str = "", request: Optional[Request] = None,
+    *, source: str = "platform",
+) -> tuple[str, str]:
     """Returns (authorize_url, state_token). Twitter requires PKCE."""
     client_id, _ = await get_twitter_creds()
-    redirect_uri = await get_twitter_redirect_uri()
+    redirect_uri = await get_twitter_redirect_uri(request, agent_id=agent_id, source=source)
     verifier, challenge = _pkce_pair()
-    state = make_state_token(user_id, agent_id, provider="twitter", pkce_verifier=verifier)
-    scopes = await _get_enabled_scopes("twitter_oauth_config", TWITTER_SCOPES)
+    state = make_state_token(user_id, agent_id, provider="twitter", pkce_verifier=verifier, source=source)
+    legacy = await _get_enabled_scopes("twitter_oauth_config", TWITTER_SCOPES)
+    scopes = await compute_required_scopes(
+        agent_id, "twitter", source=source, legacy_fallback=legacy,
+    )
     params = {
         "response_type": "code",
         "client_id": client_id,
@@ -862,18 +1108,24 @@ async def get_linkedin_creds() -> tuple[str, str]:
     return (os.environ.get("LINKEDIN_CLIENT_ID", ""), os.environ.get("LINKEDIN_CLIENT_SECRET", ""))
 
 
-async def get_linkedin_redirect_uri(request: Optional[Request] = None) -> str:
-    stored = await get_stored_oauth_redirect_uri("linkedin_oauth_config")
-    if stored:
-        return stored
-    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/linkedin"
+async def get_linkedin_redirect_uri(
+    request: Optional[Request] = None, *,
+    agent_id: str = "", source: str = "platform",
+) -> str:
+    return await _provider_redirect_uri("linkedin", "linkedin_oauth_config", request, agent_id, source)
 
 
-async def build_linkedin_authorize_url(user_id: str, agent_id: str = "") -> str:
+async def build_linkedin_authorize_url(
+    user_id: str, agent_id: str = "", request: Optional[Request] = None,
+    *, source: str = "platform",
+) -> str:
     client_id, _ = await get_linkedin_creds()
-    redirect_uri = await get_linkedin_redirect_uri()
-    state = make_state_token(user_id, agent_id, provider="linkedin")
-    scopes = await _get_enabled_scopes("linkedin_oauth_config", LINKEDIN_SCOPES)
+    redirect_uri = await get_linkedin_redirect_uri(request, agent_id=agent_id, source=source)
+    state = make_state_token(user_id, agent_id, provider="linkedin", source=source)
+    legacy = await _get_enabled_scopes("linkedin_oauth_config", LINKEDIN_SCOPES)
+    scopes = await compute_required_scopes(
+        agent_id, "linkedin", source=source, legacy_fallback=legacy,
+    )
     params = {
         "response_type": "code",
         "client_id": client_id,
@@ -908,19 +1160,25 @@ async def get_tiktok_creds() -> tuple[str, str]:
     return (os.environ.get("TIKTOK_CLIENT_KEY", ""), os.environ.get("TIKTOK_CLIENT_SECRET", ""))
 
 
-async def get_tiktok_redirect_uri(request: Optional[Request] = None) -> str:
-    stored = await get_stored_oauth_redirect_uri("tiktok_oauth_config")
-    if stored:
-        return stored
-    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/tiktok"
+async def get_tiktok_redirect_uri(
+    request: Optional[Request] = None, *,
+    agent_id: str = "", source: str = "platform",
+) -> str:
+    return await _provider_redirect_uri("tiktok", "tiktok_oauth_config", request, agent_id, source)
 
 
-async def build_tiktok_authorize_url(user_id: str, agent_id: str = "") -> str:
+async def build_tiktok_authorize_url(
+    user_id: str, agent_id: str = "", request: Optional[Request] = None,
+    *, source: str = "platform",
+) -> str:
     client_id, _ = await get_tiktok_creds()
-    redirect_uri = await get_tiktok_redirect_uri()
+    redirect_uri = await get_tiktok_redirect_uri(request, agent_id=agent_id, source=source)
     verifier, challenge = _pkce_pair()
-    state = make_state_token(user_id, agent_id, provider="tiktok", pkce_verifier=verifier)
-    scopes = await _get_enabled_scopes("tiktok_oauth_config", TIKTOK_SCOPES)
+    state = make_state_token(user_id, agent_id, provider="tiktok", pkce_verifier=verifier, source=source)
+    legacy = await _get_enabled_scopes("tiktok_oauth_config", TIKTOK_SCOPES)
+    scopes = await compute_required_scopes(
+        agent_id, "tiktok", source=source, legacy_fallback=legacy,
+    )
     params = {
         "client_key": client_id,
         "redirect_uri": redirect_uri,
@@ -973,18 +1231,24 @@ async def get_pinterest_creds() -> tuple[str, str]:
     return (os.environ.get("PINTEREST_APP_ID", ""), os.environ.get("PINTEREST_APP_SECRET", ""))
 
 
-async def get_pinterest_redirect_uri(request: Optional[Request] = None) -> str:
-    stored = await get_stored_oauth_redirect_uri("pinterest_oauth_config")
-    if stored:
-        return stored
-    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/pinterest"
+async def get_pinterest_redirect_uri(
+    request: Optional[Request] = None, *,
+    agent_id: str = "", source: str = "platform",
+) -> str:
+    return await _provider_redirect_uri("pinterest", "pinterest_oauth_config", request, agent_id, source)
 
 
-async def build_pinterest_authorize_url(user_id: str, agent_id: str = "") -> str:
+async def build_pinterest_authorize_url(
+    user_id: str, agent_id: str = "", request: Optional[Request] = None,
+    *, source: str = "platform",
+) -> str:
     client_id, _ = await get_pinterest_creds()
-    redirect_uri = await get_pinterest_redirect_uri()
-    state = make_state_token(user_id, agent_id, provider="pinterest")
-    scopes = await _get_enabled_scopes("pinterest_oauth_config", PINTEREST_SCOPES)
+    redirect_uri = await get_pinterest_redirect_uri(request, agent_id=agent_id, source=source)
+    state = make_state_token(user_id, agent_id, provider="pinterest", source=source)
+    legacy = await _get_enabled_scopes("pinterest_oauth_config", PINTEREST_SCOPES)
+    scopes = await compute_required_scopes(
+        agent_id, "pinterest", source=source, legacy_fallback=legacy,
+    )
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -1019,18 +1283,24 @@ async def get_reddit_creds() -> tuple[str, str]:
     return (os.environ.get("REDDIT_CLIENT_ID", ""), os.environ.get("REDDIT_CLIENT_SECRET", ""))
 
 
-async def get_reddit_redirect_uri(request: Optional[Request] = None) -> str:
-    stored = await get_stored_oauth_redirect_uri("reddit_oauth_config")
-    if stored:
-        return stored
-    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/reddit"
+async def get_reddit_redirect_uri(
+    request: Optional[Request] = None, *,
+    agent_id: str = "", source: str = "platform",
+) -> str:
+    return await _provider_redirect_uri("reddit", "reddit_oauth_config", request, agent_id, source)
 
 
-async def build_reddit_authorize_url(user_id: str, agent_id: str = "") -> str:
+async def build_reddit_authorize_url(
+    user_id: str, agent_id: str = "", request: Optional[Request] = None,
+    *, source: str = "platform",
+) -> str:
     client_id, _ = await get_reddit_creds()
-    redirect_uri = await get_reddit_redirect_uri()
-    state = make_state_token(user_id, agent_id, provider="reddit")
-    scopes = await _get_enabled_scopes("reddit_oauth_config", REDDIT_SCOPES)
+    redirect_uri = await get_reddit_redirect_uri(request, agent_id=agent_id, source=source)
+    state = make_state_token(user_id, agent_id, provider="reddit", source=source)
+    legacy = await _get_enabled_scopes("reddit_oauth_config", REDDIT_SCOPES)
+    scopes = await compute_required_scopes(
+        agent_id, "reddit", source=source, legacy_fallback=legacy,
+    )
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -1083,18 +1353,24 @@ async def get_snapchat_creds() -> tuple[str, str]:
     return (os.environ.get("SNAPCHAT_CLIENT_ID", ""), os.environ.get("SNAPCHAT_CLIENT_SECRET", ""))
 
 
-async def get_snapchat_redirect_uri(request: Optional[Request] = None) -> str:
-    stored = await get_stored_oauth_redirect_uri("snapchat_oauth_config")
-    if stored:
-        return stored
-    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/snapchat"
+async def get_snapchat_redirect_uri(
+    request: Optional[Request] = None, *,
+    agent_id: str = "", source: str = "platform",
+) -> str:
+    return await _provider_redirect_uri("snapchat", "snapchat_oauth_config", request, agent_id, source)
 
 
-async def build_snapchat_authorize_url(user_id: str, agent_id: str = "") -> str:
+async def build_snapchat_authorize_url(
+    user_id: str, agent_id: str = "", request: Optional[Request] = None,
+    *, source: str = "platform",
+) -> str:
     client_id, _ = await get_snapchat_creds()
-    redirect_uri = await get_snapchat_redirect_uri()
-    state = make_state_token(user_id, agent_id, provider="snapchat")
-    scopes = await _get_enabled_scopes("snapchat_oauth_config", SNAPCHAT_SCOPES)
+    redirect_uri = await get_snapchat_redirect_uri(request, agent_id=agent_id, source=source)
+    state = make_state_token(user_id, agent_id, provider="snapchat", source=source)
+    legacy = await _get_enabled_scopes("snapchat_oauth_config", SNAPCHAT_SCOPES)
+    scopes = await compute_required_scopes(
+        agent_id, "snapchat", source=source, legacy_fallback=legacy,
+    )
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -1144,18 +1420,24 @@ async def get_twitch_creds() -> tuple[str, str]:
     return (os.environ.get("TWITCH_CLIENT_ID", ""), os.environ.get("TWITCH_CLIENT_SECRET", ""))
 
 
-async def get_twitch_redirect_uri(request: Optional[Request] = None) -> str:
-    stored = await get_stored_oauth_redirect_uri("twitch_oauth_config")
-    if stored:
-        return stored
-    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/twitch"
+async def get_twitch_redirect_uri(
+    request: Optional[Request] = None, *,
+    agent_id: str = "", source: str = "platform",
+) -> str:
+    return await _provider_redirect_uri("twitch", "twitch_oauth_config", request, agent_id, source)
 
 
-async def build_twitch_authorize_url(user_id: str, agent_id: str = "") -> str:
+async def build_twitch_authorize_url(
+    user_id: str, agent_id: str = "", request: Optional[Request] = None,
+    *, source: str = "platform",
+) -> str:
     client_id, _ = await get_twitch_creds()
-    redirect_uri = await get_twitch_redirect_uri()
-    state = make_state_token(user_id, agent_id, provider="twitch")
-    scopes = await _get_enabled_scopes("twitch_oauth_config", TWITCH_SCOPES)
+    redirect_uri = await get_twitch_redirect_uri(request, agent_id=agent_id, source=source)
+    state = make_state_token(user_id, agent_id, provider="twitch", source=source)
+    legacy = await _get_enabled_scopes("twitch_oauth_config", TWITCH_SCOPES)
+    scopes = await compute_required_scopes(
+        agent_id, "twitch", source=source, legacy_fallback=legacy,
+    )
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -1205,18 +1487,24 @@ async def get_ebay_creds() -> tuple[str, str]:
     return (os.environ.get("EBAY_CLIENT_ID", ""), os.environ.get("EBAY_CLIENT_SECRET", ""))
 
 
-async def get_ebay_redirect_uri(request: Optional[Request] = None) -> str:
-    stored = await get_stored_oauth_redirect_uri("ebay_oauth_config")
-    if stored:
-        return stored
-    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/ebay"
+async def get_ebay_redirect_uri(
+    request: Optional[Request] = None, *,
+    agent_id: str = "", source: str = "platform",
+) -> str:
+    return await _provider_redirect_uri("ebay", "ebay_oauth_config", request, agent_id, source)
 
 
-async def build_ebay_authorize_url(user_id: str, agent_id: str = "", request: Optional[Request] = None) -> str:
+async def build_ebay_authorize_url(
+    user_id: str, agent_id: str = "", request: Optional[Request] = None,
+    *, source: str = "platform",
+) -> str:
     client_id, _ = await get_ebay_creds()
-    redirect_uri = await get_ebay_redirect_uri(request)
-    state = make_state_token(user_id, agent_id, provider="ebay")
-    scopes = await _get_enabled_scopes("ebay_oauth_config", EBAY_SCOPES)
+    redirect_uri = await get_ebay_redirect_uri(request, agent_id=agent_id, source=source)
+    state = make_state_token(user_id, agent_id, provider="ebay", source=source)
+    legacy = await _get_enabled_scopes("ebay_oauth_config", EBAY_SCOPES)
+    scopes = await compute_required_scopes(
+        agent_id, "ebay", source=source, legacy_fallback=legacy,
+    )
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,  # eBay calls this the "RuName" but accepts the URI here for web flows
@@ -1251,20 +1539,26 @@ async def get_etsy_creds() -> tuple[str, str]:
     return (os.environ.get("ETSY_CLIENT_ID", ""), os.environ.get("ETSY_CLIENT_SECRET", ""))
 
 
-async def get_etsy_redirect_uri(request: Optional[Request] = None) -> str:
-    stored = await get_stored_oauth_redirect_uri("etsy_oauth_config")
-    if stored:
-        return stored
-    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/etsy"
+async def get_etsy_redirect_uri(
+    request: Optional[Request] = None, *,
+    agent_id: str = "", source: str = "platform",
+) -> str:
+    return await _provider_redirect_uri("etsy", "etsy_oauth_config", request, agent_id, source)
 
 
-async def build_etsy_authorize_url(user_id: str, agent_id: str = "", request: Optional[Request] = None) -> str:
+async def build_etsy_authorize_url(
+    user_id: str, agent_id: str = "", request: Optional[Request] = None,
+    *, source: str = "platform",
+) -> str:
     """Etsy uses OAuth 2.0 + PKCE. Stash the verifier in the state JWT."""
     client_id, _ = await get_etsy_creds()
-    redirect_uri = await get_etsy_redirect_uri(request)
+    redirect_uri = await get_etsy_redirect_uri(request, agent_id=agent_id, source=source)
     verifier, challenge = _pkce_pair()
-    state = make_state_token(user_id, agent_id, provider="etsy", pkce_verifier=verifier)
-    scopes = await _get_enabled_scopes("etsy_oauth_config", ETSY_SCOPES)
+    state = make_state_token(user_id, agent_id, provider="etsy", pkce_verifier=verifier, source=source)
+    legacy = await _get_enabled_scopes("etsy_oauth_config", ETSY_SCOPES)
+    scopes = await compute_required_scopes(
+        agent_id, "etsy", source=source, legacy_fallback=legacy,
+    )
     params = {
         "response_type": "code",
         "client_id": client_id,
@@ -1301,11 +1595,11 @@ async def get_shopify_creds() -> tuple[str, str]:
     return (os.environ.get("SHOPIFY_API_KEY", ""), os.environ.get("SHOPIFY_API_SECRET", ""))
 
 
-async def get_shopify_redirect_uri(request: Optional[Request] = None) -> str:
-    stored = await get_stored_oauth_redirect_uri("shopify_oauth_config")
-    if stored:
-        return stored
-    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/shopify"
+async def get_shopify_redirect_uri(
+    request: Optional[Request] = None, *,
+    agent_id: str = "", source: str = "platform",
+) -> str:
+    return await _provider_redirect_uri("shopify", "shopify_oauth_config", request, agent_id, source)
 
 
 def _shopify_normalize_shop(shop: str) -> str:
@@ -1321,15 +1615,19 @@ async def build_shopify_authorize_url(
     shop: str,
     agent_id: str = "",
     request: Optional[Request] = None,
+    *, source: str = "platform",
 ) -> str:
     """Build the per-shop Shopify install URL. Caller must supply the shop domain."""
     if not shop:
         raise ValueError("shop domain required for Shopify authorize")
     shop_norm = _shopify_normalize_shop(shop)
     client_id, _ = await get_shopify_creds()
-    redirect_uri = await get_shopify_redirect_uri(request)
-    state = make_state_token(user_id, agent_id, provider="shopify", shop=shop_norm)
-    scopes = await _get_enabled_scopes("shopify_oauth_config", SHOPIFY_SCOPES)
+    redirect_uri = await get_shopify_redirect_uri(request, agent_id=agent_id, source=source)
+    state = make_state_token(user_id, agent_id, provider="shopify", shop=shop_norm, source=source)
+    legacy = await _get_enabled_scopes("shopify_oauth_config", SHOPIFY_SCOPES)
+    scopes = await compute_required_scopes(
+        agent_id, "shopify", source=source, legacy_fallback=legacy,
+    )
     params = {
         "client_id": client_id,
         "scope": ",".join(scopes),
@@ -1363,11 +1661,11 @@ async def get_amazon_creds() -> tuple[str, str]:
     return (os.environ.get("AMAZON_LWA_CLIENT_ID", ""), os.environ.get("AMAZON_LWA_CLIENT_SECRET", ""))
 
 
-async def get_amazon_redirect_uri(request: Optional[Request] = None) -> str:
-    stored = await get_stored_oauth_redirect_uri("amazon_oauth_config")
-    if stored:
-        return stored
-    return f"{_get_base_url(request).rstrip('/')}/api/v1/oauth/callback/amazon"
+async def get_amazon_redirect_uri(
+    request: Optional[Request] = None, *,
+    agent_id: str = "", source: str = "platform",
+) -> str:
+    return await _provider_redirect_uri("amazon", "amazon_oauth_config", request, agent_id, source)
 
 
 async def _get_amazon_app_id() -> str:
@@ -1392,6 +1690,7 @@ async def build_amazon_authorize_url(
     region: str = "NA",
     agent_id: str = "",
     request: Optional[Request] = None,
+    *, source: str = "platform",
 ) -> str:
     """Build the Amazon Seller Central authorization URL.
 
@@ -1399,8 +1698,8 @@ async def build_amazon_authorize_url(
     then Amazon redirects back to our LWA callback with a spapi_oauth_code.
     """
     app_id = await _get_amazon_app_id()
-    redirect_uri = await get_amazon_redirect_uri(request)
-    state = make_state_token(user_id, agent_id, provider="amazon", region=region.upper())
+    redirect_uri = await get_amazon_redirect_uri(request, agent_id=agent_id, source=source)
+    state = make_state_token(user_id, agent_id, provider="amazon", region=region.upper(), source=source)
     # Seller Central hosts the consent screen, not LWA directly.
     sc_hosts = {
         "NA": "https://sellercentral.amazon.com",
@@ -2218,6 +2517,89 @@ async def is_ability_enabled_for_agent(agent_id: str, ability: str) -> bool:
     except Exception as e:
         logger.debug("is_ability_enabled_for_agent(%s, %s) failed: %s", agent_id, ability, e)
         return False
+
+
+# ── OAuth Ability admin endpoints ─────────────────────────────────────────
+
+class OAuthAbilityPolicyRequest(BaseModel):
+    mode: str                             # disabled | platform_only | byo_only | both
+    platform_scopes: Optional[list[str]] = None
+    max_byo_scopes:  Optional[list[str]] = None
+
+
+@router.get("/oauth-abilities")
+async def list_oauth_abilities(
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Return every registered OAuth ability with its admin policy.
+
+    Response shape mirrors the registry: one entry per ability with the
+    current `mode`, configured `platform_scopes`, and `max_byo_scopes`.
+    Agent admin UI uses this to know which abilities are toggleable per agent.
+    """
+    from app.integrations.ability_registry import ABILITIES
+    out = []
+    for ab in ABILITIES.values():
+        policy = await get_oauth_ability_config(ab.id)
+        out.append({
+            "id": ab.id,
+            "provider": ab.provider,
+            "display_name": ab.display_name,
+            "description": ab.description,
+            "scopes": list(ab.scopes),
+            "implicit": ab.implicit,
+            "mode": policy["mode"],
+            "platform_scopes": policy["platform_scopes"],
+            "max_byo_scopes": policy["max_byo_scopes"],
+        })
+    return {"abilities": out}
+
+
+@router.post("/oauth-abilities/{ability_id}")
+async def set_oauth_ability_policy(
+    ability_id: str,
+    req: OAuthAbilityPolicyRequest,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Set the admin policy for a single OAuth ability."""
+    from app.integrations.ability_registry import get_ability
+    ab = get_ability(ability_id)
+    if not ab:
+        raise HTTPException(status_code=404, detail=f"Unknown OAuth ability: {ability_id}")
+    if req.mode not in _OAUTH_ABILITY_MODES:
+        raise HTTPException(status_code=400, detail=f"mode must be one of {_OAUTH_ABILITY_MODES}")
+    # Caps must be a subset of the ability's registered scopes — admin can't
+    # invent new scopes by editing this endpoint.
+    allowed = set(ab.scopes)
+    platform = [s for s in (req.platform_scopes or list(ab.scopes)) if s in allowed]
+    max_byo = [s for s in (req.max_byo_scopes or list(ab.scopes)) if s in allowed]
+    from app.db import get_db
+    db = get_db()
+    await db.auth_element_set(
+        user_id=_ADMIN_USER,
+        service=_oauth_ability_service(ability_id),
+        config={"mode": req.mode, "platform_scopes": platform, "max_byo_scopes": max_byo},
+        secret_ref="set",
+        label="default",
+    )
+    logger.info("OAuth ability %s set to mode=%s", ability_id, req.mode)
+    return {"status": "ok", "ability_id": ability_id, "mode": req.mode,
+            "platform_scopes": platform, "max_byo_scopes": max_byo}
+
+
+@router.delete("/oauth-abilities/{ability_id}")
+async def reset_oauth_ability_policy(
+    ability_id: str,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Delete the admin policy — reverts the ability to its registry defaults."""
+    from app.db import get_db
+    db = get_db()
+    deleted = await db.auth_element_delete(_ADMIN_USER, _oauth_ability_service(ability_id), "default")
+    return {"status": "ok", "ability_id": ability_id, "deleted": deleted}
 
 
 @router.post("/abilities/{ability}")

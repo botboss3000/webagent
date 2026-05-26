@@ -179,6 +179,21 @@ async def _require_connection_enabled(db, agent_id: str, connection_type: str) -
         raise HTTPException(status_code=403, detail="This integration is not enabled by the agent admin.")
 
 
+async def _require_ability_enabled(db, agent_id: str, ability_id: str) -> None:
+    """Raise 403 if the OAuth ability isn't enabled on this agent.
+
+    Distinct from `_require_connection_enabled`, which gates provider-level
+    rows in `agent_connections`. The ability check covers fine-grained
+    capabilities in `agent_abilities`.
+    """
+    if not hasattr(db, "get_agent_abilities"):
+        return
+    rows = await db.get_agent_abilities(agent_id)
+    match = next((r for r in rows if r.get("ability_id") == ability_id), None)
+    if not match or not match.get("enabled"):
+        raise HTTPException(status_code=403, detail=f"Ability '{ability_id}' is not enabled on this agent.")
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.get("/user/profile")
@@ -1830,6 +1845,246 @@ async def create_anon_session(agent_id: str, req: AnonSessionRequest):
         "user_id": identity.user_id,
         "session_id": identity.user_id,
     }
+
+
+# ── Per-agent OAuth Abilities (3-tier OAuth system) ──────────────────────
+
+class UpsertAbilityRequest(BaseModel):
+    user_id: str                                # caller (must be agent admin)
+    enabled: Optional[bool] = None              # toggle on/off
+    source:  Optional[str]  = None              # "platform" | "byo"
+
+
+class SetByoCredsRequest(BaseModel):
+    user_id: str
+    client_id: str
+    client_secret: str
+
+
+def _is_known_ability(ability_id: str) -> bool:
+    from app.integrations.ability_registry import get_ability
+    return get_ability(ability_id) is not None
+
+
+@router.get("/agents/{agent_id}/abilities")
+async def list_agent_abilities(agent_id: str, user_id: str = Query(...)):
+    """Return every registered OAuth ability with its enabled/source/byo state for this agent.
+
+    Merges three layers in one response so the agent admin UI can render the
+    full picture in a single fetch:
+      - registry definition (display name, scopes, provider)
+      - app-admin policy (mode, scope caps)
+      - per-agent state (enabled flag, source, BYO client id [secret masked])
+
+    Read-only members get the same payload — server-side mutation gates kick
+    in on the PUT endpoints below.
+    """
+    from app.integrations.ability_registry import ABILITIES
+    from app.admin.integrations import get_oauth_ability_config
+    db = get_db()
+    rows = (await db.get_agent_abilities(agent_id)) if hasattr(db, "get_agent_abilities") else []
+    by_id = {r["ability_id"]: r for r in rows}
+
+    out: list[dict] = []
+    for ab in ABILITIES.values():
+        row = by_id.get(ab.id) or {}
+        policy = await get_oauth_ability_config(ab.id)
+        byo_cid = row.get("byo_client_id", "") or ""
+        # Mask BYO client_id to last 6 chars so members never see real values.
+        masked_cid = ("•" * max(0, len(byo_cid) - 6) + byo_cid[-6:]) if byo_cid else ""
+        out.append({
+            "id": ab.id,
+            "provider": ab.provider,
+            "display_name": ab.display_name,
+            "description": ab.description,
+            "scopes": list(ab.scopes),
+            "implicit": ab.implicit,
+            "mode": policy["mode"],
+            "enabled": bool(row.get("enabled", False)),
+            "source": row.get("source") or "platform",
+            "byo_client_id_masked": masked_cid,
+            "byo_configured": bool(row.get("byo_client_id") and row.get("byo_client_secret_ref")),
+        })
+    is_admin = await _is_agent_admin(db, agent_id, user_id)
+    return {"abilities": out, "user_role": "admin" if is_admin else "member"}
+
+
+@router.put("/agents/{agent_id}/abilities/{ability_id}")
+async def upsert_agent_ability(
+    agent_id: str,
+    ability_id: str,
+    req: UpsertAbilityRequest,
+):
+    """Toggle an ability on/off and/or switch source (platform vs BYO).
+
+    On enable, returns `reauth_required: true` plus a fresh authorize URL when
+    the agent's existing token doesn't already cover this ability's scopes —
+    the UI prompts the user to re-consent before the agent can use the new
+    capability.
+    """
+    if not _is_known_ability(ability_id):
+        raise HTTPException(status_code=404, detail=f"Unknown ability: {ability_id}")
+    db = get_db()
+    if not await _is_agent_admin(db, agent_id, req.user_id):
+        raise HTTPException(status_code=403, detail="Only agent admins can change abilities.")
+
+    from app.admin.integrations import get_oauth_ability_config
+    from app.integrations.ability_registry import get_ability
+
+    ab = get_ability(ability_id)
+    policy = await get_oauth_ability_config(ability_id)
+    # Enforce app-admin mode policy.
+    if req.enabled and policy["mode"] == "disabled":
+        raise HTTPException(status_code=400, detail=f"Ability '{ability_id}' is disabled by the app admin.")
+    new_source = req.source
+    if new_source is None:
+        new_source = "platform"
+    if new_source not in ("platform", "byo"):
+        raise HTTPException(status_code=400, detail="source must be 'platform' or 'byo'")
+    if new_source == "platform" and policy["mode"] == "byo_only":
+        raise HTTPException(status_code=400, detail="App admin requires BYO for this ability.")
+    if new_source == "byo" and policy["mode"] == "platform_only":
+        raise HTTPException(status_code=400, detail="App admin disallows BYO for this ability.")
+
+    if not hasattr(db, "upsert_agent_ability"):
+        raise HTTPException(status_code=500, detail="Backend does not support agent_abilities yet.")
+    row = await db.upsert_agent_ability(
+        agent_id, ability_id,
+        enabled=req.enabled,
+        source=new_source,
+    )
+
+    # Check whether the existing token already covers this ability — if not,
+    # build a fresh authorize URL so the UI can prompt re-consent.
+    reauth_required = False
+    authorize_url = None
+    if req.enabled and ab is not None:
+        try:
+            from app.integrations.oauth_helper import check_ability_authorized
+            authorized = await check_ability_authorized(req.user_id, agent_id, ab.provider, ability_id)
+            if not authorized:
+                reauth_required = True
+                authorize_url = await _build_authorize_url_for(ab.provider, req.user_id, agent_id, source=new_source)
+        except Exception as e:
+            logger.debug("re-auth check failed for %s: %s", ability_id, e)
+
+    return {
+        "ability": {
+            "id": ability_id,
+            "enabled": bool(row.get("enabled")) if row else False,
+            "source": row.get("source") if row else new_source,
+        },
+        "reauth_required": reauth_required,
+        "authorize_url": authorize_url,
+    }
+
+
+@router.put("/agents/{agent_id}/abilities/{ability_id}/byo-creds")
+async def set_agent_ability_byo_creds(
+    agent_id: str,
+    ability_id: str,
+    req: SetByoCredsRequest,
+):
+    """Set the agent admin's BYO OAuth client id + secret for this ability."""
+    if not _is_known_ability(ability_id):
+        raise HTTPException(status_code=404, detail=f"Unknown ability: {ability_id}")
+    db = get_db()
+    if not await _is_agent_admin(db, agent_id, req.user_id):
+        raise HTTPException(status_code=403, detail="Only agent admins can set BYO credentials.")
+    cid = (req.client_id or "").strip()
+    csec = (req.client_secret or "").strip()
+    if not cid or not csec:
+        raise HTTPException(status_code=400, detail="client_id and client_secret are required.")
+    if not hasattr(db, "upsert_agent_ability"):
+        raise HTTPException(status_code=500, detail="Backend does not support agent_abilities yet.")
+    await db.upsert_agent_ability(
+        agent_id, ability_id,
+        source="byo", byo_client_id=cid, byo_client_secret_ref=csec,
+    )
+    return {"status": "ok"}
+
+
+async def _build_authorize_url_for(
+    provider: str, user_id: str, agent_id: str, *, source: str = "platform",
+    request: Optional[Request] = None,
+) -> Optional[str]:
+    """Centralized authorize-URL builder used by ability re-consent flow."""
+    from app.admin import integrations as ints
+    p = (provider or "").lower()
+    if p == "google":
+        return await ints.build_google_authorize_url(user_id, agent_id, request, source=source)
+    if p == "microsoft":
+        return await ints.build_microsoft_authorize_url(user_id, agent_id, request, source=source)
+    if p == "yahoo":
+        return await ints.build_yahoo_authorize_url(user_id, agent_id, request, source=source)
+    if p == "dropbox":
+        return await ints.build_dropbox_authorize_url(user_id, agent_id, request, source=source)
+    if p == "meta":
+        return await ints.build_meta_authorize_url(user_id, agent_id, request, source=source)
+    if p == "twitter":
+        url, _ = await ints.build_twitter_authorize_url(user_id, agent_id, request, source=source)
+        return url
+    if p == "linkedin":
+        return await ints.build_linkedin_authorize_url(user_id, agent_id, request, source=source)
+    if p == "tiktok":
+        return await ints.build_tiktok_authorize_url(user_id, agent_id, request, source=source)
+    if p == "pinterest":
+        return await ints.build_pinterest_authorize_url(user_id, agent_id, request, source=source)
+    if p == "reddit":
+        return await ints.build_reddit_authorize_url(user_id, agent_id, request, source=source)
+    if p == "snapchat":
+        return await ints.build_snapchat_authorize_url(user_id, agent_id, request, source=source)
+    if p == "twitch":
+        return await ints.build_twitch_authorize_url(user_id, agent_id, request, source=source)
+    if p == "ebay":
+        return await ints.build_ebay_authorize_url(user_id, agent_id, request, source=source)
+    if p == "etsy":
+        return await ints.build_etsy_authorize_url(user_id, agent_id, request, source=source)
+    if p == "amazon":
+        return await ints.build_amazon_authorize_url(user_id, "NA", agent_id, request, source=source)
+    # shopify needs a shop domain — caller has to use the per-provider authorize endpoint.
+    return None
+
+
+# ── Per-agent OAuth landing routes + homepage stub ────────────────────────
+
+# Routes outside the `/api/v1` prefix — these are user-facing URLs registered
+# on the global app router, mounted from app/main.py. Anchored to the agent's
+# stable homepage `/agents/{id}` so the visualizer can take it over later.
+
+from fastapi.responses import RedirectResponse
+
+# Separate router — these URLs (e.g. `/agents/{id}`) live outside the
+# `/api/v1` prefix used by the main agents router above.
+agent_pages_router = APIRouter()
+
+
+@agent_pages_router.get("/agents/{agent_id}")
+async def agent_homepage(agent_id: str):
+    """Agent homepage stub. 302s to the agent detail view in the main app.
+
+    The visualizer integration will eventually render the agent UI at this
+    URL directly; for now we keep the URL stable and bounce users into the
+    SPA so deep-links still work.
+    """
+    return RedirectResponse(url=f"/#agent/{agent_id}", status_code=302)
+
+
+@agent_pages_router.get("/agents/{agent_id}/oauth/callback/{provider}")
+async def per_agent_oauth_landing(agent_id: str, provider: str, request: Request):
+    """Per-agent OAuth landing URL.
+
+    For platform OAuth flows (Phase 2), the provider redirects to the standard
+    `/api/v1/oauth/callback/{provider}` URI directly — this route is reserved
+    for BYO flows where the agent admin has registered THIS URI in their own
+    OAuth project (Phase 3). On hit, we forward to the standard callback with
+    the same query string so the existing token-exchange logic picks up.
+    """
+    target = f"/api/v1/oauth/callback/{provider}"
+    qs = request.url.query
+    if qs:
+        target = f"{target}?{qs}"
+    return RedirectResponse(url=target, status_code=307)
 
 
 @router.post("/agent-templates/config")

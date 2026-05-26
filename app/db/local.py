@@ -241,6 +241,32 @@ CREATE INDEX IF NOT EXISTS idx_agent_conn_agent ON agent_connections(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_conn_type ON agent_connections(connection_type);
 
 -- ============================================================
+-- Agent Abilities: per-agent OAuth capability + BYO creds
+--   - ability_id is the registry key e.g. "google.gmail_read"
+--   - source: "platform" (uses app-admin OAuth creds) or "byo"
+--     (uses agent admin's own creds stored on this row)
+--   - byo_client_id / byo_client_secret_ref hold BYO OAuth creds.
+--     Empty when source="platform". secret_ref will move to a vault.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS agent_abilities (
+    id                    TEXT PRIMARY KEY,
+    agent_id              TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    ability_id            TEXT NOT NULL,
+    source                TEXT NOT NULL DEFAULT 'platform',
+    enabled               INTEGER NOT NULL DEFAULT 0,
+    byo_client_id         TEXT NOT NULL DEFAULT '',
+    byo_client_secret_ref TEXT NOT NULL DEFAULT '',
+    config                TEXT NOT NULL DEFAULT '{}',
+    created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(agent_id, ability_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_ability_agent ON agent_abilities(agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_ability_id    ON agent_abilities(ability_id);
+
+-- ============================================================
 -- Agent Automations: scheduled background prompts per-agent.
 -- Parsed from the `automation` prompt slot by the LLM, stored as
 -- structured rows. The local scheduler polls this table for due rows.
@@ -4886,6 +4912,136 @@ class LocalBackend(StorageBackend):
                 (connection_type,),
             ).fetchall()
             return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    # ---- Agent Abilities (per-agent OAuth capability rows) ----
+
+    async def get_agent_abilities(self, agent_id: str) -> List[dict]:
+        """Return all agent_abilities rows for an agent. Empty list when none exist."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM agent_abilities WHERE agent_id = ? ORDER BY ability_id",
+                (agent_id,),
+            ).fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["enabled"] = bool(d.get("enabled"))
+                out.append(d)
+            return out
+        finally:
+            conn.close()
+
+    async def upsert_agent_ability(
+        self,
+        agent_id: str,
+        ability_id: str,
+        *,
+        enabled: Optional[bool] = None,
+        source: Optional[str] = None,
+        byo_client_id: Optional[str] = None,
+        byo_client_secret_ref: Optional[str] = None,
+        config: Optional[dict] = None,
+    ) -> dict:
+        """Insert or partially-update an agent_ability row. Returns the resulting row.
+
+        Only fields explicitly passed (not None) are written so callers can
+        toggle `enabled` without clobbering BYO creds, and vice versa.
+        """
+        now = _now_iso()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                # Read existing row (if any) to preserve untouched fields.
+                existing = conn.execute(
+                    "SELECT * FROM agent_abilities WHERE agent_id = ? AND ability_id = ?",
+                    (agent_id, ability_id),
+                ).fetchone()
+                if existing:
+                    new_enabled = 1 if (enabled if enabled is not None else existing["enabled"]) else 0
+                    new_source = source if source is not None else existing["source"]
+                    new_byo_cid = byo_client_id if byo_client_id is not None else existing["byo_client_id"]
+                    new_byo_sec = byo_client_secret_ref if byo_client_secret_ref is not None else existing["byo_client_secret_ref"]
+                    if config is None:
+                        cfg_str = existing["config"] or "{}"
+                    else:
+                        cfg_str = json.dumps(config)
+                    conn.execute(
+                        """UPDATE agent_abilities
+                           SET enabled = ?, source = ?, byo_client_id = ?,
+                               byo_client_secret_ref = ?, config = ?, updated_at = ?
+                           WHERE agent_id = ? AND ability_id = ?""",
+                        (new_enabled, new_source, new_byo_cid, new_byo_sec,
+                         cfg_str, now, agent_id, ability_id),
+                    )
+                else:
+                    conn.execute(
+                        """INSERT INTO agent_abilities
+                            (id, agent_id, ability_id, source, enabled,
+                             byo_client_id, byo_client_secret_ref, config,
+                             created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            _uuid(), agent_id, ability_id,
+                            source or "platform",
+                            1 if (enabled or False) else 0,
+                            byo_client_id or "",
+                            byo_client_secret_ref or "",
+                            json.dumps(config or {}),
+                            now, now,
+                        ),
+                    )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT * FROM agent_abilities WHERE agent_id = ? AND ability_id = ?",
+                    (agent_id, ability_id),
+                ).fetchone()
+                if not row:
+                    return {}
+                d = dict(row)
+                d["enabled"] = bool(d.get("enabled"))
+                return d
+            finally:
+                conn.close()
+
+    async def delete_agent_ability(self, agent_id: str, ability_id: str) -> bool:
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "DELETE FROM agent_abilities WHERE agent_id = ? AND ability_id = ?",
+                    (agent_id, ability_id),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    async def get_agent_byo_creds(self, agent_id: str, provider: str) -> tuple:
+        """Return (client_id, client_secret) for any BYO ability on this provider.
+
+        All BYO rows for a given provider on a single agent share creds — they
+        come from the same Google Cloud / app-of-apps project. Returns ("","")
+        when no BYO ability is configured.
+        """
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT ability_id, byo_client_id, byo_client_secret_ref "
+                "FROM agent_abilities WHERE agent_id = ? AND source = 'byo'",
+                (agent_id,),
+            ).fetchall()
+            for r in rows:
+                ab = r["ability_id"] or ""
+                if not ab.startswith(provider + "."):
+                    continue
+                cid = r["byo_client_id"] or ""
+                csec = r["byo_client_secret_ref"] or ""
+                if cid and csec:
+                    return (cid, csec)
+            return ("", "")
         finally:
             conn.close()
 
