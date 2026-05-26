@@ -25,6 +25,10 @@ function _icon(name) { return _ICON_SVGS[name] || ''; }
 
 // ── Init & lifecycle ──────────────────────────────────────────────────────────
 
+// CHAT-PILL-SYNC: this init wires the dashboard's chat pill. The same wiring
+// pattern (has-text toggle, attach/voice forwarders, enter-to-send) lives in
+// ui/js/chat.js (web chat) and ui/js/agents.js (_bindAgentBuilderBar). Shared
+// CSS for all three pills is in ui/css/app1.css under ".chat-pill".
 export function initAutoAgent() {
   app._autoAgentHandler = handleEvent;
 
