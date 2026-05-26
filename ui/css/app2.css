@@ -288,8 +288,9 @@
   }
   #db-table-footer {
     padding: 6px 12px;
-    border-top: 1px solid var(--border);
-    color: var(--fg-3);
+    background: var(--files-bg-sidebar);
+    border-top: 1px solid var(--files-border-strong);
+    color: var(--files-text-muted);
     font-size: 11px;
     display: flex;
     align-items: center;
@@ -331,14 +332,15 @@
     font-family: 'Fira Code', Menlo, monospace;
   }
   .db-table th {
-    background: var(--bg-elev);
-    color: var(--accent);
+    background: var(--files-bg-sidebar);
+    color: var(--files-text);
     padding: 6px 10px;
     text-align: left;
     font-weight: 600;
     position: sticky;
     top: 0;
     z-index: 10;
+    border-bottom: 1px solid var(--files-border-strong);
   }
 
   /* ── DB file-selector dropdown (sidebar header) ─────────────
