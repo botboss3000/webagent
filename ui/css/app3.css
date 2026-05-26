@@ -19,45 +19,41 @@
 .db-row-even td { background: #14142a; }
 .db-table tr[style*="height:100px"] .db-cell-pre { max-height: 50px; }
 
-/* All scrollbars inside DB table area — slim,
-consistent */
-  #db-table-data,
-#db-table-data * {
-    scrollbar-width: thin !important;
-    scrollbar-color: #7dcfff33 transparent !important;
+/* Slim scrollbars matching the rest of the app (agents page baseline:
+   width 5px, thumb #2a2a4a, transparent track). Applied to the table area,
+   per-cell overflow scrollbars, and the sidebar table list. */
+#db-table-data,
+#db-table-data *,
+#db-table-list {
+    scrollbar-width: thin;
+    scrollbar-color: #2a2a4a transparent;
   }
 #db-table-data::-webkit-scrollbar,
-#db-table-data *::-webkit-scrollbar {
-    width: 4px !important;
-    height: 4px !important;
+#db-table-data *::-webkit-scrollbar,
+#db-table-list::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
   }
 #db-table-data::-webkit-scrollbar-track,
-#db-table-data *::-webkit-scrollbar-track {
-    background: transparent !important;
+#db-table-data *::-webkit-scrollbar-track,
+#db-table-list::-webkit-scrollbar-track {
+    background: transparent;
   }
 #db-table-data::-webkit-scrollbar-thumb,
-#db-table-data *::-webkit-scrollbar-thumb {
-    background: #7dcfff55 !important;
-    border-radius: 2px !important;
+#db-table-data *::-webkit-scrollbar-thumb,
+#db-table-list::-webkit-scrollbar-thumb {
+    background: #2a2a4a;
+    border-radius: 3px;
   }
 #db-table-data::-webkit-scrollbar-thumb:hover,
-#db-table-data *::-webkit-scrollbar-thumb:hover {
-    background: #7dcfff99 !important;
+#db-table-data *::-webkit-scrollbar-thumb:hover,
+#db-table-list::-webkit-scrollbar-thumb:hover {
+    background: #3a3a5a;
   }
 #db-table-data::-webkit-scrollbar-corner,
 #db-table-data *::-webkit-scrollbar-corner {
-    background: transparent !important;
+    background: transparent;
   }
-.db-cell { scrollbar-width: thin; scrollbar-color: #7dcfff33 transparent; }
-.db-cell::-webkit-scrollbar { width: 4px; height: 4px; }
-.db-cell::-webkit-scrollbar-thumb { background: #7dcfff55; border-radius: 2px; }
-.db-cell::-webkit-scrollbar-thumb:hover { background: #7dcfff99; }
-
-/* Slim blue scrollbar for the DB sidebar table list */
-  #db-table-list { scrollbar-width: thin; scrollbar-color: #7dcfff33 transparent; }
-#db-table-list::-webkit-scrollbar { width: 4px; }
-#db-table-list::-webkit-scrollbar-thumb { background: #7dcfff55; border-radius: 2px; }
-#db-table-list::-webkit-scrollbar-thumb:hover { background: #7dcfff99; }
 .db-table .col-pk { color: #e0af68; }
 .db-table .col-null { color: #565f89; font-style: italic; }
 .db-cell-pre {
