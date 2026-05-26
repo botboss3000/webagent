@@ -64,7 +64,7 @@ let _intAdminWired = false;
 // ── Sidebar nav + scroll highlighting ────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────
 const _SECTION_KEY = 'appConfig_activeSection';
-const _VALID_SECTIONS = ['llm', 'integrations', 'database', 'optimizer', 'git', 'automation', 'events', 'app-settings', 'user-management'];
+const _VALID_SECTIONS = ['llm', 'integrations', 'database', 'optimizer', 'git', 'automation', 'events', 'app-settings', 'user-management', 'monetization'];
 let _activeSection = localStorage.getItem(_SECTION_KEY) || 'llm';
 
 function _showSection(section) {
@@ -75,6 +75,22 @@ function _showSection(section) {
   _activeSection = section;
   localStorage.setItem(_SECTION_KEY, section);
   _setNavActive(section);
+  if (section === 'monetization') _renderPlatformBillingPanel();
+}
+
+function _renderPlatformBillingPanel() {
+  const mount = _qs('billing-platform-panel');
+  if (!mount) return;
+  if (!isAdmin()) {
+    mount.innerHTML = '<div style="color:var(--fg-3);font-size:13px;">Platform admin access required.</div>';
+    return;
+  }
+  if (window.AppBilling && typeof window.AppBilling.renderMonetizationPanel === 'function') {
+    window.AppBilling.renderMonetizationPanel('platform', mount);
+  } else {
+    mount.innerHTML = '<div style="color:var(--fg-3);font-size:13px;">Billing module is still loading…</div>';
+    setTimeout(_renderPlatformBillingPanel, 400);
+  }
 }
 
 function _initNav() {
@@ -1822,9 +1838,6 @@ async function _saveGitHubToken() {
       setTimeout(() => { statusEl.style.display = 'none'; }, 3000);
     }
     if (tokenEl) tokenEl.value = '';
-    // Sync to the original GitHub tab token input if present
-    const origToken = _qs('gh-token-input');
-    if (origToken) origToken.value = '';
     await _loadGit();
   } catch (e) {
     if (statusEl) {

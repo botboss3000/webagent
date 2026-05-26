@@ -1539,6 +1539,107 @@ class SupabaseBackend(StorageBackend):
             return False
 
     # ────────────────────────────────────────────────────────────────────
+    # Pages (page-builder workspace)
+    # ────────────────────────────────────────────────────────────────────
+
+    async def pages_list(self, user_id: str) -> List[dict]:
+        try:
+            res = (
+                self._client.table("pages")
+                .select("*")
+                .eq("user_id", user_id)
+                .order("updated_at", desc=True)
+                .execute()
+            )
+            rows = res.data or []
+            # Force 'home' first
+            home = [r for r in rows if r.get("slug") == "home"]
+            others = [r for r in rows if r.get("slug") != "home"]
+            return home + others
+        except Exception as e:
+            logger.error("pages_list error: %s", e)
+            return []
+
+    async def pages_get(self, user_id: str, slug: str) -> Optional[dict]:
+        try:
+            res = (
+                self._client.table("pages")
+                .select("*")
+                .eq("user_id", user_id)
+                .eq("slug", slug)
+                .limit(1)
+                .execute()
+            )
+            return res.data[0] if res.data else None
+        except Exception as e:
+            logger.error("pages_get error: %s", e)
+            return None
+
+    async def pages_upsert(
+        self,
+        user_id: str,
+        slug: str,
+        title: str,
+        agent_context: str = "",
+        html: Optional[str] = None,
+    ) -> dict:
+        import uuid
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            existing = (
+                self._client.table("pages")
+                .select("id")
+                .eq("user_id", user_id)
+                .eq("slug", slug)
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                data: dict = {
+                    "title": title,
+                    "agent_context": agent_context,
+                    "updated_at": now,
+                }
+                if html is not None:
+                    data["html"] = html
+                res = (
+                    self._client.table("pages")
+                    .update(data)
+                    .eq("id", existing.data[0]["id"])
+                    .execute()
+                )
+            else:
+                data = {
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "slug": slug,
+                    "title": title,
+                    "agent_context": agent_context,
+                    "html": html,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                res = self._client.table("pages").insert(data).execute()
+            return res.data[0] if res.data else data
+        except Exception as e:
+            logger.error("pages_upsert error: %s", e)
+            raise
+
+    async def pages_delete(self, user_id: str, slug: str) -> bool:
+        try:
+            res = (
+                self._client.table("pages")
+                .delete()
+                .eq("user_id", user_id)
+                .eq("slug", slug)
+                .execute()
+            )
+            return bool(res.data)
+        except Exception as e:
+            logger.error("pages_delete error: %s", e)
+            return False
+
+    # ────────────────────────────────────────────────────────────────────
     # Per-Agent External Data Sources
     # ────────────────────────────────────────────────────────────────────
 

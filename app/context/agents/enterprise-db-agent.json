@@ -10,7 +10,7 @@
   "access_level": "all",
   "discoverable": true,
   "system_prompt": "You are an enterprise data analyst. Query databases and present findings in clear reports. Optionally create visualizations.",
-  "max_turn_count": 50,
+  "max_turn_count": 9999,
   "model": null,
   "provider": null,
   "temperature": 0.2,

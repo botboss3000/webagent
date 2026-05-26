@@ -1,0 +1,1842 @@
+/* ============================================================
+   Files tab — VS Code-style file base editor
+   Sidebar + tree, draggable tabs, editor pane, status bar
+
+   All colors are routed through CSS custom properties so the page
+   tracks the global light/dark theme. Dark values are the default;
+   body.light-mode flips them to a VS Code Light+ palette.
+   ============================================================ */
+
+:root {
+  --files-bg:                #1e1e1e;
+  --files-bg-sidebar:        #252526;
+  --files-bg-tab:            #2d2d2d;
+  --files-bg-tab-hover:      #2a2d2e;
+  --files-bg-menu:           #252526;
+
+  --files-border:            #1e1e1e;
+  --files-border-strong:     #3c3c3c;
+
+  --files-text:              #cccccc;
+  --files-text-strong:       #ffffff;
+  --files-text-muted:        #969696;
+  --files-text-faint:        #6a6a6a;
+  --files-text-x-faint:      #888888;
+
+  --files-icon:              #c5c5c5;
+  --files-icon-folder:       #dcb67a;
+  --files-icon-file:         #9cc7ed;
+  --files-link:              #9cdcfe;
+  --files-caret:             #aeafad;
+
+  --files-row-hover:         rgba(255,255,255,0.06);
+  --files-row-selected:      rgba(14, 99, 156, 0.45);
+  --files-row-selected-hov:  rgba(14, 99, 156, 0.55);
+
+  --files-btn-hover:         rgba(255,255,255,0.08);
+  --files-btn-hover-strong:  rgba(255,255,255,0.15);
+  --files-btn-toggle-bg:     rgba(60, 60, 60, 0.85);
+  --files-btn-toggle-hov:    rgba(80, 80, 80, 0.95);
+
+  --files-textarea-bg:       #1e1e1e;
+  --files-textarea-text:     #d4d4d4;
+  --files-selection:         rgba(38, 79, 120, 0.7);
+
+  --files-status-bg:         #007acc;
+  --files-status-text:       #ffffff;
+  --files-status-btn-bg:     rgba(255,255,255,0.15);
+  --files-status-btn-bd:     rgba(255,255,255,0.25);
+  --files-status-btn-hov:    rgba(255,255,255,0.25);
+
+  --files-resize-hov:        rgba(14, 99, 156, 0.6);
+  --files-resize-active:     rgba(14, 99, 156, 0.9);
+
+  --files-menu-shadow:       0 6px 18px rgba(0,0,0,0.4);
+  --files-menu-item-hov:     rgba(14, 99, 156, 0.45);
+  --files-danger:            #f48771;
+  --files-danger-hov:        rgba(247, 118, 142, 0.25);
+  --files-dirty-dot:         #ffcc66;
+  --files-active-indicator:  #007acc;
+}
+
+body.light-mode {
+  --files-bg:                #ffffff;
+  --files-bg-sidebar:        #f3f3f3;
+  --files-bg-tab:            #ececec;
+  --files-bg-tab-hover:      #e0e0e0;
+  --files-bg-menu:           #ffffff;
+
+  --files-border:            #e7e7e7;
+  --files-border-strong:     #cccccc;
+
+  --files-text:              #333333;
+  --files-text-strong:       #000000;
+  --files-text-muted:        #616161;
+  --files-text-faint:        #999999;
+  --files-text-x-faint:      #888888;
+
+  --files-icon:              #424242;
+  --files-icon-folder:       #c09553;
+  --files-icon-file:         #2c97cb;
+  --files-link:              #0070c1;
+  --files-caret:             #000000;
+
+  --files-row-hover:         rgba(0,0,0,0.06);
+  --files-row-selected:      rgba(0, 120, 215, 0.20);
+  --files-row-selected-hov:  rgba(0, 120, 215, 0.30);
+
+  --files-btn-hover:         rgba(0,0,0,0.06);
+  --files-btn-hover-strong:  rgba(0,0,0,0.12);
+  --files-btn-toggle-bg:     rgba(0, 0, 0, 0.08);
+  --files-btn-toggle-hov:    rgba(0, 0, 0, 0.15);
+
+  --files-textarea-bg:       #ffffff;
+  --files-textarea-text:     #1f1f1f;
+  --files-selection:         rgba(173, 214, 255, 0.7);
+
+  --files-status-bg:         #007acc;
+  --files-status-text:       #ffffff;
+  --files-status-btn-bg:     rgba(255,255,255,0.20);
+  --files-status-btn-bd:     rgba(255,255,255,0.40);
+  --files-status-btn-hov:    rgba(255,255,255,0.32);
+
+  --files-resize-hov:        rgba(0, 120, 215, 0.5);
+  --files-resize-active:     rgba(0, 120, 215, 0.8);
+
+  --files-menu-shadow:       0 6px 18px rgba(0,0,0,0.18);
+  --files-menu-item-hov:     rgba(0, 120, 215, 0.18);
+  --files-danger:            #d13438;
+  --files-danger-hov:        rgba(209, 52, 56, 0.12);
+  --files-dirty-dot:         #b58900;
+  --files-active-indicator:  #007acc;
+}
+
+#tab-admin-tools {
+  background: var(--files-bg);
+  color: var(--files-text);
+  overflow: hidden;
+}
+
+/* Lucide icons are stroke-painted SVGs, so clicks in the gaps between
+   strokes miss the icon entirely and the parent element never sees
+   the event. All icons in the Files tab are decorative — routing
+   their clicks to the parent fixes every button in one shot
+   (new-file / new-folder / refresh / collapse-all / Up / Home /
+   sidebar-toggle / tab-close / save) plus icons inside tabs and
+   tree rows. */
+#tab-admin-tools .lucide-icon,
+#tab-admin-tools i[data-lucide],
+#tab-admin-tools svg { pointer-events: none; }
+
+.admin-tools {
+  display: flex;
+  flex-direction: row;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  position: relative;
+  background: var(--files-bg);
+  color: var(--files-text);
+  font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+}
+
+/* ── Sidebar ─────────────────────────────────────────────── */
+
+.files-sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 260px;
+  min-width: 160px;
+  max-width: 600px;
+  background: var(--files-bg-sidebar);
+  border-right: 1px solid var(--files-border);
+  flex-shrink: 0;
+  overflow: hidden;
+  transition: width 0.18s ease, min-width 0.18s ease;
+}
+
+.files-sidebar.collapsed {
+  width: 0 !important;
+  min-width: 0 !important;
+  border-right: none;
+}
+
+/* Maximized sidebar — fills the entire #tab-admin-tools area, hiding the editor
+   pane underneath. Useful on small / mobile screens where the side-by-side
+   layout doesn't fit. The resize handle is hidden because dragging makes
+   no sense while the sidebar owns 100% width. */
+.files-sidebar.maximized {
+  width: 100% !important;
+  max-width: none !important;
+  flex: 1 1 100%;
+  border-right: none;
+}
+.files-sidebar.maximized ~ .files-resize-handle { display: none; }
+.files-sidebar.maximized ~ .files-main { display: none; }
+
+/* Strip mode — sidebar collapses to a narrow column of icons. Panels are
+   hidden and the dedicated `.files-sidebar-strip` becomes the only thing
+   visible. */
+.files-sidebar.strip {
+  width: 38px !important;
+  min-width: 38px !important;
+  max-width: 38px !important;
+  flex: 0 0 38px;
+}
+.files-sidebar.strip ~ .files-resize-handle { display: none; }
+.files-sidebar.strip .files-sidebar-panel { display: none; }
+
+.files-sidebar-strip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 6px 0;
+  gap: 4px;
+  width: 100%;
+  background: var(--files-bg-sidebar);
+  border-right: 1px solid var(--files-border);
+  flex: 1;
+}
+.files-sidebar-strip[hidden] { display: none; }
+
+.files-strip-btn {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--files-text);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0;
+}
+.files-strip-btn:hover { background: var(--files-btn-hover); }
+.files-strip-btn .lucide-icon { width: 16px; height: 16px; }
+
+/* The strip's view-switch icons reuse a similar greyed-out treatment so
+   the user can see which view is currently selected. Unlike the in-header
+   toggle (where clicking the active one is a no-op), clicking either
+   strip view icon also expands the sidebar — so we still allow the click
+   on the "active" one. */
+.files-strip-btn.files-strip-view.active {
+  color: var(--files-text-strong);
+  background: var(--files-btn-hover);
+}
+
+.files-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  height: 35px;
+  background: var(--files-bg-sidebar);
+  border-bottom: 1px solid var(--files-border);
+  flex-shrink: 0;
+}
+
+.files-sidebar-title {
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--files-text);
+  font-weight: 600;
+}
+
+.files-sidebar-actions {
+  display: flex;
+  gap: 2px;
+}
+
+.files-icon-btn {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--files-text);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0;
+}
+.files-icon-btn:hover { background: var(--files-btn-hover); }
+.files-icon-btn .lucide-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* ── Breadcrumb ──────────────────────────────────────────── */
+
+.files-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--files-bg);
+  border-bottom: 1px solid var(--files-border-strong);
+  font-size: 11px;
+  color: var(--files-text);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.files-breadcrumb-up,
+.files-breadcrumb-home {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--files-text);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+.files-breadcrumb-up:hover,
+.files-breadcrumb-home:hover { background: var(--files-btn-hover); }
+.files-breadcrumb-up:disabled,
+.files-breadcrumb-home:disabled { opacity: 0.35; cursor: default; background: transparent; }
+.files-breadcrumb-up .lucide-icon,
+.files-breadcrumb-home .lucide-icon { width: 12px; height: 12px; }
+
+/* Read-only display of where the tree is currently rooted. Truncates
+   with ellipsis on the left side so the trailing folder (the part you
+   most care about) stays visible. */
+.files-current-path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono, "JetBrains Mono", monospace);
+  font-size: 11px;
+  color: var(--files-link);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+  unicode-bidi: plaintext;
+  padding: 0 4px;
+}
+
+/* ── Tree ────────────────────────────────────────────────── */
+
+.files-tree {
+  flex: 1;
+  overflow: auto;
+  padding: 4px 0 12px;
+  font-size: 13px;
+  line-height: 22px;
+}
+
+.files-tree-node {
+  user-select: none;
+}
+
+.files-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px 0 0;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--files-text);
+  position: relative;
+}
+
+/* Lucide SVGs paint by stroke, so clicks in the gaps between strokes
+   miss the SVG entirely. Disable pointer events on everything inside
+   the row so the row itself is always the click target — that way the
+   chevron, icon, and label all toggle the directory just like the row. */
+.files-tree-row > * { pointer-events: none; }
+
+.files-tree-row:hover { background: var(--files-row-hover); }
+.files-tree-row.selected { background: var(--files-row-selected); }
+.files-tree-row.selected:hover { background: var(--files-row-selected-hov); }
+.files-tree-row.files-drop-target {
+  outline: 1px dashed var(--files-active-indicator);
+  outline-offset: -2px;
+  background: var(--files-row-selected);
+}
+
+.files-tree-chev {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--files-text);
+  flex-shrink: 0;
+  transition: transform 0.12s ease;
+}
+.files-tree-chev .lucide-icon {
+  width: 12px;
+  height: 12px;
+}
+.files-tree-node.expanded > .files-tree-row > .files-tree-chev {
+  transform: rotate(90deg);
+}
+.files-tree-chev.invisible { visibility: hidden; }
+
+.files-tree-icon {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.files-tree-icon .lucide-icon {
+  width: 14px;
+  height: 14px;
+}
+.files-tree-icon.dir  { color: var(--files-icon-folder); }
+.files-tree-icon.file { color: var(--files-icon-file); }
+
+.files-tree-label {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.files-tree-children { display: none; }
+.files-tree-node.expanded > .files-tree-children { display: block; }
+
+.files-tree-empty {
+  padding: 16px 12px;
+  color: var(--files-text-x-faint);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.files-tree-loading {
+  padding: 6px 12px 6px 36px;
+  color: var(--files-text-x-faint);
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* ── Resize handle ───────────────────────────────────────── */
+
+.files-resize-handle {
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 2;
+}
+.files-resize-handle:hover { background: var(--files-resize-hov); }
+.files-resize-handle.dragging { background: var(--files-resize-active); }
+.files-sidebar.collapsed + .files-resize-handle { display: none; }
+
+/* ── Sidebar toggle button (shows when collapsed) ────────── */
+
+.files-sidebar-toggle {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 26px;
+  height: 26px;
+  background: var(--files-btn-toggle-bg);
+  border: 1px solid var(--files-border-strong);
+  color: var(--files-text);
+  border-radius: 4px;
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 5;
+  padding: 0;
+}
+.files-sidebar-toggle:hover { background: var(--files-btn-toggle-hov); }
+.files-sidebar-toggle .lucide-icon { width: 14px; height: 14px; }
+.files-sidebar.collapsed ~ .files-sidebar-toggle { display: inline-flex; }
+
+/* ── Main editor area ────────────────────────────────────── */
+
+.files-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--files-bg);
+}
+
+/* ── Tab bar (carousel with edge chevrons, no scrollbar) ──── */
+
+.files-tabs-wrap {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  background: var(--files-bg-sidebar);
+  border-bottom: 1px solid var(--files-border);
+  min-height: 35px;
+  height: 35px;
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.files-tabs-chev {
+  width: 26px;
+  display: none;          /* shown by JS only when the tab bar overflows */
+  align-items: center;
+  justify-content: center;
+  background: var(--files-bg-sidebar);
+  border: none;
+  border-right: 1px solid var(--files-border);
+  color: var(--files-text);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  z-index: 2;
+}
+.files-tabs-chev:hover { background: var(--files-bg-tab-hover); color: var(--files-text-strong); }
+.files-tabs-chev:disabled { opacity: 0.35; cursor: default; background: var(--files-bg-sidebar); }
+#files-tabs-next { border-right: none; border-left: 1px solid var(--files-border); }
+.files-tabs-chev .lucide-icon { width: 14px; height: 14px; }
+
+.files-tabs {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;        /* Firefox */
+  -ms-overflow-style: none;     /* IE / Edge legacy */
+  scroll-behavior: smooth;
+}
+.files-tabs::-webkit-scrollbar { display: none; }  /* Chromium / WebKit */
+
+.files-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 0 12px;
+  height: 35px;
+  min-width: 100px;
+  max-width: 220px;
+  background: var(--files-bg-tab);
+  border-right: 1px solid var(--files-border);
+  color: var(--files-text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  position: relative;
+  flex-shrink: 0;
+  user-select: none;
+  white-space: nowrap;
+  transition: background 0.05s;
+}
+
+.files-tab:hover { background: var(--files-bg-tab-hover); color: var(--files-text); }
+
+.files-tab.active {
+  background: var(--files-bg);
+  color: var(--files-text-strong);
+}
+
+.files-tab.active::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--files-active-indicator);
+}
+
+.files-tab.dragging {
+  opacity: 0.5;
+}
+
+.files-tab.drop-before { box-shadow: inset 2px 0 0 var(--files-active-indicator); }
+.files-tab.drop-after  { box-shadow: inset -2px 0 0 var(--files-active-indicator); }
+
+.files-tab-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--files-icon-file);
+  position: relative;  /* anchor for the terminal connection-status dot */
+}
+.files-tab-icon .lucide-icon { width: 14px; height: 14px; }
+
+.files-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  flex: 1;
+  min-width: 0;
+}
+
+.files-tab-close {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--files-icon);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+.files-tab-close:hover {
+  background: var(--files-btn-hover-strong);
+  opacity: 1;
+}
+.files-tab-close .lucide-icon { width: 12px; height: 12px; }
+
+.files-tab.dirty .files-tab-close::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--files-icon);
+  position: absolute;
+}
+.files-tab.dirty .files-tab-close:hover::before { display: none; }
+.files-tab.dirty .files-tab-close .lucide-icon { opacity: 0; }
+.files-tab.dirty .files-tab-close:hover .lucide-icon { opacity: 1; }
+
+/* Inline rename input for terminal tabs. Sits in place of the label span
+   while the user is editing. */
+.files-tab-rename-input {
+  background: var(--files-bg);
+  border: 1px solid var(--files-active-indicator);
+  color: var(--files-text-strong);
+  font: inherit;
+  font-size: 13px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  min-width: 60px;
+  max-width: 160px;
+  outline: none;
+}
+
+/* Per-tab connection status dot for terminal tabs. Overlaid on the bottom-
+   right of the tab icon. Driven by data-state set from terminal.js. */
+.files-tab-conn-dot {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #565f89;
+  box-shadow: 0 0 0 1.5px var(--files-bg-tab);
+  pointer-events: none;
+}
+.files-tab.active .files-tab-conn-dot { box-shadow: 0 0 0 1.5px var(--files-bg); }
+.files-tab-conn-dot[data-state="connecting"],
+.files-tab-conn-dot[data-state="reconnecting"] { background: #e0af68; animation: files-conn-pulse 1.2s ease-in-out infinite; }
+.files-tab-conn-dot[data-state="connected"]    { background: #9ece6a; }
+.files-tab-conn-dot[data-state="error"]        { background: #f7768e; }
+@keyframes files-conn-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* Tab is awaiting backend confirmation that its terminal session is dead.
+   Visually dim the whole tab and disable interactions, and spin the close
+   icon (which has been swapped from x to loader-2 by the renderer). */
+.files-tab.closing { opacity: 0.55; pointer-events: none; }
+.files-tab.closing .files-tab-close { cursor: progress; opacity: 1; }
+.files-tab-spin { animation: files-tab-spin 0.9s linear infinite; transform-origin: 50% 50%; }
+@keyframes files-tab-spin { to { transform: rotate(360deg); } }
+
+/* ── Tab "more" button (3 vertical dots) ─────────────────── */
+
+.files-tab-more {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--files-icon);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  opacity: 0.6;
+  margin-left: 2px;
+}
+.files-tab-more:hover {
+  background: var(--files-btn-hover-strong);
+  opacity: 1;
+}
+.files-tab-more .lucide-icon { width: 12px; height: 12px; }
+
+/* ── Floating menu (tab "more" + tree right-click) ──────── */
+
+.files-tab-menu {
+  position: fixed;
+  z-index: 1000;
+  background: var(--files-bg-menu);
+  border: 1px solid var(--files-border-strong);
+  border-radius: 6px;
+  box-shadow: var(--files-menu-shadow);
+  padding: 4px;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.files-tab-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  color: var(--files-text);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+.files-tab-menu-item:hover { background: var(--files-menu-item-hov); color: var(--files-text-strong); }
+.files-tab-menu-item.danger { color: var(--files-danger); }
+.files-tab-menu-item.danger:hover { background: var(--files-danger-hov); color: var(--files-text-strong); }
+.files-tab-menu-item .lucide-icon { width: 14px; height: 14px; flex-shrink: 0; }
+.files-tab-menu-item.checked .files-tab-menu-check {
+  margin-left: auto;
+  color: var(--files-link);
+  font-size: 12px;
+}
+.files-tab-menu-item .files-tab-menu-check { margin-left: auto; visibility: hidden; }
+.files-tab-menu-item.checked .files-tab-menu-check { visibility: visible; }
+.files-tab-menu-item:disabled { opacity: 0.4; cursor: default; }
+.files-tab-menu-item:disabled:hover { background: transparent; color: var(--files-text); }
+
+.files-tab-menu-sep {
+  height: 1px;
+  background: var(--files-border-strong);
+  margin: 4px 6px;
+}
+
+/* ── Word-wrap toggle for the editor ─────────────────────── */
+
+.files-textarea.wrap,
+.files-code-highlight.wrap {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: hidden;
+}
+
+/* ── Code overlay (textarea on top of a highlighted <pre>) ── */
+
+.files-code-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.files-code-highlight,
+textarea.files-textarea-overlay {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  margin: 0;
+  padding: 8px 12px;
+  border: 0;
+  box-sizing: border-box;
+  font-family: var(--font-mono, "JetBrains Mono", "Consolas", monospace);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre;
+  word-spacing: normal;
+  letter-spacing: normal;
+  tab-size: 2;
+  overflow: auto;
+}
+
+.files-code-highlight {
+  pointer-events: none;
+  background: var(--files-textarea-bg);
+  color: var(--files-textarea-text);
+  z-index: 0;
+  /* Hide the highlight's own scrollbar — we sync from the textarea above */
+  scrollbar-width: none;
+}
+.files-code-highlight::-webkit-scrollbar { display: none; }
+.files-code-highlight > code {
+  display: block;
+  font: inherit;
+  background: transparent;
+  padding: 0;
+  white-space: inherit;
+}
+
+textarea.files-textarea-overlay {
+  background: transparent;
+  color: transparent;
+  caret-color: var(--files-caret);
+  resize: none;
+  outline: none;
+  z-index: 1;
+}
+textarea.files-textarea-overlay::selection {
+  background: var(--files-selection);
+  color: transparent;
+}
+
+/* Prism token colours — VS Code-ish, themed for light/dark */
+.token.comment, .token.prolog, .token.doctype, .token.cdata { color: #6a9955; font-style: italic; }
+.token.punctuation { color: var(--files-text); }
+.token.property, .token.tag, .token.boolean, .token.number, .token.constant, .token.symbol, .token.deleted { color: #b5cea8; }
+.token.selector, .token.attr-name, .token.string, .token.char, .token.builtin, .token.inserted { color: #ce9178; }
+.token.operator, .token.entity, .token.url, .language-css .token.string, .style .token.string { color: #d4d4d4; }
+.token.atrule, .token.attr-value, .token.keyword { color: #569cd6; }
+.token.function, .token.class-name { color: #dcdcaa; }
+.token.regex, .token.important, .token.variable { color: #d16969; }
+
+body.light-mode .token.comment, body.light-mode .token.prolog, body.light-mode .token.doctype, body.light-mode .token.cdata { color: #008000; }
+body.light-mode .token.punctuation { color: #333333; }
+body.light-mode .token.property, body.light-mode .token.tag, body.light-mode .token.boolean, body.light-mode .token.number, body.light-mode .token.constant, body.light-mode .token.symbol, body.light-mode .token.deleted { color: #098658; }
+body.light-mode .token.selector, body.light-mode .token.attr-name, body.light-mode .token.string, body.light-mode .token.char, body.light-mode .token.builtin, body.light-mode .token.inserted { color: #a31515; }
+body.light-mode .token.operator, body.light-mode .token.entity, body.light-mode .token.url { color: #333333; }
+body.light-mode .token.atrule, body.light-mode .token.attr-value, body.light-mode .token.keyword { color: #0000ff; }
+body.light-mode .token.function, body.light-mode .token.class-name { color: #795e26; }
+body.light-mode .token.regex, body.light-mode .token.important, body.light-mode .token.variable { color: #ee0000; }
+
+/* ── Image preview ──────────────────────────────────────── */
+
+.files-image-pane {
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  background:
+    linear-gradient(45deg, rgba(127,127,127,0.10) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(127,127,127,0.10) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(127,127,127,0.10) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(127,127,127,0.10) 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+}
+.files-image-preview {
+  max-width: 100%;
+  max-height: 100%;
+  margin: auto;
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+}
+
+/* ── Markdown preview ───────────────────────────────────── */
+
+.files-markdown-preview {
+  flex: 1;
+  overflow: auto;
+  padding: 24px 40px;
+  font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--files-textarea-text);
+  background: var(--files-textarea-bg);
+  max-width: 100%;
+}
+.files-markdown-preview h1,
+.files-markdown-preview h2,
+.files-markdown-preview h3,
+.files-markdown-preview h4 { margin: 1.4em 0 0.6em; line-height: 1.3; color: var(--files-text-strong); }
+.files-markdown-preview h1 { font-size: 1.8em; border-bottom: 1px solid var(--files-border-strong); padding-bottom: 0.3em; }
+.files-markdown-preview h2 { font-size: 1.5em; border-bottom: 1px solid var(--files-border-strong); padding-bottom: 0.2em; }
+.files-markdown-preview h3 { font-size: 1.25em; }
+.files-markdown-preview p  { margin: 0.7em 0; }
+.files-markdown-preview a  { color: var(--files-link); text-decoration: none; }
+.files-markdown-preview a:hover { text-decoration: underline; }
+.files-markdown-preview code {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.9em;
+  background: var(--files-row-hover);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.files-markdown-preview pre {
+  background: var(--files-bg-sidebar);
+  border: 1px solid var(--files-border-strong);
+  border-radius: 4px;
+  padding: 10px 12px;
+  overflow: auto;
+}
+.files-markdown-preview pre code { background: transparent; padding: 0; }
+.files-markdown-preview blockquote {
+  border-left: 3px solid var(--files-border-strong);
+  margin: 0.7em 0;
+  padding: 0.2em 1em;
+  color: var(--files-text-muted);
+}
+.files-markdown-preview ul, .files-markdown-preview ol { padding-left: 1.6em; margin: 0.5em 0; }
+.files-markdown-preview table { border-collapse: collapse; margin: 0.8em 0; }
+.files-markdown-preview th, .files-markdown-preview td {
+  border: 1px solid var(--files-border-strong);
+  padding: 4px 8px;
+}
+.files-markdown-preview img { max-width: 100%; }
+.files-markdown-preview hr { border: 0; border-top: 1px solid var(--files-border-strong); margin: 1.4em 0; }
+
+/* ── Find / Replace bar ─────────────────────────────────── */
+
+.files-findbar {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto auto auto auto;
+  grid-template-rows: auto;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--files-bg-sidebar);
+  border-bottom: 1px solid var(--files-border-strong);
+  flex-shrink: 0;
+  font-size: 12px;
+}
+.files-findbar.with-replace {
+  grid-template-columns: minmax(120px, 1fr) auto auto auto auto auto auto auto;
+}
+.files-findbar[hidden] { display: none; }
+
+/* Hide replace-only controls unless `.with-replace` is set */
+.files-findbar .files-findbar-replace,
+.files-findbar [data-act="replace"],
+.files-findbar [data-act="replace-all"] { display: none; }
+.files-findbar.with-replace .files-findbar-replace,
+.files-findbar.with-replace [data-act="replace"],
+.files-findbar.with-replace [data-act="replace-all"] { display: inline-flex; }
+
+.files-findbar-input {
+  background: var(--files-textarea-bg);
+  border: 1px solid var(--files-border-strong);
+  color: var(--files-text);
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  outline: none;
+  min-width: 80px;
+}
+.files-findbar-input:focus { border-color: var(--files-active-indicator); }
+.files-findbar-count {
+  color: var(--files-text-muted);
+  font-size: 11px;
+  min-width: 60px;
+  text-align: center;
+  white-space: nowrap;
+}
+.files-findbar-btn {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--files-text);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+.files-findbar-btn:hover { background: var(--files-btn-hover); }
+.files-findbar-btn.active { background: var(--files-row-selected); color: var(--files-text-strong); }
+.files-findbar-btn .lucide-icon { width: 13px; height: 13px; }
+
+/* ── Content area ────────────────────────────────────────── */
+
+.files-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+  background: var(--files-bg);
+  display: flex;
+}
+
+.files-editor-pane {
+  flex: 1;
+  display: none;
+  flex-direction: column;
+  min-height: 0;
+}
+.files-editor-pane.active {
+  display: flex;
+}
+
+.files-textarea {
+  flex: 1;
+  width: 100%;
+  border: none;
+  outline: none;
+  resize: none;
+  background: var(--files-textarea-bg);
+  color: var(--files-textarea-text);
+  font-family: var(--font-mono, "JetBrains Mono", "Consolas", monospace);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 8px 12px;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  caret-color: var(--files-caret);
+}
+
+.files-textarea::selection {
+  background: var(--files-selection);
+}
+
+.files-binary-msg {
+  margin: auto;
+  color: var(--files-text-muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 24px;
+}
+.files-binary-msg .lucide-icon {
+  width: 36px;
+  height: 36px;
+  margin-bottom: 8px;
+  color: var(--files-text-faint);
+}
+
+/* ── Welcome screen ──────────────────────────────────────── */
+
+.files-welcome {
+  margin: auto;
+  text-align: center;
+  color: var(--files-text-faint);
+  padding: 24px;
+}
+.files-welcome-icon {
+  width: 56px !important;
+  height: 56px !important;
+  color: var(--files-border-strong);
+  margin-bottom: 12px;
+}
+.files-welcome-title {
+  font-size: 18px;
+  color: var(--files-text);
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+.files-welcome-text {
+  font-size: 12px;
+  color: var(--files-text-x-faint);
+}
+
+/* ── Status bar ──────────────────────────────────────────── */
+
+.files-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 22px;
+  background: var(--files-status-bg);
+  color: var(--files-status-text);
+  font-size: 12px;
+  padding: 0 12px;
+  flex-shrink: 0;
+}
+.files-status-spacer { flex: 1; }
+.files-status-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60%;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+.files-status-info {
+  font-size: 11px;
+}
+.files-status-info.dirty::before {
+  content: "● ";
+  color: var(--files-dirty-dot);
+}
+.files-status-info .files-save-btn {
+  background: var(--files-status-btn-bg);
+  border: 1px solid var(--files-status-btn-bd);
+  color: var(--files-status-text);
+  padding: 0 10px;
+  height: 18px;
+  border-radius: 3px;
+  font-size: 11px;
+  cursor: pointer;
+  margin-left: 8px;
+}
+.files-status-info .files-save-btn:hover {
+  background: var(--files-status-btn-hov);
+}
+.files-status-info .files-save-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── Restricted overlay (non-admin) ──────────────────────── */
+
+.files-restricted-card {
+  margin: auto;
+  background: var(--bg-elev, #1a1a2e);
+  border: 1px solid var(--border, #2a2a4a);
+  border-radius: 12px;
+  padding: 32px 40px;
+  text-align: center;
+  max-width: 360px;
+}
+#files-restricted-overlay {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-0, #0d0d1a);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+}
+.files-restricted-icon { color: var(--warning, #e0af68); margin-bottom: 12px; }
+.files-restricted-title { font-size: 16px; font-weight: 600; color: var(--fg-1); margin-bottom: 8px; }
+.files-restricted-desc  { font-size: 13px; color: var(--fg-3); }
+.files-restricted-diag  {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border, #2a2a4a);
+  font-size: 11px;
+  color: var(--fg-3);
+  font-family: var(--font-mono, monospace);
+  word-break: break-all;
+}
+
+/* ── Sidebar view switcher (Explorer ↔ Source Control) ───── */
+/* Toggle icons live INSIDE each panel's header (in place of the old
+   "EXPLORER" / "SOURCE CONTROL" title text). The icon of the currently
+   active view is greyed out and non-interactive; the other icon is the
+   click target. */
+
+.files-sidebar-panel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.files-sidebar-panel[hidden] { display: none; }
+
+.files-view-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.files-view-toggle-btn {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--files-text-strong);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0;
+}
+.files-view-toggle-btn .lucide-icon { width: 15px; height: 15px; }
+.files-view-toggle-btn:hover:not(.active) { background: var(--files-btn-hover); }
+
+/* The currently-active view's icon is greyed out and not clickable. */
+.files-view-toggle-btn.active {
+  color: var(--files-text-faint);
+  cursor: default;
+  background: transparent;
+  opacity: 0.55;
+}
+
+/* Small visual separator between the Files/Git view-switch group and the
+   "New terminal tab" button (which spawns a new tab rather than switching
+   the sidebar view). */
+.files-view-toggle-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--files-border);
+  margin: 0 4px;
+  display: inline-block;
+}
+
+/* Settings toggle button: shares .files-view-toggle-btn styling but its
+   .active state means "Settings view is showing" — it must stay clickable
+   so the user can toggle it off, so we override the disabling rule above. */
+.files-view-toggle-btn.files-settings-toggle-btn.active,
+.files-strip-btn.files-settings-toggle-btn.active {
+  color: var(--files-text-strong);
+  background: var(--files-btn-hover);
+  opacity: 1;
+  cursor: pointer;
+}
+
+/* Settings view: takes the place of .files-main when Settings is toggled on.
+   Same flex layout so it fills the right side; scrolls its own content. */
+.files-settings-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
+}
+/* Database view: takes the place of .files-main when the Database sidebar
+   view is active. Hosts the relocated #db-toolbar + #db-table-view. */
+.files-database-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.files-main[hidden],
+.files-settings-main[hidden],
+.files-database-main[hidden] { display: none; }
+
+/* Database sidebar panel: hosts the relocated #db-sidebar (with its own
+   refresh / reset / collapse toolbar). The panel header above carries the
+   explorer/git/database view toggles. */
+#files-panel-database .db-sidebar-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#files-panel-database #db-sidebar {
+  width: 100% !important;
+  min-width: 0 !important;
+  border-right: none;
+  flex: 1;
+  min-height: 0;
+}
+/* The original collapse animation shrunk #db-sidebar to 32px; inside the
+   new sidebar host we keep the panel filling 100% and rely on the existing
+   `.collapsed *` rules to hide the inner refresh/reset/list elements. */
+#files-panel-database #db-sidebar.collapsed {
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
+/* "New terminal tab" button — not a view switcher, so it never enters the
+   greyed-out active state. */
+.files-view-toggle-btn.files-terminal-new {
+  opacity: 1;
+  color: var(--files-text-strong);
+}
+.files-view-toggle-btn.files-terminal-new:hover { background: var(--files-btn-hover); }
+
+/* ── Embedded terminal pane (one per terminal tab) ──────── */
+
+.files-editor-pane.files-terminal-pane {
+  background: #0d0d1a;
+  padding: 0;
+  display: none;
+}
+.files-editor-pane.files-terminal-pane.active {
+  display: flex;
+  flex-direction: column;
+}
+.files-terminal-host {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+.files-terminal-host .xterm { height: 100%; padding: 4px; }
+.files-terminal-host .xterm-viewport { scrollbar-width: thin; scrollbar-color: #2a2a4a transparent; }
+.files-terminal-host .xterm-viewport::-webkit-scrollbar { width: 6px; }
+.files-terminal-host .xterm-viewport::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+
+/* Wrapper that owns the horizontal scrollbar in no-wrap mode. The host
+   element sits inside this and is sized wider than the wrapper when no-wrap
+   is on, producing a real horizontal scrollbar at the bottom of the pane
+   that the user can swipe / drag to see off-screen content. */
+.files-terminal-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;          /* WRAP mode: clip nothing because host fits */
+  display: flex;
+  flex-direction: column;
+  /* Don't stretch the host across the cross-axis — in no-wrap mode the
+     host sets its own explicit width: 300% to overflow horizontally. */
+  align-items: flex-start;
+}
+.files-terminal-scroll.files-terminal-scroll-nowrap {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #2a2a4a transparent;
+}
+.files-terminal-scroll.files-terminal-scroll-nowrap::-webkit-scrollbar { height: 14px; }
+.files-terminal-scroll.files-terminal-scroll-nowrap::-webkit-scrollbar-thumb { background: #565f89; border-radius: 4px; min-width: 40px; }
+.files-terminal-scroll.files-terminal-scroll-nowrap::-webkit-scrollbar-thumb:hover { background: #7aa2f7; }
+.files-terminal-scroll.files-terminal-scroll-nowrap::-webkit-scrollbar-track { background: #1a1a2e; }
+
+/* No-wrap mode: force the host to be wider than its scroll wrapper. The
+   fitAddon measures the host (not the wrapper) so xterm gets enough cols
+   to render long lines unwrapped, and the wrapper's overflow-x exposes
+   the off-screen portion as a horizontal scroll. 300% gives 3x the visible
+   width — wide enough for almost any real shell output. */
+.files-terminal-host.files-terminal-host-nowrap {
+  width: 300%;
+  min-width: 300%;
+  flex: 1;
+}
+
+/* Mobile long-press context menu (Copy / Paste / Select all / Clear).
+   Floats above the terminal, positioned near the touch point. */
+.files-terminal-ctxmenu {
+  position: fixed;
+  z-index: 10000;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+}
+.files-terminal-ctxmenu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: transparent;
+  border: none;
+  color: #c0caf5;
+  text-align: left;
+  padding: 9px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+}
+.files-terminal-ctxmenu-item:hover,
+.files-terminal-ctxmenu-item:active { background: #2a2a4a; }
+.files-terminal-ctxmenu-item.disabled,
+.files-terminal-ctxmenu-item[disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+.files-terminal-ctxmenu-item .lucide-icon { width: 16px; height: 16px; flex-shrink: 0; }
+
+/* Drop-target highlight when the user drags a file tree row onto a terminal.
+   The host accepts text/plain (the absolute path) and pastes it shell-quoted
+   into the PTY's input stream. */
+.files-terminal-host.files-terminal-drop-target {
+  outline: 2px dashed var(--files-active-indicator);
+  outline-offset: -3px;
+}
+
+/* In-terminal find bar — Ctrl+F inside an active terminal. */
+.files-terminal-findbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: #1a1a2e;
+  border-bottom: 1px solid #2a2a4a;
+  flex-shrink: 0;
+}
+.files-terminal-findbar[hidden] { display: none; }
+.files-terminal-findbar-input {
+  flex: 1;
+  min-width: 0;
+  background: #0d0d1a;
+  border: 1px solid #2a2a4a;
+  color: #c0caf5;
+  padding: 3px 6px;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.files-terminal-findbar-input:focus { border-color: var(--files-active-indicator); }
+.files-terminal-findbar-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #c0caf5;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.files-terminal-findbar-btn:hover { background: #2a2a4a; }
+.files-terminal-findbar-btn.active { background: #2a2a4a; border-color: var(--files-active-indicator); }
+.files-terminal-findbar-btn .lucide-icon { width: 12px; height: 12px; }
+.files-terminal-findbar-status {
+  font-size: 11px;
+  color: #f7768e;
+  min-width: 60px;
+  text-align: right;
+}
+
+/* ── Source-control (GitHub) panel ───────────────────────── */
+
+.fg-body {
+  flex: 1;
+  overflow: auto;
+  padding: 0;
+  font-size: 12px;
+  color: var(--files-text);
+}
+
+.fg-loading {
+  padding: 12px;
+  color: var(--files-text-muted);
+  font-style: italic;
+  font-size: 11px;
+}
+.fg-error {
+  padding: 12px;
+  color: var(--files-danger);
+  font-size: 11px;
+  background: var(--files-danger-hov);
+  margin: 8px 8px 0 8px;
+  border-radius: 4px;
+}
+
+.fg-section {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--files-border-strong);
+}
+.fg-section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--files-text-muted);
+  margin-bottom: 6px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.fg-graph-hint {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--files-text-faint);
+  font-size: 10px;
+}
+
+/* Header (branch + remote) */
+.fg-section-header { padding-top: 10px; padding-bottom: 8px; position: relative; }
+.fg-section-header.loading { opacity: 0.7; }
+.fg-branch-row {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px;
+}
+.fg-branch-row .lucide-icon { width: 14px; height: 14px; color: var(--files-icon); }
+.fg-branch-name { font-weight: 600; color: var(--files-text-strong); }
+.fg-branch-chev { width: 12px; height: 12px; color: var(--files-text-faint); }
+.fg-branch-picker-trigger {
+  width: 100%;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 2px 4px;
+  margin: 0 -4px;
+  cursor: pointer;
+  text-align: left;
+}
+.fg-branch-picker-trigger:hover { background: var(--files-row-hover); border-color: var(--files-border-strong); }
+.fg-ahead, .fg-behind { font-size: 11px; color: var(--files-text-muted); margin-left: 4px; }
+.fg-sync-clean { font-size: 11px; color: var(--files-text-faint); margin-left: auto; font-style: italic; }
+.fg-remote-row {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--files-text-faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Branch picker / merge picker menu (shared styles) */
+.fg-branch-menu, .fg-merge-menu {
+  position: absolute;
+  left: 8px; right: 8px;
+  z-index: 10;
+  margin-top: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--files-bg-elev, var(--files-bg, #1a1a2a));
+  border: 1px solid var(--files-border-strong);
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  padding: 4px;
+}
+.fg-merge-menu { left: 10px; right: 10px; }
+.fg-branch-menu-loading, .fg-branch-menu-empty, .fg-branch-menu-err {
+  padding: 8px;
+  font-size: 11px;
+  color: var(--files-text-muted);
+  text-align: center;
+}
+.fg-branch-menu-err { color: var(--files-danger); }
+.fg-branch-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--files-text);
+  cursor: pointer;
+  text-align: left;
+}
+.fg-branch-item:hover:not(:disabled) { background: var(--files-row-hover); }
+.fg-branch-item:disabled { opacity: 0.6; cursor: default; }
+.fg-branch-item-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fg-branch-item-meta { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--files-text-faint); }
+.fg-branch-item-meta code { font-family: var(--font-mono, monospace); font-size: 10px; color: var(--files-text-muted); }
+.fg-branch-tag-local, .fg-branch-tag-remote, .fg-branch-tag-cur {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+.fg-branch-tag-local { background: var(--files-btn-hover); color: var(--files-text-muted); }
+.fg-branch-tag-remote { background: rgba(245, 158, 11, 0.18); color: #f59e0b; }
+.fg-branch-tag-cur { background: var(--files-active-indicator); color: #fff; }
+
+/* Inputs + buttons */
+.fg-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--files-textarea-bg);
+  border: 1px solid var(--files-border-strong);
+  color: var(--files-text);
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.fg-input:focus { outline: none; border-color: var(--files-active-indicator); }
+
+.fg-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--files-btn-hover);
+  border: 1px solid var(--files-border-strong);
+  color: var(--files-text);
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.fg-btn:hover:not(:disabled) { background: var(--files-btn-hover-strong); }
+.fg-btn:disabled { opacity: 0.5; cursor: default; }
+.fg-btn .lucide-icon { width: 12px; height: 12px; }
+.fg-btn-primary {
+  background: var(--files-active-indicator);
+  border-color: var(--files-active-indicator);
+  color: #fff;
+}
+.fg-btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
+.fg-btn-deploy {
+  background: linear-gradient(90deg, #f59e0b, #ef4444);
+  border-color: transparent;
+  color: #fff;
+}
+
+/* Commit */
+.fg-commit-row { display: flex; gap: 6px; align-items: center; }
+.fg-commit-row #fg-commit-btn { width: 32px; justify-content: center; padding: 4px; }
+
+.fg-result {
+  margin-top: 6px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  background: transparent;
+}
+.fg-result.ok  { color: #10b981; }
+.fg-result.err { color: var(--files-danger); }
+.fg-result.info { color: var(--files-text-muted); }
+
+/* Sync row */
+.fg-sync { display: flex; flex-wrap: wrap; gap: 6px; position: relative; }
+.fg-sync .fg-result { width: 100%; }
+
+/* Token */
+.fg-token { padding: 0; }
+.fg-token > summary {
+  list-style: none;
+  padding: 8px 10px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px;
+  color: var(--files-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+.fg-token > summary::-webkit-details-marker { display: none; }
+.fg-token[open] > summary { border-bottom: 1px solid var(--files-border-strong); margin-bottom: 8px; }
+.fg-token-row { display: flex; gap: 6px; padding: 0 10px 8px; }
+.fg-token-status { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--files-text-faint); font-size: 10px; }
+.fg-token-status.ok { color: #10b981; }
+.fg-token-hint { padding: 0 10px 10px; }
+.fg-token-hint > summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--files-accent, #7dcfff);
+  font-weight: 500;
+  padding: 4px 0;
+}
+.fg-token-hint > summary::-webkit-details-marker { display: none; }
+.fg-token-hint-body { font-size: 11px; color: var(--files-text-muted); line-height: 1.45; }
+.fg-token-hint-body p { margin: 6px 0 4px; }
+.fg-token-hint-body ol { margin: 0; padding-left: 18px; }
+.fg-token-hint-body li { margin: 2px 0; }
+.fg-token-hint-body a { color: var(--files-accent, #7dcfff); }
+.fg-token-hint-foot { color: var(--files-text-faint); margin-top: 6px !important; }
+
+/* Changes (collapsible) */
+.fg-changes { padding: 0; }
+.fg-changes > summary {
+  list-style: none;
+  padding: 8px 10px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px;
+  color: var(--files-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+.fg-changes > summary::-webkit-details-marker { display: none; }
+.fg-changes[open] > summary { border-bottom: 1px solid var(--files-border-strong); }
+.fg-count {
+  background: var(--files-btn-hover-strong);
+  color: var(--files-text);
+  border-radius: 8px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.fg-file-list { max-height: 200px; overflow: auto; padding: 4px 6px 6px; }
+.fg-clean { padding: 6px 10px 10px; color: var(--files-text-faint); font-style: italic; font-size: 11px; }
+.fg-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  cursor: default;
+  font-size: 11px;
+}
+.fg-file:hover { background: var(--files-row-hover); }
+.fg-file-path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono, monospace);
+  color: var(--files-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl; text-align: left; unicode-bidi: plaintext;
+}
+.fg-file-flag {
+  width: 18px; height: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.fg-flag-m { background: rgba(245, 158, 11, 0.25); color: #f59e0b; }
+.fg-flag-a { background: rgba(16, 185, 129, 0.25); color: #10b981; }
+.fg-flag-d { background: rgba(239, 68, 68, 0.25);  color: #ef4444; }
+.fg-flag-r { background: rgba(59, 130, 246, 0.25); color: #3b82f6; }
+.fg-flag-u { background: rgba(139, 92, 246, 0.25); color: #8b5cf6; }
+
+/* ── Commit graph ────────────────────────────────────────── */
+
+.fg-graph { padding: 8px 0 12px; }
+.fg-graph .fg-section-title { padding: 0 10px; }
+
+.fg-graph-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.fg-graph-row {
+  display: flex;
+  flex-direction: column;
+  cursor: pointer;
+  outline: none;
+  border-left: 2px solid transparent;
+}
+.fg-graph-row-head {
+  display: flex;
+  align-items: stretch;
+  min-height: var(--row-h, 44px);
+}
+.fg-graph-row-head:hover { background: var(--files-row-hover); }
+.fg-graph-row:focus-visible .fg-graph-row-head { background: var(--files-row-hover); }
+.fg-graph-row:focus-visible { border-left-color: var(--files-active-indicator); }
+.fg-graph-row.head { border-left-color: var(--files-active-indicator); }
+.fg-graph-row.unpulled { opacity: 0.85; }
+.fg-graph-row.other-branch { opacity: 0.7; }
+.fg-graph-row.open .fg-graph-row-head { background: var(--files-row-hover); }
+
+.fg-graph-col {
+  flex-shrink: 0;
+  min-height: var(--row-h, 44px);
+}
+.fg-graph-svg {
+  display: block;
+}
+
+.fg-graph-meta {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px 4px 4px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+}
+.fg-graph-msg-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--files-text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fg-graph-msg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fg-graph-sub {
+  display: flex;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--files-text-faint);
+  align-items: center;
+}
+.fg-hash {
+  font-family: var(--font-mono, monospace);
+  background: var(--files-btn-hover);
+  padding: 0 4px;
+  border-radius: 2px;
+  font-size: 10px;
+  color: var(--files-text-muted);
+}
+.fg-graph-author { color: var(--files-text-muted); }
+.fg-graph-date { margin-left: auto; }
+
+.fg-graph-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 700;
+  border-radius: 3px;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.fg-graph-badge.head { background: var(--files-active-indicator); color: #fff; }
+.fg-graph-badge.unpulled { background: rgba(245, 158, 11, 0.25); color: #f59e0b; }
+
+.fg-branch-tag {
+  display: inline-block;
+  padding: 1px 5px;
+  font-size: 9px;
+  border-radius: 3px;
+  background: var(--files-btn-hover-strong);
+  color: var(--files-text-muted);
+  border: 1px solid var(--files-border-strong);
+  flex-shrink: 0;
+}
+
+/* Expanded commit detail — spans the full sidebar width. Active lanes
+   from the row continue downward as thin vertical bars layered above
+   the content so the commit graph chain isn't visually broken when a
+   commit is opened. */
+.fg-graph-detail {
+  position: relative;
+  font-size: 11px;
+  background: var(--files-bg);
+  border-top: 1px solid var(--files-border-strong);
+  cursor: default;
+}
+.fg-graph-detail[hidden] { display: none; }
+.fg-graph-detail-lanes {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+.fg-graph-lane-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1.6px;
+  opacity: 0.55;
+}
+.fg-graph-detail-content {
+  padding: 6px 8px 10px 6px;
+  position: relative;
+  z-index: 1;
+}
+.fg-cd-meta { display: flex; justify-content: space-between; align-items: center; color: var(--files-text-muted); margin-bottom: 4px; }
+.fg-cd-fields { display: grid; grid-template-columns: 70px 1fr; gap: 2px 8px; margin-bottom: 6px; font-size: 11px; }
+.fg-cd-field { display: contents; }
+.fg-cd-label { color: var(--files-text-faint); text-transform: uppercase; font-size: 10px; letter-spacing: 0.04em; align-self: center; }
+.fg-cd-val { color: var(--files-text); overflow-wrap: anywhere; }
+.fg-cd-val code, code.fg-cd-val { font-family: var(--font-mono, monospace); font-size: 10px; color: var(--files-text-muted); }
+.fg-cd-subject { font-weight: 600; color: var(--files-text); margin: 4px 0; font-size: 12px; }
+.fg-cd-body { white-space: pre-wrap; font-family: var(--font-mono, monospace); font-size: 11px; color: var(--files-text); margin: 0 0 6px; background: var(--files-btn-hover); padding: 4px 6px; border-radius: 3px; }
+.fg-cd-files-title { font-size: 10px; color: var(--files-text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 4px 0; }
+.fg-cd-files { display: flex; flex-direction: column; gap: 2px; }
+.fg-cd-file { display: flex; gap: 6px; font-family: var(--font-mono, monospace); font-size: 10px; color: var(--files-text); }
+.fg-cd-added { color: #10b981; min-width: 28px; text-align: right; }
+.fg-cd-removed { color: #ef4444; min-width: 28px; text-align: right; }
+.fg-cd-path { color: var(--files-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Mobile ──────────────────────────────────────────────── */
+
+@media (max-width: 800px) {
+  .files-sidebar {
+    width: 200px;
+    min-width: 140px;
+  }
+  .files-tab {
+    min-width: 80px;
+    max-width: 160px;
+  }
+}

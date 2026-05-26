@@ -133,11 +133,15 @@ class TokenRequest(BaseModel):
     token: str = Field(..., min_length=1)
 
 
+class BranchRequest(BaseModel):
+    branch: str = Field(..., min_length=1, max_length=200)
+
+
 # ── Endpoints ──
 
 @router.get("/check-access")
 async def check_access(request: Request):
-    """Check if the current user has admin access to the GitHub tab."""
+    """Check if the current user has admin access to the GitHub features."""
     user_id = _get_user_id_from_request(request)
     return {"is_admin": user_id == _ADMIN_USER_ID}
 
@@ -286,6 +290,204 @@ async def get_status(request: Request):
     }
 
 
+@router.get("/log-graph")
+async def get_log_graph(request: Request, limit: int = 80):
+    """Return a commit graph across **all** local + remote branches.
+
+    Output is shaped so the frontend can draw a VS Code style graph:
+      - `commits` is a list newest-first; each row carries its `lane`
+        (column index for the dot) and `routes` describing the line
+        segments connecting it down to the next row.
+      - `max_lane` is the total number of columns used (graph width).
+      - `branches` is a map of refname -> short hash so the frontend can
+        render branch tip labels.
+
+    The endpoint is read-only and shows commits from every ref, including
+    branches that aren't `main`, so users can see merges and side branches
+    just like the VS Code Source Control graph.
+    """
+    _cache_token(_get_token())
+
+    # Refresh remote refs so origin/* branch tips reflect what's on GitHub.
+    _run_git(["fetch", "--quiet", "--all"], timeout=20)
+
+    # Clamp limit to a sane window — big graphs become unreadable anyway.
+    try:
+        limit = max(1, min(int(limit), 500))
+    except Exception:
+        limit = 80
+
+    # 1. Walk every ref's history and collect commits with parents.
+    # %H = full sha, %P = parent shas (space-separated), %D = refnames,
+    # %an = author, %ar = relative date, %aI = iso date, %s = subject
+    _SEP = "\x1f"
+    fmt = _SEP.join(["%H", "%P", "%D", "%an", "%ar", "%aI", "%s"])
+    raw_out, _, rc = _run_git(
+        ["log", "--all", "--date-order", f"--format={fmt}", f"-{limit}"],
+        timeout=20,
+    )
+    if rc != 0:
+        raise HTTPException(status_code=500, detail="git log failed")
+
+    raw_commits = []
+    for line in raw_out.split("\n"):
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        parts = line.split(_SEP)
+        if len(parts) < 7:
+            continue
+        full_hash, parents_str, refs, author, date_rel, date_iso, subject = parts[:7]
+        parents = [p for p in parents_str.split(" ") if p]
+        raw_commits.append({
+            "full_hash": full_hash,
+            "hash": full_hash[:7],
+            "parents": parents,
+            "refs": refs,
+            "author": author,
+            "date_relative": date_rel,
+            "date_iso": date_iso,
+            "message": subject,
+        })
+
+    # 2. HEAD hash + commits already pulled (= reachable from HEAD).
+    head_hash = ""
+    h_out, _, _ = _run_git(["rev-parse", "HEAD"], timeout=5)
+    if h_out.strip():
+        head_hash = h_out.strip()
+    pulled_set: set[str] = set()
+    rev_out, _, _ = _run_git(["rev-list", "-300", "HEAD"], timeout=10)
+    if rev_out.strip():
+        pulled_set = {h.strip() for h in rev_out.strip().split("\n") if h.strip()}
+
+    # 2b. Commits that `git pull` would actually bring in — i.e. reachable
+    # from origin/<current-branch> but not yet in HEAD. Commits on other
+    # remote branches are NOT pullable from the current branch and should
+    # not be marked with the "↓ not pulled" badge.
+    pullable_set: set[str] = set()
+    cur_branch_out, _, _ = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], timeout=5)
+    cur_branch = cur_branch_out.strip()
+    if cur_branch and cur_branch != "HEAD":
+        pull_out, _, pull_rc = _run_git(
+            ["rev-list", "-300", f"origin/{cur_branch}", "^HEAD"],
+            timeout=10,
+        )
+        if pull_rc == 0 and pull_out.strip():
+            pullable_set = {h.strip() for h in pull_out.strip().split("\n") if h.strip()}
+
+    # 3. Compute lanes (column positions) for the graph.
+    # `active_lanes[i]` holds the hash of the commit expected to land in
+    # lane `i` next (placed there by a child commit above). Walking the
+    # log newest-first, for each commit:
+    #   - snapshot lanes_in (what's coming into this row from above);
+    #   - find its dot lane (first matching active slot, or open a new one
+    #     if no child placed it — i.e. it's a branch tip);
+    #   - free every active slot pointing at this commit (multiple
+    #     children draw lines down to the same parent);
+    #   - place its parents into lanes — first parent re-uses the dot's
+    #     own lane when free (keeps the trunk straight), extras take new
+    #     or recycled empty slots.
+    active_lanes: list[str | None] = []
+    graph_commits = []
+    max_lane = 0
+
+    def _first_index(hash_: str) -> int:
+        for i, h in enumerate(active_lanes):
+            if h == hash_:
+                return i
+        return -1
+
+    def _open_empty_slot() -> int:
+        for i, h in enumerate(active_lanes):
+            if h is None:
+                return i
+        active_lanes.append(None)
+        return len(active_lanes) - 1
+
+    for c in raw_commits:
+        # Snapshot BEFORE any mutation — these are the lines entering the
+        # top edge of this row from rows above.
+        lanes_in = list(active_lanes)
+
+        lane = _first_index(c["full_hash"])
+        if lane < 0:
+            # Tip commit: no child placed it, claim an empty slot.
+            lane = _open_empty_slot()
+
+        # Free every slot waiting on this commit.
+        for i, h in enumerate(active_lanes):
+            if h == c["full_hash"]:
+                active_lanes[i] = None
+
+        # Assign parents to lanes.
+        parent_lanes: list[int] = []
+        for idx, p in enumerate(c["parents"]):
+            existing = _first_index(p)
+            if existing >= 0:
+                parent_lanes.append(existing)
+            elif idx == 0 and active_lanes[lane] is None:
+                active_lanes[lane] = p
+                parent_lanes.append(lane)
+            else:
+                slot = _open_empty_slot()
+                active_lanes[slot] = p
+                parent_lanes.append(slot)
+
+        lanes_out = list(active_lanes)
+        # Width = farthest non-empty lane this row touches.
+        width_in = max((i + 1 for i, h in enumerate(lanes_in) if h is not None), default=0)
+        width_out = max((i + 1 for i, h in enumerate(lanes_out) if h is not None), default=0)
+        row_width = max(width_in, width_out, lane + 1)
+        if row_width > max_lane:
+            max_lane = row_width
+
+        graph_commits.append({
+            "hash": c["hash"],
+            "full_hash": c["full_hash"],
+            "parents": [p[:7] for p in c["parents"]],
+            "refs": c["refs"],
+            "author": c["author"],
+            "date_relative": c["date_relative"],
+            "date_iso": c["date_iso"],
+            "message": c["message"],
+            "lane": lane,
+            "parent_lanes": parent_lanes,
+            # Each element is the short hash the lane was tracking, or null
+            # if the lane was empty. Frontend just checks truthy/falsy.
+            "lanes_in":  [h[:7] if h else None for h in lanes_in],
+            "lanes_out": [h[:7] if h else None for h in lanes_out],
+            # When a child placed our hash in a non-dot lane (multi-child
+            # commit) the frontend bends that line into our dot. Mark them.
+            "merge_in_lanes": [i for i, h in enumerate(lanes_in)
+                               if h == c["full_hash"] and i != lane],
+            "is_head": c["full_hash"] == head_hash,
+            "is_pulled": c["full_hash"] in pulled_set,
+            "is_pullable": c["full_hash"] in pullable_set,
+        })
+
+    # 4. Map every ref name to its short hash for branch-tip badges.
+    branches: dict[str, str] = {}
+    ref_out, _, _ = _run_git(
+        ["for-each-ref", "--format=%(refname:short)\x1f%(objectname)", "refs/heads", "refs/remotes"],
+        timeout=10,
+    )
+    for line in ref_out.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        bits = line.split("\x1f")
+        if len(bits) == 2:
+            branches[bits[0]] = bits[1][:7]
+
+    return {
+        "commits": graph_commits,
+        "max_lane": max_lane,
+        "branches": branches,
+        "current_branch": cur_branch,
+        "head_hash": head_hash,
+    }
+
+
 @router.get("/commit/{commit_hash}")
 async def get_commit_detail(commit_hash: str, request: Request):
     """Return full info about a single commit (body, files, diff stat)."""
@@ -382,7 +584,7 @@ async def push_to_remote(request: Request):
     if rc != 0:
         detail = stderr.strip()
         if "Authentication failed" in stderr or "could not read" in stderr:
-            detail += "\n\nSet your GitHub token in the GitHub tab → Settings."
+            detail += "\n\nSet your GitHub token in the File Manager sidebar (source-control view)."
         raise HTTPException(status_code=500, detail=detail)
 
     return {
@@ -392,23 +594,250 @@ async def push_to_remote(request: Request):
     }
 
 
+def _is_backend_file(path: str) -> bool:
+    """Heuristic: does this path touch code that requires a server restart?
+
+    Anything under app/ or scripts/, plus root-level Python files, the
+    requirements/lock files, and the FastAPI entrypoint. Frontend assets
+    (ui/, index.html, README, docs) are picked up by a browser refresh.
+    """
+    if not path:
+        return False
+    p = path.strip()
+    backend_dirs = ("app/", "scripts/", "migrations/", "supabase/", "tests/")
+    if p.startswith(backend_dirs):
+        return True
+    backend_root_files = (
+        "run.py", "pyproject.toml", "uv.lock", "requirements.txt",
+        "app-settings.json", "optimizer.json", "provider.json",
+    )
+    return p in backend_root_files
+
+
+def _head_hash() -> str:
+    out, _, _ = _run_git(["rev-parse", "HEAD"], timeout=5)
+    return out.strip()
+
+
+def _files_changed_between(old: str, new: str) -> list[str]:
+    """git diff --name-only old..new — empty list on error/no diff."""
+    if not old or not new or old == new:
+        return []
+    out, _, rc = _run_git(["diff", "--name-only", f"{old}..{new}"], timeout=10)
+    if rc != 0:
+        return []
+    return [line.strip() for line in out.split("\n") if line.strip()]
+
+
 @router.post("/pull")
 async def pull_from_remote(request: Request):
-    """Pull from remote."""
+    """Pull from remote. Returns whether backend files changed so the
+    caller can decide to restart the server.
+    """
     _require_admin(request)
     _cache_token(_get_token())
 
+    before = _head_hash()
     stdout, stderr, rc = _run_git(["pull"], timeout=30)
     if rc != 0:
         detail = stderr.strip()
         if "Authentication failed" in stderr or "could not read" in stderr:
-            detail += "\n\nSet your GitHub token in the GitHub tab → Settings."
+            detail += "\n\nSet your GitHub token in the File Manager sidebar (source-control view)."
         raise HTTPException(status_code=500, detail=detail)
+    after = _head_hash()
+
+    files = _files_changed_between(before, after)
+    backend_changed = any(_is_backend_file(f) for f in files)
 
     return {
         "status": "pulled",
-        "message": "Pull successful.",
+        "message": "Pull successful." if before != after else "Already up to date.",
         "output": stdout.strip(),
+        "before": before[:7],
+        "after": after[:7],
+        "files_changed": files,
+        "backend_changed": backend_changed,
+    }
+
+
+@router.get("/branches")
+async def list_branches(request: Request):
+    """List all branches the user can switch to or merge.
+
+    Returns local branches plus remote-tracking branches (origin/*). For
+    each, includes the short hash and whether a local checkout exists.
+    """
+    _require_admin(request)
+
+    # Local branches
+    local_out, _, _ = _run_git(
+        ["for-each-ref", "--format=%(refname:short)\x1f%(objectname)", "refs/heads"],
+        timeout=10,
+    )
+    local: dict[str, str] = {}
+    for line in local_out.split("\n"):
+        bits = line.strip().split("\x1f")
+        if len(bits) == 2:
+            local[bits[0]] = bits[1]
+
+    # Remote branches
+    remote_out, _, _ = _run_git(
+        ["for-each-ref", "--format=%(refname:short)\x1f%(objectname)", "refs/remotes/origin"],
+        timeout=10,
+    )
+    remotes: dict[str, str] = {}
+    for line in remote_out.split("\n"):
+        bits = line.strip().split("\x1f")
+        if len(bits) == 2 and bits[0] != "origin/HEAD":
+            # Strip the leading "origin/" to get the bare branch name
+            bare = bits[0][len("origin/"):] if bits[0].startswith("origin/") else bits[0]
+            remotes[bare] = bits[1]
+
+    # Build the union
+    names = sorted(set(local.keys()) | set(remotes.keys()))
+    branches = []
+    for name in names:
+        branches.append({
+            "name": name,
+            "hash": (local.get(name) or remotes.get(name, ""))[:7],
+            "local": name in local,
+            "remote": name in remotes,
+        })
+
+    cur_out, _, _ = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], timeout=5)
+    return {"current": cur_out.strip(), "branches": branches}
+
+
+def _working_tree_dirty() -> tuple[bool, list[str]]:
+    """Returns (dirty, list-of-paths). Empty list when clean."""
+    out, _, _ = _run_git(["status", "--porcelain"], timeout=10)
+    paths = [line[3:] if len(line) > 3 else line for line in out.split("\n") if line.strip()]
+    return (bool(paths), paths)
+
+
+@router.post("/checkout")
+async def checkout_branch(req: BranchRequest, request: Request):
+    """Switch the working tree to a different branch.
+
+    Refuses if the working tree has uncommitted changes (would clobber).
+    If the requested branch only exists on the remote, creates a local
+    tracking branch from origin/<name>.
+    """
+    _require_admin(request)
+    _cache_token(_get_token())
+
+    branch = req.branch.strip()
+    if not branch:
+        raise HTTPException(status_code=400, detail="Branch name required.")
+
+    dirty, dirty_paths = _working_tree_dirty()
+    if dirty:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Working tree has uncommitted changes. Commit or discard them before switching branches.\n"
+                + "\n".join(dirty_paths[:10])
+                + ("\n…" if len(dirty_paths) > 10 else "")
+            ),
+        )
+
+    # Local branch exists → straight checkout.
+    # Otherwise, create a tracking branch from origin/<name>.
+    _, _, rc_local = _run_git(["show-ref", "--verify", f"refs/heads/{branch}"], timeout=5)
+
+    before = _head_hash()
+    if rc_local == 0:
+        stdout, stderr, rc = _run_git(["checkout", branch], timeout=20)
+    else:
+        # Verify the remote exists before trying
+        _, _, rc_remote = _run_git(["show-ref", "--verify", f"refs/remotes/origin/{branch}"], timeout=5)
+        if rc_remote != 0:
+            raise HTTPException(status_code=404, detail=f"Branch '{branch}' not found locally or on origin.")
+        stdout, stderr, rc = _run_git(["checkout", "-b", branch, f"origin/{branch}"], timeout=20)
+
+    if rc != 0:
+        raise HTTPException(status_code=500, detail=stderr.strip() or "git checkout failed")
+
+    after = _head_hash()
+    files = _files_changed_between(before, after)
+    backend_changed = any(_is_backend_file(f) for f in files)
+
+    return {
+        "status": "checked-out",
+        "branch": branch,
+        "message": f"Switched to {branch}.",
+        "files_changed": files,
+        "backend_changed": backend_changed,
+    }
+
+
+@router.post("/merge")
+async def merge_branch(req: BranchRequest, request: Request):
+    """Merge another branch into the current branch.
+
+    Aborts on conflict (no half-merged state left behind) and reports the
+    conflicting files so the caller can show them.
+    """
+    _require_admin(request)
+    _cache_token(_get_token())
+
+    branch = req.branch.strip()
+    if not branch:
+        raise HTTPException(status_code=400, detail="Branch name required.")
+
+    dirty, dirty_paths = _working_tree_dirty()
+    if dirty:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Working tree has uncommitted changes. Commit or discard them before merging.\n"
+                + "\n".join(dirty_paths[:10])
+                + ("\n…" if len(dirty_paths) > 10 else "")
+            ),
+        )
+
+    # If the branch only exists on the remote, merge origin/<name> directly.
+    _, _, rc_local = _run_git(["show-ref", "--verify", f"refs/heads/{branch}"], timeout=5)
+    if rc_local == 0:
+        merge_ref = branch
+    else:
+        _, _, rc_remote = _run_git(["show-ref", "--verify", f"refs/remotes/origin/{branch}"], timeout=5)
+        if rc_remote != 0:
+            raise HTTPException(status_code=404, detail=f"Branch '{branch}' not found locally or on origin.")
+        merge_ref = f"origin/{branch}"
+
+    before = _head_hash()
+    stdout, stderr, rc = _run_git(
+        ["merge", "--no-edit", merge_ref],
+        timeout=30,
+    )
+    if rc != 0:
+        # Try to roll back so we don't leave a partial merge for them to clean up
+        _run_git(["merge", "--abort"], timeout=10)
+        # Detect conflicts (this catches the common reason)
+        conflict_out, _, _ = _run_git(["diff", "--name-only", "--diff-filter=U"], timeout=5)
+        conflicts = [l.strip() for l in conflict_out.split("\n") if l.strip()]
+        detail = stderr.strip() or stdout.strip() or "merge failed"
+        if conflicts:
+            detail = "Merge conflicts in:\n" + "\n".join(conflicts) + "\n\nMerge aborted — resolve conflicts in a terminal and try again."
+        raise HTTPException(status_code=409, detail=detail)
+
+    after = _head_hash()
+    files = _files_changed_between(before, after)
+    backend_changed = any(_is_backend_file(f) for f in files)
+
+    return {
+        "status": "merged",
+        "branch": branch,
+        "message": (
+            f"Merged {branch} into HEAD." if before != after
+            else f"Already up to date with {branch}."
+        ),
+        "output": stdout.strip(),
+        "before": before[:7],
+        "after": after[:7],
+        "files_changed": files,
+        "backend_changed": backend_changed,
     }
 
 

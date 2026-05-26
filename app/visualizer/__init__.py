@@ -65,7 +65,7 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str) -> None:
 
     # -- list_pages ------------------------------------------------------------
     async def _list_pages_wrapper():
-        pages = _list_pages(user_id)
+        pages = await _list_pages(user_id)
         return json.dumps({"status": "ok", "pages": pages, "count": len(pages)})
 
     tools["list_pages"] = ToolInfo(
@@ -86,7 +86,7 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str) -> None:
         initial_html: str = "",
     ):
         try:
-            entry = _create_page(
+            entry = await _create_page(
                 user_id=user_id,
                 slug=slug,
                 title=title,
@@ -130,7 +130,7 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str) -> None:
 
     # -- delete_page -----------------------------------------------------------
     async def _delete_page_wrapper(slug: str):
-        ok = _delete_page(user_id=user_id, slug=slug)
+        ok = await _delete_page(user_id=user_id, slug=slug)
         if ok:
             return json.dumps({"status": "ok", "message": "Page '{}' deleted.".format(slug)})
         if slug == "home":

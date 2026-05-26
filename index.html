@@ -24,6 +24,23 @@
 </script>
 <!-- Lucide icons (UMD — same version as UI kit) -->
 <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<!-- Files page: Markdown rendering + syntax highlighting (loaded sync so they're
+     definitely available when ui/js/files.js initialises). -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script>
+  // Lock the autoloader to the same CDN/version so missing grammars
+  // resolve to a known URL instead of relying on script-src inference.
+  if (window.Prism && window.Prism.plugins && window.Prism.plugins.autoloader) {
+    window.Prism.plugins.autoloader.languages_path =
+      'https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/';
+  }
+  // Surface CDN failures in the console so they're easy to spot rather
+  // than silently degrading to plain-text rendering.
+  if (!window.Prism)  console.warn('[Files] Prism failed to load — syntax highlighting unavailable.');
+  if (!window.marked) console.warn('[Files] marked failed to load — markdown preview unavailable.');
+</script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm/css/xterm.css">
 <link rel="stylesheet" href="./ui/css/app1.css">
 <link rel="stylesheet" href="./ui/css/app2.css">
@@ -32,11 +49,142 @@
 <link rel="stylesheet" href="./ui/css/loop-visual.css">
 <link rel="stylesheet" href="./ui/css/autoagent.css">
 <link rel="stylesheet" href="./ui/css/agents.css">
+<link rel="stylesheet" href="./ui/css/files.css">
 <link rel="stylesheet" href="./ui/css/tutorial.css">
 <!-- Design system tokens + visual overrides (loaded last to take effect) -->
 <link rel="stylesheet" href="./ui/css/design-system.css">
+<!-- ============================================================
+     Stargaze background + dynamic spotlight overrides
+     Loaded last so it wins the cascade.
+     ============================================================ -->
+<style>
+  /* —— Background canvas + overlay —— */
+  .stargaze-canvas {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 0;
+    pointer-events: none;
+  }
+  .stargaze-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    background:
+      radial-gradient(ellipse 80% 60% at 50% 0%,   transparent 0%,  rgba(7,7,12,0.6) 92%),
+      radial-gradient(ellipse 100% 70% at 50% 100%, transparent 30%, rgba(7,7,12,0.6) 100%);
+    opacity: 0.55;
+    transition: opacity 0.3s, background 0.3s;
+  }
+  body.light-mode .stargaze-overlay {
+    background:
+      radial-gradient(ellipse 80% 60% at 50% 0%,   transparent 0%,  rgba(250,245,238,0.6) 92%),
+      radial-gradient(ellipse 100% 70% at 50% 100%, transparent 30%, rgba(250,245,238,0.6) 100%);
+    opacity: 0.45;
+  }
+
+  /* —— Make body bg let the canvas show through —— */
+  html, body { background: #07070c !important; }
+  body.light-mode { background: #faf5ee !important; }
+  body > *:not(.stargaze-canvas):not(.stargaze-overlay) {
+    position: relative;
+    z-index: 2;
+  }
+
+  /* —— Chat side: transparent — sits on the background directly —— */
+  #chat-side,
+  #chat-side > #chat-header,
+  #chat-side > #chat-messages {
+    background: transparent !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  #chat-side {
+    border-left: none !important;
+    box-shadow: none !important;
+  }
+  #chat-header {
+    border-bottom: 1px solid color-mix(in oklab, currentColor 8%, transparent) !important;
+  }
+  /* Message bubbles get their own glass surface */
+  #chat-side .chat-bubble {
+    background: color-mix(in oklab, currentColor 6%, transparent) !important;
+    border: 1px solid color-mix(in oklab, currentColor 9%, transparent) !important;
+    backdrop-filter: blur(10px) saturate(140%) !important;
+    -webkit-backdrop-filter: blur(10px) saturate(140%) !important;
+    border-radius: 14px !important;
+    position: relative;
+    overflow: hidden;
+  }
+  /* Input row sits directly on the page background — no wrapping glass surface */
+  #chat-input-area {
+    background: transparent !important;
+    border: none !important;
+    border-radius: 0 !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    margin: 0 !important;
+    position: absolute;
+    overflow: visible;
+  }
+
+  /* —— Main page area: a real panel (glass) —— */
+  #terminal-side {
+    background: color-mix(in oklab, currentColor 4%, transparent) !important;
+    border: 1px solid color-mix(in oklab, currentColor 10%, transparent) !important;
+    border-radius: 16px !important;
+    backdrop-filter: blur(16px) saturate(150%) !important;
+    -webkit-backdrop-filter: blur(16px) saturate(150%) !important;
+    box-shadow:
+      0 1px 0 color-mix(in oklab, currentColor 6%, transparent) inset,
+      0 20px 60px -30px rgba(0,0,0,0.6) !important;
+    margin: 8px !important;
+    overflow: hidden !important;
+    position: relative;
+  }
+  body.light-mode #terminal-side {
+    box-shadow:
+      0 1px 0 rgba(255,255,255,0.6) inset,
+      0 15px 50px -25px rgba(80,40,10,0.18) !important;
+  }
+
+  /* —— Dynamic cursor-follow spotlight — applied via JS to .spot elements —— */
+  .spot { position: relative; }
+  .spot::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background: radial-gradient(
+      var(--spot-radius, 320px) circle at var(--mx, -100%) var(--my, -100%),
+      var(--spot-color, rgba(155, 187, 255, 0.14)) 0%,
+      transparent 60%
+    );
+    opacity: 0;
+    transition: opacity 0.25s ease;
+    border-radius: inherit;
+  }
+  .spot.spot-active::before { opacity: 1; }
+  body.light-mode .spot { --spot-color: rgba(217, 111, 31, 0.13); }
+
+  /* Size variants */
+  #terminal-side.spot { --spot-radius: 600px; --spot-color: rgba(155, 187, 255, 0.07); }
+  body.light-mode #terminal-side.spot { --spot-color: rgba(217, 111, 31, 0.07); }
+  .main-tab.spot         { --spot-radius: 140px; }
+  .chat-bubble.spot      { --spot-radius: 240px; }
+  #chat-input-area.spot  { --spot-radius: 360px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .stargaze-canvas { display: none; }
+  }
+</style>
 </head>
 <body>
+<canvas class="stargaze-canvas" id="stargaze-bg"></canvas>
+<div class="stargaze-overlay"></div>
 <script>
   // Apply saved theme + chat panel width before paint to avoid flash on startup.
   (function () {
@@ -184,69 +332,41 @@
 
 <div id="status-bar">
 
-  <!-- Tab select: hidden native <select> for JS compat + custom pill button + popup -->
-  <div class="status-group tab-select-group" style="position:relative;">
-    <select id="main-tab-select" style="display:none;" aria-hidden="true">
-      <option value="terminal">Terminal</option>
-      <option value="stream" selected>Stream</option>
-      <option value="flow">Flow</option>
-      <option value="loop-visual">Runtime Loop</option>
-      <option value="database">Database</option>
-      <option value="github">GitHub</option>
-      <option value="autoagent">AutoAgent</option>
-      <option value="agents">Agents</option>
-      <option value="app-config">App Config</option>
-      <option value="account">Manage Account</option>
-    </select>
-    <button id="tab-select-btn" class="tab-select-pill" aria-haspopup="listbox">
-      <i id="tab-btn-icon" data-lucide="radio-tower" class="lucide-icon" style="width:14px;height:14px;"></i>
-      <span id="tab-select-label">Stream</span>
-      <i data-lucide="chevron-down" class="lucide-icon" style="width:12px;height:12px;opacity:0.6;margin-left:2px;"></i>
-    </button>
-    <div id="tab-select-popup" class="tab-select-popup" style="display:none;" role="listbox">
-      <div class="tab-option" data-value="terminal" data-icon="terminal" role="option">
-        <i data-lucide="terminal" class="lucide-icon menu-icon"></i>Terminal
-      </div>
-      <div class="tab-option active" data-value="stream" data-icon="radio-tower" role="option">
-        <i data-lucide="radio-tower" class="lucide-icon menu-icon"></i>Stream
-      </div>
-      <div class="tab-option" data-value="flow" data-icon="git-branch" role="option">
-        <i data-lucide="git-branch" class="lucide-icon menu-icon"></i>Flow
-      </div>
-      <div class="tab-option" data-value="loop-visual" data-icon="repeat" role="option">
-        <i data-lucide="repeat" class="lucide-icon menu-icon"></i>Runtime Loop
-      </div>
-      <div class="tab-option" data-value="database" data-icon="database" role="option">
-        <i data-lucide="database" class="lucide-icon menu-icon"></i>Database
-      </div>
-      <div class="tab-option" data-value="github" data-icon="github" role="option">
-        <i data-lucide="github" class="lucide-icon menu-icon"></i>GitHub
-      </div>
-      <div class="tab-option" data-value="autoagent" data-icon="palette" role="option">
-        <i data-lucide="palette" class="lucide-icon menu-icon"></i>AutoAgent
-      </div>
-      <div class="tab-option" data-value="agents" data-icon="bot" role="option">
-        <i data-lucide="bot" class="lucide-icon menu-icon"></i>Agents
-      </div>
-      <div class="tab-option" data-value="app-config" data-icon="sliders-horizontal" role="option">
-        <i data-lucide="sliders-horizontal" class="lucide-icon menu-icon"></i>App Config
-      </div>
-      <div class="tab-option" data-value="account" data-icon="user-cog" role="option">
-        <i data-lucide="user-cog" class="lucide-icon menu-icon"></i>Manage Account
-      </div>
-    </div>
-  </div>
+  <!-- Hidden native <select> kept for tabs.js compat -->
+  <select id="main-tab-select" style="display:none;" aria-hidden="true">
+    <option value="admin-tools">Admin Tools</option>
+    <option value="autoagent" selected>Dashboard</option>
+    <option value="agents">Agents</option>
+    <option value="stream">Stream</option>
+    <option value="flow">Flow</option>
+    <option value="loop-visual">Runtime Loop</option>
+    <option value="account">Manage Account</option>
+  </select>
 
-  <!-- Status dots + restart -->
-  <div class="status-group" style="margin-left:12px;">
-    <span class="status-dot yellow" id="terminal-dot" title="Terminal Connection"></span>
-    <span id="terminal-status" style="display:none;"></span>
-    <span class="status-dot yellow" id="agent-dot" title="Server Connection"></span>
-    <span id="agent-status" style="display:none;"></span>
-    <button id="btn-restart" class="icon-btn-pill" title="Restart the Python agent server">
-      <i data-lucide="refresh-cw" class="lucide-icon" style="width:14px;height:14px;"></i>
-    </button>
-    <span id="restart-status" style="font-size:11px;color:var(--text-muted,#888);margin-left:6px;display:none;"></span>
+  <!-- Horizontal tab strip with chevron-scroll carousel -->
+  <div id="main-tabs-wrap">
+    <button type="button" id="main-tabs-chev-left" class="main-tabs-chev left" aria-label="Scroll tabs left">&#10094;</button>
+    <div id="main-tabs" role="tablist">
+      <button type="button" class="main-tab" data-value="admin-tools" role="tab">
+        <i data-lucide="wrench" class="lucide-icon"></i>Admin Tools
+      </button>
+      <button type="button" class="main-tab active" data-value="autoagent" role="tab">
+        <i data-lucide="palette" class="lucide-icon"></i>Dashboard
+      </button>
+      <button type="button" class="main-tab" data-value="agents" role="tab">
+        <i data-lucide="bot" class="lucide-icon"></i>Agents
+      </button>
+      <button type="button" class="main-tab" data-value="stream" role="tab">
+        <i data-lucide="radio-tower" class="lucide-icon"></i>Stream
+      </button>
+      <button type="button" class="main-tab" data-value="flow" role="tab">
+        <i data-lucide="git-branch" class="lucide-icon"></i>Flow
+      </button>
+      <button type="button" class="main-tab" data-value="loop-visual" role="tab">
+        <i data-lucide="repeat" class="lucide-icon"></i>Runtime Loop
+      </button>
+    </div>
+    <button type="button" id="main-tabs-chev-right" class="main-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
   </div>
 
   <!-- User menu -->
@@ -295,6 +415,11 @@
 
         <div class="user-dropdown-divider"></div>
 
+        <button id="btn-send-feedback" class="user-dropdown-action" style="display:none;">
+          <i data-lucide="message-circle" class="lucide-icon" style="width:15px;height:15px;"></i>
+          Send feedback
+        </button>
+
         <button id="btn-signout-header" class="user-dropdown-action">
           <i data-lucide="log-out" class="lucide-icon" style="width:15px;height:15px;"></i>
           Sign Out
@@ -317,10 +442,7 @@
   <!-- Terminal side -->
   <div id="terminal-side">
     <!-- Tab content -->
-    <div id="tab-terminal" class="tab-content">
-      <div id="terminal-container"></div>
-    </div>
-    <div id="tab-stream" class="tab-content active">
+    <div id="tab-stream" class="tab-content">
       <div id="stream-viewer">
         <div id="stream-toolbar">
           <span style="color:#565f89;font-size:11px;display:inline-flex;align-items:center;gap:4px;"><i data-lucide="radio" style="width:12px;height:12px;"></i> Live interactions</span>
@@ -367,144 +489,8 @@
         </div>
       </div>
     </div>
-    <div id="tab-github" class="tab-content">
-      <div id="gh-restricted-overlay" style="display:none;">
-        <div class="gh-restricted-card">
-          <div class="gh-restricted-icon"><i data-lucide="lock" style="width:32px;height:32px;"></i></div>
-          <div class="gh-restricted-title">Restricted Access</div>
-          <div class="gh-restricted-desc">The GitHub tab is only available for admin users.</div>
-          <div class="gh-restricted-desc" style="margin-top:8px;font-size:12px;color:#565f89;">
-            Log in as <strong>admin</strong> to manage the repository.
-          </div>
-        </div>
-      </div>
-      <div id="gh-viewer" style="display:none;">
-        <div id="gh-toolbar">
-          <span style="color:#565f89;font-size:11px;display:inline-flex;align-items:center;gap:4px;"><i data-lucide="github" style="width:12px;height:12px;"></i> GitHub Repository</span>
-          <span id="gh-repo-badge" style="color:#565f89;font-size:11px;margin-left:8px;">
-            <span id="gh-branch-display"><span id="gh-branch">—</span></span>
-          </span>
-          <span style="margin-left:auto;display:flex;gap:6px;align-items:center;">
-            <button id="gh-refresh-btn" class="gh-btn gh-btn-sm">↻ Refresh</button>
-            <span id="gh-refresh-spinner" class="gh-spinner" style="display:none;">⟳</span>
-          </span>
-        </div>
-
-        <div id="gh-body">
-          <!-- Left column: status + actions -->
-          <div id="gh-left">
-            <!-- Repo status card -->
-            <div class="gh-card">
-              <div class="gh-card-title">Repository</div>
-              <div class="gh-status-grid">
-                <div class="gh-status-item">
-                  <span class="gh-label">Remote</span>
-                  <span id="gh-remote-url" class="gh-value">—</span>
-                </div>
-                <div class="gh-status-item">
-                  <span class="gh-label">Last Commit</span>
-                  <span id="gh-last-commit" class="gh-value">—</span>
-                </div>
-                <div class="gh-status-item">
-                  <span class="gh-label">Sync</span>
-                  <span id="gh-ahead-behind" class="gh-value">—</span>
-                </div>
-                <div class="gh-status-item">
-                  <span class="gh-label">Files</span>
-                  <span id="gh-file-count" class="gh-value">—</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- Changed files -->
-            <div class="gh-card">
-              <div class="gh-card-title">Changed Files</div>
-              <div id="gh-file-list" class="gh-file-list">
-                <div class="gh-meta">Loading...</div>
-              </div>
-            </div>
-
-            <!-- Commit area -->
-            <div id="gh-commit-section" class="gh-card" style="display:none;">
-              <div class="gh-card-title">Commit</div>
-              <div class="gh-commit-row">
-                <input type="text" id="gh-commit-msg" class="gh-input" placeholder="Commit message..." maxlength="200">
-                <button id="gh-commit-btn" class="gh-btn gh-btn-primary">Commit</button>
-                <span id="gh-commit-spinner" class="gh-spinner" style="display:none;">⟳</span>
-              </div>
-              <div id="gh-commit-result" class="gh-result" style="display:none;"></div>
-            </div>
-
-            <!-- Push / Pull -->
-            <div id="gh-push-pull-group" class="gh-card" style="display:none;">
-              <div class="gh-card-title">Sync</div>
-              <div class="gh-sync-row">
-                <button id="gh-push-btn" class="gh-btn gh-btn-primary" style="display:inline-flex;align-items:center;gap:4px;"><i data-lucide="arrow-up" style="width:13px;height:13px;"></i> Push</button>
-                <span id="gh-push-spinner" class="gh-spinner" style="display:none;">⟳</span>
-                <span id="gh-push-result" class="gh-result" style="display:none;"></span>
-                <button id="gh-pull-btn" class="gh-btn" style="display:inline-flex;align-items:center;gap:4px;"><i data-lucide="arrow-down" style="width:13px;height:13px;"></i> Pull</button>
-                <span id="gh-pull-spinner" class="gh-spinner" style="display:none;">⟳</span>
-                <span id="gh-pull-result" class="gh-result" style="display:none;"></span>
-                <button id="gh-pull-restart-btn" class="gh-btn gh-btn-deploy" style="display:inline-flex;align-items:center;gap:4px;" title="Pull latest from remote, then restart the server so backend changes take effect"><i data-lucide="rocket" style="width:13px;height:13px;"></i> Pull &amp; Restart</button>
-                <span id="gh-pull-restart-spinner" class="gh-spinner" style="display:none;">⟳</span>
-                <span id="gh-pull-restart-result" class="gh-result" style="display:none;"></span>
-              </div>
-            </div>
-
-            <!-- Token config -->
-            <div id="gh-token-section" class="gh-card">
-              <div class="gh-card-title">GitHub Token <span id="gh-token-configured" style="font-weight:400;font-size:11px;color:#565f89;margin-left:8px;">—</span></div>
-              <div class="gh-token-row">
-                <input type="password" id="gh-token-input" class="gh-input" placeholder="ghp_... or github_pat_...">
-                <button id="gh-token-save-btn" class="gh-btn gh-btn-primary">Save</button>
-              </div>
-              <div id="gh-token-status" class="gh-result" style="display:none;"></div>
-              <details class="gh-hint-details">
-                <summary style="cursor:pointer;color:#7dcfff;font-size:11px;font-weight:500;">How to create a GitHub token →</summary>
-                <div class="gh-hint-steps">
-                  <p><strong>Classic token:</strong></p>
-                  <ol>
-                    <li>Go to <a href="https://github.com/settings/tokens" target="_blank" style="color:#7dcfff;">github.com/settings/tokens</a></li>
-                    <li>Click <strong>Generate new token (classic)</strong></li>
-                    <li>Give it a name (e.g. "webAgent")</li>
-                    <li>Select scope: <strong>repo</strong> (full control)</li>
-                    <li>Click <strong>Generate token</strong> and copy it</li>
-                  </ol>
-                  <p style="margin-top:6px;"><strong>Fine-grained token:</strong></p>
-                  <ol>
-                    <li>Go to <a href="https://github.com/settings/tokens?type=beta" target="_blank" style="color:#7dcfff;">github.com/settings/tokens</a></li>
-                    <li>Click <strong>Generate new token (fine-grained)</strong></li>
-                    <li>Select this repository only</li>
-                    <li>Permissions → <strong>Contents: Read and write</strong></li>
-                    <li>Click <strong>Generate token</strong> and copy it</li>
-                  </ol>
-                  <p style="margin-top:6px;color:#e0af68;">Paste the token above and click Save. It's stored locally in provider.json.</p>
-                </div>
-              </details>
-            </div>
-          </div>
-
-          <!-- Right column: commit log -->
-          <div id="gh-right">
-            <div class="gh-card">
-              <div class="gh-card-title">Recent Commits</div>
-              <div id="gh-log-list" class="gh-log-list">
-                <div class="gh-meta">Loading...</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-    <div id="tab-autoagent" class="tab-content">
+    <div id="tab-autoagent" class="tab-content active">
       <div id="autoagent-container">
-
-        <!-- Page nav: dropdown + new / delete buttons -->
-        <div id="autoagent-page-nav">
-          <select id="autoagent-page-select" class="aa-page-select" title="Switch page"></select>
-          <button id="autoagent-new-page-btn" class="aa-icon-btn" title="New page">+</button>
-          <button id="autoagent-delete-page-btn" class="aa-icon-btn aa-delete-btn" title="Delete page" disabled><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>
-        </div>
 
         <!-- New-page dialog (hidden by default) -->
         <div id="aa-new-page-dialog">
@@ -516,12 +502,6 @@
               <button id="aa-dialog-confirm" class="aa-dialog-btn aa-dialog-btn-primary">Create</button>
             </div>
           </div>
-        </div>
-
-        <!-- Prompt bar -->
-        <div id="autoagent-prompt-bar">
-          <input type="text" id="autoagent-prompt-input" class="aa-prompt-input" placeholder="Tell the page agent what to build or change..." maxlength="2000">
-          <button id="autoagent-send-btn" class="aa-send-btn" title="Send to page agent">&#9654;</button>
         </div>
 
         <!-- Viewport -->
@@ -538,7 +518,43 @@
           </div>
         </div>
 
-        <div id="autoagent-status" class="aa-status"></div>
+        <!-- Footer: page nav (left) + prompt bar (right) -->
+        <div id="autoagent-footer">
+          <!-- Page nav: custom dropdown mirroring the chat-header agent/session
+               dropdowns, with a per-row ⋮ menu (Rename / Delete). -->
+          <div id="autoagent-page-nav">
+            <span id="aa-page-label">Page:
+              <div id="autoagent-page-dropdown" class="session-dropdown">
+                <button id="autoagent-page-dropdown-trigger" type="button" class="status-select session-dropdown-trigger">
+                  <span id="autoagent-page-dropdown-label">—</span>
+                  <i data-lucide="chevron-down" style="width:12px;height:12px;flex-shrink:0;"></i>
+                </button>
+                <div id="autoagent-page-dropdown-menu" class="session-dropdown-menu" hidden></div>
+              </div>
+              <button id="autoagent-new-page-btn" title="New page" class="header-plus-btn"><i data-lucide="plus" style="width:14px;height:14px;"></i></button>
+            </span>
+          </div>
+
+          <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #chat-input-row,
+               #ac-int-admin-chat-input-row, #agent-builder-bar-row. Style rules
+               live in ui/css/app1.css under the "Chat-pill" block. -->
+          <div id="autoagent-prompt-bar">
+            <div id="autoagent-prompt-row" class="chat-pill">
+              <button type="button" id="autoagent-attach-btn" class="chat-pill-attach" title="Attach files">
+                <i data-lucide="paperclip" style="width:18px;height:18px;"></i>
+              </button>
+              <textarea id="autoagent-prompt-input" class="chat-pill-input" rows="2"
+                placeholder="Tell the page agent what to build or change..."
+                maxlength="2000" autocomplete="off"></textarea>
+              <button type="button" id="autoagent-voice-btn" class="chat-pill-voice" title="Record voice">
+                <i data-lucide="mic" style="width:18px;height:18px;"></i>
+              </button>
+              <button type="button" id="autoagent-send-btn" class="chat-pill-send" title="Send to page agent">
+                <i data-lucide="send" style="width:16px;height:16px;"></i>
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
     <div id="tab-agents" class="tab-content">
@@ -549,6 +565,27 @@
           <span id="agents-toolbar-sub"> &middot; Agent templates &middot; system prompts &middot; model assignments</span>
         </div>
         <button id="btn-new-agent">+ New agent</button>
+      </div>
+
+      <!-- Agent Builder chat bar — page-level assistant for creating and modifying agents -->
+      <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #chat-input-row,
+           #ac-int-admin-chat-input-row, #autoagent-prompt-row. Style rules live
+           in ui/css/app1.css under the "Chat-pill" block. -->
+      <div id="agent-builder-bar">
+        <div id="agent-builder-bar-row" class="chat-pill">
+          <button type="button" id="agent-builder-bar-attach" class="chat-pill-attach" title="Attach files">
+            <i data-lucide="paperclip" style="width:18px;height:18px;"></i>
+          </button>
+          <textarea id="agent-builder-bar-input" class="chat-pill-input" rows="2"
+            placeholder="use AI to create your agent or manage your fleet"
+            autocomplete="off"></textarea>
+          <button type="button" id="agent-builder-bar-voice" class="chat-pill-voice" title="Record voice">
+            <i data-lucide="mic" style="width:18px;height:18px;"></i>
+          </button>
+          <button type="button" id="agent-builder-bar-send" class="chat-pill-send" title="Send to Agent Builder">
+            <i data-lucide="send" style="width:16px;height:16px;"></i>
+          </button>
+        </div>
       </div>
 
       <!-- Card grid -->
@@ -580,13 +617,13 @@
       </div>
     </div>
 
-    <!-- App Config tab -->
-    <div id="tab-app-config" class="tab-content">
-      <div id="app-config-container">
+    <!-- App Config UI: lives inside Admin Tools as the Settings view.
+         Markup stays here at boot; files.js moves it into #files-settings-main. -->
+    <div id="app-config-container" hidden>
 
         <!-- Header -->
         <header id="app-config-header">
-          <div class="ac-page-title">App Config</div>
+          <div class="ac-page-title">Settings</div>
         </header>
 
         <!-- Tab strip with chevron-scroll carousel -->
@@ -619,6 +656,9 @@
             </button>
             <button type="button" class="ac-tab" data-section="events" role="tab">
               <i data-lucide="radio" class="lucide-icon ac-tab-icon"></i>Event Sources
+            </button>
+            <button type="button" class="ac-tab" data-section="monetization" role="tab">
+              <i data-lucide="credit-card" class="lucide-icon ac-tab-icon"></i>Monetization
             </button>
           </div>
           <button type="button" id="app-config-tabs-chev-right" class="ac-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
@@ -695,9 +735,11 @@
             <div id="ac-int-admin-chat-card" style="margin-bottom:16px;">
               <div class="ac-label" style="margin-bottom:6px;">Use AI to create or customize an existing integration</div>
               <div id="ac-int-admin-chat-messages" style="max-height:280px;overflow-y:auto;display:none;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px;font-size:13px;"></div>
-              <div id="ac-int-admin-chat-input-row">
-                <textarea id="ac-int-admin-chat-input" rows="2" placeholder="e.g. Create a Slack integration with send_message and list_channels tools" autocomplete="off"></textarea>
-                <button id="ac-int-admin-chat-send" title="Send message" disabled><i data-lucide="send" style="width:18px;height:18px;"></i></button>
+              <!-- CHAT-PILL-SYNC: see ui/css/app1.css ".chat-pill" block. No
+                   attach/voice; .no-voice keeps the send button always visible. -->
+              <div id="ac-int-admin-chat-input-row" class="chat-pill no-voice">
+                <textarea id="ac-int-admin-chat-input" class="chat-pill-input" rows="2" placeholder="e.g. Create a Slack integration with send_message and list_channels tools" autocomplete="off"></textarea>
+                <button id="ac-int-admin-chat-send" class="chat-pill-send" title="Send message" disabled><i data-lucide="send" style="width:18px;height:18px;"></i></button>
               </div>
               <div id="ac-int-admin-chat-error" class="ac-hint" style="display:none;margin-top:6px;color:#f7768e;"></div>
             </div>
@@ -2056,6 +2098,29 @@
               <pre id="ac-storage-secrets-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;display:none;"></pre>
             </div>
 
+            <!-- ── Page Storage ── -->
+            <div class="ac-card">
+              <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
+                <i data-lucide="layout-template" class="lucide-icon" style="width:14px;height:14px;color:#9ece6a;"></i>
+                Page Storage
+                <span id="ac-storage-pages-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+              </div>
+
+              <label class="ac-label" style="margin-top:10px;">Mode</label>
+              <select id="ac-storage-pages-mode" class="ac-input">
+                <option value="filesystem">Filesystem (default — files on disk)</option>
+                <option value="database">Database (full HTML in DB; survives restarts)</option>
+                <option value="hybrid">Hybrid (metadata in DB, body on disk)</option>
+              </select>
+
+              <div id="ac-storage-pages-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--bg-elev);border:1px solid var(--border);border-left:3px solid #9ece6a;border-radius:4px;font-size:11px;line-height:1.55;"></div>
+
+              <div style="display:flex;gap:6px;margin-top:12px;">
+                <button id="ac-storage-pages-save" class="ac-btn ac-btn-primary">Activate</button>
+              </div>
+              <pre id="ac-storage-pages-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;display:none;"></pre>
+            </div>
+
             <!-- ── Encryption ── -->
             <div class="ac-card">
               <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
@@ -2280,7 +2345,7 @@
             </div>
 
             <div class="ac-info-banner">
-              For full commit/push/pull controls, switch to the <a class="ac-tab-link" data-tab="github">GitHub tab</a>.
+              For full commit/push/pull controls, open the <a class="ac-tab-link" data-tab="files">Admin Tools</a> and switch its sidebar to the source-control view.
             </div>
           </section>
 
@@ -2368,6 +2433,22 @@
               <div class="ac-card-sublabel">Last 50 fired events across all agents. <code>status=test</code> means a manual test-fire from the agent UI.</div>
               <div id="ac-events-deliveries" style="margin-top:10px;font-size:11px;font-family:monospace;max-height:280px;overflow-y:auto;background:var(--bg-0);border:1px solid var(--border);border-radius:6px;padding:8px;color:var(--fg-3);">
                 <div>(no deliveries yet)</div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ── Monetization ── -->
+          <section id="ac-section-monetization" class="ac-section">
+            <div class="ac-section-header">
+              <i data-lucide="credit-card" class="lucide-icon ac-section-icon"></i>
+              <div>
+                <h2 class="ac-section-title">Monetization</h2>
+                <p class="ac-section-desc">Set platform-wide billing methods, fees, payment processors, and exemptions.</p>
+              </div>
+            </div>
+            <div class="ac-card">
+              <div id="billing-platform-panel">
+                <div style="color:var(--fg-3,#888);font-size:13px;">Loading…</div>
               </div>
             </div>
           </section>
@@ -2490,12 +2571,14 @@
           </section>
 
         </div><!-- /app-config-content -->
-      </div><!-- /app-config-container -->
-    </div><!-- /tab-app-config -->
+    </div><!-- /app-config-container -->
 
     <div id="tab-account" class="tab-content"></div>
 
-    <div id="tab-database" class="tab-content">
+    <!-- Database viewer markup, parked here so relocateAdminToolsContainers()
+         (in files.js) can move the pieces into the Admin Tools sidebar/main
+         hosts at boot. Hidden until then. -->
+    <div id="db-viewer-park" hidden>
       <div id="db-viewer">
         <div id="db-toolbar" style="display:none;">
           <button id="db-show-hidden-btn" style="background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-3);padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;margin-left:auto;display:inline-flex;align-items:center;gap:4px;"><i data-lucide="eye" style="width:12px;height:12px;"></i> Hide hidden</button>
@@ -2546,6 +2629,147 @@
       </div>
     </div>
 
+    <!-- ── Files tab: VS Code-style file editor ───────────────── -->
+    <div id="tab-admin-tools" class="tab-content">
+      <div id="files-restricted-overlay" style="display:none;">
+        <div class="files-restricted-card">
+          <div class="files-restricted-icon"><i data-lucide="lock" style="width:32px;height:32px;"></i></div>
+          <div class="files-restricted-title">Restricted Access</div>
+          <div class="files-restricted-desc">Admin Tools is only available for admin users.</div>
+          <div class="files-restricted-desc files-restricted-diag" id="files-restricted-diag"></div>
+        </div>
+      </div>
+      <div id="admin-tools" class="admin-tools">
+        <!-- Sidebar: tabbed between Explorer (file tree) and GitHub manager.
+             The header replaces the old "EXPLORER" text with two icon
+             buttons (files + github). The icon for the current view is
+             greyed out; the other icon is the click target. -->
+        <aside id="files-sidebar" class="files-sidebar" data-view="explorer" data-state="split">
+          <!-- Collapsed strip: only visible when data-state="strip". A narrow
+               column showing the expand toggle, refresh, and the two view
+               icons so the user can still drive the sidebar without giving
+               up the full editor width. -->
+          <div class="files-sidebar-strip" hidden aria-label="Sidebar collapsed strip">
+            <button class="files-strip-btn files-maximize-btn" title="Expand sidebar"><i data-lucide="panel-left-open" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-strip-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-strip-view" data-view="explorer" title="Switch to explorer"><i data-lucide="files" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-strip-view" data-view="git" title="Switch to source control"><i data-lucide="github" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-strip-view" data-view="database" title="Switch to database"><i data-lucide="database" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
+          </div>
+
+          <!-- Explorer panel (file tree) -->
+          <div class="files-sidebar-panel" id="files-panel-explorer" data-view="explorer">
+            <div class="files-sidebar-header">
+              <div class="files-view-toggle" role="tablist" aria-label="Sidebar view">
+                <button class="files-view-toggle-btn active" data-view="explorer" title="Explorer (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="files" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn" data-view="git" title="Switch to source control" role="tab" aria-selected="false"><i data-lucide="github" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn" data-view="database" title="Switch to database" role="tab" aria-selected="false"><i data-lucide="database" class="lucide-icon"></i></button>
+                <span class="files-view-toggle-sep" aria-hidden="true"></span>
+                <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
+              </div>
+              <div class="files-sidebar-actions">
+                <button class="files-icon-btn" id="files-new-file" title="New file"><i data-lucide="file-plus" class="lucide-icon"></i></button>
+                <button class="files-icon-btn" id="files-new-folder" title="New folder"><i data-lucide="folder-plus" class="lucide-icon"></i></button>
+                <button class="files-icon-btn" id="files-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
+                <button class="files-icon-btn" id="files-collapse-all" title="Collapse all"><i data-lucide="chevrons-down-up" class="lucide-icon"></i></button>
+                <button class="files-icon-btn files-maximize-btn" title="Maximize sidebar"><i data-lucide="maximize-2" class="lucide-icon"></i></button>
+              </div>
+            </div>
+            <div id="files-breadcrumb" class="files-breadcrumb" aria-label="Current path">
+              <button class="files-breadcrumb-up" id="files-breadcrumb-up" title="Go to parent directory"><i data-lucide="arrow-up" class="lucide-icon"></i></button>
+              <button class="files-breadcrumb-home" id="files-breadcrumb-home" title="Back to project root"><i data-lucide="home" class="lucide-icon"></i></button>
+              <span class="files-current-path" id="files-current-path" title=""></span>
+            </div>
+            <div id="files-tree" class="files-tree" role="tree"></div>
+          </div>
+
+          <!-- GitHub panel (source control) -->
+          <div class="files-sidebar-panel" id="files-panel-git" data-view="git" hidden>
+            <div class="files-sidebar-header">
+              <div class="files-view-toggle" role="tablist" aria-label="Sidebar view">
+                <button class="files-view-toggle-btn" data-view="explorer" title="Switch to explorer" role="tab" aria-selected="false"><i data-lucide="files" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn active" data-view="git" title="Source control (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="github" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn" data-view="database" title="Switch to database" role="tab" aria-selected="false"><i data-lucide="database" class="lucide-icon"></i></button>
+                <span class="files-view-toggle-sep" aria-hidden="true"></span>
+                <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
+              </div>
+              <div class="files-sidebar-actions">
+                <button class="files-icon-btn" id="fg-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
+                <button class="files-icon-btn files-maximize-btn" title="Maximize sidebar"><i data-lucide="maximize-2" class="lucide-icon"></i></button>
+              </div>
+            </div>
+            <div id="fg-body" class="fg-body">
+              <div class="fg-loading">Loading…</div>
+            </div>
+          </div>
+
+          <!-- Database panel: hosts the relocated #db-sidebar (table list +
+               refresh/reset/collapse toolbar). The panel header below carries
+               the explorer/git/database view toggles; #db-sidebar carries its
+               own internal toolbar. -->
+          <div class="files-sidebar-panel" id="files-panel-database" data-view="database" hidden>
+            <div class="files-sidebar-header">
+              <div class="files-view-toggle" role="tablist" aria-label="Sidebar view">
+                <button class="files-view-toggle-btn" data-view="explorer" title="Switch to explorer" role="tab" aria-selected="false"><i data-lucide="files" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn" data-view="git" title="Switch to source control" role="tab" aria-selected="false"><i data-lucide="github" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn active" data-view="database" title="Database (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="database" class="lucide-icon"></i></button>
+                <span class="files-view-toggle-sep" aria-hidden="true"></span>
+                <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
+              </div>
+              <div class="files-sidebar-actions">
+                <button class="files-icon-btn files-maximize-btn" title="Maximize sidebar"><i data-lucide="maximize-2" class="lucide-icon"></i></button>
+              </div>
+            </div>
+            <div id="db-sidebar-host" class="db-sidebar-host"></div>
+          </div>
+        </aside>
+
+        <!-- Resize handle between sidebar and editor -->
+        <div id="files-resize-handle" class="files-resize-handle" title="Drag to resize"></div>
+
+        <!-- Toggle button to show sidebar when collapsed -->
+        <button id="files-sidebar-toggle" class="files-sidebar-toggle" title="Toggle sidebar">
+          <i data-lucide="panel-left" class="lucide-icon"></i>
+        </button>
+
+        <!-- Main editor area: tabs + content -->
+        <main class="files-main">
+          <div class="files-tabs-wrap">
+            <button id="files-tabs-prev" class="files-tabs-chev" title="Scroll tabs left"><i data-lucide="chevron-left" class="lucide-icon"></i></button>
+            <div id="files-tabs" class="files-tabs" role="tablist"></div>
+            <button id="files-tabs-next" class="files-tabs-chev" title="Scroll tabs right"><i data-lucide="chevron-right" class="lucide-icon"></i></button>
+          </div>
+          <div id="files-content" class="files-content">
+            <div class="files-welcome">
+              <i data-lucide="folder-tree" class="lucide-icon files-welcome-icon"></i>
+              <div class="files-welcome-title">File Editor</div>
+              <div class="files-welcome-text">Pick a file from the Explorer on the left to open it here.</div>
+            </div>
+          </div>
+          <div id="files-status-bar" class="files-status-bar">
+            <span id="files-status-path" class="files-status-path"></span>
+            <span class="files-status-spacer"></span>
+            <span id="files-status-info" class="files-status-info"></span>
+          </div>
+        </main>
+
+        <!-- Settings view: replaces the file editor area when the Settings
+             sidebar button is toggled on. files.js moves #app-config-container
+             into here at boot. -->
+        <main class="files-main files-settings-main" id="files-settings-main" hidden></main>
+
+        <!-- Database view: replaces the file editor area when the Database
+             sidebar view is active. files.js moves #db-table-view (and the
+             #db-toolbar) into here at boot. -->
+        <main class="files-main files-database-main" id="files-database-main" hidden></main>
+      </div>
+    </div>
+
   </div>
 
   <!-- Chat resize handle -->
@@ -2591,11 +2815,14 @@
     <div id="chat-input-area" class="chat-footer-drop-target">
       <button id="chat-expand-btn" title="Expand input" class="chat-expand-btn">↗</button>
       <div id="chat-preview-bar" style="display:none;"></div>
-      <div id="chat-input-row">
-        <button id="chat-attach-btn" title="Attach files (or drag & drop onto chat)"><i data-lucide="paperclip" style="width:18px;height:18px;"></i></button>
-        <textarea id="chat-input" rows="2" placeholder="Chat with the agent" autocomplete="off"></textarea>
-        <button id="chat-voice-btn" title="Record voice"><i data-lucide="mic" style="width:18px;height:18px;"></i></button>
-        <button id="chat-send" title="Send message" disabled><i data-lucide="send" style="width:18px;height:18px;"></i></button>
+      <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #ac-int-admin-chat-input-row,
+           #agent-builder-bar-row, #autoagent-prompt-row. Style rules live in
+           ui/css/app1.css under the "Chat-pill" block. -->
+      <div id="chat-input-row" class="chat-pill">
+        <button id="chat-attach-btn" class="chat-pill-attach" title="Attach files (or drag & drop onto chat)"><i data-lucide="paperclip" style="width:18px;height:18px;"></i></button>
+        <textarea id="chat-input" class="chat-pill-input" rows="2" placeholder="Chat with the agent" autocomplete="off"></textarea>
+        <button id="chat-voice-btn" class="chat-pill-voice" title="Record voice"><i data-lucide="mic" style="width:18px;height:18px;"></i></button>
+        <button id="chat-send" class="chat-pill-send" title="Send message" disabled><i data-lucide="send" style="width:18px;height:18px;"></i></button>
         <input type="file" id="chat-file-input" multiple accept="image/*,audio/*,video/*,.pdf,.txt,.md,.csv,.json" hidden>
       </div>
       <div id="chat-footer-drop-overlay">
@@ -2642,6 +2869,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm/lib/xterm.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit/lib/addon-fit.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-search/lib/addon-search.js"></script>
 <script>
   document.addEventListener('DOMContentLoaded', function() {
     // ── Custom db-select dropdown ──
@@ -3045,89 +3273,542 @@
 <script type="module" src="./ui/js/main.js"></script>
 <script type="module" src="./ui/js/attachments.js"></script>
 <script type="module" src="./ui/js/data-sources.js"></script>
-<!-- ── Lucide icons + custom tab-select popup ───────────────── -->
+<!-- ── Lucide icons + horizontal tab strip with carousel ───────── -->
 <script>
 (function () {
   // Render all data-lucide icons in the DOM
   lucide.createIcons();
 
-  // ── Custom tab-select popup ──────────────────────────────────
+  // ── Horizontal tab strip ─────────────────────────────────────
   // The hidden <select id="main-tab-select"> is used by tabs.js.
-  // This block drives the visible pill button + popup and stays in sync.
-
-  var TABS = [
-    { id: 'terminal',    icon: 'terminal',    label: 'Terminal'   },
-    { id: 'stream',      icon: 'radio-tower', label: 'Stream'     },
-    { id: 'flow',        icon: 'git-branch',  label: 'Flow'       },
-    { id: 'loop-visual', icon: 'repeat',      label: 'Runtime Loop' },
-    { id: 'database',    icon: 'database',    label: 'Database'   },
-    { id: 'github',      icon: 'github',      label: 'GitHub'     },
-    { id: 'autoagent',   icon: 'palette',     label: 'AutoAgent'  },
-    { id: 'agents',      icon: 'bot',              label: 'Agents'     },
-    { id: 'app-config',  icon: 'sliders-horizontal', label: 'App Config' },
-    { id: 'account',     icon: 'user-cog',         label: 'Manage Account' },
-  ];
+  // This block drives the visible tab buttons + chevron carousel
+  // and stays in sync when tabs change externally.
 
   var nativeSelect = document.getElementById('main-tab-select');
-  var btn          = document.getElementById('tab-select-btn');
-  var popup        = document.getElementById('tab-select-popup');
-  var labelEl      = document.getElementById('tab-select-label');
-  var btnIconEl    = document.getElementById('tab-btn-icon');
-  if (!nativeSelect || !btn || !popup) return;
+  var tabBar       = document.getElementById('main-tabs');
+  var tabWrap      = document.getElementById('main-tabs-wrap');
+  var chevLeft     = document.getElementById('main-tabs-chev-left');
+  var chevRight    = document.getElementById('main-tabs-chev-right');
+  if (!nativeSelect || !tabBar || !tabWrap) return;
 
-  function syncBtn(tabId) {
-    var t = TABS.find(function (t) { return t.id === tabId; }) || TABS[1];
-    labelEl.textContent = t.label;
-    btnIconEl.setAttribute('data-lucide', t.icon);
-    lucide.createIcons({ nodes: [btnIconEl] });
-    popup.querySelectorAll('.tab-option').forEach(function (o) {
-      o.classList.toggle('active', o.dataset.value === tabId);
-    });
+  function updateChevrons() {
+    if (!chevLeft || !chevRight) return;
+    var overflow = tabBar.scrollWidth - tabBar.clientWidth > 1;
+    tabWrap.classList.toggle('has-overflow', overflow);
+    chevLeft.classList.toggle('visible', overflow && tabBar.scrollLeft > 1);
+    chevRight.classList.toggle('visible', overflow && tabBar.scrollLeft < tabBar.scrollWidth - tabBar.clientWidth - 1);
   }
 
-  // Open / close popup
-  btn.addEventListener('click', function (e) {
-    e.stopPropagation();
-    popup.style.display = popup.style.display === 'none' ? 'block' : 'none';
-  });
+  function syncActive(tabId) {
+    tabBar.querySelectorAll('.main-tab').forEach(function (b) {
+      b.classList.toggle('active', b.dataset.value === tabId);
+    });
+    var activeBtn = tabBar.querySelector('.main-tab.active');
+    if (activeBtn) activeBtn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    requestAnimationFrame(updateChevrons);
+    setTimeout(updateChevrons, 350); // catch end of smooth scroll
+  }
 
   // Pick a tab
-  popup.querySelectorAll('.tab-option').forEach(function (opt) {
-    opt.addEventListener('click', function () {
-      var val = opt.dataset.value;
+  tabBar.querySelectorAll('.main-tab').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var val = btn.dataset.value;
       nativeSelect.value = val;
       nativeSelect.dispatchEvent(new Event('change', { bubbles: true }));
-      popup.style.display = 'none';
-      syncBtn(val);
+      syncActive(val);
     });
   });
 
-  // Close on outside click
-  document.addEventListener('click', function (e) {
-    if (!e.target.closest('.tab-select-group')) {
-      popup.style.display = 'none';
+  // Chevron carousel (matches app-config tabs pattern)
+  if (chevLeft && chevRight) {
+    var scrollStep = function () { return Math.max(80, Math.floor(tabBar.clientWidth * 0.6)); };
+    chevLeft.addEventListener('click', function () { tabBar.scrollBy({ left: -scrollStep(), behavior: 'smooth' }); });
+    chevRight.addEventListener('click', function () { tabBar.scrollBy({ left: scrollStep(), behavior: 'smooth' }); });
+    tabBar.addEventListener('scroll', updateChevrons, { passive: true });
+
+    requestAnimationFrame(function () {
+      updateChevrons();
+      var active = tabBar.querySelector('.main-tab.active');
+      if (active) active.scrollIntoView({ inline: 'center', block: 'nearest' });
+    });
+    if (typeof ResizeObserver !== 'undefined') {
+      var roPending = false;
+      var ro = new ResizeObserver(function () {
+        if (roPending) return;
+        roPending = true;
+        requestAnimationFrame(function () { roPending = false; updateChevrons(); });
+      });
+      ro.observe(tabBar);
+      ro.observe(tabWrap);
     }
-  });
+    window.addEventListener('resize', updateChevrons);
+  }
 
   // MutationObserver: sync when tabs.js (or config menu) switches tab externally
   var tabContents = document.querySelectorAll('.tab-content');
   if (tabContents.length) {
     var observer = new MutationObserver(function () {
       var active = document.querySelector('.tab-content.active');
-      if (active) {
-        syncBtn(active.id.replace('tab-', ''));
-      }
+      if (active) syncActive(active.id.replace('tab-', ''));
     });
     tabContents.forEach(function (el) {
       observer.observe(el, { attributes: true, attributeFilter: ['class'] });
     });
   }
 
-  // Sync pill to whatever tab is currently active on load
+  // Sync to whatever tab is currently active on load
   var initActive = document.querySelector('.tab-content.active');
-  if (initActive) syncBtn(initActive.id.replace('tab-', ''));
+  if (initActive) syncActive(initActive.id.replace('tab-', ''));
 
 })();
 </script>
+<script>
+/* ============================================================
+   Stargaze background + per-element spotlight tracking
+   ============================================================ */
+(function () {
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+  /* —— Canvas animation —— */
+  var canvas = document.getElementById('stargaze-bg');
+  if (!canvas) return;
+  var ctx = canvas.getContext('2d');
+  var DPR = Math.min(window.devicePixelRatio || 1, 2);
+  var W = 0, H = 0;
+  var stars = [];
+  var shootingStars = [];
+  var dust = [];
+  var nextShootAt = 0;
+  var pointerX = 0.5, pointerY = 0.5;
+  var targetX = 0.5, targetY = 0.5;
+  var scrollY = 0;
+  var lastT = 0;
+  var lastPX = 0, lastPY = 0;
+
+  function isLight() { return document.body && document.body.classList.contains('light-mode'); }
+
+  function resize() {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W * DPR;
+    canvas.height = H * DPR;
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    initStars();
+  }
+
+  function initStars() {
+    stars = [];
+    var count = Math.round((W * H) / 8000);
+    for (var i = 0; i < count; i++) {
+      var layer = Math.random() < 0.55 ? 0 : (Math.random() < 0.85 ? 1 : 2);
+      stars.push({
+        x: Math.random(),
+        y: Math.random(),
+        r: layer === 0 ? Math.random() * 0.7 + 0.3
+           : layer === 1 ? Math.random() * 0.9 + 0.5
+           : Math.random() * 1.4 + 0.8,
+        layer: layer,
+        tw: Math.random() * Math.PI * 2,
+        twSpeed: 0.4 + Math.random() * 0.8,
+        drift: 0.01 + Math.random() * 0.04,
+        hueDark: Math.random() < 0.85 ? 220 : (Math.random() < 0.5 ? 260 : 200),
+        hueLight: Math.random() < 0.85 ? 22 : (Math.random() < 0.5 ? 12 : 35)
+      });
+    }
+  }
+
+  function drawStars(t) {
+    var light = isLight();
+    var px = pointerX - 0.5, py = pointerY - 0.5;
+
+    if (light) {
+      var g = ctx.createRadialGradient(W * 0.5, H * 0.28, 40, W * 0.5, H * 0.28, Math.max(W, H) * 0.9);
+      g.addColorStop(0, 'rgba(255, 200, 150, 0.22)');
+      g.addColorStop(0.5, 'rgba(220, 160, 110, 0.08)');
+      g.addColorStop(1, 'rgba(245, 220, 195, 0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+
+      var g2 = ctx.createRadialGradient(
+        W * (0.82 + px * 0.05), H * (0.78 + py * 0.05), 30,
+        W * (0.82 + px * 0.05), H * (0.78 + py * 0.05), Math.max(W, H) * 0.6
+      );
+      g2.addColorStop(0, 'rgba(200, 120, 70, 0.16)');
+      g2.addColorStop(0.5, 'rgba(180, 100, 60, 0.05)');
+      g2.addColorStop(1, 'rgba(245, 220, 195, 0)');
+      ctx.fillStyle = g2;
+      ctx.fillRect(0, 0, W, H);
+    } else {
+      var g3 = ctx.createRadialGradient(W * 0.5, H * 0.3, 50, W * 0.5, H * 0.3, Math.max(W, H) * 0.9);
+      g3.addColorStop(0, 'rgba(60, 70, 130, 0.18)');
+      g3.addColorStop(0.45, 'rgba(40, 30, 80, 0.08)');
+      g3.addColorStop(1, 'rgba(8, 8, 16, 0)');
+      ctx.fillStyle = g3;
+      ctx.fillRect(0, 0, W, H);
+
+      var g4 = ctx.createRadialGradient(
+        W * (0.82 + px * 0.05), H * (0.78 + py * 0.05), 30,
+        W * (0.82 + px * 0.05), H * (0.78 + py * 0.05), Math.max(W, H) * 0.6
+      );
+      g4.addColorStop(0, 'rgba(125, 90, 200, 0.16)');
+      g4.addColorStop(0.5, 'rgba(80, 60, 160, 0.05)');
+      g4.addColorStop(1, 'rgba(8, 8, 16, 0)');
+      ctx.fillStyle = g4;
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    for (var i = 0; i < stars.length; i++) {
+      var s = stars[i];
+      var parallax = (s.layer + 1) * 10;
+      var x = (s.x * W) - px * parallax;
+      var y = (s.y * H) - py * parallax - (scrollY * 0.04 * (s.layer + 1));
+      var tw = (Math.sin(t * 0.001 * s.twSpeed + s.tw) + 1) * 0.5;
+      var r = s.r * (0.9 + tw * 0.25);
+
+      if (light) {
+        var hue = s.hueLight, alpha = 0.45 + tw * 0.45, lightness = 18 + tw * 8, sat = 55;
+        if (s.layer >= 1) {
+          var halo = ctx.createRadialGradient(x, y, 0, x, y, r * 6);
+          halo.addColorStop(0, 'hsla(' + hue + ',' + sat + '%,' + lightness + '%,' + (alpha * 0.35) + ')');
+          halo.addColorStop(1, 'hsla(' + hue + ',' + sat + '%,' + lightness + '%,0)');
+          ctx.fillStyle = halo;
+          ctx.beginPath();
+          ctx.arc(x, y, r * 6, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.fillStyle = 'hsla(' + hue + ',' + sat + '%,' + lightness + '%,' + alpha + ')';
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        var hueD = s.hueDark, alphaD = 0.35 + tw * 0.55;
+        if (s.layer >= 1) {
+          var haloD = ctx.createRadialGradient(x, y, 0, x, y, r * 6);
+          haloD.addColorStop(0, 'hsla(' + hueD + ',90%,85%,' + (alphaD * 0.5) + ')');
+          haloD.addColorStop(1, 'hsla(' + hueD + ',90%,85%,0)');
+          ctx.fillStyle = haloD;
+          ctx.beginPath();
+          ctx.arc(x, y, r * 6, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.fillStyle = 'hsla(' + hueD + ',80%,' + (85 + tw * 10) + '%,' + alphaD + ')';
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      s.x += s.drift * 0.0006;
+      if (s.x > 1.05) s.x = -0.05;
+    }
+  }
+
+  function drawConstellation(light) {
+    var cx = pointerX * W, cy = pointerY * H;
+    var candidates = [];
+    for (var i = 0; i < stars.length; i++) {
+      var s = stars[i];
+      if (s.layer < 1) continue;
+      var sx = s.x * W - (pointerX - 0.5) * (s.layer + 1) * 10;
+      var sy = s.y * H - (pointerY - 0.5) * (s.layer + 1) * 10 - scrollY * 0.04 * (s.layer + 1);
+      var d = Math.hypot(sx - cx, sy - cy);
+      if (d < 220) candidates.push({ x: sx, y: sy, d: d });
+    }
+    candidates.sort(function (a, b) { return a.d - b.d; });
+    var pick = candidates.slice(0, 5);
+    if (pick.length < 2) return;
+    ctx.lineWidth = 0.6;
+    ctx.lineCap = 'round';
+    for (var j = 0; j < pick.length - 1; j++) {
+      var a = pick[j], b = pick[j + 1];
+      var dist = Math.hypot(a.x - b.x, a.y - b.y);
+      if (dist > 200) continue;
+      var alpha = (1 - dist / 200) * 0.45 * (1 - a.d / 220);
+      ctx.strokeStyle = light
+        ? 'rgba(80, 40, 20, ' + alpha + ')'
+        : 'rgba(180, 200, 255, ' + alpha + ')';
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+  }
+
+  function spawnShooting(t) {
+    var fromLeft = Math.random() < 0.5;
+    var startX = fromLeft ? -50 + Math.random() * 100 : W + 50 - Math.random() * 100;
+    var startY = Math.random() * H * 0.5;
+    var speed = 0.8 + Math.random() * 0.6;
+    var angle = (0.18 + Math.random() * 0.12) * Math.PI;
+    shootingStars.push({
+      x: startX, y: startY,
+      vx: Math.cos(angle) * speed * (fromLeft ? 1 : -1),
+      vy: Math.sin(angle) * speed + 0.3,
+      maxLife: 900 + Math.random() * 500,
+      born: t,
+      trail: []
+    });
+  }
+
+  function drawShootingStars(t, light) {
+    if (t > nextShootAt) {
+      spawnShooting(t);
+      nextShootAt = t + 12000 + Math.random() * 20000;
+    }
+    for (var i = shootingStars.length - 1; i >= 0; i--) {
+      var s = shootingStars[i];
+      var age = t - s.born;
+      if (age > s.maxLife) { shootingStars.splice(i, 1); continue; }
+      s.x += s.vx * 16;
+      s.y += s.vy * 16;
+      s.trail.unshift({ x: s.x, y: s.y });
+      if (s.trail.length > 22) s.trail.length = 22;
+
+      var fade = age < 150 ? age / 150 : (age > s.maxLife - 250 ? (s.maxLife - age) / 250 : 1);
+      for (var j = 0; j < s.trail.length - 1; j++) {
+        var p1 = s.trail[j], p2 = s.trail[j + 1];
+        var segAlpha = (1 - j / s.trail.length) * 0.9 * fade;
+        ctx.strokeStyle = light
+          ? 'rgba(110, 50, 20, ' + segAlpha + ')'
+          : 'rgba(220, 230, 255, ' + segAlpha + ')';
+        ctx.lineWidth = (1 - j / s.trail.length) * 2 + 0.3;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
+      }
+      var head = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, 8);
+      if (light) {
+        head.addColorStop(0, 'rgba(110, 50, 20, ' + (0.9 * fade) + ')');
+        head.addColorStop(1, 'rgba(110, 50, 20, 0)');
+      } else {
+        head.addColorStop(0, 'rgba(255, 255, 255, ' + (0.95 * fade) + ')');
+        head.addColorStop(1, 'rgba(180, 200, 255, 0)');
+      }
+      ctx.fillStyle = head;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawDust(dtMs) {
+    for (var i = dust.length - 1; i >= 0; i--) {
+      var p = dust[i];
+      p.life += dtMs;
+      if (p.life > p.maxLife) { dust.splice(i, 1); continue; }
+      p.x += p.vx * dtMs * 0.06;
+      p.y += p.vy * dtMs * 0.06;
+      var a = (1 - p.life / p.maxLife);
+      ctx.fillStyle = p.isLight
+        ? 'rgba(110, 60, 30, ' + (a * 0.55) + ')'
+        : 'rgba(220, 230, 255, ' + (a * 0.75) + ')';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r * a, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function frame(t) {
+    t = t || performance.now();
+    var dtMs = lastT ? Math.min(50, t - lastT) : 16;
+    lastT = t;
+    pointerX += (targetX - pointerX) * 0.06;
+    pointerY += (targetY - pointerY) * 0.06;
+    ctx.clearRect(0, 0, W, H);
+    var light = isLight();
+    drawStars(t);
+    drawConstellation(light);
+    drawShootingStars(t, light);
+    drawDust(dtMs);
+    if (document.hidden) setTimeout(function () { frame(performance.now()); }, 80);
+    else requestAnimationFrame(frame);
+  }
+
+  window.addEventListener('pointermove', function (e) {
+    targetX = e.clientX / window.innerWidth;
+    targetY = e.clientY / window.innerHeight;
+    var dx = e.clientX - lastPX, dy = e.clientY - lastPY;
+    var speed = Math.hypot(dx, dy);
+    if (speed > 4 && Math.random() < Math.min(0.5, speed / 60)) {
+      var light = isLight();
+      for (var k = 0; k < 2; k++) {
+        dust.push({
+          x: e.clientX + (Math.random() - 0.5) * 6,
+          y: e.clientY + (Math.random() - 0.5) * 6,
+          vx: (Math.random() - 0.5) * 0.3,
+          vy: (Math.random() - 0.5) * 0.3 - 0.15,
+          r: 0.4 + Math.random() * 1.2,
+          life: 0,
+          maxLife: 600 + Math.random() * 400,
+          isLight: light
+        });
+      }
+    }
+    lastPX = e.clientX;
+    lastPY = e.clientY;
+  });
+  window.addEventListener('scroll', function () { scrollY = window.scrollY || 0; }, { passive: true });
+  window.addEventListener('resize', function () {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    resize();
+  });
+
+  resize();
+  frame(performance.now());
+
+  /* —— Spotlight tracking for cards / bubbles / dropdowns / panels —— */
+  // Selectors to apply spotlight to
+  var SPOT_SELECTORS = [
+    '#terminal-side',
+    '#chat-input-area',
+    '.chat-bubble',
+    '.tab-select-popup',
+    '.tab-option',
+    '.tab-select-pill',
+    '.gh-restricted-card',
+    '.files-restricted-card',
+    '.ac-card',
+    '.agent-card',
+    '.tutorial-card',
+    '.card'
+  ];
+  var SPOT_SELECTOR_STR = SPOT_SELECTORS.join(', ');
+
+  function decorate(root) {
+    var nodes = root && root.querySelectorAll ? root.querySelectorAll(SPOT_SELECTOR_STR) : [];
+    for (var i = 0; i < nodes.length; i++) nodes[i].classList.add('spot');
+    if (root && root.matches && root.matches(SPOT_SELECTOR_STR)) root.classList.add('spot');
+  }
+  decorate(document);
+
+  // Watch for dynamically added elements (new chat bubbles, popups, etc.)
+  var mo = new MutationObserver(function (mutations) {
+    for (var m = 0; m < mutations.length; m++) {
+      var added = mutations[m].addedNodes;
+      for (var n = 0; n < added.length; n++) {
+        var node = added[n];
+        if (node.nodeType === 1) decorate(node);
+      }
+    }
+  });
+  mo.observe(document.body, { childList: true, subtree: true });
+
+  // Single delegated pointermove to update --mx/--my on the nearest .spot
+  document.addEventListener('pointermove', function (e) {
+    var el = e.target && e.target.closest ? e.target.closest('.spot') : null;
+    if (!el) return;
+    var r = el.getBoundingClientRect();
+    var mx = ((e.clientX - r.left) / r.width) * 100;
+    var my = ((e.clientY - r.top) / r.height) * 100;
+    el.style.setProperty('--mx', mx + '%');
+    el.style.setProperty('--my', my + '%');
+    if (!el.classList.contains('spot-active')) el.classList.add('spot-active');
+  }, true);
+
+  // Clear .spot-active when pointer leaves a tracked element
+  document.addEventListener('pointerleave', function (e) {
+    if (e.target && e.target.classList && e.target.classList.contains('spot')) {
+      e.target.classList.remove('spot-active');
+    }
+  }, true);
+  // Also clear on pointerout (more reliable for some elements)
+  document.addEventListener('pointerout', function (e) {
+    var from = e.target;
+    var to = e.relatedTarget;
+    if (from && from.classList && from.classList.contains('spot')) {
+      // Only clear if the new target is outside this spot
+      if (!to || !from.contains(to)) from.classList.remove('spot-active');
+    }
+  }, true);
+})();
+</script>
+
+<!-- ── Feedback modal (rendered hidden; opened by ui/js/feedback.js) ── -->
+<div id="feedback-modal" class="feedback-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="feedback-modal-title">
+  <div class="feedback-modal-backdrop" data-feedback-close></div>
+  <div class="feedback-modal-card">
+    <div class="feedback-modal-head">
+      <h3 id="feedback-modal-title">Send feedback</h3>
+      <button class="feedback-modal-close" data-feedback-close aria-label="Close">&times;</button>
+    </div>
+    <form id="feedback-form" class="feedback-modal-body">
+      <fieldset class="feedback-type-group">
+        <legend>What kind of feedback?</legend>
+        <label class="feedback-type-opt">
+          <input type="radio" name="feedback-type" value="bug" checked>
+          <span><strong>Bug report</strong> — something is broken</span>
+        </label>
+        <label class="feedback-type-opt">
+          <input type="radio" name="feedback-type" value="feature">
+          <span><strong>Feature request</strong> — an idea or improvement</span>
+        </label>
+        <label class="feedback-type-opt">
+          <input type="radio" name="feedback-type" value="message">
+          <span><strong>Message to admin</strong> — anything else</span>
+        </label>
+      </fieldset>
+
+      <label class="feedback-field">
+        <span class="feedback-label">Details</span>
+        <textarea id="feedback-body" name="body" rows="6" required maxlength="8000" placeholder="Describe what happened, what you expected, and any steps to reproduce."></textarea>
+        <span class="feedback-counter"><span id="feedback-body-count">0</span> / 8000</span>
+      </label>
+
+      <label class="feedback-field">
+        <span class="feedback-label">Your email <span class="feedback-optional">(optional, only if you want a reply)</span></span>
+        <input id="feedback-email" name="email" type="email" maxlength="254" placeholder="you@example.com" autocomplete="email">
+      </label>
+
+      <div id="feedback-turnstile" class="feedback-turnstile"></div>
+
+      <div id="feedback-status" class="feedback-status" aria-live="polite"></div>
+
+      <div class="feedback-modal-actions">
+        <button type="button" class="feedback-btn-ghost" data-feedback-close>Cancel</button>
+        <button type="submit" id="feedback-submit-btn" class="feedback-btn-primary">Send</button>
+      </div>
+
+      <p class="feedback-disclosure">
+        Submissions create a GitHub issue in the webAgent feedback repo. Don't include passwords or other secrets. Your email, if provided, is stored in the issue body so the admin can reply.
+      </p>
+    </form>
+  </div>
+</div>
+
+<style>
+  .feedback-modal { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; }
+  .feedback-modal-backdrop { position: absolute; inset: 0; background: rgba(8, 10, 22, 0.65); backdrop-filter: blur(2px); }
+  .feedback-modal-card { position: relative; background: var(--surface, #11142b); color: var(--text, #e6e8ef); border: 1px solid #2a2a4a; border-radius: 10px; width: min(560px, 92vw); max-height: 90vh; overflow: auto; box-shadow: 0 16px 48px rgba(0,0,0,0.4); }
+  .feedback-modal-head { display:flex; align-items:center; justify-content:space-between; padding: 14px 18px; border-bottom: 1px solid #2a2a4a; }
+  .feedback-modal-head h3 { margin:0; font-size: 15px; font-weight: 600; }
+  .feedback-modal-close { background:none; border:0; color:inherit; font-size:22px; line-height:1; cursor:pointer; padding:4px 8px; }
+  .feedback-modal-body { padding: 16px 18px 18px; display:flex; flex-direction:column; gap:14px; }
+  .feedback-type-group { border:0; padding:0; margin:0; display:flex; flex-direction:column; gap:6px; }
+  .feedback-type-group legend { padding:0; margin: 0 0 4px; font-size:12px; color:#9ba1bd; }
+  .feedback-type-opt { display:flex; gap:8px; align-items:flex-start; font-size:13px; cursor:pointer; padding:6px 8px; border-radius:6px; }
+  .feedback-type-opt:hover { background: rgba(255,255,255,0.04); }
+  .feedback-type-opt input { margin-top: 2px; }
+  .feedback-field { display:flex; flex-direction:column; gap:5px; position:relative; }
+  .feedback-label { font-size:12px; color:#9ba1bd; }
+  .feedback-optional { color:#6e7493; font-weight:400; }
+  .feedback-field textarea, .feedback-field input[type=email] { background:#0d1024; color:inherit; border:1px solid #2a2a4a; border-radius:6px; padding:8px 10px; font: inherit; resize: vertical; }
+  .feedback-field textarea:focus, .feedback-field input[type=email]:focus { outline: 2px solid #4c6cff; outline-offset: -1px; }
+  .feedback-counter { position:absolute; right:6px; bottom:6px; font-size:10px; color:#6e7493; pointer-events:none; }
+  .feedback-turnstile { min-height: 0; }
+  .feedback-turnstile:not(:empty) { min-height: 65px; }
+  .feedback-status { font-size: 12px; min-height: 1em; }
+  .feedback-status.error { color: #ff7a7a; }
+  .feedback-status.success { color: #5cd6a8; }
+  .feedback-modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top: 4px; }
+  .feedback-btn-ghost { background:transparent; color:#c5cae3; border:1px solid #2a2a4a; border-radius:6px; padding:6px 14px; cursor:pointer; font: inherit; }
+  .feedback-btn-primary { background:#4c6cff; color:#fff; border:0; border-radius:6px; padding:6px 16px; cursor:pointer; font: inherit; }
+  .feedback-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .feedback-disclosure { font-size: 11px; color: #6e7493; margin: 0; line-height: 1.5; }
+</style>
+
+<script type="module" src="./ui/js/feedback.js"></script>
 </body>
 </html>

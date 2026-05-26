@@ -6,9 +6,10 @@
  * State lives in localStorage under "tutorialPrefs":
  *   { globalEnabled: boolean, pages: { [pageId]: boolean } }
  *
- * Pages map 1:1 to the main-tab values from index.html (terminal, stream,
- * flow, loop-visual, database, github, autoagent, agents, app-config,
- * account).
+ * Pages map 1:1 to the main-tab values from index.html (admin-tools,
+ * autoagent, agents, stream, flow, loop-visual, account). The chat-panel
+ * hints render alongside whichever main tab is active when the chat side is
+ * visible.
  *
  * Each hint has a target CSS selector. If the selector doesn't resolve at
  * render time (page not loaded, element hidden, user lacks permission, etc.)
@@ -20,23 +21,32 @@ const STORAGE_KEY = 'tutorialPrefs';
 const TICK_MS = 500;
 
 const PAGE_LABELS = {
-  'terminal':    'Terminal',
+  'admin-tools': 'Admin Tools',
+  'autoagent':   'Dashboard',
+  'agents':      'Agents',
   'stream':      'Stream',
   'flow':        'Flow',
   'loop-visual': 'Runtime Loop',
-  'database':    'Database',
-  'github':      'GitHub',
-  'autoagent':   'AutoAgent',
-  'agents':      'Agents',
-  'app-config':  'App Config',
   'account':     'Manage Account',
   'chat':        'Chat Panel',
 };
 
 const HINTS = {
-  terminal: [
-    { selector: '#terminal-container', title: 'Terminal output',
-      body: 'Live shell output from the agent appears here. Anything the agent runs in a shell — installs, scripts, builds — shows up in real time.' },
+  'admin-tools': [
+    { selector: '.files-view-toggle-btn[data-view="explorer"]', title: 'File explorer',
+      body: 'Browse the project tree. Click any file to open it in the editor; right-click for rename, delete and other actions.' },
+    { selector: '.files-view-toggle-btn[data-view="git"]', title: 'Source control',
+      body: 'See changed files, commit with a message, push, pull, switch branches and view recent commit history — all in one panel.' },
+    { selector: '.files-view-toggle-btn[data-view="database"]', title: 'Database viewer',
+      body: 'Inspect tables, refresh rows after the agent writes, switch between local databases and reset selected tables.' },
+    { selector: '.files-terminal-new', title: 'Open a terminal',
+      body: 'Spawns a new terminal tab inside the main panel — each tab is its own independent shell with scrollback and search.' },
+    { selector: '.files-settings-toggle-btn', title: 'App settings',
+      body: 'Toggle the Settings overlay (App Settings, User Management, default LLM, Agent Abilities, Optimizer, Git, Automation, Events).' },
+    { selector: '#files-new-file', title: 'New file',
+      body: 'Create a new file in the currently selected folder.' },
+    { selector: '#files-new-folder', title: 'New folder',
+      body: 'Create a new folder under the currently selected directory.' },
   ],
 
   stream: [
@@ -68,43 +78,11 @@ const HINTS = {
       body: 'Each node lights up as the agent reaches it. Great for understanding loops and conditional branches at a glance.' },
   ],
 
-  database: [
-    { selector: '#db-table-list', title: 'Pick a table',
-      body: 'Every table in the local database is listed here. Click one to inspect its rows in the panel on the right.' },
-    { selector: '#db-refresh', title: 'Refresh',
-      body: 'Re-fetch the current table. Use this after the agent writes new rows to see them immediately.' },
-    { selector: '#db-reset', title: 'Reset DB (destructive)',
-      body: 'Drops selected tables and re-creates them empty. There is no undo — only use when you really want to start over.' },
-    { selector: '#db-select-trigger', title: 'Switch database',
-      body: 'Switch the active database file. You can also check multiple to view them side by side.' },
-    { selector: '#db-download-btn', title: 'Download local.db',
-      body: 'Grab a copy of the SQLite file to inspect offline in another tool.' },
-    { selector: '#db-sidebar-toggle', title: 'Collapse sidebar',
-      body: 'Hide the table list to give the data view more horizontal room.' },
-  ],
-
-  github: [
-    { selector: '#gh-token-section', title: 'Add a GitHub token',
-      body: 'Paste a personal access token (classic or fine-grained) so the app can push, pull and read commits. Stored locally only.' },
-    { selector: '#gh-refresh-btn', title: 'Refresh repo status',
-      body: 'Re-read the working tree — useful after editing files outside the app.' },
-    { selector: '#gh-file-list', title: 'Changed files',
-      body: 'Shows every file modified since the last commit. Click any entry to see the diff before committing.' },
-    { selector: '#gh-commit-section', title: 'Commit changes',
-      body: 'Type a message, then click Commit to record a new commit on the current branch.' },
-    { selector: '#gh-push-pull-group', title: 'Sync with remote',
-      body: 'Push your commits, pull others’ changes, or use Pull & Restart to apply backend updates and reload the server.' },
-    { selector: '#gh-log-list', title: 'Recent commits',
-      body: 'A live view of the branch history, including commits pushed by you and others.' },
-  ],
-
   autoagent: [
     { selector: '#autoagent-new-page-btn', title: 'New AutoAgent page',
       body: 'Create a new generated page. Each page is built and updated by the agent from your prompts.' },
-    { selector: '#autoagent-page-select', title: 'Switch pages',
-      body: 'Hop between your existing generated pages.' },
-    { selector: '#autoagent-delete-page-btn', title: 'Delete page',
-      body: 'Permanently remove the currently selected page.' },
+    { selector: '#autoagent-page-dropdown-trigger', title: 'Switch pages',
+      body: 'Hop between your existing generated pages. Each row has a ⋮ menu for rename and delete.' },
     { selector: '#autoagent-prompt-input', title: 'Describe what to build',
       body: 'Type a natural-language instruction — e.g. "add a dashboard with three stat cards" — and the agent will edit the page for you.' },
     { selector: '#autoagent-send-btn', title: 'Send to the agent',
@@ -124,17 +102,6 @@ const HINTS = {
     { selector: 'body', title: 'Step 4 — Grant abilities',
       body: 'In the Agent Tools / Abilities section you can toggle which tools the agent is allowed to call. Some require confirmation before running.',
       anchor: { selector: '#agents-grid', position: 'inside-bottom-right' } },
-  ],
-
-  'app-config': [
-    { selector: '#app-config-tabs', title: 'Config sections',
-      body: 'Switch between App Settings, User Management, default LLM, Agent Abilities, Database, Optimizer, Git, Automation and Events.' },
-    { selector: '.ac-tab[data-section="llm"]', title: 'Default LLM',
-      body: 'Pick the default model used by new agents. You can still override per-agent later.' },
-    { selector: '.ac-tab[data-section="integrations"]', title: 'Agent Abilities',
-      body: 'Enable or disable the tools (web search, code edit, automation, etc.) that agents are allowed to use.' },
-    { selector: '.ac-tab[data-section="user-management"]', title: 'User Management',
-      body: 'Control who can sign up, review existing users, and toggle these tutorial hints.' },
   ],
 
   account: [
@@ -483,7 +450,12 @@ function _openPopover(badge, hint, step, total) {
 
   pop.appendChild(footer);
 
-  document.body.appendChild(pop);
+  // Append to the overlay (a fixed, body-level container) rather than body
+  // directly. A global index.html rule forces `position: relative` on every
+  // direct body child except the stargaze canvas/overlay, which would clobber
+  // this popover's `position: fixed` and render it after the body's last block
+  // (i.e. far below the viewport, inaccessible).
+  _ensureOverlay().appendChild(pop);
   _activePopover = pop;
   _positionPopover(pop, badge);
 }
