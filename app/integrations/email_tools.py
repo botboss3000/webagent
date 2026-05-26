@@ -39,9 +39,12 @@ async def gmail_list_messages(
         params["q"] = query
     if label_ids:
         params["labelIds"] = [s.strip() for s in label_ids.split(",") if s.strip()]
-    result = await oauth_api_call(user_id, agent_id, "google", "GET", f"{_GMAIL_BASE}/messages", params=params)
+    result = await oauth_api_call(
+        user_id, agent_id, "google", "GET", f"{_GMAIL_BASE}/messages",
+        params=params, ability="google.gmail_read",
+    )
     if result.get("status") == "not_connected":
-        return not_connected_payload("google")
+        return not_connected_payload("google", ability=result.get("ability") or "google.gmail_read")
     return json.dumps(result)
 
 
@@ -54,10 +57,10 @@ async def gmail_get_message(user_id: str, agent_id: str, message_id: str, format
     result = await oauth_api_call(
         user_id, agent_id, "google", "GET",
         f"{_GMAIL_BASE}/messages/{message_id}",
-        params=params,
+        params=params, ability="google.gmail_read",
     )
     if result.get("status") == "not_connected":
-        return not_connected_payload("google")
+        return not_connected_payload("google", ability=result.get("ability") or "google.gmail_read")
     if result.get("status") == "ok" and (format or "metadata") == "full":
         body = result.get("body")
         if isinstance(body, dict):
@@ -79,7 +82,9 @@ async def gmail_send(
 ) -> str:
     tok = await get_oauth_token(user_id, agent_id, "google")
     if not tok:
-        return not_connected_payload("google")
+        return not_connected_payload("google", ability="google.gmail_send")
+    if "google.gmail_send" not in (tok.get("covered_abilities") or []):
+        return not_connected_payload("google", ability="google.gmail_send")
     if not to or not subject:
         return json.dumps({"status": "error", "message": "to and subject required"})
 
@@ -151,9 +156,12 @@ async def outlook_list_messages(
         params.pop("$orderby", None)  # Graph forbids $orderby with $search
 
     url = f"{_GRAPH}/me/mailFolders/{folder}/messages" if folder else f"{_GRAPH}/me/messages"
-    result = await oauth_api_call(user_id, agent_id, "microsoft", "GET", url, params=params)
+    result = await oauth_api_call(
+        user_id, agent_id, "microsoft", "GET", url, params=params,
+        ability="microsoft.mail_read",
+    )
     if result.get("status") == "not_connected":
-        return not_connected_payload("microsoft")
+        return not_connected_payload("microsoft", ability=result.get("ability") or "microsoft.mail_read")
     return json.dumps(result)
 
 
@@ -167,9 +175,10 @@ async def outlook_get_message(user_id: str, agent_id: str, message_id: str, full
         user_id, agent_id, "microsoft", "GET",
         f"{_GRAPH}/me/messages/{message_id}",
         params={"$select": select},
+        ability="microsoft.mail_read",
     )
     if result.get("status") == "not_connected":
-        return not_connected_payload("microsoft")
+        return not_connected_payload("microsoft", ability=result.get("ability") or "microsoft.mail_read")
     return json.dumps(result)
 
 
@@ -203,9 +212,10 @@ async def outlook_send(
         user_id, agent_id, "microsoft", "POST",
         f"{_GRAPH}/me/sendMail",
         json_body={"message": message, "saveToSentItems": True},
+        ability="microsoft.mail_send",
     )
     if result.get("status") == "not_connected":
-        return not_connected_payload("microsoft")
+        return not_connected_payload("microsoft", ability=result.get("ability") or "microsoft.mail_send")
     return json.dumps(result)
 
 

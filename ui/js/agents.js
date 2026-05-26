@@ -2621,12 +2621,33 @@ async function _renderConnectionsTab(body, agent) {
 
   let connections = [];
   let userRole = 'member';
+  let abilitiesByProvider = {};
   try {
-    const res = await fetch(`/api/v1/agents/${agent.id}/connections?user_id=${encodeURIComponent(app.currentUserId)}`);
-    if (res.ok) {
-      const data = await res.json();
+    // Fetch connections + abilities in parallel — both are required for the
+    // OAuth cards to render their nested per-ability toggles.
+    const [connRes, abilRes] = await Promise.all([
+      fetch(`/api/v1/agents/${agent.id}/connections?user_id=${encodeURIComponent(app.currentUserId)}`),
+      fetch(`/api/v1/agents/${agent.id}/abilities?user_id=${encodeURIComponent(app.currentUserId)}`).catch(() => null),
+    ]);
+    if (connRes.ok) {
+      const data = await connRes.json();
       connections = data.connections || [];
       userRole = data.user_role || 'member';
+    }
+    if (abilRes && abilRes.ok) {
+      const data = await abilRes.json();
+      for (const ab of (data.abilities || [])) {
+        const list = abilitiesByProvider[ab.provider] || (abilitiesByProvider[ab.provider] = []);
+        list.push(ab);
+      }
+    }
+    // Attach the per-provider ability list onto each matching connection so
+    // _buildConnectionBody can render the toggles without re-fetching.
+    for (const c of connections) {
+      // Meta covers both facebook & instagram; aliases share the same scopes.
+      const provider = c.connection_type === 'facebook' || c.connection_type === 'instagram'
+        ? 'meta' : c.connection_type;
+      c._abilities = abilitiesByProvider[provider] || [];
     }
   } catch (e) {
     body.innerHTML = `<div class="conn-loading" style="color:#f7768e">Failed to load connections: ${_esc(e.message)}</div>`;
@@ -2889,6 +2910,26 @@ function _buildConnectionCard(agent, conn, canEdit = true) {
     btn.addEventListener('click', () => _oauthDisconnectFromAgent(provider, agent, conn, card));
   });
 
+  // Per-ability toggles inside OAuth cards (Phase 2: 3-tier OAuth system).
+  card.querySelectorAll('.conn-ability-row').forEach(row => {
+    const toggle = row.querySelector('.conn-ability-toggle');
+    if (!toggle) return;
+    toggle.addEventListener('change', async () => {
+      const abilityId = row.dataset.abilityId;
+      // Find the matching ability object to pull its current `source`.
+      const ab = (conn._abilities || []).find(a => a.id === abilityId) || {};
+      await _onAbilityToggle(agent, conn, card, abilityId, toggle.checked, ab.source);
+    });
+  });
+
+  // "Use my own credentials" launcher (Phase 3 BYO).
+  card.querySelectorAll('.conn-byo-setup-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();  // don't trigger card collapse
+      _openByoSetupModal(agent, btn.dataset.provider, conn);
+    });
+  });
+
   return card;
 }
 
@@ -3010,6 +3051,7 @@ function _buildConnectionBody(conn, canEdit = true, agentId = null) {
     const name      = conn[`${ct}_name`] || '';
     const email     = conn[`${ct}_email`] || '';
     const connAt    = conn[`${ct}_connected_at`] || '';
+    const abilitiesHtml = _renderAbilitiesBlock(conn._abilities || [], conn, canEdit);
 
     if (connected) {
       el.innerHTML = `
@@ -3024,6 +3066,7 @@ function _buildConnectionBody(conn, canEdit = true, agentId = null) {
           <button class="agents-btn" data-oauth-disconnect="${ct}" style="color:#f7768e;border-color:#f7768e;">Disconnect</button>
           ${connAt ? `<span style="font-size:10px;color:var(--fg-muted,#565f89);">Connected ${new Date(connAt).toLocaleDateString()}</span>` : ''}
         </div>
+        ${abilitiesHtml}
         <span class="conn-save-msg"></span>
       `;
     } else if (!canEdit && !conn.enabled) {
@@ -3034,6 +3077,7 @@ function _buildConnectionBody(conn, canEdit = true, agentId = null) {
       el.innerHTML = `
         <button class="agents-btn primary" data-oauth-connect="${ct}" style="width:100%;">Connect ${oauthInfo.label}</button>
         <span class="conn-field-hint" style="margin-top:6px;">${oauthInfo.hint}</span>
+        ${abilitiesHtml}
         <span class="conn-save-msg"></span>
       `;
     }
@@ -3042,6 +3086,142 @@ function _buildConnectionBody(conn, canEdit = true, agentId = null) {
 
   // No expandable body for other available-but-unconfigured types yet
   return null;
+}
+
+// ── Per-ability toggles inside OAuth provider cards ──────────────────────
+
+function _renderAbilitiesBlock(abilities, conn, canEdit) {
+  // Drop implicit abilities (sign-in / profile) — they're always on.
+  const list = (abilities || []).filter(a => !a.implicit && a.mode !== 'disabled');
+  if (!list.length) return '';
+
+  // BYO setup link surfaces only when the app admin allows BYO somewhere
+  // on this provider AND the caller can edit (members can't set creds).
+  const byoAllowed = canEdit && list.some(a => a.mode === 'byo_only' || a.mode === 'both');
+  const byoLink = byoAllowed
+    ? `<button class="conn-byo-setup-btn" data-provider="${_esc(list[0].provider)}"
+                style="background:none;border:none;color:#7aa2f7;font-size:10px;cursor:pointer;padding:0;margin-left:auto;">
+         Use my own credentials →
+       </button>`
+    : '';
+
+  const rows = list.map(ab => {
+    const cantToggle = !canEdit;
+    const checked = ab.enabled ? 'checked' : '';
+    const dis = cantToggle ? 'disabled' : '';
+    const sourceTag = ab.source === 'byo'
+      ? '<span style="font-size:9px;background:#3a2a4a;color:#bb9af7;padding:1px 4px;border-radius:3px;margin-left:6px;font-weight:600;">BYO</span>'
+      : '';
+    const byoConfigured = ab.byo_configured
+      ? '<span title="BYO credentials configured" style="font-size:10px;color:#9ece6a;margin-left:6px;">●</span>'
+      : '';
+    return `
+      <div class="conn-ability-row" data-ability-id="${_esc(ab.id)}" data-provider="${_esc(ab.provider)}"
+           style="display:flex;align-items:center;padding:6px 8px;gap:8px;border-top:1px solid #2a2a4a;">
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:12px;color:#c0caf5;font-weight:500;">
+            ${_esc(ab.display_name)}${sourceTag}${byoConfigured}
+          </div>
+          <div style="font-size:10px;color:#565f89;line-height:1.4;">${_esc(ab.description || '')}</div>
+        </div>
+        <label class="conn-toggle-wrap" title="${cantToggle ? 'Admin only' : (ab.enabled ? 'Disable' : 'Enable')}">
+          <input type="checkbox" class="conn-toggle conn-ability-toggle" ${checked} ${dis}>
+          <span class="conn-toggle-track"></span>
+        </label>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div class="conn-abilities-block" style="margin-top:10px;border:1px solid #2a2a4a;border-radius:6px;background:#161728;">
+      <div style="font-size:10px;color:#7aa2f7;padding:6px 8px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;display:flex;align-items:center;">
+        Abilities
+        ${byoLink}
+      </div>
+      ${rows}
+    </div>
+  `;
+}
+
+async function _onAbilityToggle(agent, conn, cardEl, abilityId, enabled, source) {
+  const msgEl = cardEl.querySelector('.conn-save-msg');
+  if (msgEl) { msgEl.textContent = ''; msgEl.className = 'conn-save-msg'; }
+  try {
+    const body = { user_id: app.currentUserId, enabled, source: source || 'platform' };
+    const res = await fetch(`/api/v1/agents/${agent.id}/abilities/${encodeURIComponent(abilityId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const reason = data.detail || `HTTP ${res.status}`;
+      if (msgEl) { msgEl.textContent = reason; msgEl.className = 'conn-save-msg error'; }
+      return;
+    }
+    if (data.reauth_required && data.authorize_url) {
+      // Open the authorize URL in a popup — same flow as the Connect button.
+      _oauthRefreshCallback = () => {
+        const body = cardEl.closest('.agent-detail-panel')?.querySelector('.agent-detail-body');
+        if (body) _renderConnectionsTab(body, agent);
+      };
+      _oauthPopup = window.open(data.authorize_url, `oauth-reauth`, 'width=520,height=640,left=200,top=100');
+      if (!_oauthPopup) window.location.href = data.authorize_url;
+      if (msgEl) { msgEl.textContent = 'Re-authorize to grant the new scope...'; msgEl.className = 'conn-save-msg'; }
+      return;
+    }
+    if (msgEl) { msgEl.textContent = '✓ Saved'; }
+  } catch (e) {
+    if (msgEl) { msgEl.textContent = `Error: ${e.message}`; msgEl.className = 'conn-save-msg error'; }
+  }
+}
+
+// ── BYO OAuth setup (Phase 3) ─────────────────────────────────────────────
+//
+// Agent admins can supply their own OAuth client_id/secret for any provider
+// the app admin has marked as `byo_only` or `both`. The creds are stored on
+// every BYO ability row for that provider on this agent — the per-agent
+// redirect URI shown in the popup is what the admin must register in their
+// own Google Cloud / Microsoft / etc. project.
+async function _openByoSetupModal(agent, provider, conn) {
+  const redirectUri = `${window.location.origin}/agents/${agent.id}/oauth/callback/${provider}`;
+  // Pick a representative ability for this provider — any will do, the BYO
+  // creds row is shared across the whole provider on this agent.
+  const byoAbility = (conn._abilities || []).find(a => a.provider === provider && !a.implicit);
+  if (!byoAbility) {
+    alert('No BYO-capable abilities available for this provider. The app admin must enable BYO first.');
+    return;
+  }
+  const cid = window.prompt(
+    `Bring-your-own OAuth credentials for ${provider}.\n\n`
+    + `Register THIS redirect URI in your own OAuth project:\n`
+    + `  ${redirectUri}\n\n`
+    + `Then paste your Client ID:`,
+    ''
+  );
+  if (!cid) return;
+  const csec = window.prompt('Paste your Client Secret:', '');
+  if (!csec) return;
+  try {
+    const res = await fetch(
+      `/api/v1/agents/${agent.id}/abilities/${encodeURIComponent(byoAbility.id)}/byo-creds`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: app.currentUserId, client_id: cid.trim(), client_secret: csec.trim() }),
+      }
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(`Failed to save BYO credentials: ${data.detail || res.status}`);
+      return;
+    }
+    alert('BYO credentials saved. Toggle abilities on to use them.');
+    const body = document.querySelector(`.agent-detail-panel[data-agent-id="${agent.id}"] .agent-detail-body`);
+    if (body) _renderConnectionsTab(body, agent);
+  } catch (e) {
+    alert(`Error: ${e.message}`);
+  }
 }
 
 // ── OAuth helpers for Agent Connections tab (generic, all providers) ──────────

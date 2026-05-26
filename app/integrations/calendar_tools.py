@@ -33,10 +33,10 @@ async def gcal_list_events(
     result = await oauth_api_call(
         user_id, agent_id, "google", "GET",
         f"{_GCAL_BASE}/calendars/{calendar_id}/events",
-        params=params,
+        params=params, ability="google.calendar_read",
     )
     if result.get("status") == "not_connected":
-        return not_connected_payload("google")
+        return not_connected_payload("google", ability=result.get("ability") or "google.calendar_read")
     return json.dumps(result)
 
 
@@ -75,10 +75,10 @@ async def gcal_create_event(
     result = await oauth_api_call(
         user_id, agent_id, "google", "POST",
         f"{_GCAL_BASE}/calendars/{calendar_id}/events",
-        json_body=body,
+        json_body=body, ability="google.calendar_write",
     )
     if result.get("status") == "not_connected":
-        return not_connected_payload("google")
+        return not_connected_payload("google", ability=result.get("ability") or "google.calendar_write")
     return json.dumps(result)
 
 
@@ -120,9 +120,12 @@ async def outlook_calendar_list_events(
         params.pop("$orderby", None)
         params.pop("$filter", None)
 
-    result = await oauth_api_call(user_id, agent_id, "microsoft", "GET", url, params=params)
+    result = await oauth_api_call(
+        user_id, agent_id, "microsoft", "GET", url, params=params,
+        ability="microsoft.calendar_write",  # MS only has one calendar scope
+    )
     if result.get("status") == "not_connected":
-        return not_connected_payload("microsoft")
+        return not_connected_payload("microsoft", ability=result.get("ability") or "microsoft.calendar_write")
     return json.dumps(result)
 
 
@@ -159,10 +162,10 @@ async def outlook_calendar_create_event(
     result = await oauth_api_call(
         user_id, agent_id, "microsoft", "POST",
         f"{_GRAPH}/me/events",
-        json_body=body,
+        json_body=body, ability="microsoft.calendar_write",
     )
     if result.get("status") == "not_connected":
-        return not_connected_payload("microsoft")
+        return not_connected_payload("microsoft", ability=result.get("ability") or "microsoft.calendar_write")
     return json.dumps(result)
 
 

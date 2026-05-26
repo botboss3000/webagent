@@ -91,8 +91,30 @@ def oauth_label(agent_id: str) -> str:
     return f"oauth:{agent_id}"
 
 
-async def _get_creds(provider: str) -> Tuple[str, str]:
-    """Look up admin-configured (client_id, client_secret) for a provider."""
+async def _get_creds(
+    provider: str,
+    agent_id: str = "",
+    source: str = "platform",
+) -> Tuple[str, str]:
+    """Look up the OAuth (client_id, client_secret) to use for this provider.
+
+    - `source="platform"` (default): return the app-admin's platform creds.
+    - `source="byo"`: return the agent admin's BYO creds for this agent, if
+      configured. Falls back to ("","") so callers can show a setup error
+      instead of silently using platform creds.
+    """
+    if source == "byo" and agent_id:
+        try:
+            from app.db import get_db
+            db = get_db()
+            if hasattr(db, "get_agent_byo_creds"):
+                cid, csec = await db.get_agent_byo_creds(agent_id, provider)
+                if cid and csec:
+                    return (cid, csec)
+        except Exception as e:
+            logger.warning("BYO cred lookup failed for %s/%s: %s", provider, agent_id, e)
+        return ("", "")
+
     fn_name = _PROVIDER_CRED_FNS.get(provider)
     if not fn_name:
         return ("", "")
@@ -119,12 +141,19 @@ def _is_expired(connected_at: str, expires_in: Any, skew_seconds: int = 60) -> b
         return False
 
 
-async def _refresh_token(user_id: str, provider: str, refresh_token: str) -> Optional[dict]:
+async def _refresh_token(
+    user_id: str,
+    provider: str,
+    refresh_token: str,
+    *,
+    agent_id: str = "",
+    source: str = "platform",
+) -> Optional[dict]:
     """Hit the provider's refresh endpoint. Returns a fresh secret dict or None."""
     if provider not in _REFRESH_ENDPOINTS:
         return None
     url, use_basic, send_scope = _REFRESH_ENDPOINTS[provider]
-    client_id, client_secret = await _get_creds(provider)
+    client_id, client_secret = await _get_creds(provider, agent_id=agent_id, source=source)
     if not client_id or not client_secret:
         logger.warning("refresh skipped — admin creds missing for %s", provider)
         return None
@@ -165,8 +194,13 @@ async def _refresh_token(user_id: str, provider: str, refresh_token: str) -> Opt
 async def get_oauth_token(user_id: str, agent_id: str, provider: str, allow_refresh: bool = True) -> Optional[dict]:
     """Return current token dict for (user_id, agent_id, provider). Refreshes if needed.
 
-    Result shape: {"access_token": str, "provider": str, "account": str}
+    Result shape: {"access_token": str, "provider": str, "account": str,
+                   "scopes": list[str], "covered_abilities": list[str]}
                   or None if no connection exists / refresh impossible.
+
+    `covered_abilities` is computed from `config.scopes`. Tokens predating the
+    ability system (no `scopes` recorded) are treated as covering every
+    ability for that provider — legacy behaviour, no forced re-auth.
     """
     provider = normalize_provider(provider)
     label = oauth_label(agent_id)
@@ -193,9 +227,13 @@ async def get_oauth_token(user_id: str, agent_id: str, provider: str, allow_refr
     expires_in = secret.get("expires_in")
     connected_at = config.get("connected_at", "")
 
+    source = (config.get("source") or "platform")
     needs_refresh = bool(allow_refresh and refresh_token and _is_expired(connected_at, expires_in))
     if needs_refresh:
-        fresh = await _refresh_token(user_id, provider, refresh_token)
+        fresh = await _refresh_token(
+            user_id, provider, refresh_token,
+            agent_id=agent_id, source=source,
+        )
         if fresh and fresh.get("access_token"):
             access_token = fresh["access_token"]
             # Persist the refreshed token + new connected_at so next refresh check is correct.
@@ -207,20 +245,69 @@ async def get_oauth_token(user_id: str, agent_id: str, provider: str, allow_refr
                 secret_ref=json.dumps(fresh),
                 label=label,
             )
+            config = new_config
 
     if not access_token:
         return None
 
+    scopes = config.get("scopes") or []
+    if isinstance(scopes, str):
+        scopes = scopes.split()
+    covered = _token_covered_abilities(provider, scopes)
     return {
         "access_token": access_token,
         "provider": provider,
         "account": config.get("email") or config.get("name") or "",
+        "scopes": list(scopes),
+        "covered_abilities": covered,
     }
 
 
-def not_connected_payload(provider: str) -> str:
-    """Standard JSON the agent sees when no token exists. Tells it to call check_oauth_connection."""
+def _token_covered_abilities(provider: str, scopes: list[str]) -> list[str]:
+    """Compute the abilities a token's scope set covers.
+
+    Legacy tokens (no scopes recorded) cover every ability for that provider
+    so existing connections keep working without forced re-consent.
+    """
+    from app.integrations.ability_registry import abilities_for_provider, cover_abilities
+    if not scopes:
+        return abilities_for_provider(provider)
+    return cover_abilities(provider, scopes)
+
+
+async def check_ability_authorized(
+    user_id: str, agent_id: str, provider: str, ability_id: str,
+) -> bool:
+    """True iff the user's token for this (user, agent, provider) covers `ability_id`."""
+    tok = await get_oauth_token(user_id, agent_id, provider, allow_refresh=False)
+    if not tok:
+        return False
+    return ability_id in (tok.get("covered_abilities") or [])
+
+
+def not_connected_payload(provider: str, ability: Optional[str] = None) -> str:
+    """Standard JSON the agent sees when no token exists / required ability missing.
+
+    When `ability` is provided, the message tells the agent to prompt the user
+    to enable that specific capability — the connect link in the agent's
+    Connections tab will surface the per-ability toggles.
+    """
     provider = normalize_provider(provider)
+    if ability:
+        from app.integrations.ability_registry import get_ability
+        ab = get_ability(ability)
+        label = ab.display_name if ab else ability
+        return json.dumps({
+            "status": "not_connected",
+            "provider": provider,
+            "ability": ability,
+            "reauth_required": True,
+            "message": (
+                f"This action requires the '{label}' ability on {provider}. "
+                f"Call check_oauth_connection('{provider}') to get a connect link, "
+                f"then ask the user to enable '{ability}' and re-authorize."
+            ),
+        })
     return json.dumps({
         "status": "not_connected",
         "provider": provider,
@@ -245,6 +332,7 @@ async def oauth_api_call(
     headers: Optional[dict] = None,
     timeout: float = 30.0,
     retry_on_401: bool = True,
+    ability: Optional[str] = None,
 ) -> dict:
     """Generic OAuth-authenticated HTTP call scoped to (user, agent).
 
@@ -252,10 +340,21 @@ async def oauth_api_call(
                      "body": parsed_json_or_text, "url": url}
     Bearer token is injected automatically. On 401 a single token refresh +
     retry is attempted.
+
+    When `ability` is supplied, the token must cover that ability — otherwise
+    the call short-circuits with a "not_connected" payload so the agent can
+    surface a per-ability re-authorize prompt without burning a network call.
     """
     tok = await get_oauth_token(user_id, agent_id, provider)
     if not tok:
-        return {"status": "not_connected", "provider": normalize_provider(provider)}
+        return {"status": "not_connected", "provider": normalize_provider(provider), "ability": ability}
+    if ability and ability not in (tok.get("covered_abilities") or []):
+        return {
+            "status": "not_connected",
+            "provider": normalize_provider(provider),
+            "ability": ability,
+            "reauth_required": True,
+        }
 
     hdrs = dict(headers or {})
     hdrs.setdefault("Authorization", f"Bearer {tok['access_token']}")

@@ -211,6 +211,19 @@ TABLES: List[Table] = [
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ], constraints=["UNIQUE(agent_id, connection_type)"]),
 
+    Table("agent_abilities", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("agent_id", "TEXT", nullable=False, references="agents(id)", on_delete="CASCADE"),
+        Column("ability_id", "TEXT", nullable=False),
+        Column("source", "TEXT", nullable=False, default="'platform'"),
+        Column("enabled", "INTEGER", nullable=False, default="0"),
+        Column("byo_client_id", "TEXT", nullable=False, default="''"),
+        Column("byo_client_secret_ref", "TEXT", nullable=False, default="''"),
+        Column("config", "TEXT", nullable=False, default="'{}'"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ], constraints=["UNIQUE(agent_id, ability_id)"]),
+
     Table("memories", [
         Column("id", "TEXT", nullable=False, primary_key=True),
         Column("user_id", "TEXT", nullable=False),
@@ -652,6 +665,8 @@ INDEXES: List[Index] = [
     Index("idx_agent_prompt_templates_tpl", "agent_prompt_templates", "template_id"),
     Index("idx_agent_conn_agent", "agent_connections", "agent_id"),
     Index("idx_agent_conn_type", "agent_connections", "connection_type"),
+    Index("idx_agent_ability_agent", "agent_abilities", "agent_id"),
+    Index("idx_agent_ability_id", "agent_abilities", "ability_id"),
     Index("idx_memories_user", "memories", "user_id"),
     Index("idx_memories_type", "memories", "page_type"),
     Index("idx_memories_updated", "memories", "updated_at DESC"),
