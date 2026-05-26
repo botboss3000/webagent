@@ -2636,7 +2636,7 @@
                (new file, refresh, collapse-all, etc.). -->
           <div class="files-sidebar-strip" aria-label="Sidebar strip">
             <button class="files-strip-btn files-maximize-btn" title="Collapse sidebar"><i data-lucide="chevrons-left" class="lucide-icon"></i></button>
-            <button class="files-strip-btn files-settings-toggle-btn" title="Admin Configuration" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-strip-view files-settings-toggle-btn" data-view="settings" title="Admin Configuration"><i data-lucide="settings" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="database" title="Database"><i data-lucide="database" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="explorer" title="File Viewer"><i data-lucide="files" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="terminal" title="Terminal Launcher"><i data-lucide="zap" class="lucide-icon"></i></button>
@@ -2791,10 +2791,12 @@
           </div>
         </main>
 
-        <!-- Settings view: replaces the active main when the Settings
-             sidebar button is toggled on. files.js moves #app-config-container
-             into here at boot. -->
-        <main class="files-main files-settings-main" id="files-settings-main" hidden></main>
+        <!-- Settings view: an independent page reached via the strip's
+             Admin Configuration icon. files.js moves #app-config-container
+             into here at boot. The sidebar's panel column collapses when
+             this view is active (CSS rule on data-view="settings"), so
+             only the strip remains on the left. -->
+        <main class="files-main files-settings-main" id="files-settings-main" data-view="settings" hidden></main>
 
         <!-- Database view: replaces the file editor area when the Database
              sidebar view is active. files.js moves #db-table-view (and the

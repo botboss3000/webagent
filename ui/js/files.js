@@ -49,7 +49,6 @@ let isAdmin = false;
 let openTabs = [];          // { path, name, content, dirty, binary, encoding, size, kind? }
 let activeFilePath = null;       // path of the active FILE tab (in explorer main)
 let activeTerminalId = null;     // session_id of the active TERMINAL tab (in terminal main)
-let settingsOpen = false;   // Settings view (App Config) currently overlaying the editor area
 let expandedDirs = new Set();  // absolute paths of currently expanded directories
 let dragSrcPath = null;        // path of the tab being dragged
 let currentRoot = '';          // absolute path of the directory the tree is rooted at
@@ -2476,11 +2475,15 @@ function initSidebarMaximize() {
       e.stopPropagation();
       const v = stripView.dataset.view;
       if (!v) return;
-      // Switching view from the strip also expands the sidebar so the
-      // chosen view is actually visible.
       applySidebarView(v);
       try { localStorage.setItem(LS_SIDEBAR_VIEW, v); } catch (_) {}
-      setSidebarState(isMobileLayout() ? 'max' : 'split');
+      // Other views need the panel column visible — expand from strip
+      // mode. Settings has no panel and renders full-bleed via CSS, so
+      // leave the data-state alone (and skip the mobile 'max' that
+      // would otherwise hide the settings main).
+      if (v !== 'settings') {
+        setSidebarState(isMobileLayout() ? 'max' : 'split');
+      }
     }
   });
 }
@@ -2540,7 +2543,7 @@ function initSidebarViewSwitcher() {
   if (!sidebar) return;
   // Restore last view (default: explorer)
   const stored = localStorage.getItem(LS_SIDEBAR_VIEW);
-  const want = (stored === 'git' || stored === 'database' || stored === 'terminal') ? stored : 'explorer';
+  const want = (stored && stored in VIEW_MAIN_ID) ? stored : 'explorer';
   applySidebarView(want);
   // The toggle icons live in BOTH panel headers (so each header has its
   // own copy). Delegate click handling at the sidebar level so we catch
@@ -2557,17 +2560,18 @@ function initSidebarViewSwitcher() {
   });
 }
 
-const VIEW_TITLE = { explorer: 'Explorer', git: 'Source control', database: 'Database', terminal: 'Terminal launchers' };
-const VIEW_SWITCH = { explorer: 'explorer', git: 'source control', database: 'database', terminal: 'terminal launchers' };
+const VIEW_TITLE = { explorer: 'Explorer', git: 'Source control', database: 'Database', terminal: 'Terminal launchers', settings: 'Admin Configuration' };
+const VIEW_SWITCH = { explorer: 'explorer', git: 'source control', database: 'database', terminal: 'terminal launchers', settings: 'admin configuration' };
 
 // Each sidebar view has a dedicated <main> on the right side. Switching
-// the strip swaps which main is visible. The Settings overlay wins over
-// every view (handled separately by toggleSettingsView).
+// the strip swaps which main is visible. The Settings view is just
+// another entry — no overlay/toggle special-case.
 const VIEW_MAIN_ID = {
   explorer: 'files-explorer-main',
   git:      'files-git-main',
   database: 'files-database-main',
   terminal: 'files-terminal-main',
+  settings: 'files-settings-main',
 };
 
 function applySidebarView(view) {
@@ -2576,11 +2580,10 @@ function applySidebarView(view) {
   if (!(view in VIEW_MAIN_ID)) view = 'explorer';
   sidebar.dataset.view = view;
   // Update aria-selected on every view-toggle button (in panel headers
-  // and in the strip). The Settings toggle button shares .files-view-toggle-btn
-  // for styling but is not part of the Explorer/Git/Database switch, so exclude
-  // it.
+  // and in the strip). The Settings strip button now lives in
+  // .files-strip-view, so it's covered by the same selector.
   sidebar.querySelectorAll(
-    '.files-view-toggle-btn:not(.files-settings-toggle-btn), .files-strip-view'
+    '.files-view-toggle-btn, .files-strip-view'
   ).forEach((b) => {
     const active = b.dataset.view === view;
     b.classList.toggle('active', active);
@@ -2596,7 +2599,9 @@ function applySidebarView(view) {
     }
   });
   // In strip mode all sidebar panels stay hidden; otherwise the matching
-  // panel shows.
+  // panel shows. No panel has data-view="settings", so all panels hide
+  // naturally for that view — the CSS rule on data-view="settings"
+  // additionally collapses the panel column to strip width.
   const state = sidebar.dataset.state || 'split';
   sidebar.querySelectorAll('.files-sidebar-panel').forEach((p) => {
     p.hidden = (state === 'strip') || (p.dataset.view !== view);
@@ -2611,27 +2616,30 @@ function applySidebarView(view) {
     stopTerminalLaunchersPolling();
   }
   // Right-pane swap: hide every per-view main except the one matching
-  // `view`. Settings is an independent overlay that wins, so we don't
-  // touch the mains at all whenever Settings is open.
-  if (!settingsOpen) {
-    const wantId = VIEW_MAIN_ID[view];
-    document.querySelectorAll('#admin-tools .files-main[data-view]').forEach((el) => {
-      el.hidden = (el.id !== wantId);
-    });
-    if (view === 'database') {
-      try { startAutoRefresh(); } catch (_) {}
-    } else {
-      try { stopAutoRefresh(); } catch (_) {}
-    }
-    if (view === 'git') {
-      try { renderGitMain(); } catch (_) {}
-    }
-    if (view === 'terminal') {
-      // Refit the active terminal once the main becomes visible — xterm
-      // can't measure a display:none host.
-      const tab = getActiveTerminalTab();
-      if (tab && tab.instance) setTimeout(() => tab.instance.fit(), 30);
-    }
+  // `view`.
+  const wantId = VIEW_MAIN_ID[view];
+  document.querySelectorAll('#admin-tools .files-main[data-view]').forEach((el) => {
+    el.hidden = (el.id !== wantId);
+  });
+  // Per-view background work (poll loops, lazy renders).
+  if (view === 'database') {
+    try { startAutoRefresh(); } catch (_) {}
+  } else {
+    try { stopAutoRefresh(); } catch (_) {}
+  }
+  if (view === 'settings') {
+    try { startAppConfig(); } catch (_) {}
+  } else {
+    try { stopAppConfig(); } catch (_) {}
+  }
+  if (view === 'git') {
+    try { renderGitMain(); } catch (_) {}
+  }
+  if (view === 'terminal') {
+    // Refit the active terminal once the main becomes visible — xterm
+    // can't measure a display:none host.
+    const tab = getActiveTerminalTab();
+    if (tab && tab.instance) setTimeout(() => tab.instance.fit(), 30);
   }
 }
 
@@ -2762,71 +2770,22 @@ function stopTerminalLaunchersPolling() {
   }
 }
 
-// ── Settings view (App Config) ────────────────────────────────────
+// ── Settings view (App Config) DOM relocation ────────────────────
 //
-// The Settings sidebar button toggles a full-width view that replaces the
-// file editor area (#files-tabs + #files-content) with the App Config UI.
-// The Explorer/Git sidebar stays interactive; only the right side swaps.
+// The Settings strip icon is a plain `.files-strip-view` with
+// data-view="settings"; dispatch happens through applySidebarView. The
+// only setup-time work needed is moving #app-config-container into
+// #files-settings-main so the App Config UI lives where the view shows.
+// Lifecycle (startAppConfig / stopAppConfig) is driven by
+// applySidebarView too.
 
 function initSettingsToggle() {
-  // Relocate the App Config markup (parked hidden at the bottom of #app-container
-  // by index.html) into the Settings main inside Admin Tools. Idempotent.
   const container = document.getElementById('app-config-container');
   const host = document.getElementById('files-settings-main');
   if (container && host && container.parentElement !== host) {
     host.appendChild(container);
     container.removeAttribute('hidden');
   }
-  // Delegated click handler covers all three Settings buttons (strip + both
-  // sidebar panel headers).
-  const sidebar = document.getElementById('files-sidebar');
-  if (sidebar && !sidebar.__settingsToggleBound) {
-    sidebar.__settingsToggleBound = true;
-    sidebar.addEventListener('click', (e) => {
-      const btn = e.target.closest('.files-settings-toggle-btn');
-      if (!btn || !sidebar.contains(btn)) return;
-      e.preventDefault();
-      e.stopPropagation();
-      toggleSettingsView();
-    });
-  }
-  // Reflect any pre-existing settingsOpen flag on the button(s).
-  applySettingsButtonState();
-}
-
-function applySettingsButtonState() {
-  document.querySelectorAll('.files-settings-toggle-btn').forEach((b) => {
-    b.classList.toggle('active', settingsOpen);
-    b.setAttribute('aria-pressed', settingsOpen ? 'true' : 'false');
-  });
-}
-
-function toggleSettingsView() {
-  const settingsMain = document.getElementById('files-settings-main');
-  if (!settingsMain) return;
-  const sidebar = document.getElementById('files-sidebar');
-  const currentView = sidebar?.dataset.view || 'explorer';
-  settingsOpen = !settingsOpen;
-  if (settingsOpen) {
-    // Hide every per-view main; Settings overlays on top.
-    document.querySelectorAll('#admin-tools .files-main[data-view]').forEach((el) => {
-      el.hidden = true;
-    });
-    settingsMain.hidden = false;
-    try { startAppConfig(); } catch (_) {}
-    try { stopAutoRefresh(); } catch (_) {}
-    // On mobile, the sidebar may be filling the screen (state=max). Collapse
-    // to the strip so the Settings view we just opened becomes visible.
-    if (sidebar && isMobileLayout() && sidebar.dataset.state === 'max') {
-      setSidebarState('strip');
-    }
-  } else {
-    settingsMain.hidden = true;
-    try { stopAppConfig(); } catch (_) {}
-    // Re-apply the current view so the matching main becomes visible.
-    applySidebarView(currentView);
-  }
-  applySettingsButtonState();
 }
 
 // Relocate detached markup (App Config and the Database viewer) into the
@@ -2919,26 +2878,21 @@ export async function startAdminTools() {
     setTimeout(() => activeTermTab.instance.fit(), 30);
   }
 
-  // If the Settings view was left open when the user navigated away, resume
-  // its background polling now that Admin Tools is active again.
-  if (settingsOpen) {
-    try { startAppConfig(); } catch (_) {}
-  }
-  // If the Database sidebar view is active (and Settings isn't covering it),
-  // resume the 1s auto-refresh now that Admin Tools is back on screen.
+  // Resume background polling for whichever view is currently active.
+  // The view persists across top-level tab switches; we just need to
+  // restart its loop now that Admin Tools is on screen again.
   const sb = document.getElementById('files-sidebar');
-  if (!settingsOpen && sb && sb.dataset.view === 'database') {
+  const view = sb?.dataset.view;
+  if (view === 'settings') {
+    try { startAppConfig(); } catch (_) {}
+  } else if (view === 'database') {
     try { startAutoRefresh(); } catch (_) {}
   }
 }
 
 export function stopAdminTools() {
-  // Quiet App Config polling while another main tab is active, but keep
-  // settingsOpen so the view restores on return.
-  if (settingsOpen) {
-    try { stopAppConfig(); } catch (_) {}
-  }
-  // Always stop the database auto-refresh; whatever sub-view is active is
-  // about to be hidden by the top-level tab swap.
+  // Quiet any background loops; the view stays selected so polling
+  // resumes when the user returns.
+  try { stopAppConfig(); } catch (_) {}
   try { stopAutoRefresh(); } catch (_) {}
 }
