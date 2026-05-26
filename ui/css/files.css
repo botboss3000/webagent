@@ -1283,8 +1283,10 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
   scrollbar-width: thin;
   scrollbar-color: #2a2a4a transparent;
 }
-.files-terminal-scroll.files-terminal-scroll-nowrap::-webkit-scrollbar { height: 8px; }
-.files-terminal-scroll.files-terminal-scroll-nowrap::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+.files-terminal-scroll.files-terminal-scroll-nowrap::-webkit-scrollbar { height: 14px; }
+.files-terminal-scroll.files-terminal-scroll-nowrap::-webkit-scrollbar-thumb { background: #565f89; border-radius: 4px; min-width: 40px; }
+.files-terminal-scroll.files-terminal-scroll-nowrap::-webkit-scrollbar-thumb:hover { background: #7aa2f7; }
+.files-terminal-scroll.files-terminal-scroll-nowrap::-webkit-scrollbar-track { background: #1a1a2e; }
 
 /* No-wrap mode: force the host to be wider than its scroll wrapper. The
    fitAddon measures the host (not the wrapper) so xterm gets enough cols
