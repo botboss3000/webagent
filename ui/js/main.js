@@ -7,7 +7,6 @@ import { initReconnect } from './reconnect.js';
 import { ensureAttachmentsInit } from './attachments.js';
 import { connectAgent } from './agentWs.js';
 import { initTabs } from './tabs.js';
-import { initStream } from './stream.js';
 import { initLoop } from './loop.js';
 import { initLoopVisual } from './loop-logic.js';
 import { initDbViewer } from './db/index.js';
@@ -156,7 +155,6 @@ _anonReady.then(() => {
   }
 
   _safeInit('initTabs',        initTabs);
-  _safeInit('initStream',      initStream);
   _safeInit('initLoop',        initLoop);
   _safeInit('initLoopVisual',  initLoopVisual);
   // Move parked Admin Tools markup (App Config + Database viewer) into the

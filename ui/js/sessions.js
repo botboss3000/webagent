@@ -4,7 +4,6 @@ import { app } from './state.js';
 import { loopSessionChanged } from './loop.js';
 import { loopVisualSessionChanged } from './loop-logic.js';
 import { autoAgentSessionChanged } from './autoagent.js';
-import { streamSessionChanged } from './stream.js';
 import { abortChatStream } from './chat.js';
 import { apiPath } from './config.js';
 import { icon } from './icons.js';
@@ -580,7 +579,6 @@ export function initSessions() {
     app.currentSessionId = sid;
     localStorage.setItem('terminalSessionId', app.currentSessionId);
     loadSessionChat(sid);
-    streamSessionChanged();
     loopSessionChanged();
     loopVisualSessionChanged();
     autoAgentSessionChanged();
@@ -766,7 +764,6 @@ export function initSessions() {
       app.chatMessages.innerHTML = '';
       app.addChatBubble('agent', 'New session. Start typing below.');
       populateSessionSelect(app.currentUserId);
-      streamSessionChanged();
       loopSessionChanged();
       loopVisualSessionChanged();
       autoAgentSessionChanged();
@@ -807,7 +804,6 @@ export function initSessions() {
     app.chatMessages.innerHTML = '';
     app.addChatBubble('agent', 'Switched agent. New session started.');
     populateSessionSelect(app.currentUserId);
-    streamSessionChanged();
     loopSessionChanged();
     loopVisualSessionChanged();
     autoAgentSessionChanged();

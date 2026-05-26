@@ -835,13 +835,10 @@ body.light-mode .status-select {
 body.light-mode .status-select:focus { border-color: #ff8c42; }
 body.light-mode #terminal-container,
 body.light-mode #terminal-side,
-body.light-mode #stream-viewer,
 body.light-mode #loop-container,
-body.light-mode #loop-list,
-body.light-mode #stream-list {
+body.light-mode #loop-list {
     background: #fffaf5;
   }
-body.light-mode #stream-toolbar,
 body.light-mode #loop-toolbar,
 body.light-mode #db-toolbar,
 body.light-mode #loop-visual-toolbar {
@@ -931,25 +928,8 @@ body.light-mode .chat-expand-btn:hover {
     border-color: #ff8c42;
   }
 
-body.light-mode .str-entry[data-role="user"] {
-    background: #fff5eb;
-    border-color: #ffdec4;
-    color: #3d2c2e;
-  }
-body.light-mode .str-entry[data-role="assistant"] {
-    background: #ffeee0;
-    border-color: #ffd4a8;
-    color: #3d2c2e;
-  }
-body.light-mode .str-entry[data-role="user"] .str-body,
-body.light-mode .str-entry[data-role="assistant"] .str-body { color: #3d2c2e; }
-body.light-mode .str-entry[data-role="tool"] .str-body { color: #8c7a7b; }
-body.light-mode .str-role,
-body.light-mode .str-time,
-body.light-mode .str-session,
 body.light-mode .json-punc { color: #cca08a; }
 body.light-mode .json-null { color: #cca08a; font-style: italic; }
-body.light-mode .str-tool { color: #d4873a; }
 body.light-mode .json-key { color: #cc6a28; }
 body.light-mode .json-str { color: #5a8a4a; }
 body.light-mode .json-num { color: #d4873a; }
@@ -1066,11 +1046,6 @@ body.light-mode #loop-autoscroll.active {
     background: #ffeee0;
     border-color: #ff8c42;
     color: #cc6a28;
-  }
-
-body.light-mode #stream-filter-panel {
-    background: #fff2e6;
-    border-bottom-color: #ffdec4;
   }
 
 body.light-mode .chat-attachment-pill {
@@ -1247,7 +1222,6 @@ body.light-mode ::-webkit-scrollbar-thumb {
     background: #ffd4a8;
     border-radius: 3px;
   }
-body.light-mode #stream-list::-webkit-scrollbar-thumb,
 body.light-mode #db-table-data::-webkit-scrollbar-thumb,
 body.light-mode #db-table-list::-webkit-scrollbar-thumb,
 body.light-mode #agents-grid::-webkit-scrollbar-thumb,

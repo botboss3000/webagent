@@ -7,7 +7,7 @@
  *   { globalEnabled: boolean, pages: { [pageId]: boolean } }
  *
  * Pages map 1:1 to the main-tab values from index.html (admin-tools,
- * autoagent, agents, stream, flow, loop-visual, account). The chat-panel
+ * autoagent, agents, flow, loop-visual, account). The chat-panel
  * hints render alongside whichever main tab is active when the chat side is
  * visible.
  *
@@ -24,7 +24,6 @@ const PAGE_LABELS = {
   'admin-tools': 'Admin Tools',
   'autoagent':   'Dashboard',
   'agents':      'Agents',
-  'stream':      'Stream',
   'flow':        'Flow',
   'loop-visual': 'Runtime Loop',
   'account':     'Manage Account',
@@ -47,17 +46,6 @@ const HINTS = {
       body: 'Create a new file in the currently selected folder.' },
     { selector: '#files-new-folder', title: 'New folder',
       body: 'Create a new folder under the currently selected directory.' },
-  ],
-
-  stream: [
-    { selector: '#stream-filter-btn', title: 'Filter the stream',
-      body: 'Hide or show messages by role (user, assistant, tool) and by specific tool name to focus on what matters.' },
-    { selector: '#stream-status', title: 'Live / paused indicator',
-      body: 'Tells you if the stream is actively receiving events. Switching to another tab pauses it; switching back resumes.' },
-    { selector: '#stream-clear', title: 'Clear the stream',
-      body: 'Wipes the on-screen log. Useful before kicking off a new run so you only see fresh events.' },
-    { selector: '#stream-list', title: 'Live interactions',
-      body: 'Each row is a message or tool call from the current session. Click any row to expand its full content.' },
   ],
 
   flow: [

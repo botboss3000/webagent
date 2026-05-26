@@ -22,7 +22,6 @@ import { icon } from './icons.js';
 import { loadSessionChat, populateSessionSelect } from './sessions.js';
 import { loopSessionChanged } from './loop.js';
 import { loopVisualSessionChanged } from './loop-logic.js';
-import { streamSessionChanged } from './stream.js';
 
 // ── Auth-aware fetch ──────────────────────────────────────────────────────
 function _fetch(url, opts = {}) {
@@ -1702,7 +1701,6 @@ async function _loadSessionStats() {
         populateSessionSelect();
         loopSessionChanged(sid);
         loopVisualSessionChanged(sid);
-        streamSessionChanged(sid);
         _loadSessionStats();
       });
     });
