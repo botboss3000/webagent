@@ -339,8 +339,6 @@
     <option value="admin-tools">Admin Tools</option>
     <option value="autoagent" selected>Dashboard</option>
     <option value="agents">Agents</option>
-    <option value="flow">Flow</option>
-    <option value="loop-visual">Runtime Loop</option>
     <option value="account">Manage Account</option>
   </select>
 
@@ -356,12 +354,6 @@
       </button>
       <button type="button" class="main-tab" data-value="agents" role="tab">
         <i data-lucide="bot" class="lucide-icon"></i>Agents
-      </button>
-      <button type="button" class="main-tab" data-value="flow" role="tab">
-        <i data-lucide="git-branch" class="lucide-icon"></i>Flow
-      </button>
-      <button type="button" class="main-tab" data-value="loop-visual" role="tab">
-        <i data-lucide="repeat" class="lucide-icon"></i>Runtime Loop
       </button>
     </div>
     <button type="button" id="main-tabs-chev-right" class="main-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
@@ -440,37 +432,6 @@
   <!-- Terminal side -->
   <div id="terminal-side">
     <!-- Tab content -->
-    <div id="tab-flow" class="tab-content">
-      <div id="loop-container">
-        <div id="loop-toolbar">
-          <span style="color:#565f89;font-size:11px;display:inline-flex;align-items:center;gap:4px;"><i data-lucide="refresh-cw" style="width:12px;height:12px;"></i> Pipeline</span>
-          <button class="loop-filter-btn" data-level="basic">Basic</button>
-          <button class="loop-filter-btn active" data-level="detailed">Detailed</button>
-          <button class="loop-filter-btn" data-level="debug">Debug</button>
-          <button id="loop-autoscroll" class="active">Auto-scroll ✓</button>
-        </div>
-        <div id="loop-list">
-          <div class="loop-hint">Pipeline visualizer — connect to see agent flow</div>
-        </div>
-      </div>
-    </div>
-    <div id="tab-loop-visual" class="tab-content">
-      <div id="loop-visual-container">
-        <div id="loop-visual-toolbar">
-          <span style="color:#565f89;font-size:11px;display:inline-flex;align-items:center;gap:4px;"><i data-lucide="repeat" style="width:12px;height:12px;"></i> Agent Loop</span>
-          <div id="loop-visual-pages"></div>
-          <div id="loop-visual-legend">
-            <span class="lv-legend-item"><span class="lv-legend-dot" style="background:#2a2a4a;"></span> idle</span>
-            <span class="lv-legend-item"><span class="lv-legend-dot" style="background:#7dcfff;"></span> active</span>
-            <span class="lv-legend-item"><span class="lv-legend-dot" style="background:#9ece6a;"></span> done</span>
-            <span class="lv-legend-item"><span class="lv-legend-dot" style="background:#f7768e;"></span> error</span>
-          </div>
-        </div>
-        <div id="loop-visual-graph-area">
-          <div class="loop-visual-hint">Agent loop visualizer — connect to see events light up the graph</div>
-        </div>
-      </div>
-    </div>
     <div id="tab-autoagent" class="tab-content active">
       <div id="autoagent-container">
 
@@ -2638,9 +2599,11 @@
             <button class="files-strip-btn files-maximize-btn" title="Collapse sidebar"><i data-lucide="chevrons-left" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view files-settings-toggle-btn" data-view="settings" title="Admin Configuration"><i data-lucide="settings" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="database" title="Database"><i data-lucide="database" class="lucide-icon"></i></button>
-            <button class="files-strip-btn files-strip-view" data-view="explorer" title="File Viewer"><i data-lucide="files" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-strip-view" data-view="explorer" title="File Manager"><i data-lucide="folder-tree" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="terminal" title="Terminal Launcher"><i data-lucide="terminal" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="git" title="Source Control"><i data-lucide="git-branch" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-strip-view" data-view="interactions" title="Interactions"><i data-lucide="square-menu" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-strip-view" data-view="runtime-loop" title="Runtime Loop"><i data-lucide="repeat" class="lucide-icon"></i></button>
           </div>
 
           <!-- Explorer panel (file tree) -->
@@ -2787,6 +2750,43 @@
               <i data-lucide="terminal" class="lucide-icon files-welcome-icon"></i>
               <div class="files-welcome-title">Terminal</div>
               <div class="files-welcome-text">Open a session from the launcher on the left, or press <kbd>Ctrl</kbd>+<kbd>`</kbd>.</div>
+            </div>
+          </div>
+        </main>
+
+        <!-- Interactions main (formerly the top-level Flow tab) — the
+             agent pipeline visualizer. -->
+        <main class="files-main" id="files-interactions-main" data-view="interactions" hidden>
+          <div id="loop-container">
+            <div id="loop-toolbar">
+              <span style="color:#565f89;font-size:11px;display:inline-flex;align-items:center;gap:4px;"><i data-lucide="refresh-cw" style="width:12px;height:12px;"></i> Pipeline</span>
+              <button class="loop-filter-btn" data-level="basic">Basic</button>
+              <button class="loop-filter-btn active" data-level="detailed">Detailed</button>
+              <button class="loop-filter-btn" data-level="debug">Debug</button>
+              <button id="loop-autoscroll" class="active">Auto-scroll ✓</button>
+            </div>
+            <div id="loop-list">
+              <div class="loop-hint">Pipeline visualizer — connect to see agent flow</div>
+            </div>
+          </div>
+        </main>
+
+        <!-- Runtime Loop main (formerly the top-level Runtime Loop tab) —
+             the agent-loop graph visualizer. -->
+        <main class="files-main" id="files-runtime-loop-main" data-view="runtime-loop" hidden>
+          <div id="loop-visual-container">
+            <div id="loop-visual-toolbar">
+              <span style="color:#565f89;font-size:11px;display:inline-flex;align-items:center;gap:4px;"><i data-lucide="repeat" style="width:12px;height:12px;"></i> Agent Loop</span>
+              <div id="loop-visual-pages"></div>
+              <div id="loop-visual-legend">
+                <span class="lv-legend-item"><span class="lv-legend-dot" style="background:#2a2a4a;"></span> idle</span>
+                <span class="lv-legend-item"><span class="lv-legend-dot" style="background:#7dcfff;"></span> active</span>
+                <span class="lv-legend-item"><span class="lv-legend-dot" style="background:#9ece6a;"></span> done</span>
+                <span class="lv-legend-item"><span class="lv-legend-dot" style="background:#f7768e;"></span> error</span>
+              </div>
+            </div>
+            <div id="loop-visual-graph-area">
+              <div class="loop-visual-hint">Agent loop visualizer — connect to see events light up the graph</div>
             </div>
           </div>
         </main>

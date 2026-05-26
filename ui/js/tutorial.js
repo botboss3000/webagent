@@ -24,15 +24,13 @@ const PAGE_LABELS = {
   'admin-tools': 'Admin Tools',
   'autoagent':   'Dashboard',
   'agents':      'Agents',
-  'flow':        'Flow',
-  'loop-visual': 'Runtime Loop',
   'account':     'Manage Account',
   'chat':        'Chat Panel',
 };
 
 const HINTS = {
   'admin-tools': [
-    { selector: '.files-strip-view[data-view="explorer"]', title: 'File explorer',
+    { selector: '.files-strip-view[data-view="explorer"]', title: 'File manager',
       body: 'Browse the project tree. Click any file to open it in the editor; right-click for rename, delete and other actions.' },
     { selector: '.files-strip-view[data-view="git"]', title: 'Source control',
       body: 'See changed files, commit with a message, push, pull, switch branches and view recent commit history — all in one panel.' },
@@ -40,30 +38,16 @@ const HINTS = {
       body: 'Inspect tables, refresh rows after the agent writes, switch between local databases and reset selected tables.' },
     { selector: '.files-strip-view[data-view="terminal"]', title: 'Terminal launcher',
       body: 'Opens the launcher panel with quick launches, live tmux sessions, and a "New terminal" button. Terminal tabs live in their own main panel, independent of the file editor.' },
-    { selector: '.files-settings-toggle-btn', title: 'App settings',
-      body: 'Toggle the Settings overlay (App Settings, User Management, default LLM, Agent Abilities, Optimizer, Git, Automation, Events).' },
+    { selector: '.files-strip-view[data-view="interactions"]', title: 'Interactions',
+      body: 'Step-by-step view of what the agent is doing — model calls, tool invocations, results. Toggle Basic / Detailed / Debug to control the noise.' },
+    { selector: '.files-strip-view[data-view="runtime-loop"]', title: 'Runtime loop',
+      body: 'Live graph of the agent loop. Nodes light up as the agent reaches them — handy for spotting branches and loops at a glance.' },
+    { selector: '.files-settings-toggle-btn', title: 'Admin configuration',
+      body: 'App Settings, User Management, default LLM, Agent Abilities, Optimizer, Git, Automation, Events.' },
     { selector: '#files-new-file', title: 'New file',
       body: 'Create a new file in the currently selected folder.' },
     { selector: '#files-new-folder', title: 'New folder',
       body: 'Create a new folder under the currently selected directory.' },
-  ],
-
-  flow: [
-    { selector: '.loop-filter-btn[data-level="basic"]', title: 'Detail level',
-      body: 'Switch between Basic, Detailed and Debug to control how much of the agent pipeline you see.' },
-    { selector: '#loop-autoscroll', title: 'Auto-scroll',
-      body: 'When on, the view follows the latest step automatically. Turn off to scroll back without being yanked forward.' },
-    { selector: '#loop-list', title: 'Pipeline timeline',
-      body: 'Step-by-step view of what the agent is doing — model calls, tool invocations, results.' },
-  ],
-
-  'loop-visual': [
-    { selector: '#loop-visual-pages', title: 'Visualizer pages',
-      body: 'Switch between graphs if your agent loop produces multiple visualizations.' },
-    { selector: '#loop-visual-legend', title: 'Node state legend',
-      body: 'Color key for the graph — idle, active, done, error. Watch nodes change color as the agent runs.' },
-    { selector: '#loop-visual-graph-area', title: 'Live graph',
-      body: 'Each node lights up as the agent reaches it. Great for understanding loops and conditional branches at a glance.' },
   ],
 
   autoagent: [
