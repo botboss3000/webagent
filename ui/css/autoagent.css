@@ -396,3 +396,19 @@ body.light-mode .aa-dialog-btn-cancel {
   color: #b09580;
 }
 body.light-mode .aa-dialog-btn-cancel:hover { background: #fff2e6; color: #3d2c2e; }
+
+/* ═══════════════════════════════════════════════
+   MOBILE: stack page nav above prompt bar
+   ═══════════════════════════════════════════════ */
+@media (max-width: 800px) {
+  #autoagent-footer {
+    flex-direction: column;
+    gap: 8px;
+  }
+  #autoagent-page-nav {
+    width: 100%;
+  }
+  #autoagent-prompt-bar {
+    width: 100%;
+  }
+}
