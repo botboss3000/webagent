@@ -390,6 +390,31 @@ function rowPkKey(row, pkCols) {
     .join('␟');
 }
 
+// Cells over this raw-string length skip the inline JSON tree render. The
+// modal viewer (↗ button) still parses and renders the full tree on demand.
+const INLINE_JSON_MAX_CHARS = 8000;
+
+// LRU-ish cache: value string → { html, isJson }. Insertion-order eviction
+// keeps the cache from growing unbounded when the user scrolls through many
+// pages of large content. fmtCell output is pure for the same input value,
+// so the cache never needs explicit invalidation.
+const CELL_HTML_CACHE_MAX = 1000;
+const cellHtmlCache = new Map();
+function cacheGet(key) {
+  if (!cellHtmlCache.has(key)) return undefined;
+  const v = cellHtmlCache.get(key);
+  cellHtmlCache.delete(key);
+  cellHtmlCache.set(key, v);
+  return v;
+}
+function cacheSet(key, value) {
+  if (cellHtmlCache.size >= CELL_HTML_CACHE_MAX) {
+    const firstKey = cellHtmlCache.keys().next().value;
+    if (firstKey !== undefined) cellHtmlCache.delete(firstKey);
+  }
+  cellHtmlCache.set(key, value);
+}
+
 // Single delegated mousedown listener for row-resize handles. Attached once
 // per table container so newly inserted rows work without per-render rebinding.
 let _rowResizeDelegated = false;
@@ -463,17 +488,42 @@ function renderTableData(result, silent) {
 
   function fmtCell(val) {
     if (val === null) return { html: 'NULL', isJson: false };
+    // Cache key uses the *raw* value (pre-strip) since the output depends on
+    // the strip + JSON-detect path it falls through.
+    const cacheKey = typeof val === 'string' ? val : null;
+    if (cacheKey !== null) {
+      const cached = cacheGet(cacheKey);
+      if (cached) return cached;
+    }
+
+    let result;
     if (typeof val === 'string') {
-      val = stripToolCallsSuffix(val);
-      if (val.length > 1) {
-        const trimmed = val.trim();
+      const stripped = stripToolCallsSuffix(val);
+      // Skip inline JSON tree for huge strings — the modal renders it on demand.
+      if (stripped.length > 1 && stripped.length <= INLINE_JSON_MAX_CHARS) {
+        const trimmed = stripped.trim();
         if (trimmed && (trimmed[0] === '{' || trimmed[0] === '[')) {
           const jsonHtml = formatJsonAsHtml(trimmed);
-          if (jsonHtml) return { html: jsonHtml, isJson: true };
+          if (jsonHtml) {
+            result = { html: jsonHtml, isJson: true };
+          }
         }
       }
+      if (!result) {
+        result = {
+          html: String(stripped).replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+          isJson: false,
+        };
+      }
+    } else {
+      result = {
+        html: String(val).replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+        isJson: false,
+      };
     }
-    return { html: String(val).replace(/</g, '&lt;').replace(/>/g, '&gt;'), isJson: false };
+
+    if (cacheKey !== null) cacheSet(cacheKey, result);
+    return result;
   }
 
   function cellInnerHtml(val) {
@@ -839,7 +889,7 @@ function getActiveDbsLocal() {
   return sel && sel.value ? [sel.value] : [];
 }
 
-function buildQueryUrl(dbName, tableName, limit, offset, sortCol, sortDir, exclParams, legacyFilter) {
+function buildQueryUrl(dbName, tableName, limit, offset, sortCol, sortDir, exclParams, legacyFilter, withCount) {
   let url = apiPath(`/api/v1/db/query?db=${encodeURIComponent(dbName)}&table=${encodeURIComponent(tableName)}&limit=${limit}&offset=${offset}`);
   url += `&order_by=${encodeURIComponent(sortCol)}&order_dir=${sortDir}`;
   if (exclParams) url += '&' + exclParams;
@@ -847,6 +897,7 @@ function buildQueryUrl(dbName, tableName, limit, offset, sortCol, sortDir, exclP
     const [fCol, fVal] = legacyFilter;
     url += `&filter_col=${encodeURIComponent(fCol)}&filter_op=contains&filter_val=${encodeURIComponent(fVal)}`;
   }
+  if (withCount === false) url += '&with_count=false';
   return url;
 }
 
@@ -878,7 +929,8 @@ async function queryTable(tableName, opts) {
   try {
     if (!multi) {
       const dbName = dbs[0] || document.getElementById('db-select').value;
-      const url = buildQueryUrl(dbName, tableName, app.dbPageLimit, app.dbPageOffset, sortCol, sortDir, exclParams, legacyFilter);
+      // Silent polls keep the cached total; the backend skips COUNT(*).
+      const url = buildQueryUrl(dbName, tableName, app.dbPageLimit, app.dbPageOffset, sortCol, sortDir, exclParams, legacyFilter, !silent);
       const res = await fetch(authUrl(url));
       if (res.status === 401) {
         localStorage.removeItem('auth_token');
@@ -886,7 +938,14 @@ async function queryTable(tableName, opts) {
         return;
       }
       const result = await res.json();
-      app.dbTotalRows = result.total || 0;
+      // Server returns total = -1 when COUNT(*) was skipped on a silent poll.
+      // In that case, keep the cached dbTotalRows and patch the result object
+      // so downstream code (updatePageInfo) sees a real number.
+      if (typeof result.total === 'number' && result.total >= 0) {
+        app.dbTotalRows = result.total;
+      } else {
+        result.total = app.dbTotalRows;
+      }
       app.dbCurrentResult = result;
       if (!result.columns || !result.columns.length) {
         if (!silent) data.innerHTML = '<div class="db-hint">Empty or invalid table</div>';
@@ -901,12 +960,13 @@ async function queryTable(tableName, opts) {
     // Multi-mode: fetch each DB (no offset; bigger cap), merge, sort, slice.
     const PER_DB_CAP = 1000;
     const perDbResults = await Promise.all(dbs.map(async (db) => {
-      const url = buildQueryUrl(db, tableName, PER_DB_CAP, 0, sortCol, sortDir, exclParams, legacyFilter);
+      const url = buildQueryUrl(db, tableName, PER_DB_CAP, 0, sortCol, sortDir, exclParams, legacyFilter, !silent);
       try {
         const r = await fetch(authUrl(url));
         if (!r.ok) return { db, columns: [], rows: [], total: 0 };
         const j = await r.json();
-        return { db, columns: j.columns || [], rows: j.rows || [], total: j.total || 0 };
+        const t = typeof j.total === 'number' && j.total >= 0 ? j.total : 0;
+        return { db, columns: j.columns || [], rows: j.rows || [], total: t };
       } catch (e) {
         return { db, columns: [], rows: [], total: 0 };
       }

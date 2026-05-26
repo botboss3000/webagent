@@ -860,6 +860,7 @@ async def query_table(
     filter_val: Optional[str] = Query(None, description="Filter value (comma-separated for not_in)"),
     filters_json: Optional[str] = Query(None, description="JSON array of {col, op, val} for multi-column filters"),
     db: str = Query("local.db", description="Database filename"),
+    with_count: bool = Query(True, description="When false, skip SELECT COUNT(*) (total will be -1). Used by silent auto-refresh."),
     _auth: dict = Depends(require_db_auth),
 ):
     """Query rows from a table."""
@@ -953,9 +954,12 @@ async def query_table(
         cur.execute(query, where_params)
         rows = [dict(row) for row in cur.fetchall()]
 
-        # Get total count (with same filter)
-        cur.execute(f'SELECT COUNT(*) FROM "{table}"{where_clause}', where_params)
-        total = cur.fetchone()[0]
+        # Skip COUNT(*) on silent refreshes — the client keeps the last total.
+        if with_count:
+            cur.execute(f'SELECT COUNT(*) FROM "{table}"{where_clause}', where_params)
+            total = cur.fetchone()[0]
+        else:
+            total = -1
 
         conn.close()
         return {
