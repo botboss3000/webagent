@@ -2640,8 +2640,7 @@
             <button class="files-strip-btn files-strip-view" data-view="database" title="Database"><i data-lucide="database" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="explorer" title="File Viewer"><i data-lucide="files" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="terminal" title="Terminal Launcher"><i data-lucide="zap" class="lucide-icon"></i></button>
-            <button class="files-strip-btn files-terminal-new" title="Terminal Tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
-            <button class="files-strip-btn files-strip-view" data-view="git" title="Source Control"><i data-lucide="github" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-strip-view" data-view="git" title="Source Control"><i data-lucide="git-branch" class="lucide-icon"></i></button>
           </div>
 
           <!-- Explorer panel (file tree) -->
@@ -2696,6 +2695,12 @@
               </div>
             </div>
             <div id="ft-body" class="ft-body">
+              <div class="ft-section ft-section-action">
+                <button type="button" id="ft-new-terminal" class="ft-new-btn" title="Open a new blank terminal tab">
+                  <i data-lucide="plus" class="lucide-icon"></i>
+                  <span>New terminal</span>
+                </button>
+              </div>
               <div class="ft-section">
                 <div class="ft-section-title">Quick launches</div>
                 <div class="ft-list" id="ft-list-launches"><div class="ft-empty">Loading…</div></div>
@@ -2727,8 +2732,9 @@
           <i data-lucide="panel-left" class="lucide-icon"></i>
         </button>
 
-        <!-- Main editor area: tabs + content -->
-        <main class="files-main">
+        <!-- Explorer main: file tabs + editor. Visible when the Explorer
+             view is active. -->
+        <main class="files-main" id="files-explorer-main" data-view="explorer">
           <div class="files-tabs-wrap">
             <button id="files-tabs-prev" class="files-tabs-chev" title="Scroll tabs left"><i data-lucide="chevron-left" class="lucide-icon"></i></button>
             <div id="files-tabs" class="files-tabs" role="tablist"></div>
@@ -2748,7 +2754,44 @@
           </div>
         </main>
 
-        <!-- Settings view: replaces the file editor area when the Settings
+        <!-- Source Control main: shows commit / diff / branch-compare
+             detail driven by clicks in the git sidebar panel. Mode pills
+             reflect the last payload viewed in each mode. -->
+        <main class="files-main" id="files-git-main" data-view="git" hidden>
+          <div class="fg-main-header">
+            <div class="fg-main-mode-pills" id="fg-main-mode-pills" role="tablist" aria-label="Source control view">
+              <button type="button" class="fg-main-mode-pill active" data-mode="overview" role="tab" aria-selected="true">Overview</button>
+              <button type="button" class="fg-main-mode-pill" data-mode="commit" role="tab" aria-selected="false" disabled>Commit</button>
+              <button type="button" class="fg-main-mode-pill" data-mode="diff" role="tab" aria-selected="false" disabled>Diff</button>
+              <button type="button" class="fg-main-mode-pill" data-mode="compare" role="tab" aria-selected="false" disabled>Compare</button>
+            </div>
+          </div>
+          <div id="fg-main-body" class="fg-main-body" data-mode="overview">
+            <div class="fg-main-loading">Loading…</div>
+          </div>
+        </main>
+
+        <!-- Terminal main: dedicated tabs and content area for PTY
+             sessions, independent of the file editor's tabs. The strip's
+             zap (Terminal Launcher) button activates this view; new tabs
+             open via the launcher panel's "New terminal" button, the
+             quick-launch / tmux rows, or the Ctrl+` shortcut. -->
+        <main class="files-main" id="files-terminal-main" data-view="terminal" hidden>
+          <div class="files-tabs-wrap">
+            <button id="files-term-tabs-prev" class="files-tabs-chev" title="Scroll tabs left"><i data-lucide="chevron-left" class="lucide-icon"></i></button>
+            <div id="files-term-tabs" class="files-tabs" role="tablist"></div>
+            <button id="files-term-tabs-next" class="files-tabs-chev" title="Scroll tabs right"><i data-lucide="chevron-right" class="lucide-icon"></i></button>
+          </div>
+          <div id="files-term-content" class="files-content">
+            <div class="files-welcome">
+              <i data-lucide="terminal" class="lucide-icon files-welcome-icon"></i>
+              <div class="files-welcome-title">Terminal</div>
+              <div class="files-welcome-text">Open a session from the launcher on the left, or press <kbd>Ctrl</kbd>+<kbd>`</kbd>.</div>
+            </div>
+          </div>
+        </main>
+
+        <!-- Settings view: replaces the active main when the Settings
              sidebar button is toggled on. files.js moves #app-config-container
              into here at boot. -->
         <main class="files-main files-settings-main" id="files-settings-main" hidden></main>
@@ -2756,7 +2799,7 @@
         <!-- Database view: replaces the file editor area when the Database
              sidebar view is active. files.js moves #db-table-view (and the
              #db-toolbar) into here at boot. -->
-        <main class="files-main files-database-main" id="files-database-main" hidden></main>
+        <main class="files-main files-database-main" id="files-database-main" data-view="database" hidden></main>
       </div>
     </div>
 
