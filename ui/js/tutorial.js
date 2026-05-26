@@ -33,11 +33,11 @@ const PAGE_LABELS = {
 
 const HINTS = {
   'admin-tools': [
-    { selector: '.files-view-toggle-btn[data-view="explorer"]', title: 'File explorer',
+    { selector: '.files-strip-view[data-view="explorer"]', title: 'File explorer',
       body: 'Browse the project tree. Click any file to open it in the editor; right-click for rename, delete and other actions.' },
-    { selector: '.files-view-toggle-btn[data-view="git"]', title: 'Source control',
+    { selector: '.files-strip-view[data-view="git"]', title: 'Source control',
       body: 'See changed files, commit with a message, push, pull, switch branches and view recent commit history — all in one panel.' },
-    { selector: '.files-view-toggle-btn[data-view="database"]', title: 'Database viewer',
+    { selector: '.files-strip-view[data-view="database"]', title: 'Database viewer',
       body: 'Inspect tables, refresh rows after the agent writes, switch between local databases and reset selected tables.' },
     { selector: '.files-terminal-new', title: 'Open a terminal',
       body: 'Spawns a new terminal tab inside the main panel — each tab is its own independent shell with scrollback and search.' },
