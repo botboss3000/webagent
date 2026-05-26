@@ -307,18 +307,18 @@ function _renderList() {
           ${agent.icon || icon('bot', { size: '20px' })}
         </div>
         <div class="agent-card-meta">
-          ${isExpanded
-            ? '<div class="agent-card-tabs" role="tablist"></div>'
-            : `<div class="agent-card-name-row">
-                 <span class="agent-card-name">${_esc(_displayName(agent))}</span>
-                 <span class="agent-status-dot"></span>
-               </div>`}
+          <div class="agent-card-name-row">
+            <span class="agent-card-name">${_esc(_displayName(agent))}</span>
+            <span class="agent-status-dot"></span>
+          </div>
+          ${agent.description ? `<div class="agent-card-desc">${_esc(agent.description)}</div>` : ''}
         </div>
         <div class="agent-card-badge-wrap">
           <span class="agent-badge ${badgeType}">${badgeLabel}</span>
           ${isCustom ? '<button class="agent-card-action-btn delete-btn">Delete</button>' : ''}
         </div>
       </div>
+      ${isExpanded ? '<div class="agent-card-tabs" role="tablist"></div>' : ''}
     `;
 
     // Wire inline action buttons — stopPropagation so click doesn't toggle the panel
