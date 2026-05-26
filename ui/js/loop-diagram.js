@@ -539,6 +539,7 @@ export function renderLoopDiagram(containerEl, nodeStates, {
     const state = nodeStates.get(nd.id) || '';
     const el = document.createElement('div');
     el.className = `lv-node lv-type-${nd.type}`;
+    el.dataset.id = nd.id;   // sidebar uses this to scroll a node into view
     if (state === 'active')     el.classList.add('lv-active');
     else if (state === 'done')  el.classList.add('lv-done');
     else if (state === 'error') el.classList.add('lv-error');

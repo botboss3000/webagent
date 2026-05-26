@@ -2032,3 +2032,99 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 /* Mobile .maximized normally hides the right side; for settings we want
    the settings main visible. */
 .files-sidebar[data-view="settings"].maximized ~ .files-main:not([hidden]) { display: flex; }
+
+/* ── Interactions + Runtime Loop sidebars ────────────────
+   Two parallel layouts: a vertical stack of titled sections, each section
+   holding either a checkbox group (event-type filters) or a clickable
+   row list (turns, runs, nodes). */
+.ix-body, .rl-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.ix-section, .rl-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ix-section-title, .rl-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--files-text-muted);
+  padding: 0 12px 4px;
+}
+.ix-filters {
+  display: flex;
+  flex-direction: column;
+  padding: 0 12px;
+  gap: 4px;
+}
+.ix-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--files-text);
+  cursor: pointer;
+  user-select: none;
+}
+.ix-filter-row input[type="checkbox"] { accent-color: var(--files-active-indicator, #3b82f6); }
+.ix-empty, .rl-empty {
+  font-size: 11px;
+  color: var(--files-text-muted);
+  padding: 6px 12px;
+}
+.ix-turn-row, .rl-row {
+  appearance: none;
+  background: transparent;
+  border: none;
+  border-left: 2px solid transparent;
+  color: var(--files-text);
+  font-size: 12px;
+  text-align: left;
+  padding: 5px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  width: 100%;
+}
+.ix-turn-row:hover, .rl-row:hover { background: var(--files-row-hover); }
+.ix-turn-row.active, .rl-row.active {
+  background: var(--files-row-hover);
+  border-left-color: var(--files-active-indicator, #3b82f6);
+}
+.ix-turn-num, .rl-row-num {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--files-text-muted);
+  min-width: 56px;
+}
+.ix-turn-count, .rl-row-meta {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--files-text-muted);
+}
+.rl-row-label, .ix-turn-row .ix-turn-num + span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rl-node-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #2a2a4a;
+  flex-shrink: 0;
+}
+.rl-node-dot[data-state="active"] { background: #7dcfff; }
+.rl-node-dot[data-state="done"]   { background: #9ece6a; }
+.rl-node-dot[data-state="error"]  { background: #f7768e; }
+.rl-node-row.rl-state-active .rl-row-label { color: var(--files-text-strong); }
+.rl-node-row.rl-state-error  .rl-row-label { color: #f7768e; }

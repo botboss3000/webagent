@@ -21,6 +21,21 @@ let turns = [];                // all completed turn containers
 let eventBuffer = [];          // always collects events, even when tab hidden
 let loopActive = false;        // is the loop tab currently visible
 
+// Event-type filter for the Interactions sidebar. Each entry maps a UI
+// label to the set of `node.dataset.type` values it gates. When a type
+// is removed from `enabledEventTypes`, matching nodes hide via CSS-like
+// inline display:none. Independent of `currentLevel` — both filters
+// AND together.
+const EVENT_TYPE_GROUPS = [
+  { id: 'user',      label: 'User messages',  types: ['user_message'] },
+  { id: 'agent',     label: 'Agent replies',  types: ['response', 'stream'] },
+  { id: 'tool',      label: 'Tool calls',     types: ['tool_call', 'tool_result'] },
+  { id: 'pipeline',  label: 'Pipeline steps', types: ['pipeline'] },
+  { id: 'db',        label: 'DB writes',      types: ['db'] },
+  { id: 'error',     label: 'Errors',         types: ['error'] },
+];
+const enabledEventTypeGroups = new Set(EVENT_TYPE_GROUPS.map((g) => g.id));
+
 // ── Lazy DOM lookup (robust against init timing) ──
 function getLoopList() {
   return document.getElementById('loop-list');
@@ -87,6 +102,7 @@ export function startLoop() {
   turns = [];
 
   fetchLoopEvents();
+  renderInteractionsSidebar();
 }
 
 // ── Stop: deactivate tab (but keep collecting events in background) ──
@@ -323,6 +339,8 @@ function createTurnContainer(turnNum) {
   const list = getLoopList();
   if (list) list.appendChild(container);
   turns.push(container);
+  // Sidebar tracks turn count + per-turn event counts; cheap to repaint.
+  try { renderTurnsList(); } catch (_) {}
   return container;
 }
 
@@ -609,6 +627,16 @@ function createNode(level, type, text, parent) {
   node.style.borderLeftColor = colors.border;
   node.style.backgroundColor = colors.bg;
 
+  // Honor the current type-filter at creation time. Cheap lookup: find
+  // the group this type belongs to.
+  for (const g of EVENT_TYPE_GROUPS) {
+    if (g.types.includes(type) && !enabledEventTypeGroups.has(g.id)) {
+      node.dataset.hideByType = '1';
+      node.style.display = 'none';
+      break;
+    }
+  }
+
   node.innerHTML = `
     <span class="loop-node-icon">${icon(colors.icon, { size: '12px' })}</span>
     <span class="loop-node-summary">${escapeHtml(text)}</span>
@@ -764,7 +792,9 @@ export function setLoopLevel(level) {
   if (!list) return;
   list.querySelectorAll('.loop-node').forEach(node => {
     const lv = node.dataset.level || 'agent';
-    node.style.display = LEVEL_VISIBILITY[currentLevel].has(lv) ? '' : 'none';
+    const lvHidden = !LEVEL_VISIBILITY[currentLevel].has(lv);
+    const typeHidden = node.dataset.hideByType === '1';
+    node.style.display = (lvHidden || typeHidden) ? 'none' : '';
   });
 }
 
@@ -792,4 +822,101 @@ export function loopSessionChanged() {
   turns = [];
   eventBuffer = [];
   fetchLoopEvents();
+  renderInteractionsSidebar();
+}
+
+// ── Interactions sidebar ──────────────────────────────────────────
+//
+// Two lists: event-type checkboxes (orthogonal to the Basic/Detailed/Debug
+// pills) and a turn jump list. Both are rendered into the sidebar panel
+// at #files-panel-interactions. Renders are cheap — called whenever a
+// new turn appears or the user toggles a filter.
+
+function applyEventTypeFilter() {
+  const list = getLoopList();
+  if (!list) return;
+  // Build a lookup: which group does each type belong to.
+  const typeToGroup = new Map();
+  for (const g of EVENT_TYPE_GROUPS) {
+    for (const t of g.types) typeToGroup.set(t, g.id);
+  }
+  list.querySelectorAll('.loop-node').forEach((node) => {
+    const t = node.dataset.type || '';
+    const g = typeToGroup.get(t);
+    // Nodes whose type isn't in any group (e.g. 'ping') are always shown.
+    const hiddenByType = g && !enabledEventTypeGroups.has(g);
+    if (hiddenByType) {
+      node.dataset.hideByType = '1';
+      node.style.display = 'none';
+    } else {
+      delete node.dataset.hideByType;
+      // Restore visibility unless the level filter wants it hidden.
+      const lv = node.dataset.level || 'agent';
+      node.style.display = LEVEL_VISIBILITY[currentLevel].has(lv) ? '' : 'none';
+    }
+  });
+}
+
+function renderEventTypeFilters() {
+  const host = document.getElementById('ix-filters');
+  if (!host) return;
+  host.innerHTML = '';
+  for (const g of EVENT_TYPE_GROUPS) {
+    const row = document.createElement('label');
+    row.className = 'ix-filter-row';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = enabledEventTypeGroups.has(g.id);
+    cb.dataset.group = g.id;
+    cb.addEventListener('change', () => {
+      if (cb.checked) enabledEventTypeGroups.add(g.id);
+      else enabledEventTypeGroups.delete(g.id);
+      applyEventTypeFilter();
+    });
+    const text = document.createElement('span');
+    text.textContent = g.label;
+    row.appendChild(cb);
+    row.appendChild(text);
+    host.appendChild(row);
+  }
+}
+
+function renderTurnsList() {
+  const host = document.getElementById('ix-turns');
+  if (!host) return;
+  if (!turns.length) {
+    host.innerHTML = '<div class="ix-empty">No turns yet</div>';
+    return;
+  }
+  host.innerHTML = '';
+  for (const t of turns) {
+    const num = t.dataset.turn;
+    const body = t.querySelector('.loop-turn-body');
+    const count = body ? body.querySelectorAll('.loop-node').length : 0;
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'ix-turn-row';
+    row.dataset.turn = num;
+    row.innerHTML =
+      '<span class="ix-turn-num">Turn ' + escapeHtml(String(num)) + '</span>' +
+      '<span class="ix-turn-count">' + count + ' event' + (count === 1 ? '' : 's') + '</span>';
+    row.addEventListener('click', () => {
+      t.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      host.querySelectorAll('.ix-turn-row.active').forEach((r) => r.classList.remove('active'));
+      row.classList.add('active');
+    });
+    host.appendChild(row);
+  }
+}
+
+// Public re-render entry — called from startLoop and after each new
+// turn / event so the sidebar stays in sync.
+export function renderInteractionsSidebar() {
+  renderEventTypeFilters();
+  renderTurnsList();
+  const btn = document.getElementById('ix-refresh');
+  if (btn && !btn.dataset.wired) {
+    btn.dataset.wired = '1';
+    btn.addEventListener('click', () => { try { startLoop(); } catch (_) {} });
+  }
 }
