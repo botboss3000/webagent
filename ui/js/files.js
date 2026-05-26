@@ -14,6 +14,22 @@ import { startAutoRefresh, stopAutoRefresh } from './db/pagination.js';
 
 const API_BASE = '/api/v1/files';
 const LS_SIDEBAR_VIEW = 'files.sidebarView';   // 'explorer' | 'git' | 'database'
+const LS_TERM_FONT_SIZE = 'files.terminalFontSize';
+const TERM_FONT_DEFAULT = 14;
+
+function getTerminalFontSize() {
+  const raw = parseInt(localStorage.getItem(LS_TERM_FONT_SIZE), 10);
+  return Number.isFinite(raw) && raw >= 8 && raw <= 32 ? raw : TERM_FONT_DEFAULT;
+}
+function setTerminalFontSize(n) {
+  try { localStorage.setItem(LS_TERM_FONT_SIZE, String(n)); } catch (_) {}
+  // Propagate to every open terminal — font size is global, not per-tab.
+  for (const t of openTabs) {
+    if (t.kind === 'terminal' && t.instance && t.instance.setFontSize) {
+      try { t.instance.setFontSize(n); } catch (_) {}
+    }
+  }
+}
 
 let initialised = false;
 let isAdmin = false;
@@ -463,30 +479,28 @@ function renderTabs() {
     el.appendChild(label);
 
     // ── 3-dot "more" menu button ──
-    // Terminal tabs have no per-tab actions (no file to rename/delete/wrap/
-    // preview/find), so the menu is omitted entirely.
-    if (tab.kind !== 'terminal') {
-      const more = document.createElement('button');
-      more.className = 'files-tab-more';
-      more.type = 'button';
-      more.title = 'More actions';
-      more.draggable = false;
-      const moreI = document.createElement('i');
-      moreI.setAttribute('data-lucide', 'more-vertical');
-      moreI.className = 'lucide-icon';
-      more.appendChild(moreI);
-      // Same draggable-parent guard as the close button.
-      more.addEventListener('mousedown', (e) => {
-        e.stopPropagation();
-        if (e.button === 0) {
-          e.preventDefault();
-          showTabMenu(tab, more);
-        }
-      });
-      more.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); });
-      more.addEventListener('dragstart', (e) => { e.preventDefault(); e.stopPropagation(); });
-      el.appendChild(more);
-    }
+    // For file tabs this opens the rename/delete/wrap/preview/find menu;
+    // for terminal tabs it shows the (different) terminal-specific items.
+    const more = document.createElement('button');
+    more.className = 'files-tab-more';
+    more.type = 'button';
+    more.title = 'More actions';
+    more.draggable = false;
+    const moreI = document.createElement('i');
+    moreI.setAttribute('data-lucide', 'more-vertical');
+    moreI.className = 'lucide-icon';
+    more.appendChild(moreI);
+    more.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+      if (e.button === 0) {
+        e.preventDefault();
+        if (tab.kind === 'terminal') showTerminalTabMenu(tab, more);
+        else showTabMenu(tab, more);
+      }
+    });
+    more.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); });
+    more.addEventListener('dragstart', (e) => { e.preventDefault(); e.stopPropagation(); });
+    el.appendChild(more);
 
     const close = document.createElement('button');
     close.className = 'files-tab-close';
@@ -675,6 +689,45 @@ function showTabMenu(tab, anchorBtn) {
   items.push({ icon: 'search', label: 'Find / Replace…', disabled: findDisabled, action: () => openFindBarForActiveTab(tab.path, false) });
   // Right-align under the button
   _openFloatingMenu(items, rect.bottom + 2, rect.right - 180);
+}
+
+function showTerminalTabMenu(tab, anchorBtn) {
+  const rect = anchorBtn.getBoundingClientRect();
+  const wrapOn = tab.wrap !== false;
+  const items = [
+    { icon: 'pencil',    label: 'Rename…',        action: () => startInlineRename(tab, document.querySelector('#files-tabs .files-tab[data-path="' + cssEscape(tab.path) + '"] .files-tab-label')) },
+    { icon: 'wrap-text', label: 'Wrap lines',     checked: wrapOn, action: () => toggleTerminalWrap(tab.path) },
+    { separator: true },
+    { icon: 'zoom-in',   label: 'Zoom in',        action: () => terminalZoom(+1) },
+    { icon: 'zoom-out',  label: 'Zoom out',       action: () => terminalZoom(-1) },
+    { icon: 'refresh-cw', label: 'Reset zoom',    action: () => terminalResetZoom() },
+    { separator: true },
+    { icon: 'search',    label: 'Find…',          action: () => openTerminalFindFromMenu(tab.path) },
+  ];
+  _openFloatingMenu(items, rect.bottom + 2, rect.right - 180);
+}
+
+function toggleTerminalWrap(tabPath) {
+  const tab = openTabs.find((t) => t.path === tabPath);
+  if (!tab || tab.kind !== 'terminal') return;
+  tab.wrap = !(tab.wrap !== false);   // flip; treat undefined as true
+  if (tab.instance && tab.instance.setWrap) tab.instance.setWrap(tab.wrap);
+  persistTabs();
+}
+
+function terminalZoom(delta) {
+  const next = getTerminalFontSize() + delta;
+  setTerminalFontSize(next);
+}
+function terminalResetZoom() {
+  setTerminalFontSize(TERM_FONT_DEFAULT);
+}
+
+function openTerminalFindFromMenu(tabPath) {
+  const pane = document.querySelector('.files-editor-pane[data-path="' + cssEscape(tabPath) + '"]');
+  const bar = pane && pane.querySelector('.files-terminal-findbar');
+  const tab = openTabs.find((t) => t.path === tabPath);
+  if (bar && tab && tab.instance) openTerminalFindBar(bar, tab.instance);
 }
 
 function togglePreview(path) {
@@ -1100,7 +1153,10 @@ function buildPaneForTab(tab, mode) {
       try {
         // tab.path is the backend session_id (see pushTerminalTab). Passing
         // the existing id on restore reattaches to the running shell.
-        tab.instance = createTerminalInstance(host, tab.path);
+        tab.instance = createTerminalInstance(host, tab.path, {
+          wrap: tab.wrap !== false,           // default true unless persisted false
+          fontSize: getTerminalFontSize(),    // global setting, shared across tabs
+        });
         // Drive the per-tab status dot from the WS state machine.
         tab.instance.onStateChange((s) => _updateTabConnDot(tab.path, s));
         tab.instance.fit();
@@ -1689,7 +1745,7 @@ function persistTabs() {
     // with the same id reattaches us to it.
     const minimal = openTabs.map((t) => {
       if (t.kind === 'terminal') {
-        return { path: t.path, name: t.name, kind: 'terminal' };
+        return { path: t.path, name: t.name, kind: 'terminal', wrap: t.wrap !== false };
       }
       return { path: t.path, name: t.name, wrap: !!t.wrap, preview: !!t.preview };
     });
@@ -1728,6 +1784,8 @@ async function restoreOpenTabs() {
           // Reattach to the running PTY identified by t.path. If the shell
           // already exited, the backend will spawn a fresh one for that id.
           pushTerminalTab(t.path, t.name);
+          const restored = openTabs[openTabs.length - 1];
+          if (restored && t.wrap === false) restored.wrap = false;
           continue;
         }
         await openFile(t.path, t.name);
@@ -1986,6 +2044,31 @@ function initFilesTerminalButton() {
       tabSelect.dispatchEvent(new Event('change', { bubbles: true }));
     }
     openNewTerminalTab();
+  }, true);
+
+  // Zoom shortcuts — only fire when a terminal tab is the active tab so
+  // they don't hijack browser zoom on other pages. Capture-phase for the
+  // same reason as Ctrl+`: xterm would otherwise see Ctrl+= / Ctrl+- and
+  // forward bytes to the shell.
+  document.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+    const active = openTabs.find((t) => t.path === activeTabPath);
+    if (!active || active.kind !== 'terminal') return;
+    // Don't steal these keys while the user is typing in an input — e.g.
+    // the find bar or the inline rename input.
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    // '=' on US layouts produces Equal; '+' is the same key with shift,
+    // which we excluded above. Some keyboards report '+' directly though.
+    const isPlus  = e.code === 'Equal' || e.key === '+' || e.key === '=';
+    const isMinus = e.code === 'Minus' || e.key === '-' || e.key === '_';
+    const isZero  = e.code === 'Digit0' || e.key === '0';
+    if (!isPlus && !isMinus && !isZero) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (isPlus)  terminalZoom(+1);
+    if (isMinus) terminalZoom(-1);
+    if (isZero)  terminalResetZoom();
   }, true);
 }
 

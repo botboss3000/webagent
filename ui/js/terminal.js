@@ -9,14 +9,27 @@ import { termWsUrl, apiPath } from './config.js';
 const MAX_RECONNECT_DELAY = 30000; // 30s max
 const INITIAL_RECONNECT_DELAY = 500; // 500ms first retry
 
-export function createTerminalInstance(container, sessionId) {
+const DEFAULT_FONT_SIZE = 14;
+const MIN_FONT_SIZE = 8;
+const MAX_FONT_SIZE = 32;
+// When wrap is OFF we lock xterm's cols to this width so long lines extend
+// beyond the visible area; the host CSS adds a horizontal scrollbar so the
+// user can pan to the rest. 200 is wide enough for almost any real output
+// without producing a giant DOM.
+const NOWRAP_COLS = 200;
+
+export function createTerminalInstance(container, sessionId, opts) {
   if (!sessionId) {
     throw new Error('createTerminalInstance: sessionId is required');
   }
+  opts = opts || {};
+  const initialFontSize = (typeof opts.fontSize === 'number' && opts.fontSize >= MIN_FONT_SIZE && opts.fontSize <= MAX_FONT_SIZE)
+    ? opts.fontSize : DEFAULT_FONT_SIZE;
+
   const term = new Terminal({
     cursorBlink: true,
     cursorStyle: 'block',
-    fontSize: 14,
+    fontSize: initialFontSize,
     fontFamily:
       '"Fira Code", Menlo, Monaco, "Courier New", monospace',
     allowTransparency: true,
@@ -56,7 +69,8 @@ export function createTerminalInstance(container, sessionId) {
     }
   } catch (_) {}
   term.open(container);
-  try { fitAddon.fit(); } catch (_) {}
+  // First fit happens further down, after the wrap/fontSize state is
+  // declared (so the no-wrap path can pin cols correctly on restore).
 
   let ws = null;
   let reconnectTimer = null;
@@ -176,14 +190,59 @@ export function createTerminalInstance(container, sessionId) {
     ws.onerror = () => { /* onclose fires after onerror; reconnect is scheduled there */ };
   }
 
+  let wrap = opts.wrap !== false;   // default true
+  let fontSize = initialFontSize;
+
+  function _sendResize() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'resize', rows: term.rows, cols: term.cols }));
+    }
+  }
+
   function fit() {
     try {
-      fitAddon.fit();
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'resize', rows: term.rows, cols: term.cols }));
+      if (wrap) {
+        fitAddon.fit();
+      } else {
+        // No-wrap mode: pin cols at NOWRAP_COLS so the shell stops wrapping;
+        // we still need to keep rows in sync with the host's vertical size,
+        // so ask the fitter for what it WOULD set and use just the rows.
+        const proposed = fitAddon.proposeDimensions();
+        const rows = (proposed && proposed.rows && proposed.rows > 0) ? proposed.rows : term.rows;
+        term.resize(NOWRAP_COLS, rows);
       }
+      _sendResize();
     } catch (_) {}
   }
+
+  function setWrap(on) {
+    const next = !!on;
+    if (next === wrap) return;
+    wrap = next;
+    // Toggle the host CSS class that switches overflow-x. The class lives
+    // on the parent of the xterm root, which is the container we were
+    // given at construction time.
+    if (container && container.classList) {
+      container.classList.toggle('files-terminal-host-nowrap', !wrap);
+    }
+    fit();
+  }
+  function getWrap() { return wrap; }
+
+  function setFontSize(n) {
+    n = Math.round(n);
+    if (!Number.isFinite(n)) return;
+    if (n < MIN_FONT_SIZE) n = MIN_FONT_SIZE;
+    if (n > MAX_FONT_SIZE) n = MAX_FONT_SIZE;
+    if (n === fontSize) return;
+    fontSize = n;
+    try { term.options.fontSize = n; } catch (_) {}
+    fit();
+  }
+  function getFontSize() { return fontSize; }
+  function zoomIn()   { setFontSize(fontSize + 1); }
+  function zoomOut()  { setFontSize(fontSize - 1); }
+  function resetZoom() { setFontSize(DEFAULT_FONT_SIZE); }
 
   function focus() {
     try { term.focus(); } catch (_) {}
@@ -269,6 +328,15 @@ export function createTerminalInstance(container, sessionId) {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(text);
   }
 
+  // Apply initial wrap state to the host class (matches the renderer's
+  // overflow-x rule). Defer until after term.open() has wired up the DOM.
+  if (!wrap && container && container.classList) {
+    container.classList.add('files-terminal-host-nowrap');
+  }
+  // First sizing — uses the wrap-aware path so a restored no-wrap tab
+  // starts with locked cols.
+  fit();
+
   connect();
 
   return {
@@ -276,5 +344,7 @@ export function createTerminalInstance(container, sessionId) {
     onStateChange, getState,
     findNext, findPrevious, clearSearch,
     paste,
+    setWrap, getWrap,
+    setFontSize, getFontSize, zoomIn, zoomOut, resetZoom,
   };
 }
