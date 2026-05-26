@@ -53,6 +53,10 @@ export function restartAutoRefresh() {
 export function initDbPaginationAndToolbar() {
   app.stopAutoRefresh = stopAutoRefresh;
 
+  // One-shot cleanup: the inner-sidebar collapse toggle was removed in favor
+  // of the leftmost strip's files-maximize-btn. Drop any stale state.
+  try { localStorage.removeItem('dbSidebarCollapsed'); } catch(_) {}
+
   const prevBtn = document.getElementById('db-page-prev');
   const nextBtn = document.getElementById('db-page-next');
   if (prevBtn) {
@@ -274,27 +278,6 @@ export function initDbPaginationAndToolbar() {
   };
   document.getElementById('db-select').addEventListener('change', softRefreshActiveDbs);
   window.addEventListener('db-active-changed', softRefreshActiveDbs);
-
-  // Sidebar collapse toggle
-  const sidebar = document.getElementById('db-sidebar');
-  const sidebarToggle = document.getElementById('db-sidebar-toggle');
-  if (sidebar && sidebarToggle) {
-    const applySidebarState = (collapsed) => {
-      sidebar.classList.toggle('collapsed', collapsed);
-      sidebarToggle.setAttribute('aria-expanded', String(!collapsed));
-      sidebarToggle.title = collapsed ? 'Expand table list' : 'Collapse table list';
-      sidebarToggle.setAttribute('aria-label', sidebarToggle.title);
-      const iconName = collapsed ? 'chevrons-right' : 'chevrons-left';
-      sidebarToggle.innerHTML =
-        `<i data-lucide="${iconName}" style="width:13px;height:13px;"></i>`;
-    };
-    applySidebarState(localStorage.getItem('dbSidebarCollapsed') === 'true');
-    sidebarToggle.addEventListener('click', () => {
-      const next = !sidebar.classList.contains('collapsed');
-      localStorage.setItem('dbSidebarCollapsed', String(next));
-      applySidebarState(next);
-    });
-  }
 
   // Show Hidden toggle
   const showHiddenBtn = document.getElementById('db-show-hidden-btn');

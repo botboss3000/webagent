@@ -2539,33 +2539,20 @@
                   <button id="db-reset-apply" style="width:100%;background:#cc241d;border:1px solid #fb4934;color:#fbf1c7;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;">Confirm Reset</button>
                 </div>
               </div>
-              <button id="db-sidebar-toggle" title="Collapse table list" aria-label="Collapse table list" aria-expanded="true" style="margin-left:auto;background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-3);padding:0;border-radius:4px;cursor:pointer;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;"><i data-lucide="chevrons-left" style="width:13px;height:13px;"></i></button>
             </div>
             <div id="db-table-list" style="width:100%;border-right:none;flex:1;"></div>
           </div>
           <div id="db-table-view">
-            <div id="db-table-header" style="display:flex;justify-content:space-between;align-items:center;">
-              <span style="display:flex;align-items:center;gap:8px;">
-                <div id="db-select-wrap" style="position:relative;display:inline-block;">
-                  <select id="db-select" title="Switch database" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;">
-                    <option value="local.db">local.db</option>
-                  </select>
-                  <button type="button" id="db-select-trigger" title="Switch database" style="background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-1);padding:0 8px;border-radius:4px;font-size:11px;font-family:inherit;cursor:pointer;max-width:160px;display:inline-flex;align-items:center;gap:6px;height:24px;box-sizing:border-box;">
-                    <span id="db-select-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:120px;">local.db</span>
-                    <span style="color:var(--fg-3);font-size:9px;">▼</span>
-                  </button>
-                  <ul id="db-select-menu" role="listbox" style="display:none;position:fixed;top:0;left:0;margin:0;padding:4px;list-style:none;background:var(--bg-1);border:1px solid var(--border);border-radius:6px;box-shadow:var(--shadow-md);z-index:9999;min-width:240px;max-height:300px;overflow-y:auto;font-size:11px;"></ul>
-                </div>
-              </span>
-              <span id="db-page-info" style="color:var(--fg-3);font-size:11px;"></span>
-              <span style="display:flex;align-items:center;gap:8px;">
+            <div id="db-table-data">
+              <div class="db-hint">Select a table to view its contents</div>
+            </div>
+            <div id="db-table-footer">
+              <span id="db-page-info"></span>
+              <span class="db-table-footer-actions">
                 <button id="db-page-prev" style="display:none;background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-1);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;"><i data-lucide="chevron-left" style="width:13px;height:13px;"></i></button>
                 <button id="db-page-next" style="display:none;background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-1);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;"><i data-lucide="chevron-right" style="width:13px;height:13px;"></i></button>
                 <button id="db-download-btn" title="Download local.db" style="background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-3);padding:0 6px;border-radius:4px;cursor:pointer;font-size:14px;font-family:inherit;height:24px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;line-height:1;"><i data-lucide="download" style="width:14px;height:14px;"></i></button>
               </span>
-            </div>
-            <div id="db-table-data">
-              <div class="db-hint">Select a table to view its contents</div>
             </div>
           </div>
         </div>
@@ -2636,13 +2623,22 @@
             </div>
           </div>
 
-          <!-- Database panel: hosts the relocated #db-sidebar (table list +
-               refresh/reset/collapse toolbar). View switching happens in the
-               persistent strip on the left; #db-sidebar carries its own
-               internal toolbar. -->
+          <!-- Database panel: top header hosts the database-file selector
+               (session/agent dropdown styling); below it the relocated
+               #db-sidebar carries refresh + reset and the table list. -->
           <div class="files-sidebar-panel" id="files-panel-database" data-view="database" hidden>
             <div class="files-sidebar-header">
-              <div class="files-sidebar-actions"></div>
+              <div id="db-select-wrap" class="db-select-dropdown">
+                <select id="db-select" title="Switch database" hidden>
+                  <option value="local.db">local.db</option>
+                </select>
+                <button type="button" id="db-select-trigger" class="db-select-dropdown-trigger" title="Switch database" aria-haspopup="listbox" aria-expanded="false">
+                  <i data-lucide="database" style="width:13px;height:13px;flex-shrink:0;"></i>
+                  <span id="db-select-label">local.db</span>
+                  <i data-lucide="chevron-down" style="width:11px;height:11px;flex-shrink:0;opacity:0.6;"></i>
+                </button>
+                <ul id="db-select-menu" class="db-select-dropdown-menu" role="listbox" hidden></ul>
+              </div>
             </div>
             <div id="db-sidebar-host" class="db-sidebar-host"></div>
           </div>
@@ -2991,7 +2987,69 @@
 
     function closeDbMenu() {
       var menu = document.getElementById('db-select-menu');
-      if (menu) menu.style.display = 'none';
+      if (menu) menu.hidden = true;
+      var trig = document.getElementById('db-select-trigger');
+      if (trig) trig.setAttribute('aria-expanded', 'false');
+      closeDbRowActions();
+    }
+
+    function closeDbRowActions() {
+      var open = document.querySelector('.db-row-actions');
+      if (open) open.remove();
+    }
+
+    async function deleteDb(name) {
+      if (name === 'local.db') return;
+      if (!confirm('Delete database file "' + name + '"? This cannot be undone.')) return;
+      var token = localStorage.getItem('auth_token');
+      var sel = document.getElementById('db-select');
+      try {
+        var res = await fetch(
+          '/api/v1/db/file?db=' + encodeURIComponent(name) +
+          '&token=' + encodeURIComponent(token || ''),
+          { method: 'DELETE' }
+        );
+        if (!res.ok) {
+          var err = await res.json().catch(function() { return { detail: res.statusText }; });
+          alert('Delete failed: ' + (err.detail || res.statusText));
+          return;
+        }
+        if (sel && sel.value === name) {
+          setDbSelectValue('local.db');
+        }
+        await populateDbList({ force: true });
+      } catch(e) {
+        alert('Delete failed: ' + e.message);
+      }
+    }
+
+    function openDbRowActions(name, kebabEl) {
+      closeDbRowActions();
+      var popup = document.createElement('div');
+      popup.className = 'db-row-actions';
+      popup.dataset.dbName = name;
+      popup.innerHTML =
+        '<button class="db-row-action danger" data-action="delete" type="button">' +
+        '<i data-lucide="trash-2" style="width:14px;height:14px;"></i> Delete</button>';
+      document.body.appendChild(popup);
+      var kb = kebabEl.getBoundingClientRect();
+      var pw = popup.offsetWidth, ph = popup.offsetHeight;
+      var left = kb.right - pw;
+      var top = kb.bottom + 4;
+      if (left < 4) left = 4;
+      if (left + pw > window.innerWidth - 4) left = window.innerWidth - pw - 4;
+      if (top + ph > window.innerHeight - 4) top = kb.top - ph - 4;
+      popup.style.left = left + 'px';
+      popup.style.top = top + 'px';
+      popup.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var btn = e.target.closest('.db-row-action');
+        if (!btn) return;
+        var action = btn.dataset.action;
+        closeDbRowActions();
+        if (action === 'delete') deleteDb(name);
+      });
+      if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();
     }
 
     function getShowAllDbs() {
@@ -3007,14 +3065,14 @@
       if (!menu || !sel) return;
       menu.innerHTML = '';
 
-      // ── Header row: "All databases" master toggle ──
+      // ── Header row: "All databases" master toggle + delete-all ──
       var header = document.createElement('li');
-      header.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid var(--border);margin-bottom:4px;color:var(--accent);font-weight:bold;';
+      header.className = 'db-row-header';
       var allCb = document.createElement('input');
       allCb.type = 'checkbox';
+      allCb.className = 'db-row-cb';
       allCb.checked = getShowAllDbs();
       allCb.title = 'Auto-select all databases (regular polling)';
-      allCb.style.cssText = 'margin:0;cursor:pointer;accent-color:var(--accent);';
       allCb.addEventListener('click', function(ev) { ev.stopPropagation(); });
       allCb.addEventListener('change', function() {
         setShowAllDbs(allCb.checked);
@@ -3030,8 +3088,8 @@
         renderDbMenu(databases);
       });
       var headerLabel = document.createElement('span');
+      headerLabel.className = 'db-row-header-label';
       headerLabel.textContent = 'All databases';
-      headerLabel.style.cssText = 'flex:1;cursor:pointer;font-size:11px;';
       headerLabel.addEventListener('click', function() {
         allCb.checked = !allCb.checked;
         allCb.dispatchEvent(new Event('change'));
@@ -3042,17 +3100,9 @@
       // Delete-all button (skips local.db)
       var delAll = document.createElement('button');
       delAll.type = 'button';
-      delAll.textContent = '🗑';
+      delAll.className = 'db-row-header-trash';
       delAll.title = 'Delete all databases (keeps local.db)';
-      delAll.style.cssText = 'background:transparent;border:none;color:var(--fg-3);cursor:pointer;font-size:13px;line-height:1;padding:0 4px;border-radius:3px;';
-      delAll.addEventListener('mouseenter', function() {
-        delAll.style.color = 'var(--danger)';
-        delAll.style.background = 'var(--danger-soft)';
-      });
-      delAll.addEventListener('mouseleave', function() {
-        delAll.style.color = 'var(--fg-3)';
-        delAll.style.background = 'transparent';
-      });
+      delAll.innerHTML = '<i data-lucide="trash-2" style="width:13px;height:13px;"></i>';
       delAll.addEventListener('click', async function(ev) {
         ev.stopPropagation();
         var victims = databases.filter(function(n) { return n !== 'local.db'; });
@@ -3094,28 +3144,17 @@
       var checked = new Set(getCheckedDbs());
       databases.forEach(function(name) {
         var li = document.createElement('li');
+        li.className = 'db-row' + (name === sel.value ? ' selected' : '');
         li.setAttribute('role', 'option');
         li.dataset.dbName = name;
-        li.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:4px;cursor:pointer;color:var(--fg-1);';
-        if (name === sel.value) {
-          li.style.background = 'var(--bg-tint)';
-        }
-        li.addEventListener('mouseenter', function() {
-          if (name !== sel.value) li.style.background = 'var(--bg-elev)';
-        });
-        li.addEventListener('mouseleave', function() {
-          li.style.background = (name === sel.value) ? 'var(--bg-tint)' : 'transparent';
-        });
 
         // Checkbox — multi-select for merged view
         var cb = document.createElement('input');
         cb.type = 'checkbox';
+        cb.className = 'db-row-cb';
         cb.checked = checked.has(name);
         cb.title = 'Include in merged view';
-        cb.style.cssText = 'margin:0;cursor:pointer;accent-color:var(--accent);';
-        cb.addEventListener('click', function(ev) {
-          ev.stopPropagation();
-        });
+        cb.addEventListener('click', function(ev) { ev.stopPropagation(); });
         cb.addEventListener('change', function() {
           var current = new Set(getCheckedDbs());
           if (cb.checked) current.add(name); else current.delete(name);
@@ -3125,71 +3164,45 @@
           if (!cb.checked && sel.value === name && arr.length > 0) {
             sel.value = arr[0];
           }
-          // Update only the highlight on the active row without rebuilding menu
-          Array.from(menu.querySelectorAll('li[role="option"]')).forEach(function(rowEl) {
-            var rowName = rowEl.dataset.dbName;
-            rowEl.style.background = (rowName === sel.value) ? 'var(--bg-tint)' : 'transparent';
+          // Update .selected class on rows without rebuilding the menu
+          Array.from(menu.querySelectorAll('.db-row')).forEach(function(rowEl) {
+            rowEl.classList.toggle('selected', rowEl.dataset.dbName === sel.value);
           });
           refreshDbSelectLabel();
           // Soft notify — pagination.js debounces and does silent re-query.
-          // Use custom event (not sel.change) to avoid re-rendering menu DOM.
           window.dispatchEvent(new CustomEvent('db-active-changed'));
         });
         li.appendChild(cb);
 
         var label = document.createElement('span');
+        label.className = 'db-row-title';
         label.textContent = name;
-        label.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        label.title = name;
         label.addEventListener('click', function() {
           setDbSelectValue(name);
           closeDbMenu();
         });
         li.appendChild(label);
 
-        // X delete button — hidden for local.db
+        // Kebab → Delete (hidden for local.db)
         if (name !== 'local.db') {
-          var x = document.createElement('button');
-          x.type = 'button';
-          x.textContent = '×';
-          x.title = 'Delete ' + name;
-          x.style.cssText = 'background:transparent;border:none;color:var(--fg-3);cursor:pointer;font-size:14px;line-height:1;padding:0 4px;border-radius:3px;';
-          x.addEventListener('mouseenter', function() {
-            x.style.color = 'var(--danger)';
-            x.style.background = 'var(--danger-soft)';
-          });
-          x.addEventListener('mouseleave', function() {
-            x.style.color = 'var(--fg-3)';
-            x.style.background = 'transparent';
-          });
-          x.addEventListener('click', async function(ev) {
+          var kebab = document.createElement('button');
+          kebab.type = 'button';
+          kebab.className = 'db-row-kebab';
+          kebab.title = 'More actions';
+          kebab.dataset.dbName = name;
+          kebab.innerHTML = '<i data-lucide="more-vertical" style="width:13px;height:13px;"></i>';
+          kebab.addEventListener('click', function(ev) {
             ev.stopPropagation();
-            if (!confirm('Delete database file "' + name + '"? This cannot be undone.')) return;
-            var token = localStorage.getItem('auth_token');
-            try {
-              var res = await fetch(
-                '/api/v1/db/file?db=' + encodeURIComponent(name) +
-                '&token=' + encodeURIComponent(token || ''),
-                { method: 'DELETE' }
-              );
-              if (!res.ok) {
-                var err = await res.json().catch(function() { return { detail: res.statusText }; });
-                alert('Delete failed: ' + (err.detail || res.statusText));
-                return;
-              }
-              // If deleted the currently selected DB, fall back to local.db
-              if (sel.value === name) {
-                setDbSelectValue('local.db');
-              }
-              await populateDbList();
-            } catch(e) {
-              alert('Delete failed: ' + e.message);
-            }
+            openDbRowActions(name, kebab);
           });
-          li.appendChild(x);
+          li.appendChild(kebab);
         }
 
         menu.appendChild(li);
       });
+
+      if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();
     }
 
     var __lastDbList = [];
@@ -3241,7 +3254,7 @@
         // Re-render only on list change or when menu open, to avoid clobbering hover state.
         var listChanged = !arraysEqualUnordered(__lastDbList, data.databases);
         var menu = document.getElementById('db-select-menu');
-        var menuOpen = menu && menu.style.display === 'block';
+        var menuOpen = menu && !menu.hidden;
         if (listChanged || menuOpen || (opts && opts.force)) {
           renderDbMenu(data.databases);
         }
@@ -3284,7 +3297,7 @@
         refreshDbSelectLabel();
         // Only rebuild menu DOM when menu is actually open (avoids flicker during background updates)
         var menu = document.getElementById('db-select-menu');
-        if (menu && menu.style.display === 'block') {
+        if (menu && !menu.hidden) {
           var names = Array.from(selEl.options).map(function(o) { return o.value; });
           renderDbMenu(names);
         }
@@ -3292,15 +3305,21 @@
     }
     window.addEventListener('db-checked-changed', refreshDbSelectLabel);
 
-    // Trigger toggles menu (fixed-positioned at trigger rect so no ancestor clips it)
+    // Trigger toggles menu (fixed-positioned at trigger rect so no ancestor clips it).
+    // The trigger now sits in a narrow sidebar column, so the menu's right edge
+    // must be clamped inside the viewport.
     function positionDbMenu() {
       var trig = document.getElementById('db-select-trigger');
       var menu = document.getElementById('db-select-menu');
       if (!trig || !menu) return;
       var r = trig.getBoundingClientRect();
-      menu.style.top = (r.bottom + 2) + 'px';
-      menu.style.left = r.left + 'px';
-      menu.style.minWidth = Math.max(r.width, 240) + 'px';
+      var w = Math.max(r.width, 240);
+      var left = r.left;
+      if (left + w > window.innerWidth - 8) left = window.innerWidth - w - 8;
+      if (left < 8) left = 8;
+      menu.style.top = (r.bottom + 4) + 'px';
+      menu.style.left = left + 'px';
+      menu.style.minWidth = w + 'px';
     }
     var trigger = document.getElementById('db-select-trigger');
     if (trigger) {
@@ -3308,27 +3327,31 @@
         ev.stopPropagation();
         var menu = document.getElementById('db-select-menu');
         if (!menu) return;
-        var open = !(menu.style.display === 'none' || !menu.style.display);
-        if (open) {
-          menu.style.display = 'none';
+        if (!menu.hidden) {
+          closeDbMenu();
         } else {
           // Refetch list every time menu opens so newly-created/deleted DBs appear
           populateDbList({ force: true }).then(function() {
             positionDbMenu();
-            menu.style.display = 'block';
+            menu.hidden = false;
+            trigger.setAttribute('aria-expanded', 'true');
           });
         }
       });
     }
     window.addEventListener('resize', positionDbMenu);
     window.addEventListener('scroll', positionDbMenu, true);
-    // Click outside closes menu
+    // Click outside closes menu (kebab popup is positioned outside #db-select-wrap)
     document.addEventListener('click', function(ev) {
       var wrap = document.getElementById('db-select-wrap');
-      if (wrap && !wrap.contains(ev.target)) closeDbMenu();
+      if (wrap && !wrap.contains(ev.target) && !ev.target.closest('.db-row-actions')) {
+        closeDbMenu();
+      }
     });
     document.addEventListener('keydown', function(ev) {
-      if (ev.key === 'Escape') closeDbMenu();
+      if (ev.key === 'Escape') {
+        closeDbMenu();
+      }
     });
 
     // ── Download button ──
