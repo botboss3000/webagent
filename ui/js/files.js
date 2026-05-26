@@ -711,7 +711,20 @@ function toggleTerminalWrap(tabPath) {
   const tab = openTabs.find((t) => t.path === tabPath);
   if (!tab || tab.kind !== 'terminal') return;
   tab.wrap = !(tab.wrap !== false);   // flip; treat undefined as true
+  // Sync the CSS classes that control the scroll wrapper's overflow-x and
+  // the host's width. The terminal pane is a sibling of the find bar; the
+  // host lives inside .files-terminal-scroll.
+  const pane = document.querySelector('.files-editor-pane[data-path="' + cssEscape(tabPath) + '"]');
+  if (pane) {
+    const scrollWrap = pane.querySelector('.files-terminal-scroll');
+    const host = pane.querySelector('.files-terminal-host');
+    if (scrollWrap) scrollWrap.classList.toggle('files-terminal-scroll-nowrap', !tab.wrap);
+    if (host)       host.classList.toggle('files-terminal-host-nowrap', !tab.wrap);
+  }
   if (tab.instance && tab.instance.setWrap) tab.instance.setWrap(tab.wrap);
+  // Refit after the layout change — the host now has a different effective
+  // width so xterm needs to recompute cols.
+  setTimeout(() => { if (tab.instance) tab.instance.fit(); }, 30);
   persistTabs();
 }
 
@@ -1120,9 +1133,17 @@ function buildPaneForTab(tab, mode) {
     // host so it stacks on top in flex-column layout.
     const findBar = buildTerminalFindBar();
     pane.appendChild(findBar);
+    // Scroll wrapper owns the horizontal scrollbar in no-wrap mode. The
+    // host inside is grown wider than the wrapper via CSS so the user can
+    // swipe / drag to see off-screen content.
+    const scrollWrap = document.createElement('div');
+    scrollWrap.className = 'files-terminal-scroll';
+    if (tab.wrap === false) scrollWrap.classList.add('files-terminal-scroll-nowrap');
     const host = document.createElement('div');
     host.className = 'files-terminal-host';
-    pane.appendChild(host);
+    if (tab.wrap === false) host.classList.add('files-terminal-host-nowrap');
+    scrollWrap.appendChild(host);
+    pane.appendChild(scrollWrap);
 
     // Drag-and-drop: dropping a file from the file tree pastes its absolute
     // path (shell-quoted) at the current prompt. The tree marshals the path
@@ -1143,6 +1164,10 @@ function buildPaneForTab(tab, mode) {
       tab.instance.paste(shellQuote(raw) + ' ');
       tab.instance.focus();
     });
+
+    // Long-press on mobile → context menu with Copy / Paste / Select all.
+    // Fires after a 500ms hold that didn't move; cancelled on move / lift.
+    wireTerminalLongPress(host, () => tab.instance);
 
     // xterm.open() measures its host immediately. The pane has just been
     // created (not yet appended to the document) — defer xterm creation
@@ -1869,6 +1894,138 @@ function _updateTabConnDot(tabPath, state) {
 
 function newTerminalSessionId() {
   return 'terminal:' + randomUUID();
+}
+
+// ── Mobile long-press → Copy / Paste menu ─────────────────────────
+//
+// xterm.js doesn't natively expose a touch-friendly copy/paste UI.
+// We watch for a still touch held >500ms on the terminal host and pop a
+// small floating menu near the touch point. Cancelled on touchmove /
+// touchcancel so it doesn't fight with the user's scrolling or selection.
+
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_MOVE_TOLERANCE = 8;  // px — touchmove farther than this aborts
+
+function wireTerminalLongPress(host, getInstance) {
+  let timer = null;
+  let startX = 0;
+  let startY = 0;
+
+  function cancel() {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  }
+
+  host.addEventListener('touchstart', (e) => {
+    if (!e.touches || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    startX = t.clientX;
+    startY = t.clientY;
+    cancel();
+    timer = setTimeout(() => {
+      timer = null;
+      const inst = getInstance && getInstance();
+      if (inst) showTerminalContextMenu(startX, startY, inst);
+    }, LONG_PRESS_MS);
+  }, { passive: true });
+
+  host.addEventListener('touchmove', (e) => {
+    if (!e.touches || e.touches.length !== 1) { cancel(); return; }
+    const t = e.touches[0];
+    if (Math.abs(t.clientX - startX) > LONG_PRESS_MOVE_TOLERANCE ||
+        Math.abs(t.clientY - startY) > LONG_PRESS_MOVE_TOLERANCE) {
+      cancel();
+    }
+  }, { passive: true });
+
+  host.addEventListener('touchend',    cancel, { passive: true });
+  host.addEventListener('touchcancel', cancel, { passive: true });
+}
+
+function showTerminalContextMenu(x, y, instance) {
+  closeTerminalContextMenu();
+  const menu = document.createElement('div');
+  menu.className = 'files-terminal-ctxmenu';
+  menu.id = 'files-terminal-ctxmenu';
+
+  function btn(label, icon, action, disabled) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'files-terminal-ctxmenu-item' + (disabled ? ' disabled' : '');
+    b.disabled = !!disabled;
+    b.innerHTML = '<i data-lucide="' + icon + '" class="lucide-icon"></i><span>' + label + '</span>';
+    b.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      closeTerminalContextMenu();
+      if (!disabled) action();
+    });
+    return b;
+  }
+
+  const hasSel = !!(instance && instance.term && instance.term.hasSelection && instance.term.hasSelection());
+
+  menu.appendChild(btn('Copy',       'copy',      async () => {
+    try {
+      const text = (instance.term.getSelection && instance.term.getSelection()) || '';
+      if (text) await navigator.clipboard.writeText(text);
+    } catch (_) {}
+    try { instance.focus(); } catch (_) {}
+  }, !hasSel));
+
+  menu.appendChild(btn('Paste',      'clipboard', async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text && instance.paste) instance.paste(text);
+    } catch (_) {}
+    try { instance.focus(); } catch (_) {}
+  }));
+
+  menu.appendChild(btn('Select all', 'list',      () => {
+    try { instance.term.selectAll && instance.term.selectAll(); } catch (_) {}
+  }));
+
+  menu.appendChild(btn('Clear',      'trash-2',   () => {
+    try { instance.term.clear && instance.term.clear(); } catch (_) {}
+    try { instance.focus(); } catch (_) {}
+  }));
+
+  document.body.appendChild(menu);
+
+  // Clamp into viewport.
+  const rect = menu.getBoundingClientRect();
+  const left = Math.max(8, Math.min(window.innerWidth  - rect.width  - 8, x - rect.width / 2));
+  const top  = Math.max(8, Math.min(window.innerHeight - rect.height - 8, y - rect.height - 8));
+  menu.style.left = left + 'px';
+  menu.style.top  = top  + 'px';
+
+  if (window.lucide) {
+    window.lucide.createIcons({ nodes: Array.from(menu.querySelectorAll('[data-lucide]:not(.lucide)')) });
+  }
+
+  // Close on any tap / click outside, or on scroll. Touchstart capture so
+  // we catch the gesture before xterm processes it as a new selection.
+  const outside = (ev) => {
+    if (!menu.contains(ev.target)) closeTerminalContextMenu();
+  };
+  setTimeout(() => {
+    document.addEventListener('mousedown',  outside, true);
+    document.addEventListener('touchstart', outside, true);
+    document.addEventListener('scroll',     closeTerminalContextMenu, true);
+  }, 0);
+  menu._outsideHandler = outside;
+}
+
+function closeTerminalContextMenu() {
+  const menu = document.getElementById('files-terminal-ctxmenu');
+  if (!menu) return;
+  if (menu._outsideHandler) {
+    document.removeEventListener('mousedown',  menu._outsideHandler, true);
+    document.removeEventListener('touchstart', menu._outsideHandler, true);
+  }
+  document.removeEventListener('scroll', closeTerminalContextMenu, true);
+  menu.remove();
 }
 
 // ── Drag a file from the tree onto a terminal pane ────────────────
