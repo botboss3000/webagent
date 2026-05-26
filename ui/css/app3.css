@@ -778,18 +778,8 @@ body.light-mode .th-funnel {
 }
 
 /* ═══════════════════════════════════════════
-   App Config tab — two-column settings page
+   App Config UI — hosted inside Admin Tools' Settings view
 ═══════════════════════════════════════════ */
-
-#tab-app-config {
-  overflow: hidden;
-  display: none;
-}
-#tab-app-config.active {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-}
 
 #app-config-container {
   display: flex;
@@ -798,6 +788,7 @@ body.light-mode .th-funnel {
   min-height: 0;
   overflow: hidden;
 }
+#app-config-container[hidden] { display: none; }
 
 /* Top header */
 #app-config-header {

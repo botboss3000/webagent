@@ -9,14 +9,33 @@
 import { openGitPanel } from './files-git.js';
 import { createTerminalInstance } from './terminal.js';
 import { randomUUID } from './uuid.js';
+import { startAppConfig, stopAppConfig } from './app-config.js';
+import { startAutoRefresh, stopAutoRefresh } from './db/pagination.js';
 
 const API_BASE = '/api/v1/files';
-const LS_SIDEBAR_VIEW = 'files.sidebarView';   // 'explorer' | 'git'
+const LS_SIDEBAR_VIEW = 'files.sidebarView';   // 'explorer' | 'git' | 'database'
+const LS_TERM_FONT_SIZE = 'files.terminalFontSize';
+const TERM_FONT_DEFAULT = 14;
+
+function getTerminalFontSize() {
+  const raw = parseInt(localStorage.getItem(LS_TERM_FONT_SIZE), 10);
+  return Number.isFinite(raw) && raw >= 8 && raw <= 32 ? raw : TERM_FONT_DEFAULT;
+}
+function setTerminalFontSize(n) {
+  try { localStorage.setItem(LS_TERM_FONT_SIZE, String(n)); } catch (_) {}
+  // Propagate to every open terminal — font size is global, not per-tab.
+  for (const t of openTabs) {
+    if (t.kind === 'terminal' && t.instance && t.instance.setFontSize) {
+      try { t.instance.setFontSize(n); } catch (_) {}
+    }
+  }
+}
 
 let initialised = false;
 let isAdmin = false;
 let openTabs = [];          // { path, name, content, dirty, binary, encoding, size }
 let activeTabPath = null;
+let settingsOpen = false;   // Settings view (App Config) currently overlaying the editor area
 let expandedDirs = new Set();  // absolute paths of currently expanded directories
 let dragSrcPath = null;        // path of the tab being dragged
 let currentRoot = '';          // absolute path of the directory the tree is rooted at
@@ -225,7 +244,7 @@ let _filesDropGuardInstalled = false;
 function installFilesDropGuard() {
   if (_filesDropGuardInstalled) return;
   _filesDropGuardInstalled = true;
-  const editor = document.getElementById('files-editor');
+  const editor = document.getElementById('admin-tools');
   if (!editor) return;
   editor.addEventListener('dragover', (e) => {
     if (e.dataTransfer && Array.from(e.dataTransfer.types).indexOf('Files') !== -1) {
@@ -460,30 +479,28 @@ function renderTabs() {
     el.appendChild(label);
 
     // ── 3-dot "more" menu button ──
-    // Terminal tabs have no per-tab actions (no file to rename/delete/wrap/
-    // preview/find), so the menu is omitted entirely.
-    if (tab.kind !== 'terminal') {
-      const more = document.createElement('button');
-      more.className = 'files-tab-more';
-      more.type = 'button';
-      more.title = 'More actions';
-      more.draggable = false;
-      const moreI = document.createElement('i');
-      moreI.setAttribute('data-lucide', 'more-vertical');
-      moreI.className = 'lucide-icon';
-      more.appendChild(moreI);
-      // Same draggable-parent guard as the close button.
-      more.addEventListener('mousedown', (e) => {
-        e.stopPropagation();
-        if (e.button === 0) {
-          e.preventDefault();
-          showTabMenu(tab, more);
-        }
-      });
-      more.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); });
-      more.addEventListener('dragstart', (e) => { e.preventDefault(); e.stopPropagation(); });
-      el.appendChild(more);
-    }
+    // For file tabs this opens the rename/delete/wrap/preview/find menu;
+    // for terminal tabs it shows the (different) terminal-specific items.
+    const more = document.createElement('button');
+    more.className = 'files-tab-more';
+    more.type = 'button';
+    more.title = 'More actions';
+    more.draggable = false;
+    const moreI = document.createElement('i');
+    moreI.setAttribute('data-lucide', 'more-vertical');
+    moreI.className = 'lucide-icon';
+    more.appendChild(moreI);
+    more.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+      if (e.button === 0) {
+        e.preventDefault();
+        if (tab.kind === 'terminal') showTerminalTabMenu(tab, more);
+        else showTabMenu(tab, more);
+      }
+    });
+    more.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); });
+    more.addEventListener('dragstart', (e) => { e.preventDefault(); e.stopPropagation(); });
+    el.appendChild(more);
 
     const close = document.createElement('button');
     close.className = 'files-tab-close';
@@ -672,6 +689,73 @@ function showTabMenu(tab, anchorBtn) {
   items.push({ icon: 'search', label: 'Find / Replace…', disabled: findDisabled, action: () => openFindBarForActiveTab(tab.path, false) });
   // Right-align under the button
   _openFloatingMenu(items, rect.bottom + 2, rect.right - 180);
+}
+
+function showTerminalTabMenu(tab, anchorBtn) {
+  const rect = anchorBtn.getBoundingClientRect();
+  const wrapOn = tab.wrap !== false;
+  const items = [
+    { icon: 'pencil',    label: 'Rename…',        action: () => startInlineRename(tab, document.querySelector('#files-tabs .files-tab[data-path="' + cssEscape(tab.path) + '"] .files-tab-label')) },
+    { icon: 'wrap-text', label: 'Wrap lines',     checked: wrapOn, action: () => toggleTerminalWrap(tab.path) },
+    { separator: true },
+    { icon: 'zoom-in',   label: 'Zoom in',        action: () => terminalZoom(+1) },
+    { icon: 'zoom-out',  label: 'Zoom out',       action: () => terminalZoom(-1) },
+    { icon: 'refresh-cw', label: 'Reset zoom',    action: () => terminalResetZoom() },
+    { separator: true },
+    { icon: 'search',    label: 'Find…',          action: () => openTerminalFindFromMenu(tab.path) },
+  ];
+  _openFloatingMenu(items, rect.bottom + 2, rect.right - 180);
+}
+
+function toggleTerminalWrap(tabPath) {
+  const tab = openTabs.find((t) => t.path === tabPath);
+  if (!tab || tab.kind !== 'terminal') return;
+  tab.wrap = !(tab.wrap !== false);   // flip; treat undefined as true
+  // Sync the CSS classes that control the scroll wrapper's overflow-x and
+  // the host's width. The terminal pane is a sibling of the find bar; the
+  // host lives inside .files-terminal-scroll.
+  const pane = document.querySelector('.files-editor-pane[data-path="' + cssEscape(tabPath) + '"]');
+  if (pane) {
+    const scrollWrap = pane.querySelector('.files-terminal-scroll');
+    const host = pane.querySelector('.files-terminal-host');
+    if (scrollWrap) scrollWrap.classList.toggle('files-terminal-scroll-nowrap', !tab.wrap);
+    if (host)       host.classList.toggle('files-terminal-host-nowrap', !tab.wrap);
+  }
+  if (tab.instance && tab.instance.setWrap) tab.instance.setWrap(tab.wrap);
+  // Refit after the layout change. Two rAF ticks guarantee the browser has
+  // applied the new width to the host BEFORE fitAddon measures — on mobile
+  // a 30ms setTimeout sometimes fires before layout has reflowed, so xterm
+  // keeps its old cols and wrap appears not to work.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (!tab.instance) return;
+    tab.instance.fit();
+    // Print a one-line confirmation so the user can see the toggle took
+    // effect and what cols xterm is now using. Future shell output will
+    // wrap (or not) at this column count.
+    try {
+      const cols = (tab.instance.term && tab.instance.term.cols) || '?';
+      const msg = tab.wrap
+        ? '\r\n\x1b[2;33m[wrap ON — ' + cols + ' cols, lines wrap to next row]\x1b[0m\r\n'
+        : '\r\n\x1b[2;33m[wrap OFF — ' + cols + ' cols, swipe horizontally to see overflow]\x1b[0m\r\n';
+      tab.instance.term.write(msg);
+    } catch (_) {}
+  }));
+  persistTabs();
+}
+
+function terminalZoom(delta) {
+  const next = getTerminalFontSize() + delta;
+  setTerminalFontSize(next);
+}
+function terminalResetZoom() {
+  setTerminalFontSize(TERM_FONT_DEFAULT);
+}
+
+function openTerminalFindFromMenu(tabPath) {
+  const pane = document.querySelector('.files-editor-pane[data-path="' + cssEscape(tabPath) + '"]');
+  const bar = pane && pane.querySelector('.files-terminal-findbar');
+  const tab = openTabs.find((t) => t.path === tabPath);
+  if (bar && tab && tab.instance) openTerminalFindBar(bar, tab.instance);
 }
 
 function togglePreview(path) {
@@ -1064,9 +1148,17 @@ function buildPaneForTab(tab, mode) {
     // host so it stacks on top in flex-column layout.
     const findBar = buildTerminalFindBar();
     pane.appendChild(findBar);
+    // Scroll wrapper owns the horizontal scrollbar in no-wrap mode. The
+    // host inside is grown wider than the wrapper via CSS so the user can
+    // swipe / drag to see off-screen content.
+    const scrollWrap = document.createElement('div');
+    scrollWrap.className = 'files-terminal-scroll';
+    if (tab.wrap === false) scrollWrap.classList.add('files-terminal-scroll-nowrap');
     const host = document.createElement('div');
     host.className = 'files-terminal-host';
-    pane.appendChild(host);
+    if (tab.wrap === false) host.classList.add('files-terminal-host-nowrap');
+    scrollWrap.appendChild(host);
+    pane.appendChild(scrollWrap);
 
     // Drag-and-drop: dropping a file from the file tree pastes its absolute
     // path (shell-quoted) at the current prompt. The tree marshals the path
@@ -1088,19 +1180,34 @@ function buildPaneForTab(tab, mode) {
       tab.instance.focus();
     });
 
+    // Long-press on mobile → context menu with Copy / Paste / Select all.
+    // Fires after a 500ms hold that didn't move; cancelled on move / lift.
+    wireTerminalLongPress(host, () => tab.instance);
+    // Two-finger pinch → adjust the global terminal font size.
+    wireTerminalPinchZoom(host);
+
     // xterm.open() measures its host immediately. The pane has just been
     // created (not yet appended to the document) — defer xterm creation
-    // until after the pane is attached and the active class has been set,
-    // otherwise fit() reads zero dimensions.
-    setTimeout(() => {
+    // until after the pane is attached AND the browser has reflowed, so
+    // fit() sees the final host width. Without the rAF, on slow mobile
+    // browsers the host can still report a stale width and xterm picks
+    // too many cols, making the shell think it has more room than it
+    // does and wrap behaviour appears broken.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
       if (!document.body.contains(pane)) return;
       try {
         // tab.path is the backend session_id (see pushTerminalTab). Passing
         // the existing id on restore reattaches to the running shell.
-        tab.instance = createTerminalInstance(host, tab.path);
+        tab.instance = createTerminalInstance(host, tab.path, {
+          wrap: tab.wrap !== false,           // default true unless persisted false
+          fontSize: getTerminalFontSize(),    // global setting, shared across tabs
+        });
         // Drive the per-tab status dot from the WS state machine.
         tab.instance.onStateChange((s) => _updateTabConnDot(tab.path, s));
         tab.instance.fit();
+        // Belt-and-braces second fit after another paint — covers any
+        // late layout shift from the address bar settling on iOS Safari.
+        setTimeout(() => { if (tab.instance) tab.instance.fit(); }, 150);
         // Wire Ctrl+F → find bar. Capture-phase on the host so we preempt
         // xterm's keydown handler (which otherwise forwards Ctrl+F bytes
         // to the shell).
@@ -1115,7 +1222,7 @@ function buildPaneForTab(tab, mode) {
       } catch (e) {
         host.textContent = 'Failed to start terminal: ' + (e.message || e);
       }
-    }, 0);
+    }));
   } else {
     // text mode: textarea (transparent) overlaid on a <pre> for Prism
     buildTextEditorPane(pane, tab);
@@ -1655,7 +1762,7 @@ function initSidebarResize() {
   });
   document.addEventListener('mousemove', (e) => {
     if (!dragging) return;
-    const editorRect = document.getElementById('files-editor').getBoundingClientRect();
+    const editorRect = document.getElementById('admin-tools').getBoundingClientRect();
     let w = e.clientX - editorRect.left;
     w = Math.max(160, Math.min(600, w));
     sidebar.style.width = w + 'px';
@@ -1686,7 +1793,7 @@ function persistTabs() {
     // with the same id reattaches us to it.
     const minimal = openTabs.map((t) => {
       if (t.kind === 'terminal') {
-        return { path: t.path, name: t.name, kind: 'terminal' };
+        return { path: t.path, name: t.name, kind: 'terminal', wrap: t.wrap !== false };
       }
       return { path: t.path, name: t.name, wrap: !!t.wrap, preview: !!t.preview };
     });
@@ -1725,6 +1832,8 @@ async function restoreOpenTabs() {
           // Reattach to the running PTY identified by t.path. If the shell
           // already exited, the backend will spawn a fresh one for that id.
           pushTerminalTab(t.path, t.name);
+          const restored = openTabs[openTabs.length - 1];
+          if (restored && t.wrap === false) restored.wrap = false;
           continue;
         }
         await openFile(t.path, t.name);
@@ -1776,6 +1885,7 @@ export function initFiles() {
   initTabCarousel();
   installFilesDropGuard();
   initSidebarViewSwitcher();
+  initSettingsToggle();
   initSidebarMaximize();
   initFilesTerminalButton();
   renderTabs();
@@ -1807,6 +1917,185 @@ function _updateTabConnDot(tabPath, state) {
 
 function newTerminalSessionId() {
   return 'terminal:' + randomUUID();
+}
+
+// ── Mobile long-press → Copy / Paste menu ─────────────────────────
+//
+// xterm.js doesn't natively expose a touch-friendly copy/paste UI.
+// We watch for a still touch held >500ms on the terminal host and pop a
+// small floating menu near the touch point. Cancelled on touchmove /
+// touchcancel so it doesn't fight with the user's scrolling or selection.
+
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_MOVE_TOLERANCE = 8;  // px — touchmove farther than this aborts
+
+function wireTerminalLongPress(host, getInstance) {
+  let timer = null;
+  let startX = 0;
+  let startY = 0;
+
+  function cancel() {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  }
+
+  host.addEventListener('touchstart', (e) => {
+    // Multi-touch (e.g. pinch-to-zoom) cancels the long-press intent.
+    if (!e.touches || e.touches.length !== 1) { cancel(); return; }
+    const t = e.touches[0];
+    startX = t.clientX;
+    startY = t.clientY;
+    cancel();
+    timer = setTimeout(() => {
+      timer = null;
+      const inst = getInstance && getInstance();
+      if (inst) showTerminalContextMenu(startX, startY, inst);
+    }, LONG_PRESS_MS);
+  }, { passive: true });
+
+  host.addEventListener('touchmove', (e) => {
+    if (!e.touches || e.touches.length !== 1) { cancel(); return; }
+    const t = e.touches[0];
+    if (Math.abs(t.clientX - startX) > LONG_PRESS_MOVE_TOLERANCE ||
+        Math.abs(t.clientY - startY) > LONG_PRESS_MOVE_TOLERANCE) {
+      cancel();
+    }
+  }, { passive: true });
+
+  host.addEventListener('touchend',    cancel, { passive: true });
+  host.addEventListener('touchcancel', cancel, { passive: true });
+}
+
+// ── Mobile pinch-to-zoom ──────────────────────────────────────────
+//
+// Two-finger pinch on the terminal host adjusts the global font size.
+// Uses the same setter as the menu's Zoom in / out items so the new size
+// propagates to every open terminal and persists in localStorage.
+
+function wireTerminalPinchZoom(host) {
+  let startDist = 0;
+  let startFontSize = 0;
+  let lastApplied = 0;
+
+  function dist(t0, t1) {
+    const dx = t0.clientX - t1.clientX;
+    const dy = t0.clientY - t1.clientY;
+    return Math.hypot(dx, dy);
+  }
+
+  host.addEventListener('touchstart', (e) => {
+    if (!e.touches || e.touches.length < 2) return;
+    // Prevent the OS-level pinch zoom from kicking in on top of ours.
+    if (e.cancelable) e.preventDefault();
+    startDist = dist(e.touches[0], e.touches[1]);
+    startFontSize = getTerminalFontSize();
+    lastApplied = startFontSize;
+  }, { passive: false });
+
+  host.addEventListener('touchmove', (e) => {
+    if (!e.touches || e.touches.length < 2 || startDist === 0) return;
+    if (e.cancelable) e.preventDefault();
+    const d = dist(e.touches[0], e.touches[1]);
+    if (d === 0) return;
+    const ratio = d / startDist;
+    let next = Math.round(startFontSize * ratio);
+    if (next < 8) next = 8;
+    if (next > 32) next = 32;
+    if (next !== lastApplied) {
+      setTerminalFontSize(next);
+      lastApplied = next;
+    }
+  }, { passive: false });
+
+  function end() { startDist = 0; }
+  host.addEventListener('touchend',    end, { passive: true });
+  host.addEventListener('touchcancel', end, { passive: true });
+}
+
+function showTerminalContextMenu(x, y, instance) {
+  closeTerminalContextMenu();
+  const menu = document.createElement('div');
+  menu.className = 'files-terminal-ctxmenu';
+  menu.id = 'files-terminal-ctxmenu';
+
+  function btn(label, icon, action, disabled) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'files-terminal-ctxmenu-item' + (disabled ? ' disabled' : '');
+    b.disabled = !!disabled;
+    b.innerHTML = '<i data-lucide="' + icon + '" class="lucide-icon"></i><span>' + label + '</span>';
+    b.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      closeTerminalContextMenu();
+      if (!disabled) action();
+    });
+    return b;
+  }
+
+  const hasSel = !!(instance && instance.term && instance.term.hasSelection && instance.term.hasSelection());
+
+  menu.appendChild(btn('Copy',       'copy',      async () => {
+    try {
+      const text = (instance.term.getSelection && instance.term.getSelection()) || '';
+      if (text) await navigator.clipboard.writeText(text);
+    } catch (_) {}
+    try { instance.focus(); } catch (_) {}
+  }, !hasSel));
+
+  menu.appendChild(btn('Paste',      'clipboard', async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text && instance.paste) instance.paste(text);
+    } catch (_) {}
+    try { instance.focus(); } catch (_) {}
+  }));
+
+  menu.appendChild(btn('Select all', 'list',      () => {
+    try { instance.term.selectAll && instance.term.selectAll(); } catch (_) {}
+  }));
+
+  menu.appendChild(btn('Clear',      'trash-2',   () => {
+    try { instance.term.clear && instance.term.clear(); } catch (_) {}
+    try { instance.focus(); } catch (_) {}
+  }));
+
+  document.body.appendChild(menu);
+
+  // Clamp into viewport.
+  const rect = menu.getBoundingClientRect();
+  const left = Math.max(8, Math.min(window.innerWidth  - rect.width  - 8, x - rect.width / 2));
+  const top  = Math.max(8, Math.min(window.innerHeight - rect.height - 8, y - rect.height - 8));
+  menu.style.left = left + 'px';
+  menu.style.top  = top  + 'px';
+
+  if (window.lucide) {
+    window.lucide.createIcons({ nodes: Array.from(menu.querySelectorAll('[data-lucide]:not(.lucide)')) });
+  }
+
+  // Close on any tap / click outside, or on scroll. Touchstart capture so
+  // we catch the gesture before xterm processes it as a new selection.
+  const outside = (ev) => {
+    if (!menu.contains(ev.target)) closeTerminalContextMenu();
+  };
+  setTimeout(() => {
+    document.addEventListener('mousedown',  outside, true);
+    document.addEventListener('touchstart', outside, true);
+    document.addEventListener('scroll',     closeTerminalContextMenu, true);
+  }, 0);
+  menu._outsideHandler = outside;
+}
+
+function closeTerminalContextMenu() {
+  const menu = document.getElementById('files-terminal-ctxmenu');
+  if (!menu) return;
+  if (menu._outsideHandler) {
+    document.removeEventListener('mousedown',  menu._outsideHandler, true);
+    document.removeEventListener('touchstart', menu._outsideHandler, true);
+  }
+  document.removeEventListener('scroll', closeTerminalContextMenu, true);
+  menu.remove();
 }
 
 // ── Drag a file from the tree onto a terminal pane ────────────────
@@ -1983,6 +2272,31 @@ function initFilesTerminalButton() {
     }
     openNewTerminalTab();
   }, true);
+
+  // Zoom shortcuts — only fire when a terminal tab is the active tab so
+  // they don't hijack browser zoom on other pages. Capture-phase for the
+  // same reason as Ctrl+`: xterm would otherwise see Ctrl+= / Ctrl+- and
+  // forward bytes to the shell.
+  document.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+    const active = openTabs.find((t) => t.path === activeTabPath);
+    if (!active || active.kind !== 'terminal') return;
+    // Don't steal these keys while the user is typing in an input — e.g.
+    // the find bar or the inline rename input.
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    // '=' on US layouts produces Equal; '+' is the same key with shift,
+    // which we excluded above. Some keyboards report '+' directly though.
+    const isPlus  = e.code === 'Equal' || e.key === '+' || e.key === '=';
+    const isMinus = e.code === 'Minus' || e.key === '-' || e.key === '_';
+    const isZero  = e.code === 'Digit0' || e.key === '0';
+    if (!isPlus && !isMinus && !isZero) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (isPlus)  terminalZoom(+1);
+    if (isMinus) terminalZoom(-1);
+    if (isZero)  terminalResetZoom();
+  }, true);
 }
 
 export function reconnectAllTerminals() {
@@ -2007,7 +2321,7 @@ window.addEventListener('resize', () => {
 
 const LS_SIDEBAR_STATE = 'files.sidebarState';   // 'split' | 'max' | 'strip'
 
-function isMobileLayout() {
+export function isMobileLayout() {
   if (typeof window.__isMobileChatLayout === 'function') return window.__isMobileChatLayout();
   return window.innerWidth <= 800;
 }
@@ -2074,7 +2388,7 @@ function cycleSidebarState() {
   setSidebarState(next);
 }
 
-function setSidebarState(state) {
+export function setSidebarState(state) {
   const sidebar = document.getElementById('files-sidebar');
   if (!sidebar) return;
   if (state !== 'split' && state !== 'max' && state !== 'strip') state = 'split';
@@ -2117,7 +2431,8 @@ function initSidebarViewSwitcher() {
   const sidebar = document.getElementById('files-sidebar');
   if (!sidebar) return;
   // Restore last view (default: explorer)
-  const want = localStorage.getItem(LS_SIDEBAR_VIEW) === 'git' ? 'git' : 'explorer';
+  const stored = localStorage.getItem(LS_SIDEBAR_VIEW);
+  const want = (stored === 'git' || stored === 'database') ? stored : 'explorer';
   applySidebarView(want);
   // The toggle icons live in BOTH panel headers (so each header has its
   // own copy). Delegate click handling at the sidebar level so we catch
@@ -2134,27 +2449,35 @@ function initSidebarViewSwitcher() {
   });
 }
 
+const VIEW_TITLE = { explorer: 'Explorer', git: 'Source control', database: 'Database' };
+const VIEW_SWITCH = { explorer: 'explorer', git: 'source control', database: 'database' };
+
 function applySidebarView(view) {
   const sidebar = document.getElementById('files-sidebar');
   if (!sidebar) return;
+  if (view !== 'explorer' && view !== 'git' && view !== 'database') view = 'explorer';
   sidebar.dataset.view = view;
   // Update aria-selected on every view-toggle button (in panel headers
-  // and in the strip).
-  sidebar.querySelectorAll('.files-view-toggle-btn, .files-strip-view').forEach((b) => {
+  // and in the strip). The Settings toggle button shares .files-view-toggle-btn
+  // for styling but is not part of the Explorer/Git/Database switch, so exclude
+  // it.
+  sidebar.querySelectorAll(
+    '.files-view-toggle-btn:not(.files-settings-toggle-btn), .files-strip-view'
+  ).forEach((b) => {
     const active = b.dataset.view === view;
     b.classList.toggle('active', active);
     b.setAttribute('aria-selected', active ? 'true' : 'false');
     if (b.classList.contains('files-view-toggle-btn')) {
       if (active) {
         b.setAttribute('aria-disabled', 'true');
-        b.title = (view === 'git' ? 'Source control' : 'Explorer') + ' (current view)';
+        b.title = VIEW_TITLE[view] + ' (current view)';
       } else {
         b.removeAttribute('aria-disabled');
-        b.title = 'Switch to ' + (b.dataset.view === 'git' ? 'source control' : 'explorer');
+        b.title = 'Switch to ' + (VIEW_SWITCH[b.dataset.view] || 'explorer');
       }
     }
   });
-  // In strip mode both panels stay hidden; otherwise the matching panel
+  // In strip mode all panels stay hidden; otherwise the matching panel
   // shows.
   const state = sidebar.dataset.state || 'split';
   sidebar.querySelectorAll('.files-sidebar-panel').forEach((p) => {
@@ -2164,9 +2487,136 @@ function applySidebarView(view) {
     // Lazy-load the git panel the first time, refresh on subsequent shows.
     openGitPanel(sidebar);
   }
+  // Right-pane swap: Database view replaces the file editor with the relocated
+  // db table view. Settings is an independent overlay that wins, so leave the
+  // pane swap alone whenever Settings is open.
+  const dbMain = document.getElementById('files-database-main');
+  const editorMain = document.querySelector(
+    '#admin-tools .files-main:not(.files-settings-main):not(.files-database-main)'
+  );
+  if (!settingsOpen) {
+    if (view === 'database') {
+      if (editorMain) editorMain.hidden = true;
+      if (dbMain) dbMain.hidden = false;
+      try { startAutoRefresh(); } catch (_) {}
+    } else {
+      if (dbMain) dbMain.hidden = true;
+      if (editorMain) editorMain.hidden = false;
+      try { stopAutoRefresh(); } catch (_) {}
+    }
+  }
 }
 
-export async function startFiles() {
+// ── Settings view (App Config) ────────────────────────────────────
+//
+// The Settings sidebar button toggles a full-width view that replaces the
+// file editor area (#files-tabs + #files-content) with the App Config UI.
+// The Explorer/Git sidebar stays interactive; only the right side swaps.
+
+function initSettingsToggle() {
+  // Relocate the App Config markup (parked hidden at the bottom of #app-container
+  // by index.html) into the Settings main inside Admin Tools. Idempotent.
+  const container = document.getElementById('app-config-container');
+  const host = document.getElementById('files-settings-main');
+  if (container && host && container.parentElement !== host) {
+    host.appendChild(container);
+    container.removeAttribute('hidden');
+  }
+  // Delegated click handler covers all three Settings buttons (strip + both
+  // sidebar panel headers).
+  const sidebar = document.getElementById('files-sidebar');
+  if (sidebar && !sidebar.__settingsToggleBound) {
+    sidebar.__settingsToggleBound = true;
+    sidebar.addEventListener('click', (e) => {
+      const btn = e.target.closest('.files-settings-toggle-btn');
+      if (!btn || !sidebar.contains(btn)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      toggleSettingsView();
+    });
+  }
+  // Reflect any pre-existing settingsOpen flag on the button(s).
+  applySettingsButtonState();
+}
+
+function applySettingsButtonState() {
+  document.querySelectorAll('.files-settings-toggle-btn').forEach((b) => {
+    b.classList.toggle('active', settingsOpen);
+    b.setAttribute('aria-pressed', settingsOpen ? 'true' : 'false');
+  });
+}
+
+function toggleSettingsView() {
+  const editorMain = document.querySelector(
+    '#admin-tools .files-main:not(.files-settings-main):not(.files-database-main)'
+  );
+  const settingsMain = document.getElementById('files-settings-main');
+  const dbMain = document.getElementById('files-database-main');
+  if (!editorMain || !settingsMain) return;
+  const sidebar = document.getElementById('files-sidebar');
+  const currentView = sidebar?.dataset.view || 'explorer';
+  settingsOpen = !settingsOpen;
+  if (settingsOpen) {
+    editorMain.hidden = true;
+    if (dbMain) dbMain.hidden = true;
+    settingsMain.hidden = false;
+    try { startAppConfig(); } catch (_) {}
+    try { stopAutoRefresh(); } catch (_) {}
+    // On mobile, the sidebar may be filling the screen (state=max). Collapse
+    // to the strip so the Settings view we just opened becomes visible.
+    if (sidebar && isMobileLayout() && sidebar.dataset.state === 'max') {
+      setSidebarState('strip');
+    }
+  } else {
+    settingsMain.hidden = true;
+    try { stopAppConfig(); } catch (_) {}
+    if (currentView === 'database') {
+      if (dbMain) dbMain.hidden = false;
+      try { startAutoRefresh(); } catch (_) {}
+    } else {
+      editorMain.hidden = false;
+    }
+  }
+  applySettingsButtonState();
+}
+
+// Relocate detached markup (App Config and the Database viewer) into the
+// Admin Tools layout. The originals are parked at the bottom of #app-container
+// in index.html so this module owns their final mount point. Idempotent.
+export function relocateAdminToolsContainers() {
+  // App Config — Settings view host
+  const acHost = document.getElementById('files-settings-main');
+  const acContainer = document.getElementById('app-config-container');
+  if (acHost && acContainer && acContainer.parentElement !== acHost) {
+    acHost.appendChild(acContainer);
+    acContainer.removeAttribute('hidden');
+  }
+  // Database viewer — sidebar host receives #db-sidebar; main host receives
+  // #db-toolbar then #db-table-view. The empty #db-panel and #db-viewer
+  // wrappers are dropped once their children have been moved.
+  const dbSbHost = document.getElementById('db-sidebar-host');
+  const dbMainHost = document.getElementById('files-database-main');
+  const dbSidebar = document.getElementById('db-sidebar');
+  const dbToolbar = document.getElementById('db-toolbar');
+  const dbTableView = document.getElementById('db-table-view');
+  if (dbSbHost && dbSidebar && dbSidebar.parentElement !== dbSbHost) {
+    dbSbHost.appendChild(dbSidebar);
+  }
+  if (dbMainHost && dbToolbar && dbToolbar.parentElement !== dbMainHost) {
+    dbMainHost.appendChild(dbToolbar);
+  }
+  if (dbMainHost && dbTableView && dbTableView.parentElement !== dbMainHost) {
+    dbMainHost.appendChild(dbTableView);
+  }
+  const dbPanel = document.getElementById('db-panel');
+  if (dbPanel && !dbPanel.children.length) dbPanel.remove();
+  const dbViewer = document.getElementById('db-viewer');
+  if (dbViewer && !dbViewer.children.length) dbViewer.remove();
+  const dbPark = document.getElementById('db-viewer-park');
+  if (dbPark && !dbPark.children.length) dbPark.remove();
+}
+
+export async function startAdminTools() {
   initFiles();
   // Check admin access; show overlay if not
   let accessInfo = { is_admin: false, user_id: '', authenticated: false };
@@ -2178,7 +2628,7 @@ export async function startFiles() {
   isAdmin = !!accessInfo.is_admin;
 
   const overlay = document.getElementById('files-restricted-overlay');
-  const editor = document.getElementById('files-editor');
+  const editor = document.getElementById('admin-tools');
   if (!isAdmin) {
     if (overlay) overlay.style.display = 'flex';
     if (editor) editor.style.display = 'none';
@@ -2193,13 +2643,13 @@ export async function startFiles() {
             'The server could not verify your session (token may be stale). ' +
             'Try signing out and back in.';
         } else {
-          diag.textContent = 'Not signed in. Sign in as an admin user to access the file editor.';
+          diag.textContent = 'Not signed in. Sign in as an admin user to access Admin Tools.';
         }
       } else {
         diag.textContent =
           'Signed in as: ' + (accessInfo.user_id || '?') + '\n' +
           'This account does not have user_profiles.is_admin = 1. ' +
-          'Ask an admin to promote it via App Config → User Management.';
+          'Ask an admin to promote it via Settings → User Management.';
       }
     }
     return;
@@ -2219,8 +2669,27 @@ export async function startFiles() {
   if (activeTab && activeTab.kind === 'terminal' && activeTab.instance) {
     setTimeout(() => activeTab.instance.fit(), 30);
   }
+
+  // If the Settings view was left open when the user navigated away, resume
+  // its background polling now that Admin Tools is active again.
+  if (settingsOpen) {
+    try { startAppConfig(); } catch (_) {}
+  }
+  // If the Database sidebar view is active (and Settings isn't covering it),
+  // resume the 1s auto-refresh now that Admin Tools is back on screen.
+  const sb = document.getElementById('files-sidebar');
+  if (!settingsOpen && sb && sb.dataset.view === 'database') {
+    try { startAutoRefresh(); } catch (_) {}
+  }
 }
 
-export function stopFiles() {
-  // No teardown needed — tabs and state are kept so reopening the page is instant.
+export function stopAdminTools() {
+  // Quiet App Config polling while another main tab is active, but keep
+  // settingsOpen so the view restores on return.
+  if (settingsOpen) {
+    try { stopAppConfig(); } catch (_) {}
+  }
+  // Always stop the database auto-refresh; whatever sub-view is active is
+  // about to be hidden by the top-level tab swap.
+  try { stopAutoRefresh(); } catch (_) {}
 }

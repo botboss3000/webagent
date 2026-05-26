@@ -55,6 +55,12 @@ class PageStore(ABC):
         ...
 
     @abstractmethod
+    async def rename_page(self, user_id: str, slug: str, new_title: str) -> bool:
+        """Update only the display title of a page. Slug and body are preserved.
+        Returns False if no page with that slug exists."""
+        ...
+
+    @abstractmethod
     async def ensure_home_page(self, user_id: str, seed_html: str) -> None:
         """Seed the home page for user_id if it doesn't already exist."""
         ...

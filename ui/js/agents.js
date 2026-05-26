@@ -32,6 +32,10 @@ let _expandedAgents = new Map(); // Map<agentId, { tab: string }>
 let _userIsAdmin    = false;
 let _extendLlmToAgents = true; // mirrors app-settings.json extend_llm_to_agents
 
+// ── Agent Builder (per-detail-panel chat bar) ────────────────────────────────
+const AGENT_BUILDER_TEMPLATE_ID = 'agent-builder';
+const _agentBuilderAgentCache = new Map(); // userId → agentId
+
 // Tool descriptions for the Tools tab (matches BUILTIN_TOOL_METADATA keys)
 const TOOL_DESCRIPTIONS = {
   list_tools:                   'Discover available tools at runtime',
@@ -168,6 +172,7 @@ export async function initAgents() {
   await Promise.all([_loadProfile(), _loadAgents(), _loadAppSettings()]);
   _renderList();
   _bindCreateModal();
+  _bindAgentBuilderBar();
   _restoreViewState();
 }
 
@@ -292,13 +297,7 @@ function _renderList() {
                      : agent.source === 'custom'            ? 'Custom'
                      : 'System';
 
-    const toolCount = _toolsForAgent(agent).length;
-    const temp      = agent.temperature != null ? agent.temperature : '—';
-    const turns     = agent.max_turn_count || '—';
-    const model     = agent.model || '';
-    const timeAgo   = _timeAgo(agent.updated_at || agent.created_at || '');
-
-    const isCustom   = agent.source === 'custom';
+    const isCustom = agent.source === 'custom';
 
     const card = document.createElement('div');
     card.className = 'agent-card' + (isExpanded ? ' active' : '');
@@ -312,46 +311,20 @@ function _renderList() {
             <span class="agent-card-name">${_esc(_displayName(agent))}</span>
             <span class="agent-status-dot"></span>
           </div>
-          ${model ? `<div class="agent-card-model">${_esc(model)}</div>` : ''}
+          ${agent.description ? `<div class="agent-card-desc">${_esc(agent.description)}</div>` : ''}
         </div>
         <div class="agent-card-badge-wrap">
           <span class="agent-badge ${badgeType}">${badgeLabel}</span>
           ${isCustom ? '<button class="agent-card-action-btn delete-btn">Delete</button>' : ''}
         </div>
       </div>
-      ${agent.description ? `<div class="agent-card-desc">${_esc(agent.description)}</div>` : ''}
-      <div class="agent-card-url">
-        <span class="agent-url-text">${location.origin}/${agent.id}</span>
-        <button class="agent-url-copy" title="Copy URL">${icon('copy', { size: '13px' })}</button>
-      </div>
-      <div class="agent-card-stats">
-        <span class="agent-stat"><span class="agent-stat-icon">↻</span>${turns} turns</span>
-        <span class="agent-stat"><span class="agent-stat-icon">⋮</span>${temp}</span>
-        <span class="agent-stat"><span class="agent-stat-icon">${icon('wrench', { size: '11px' })}</span>${toolCount} tools</span>
-        ${timeAgo ? `<span class="agent-stat agent-stat-time"><span class="agent-stat-icon">${icon('clock', { size: '11px' })}</span>${timeAgo}</span>` : ''}
-      </div>
+      <div class="agent-card-tabs" role="tablist"></div>
     `;
 
     // Wire inline action buttons — stopPropagation so click doesn't toggle the panel
     const deleteBtn = card.querySelector('.delete-btn');
     if (deleteBtn) {
       deleteBtn.addEventListener('click', e => { e.stopPropagation(); _deleteAgent(agent); });
-    }
-    const copyUrlBtn = card.querySelector('.agent-url-copy');
-    if (copyUrlBtn) {
-      // Use pointerdown — lucide replaces the inner <i> with <svg> between
-      // mousedown and mouseup, so the browser never synthesises a click event.
-      copyUrlBtn.addEventListener('pointerdown', e => {
-        e.preventDefault();
-        e.stopPropagation();
-        const url = `${location.origin}/${agent.id}`;
-        navigator.clipboard.writeText(url).then(() => {
-          copyUrlBtn.innerHTML = icon('check', { size: '13px' });
-          setTimeout(() => { copyUrlBtn.innerHTML = icon('copy', { size: '13px' }); }, 1500);
-        });
-      });
-      // Swallow the stray click too so the card doesn't toggle if one fires.
-      copyUrlBtn.addEventListener('click', e => { e.stopPropagation(); });
     }
 
     card.addEventListener('click', () => _selectAgent(agent));
@@ -362,9 +335,16 @@ function _renderList() {
     row.dataset.agentId = agent.id;
     row.appendChild(card);
 
+    let panel = null;
     if (isExpanded) {
-      row.appendChild(_buildDetailPanel(agent));
+      panel = _buildDetailPanel(agent);
+      row.appendChild(panel);
     }
+
+    // Tabs render in both collapsed and expanded states; clicking a tab on a
+    // collapsed card expands it to that tab.
+    const cardTabBar = card.querySelector('.agent-card-tabs');
+    if (cardTabBar) _populateAgentTabBar(cardTabBar, agent, panel);
 
     grid.appendChild(row);
   }
@@ -386,7 +366,9 @@ function _selectAgent(agent) {
 
 function _populateAgentTabBar(tabBar, agent, panel) {
   const state = _expandedAgents.get(agent.id);
-  const activeTab = state?.tab || 'config';
+  // Highlight a tab only when the card is open — a collapsed card has no
+  // active content, so no tab should look selected.
+  const activeTab = state ? (state.tab || 'config') : null;
   tabBar.innerHTML = '';
   const tabs = [['config','Config'],['tools','Tools'],['test','Agent Loop'],['connections','Abilities']];
   if (state?.automationEnabled) tabs.push(['automation','Automation']);
@@ -397,22 +379,29 @@ function _populateAgentTabBar(tabBar, agent, panel) {
     btn.className = 'agents-detail-tab' + (activeTab === key ? ' active' : '');
     btn.dataset.tab = key;
     btn.textContent = label;
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
       const entry = _expandedAgents.get(agent.id);
-      if (entry) entry.tab = key;
-      _renderPanelBody(agent, panel);
+      if (entry) {
+        // Card is open → any tab click collapses it.
+        _expandedAgents.delete(agent.id);
+      } else {
+        // Collapsed → expand to the clicked tab.
+        _expandedAgents.set(agent.id, { tab: key });
+      }
+      _renderList();
       _saveViewState();
-      btn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
     });
     tabBar.appendChild(btn);
   }
 }
 
 function _refreshAgentTabBar(agent) {
-  const panel = document.querySelector(`.agent-detail-panel[data-agent-id="${agent.id}"]`);
-  if (!panel) return;
-  const tabBar = panel.querySelector('.agent-detail-tabs');
-  if (tabBar) _populateAgentTabBar(tabBar, agent, panel);
+  const row = document.querySelector(`.agent-row[data-agent-id="${agent.id}"]`);
+  if (!row) return;
+  const tabBar = row.querySelector('.agent-card-tabs');
+  const panel = row.querySelector('.agent-detail-panel');
+  if (tabBar && panel) _populateAgentTabBar(tabBar, agent, panel);
 }
 
 async function _detectAgentAbilities(agent, panel) {
@@ -438,9 +427,6 @@ async function _detectAgentAbilities(agent, panel) {
 }
 
 function _buildDetailPanel(agent) {
-  const state = _expandedAgents.get(agent.id);
-  const activeTab = state?.tab || 'config';
-
   const panel = document.createElement('div');
   panel.className = 'agent-detail-panel';
   panel.dataset.agentId = agent.id;
@@ -449,61 +435,7 @@ function _buildDetailPanel(agent) {
   content.className = 'agent-detail-content';
   panel.appendChild(content);
 
-  // Tab bar (wrapped in chevron-scroll carousel for narrow screens)
-  const tabWrap = document.createElement('div');
-  tabWrap.className = 'agent-detail-tabs-wrap';
-
-  const chevLeft = document.createElement('button');
-  chevLeft.type = 'button';
-  chevLeft.className = 'agent-detail-tabs-chev left';
-  chevLeft.setAttribute('aria-label', 'Scroll tabs left');
-  chevLeft.innerHTML = '&#10094;';
-
-  const chevRight = document.createElement('button');
-  chevRight.type = 'button';
-  chevRight.className = 'agent-detail-tabs-chev right';
-  chevRight.setAttribute('aria-label', 'Scroll tabs right');
-  chevRight.innerHTML = '&#10095;';
-
-  const tabBar = document.createElement('div');
-  tabBar.className = 'agent-detail-tabs';
-  _populateAgentTabBar(tabBar, agent, panel);
-
-  const updateChevrons = () => {
-    const overflow = tabBar.scrollWidth - tabBar.clientWidth > 1;
-    tabWrap.classList.toggle('has-overflow', overflow);
-    chevLeft.classList.toggle('visible', overflow && tabBar.scrollLeft > 1);
-    chevRight.classList.toggle('visible', overflow && tabBar.scrollLeft < tabBar.scrollWidth - tabBar.clientWidth - 1);
-  };
-  const scrollStep = () => Math.max(80, Math.floor(tabBar.clientWidth * 0.6));
-  chevLeft.addEventListener('click', () => tabBar.scrollBy({ left: -scrollStep(), behavior: 'smooth' }));
-  chevRight.addEventListener('click', () => tabBar.scrollBy({ left: scrollStep(), behavior: 'smooth' }));
-  tabBar.addEventListener('scroll', updateChevrons, { passive: true });
-
-  tabWrap.appendChild(chevLeft);
-  tabWrap.appendChild(tabBar);
-  tabWrap.appendChild(chevRight);
-  content.appendChild(tabWrap);
-
-  // Recompute on mount and on resize. ResizeObserver catches container width changes.
-  requestAnimationFrame(() => {
-    updateChevrons();
-    const active = tabBar.querySelector('.agents-detail-tab.active');
-    if (active) active.scrollIntoView({ inline: 'center', block: 'nearest' });
-  });
-  if (typeof ResizeObserver !== 'undefined') {
-    let roPending = false;
-    const ro = new ResizeObserver(() => {
-      if (roPending) return;
-      roPending = true;
-      requestAnimationFrame(() => { roPending = false; updateChevrons(); });
-    });
-    ro.observe(tabBar);
-    ro.observe(tabWrap);
-  }
-  window.addEventListener('resize', updateChevrons);
-
-  // Scrollable body
+  // Scrollable body (the tab carousel now lives in the card header above)
   const body = document.createElement('div');
   body.className = 'agent-detail-body';
   content.appendChild(body);
@@ -517,15 +449,155 @@ function _buildDetailPanel(agent) {
   return panel;
 }
 
+// ── Agent Builder chat bar ────────────────────────────────────────────────────
+//
+// Persistent textarea + send button at the top of every agent detail body.
+// Submitting a prompt hands the conversation off to the built-in `agent-builder`
+// system agent (find-or-created on first send), then injects the message into
+// the main chat composer. Mirrors the dashboard Visualizer pattern in
+// ui/js/autoagent.js:129-232.
+
+async function _findAgentBuilderAgent(userId) {
+  const cached = _agentBuilderAgentCache.get(userId);
+  if (cached) return cached;
+  try {
+    const res = await fetch(`/api/v1/agents?user_id=${encodeURIComponent(userId)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const match = (data.agents || []).find(a => a.template_id === AGENT_BUILDER_TEMPLATE_ID);
+    if (match) {
+      _agentBuilderAgentCache.set(userId, match.id);
+      return match.id;
+    }
+  } catch (_) { /* fall through */ }
+  return null;
+}
+
+async function _createAgentBuilderAgent(userId) {
+  const res = await fetch('/api/v1/agents', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: userId,
+      name: 'Agent Builder',
+      description: 'Guides agent configuration — templates, prompt slots, abilities, model settings.',
+      template_id: AGENT_BUILDER_TEMPLATE_ID,
+    }),
+  });
+  if (!res.ok) throw new Error(`agent create failed (${res.status})`);
+  const data = await res.json();
+  const id = data.agent && data.agent.id;
+  if (!id) throw new Error('agent create returned no id');
+  _agentBuilderAgentCache.set(userId, id);
+  if (typeof app.populateAgentSelect === 'function') {
+    try { await app.populateAgentSelect(userId); } catch (_) {}
+  }
+  return id;
+}
+
+async function _ensureAgentBuilderAgent(userId) {
+  return (await _findAgentBuilderAgent(userId)) || (await _createAgentBuilderAgent(userId));
+}
+
+async function _sendAgentBuilderPrompt() {
+  const input = document.getElementById('agent-builder-bar-input');
+  const row   = document.getElementById('agent-builder-bar-row');
+  if (!input) return;
+
+  const text = input.value.trim();
+  if (!text) return;
+  if (!app.currentUserId) return;
+
+  const tagged = `[Agent Builder Request | Source: Agents Page]: ${text}`;
+
+  let builderAgentId;
+  try {
+    builderAgentId = await _ensureAgentBuilderAgent(app.currentUserId);
+  } catch (_e) {
+    return;
+  }
+
+  if (typeof app.switchToAgent === 'function') {
+    app.switchToAgent(builderAgentId);
+  } else if (builderAgentId !== app.currentAgentId) {
+    app.currentAgentId = builderAgentId;
+    try { localStorage.setItem('selectedAgentId', builderAgentId); } catch (_) {}
+  }
+
+  input.value = '';
+  if (row) row.classList.remove('has-text');
+
+  if (app.chatInput && app.chatSend) {
+    app.chatInput.value = tagged;
+    app.chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+    app.chatSend.click();
+  }
+}
+
+// CHAT-PILL-SYNC: binds the Agents-page chat pill. The same wiring pattern
+// (has-text toggle, attach/voice forwarders, enter-to-send) lives in
+// ui/js/chat.js (web chat) and ui/js/autoagent.js (dashboard). Shared CSS
+// for all three pills is in ui/css/app1.css under ".chat-pill".
+let _agentBuilderBarBound = false;
+function _bindAgentBuilderBar() {
+  if (_agentBuilderBarBound) return;
+  const row      = document.getElementById('agent-builder-bar-row');
+  const input    = document.getElementById('agent-builder-bar-input');
+  const attachBtn = document.getElementById('agent-builder-bar-attach');
+  const voiceBtn = document.getElementById('agent-builder-bar-voice');
+  const sendBtn  = document.getElementById('agent-builder-bar-send');
+  if (!row || !input) return;
+  _agentBuilderBarBound = true;
+
+  // has-text class swaps the visible right-side button between voice (idle)
+  // and send (typing). Mirrors #chat-input-row behavior.
+  const sync = () => {
+    const hasText = input.value.trim().length > 0;
+    row.classList.toggle('has-text', hasText);
+  };
+  input.addEventListener('input', sync);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (input.value.trim().length > 0) _sendAgentBuilderPrompt();
+    }
+  });
+  if (sendBtn) sendBtn.addEventListener('click', () => _sendAgentBuilderPrompt());
+
+  // Forward attach and voice to the main chat composer's existing handlers.
+  // We reuse them rather than duplicating the file-picker / recorder logic.
+  if (attachBtn) {
+    attachBtn.addEventListener('click', () => {
+      const mainAttach = document.getElementById('chat-attach-btn');
+      if (mainAttach) mainAttach.click();
+    });
+  }
+  if (voiceBtn) {
+    voiceBtn.addEventListener('click', () => {
+      const mainVoice = document.getElementById('chat-voice-btn');
+      if (mainVoice) mainVoice.click();
+    });
+  }
+
+  sync();
+
+  if (window.lucide && typeof window.lucide.createIcons === 'function') {
+    try { window.lucide.createIcons(); } catch (_) {}
+  }
+}
+
 function _renderPanelBody(agent, panelEl) {
   const state = _expandedAgents.get(agent.id);
   let tab = state?.tab || 'config';
   if (tab === 'automation' && !state?.automationEnabled) tab = 'config';
 
-  // Sync tab-button active states
-  panelEl.querySelectorAll('.agents-detail-tab').forEach(t => {
-    t.classList.toggle('active', t.dataset.tab === tab);
-  });
+  // Sync tab-button active states (the tab carousel lives in the sibling card)
+  const row = panelEl.closest('.agent-row');
+  if (row) {
+    row.querySelectorAll('.agent-card-tabs .agents-detail-tab').forEach(t => {
+      t.classList.toggle('active', t.dataset.tab === tab);
+    });
+  }
 
   const body = panelEl.querySelector('.agent-detail-body');
   if (!body) return;
