@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import sqlite3
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -21,6 +22,18 @@ router = APIRouter(prefix="/api/v1/db", tags=["db_viewer"])
 
 # SQLite files for this API live under app/db/ (same directory as local.py)
 _DB_FILES_DIR = Path(__file__).resolve().parent.parent / "db"
+
+# In-process cache for /tables responses. Keyed by absolute db path.
+# Counts can be expensive for large tables; clients poll this every ~20s, and
+# the underlying SQLite file is updated by writes that we can't easily hook,
+# so we key on (mtime, size) and fall back to a short TTL.
+_TABLES_CACHE: dict[str, tuple[float, float, int, dict]] = {}
+_TABLES_CACHE_TTL_S = 5.0
+
+
+def _invalidate_tables_cache(db_path: Path) -> None:
+    _TABLES_CACHE.pop(str(db_path), None)
+
 
 
 def _get_db_path(name: str = "local.db") -> Path:
@@ -57,6 +70,23 @@ async def list_tables(
 ):
     """List all tables in the database."""
     db_path = _get_db_path(db)
+    cache_key = str(db_path)
+
+    # Try cache: valid if the db file hasn't been touched since we cached, and
+    # the TTL hasn't elapsed. mtime+size is a cheap stat that catches all writes.
+    try:
+        st = db_path.stat()
+        mtime, size = st.st_mtime, st.st_size
+    except OSError:
+        mtime, size = 0.0, 0
+
+    now = time.monotonic()
+    cached = _TABLES_CACHE.get(cache_key)
+    if cached is not None:
+        c_mtime, c_size, c_expiry, c_payload = cached
+        if c_mtime == mtime and c_size == size and now < c_expiry:
+            return c_payload
+
     try:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
@@ -76,7 +106,9 @@ async def list_tables(
             count = cur.fetchone()[0]
             tables.append({"name": name, "columns": columns, "row_count": count})
         conn.close()
-        return {"tables": tables, "db": db}
+        payload = {"tables": tables, "db": db}
+        _TABLES_CACHE[cache_key] = (mtime, size, now + _TABLES_CACHE_TTL_S, payload)
+        return payload
     except sqlite3.Error as e:
         raise HTTPException(status_code=500, detail=str(e))
 

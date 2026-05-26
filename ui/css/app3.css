@@ -87,6 +87,7 @@ consistent */
   }
 .db-cell { overflow: auto; position: relative; }
 .db-cell:hover { outline: 1px solid #7dcfff55; }
+.db-cell-overlay { display: contents; }
 .db-cell-expand {
     position: absolute;
     top: 1px;
