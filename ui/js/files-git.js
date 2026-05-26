@@ -241,11 +241,13 @@ function renderGraphSection(s, g) {
 }
 
 function renderGraphRow(c, idx, g) {
-  const cls = c.is_head
+  const baseCls = c.is_head
     ? 'fg-graph-row head'
     : (c.is_pullable
         ? 'fg-graph-row unpulled'
         : (c.is_pulled ? 'fg-graph-row pulled' : 'fg-graph-row other-branch'));
+  const selected = (_gitMainState.mode === 'commit' && _gitMainState.payload && _gitMainState.payload.hash === c.full_hash);
+  const cls = baseCls + (selected ? ' selected' : '');
   const badge = c.is_head
     ? '<span class="fg-graph-badge head">HEAD</span>'
     : (c.is_pullable
@@ -260,20 +262,6 @@ function renderGraphRow(c, idx, g) {
     : '';
   // Graph column width is fixed by max_lane * lane width
   const graphW = (g.max_lane || 1) * GRAPH_LANE_W;
-  // Continuation lines for the detail panel: any lane that's "active" out
-  // of this row (i.e. has a line entering the row from the top AND/OR
-  // leaving toward the bottom) needs to render as a vertical line through
-  // the detail area so the chain stays connected when the row expands.
-  const passLanes = [];
-  const lanesIn  = c.lanes_in  || [];
-  const lanesOut = c.lanes_out || [];
-  const laneCount = Math.max(lanesIn.length, lanesOut.length);
-  for (let i = 0; i < laneCount; i++) {
-    if (lanesIn[i] || lanesOut[i]) passLanes.push(i);
-  }
-  const passLines = passLanes.map(i =>
-    `<div class="fg-graph-lane-line" style="left:${laneX(i) - 1}px;background:${laneColor(i)};"></div>`
-  ).join('');
   return `
     <div class="${cls}" data-hash="${escapeHtml(c.full_hash)}" data-short="${escapeHtml(c.hash)}" data-lane="${c.lane}" data-idx="${idx}" tabindex="0" role="button">
       <div class="fg-graph-row-head">
@@ -291,10 +279,6 @@ function renderGraphRow(c, idx, g) {
             <span class="fg-graph-date" title="${escapeHtml(c.date_iso || '')}">${escapeHtml(c.date_relative || '')}</span>
           </div>
         </div>
-      </div>
-      <div class="fg-graph-detail" hidden>
-        <div class="fg-graph-detail-lanes" aria-hidden="true" style="width:${graphW}px;">${passLines}</div>
-        <div class="fg-graph-detail-content"></div>
       </div>
     </div>
   `;
@@ -462,44 +446,26 @@ function wireEvents(rootEl, s, g) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSaveToken(rootEl); }
   });
 
-  // Commit graph rows → click the header to expand commit detail. Clicks
-  // inside the detail panel (selecting text, etc.) shouldn't collapse it.
+  // Commit graph rows → click the row to load full commit detail in the
+  // git main panel. The sidebar row gets a `.selected` class to mark the
+  // currently-displayed commit.
   body.querySelectorAll('.fg-graph-row').forEach((row) => {
+    const select = () => {
+      const hash = row.dataset.hash || row.dataset.short;
+      if (!hash) return;
+      body.querySelectorAll('.fg-graph-row.selected').forEach((r) => r.classList.remove('selected'));
+      row.classList.add('selected');
+      renderGitMain('commit', { hash });
+    };
     const head = row.querySelector('.fg-graph-row-head');
-    if (head) head.addEventListener('click', () => toggleDetail(row));
+    if (head) head.addEventListener('click', select);
     row.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleDetail(row); }
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(); }
     });
   });
 
   // Refresh token-status label
   refreshTokenStatus(rootEl);
-}
-
-async function toggleDetail(row) {
-  const panel = row.querySelector('.fg-graph-detail');
-  if (!panel) return;
-  // We only swap content inside .fg-graph-detail-content — the lane-line
-  // overlay above it stays in place so the chain stays connected when the
-  // detail expands.
-  const content = panel.querySelector('.fg-graph-detail-content');
-  if (!panel.hidden) {
-    panel.hidden = true;
-    row.classList.remove('open');
-    return;
-  }
-  row.classList.add('open');
-  panel.hidden = false;
-  if (panel.dataset.loaded === '1') return;
-  if (content) content.innerHTML = '<div class="fg-loading">Loading…</div>';
-  const hash = row.dataset.hash || row.dataset.short;
-  try {
-    const d = await ghFetch(`/api/v1/github/commit/${encodeURIComponent(hash)}`);
-    if (content) content.innerHTML = renderCommitDetail(d);
-    panel.dataset.loaded = '1';
-  } catch (e) {
-    if (content) content.innerHTML = `<div class="fg-error">${escapeHtml(e.message)}</div>`;
-  }
 }
 
 function renderCommitDetail(d) {
@@ -794,6 +760,11 @@ export async function refreshGit(rootEl) {
     _state.loading = false;
   }
   renderGitPanel(rootEl);
+  // Keep the git main in sync with the latest status (only the overview
+  // mode reads from `_state.status`; other modes own their own payload).
+  if (_gitMainState.mode === 'overview') {
+    try { renderGitMain(); } catch (_) {}
+  }
 }
 
 let _opened = false;
@@ -804,6 +775,161 @@ export async function openGitPanel(rootEl) {
     _opened = true;
     const refresh = rootEl.querySelector('#fg-refresh');
     if (refresh) refresh.addEventListener('click', () => refreshGit(rootEl));
+    initGitMainPills();
   }
   await refreshGit(rootEl);
+}
+
+// ── Git main panel ─────────────────────────────────────────────────
+//
+// The Source Control view's right-side <main> is driven by clicks in the
+// sidebar. `overview` is the default (a small summary); other modes
+// render when the user clicks something — a commit row, a file in the
+// Changes list, a branch in the branch picker. Mode pills mirror the
+// most-recently-viewed payload of each mode so users can switch back.
+
+const _gitMainState = {
+  mode: 'overview',
+  payload: null,
+  // Per-mode "last payload" memory so the user can click a disabled mode
+  // pill once it has data behind it.
+  byMode: { overview: null, commit: null, diff: null, compare: null },
+};
+
+let _gitMainPillsWired = false;
+function initGitMainPills() {
+  if (_gitMainPillsWired) return;
+  const pills = document.getElementById('fg-main-mode-pills');
+  if (!pills) return;
+  _gitMainPillsWired = true;
+  pills.addEventListener('click', (e) => {
+    const pill = e.target.closest('.fg-main-mode-pill');
+    if (!pill || pill.disabled) return;
+    const mode = pill.dataset.mode;
+    if (!mode || mode === _gitMainState.mode) return;
+    const payload = _gitMainState.byMode[mode] || null;
+    renderGitMain(mode, payload);
+  });
+}
+
+function updateGitMainPills() {
+  const pills = document.getElementById('fg-main-mode-pills');
+  if (!pills) return;
+  pills.querySelectorAll('.fg-main-mode-pill').forEach((pill) => {
+    const mode = pill.dataset.mode;
+    const active = mode === _gitMainState.mode;
+    pill.classList.toggle('active', active);
+    pill.setAttribute('aria-selected', active ? 'true' : 'false');
+    // Overview is always enabled; other pills enable once they've ever
+    // been rendered with a payload.
+    if (mode === 'overview') {
+      pill.disabled = false;
+    } else {
+      pill.disabled = !_gitMainState.byMode[mode];
+    }
+  });
+}
+
+// `renderGitMain()` with no args re-renders the current mode (typically
+// called when the view becomes visible). With (mode, payload) it switches
+// modes and remembers the payload.
+export function renderGitMain(mode, payload) {
+  const body = document.getElementById('fg-main-body');
+  if (!body) return;
+  if (mode) {
+    _gitMainState.mode = mode;
+    _gitMainState.payload = payload || null;
+    _gitMainState.byMode[mode] = payload || _gitMainState.byMode[mode] || null;
+  }
+  body.dataset.mode = _gitMainState.mode;
+  updateGitMainPills();
+  switch (_gitMainState.mode) {
+    case 'commit':
+      return _gmRenderCommit(body, _gitMainState.payload);
+    case 'diff':
+      return _gmRenderDiffPlaceholder(body, _gitMainState.payload);
+    case 'compare':
+      return _gmRenderComparePlaceholder(body, _gitMainState.payload);
+    case 'overview':
+    default:
+      return _gmRenderOverview(body);
+  }
+}
+
+function _gmRenderOverview(body) {
+  const s = _state.status;
+  if (!s) {
+    body.innerHTML = '<div class="fg-main-loading">Loading…</div>';
+    return;
+  }
+  const branch = escapeHtml(s.branch || '—');
+  const remote = escapeHtml(s.remote_url || 'no remote');
+  const dirty = (s.staged || []).length + (s.unstaged || []).length + (s.untracked || []).length;
+  let sync = '';
+  if (s.has_remote && (s.ahead > 0 || s.behind > 0)) {
+    sync = `<span class="fg-ahead">↑${s.ahead}</span><span class="fg-behind">↓${s.behind}</span>`;
+  } else if (s.has_remote) {
+    sync = '<span class="fg-sync-clean">in sync</span>';
+  } else {
+    sync = '<span class="fg-sync-clean">no remote</span>';
+  }
+  body.innerHTML = `
+    <div class="fg-main-overview">
+      <div class="fg-main-overview-card">
+        <div class="fg-main-overview-row">
+          <i data-lucide="git-branch" class="lucide-icon"></i>
+          <div class="fg-main-overview-label">Branch</div>
+          <div class="fg-main-overview-val">${branch} ${sync}</div>
+        </div>
+        <div class="fg-main-overview-row">
+          <i data-lucide="cloud" class="lucide-icon"></i>
+          <div class="fg-main-overview-label">Remote</div>
+          <div class="fg-main-overview-val">${remote}</div>
+        </div>
+        <div class="fg-main-overview-row">
+          <i data-lucide="file-diff" class="lucide-icon"></i>
+          <div class="fg-main-overview-label">Working tree</div>
+          <div class="fg-main-overview-val">${dirty ? dirty + ' uncommitted change' + (dirty === 1 ? '' : 's') : 'clean'}</div>
+        </div>
+      </div>
+      <div class="fg-main-overview-hint">
+        Select a commit in the sidebar's graph to see its full detail here.
+      </div>
+    </div>
+  `;
+  if (window.lucide) window.lucide.createIcons({ nodes: Array.from(body.querySelectorAll('[data-lucide]:not(.lucide)')) });
+}
+
+async function _gmRenderCommit(body, payload) {
+  if (!payload || !payload.hash) {
+    body.innerHTML = '<div class="fg-main-empty">No commit selected.</div>';
+    return;
+  }
+  body.innerHTML = '<div class="fg-main-loading">Loading commit…</div>';
+  try {
+    const d = await ghFetch(`/api/v1/github/commit/${encodeURIComponent(payload.hash)}`);
+    body.innerHTML = `<div class="fg-main-commit">${renderCommitDetail(d)}</div>`;
+    if (window.lucide) window.lucide.createIcons({ nodes: Array.from(body.querySelectorAll('[data-lucide]:not(.lucide)')) });
+  } catch (e) {
+    body.innerHTML = `<div class="fg-error">${escapeHtml(e.message || e)}</div>`;
+  }
+}
+
+function _gmRenderDiffPlaceholder(body, payload) {
+  const path = payload && payload.path ? escapeHtml(payload.path) : '';
+  body.innerHTML = `
+    <div class="fg-main-empty">
+      <div class="fg-main-empty-title">Working-tree diff${path ? ': ' + path : ''}</div>
+      <div class="fg-main-empty-text">File diff rendering ships in a follow-up.</div>
+    </div>`;
+}
+
+function _gmRenderComparePlaceholder(body, payload) {
+  const base = payload && payload.base ? escapeHtml(payload.base) : '';
+  const head = payload && payload.head ? escapeHtml(payload.head) : '';
+  body.innerHTML = `
+    <div class="fg-main-empty">
+      <div class="fg-main-empty-title">Compare${base && head ? ': ' + base + ' → ' + head : ''}</div>
+      <div class="fg-main-empty-text">Branch comparison ships in a follow-up.</div>
+    </div>`;
 }

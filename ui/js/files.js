@@ -2,11 +2,13 @@
 
 // VS Code-style file base editor.
 //
-// State: open tabs live in `openTabs` (ordered, draggable) and the active
-// tab is `activeTabPath`. The directory tree is rendered lazily — each
-// folder fetches its children on first expand.
+// State: open tabs live in `openTabs` (ordered, draggable). File and
+// terminal tabs share the array but track separate "active" pointers
+// (`activeFilePath` / `activeTerminalId`) — they render into separate
+// main panels (explorer vs terminal). The directory tree is rendered
+// lazily — each folder fetches its children on first expand.
 
-import { openGitPanel } from './files-git.js';
+import { openGitPanel, renderGitMain } from './files-git.js';
 import { createTerminalInstance } from './terminal.js';
 import { randomUUID } from './uuid.js';
 import { startAppConfig, stopAppConfig } from './app-config.js';
@@ -31,10 +33,22 @@ function setTerminalFontSize(n) {
   }
 }
 
+// Look up the active terminal tab (used by the terminal main and the
+// global keyboard shortcuts).
+function getActiveTerminalTab() {
+  if (!activeTerminalId) return null;
+  return openTabs.find((t) => t.kind === 'terminal' && t.path === activeTerminalId) || null;
+}
+
 let initialised = false;
 let isAdmin = false;
-let openTabs = [];          // { path, name, content, dirty, binary, encoding, size }
-let activeTabPath = null;
+// File and terminal tabs share one array so the existing actions (close,
+// rename, drag, persistence) still operate on a single store. Rendering
+// routes file tabs into #files-tabs / #files-content and terminal tabs
+// into #files-term-tabs / #files-term-content based on `kind`.
+let openTabs = [];          // { path, name, content, dirty, binary, encoding, size, kind? }
+let activeFilePath = null;       // path of the active FILE tab (in explorer main)
+let activeTerminalId = null;     // session_id of the active TERMINAL tab (in terminal main)
 let settingsOpen = false;   // Settings view (App Config) currently overlaying the editor area
 let expandedDirs = new Set();  // absolute paths of currently expanded directories
 let dragSrcPath = null;        // path of the tab being dragged
@@ -45,9 +59,25 @@ let projectRoot = '';          // absolute path of the project root (server-repo
 const LS_SIDEBAR_WIDTH    = 'files.sidebarWidth';
 const LS_SIDEBAR_COLLAPSED = 'files.sidebarCollapsed';
 const LS_OPEN_TABS         = 'files.openTabs';
-const LS_ACTIVE_TAB        = 'files.activeTab';
+const LS_ACTIVE_TAB        = 'files.activeTab';        // legacy unified key (still read for migration)
+const LS_ACTIVE_FILE       = 'files.activeFile';
+const LS_ACTIVE_TERMINAL   = 'files.activeTerminal';
 const LS_EXPANDED          = 'files.expandedDirs';
 const LS_CURRENT_ROOT      = 'files.currentRoot';
+
+// ── Active-tab helpers ────────────────────────────────────────────
+// File and terminal tabs each track their own "active" pointer. The two
+// helpers below let callers stay agnostic about which kind a tab is.
+
+function activePathForKind(kind) {
+  return kind === 'terminal' ? activeTerminalId : activeFilePath;
+}
+
+function setActivePathForTab(tab) {
+  if (!tab) return;
+  if (tab.kind === 'terminal') activeTerminalId = tab.path;
+  else activeFilePath = tab.path;
+}
 
 // ── Auth helper ────────────────────────────────────────────────────
 
@@ -430,13 +460,18 @@ async function setRoot(absPath) {
 // ── Tabs ──────────────────────────────────────────────────────────
 
 function renderTabs() {
-  const bar = document.getElementById('files-tabs');
-  if (!bar) return;
-  bar.innerHTML = '';
+  const fileBar = document.getElementById('files-tabs');
+  const termBar = document.getElementById('files-term-tabs');
+  if (!fileBar && !termBar) return;
+  if (fileBar) fileBar.innerHTML = '';
+  if (termBar) termBar.innerHTML = '';
   for (const tab of openTabs) {
+    const bar = tab.kind === 'terminal' ? termBar : fileBar;
+    if (!bar) continue;
+    const isActive = tab.path === activePathForKind(tab.kind);
     const el = document.createElement('div');
     el.className = 'files-tab'
-      + (tab.path === activeTabPath ? ' active' : '')
+      + (isActive ? ' active' : '')
       + (tab.dirty ? ' dirty' : '')
       + (tab.closing ? ' closing' : '');
     el.dataset.path = tab.path;
@@ -576,7 +611,10 @@ function renderTabs() {
 
     bar.appendChild(el);
   }
-  if (window.lucide) window.lucide.createIcons({ nodes: Array.from(bar.querySelectorAll('[data-lucide]:not(.lucide)')) });
+  if (window.lucide) {
+    if (fileBar) window.lucide.createIcons({ nodes: Array.from(fileBar.querySelectorAll('[data-lucide]:not(.lucide)')) });
+    if (termBar) window.lucide.createIcons({ nodes: Array.from(termBar.querySelectorAll('[data-lucide]:not(.lucide)')) });
+  }
   updateTabCarousel();
 }
 
@@ -695,7 +733,7 @@ function showTerminalTabMenu(tab, anchorBtn) {
   const rect = anchorBtn.getBoundingClientRect();
   const wrapOn = tab.wrap !== false;
   const items = [
-    { icon: 'pencil',    label: 'Rename…',        action: () => startInlineRename(tab, document.querySelector('#files-tabs .files-tab[data-path="' + cssEscape(tab.path) + '"] .files-tab-label')) },
+    { icon: 'pencil',    label: 'Rename…',        action: () => startInlineRename(tab, document.querySelector('#files-term-tabs .files-tab[data-path="' + cssEscape(tab.path) + '"] .files-tab-label')) },
     { icon: 'wrap-text', label: 'Wrap lines',     checked: wrapOn, action: () => toggleTerminalWrap(tab.path) },
     { separator: true },
     { icon: 'zoom-in',   label: 'Zoom in',        action: () => terminalZoom(+1) },
@@ -829,7 +867,7 @@ async function renameEntry(entry) {
         tab.path = finalPath + tab.path.slice(entry.path.length);
       }
     }
-    if (activeTabPath === entry.path) activeTabPath = finalPath;
+    if (activeFilePath === entry.path) activeFilePath = finalPath;
     renderTabs();
     renderEditorPanes();
     persistTabs();
@@ -918,7 +956,7 @@ async function renameTab(path) {
     // Update the tab in place
     tab.path = newAbs;
     tab.name = newAbs.split('/').pop();
-    if (activeTabPath === path) activeTabPath = newAbs;
+    if (activeFilePath === path) activeFilePath = newAbs;
     // The editor pane keys panes by data-path; update it too
     const pane = document.querySelector('.files-editor-pane[data-path="' + cssEscape(path) + '"]');
     if (pane) pane.dataset.path = newAbs;
@@ -985,10 +1023,15 @@ function toggleWrap(path) {
 
 // ── Tab carousel ──────────────────────────────────────────────────
 
-function updateTabCarousel() {
-  const bar = document.getElementById('files-tabs');
-  const prev = document.getElementById('files-tabs-prev');
-  const next = document.getElementById('files-tabs-next');
+const CAROUSEL_BARS = [
+  { bar: 'files-tabs',      prev: 'files-tabs-prev',      next: 'files-tabs-next' },
+  { bar: 'files-term-tabs', prev: 'files-term-tabs-prev', next: 'files-term-tabs-next' },
+];
+
+function _updateCarouselFor(barId, prevId, nextId) {
+  const bar = document.getElementById(barId);
+  const prev = document.getElementById(prevId);
+  const next = document.getElementById(nextId);
   if (!bar || !prev || !next) return;
   const overflow = bar.scrollWidth > bar.clientWidth + 1;
   if (!overflow) {
@@ -1002,89 +1045,118 @@ function updateTabCarousel() {
   next.disabled = bar.scrollLeft + bar.clientWidth >= bar.scrollWidth - 1;
 }
 
+function updateTabCarousel() {
+  for (const c of CAROUSEL_BARS) _updateCarouselFor(c.bar, c.prev, c.next);
+}
+
 function initTabCarousel() {
-  const bar = document.getElementById('files-tabs');
-  const prev = document.getElementById('files-tabs-prev');
-  const next = document.getElementById('files-tabs-next');
-  if (!bar || !prev || !next) return;
-
   const SCROLL_STEP = 160;
-  prev.addEventListener('click', () => { bar.scrollBy({ left: -SCROLL_STEP, behavior: 'smooth' }); });
-  next.addEventListener('click', () => { bar.scrollBy({ left:  SCROLL_STEP, behavior: 'smooth' }); });
-  bar.addEventListener('scroll', updateTabCarousel, { passive: true });
+  for (const c of CAROUSEL_BARS) {
+    const bar = document.getElementById(c.bar);
+    const prev = document.getElementById(c.prev);
+    const next = document.getElementById(c.next);
+    if (!bar || !prev || !next) continue;
+    prev.addEventListener('click', () => { bar.scrollBy({ left: -SCROLL_STEP, behavior: 'smooth' }); });
+    next.addEventListener('click', () => { bar.scrollBy({ left:  SCROLL_STEP, behavior: 'smooth' }); });
+    bar.addEventListener('scroll', updateTabCarousel, { passive: true });
 
-  // Auto-scroll while dragging a tab past either edge
-  ['files-tabs-prev', 'files-tabs-next'].forEach((id) => {
-    const btn = document.getElementById(id);
-    if (!btn) return;
-    btn.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      const dir = id === 'files-tabs-prev' ? -1 : 1;
-      bar.scrollBy({ left: dir * 40, behavior: 'auto' });
+    // Auto-scroll while dragging a tab past either edge
+    [c.prev, c.next].forEach((id) => {
+      const btn = document.getElementById(id);
+      if (!btn) return;
+      btn.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        const dir = id === c.prev ? -1 : 1;
+        bar.scrollBy({ left: dir * 40, behavior: 'auto' });
+      });
     });
-  });
 
-  if (typeof ResizeObserver !== 'undefined') {
-    new ResizeObserver(updateTabCarousel).observe(bar);
-  } else {
-    window.addEventListener('resize', updateTabCarousel);
+    if (typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(updateTabCarousel).observe(bar);
+    }
   }
+  window.addEventListener('resize', updateTabCarousel);
 }
 
 function renderEditorPanes() {
-  const content = document.getElementById('files-content');
-  if (!content) return;
+  const fileContent = document.getElementById('files-content');
+  const termContent = document.getElementById('files-term-content');
+  if (!fileContent && !termContent) return;
 
-  if (!openTabs.length) {
-    content.innerHTML = `
+  const fileTabs = openTabs.filter((t) => t.kind !== 'terminal');
+  const termTabs = openTabs.filter((t) => t.kind === 'terminal');
+
+  // Welcome placeholders — show when the container has no tabs. Skip if
+  // a welcome is already on screen, so the welcome doesn't flicker on
+  // every render.
+  function showWelcome(host, html) {
+    if (!host) return;
+    if (host.querySelector('.files-welcome')) return;
+    host.innerHTML = html;
+    if (window.lucide) window.lucide.createIcons({ nodes: Array.from(host.querySelectorAll('[data-lucide]:not(.lucide)')) });
+  }
+  if (!fileTabs.length) {
+    showWelcome(fileContent, `
       <div class="files-welcome">
         <i data-lucide="folder-tree" class="lucide-icon files-welcome-icon"></i>
         <div class="files-welcome-title">File Editor</div>
         <div class="files-welcome-text">Pick a file from the Explorer on the left to open it here.</div>
-      </div>`;
-    if (window.lucide) window.lucide.createIcons({ nodes: Array.from(content.querySelectorAll('[data-lucide]:not(.lucide)')) });
-    updateStatusBar(null);
-    return;
+      </div>`);
+  }
+  if (!termTabs.length) {
+    showWelcome(termContent, `
+      <div class="files-welcome">
+        <i data-lucide="terminal" class="lucide-icon files-welcome-icon"></i>
+        <div class="files-welcome-title">Terminal</div>
+        <div class="files-welcome-text">Open a session from the launcher on the left, or press <kbd>Ctrl</kbd>+<kbd>\`</kbd>.</div>
+      </div>`);
   }
 
-  // Re-use existing panes; create missing ones; remove closed ones
-  const existing = new Map();
-  content.querySelectorAll('.files-editor-pane').forEach((p) => existing.set(p.dataset.path, p));
-  // Remove any pane whose tab is gone
-  for (const [path, pane] of existing) {
-    if (!openTabs.find((t) => t.path === path)) {
-      pane.remove();
-      existing.delete(path);
-    }
-  }
-  // Remove the welcome panel if present
-  const welcome = content.querySelector('.files-welcome');
-  if (welcome) welcome.remove();
-
-  for (const tab of openTabs) {
-    let pane = existing.get(tab.path);
-    const wantMode = paneModeForTab(tab);
-    if (pane && pane.dataset.mode !== wantMode) {
-      // The right kind of pane no longer matches the tab (e.g. preview
-      // toggled, or refresh changed binary-ness) — drop and rebuild.
-      pane.remove();
-      pane = null;
-    }
-    if (pane && wantMode === 'text') {
-      const ta = pane.querySelector('textarea.files-textarea');
-      if (ta && ta.value !== tab.content) {
-        ta.value = tab.content || '';
-        updateHighlightOverlay(pane);
+  // Re-use existing panes; create missing ones; remove closed ones — once
+  // per container so we don't accidentally drop a pane that lives in the
+  // other content area.
+  function syncContainer(host, tabs) {
+    if (!host) return;
+    const existing = new Map();
+    host.querySelectorAll('.files-editor-pane').forEach((p) => existing.set(p.dataset.path, p));
+    for (const [path, pane] of existing) {
+      if (!tabs.find((t) => t.path === path)) {
+        pane.remove();
+        existing.delete(path);
       }
     }
-    if (!pane) {
-      pane = buildPaneForTab(tab, wantMode);
-      content.appendChild(pane);
+    if (tabs.length) {
+      const welcome = host.querySelector('.files-welcome');
+      if (welcome) welcome.remove();
     }
-    pane.classList.toggle('active', tab.path === activeTabPath);
+    for (const tab of tabs) {
+      let pane = existing.get(tab.path);
+      const wantMode = paneModeForTab(tab);
+      if (pane && pane.dataset.mode !== wantMode) {
+        pane.remove();
+        pane = null;
+      }
+      if (pane && wantMode === 'text') {
+        const ta = pane.querySelector('textarea.files-textarea');
+        if (ta && ta.value !== tab.content) {
+          ta.value = tab.content || '';
+          updateHighlightOverlay(pane);
+        }
+      }
+      if (!pane) {
+        pane = buildPaneForTab(tab, wantMode);
+        host.appendChild(pane);
+      }
+      pane.classList.toggle('active', tab.path === activePathForKind(tab.kind));
+    }
   }
-  const active = openTabs.find((t) => t.path === activeTabPath);
-  updateStatusBar(active || null);
+  syncContainer(fileContent, fileTabs);
+  syncContainer(termContent, termTabs);
+
+  const activeFile = activeFilePath
+    ? openTabs.find((t) => t.kind !== 'terminal' && t.path === activeFilePath)
+    : null;
+  updateStatusBar(activeFile || null);
 }
 
 // ── Per-tab pane mode ─────────────────────────────────────────────
@@ -1222,7 +1294,7 @@ function buildPaneForTab(tab, mode) {
             openTerminalFindBar(findBar, tab.instance);
           }
         }, true);
-        if (tab.path === activeTabPath) tab.instance.focus();
+        if (tab.path === activeTerminalId) tab.instance.focus();
       } catch (e) {
         host.textContent = 'Failed to start terminal: ' + (e.message || e);
       }
@@ -1617,40 +1689,49 @@ async function openFile(path, name) {
     // switches back to raw editing. Other types open as plain text.
     preview: isMarkdownFile(tabName),
   });
-  activeTabPath = path;
+  activeFilePath = path;
   renderTabs();
   renderEditorPanes();
   persistTabs();
 }
 
 function activateTab(path) {
-  if (!openTabs.find((t) => t.path === path)) return;
-  activeTabPath = path;
+  const tab = openTabs.find((t) => t.path === path);
+  if (!tab) return;
+  setActivePathForTab(tab);
   renderTabs();
-  // Just flip active class instead of re-rendering everything
-  const content = document.getElementById('files-content');
-  if (content) {
-    content.querySelectorAll('.files-editor-pane').forEach((p) => {
+  // Just flip active class on the matching content area instead of
+  // re-rendering everything.
+  const host = document.getElementById(
+    tab.kind === 'terminal' ? 'files-term-content' : 'files-content',
+  );
+  if (host) {
+    host.querySelectorAll('.files-editor-pane').forEach((p) => {
       p.classList.toggle('active', p.dataset.path === path);
     });
   }
-  const tab = openTabs.find((t) => t.path === path);
-  updateStatusBar(tab || null);
+  if (tab.kind !== 'terminal') updateStatusBar(tab);
   // Terminal tabs need a refit each time they regain focus — xterm can't
   // measure while its pane is display:none, so any window resize that
   // happened while another tab was active is unaccounted for until now.
-  if (tab && tab.kind === 'terminal' && tab.instance) {
+  if (tab.kind === 'terminal' && tab.instance) {
     setTimeout(() => {
       tab.instance.fit();
       tab.instance.focus();
     }, 30);
   }
   // Bring the activated tab into view if it's outside the visible window
-  const tabEl = document.querySelector('#files-tabs .files-tab[data-path="' + cssEscape(path) + '"]');
+  const barId = tab.kind === 'terminal' ? '#files-term-tabs' : '#files-tabs';
+  const tabEl = document.querySelector(barId + ' .files-tab[data-path="' + cssEscape(path) + '"]');
   if (tabEl && typeof tabEl.scrollIntoView === 'function') {
     tabEl.scrollIntoView({ inline: 'nearest', block: 'nearest', behavior: 'smooth' });
   }
-  try { localStorage.setItem(LS_ACTIVE_TAB, path); } catch (_) {}
+  try {
+    localStorage.setItem(
+      tab.kind === 'terminal' ? LS_ACTIVE_TERMINAL : LS_ACTIVE_FILE,
+      path,
+    );
+  } catch (_) {}
 }
 
 async function closeTab(path) {
@@ -1685,15 +1766,25 @@ async function closeTab(path) {
 
   const idx = openTabs.findIndex((t) => t.path === path);
   if (idx < 0) return;              // another close finished first
+  const closedKind = tab.kind === 'terminal' ? 'terminal' : 'file';
   openTabs.splice(idx, 1);
-  // Remove pane
-  const content = document.getElementById('files-content');
-  if (content) {
-    const pane = content.querySelector('.files-editor-pane[data-path="' + cssEscape(path) + '"]');
+  // Remove pane from whichever container hosts it.
+  const hostId = closedKind === 'terminal' ? 'files-term-content' : 'files-content';
+  const host = document.getElementById(hostId);
+  if (host) {
+    const pane = host.querySelector('.files-editor-pane[data-path="' + cssEscape(path) + '"]');
     if (pane) pane.remove();
   }
-  if (activeTabPath === path) {
-    activeTabPath = openTabs.length ? openTabs[Math.min(idx, openTabs.length - 1)].path : null;
+  // Promote the neighbour of the same kind to active (don't pick a file
+  // tab as the active terminal, or vice versa).
+  const sameKind = openTabs.filter((t) =>
+    closedKind === 'terminal' ? t.kind === 'terminal' : t.kind !== 'terminal'
+  );
+  if (closedKind === 'terminal' && activeTerminalId === path) {
+    activeTerminalId = sameKind.length ? sameKind[Math.min(idx, sameKind.length - 1)].path : null;
+  }
+  if (closedKind === 'file' && activeFilePath === path) {
+    activeFilePath = sameKind.length ? sameKind[Math.min(idx, sameKind.length - 1)].path : null;
   }
   renderTabs();
   renderEditorPanes();
@@ -1802,7 +1893,11 @@ function persistTabs() {
       return { path: t.path, name: t.name, wrap: !!t.wrap, preview: !!t.preview };
     });
     localStorage.setItem(LS_OPEN_TABS, JSON.stringify(minimal));
-    localStorage.setItem(LS_ACTIVE_TAB, activeTabPath || '');
+    localStorage.setItem(LS_ACTIVE_FILE, activeFilePath || '');
+    localStorage.setItem(LS_ACTIVE_TERMINAL, activeTerminalId || '');
+    // Clear the legacy unified key so old code (or stale tabs) don't pick
+    // up a stale pointer of the wrong kind.
+    localStorage.removeItem(LS_ACTIVE_TAB);
   } catch (_) {}
 }
 
@@ -1826,7 +1921,15 @@ function restoreState() {
 async function restoreOpenTabs() {
   try {
     const saved = JSON.parse(localStorage.getItem(LS_OPEN_TABS) || '[]');
-    const wantActive = localStorage.getItem(LS_ACTIVE_TAB) || '';
+    // Read both new per-kind keys; fall back to the legacy unified key for
+    // users who saved their state before the split.
+    const legacyActive = localStorage.getItem(LS_ACTIVE_TAB) || '';
+    let wantFile = localStorage.getItem(LS_ACTIVE_FILE) || '';
+    let wantTerm = localStorage.getItem(LS_ACTIVE_TERMINAL) || '';
+    if (!wantFile && !wantTerm && legacyActive) {
+      if (legacyActive.startsWith('terminal:')) wantTerm = legacyActive;
+      else wantFile = legacyActive;
+    }
     if (!Array.isArray(saved) || !saved.length) return;
     // Open in order, swallow failures (file may have been deleted, or a
     // terminal's backend session may have died and need to respawn).
@@ -1853,8 +1956,11 @@ async function restoreOpenTabs() {
       } catch (_) {}
     }
     renderEditorPanes();
-    if (wantActive && openTabs.find((t) => t.path === wantActive)) {
-      activateTab(wantActive);
+    if (wantFile && openTabs.find((t) => t.kind !== 'terminal' && t.path === wantFile)) {
+      activateTab(wantFile);
+    }
+    if (wantTerm && openTabs.find((t) => t.kind === 'terminal' && t.path === wantTerm)) {
+      activateTab(wantTerm);
     }
   } catch (_) {}
 }
@@ -1911,7 +2017,11 @@ function _connStateTitle(s) {
 }
 
 function _updateTabConnDot(tabPath, state) {
-  const tabEl = document.querySelector('#files-tabs .files-tab[data-path="' + cssEscape(tabPath) + '"]');
+  // Connection dots live on terminal tabs, which render into the terminal
+  // tab bar; fall back to the file bar for safety.
+  const tabEl =
+    document.querySelector('#files-term-tabs .files-tab[data-path="' + cssEscape(tabPath) + '"]') ||
+    document.querySelector('#files-tabs .files-tab[data-path="' + cssEscape(tabPath) + '"]');
   if (!tabEl) return;
   const dot = tabEl.querySelector('.files-tab-conn-dot');
   if (!dot) return;
@@ -2230,10 +2340,14 @@ function pushTerminalTab(sessionId, name, opts) {
 function openNewTerminalTab() {
   const id = newTerminalSessionId();
   pushTerminalTab(id);
-  activeTabPath = id;
+  activeTerminalId = id;
   renderTabs();
   renderEditorPanes();
   persistTabs();
+  // Land the user on the terminal main so the freshly-opened session is
+  // actually visible. Same call as a click on the zap strip icon.
+  applySidebarView('terminal');
+  try { localStorage.setItem(LS_SIDEBAR_VIEW, 'terminal'); } catch (_) {}
 }
 
 // Like openNewTerminalTab but pre-types `command` into the shell. Used by
@@ -2241,12 +2355,14 @@ function openNewTerminalTab() {
 export function openNewTerminalTabWithCommand(command, name) {
   const id = newTerminalSessionId();
   pushTerminalTab(id, name, { initialCommand: command || '' });
-  activeTabPath = id;
+  activeTerminalId = id;
   renderTabs();
   renderEditorPanes();
   persistTabs();
+  applySidebarView('terminal');
+  try { localStorage.setItem(LS_SIDEBAR_VIEW, 'terminal'); } catch (_) {}
   // On mobile the sidebar fills the screen; switch to the strip so the
-  // newly-opened terminal becomes visible — same pattern as the "+" button.
+  // newly-opened terminal becomes visible.
   const sidebar = document.getElementById('files-sidebar');
   if (sidebar && isMobileLayout() && sidebar.dataset.state === 'max') {
     setSidebarState('strip');
@@ -2254,28 +2370,12 @@ export function openNewTerminalTabWithCommand(command, name) {
 }
 
 function initFilesTerminalButton() {
-  const sidebar = document.getElementById('files-sidebar');
-  if (!sidebar) return;
-
-  sidebar.addEventListener('click', (e) => {
-    const btn = e.target.closest('.files-terminal-new');
-    if (!btn || !sidebar.contains(btn)) return;
-    e.stopPropagation();
-    openNewTerminalTab();
-    // On mobile, the sidebar may be filling the screen (state=max). Switch
-    // to the strip so the main panel — and the terminal we just opened —
-    // becomes visible.
-    if (isMobileLayout() && sidebar.dataset.state === 'max') {
-      setSidebarState('strip');
-    }
-  });
-
   // Keep visible terminal tabs in sync with sidebar resize drags.
   const handle = document.getElementById('files-resize-handle');
   if (handle) {
     handle.addEventListener('mouseup', () => {
-      const tab = openTabs.find((t) => t.path === activeTabPath);
-      if (tab && tab.kind === 'terminal' && tab.instance) {
+      const tab = getActiveTerminalTab();
+      if (tab && tab.instance) {
         setTimeout(() => tab.instance.fit(), 30);
       }
     });
@@ -2304,8 +2404,8 @@ function initFilesTerminalButton() {
   // forward bytes to the shell.
   document.addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
-    const active = openTabs.find((t) => t.path === activeTabPath);
-    if (!active || active.kind !== 'terminal') return;
+    const active = getActiveTerminalTab();
+    if (!active) return;
     // Don't steal these keys while the user is typing in an input — e.g.
     // the find bar or the inline rename input.
     const t = e.target;
@@ -2335,8 +2435,8 @@ export function reconnectAllTerminals() {
 // Refit the currently active terminal on viewport resize. Background tabs
 // refit themselves when they next become active (see activateTab).
 window.addEventListener('resize', () => {
-  const tab = openTabs.find((t) => t.path === activeTabPath);
-  if (tab && tab.kind === 'terminal' && tab.instance) tab.instance.fit();
+  const tab = getActiveTerminalTab();
+  if (tab && tab.instance) tab.instance.fit();
 });
 
 // ── Sidebar state cycle ───────────────────────────────────────────
@@ -2460,10 +2560,20 @@ function initSidebarViewSwitcher() {
 const VIEW_TITLE = { explorer: 'Explorer', git: 'Source control', database: 'Database', terminal: 'Terminal launchers' };
 const VIEW_SWITCH = { explorer: 'explorer', git: 'source control', database: 'database', terminal: 'terminal launchers' };
 
+// Each sidebar view has a dedicated <main> on the right side. Switching
+// the strip swaps which main is visible. The Settings overlay wins over
+// every view (handled separately by toggleSettingsView).
+const VIEW_MAIN_ID = {
+  explorer: 'files-explorer-main',
+  git:      'files-git-main',
+  database: 'files-database-main',
+  terminal: 'files-terminal-main',
+};
+
 function applySidebarView(view) {
   const sidebar = document.getElementById('files-sidebar');
   if (!sidebar) return;
-  if (view !== 'explorer' && view !== 'git' && view !== 'database' && view !== 'terminal') view = 'explorer';
+  if (!(view in VIEW_MAIN_ID)) view = 'explorer';
   sidebar.dataset.view = view;
   // Update aria-selected on every view-toggle button (in panel headers
   // and in the strip). The Settings toggle button shares .files-view-toggle-btn
@@ -2485,8 +2595,8 @@ function applySidebarView(view) {
       }
     }
   });
-  // In strip mode all panels stay hidden; otherwise the matching panel
-  // shows.
+  // In strip mode all sidebar panels stay hidden; otherwise the matching
+  // panel shows.
   const state = sidebar.dataset.state || 'split';
   sidebar.querySelectorAll('.files-sidebar-panel').forEach((p) => {
     p.hidden = (state === 'strip') || (p.dataset.view !== view);
@@ -2500,22 +2610,27 @@ function applySidebarView(view) {
   } else {
     stopTerminalLaunchersPolling();
   }
-  // Right-pane swap: Database view replaces the file editor with the relocated
-  // db table view. Settings is an independent overlay that wins, so leave the
-  // pane swap alone whenever Settings is open.
-  const dbMain = document.getElementById('files-database-main');
-  const editorMain = document.querySelector(
-    '#admin-tools .files-main:not(.files-settings-main):not(.files-database-main)'
-  );
+  // Right-pane swap: hide every per-view main except the one matching
+  // `view`. Settings is an independent overlay that wins, so we don't
+  // touch the mains at all whenever Settings is open.
   if (!settingsOpen) {
+    const wantId = VIEW_MAIN_ID[view];
+    document.querySelectorAll('#admin-tools .files-main[data-view]').forEach((el) => {
+      el.hidden = (el.id !== wantId);
+    });
     if (view === 'database') {
-      if (editorMain) editorMain.hidden = true;
-      if (dbMain) dbMain.hidden = false;
       try { startAutoRefresh(); } catch (_) {}
     } else {
-      if (dbMain) dbMain.hidden = true;
-      if (editorMain) editorMain.hidden = false;
       try { stopAutoRefresh(); } catch (_) {}
+    }
+    if (view === 'git') {
+      try { renderGitMain(); } catch (_) {}
+    }
+    if (view === 'terminal') {
+      // Refit the active terminal once the main becomes visible — xterm
+      // can't measure a display:none host.
+      const tab = getActiveTerminalTab();
+      if (tab && tab.instance) setTimeout(() => tab.instance.fit(), 30);
     }
   }
 }
@@ -2631,6 +2746,13 @@ function openTerminalLaunchersPanel() {
       ftLoadTmuxSessions();
     });
   }
+  // Wire the "New terminal" primary action in the launcher panel. Replaces
+  // the old standalone Terminal Tab strip icon.
+  const newBtn = document.getElementById('ft-new-terminal');
+  if (newBtn && !newBtn.dataset.wired) {
+    newBtn.dataset.wired = '1';
+    newBtn.addEventListener('click', () => openNewTerminalTab());
+  }
 }
 
 function stopTerminalLaunchersPolling() {
@@ -2680,18 +2802,16 @@ function applySettingsButtonState() {
 }
 
 function toggleSettingsView() {
-  const editorMain = document.querySelector(
-    '#admin-tools .files-main:not(.files-settings-main):not(.files-database-main)'
-  );
   const settingsMain = document.getElementById('files-settings-main');
-  const dbMain = document.getElementById('files-database-main');
-  if (!editorMain || !settingsMain) return;
+  if (!settingsMain) return;
   const sidebar = document.getElementById('files-sidebar');
   const currentView = sidebar?.dataset.view || 'explorer';
   settingsOpen = !settingsOpen;
   if (settingsOpen) {
-    editorMain.hidden = true;
-    if (dbMain) dbMain.hidden = true;
+    // Hide every per-view main; Settings overlays on top.
+    document.querySelectorAll('#admin-tools .files-main[data-view]').forEach((el) => {
+      el.hidden = true;
+    });
     settingsMain.hidden = false;
     try { startAppConfig(); } catch (_) {}
     try { stopAutoRefresh(); } catch (_) {}
@@ -2703,12 +2823,8 @@ function toggleSettingsView() {
   } else {
     settingsMain.hidden = true;
     try { stopAppConfig(); } catch (_) {}
-    if (currentView === 'database') {
-      if (dbMain) dbMain.hidden = false;
-      try { startAutoRefresh(); } catch (_) {}
-    } else {
-      editorMain.hidden = false;
-    }
+    // Re-apply the current view so the matching main becomes visible.
+    applySidebarView(currentView);
   }
   applySettingsButtonState();
 }
@@ -2796,11 +2912,11 @@ export async function startAdminTools() {
   // Restore previously open tabs only once per session
   if (!openTabs.length) await restoreOpenTabs();
 
-  // If the active tab is a terminal, refit xterm — it can't measure a
+  // If a terminal tab is active, refit xterm — it can't measure a
   // display:none host while another main tab was active.
-  const activeTab = openTabs.find((t) => t.path === activeTabPath);
-  if (activeTab && activeTab.kind === 'terminal' && activeTab.instance) {
-    setTimeout(() => activeTab.instance.fit(), 30);
+  const activeTermTab = getActiveTerminalTab();
+  if (activeTermTab && activeTermTab.instance) {
+    setTimeout(() => activeTermTab.instance.fit(), 30);
   }
 
   // If the Settings view was left open when the user navigated away, resume

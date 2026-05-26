@@ -1232,15 +1232,26 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
   min-width: 0 !important;
 }
 
-/* "New terminal tab" button — not a view switcher, so it never enters the
-   greyed-out active state. */
-.files-view-toggle-btn.files-terminal-new {
-  opacity: 1;
-  color: var(--files-text-strong);
-}
-.files-view-toggle-btn.files-terminal-new:hover { background: var(--files-btn-hover); }
-
 /* ── Terminal launchers sidebar panel ──────────────────── */
+
+/* Primary "New terminal" action at the top of the zap launcher panel.
+   Replaces the standalone Terminal Tab strip icon. */
+.ft-new-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 10px 6px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: var(--files-btn-hover);
+  color: var(--files-text-strong);
+  border: 1px solid var(--files-border);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+.ft-new-btn:hover { background: var(--files-row-hover); }
+.ft-new-btn .lucide-icon { width: 14px; height: 14px; }
 
 #files-panel-terminal .ft-body {
   flex: 1;
@@ -1877,38 +1888,121 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
   flex-shrink: 0;
 }
 
-/* Expanded commit detail — spans the full sidebar width. Active lanes
-   from the row continue downward as thin vertical bars layered above
-   the content so the commit graph chain isn't visually broken when a
-   commit is opened. */
-.fg-graph-detail {
-  position: relative;
+/* Sidebar commit-graph row is highlighted while its detail is shown in
+   the git main panel. */
+.fg-graph-row.selected { background: var(--files-row-hover); }
+.fg-graph-row.selected .fg-graph-row-head { background: var(--files-row-hover); }
+
+/* ── Git main panel (commit / diff / compare detail) ─── */
+
+#files-git-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.fg-main-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--files-border);
+  background: var(--files-bg-sidebar);
+  flex: 0 0 auto;
+}
+.fg-main-mode-pills {
+  display: flex;
+  gap: 4px;
+}
+.fg-main-mode-pill {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--files-text-muted);
   font-size: 11px;
-  background: var(--files-bg);
-  border-top: 1px solid var(--files-border-strong);
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.fg-main-mode-pill:hover:not(:disabled) {
+  background: var(--files-btn-hover);
+  color: var(--files-text-strong);
+}
+.fg-main-mode-pill.active {
+  background: var(--files-row-hover);
+  color: var(--files-text-strong);
+  border-color: var(--files-border-strong);
+}
+.fg-main-mode-pill:disabled {
+  opacity: 0.4;
   cursor: default;
 }
-.fg-graph-detail[hidden] { display: none; }
-.fg-graph-detail-lanes {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  pointer-events: none;
-  z-index: 2;
+.fg-main-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px;
+  font-size: 12px;
 }
-.fg-graph-lane-line {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 1.6px;
-  opacity: 0.55;
+.fg-main-loading,
+.fg-main-empty {
+  color: var(--files-text-muted);
+  text-align: center;
+  padding: 24px 12px;
 }
-.fg-graph-detail-content {
-  padding: 6px 8px 10px 6px;
-  position: relative;
-  z-index: 1;
+.fg-main-empty-title { font-weight: 600; color: var(--files-text); margin-bottom: 6px; }
+.fg-main-empty-text { font-size: 11px; }
+
+.fg-main-overview {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 640px;
 }
+.fg-main-overview-card {
+  border: 1px solid var(--files-border);
+  border-radius: 6px;
+  background: var(--files-bg-sidebar);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+}
+.fg-main-overview-row {
+  display: grid;
+  grid-template-columns: 22px 110px 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--files-border);
+}
+.fg-main-overview-row:last-child { border-bottom: none; }
+.fg-main-overview-row .lucide-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--files-text-muted);
+}
+.fg-main-overview-label {
+  font-size: 10px;
+  color: var(--files-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.fg-main-overview-val {
+  color: var(--files-text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.fg-main-overview-hint {
+  color: var(--files-text-muted);
+  font-size: 11px;
+}
+
+.fg-main-commit { max-width: 920px; }
 .fg-cd-meta { display: flex; justify-content: space-between; align-items: center; color: var(--files-text-muted); margin-bottom: 4px; }
 .fg-cd-fields { display: grid; grid-template-columns: 70px 1fr; gap: 2px 8px; margin-bottom: 6px; font-size: 11px; }
 .fg-cd-field { display: contents; }
