@@ -415,6 +415,43 @@ function cacheSet(key, value) {
   cellHtmlCache.set(key, value);
 }
 
+// One shared hover overlay holds the edit (✎) and expand (↗) buttons. We
+// move it into the currently-hovered cell instead of stamping two buttons
+// into every cell on render. The buttons keep their original class names so
+// the existing click delegation in edit.js continues to find them via
+// closest('.db-cell').
+//
+// Touch devices without :hover get the per-cell buttons rendered inline, so
+// edit/expand are reachable on first tap.
+const HAS_HOVER = typeof window !== 'undefined' && window.matchMedia
+  ? window.matchMedia('(hover: hover) and (pointer: fine)').matches
+  : true;
+
+let _cellOverlay = null;
+function getCellOverlay() {
+  if (_cellOverlay && _cellOverlay.isConnected) return _cellOverlay;
+  // The cell may have been wiped (edit mode replaces innerHTML); rebuild.
+  const span = document.createElement('span');
+  span.className = 'db-cell-overlay';
+  span.innerHTML =
+    '<button class="db-cell-edit" title="Edit inline">✎</button>' +
+    '<button class="db-cell-expand" title="Open full viewer">↗</button>';
+  _cellOverlay = span;
+  return span;
+}
+
+let _cellOverlayDelegated = false;
+function ensureCellOverlayDelegation(container) {
+  if (_cellOverlayDelegated || !container || !HAS_HOVER) return;
+  _cellOverlayDelegated = true;
+  container.addEventListener('mouseover', (e) => {
+    const cell = e.target.closest('.db-cell');
+    if (!cell || !container.contains(cell)) return;
+    const overlay = getCellOverlay();
+    if (overlay.parentElement !== cell) cell.appendChild(overlay);
+  });
+}
+
 // Single delegated mousedown listener for row-resize handles. Attached once
 // per table container so newly inserted rows work without per-render rebinding.
 let _rowResizeDelegated = false;
@@ -531,6 +568,8 @@ function renderTableData(result, silent) {
     const inner = isJson
       ? `<div class="db-cell-json">${display}</div>`
       : `<pre class="db-cell-pre">${display}</pre>`;
+    if (HAS_HOVER) return inner;
+    // Touch fallback: inline buttons so first-tap access still works.
     return `<button class="db-cell-edit" title="Edit inline">✎</button>${inner}<button class="db-cell-expand" title="Open full viewer">↗</button>`;
   }
 
@@ -558,11 +597,10 @@ function renderTableData(result, silent) {
       const cls = val === null ? 'col-null' : '';
       const { html: display, isJson } = fmtCell(val);
       const safeVal = String(val).replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      h += `<td class="db-cell ${cls}"${style} data-row="${ri}" data-col="${col}" data-val="${safeVal}">
-        <button class="db-cell-edit" title="Edit inline">✎</button>
-        ${isJson ? `<div class="db-cell-json">${display}</div>` : `<pre class="db-cell-pre">${display}</pre>`}
-        <button class="db-cell-expand" title="Open full viewer">↗</button>
-      </td>`;
+      const inner = isJson ? `<div class="db-cell-json">${display}</div>` : `<pre class="db-cell-pre">${display}</pre>`;
+      const touchButtons = HAS_HOVER ? '' : '<button class="db-cell-edit" title="Edit inline">✎</button>';
+      const touchExpand = HAS_HOVER ? '' : '<button class="db-cell-expand" title="Open full viewer">↗</button>';
+      h += `<td class="db-cell ${cls}"${style} data-row="${ri}" data-col="${col}" data-val="${safeVal}">${touchButtons}${inner}${touchExpand}</td>`;
     }
     h += '</tr>';
     h += `<tr class="db-row-resize-row" data-ri="${ri}"${pkAttr}><td colspan="${displayCols.length + 1}" class="db-row-resize-td"><div class="db-row-resize-handle" data-ri="${ri}"></div></td></tr>`;
@@ -844,6 +882,8 @@ function renderTableData(result, silent) {
 
   // Row-resize handles: one delegated listener on the container (idempotent).
   ensureRowResizeDelegation(data);
+  // Hover overlay for edit/expand buttons: one delegated mouseover listener.
+  ensureCellOverlayDelegation(data);
 
   initColumnResize();
   ensurePopupOutsideHandler();
