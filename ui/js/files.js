@@ -14,6 +14,22 @@ import { startAutoRefresh, stopAutoRefresh } from './db/pagination.js';
 
 const API_BASE = '/api/v1/files';
 const LS_SIDEBAR_VIEW = 'files.sidebarView';   // 'explorer' | 'git' | 'database'
+const LS_TERM_FONT_SIZE = 'files.terminalFontSize';
+const TERM_FONT_DEFAULT = 14;
+
+function getTerminalFontSize() {
+  const raw = parseInt(localStorage.getItem(LS_TERM_FONT_SIZE), 10);
+  return Number.isFinite(raw) && raw >= 8 && raw <= 32 ? raw : TERM_FONT_DEFAULT;
+}
+function setTerminalFontSize(n) {
+  try { localStorage.setItem(LS_TERM_FONT_SIZE, String(n)); } catch (_) {}
+  // Propagate to every open terminal — font size is global, not per-tab.
+  for (const t of openTabs) {
+    if (t.kind === 'terminal' && t.instance && t.instance.setFontSize) {
+      try { t.instance.setFontSize(n); } catch (_) {}
+    }
+  }
+}
 
 let initialised = false;
 let isAdmin = false;
@@ -463,30 +479,28 @@ function renderTabs() {
     el.appendChild(label);
 
     // ── 3-dot "more" menu button ──
-    // Terminal tabs have no per-tab actions (no file to rename/delete/wrap/
-    // preview/find), so the menu is omitted entirely.
-    if (tab.kind !== 'terminal') {
-      const more = document.createElement('button');
-      more.className = 'files-tab-more';
-      more.type = 'button';
-      more.title = 'More actions';
-      more.draggable = false;
-      const moreI = document.createElement('i');
-      moreI.setAttribute('data-lucide', 'more-vertical');
-      moreI.className = 'lucide-icon';
-      more.appendChild(moreI);
-      // Same draggable-parent guard as the close button.
-      more.addEventListener('mousedown', (e) => {
-        e.stopPropagation();
-        if (e.button === 0) {
-          e.preventDefault();
-          showTabMenu(tab, more);
-        }
-      });
-      more.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); });
-      more.addEventListener('dragstart', (e) => { e.preventDefault(); e.stopPropagation(); });
-      el.appendChild(more);
-    }
+    // For file tabs this opens the rename/delete/wrap/preview/find menu;
+    // for terminal tabs it shows the (different) terminal-specific items.
+    const more = document.createElement('button');
+    more.className = 'files-tab-more';
+    more.type = 'button';
+    more.title = 'More actions';
+    more.draggable = false;
+    const moreI = document.createElement('i');
+    moreI.setAttribute('data-lucide', 'more-vertical');
+    moreI.className = 'lucide-icon';
+    more.appendChild(moreI);
+    more.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+      if (e.button === 0) {
+        e.preventDefault();
+        if (tab.kind === 'terminal') showTerminalTabMenu(tab, more);
+        else showTabMenu(tab, more);
+      }
+    });
+    more.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); });
+    more.addEventListener('dragstart', (e) => { e.preventDefault(); e.stopPropagation(); });
+    el.appendChild(more);
 
     const close = document.createElement('button');
     close.className = 'files-tab-close';
@@ -675,6 +689,73 @@ function showTabMenu(tab, anchorBtn) {
   items.push({ icon: 'search', label: 'Find / Replace…', disabled: findDisabled, action: () => openFindBarForActiveTab(tab.path, false) });
   // Right-align under the button
   _openFloatingMenu(items, rect.bottom + 2, rect.right - 180);
+}
+
+function showTerminalTabMenu(tab, anchorBtn) {
+  const rect = anchorBtn.getBoundingClientRect();
+  const wrapOn = tab.wrap !== false;
+  const items = [
+    { icon: 'pencil',    label: 'Rename…',        action: () => startInlineRename(tab, document.querySelector('#files-tabs .files-tab[data-path="' + cssEscape(tab.path) + '"] .files-tab-label')) },
+    { icon: 'wrap-text', label: 'Wrap lines',     checked: wrapOn, action: () => toggleTerminalWrap(tab.path) },
+    { separator: true },
+    { icon: 'zoom-in',   label: 'Zoom in',        action: () => terminalZoom(+1) },
+    { icon: 'zoom-out',  label: 'Zoom out',       action: () => terminalZoom(-1) },
+    { icon: 'refresh-cw', label: 'Reset zoom',    action: () => terminalResetZoom() },
+    { separator: true },
+    { icon: 'search',    label: 'Find…',          action: () => openTerminalFindFromMenu(tab.path) },
+  ];
+  _openFloatingMenu(items, rect.bottom + 2, rect.right - 180);
+}
+
+function toggleTerminalWrap(tabPath) {
+  const tab = openTabs.find((t) => t.path === tabPath);
+  if (!tab || tab.kind !== 'terminal') return;
+  tab.wrap = !(tab.wrap !== false);   // flip; treat undefined as true
+  // Sync the CSS classes that control the scroll wrapper's overflow-x and
+  // the host's width. The terminal pane is a sibling of the find bar; the
+  // host lives inside .files-terminal-scroll.
+  const pane = document.querySelector('.files-editor-pane[data-path="' + cssEscape(tabPath) + '"]');
+  if (pane) {
+    const scrollWrap = pane.querySelector('.files-terminal-scroll');
+    const host = pane.querySelector('.files-terminal-host');
+    if (scrollWrap) scrollWrap.classList.toggle('files-terminal-scroll-nowrap', !tab.wrap);
+    if (host)       host.classList.toggle('files-terminal-host-nowrap', !tab.wrap);
+  }
+  if (tab.instance && tab.instance.setWrap) tab.instance.setWrap(tab.wrap);
+  // Refit after the layout change. Two rAF ticks guarantee the browser has
+  // applied the new width to the host BEFORE fitAddon measures — on mobile
+  // a 30ms setTimeout sometimes fires before layout has reflowed, so xterm
+  // keeps its old cols and wrap appears not to work.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (!tab.instance) return;
+    tab.instance.fit();
+    // Print a one-line confirmation so the user can see the toggle took
+    // effect and what cols xterm is now using. Future shell output will
+    // wrap (or not) at this column count.
+    try {
+      const cols = (tab.instance.term && tab.instance.term.cols) || '?';
+      const msg = tab.wrap
+        ? '\r\n\x1b[2;33m[wrap ON — ' + cols + ' cols, lines wrap to next row]\x1b[0m\r\n'
+        : '\r\n\x1b[2;33m[wrap OFF — ' + cols + ' cols, swipe horizontally to see overflow]\x1b[0m\r\n';
+      tab.instance.term.write(msg);
+    } catch (_) {}
+  }));
+  persistTabs();
+}
+
+function terminalZoom(delta) {
+  const next = getTerminalFontSize() + delta;
+  setTerminalFontSize(next);
+}
+function terminalResetZoom() {
+  setTerminalFontSize(TERM_FONT_DEFAULT);
+}
+
+function openTerminalFindFromMenu(tabPath) {
+  const pane = document.querySelector('.files-editor-pane[data-path="' + cssEscape(tabPath) + '"]');
+  const bar = pane && pane.querySelector('.files-terminal-findbar');
+  const tab = openTabs.find((t) => t.path === tabPath);
+  if (bar && tab && tab.instance) openTerminalFindBar(bar, tab.instance);
 }
 
 function togglePreview(path) {
@@ -1067,9 +1148,17 @@ function buildPaneForTab(tab, mode) {
     // host so it stacks on top in flex-column layout.
     const findBar = buildTerminalFindBar();
     pane.appendChild(findBar);
+    // Scroll wrapper owns the horizontal scrollbar in no-wrap mode. The
+    // host inside is grown wider than the wrapper via CSS so the user can
+    // swipe / drag to see off-screen content.
+    const scrollWrap = document.createElement('div');
+    scrollWrap.className = 'files-terminal-scroll';
+    if (tab.wrap === false) scrollWrap.classList.add('files-terminal-scroll-nowrap');
     const host = document.createElement('div');
     host.className = 'files-terminal-host';
-    pane.appendChild(host);
+    if (tab.wrap === false) host.classList.add('files-terminal-host-nowrap');
+    scrollWrap.appendChild(host);
+    pane.appendChild(scrollWrap);
 
     // Drag-and-drop: dropping a file from the file tree pastes its absolute
     // path (shell-quoted) at the current prompt. The tree marshals the path
@@ -1091,17 +1180,28 @@ function buildPaneForTab(tab, mode) {
       tab.instance.focus();
     });
 
+    // Long-press on mobile → context menu with Copy / Paste / Select all.
+    // Fires after a 500ms hold that didn't move; cancelled on move / lift.
+    wireTerminalLongPress(host, () => tab.instance);
+    // Two-finger pinch → adjust the global terminal font size.
+    wireTerminalPinchZoom(host);
+
     // xterm.open() measures its host immediately. The pane has just been
     // created (not yet appended to the document) — defer xterm creation
-    // until after the pane is attached and the active class has been set,
-    // otherwise fit() reads zero dimensions.
-    setTimeout(() => {
+    // until after the pane is attached AND the browser has reflowed, so
+    // fit() sees the final host width. Without the rAF, on slow mobile
+    // browsers the host can still report a stale width and xterm picks
+    // too many cols, making the shell think it has more room than it
+    // does and wrap behaviour appears broken.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
       if (!document.body.contains(pane)) return;
       try {
         // tab.path is the backend session_id (see pushTerminalTab). Passing
         // the existing id on restore reattaches to the running shell.
         tab.instance = createTerminalInstance(host, tab.path, {
           initialCommand: tab.initialCommand || '',
+          wrap: tab.wrap !== false,           // default true unless persisted false
+          fontSize: getTerminalFontSize(),    // global setting, shared across tabs
         });
         // Consume the command — buildPaneForTab can be called again later
         // (e.g. pane mode swap), but the shell already has it.
@@ -1109,6 +1209,9 @@ function buildPaneForTab(tab, mode) {
         // Drive the per-tab status dot from the WS state machine.
         tab.instance.onStateChange((s) => _updateTabConnDot(tab.path, s));
         tab.instance.fit();
+        // Belt-and-braces second fit after another paint — covers any
+        // late layout shift from the address bar settling on iOS Safari.
+        setTimeout(() => { if (tab.instance) tab.instance.fit(); }, 150);
         // Wire Ctrl+F → find bar. Capture-phase on the host so we preempt
         // xterm's keydown handler (which otherwise forwards Ctrl+F bytes
         // to the shell).
@@ -1123,7 +1226,7 @@ function buildPaneForTab(tab, mode) {
       } catch (e) {
         host.textContent = 'Failed to start terminal: ' + (e.message || e);
       }
-    }, 0);
+    }));
   } else {
     // text mode: textarea (transparent) overlaid on a <pre> for Prism
     buildTextEditorPane(pane, tab);
@@ -1694,7 +1797,7 @@ function persistTabs() {
     // with the same id reattaches us to it.
     const minimal = openTabs.map((t) => {
       if (t.kind === 'terminal') {
-        return { path: t.path, name: t.name, kind: 'terminal' };
+        return { path: t.path, name: t.name, kind: 'terminal', wrap: t.wrap !== false };
       }
       return { path: t.path, name: t.name, wrap: !!t.wrap, preview: !!t.preview };
     });
@@ -1733,6 +1836,8 @@ async function restoreOpenTabs() {
           // Reattach to the running PTY identified by t.path. If the shell
           // already exited, the backend will spawn a fresh one for that id.
           pushTerminalTab(t.path, t.name);
+          const restored = openTabs[openTabs.length - 1];
+          if (restored && t.wrap === false) restored.wrap = false;
           continue;
         }
         await openFile(t.path, t.name);
@@ -1816,6 +1921,185 @@ function _updateTabConnDot(tabPath, state) {
 
 function newTerminalSessionId() {
   return 'terminal:' + randomUUID();
+}
+
+// ── Mobile long-press → Copy / Paste menu ─────────────────────────
+//
+// xterm.js doesn't natively expose a touch-friendly copy/paste UI.
+// We watch for a still touch held >500ms on the terminal host and pop a
+// small floating menu near the touch point. Cancelled on touchmove /
+// touchcancel so it doesn't fight with the user's scrolling or selection.
+
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_MOVE_TOLERANCE = 8;  // px — touchmove farther than this aborts
+
+function wireTerminalLongPress(host, getInstance) {
+  let timer = null;
+  let startX = 0;
+  let startY = 0;
+
+  function cancel() {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  }
+
+  host.addEventListener('touchstart', (e) => {
+    // Multi-touch (e.g. pinch-to-zoom) cancels the long-press intent.
+    if (!e.touches || e.touches.length !== 1) { cancel(); return; }
+    const t = e.touches[0];
+    startX = t.clientX;
+    startY = t.clientY;
+    cancel();
+    timer = setTimeout(() => {
+      timer = null;
+      const inst = getInstance && getInstance();
+      if (inst) showTerminalContextMenu(startX, startY, inst);
+    }, LONG_PRESS_MS);
+  }, { passive: true });
+
+  host.addEventListener('touchmove', (e) => {
+    if (!e.touches || e.touches.length !== 1) { cancel(); return; }
+    const t = e.touches[0];
+    if (Math.abs(t.clientX - startX) > LONG_PRESS_MOVE_TOLERANCE ||
+        Math.abs(t.clientY - startY) > LONG_PRESS_MOVE_TOLERANCE) {
+      cancel();
+    }
+  }, { passive: true });
+
+  host.addEventListener('touchend',    cancel, { passive: true });
+  host.addEventListener('touchcancel', cancel, { passive: true });
+}
+
+// ── Mobile pinch-to-zoom ──────────────────────────────────────────
+//
+// Two-finger pinch on the terminal host adjusts the global font size.
+// Uses the same setter as the menu's Zoom in / out items so the new size
+// propagates to every open terminal and persists in localStorage.
+
+function wireTerminalPinchZoom(host) {
+  let startDist = 0;
+  let startFontSize = 0;
+  let lastApplied = 0;
+
+  function dist(t0, t1) {
+    const dx = t0.clientX - t1.clientX;
+    const dy = t0.clientY - t1.clientY;
+    return Math.hypot(dx, dy);
+  }
+
+  host.addEventListener('touchstart', (e) => {
+    if (!e.touches || e.touches.length < 2) return;
+    // Prevent the OS-level pinch zoom from kicking in on top of ours.
+    if (e.cancelable) e.preventDefault();
+    startDist = dist(e.touches[0], e.touches[1]);
+    startFontSize = getTerminalFontSize();
+    lastApplied = startFontSize;
+  }, { passive: false });
+
+  host.addEventListener('touchmove', (e) => {
+    if (!e.touches || e.touches.length < 2 || startDist === 0) return;
+    if (e.cancelable) e.preventDefault();
+    const d = dist(e.touches[0], e.touches[1]);
+    if (d === 0) return;
+    const ratio = d / startDist;
+    let next = Math.round(startFontSize * ratio);
+    if (next < 8) next = 8;
+    if (next > 32) next = 32;
+    if (next !== lastApplied) {
+      setTerminalFontSize(next);
+      lastApplied = next;
+    }
+  }, { passive: false });
+
+  function end() { startDist = 0; }
+  host.addEventListener('touchend',    end, { passive: true });
+  host.addEventListener('touchcancel', end, { passive: true });
+}
+
+function showTerminalContextMenu(x, y, instance) {
+  closeTerminalContextMenu();
+  const menu = document.createElement('div');
+  menu.className = 'files-terminal-ctxmenu';
+  menu.id = 'files-terminal-ctxmenu';
+
+  function btn(label, icon, action, disabled) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'files-terminal-ctxmenu-item' + (disabled ? ' disabled' : '');
+    b.disabled = !!disabled;
+    b.innerHTML = '<i data-lucide="' + icon + '" class="lucide-icon"></i><span>' + label + '</span>';
+    b.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      closeTerminalContextMenu();
+      if (!disabled) action();
+    });
+    return b;
+  }
+
+  const hasSel = !!(instance && instance.term && instance.term.hasSelection && instance.term.hasSelection());
+
+  menu.appendChild(btn('Copy',       'copy',      async () => {
+    try {
+      const text = (instance.term.getSelection && instance.term.getSelection()) || '';
+      if (text) await navigator.clipboard.writeText(text);
+    } catch (_) {}
+    try { instance.focus(); } catch (_) {}
+  }, !hasSel));
+
+  menu.appendChild(btn('Paste',      'clipboard', async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text && instance.paste) instance.paste(text);
+    } catch (_) {}
+    try { instance.focus(); } catch (_) {}
+  }));
+
+  menu.appendChild(btn('Select all', 'list',      () => {
+    try { instance.term.selectAll && instance.term.selectAll(); } catch (_) {}
+  }));
+
+  menu.appendChild(btn('Clear',      'trash-2',   () => {
+    try { instance.term.clear && instance.term.clear(); } catch (_) {}
+    try { instance.focus(); } catch (_) {}
+  }));
+
+  document.body.appendChild(menu);
+
+  // Clamp into viewport.
+  const rect = menu.getBoundingClientRect();
+  const left = Math.max(8, Math.min(window.innerWidth  - rect.width  - 8, x - rect.width / 2));
+  const top  = Math.max(8, Math.min(window.innerHeight - rect.height - 8, y - rect.height - 8));
+  menu.style.left = left + 'px';
+  menu.style.top  = top  + 'px';
+
+  if (window.lucide) {
+    window.lucide.createIcons({ nodes: Array.from(menu.querySelectorAll('[data-lucide]:not(.lucide)')) });
+  }
+
+  // Close on any tap / click outside, or on scroll. Touchstart capture so
+  // we catch the gesture before xterm processes it as a new selection.
+  const outside = (ev) => {
+    if (!menu.contains(ev.target)) closeTerminalContextMenu();
+  };
+  setTimeout(() => {
+    document.addEventListener('mousedown',  outside, true);
+    document.addEventListener('touchstart', outside, true);
+    document.addEventListener('scroll',     closeTerminalContextMenu, true);
+  }, 0);
+  menu._outsideHandler = outside;
+}
+
+function closeTerminalContextMenu() {
+  const menu = document.getElementById('files-terminal-ctxmenu');
+  if (!menu) return;
+  if (menu._outsideHandler) {
+    document.removeEventListener('mousedown',  menu._outsideHandler, true);
+    document.removeEventListener('touchstart', menu._outsideHandler, true);
+  }
+  document.removeEventListener('scroll', closeTerminalContextMenu, true);
+  menu.remove();
 }
 
 // ── Drag a file from the tree onto a terminal pane ────────────────
@@ -2012,6 +2296,31 @@ function initFilesTerminalButton() {
       tabSelect.dispatchEvent(new Event('change', { bubbles: true }));
     }
     openNewTerminalTab();
+  }, true);
+
+  // Zoom shortcuts — only fire when a terminal tab is the active tab so
+  // they don't hijack browser zoom on other pages. Capture-phase for the
+  // same reason as Ctrl+`: xterm would otherwise see Ctrl+= / Ctrl+- and
+  // forward bytes to the shell.
+  document.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+    const active = openTabs.find((t) => t.path === activeTabPath);
+    if (!active || active.kind !== 'terminal') return;
+    // Don't steal these keys while the user is typing in an input — e.g.
+    // the find bar or the inline rename input.
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    // '=' on US layouts produces Equal; '+' is the same key with shift,
+    // which we excluded above. Some keyboards report '+' directly though.
+    const isPlus  = e.code === 'Equal' || e.key === '+' || e.key === '=';
+    const isMinus = e.code === 'Minus' || e.key === '-' || e.key === '_';
+    const isZero  = e.code === 'Digit0' || e.key === '0';
+    if (!isPlus && !isMinus && !isZero) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (isPlus)  terminalZoom(+1);
+    if (isMinus) terminalZoom(-1);
+    if (isZero)  terminalResetZoom();
   }, true);
 }
 

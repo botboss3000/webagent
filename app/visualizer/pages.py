@@ -46,5 +46,9 @@ async def delete_page(user_id: str, slug: str) -> bool:
     return await get_pages_store().delete_page(user_id, slug)
 
 
+async def rename_page(user_id: str, slug: str, new_title: str) -> bool:
+    return await get_pages_store().rename_page(user_id, slug, new_title)
+
+
 async def ensure_home_page(user_id: str) -> None:
     await get_pages_store().ensure_home_page(user_id, home_page_html())
