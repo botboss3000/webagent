@@ -1272,6 +1272,15 @@ async def stream_agent_events(
                     except json.JSONDecodeError:
                         tool_args = {}
 
+                    # ── Visualizer: populate render_visual html from assistant text ──
+                    # DeepSeek and similar models often put the HTML content in their
+                    # text response instead of the tool call's html parameter. When the
+                    # html parameter is empty/blank, use the assistant's text content.
+                    if tool_name == "render_visual" and collected_content:
+                        html_raw = tool_args.get("html", "")
+                        if not html_raw or not html_raw.strip():
+                            tool_args["html"] = collected_content
+
                     validation_error = await validate_tool_call(tool_name, tool_args, tools)
 
                     yield {"type": "pipeline", "level": "pipeline",
