@@ -9,10 +9,16 @@ import { termWsUrl, apiPath } from './config.js';
 const MAX_RECONNECT_DELAY = 30000; // 30s max
 const INITIAL_RECONNECT_DELAY = 500; // 500ms first retry
 
-export function createTerminalInstance(container, sessionId) {
+export function createTerminalInstance(container, sessionId, opts) {
   if (!sessionId) {
     throw new Error('createTerminalInstance: sessionId is required');
   }
+  opts = opts || {};
+  // Command typed into the shell once, on the first successful WS open.
+  // Reconnects (network blip, refresh) do NOT re-type it — the PTY already
+  // has it in its history.
+  const initialCommand = typeof opts.initialCommand === 'string' ? opts.initialCommand : '';
+  let initialCommandSent = false;
   const term = new Terminal({
     cursorBlink: true,
     cursorStyle: 'block',
@@ -135,6 +141,15 @@ export function createTerminalInstance(container, sessionId) {
       try {
         ws.send(JSON.stringify({ type: 'resize', rows: term.rows, cols: term.cols }));
       } catch (_) {}
+      if (initialCommand && !initialCommandSent) {
+        initialCommandSent = true;
+        // Small delay so the shell finishes printing its prompt first.
+        setTimeout(() => {
+          try {
+            if (ws && ws.readyState === WebSocket.OPEN) ws.send(initialCommand + '\n');
+          } catch (_) {}
+        }, 200);
+      }
     };
 
     ws.onmessage = (ev) => {

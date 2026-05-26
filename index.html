@@ -2628,6 +2628,7 @@
             <button class="files-strip-btn files-strip-view" data-view="explorer" title="Switch to explorer"><i data-lucide="files" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="git" title="Switch to source control"><i data-lucide="github" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="database" title="Switch to database"><i data-lucide="database" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-strip-view" data-view="terminal" title="Switch to terminal launchers"><i data-lucide="zap" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
           </div>
@@ -2639,6 +2640,7 @@
                 <button class="files-view-toggle-btn active" data-view="explorer" title="Explorer (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="files" class="lucide-icon"></i></button>
                 <button class="files-view-toggle-btn" data-view="git" title="Switch to source control" role="tab" aria-selected="false"><i data-lucide="github" class="lucide-icon"></i></button>
                 <button class="files-view-toggle-btn" data-view="database" title="Switch to database" role="tab" aria-selected="false"><i data-lucide="database" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn" data-view="terminal" title="Switch to terminal launchers" role="tab" aria-selected="false"><i data-lucide="zap" class="lucide-icon"></i></button>
                 <span class="files-view-toggle-sep" aria-hidden="true"></span>
                 <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
                 <button class="files-view-toggle-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
@@ -2666,6 +2668,7 @@
                 <button class="files-view-toggle-btn" data-view="explorer" title="Switch to explorer" role="tab" aria-selected="false"><i data-lucide="files" class="lucide-icon"></i></button>
                 <button class="files-view-toggle-btn active" data-view="git" title="Source control (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="github" class="lucide-icon"></i></button>
                 <button class="files-view-toggle-btn" data-view="database" title="Switch to database" role="tab" aria-selected="false"><i data-lucide="database" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn" data-view="terminal" title="Switch to terminal launchers" role="tab" aria-selected="false"><i data-lucide="zap" class="lucide-icon"></i></button>
                 <span class="files-view-toggle-sep" aria-hidden="true"></span>
                 <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
                 <button class="files-view-toggle-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
@@ -2690,6 +2693,7 @@
                 <button class="files-view-toggle-btn" data-view="explorer" title="Switch to explorer" role="tab" aria-selected="false"><i data-lucide="files" class="lucide-icon"></i></button>
                 <button class="files-view-toggle-btn" data-view="git" title="Switch to source control" role="tab" aria-selected="false"><i data-lucide="github" class="lucide-icon"></i></button>
                 <button class="files-view-toggle-btn active" data-view="database" title="Database (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="database" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn" data-view="terminal" title="Switch to terminal launchers" role="tab" aria-selected="false"><i data-lucide="zap" class="lucide-icon"></i></button>
                 <span class="files-view-toggle-sep" aria-hidden="true"></span>
                 <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
                 <button class="files-view-toggle-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
@@ -2699,6 +2703,49 @@
               </div>
             </div>
             <div id="db-sidebar-host" class="db-sidebar-host"></div>
+          </div>
+
+          <!-- Terminal launchers panel: quick-launch shortcuts, live tmux
+               sessions list, and a static hints/cheat-sheet section. The
+               panel itself doesn't host any terminal — clicking a row opens
+               a new terminal tab in the main pane. -->
+          <div class="files-sidebar-panel" id="files-panel-terminal" data-view="terminal" hidden>
+            <div class="files-sidebar-header">
+              <div class="files-view-toggle" role="tablist" aria-label="Sidebar view">
+                <button class="files-view-toggle-btn" data-view="explorer" title="Switch to explorer" role="tab" aria-selected="false"><i data-lucide="files" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn" data-view="git" title="Switch to source control" role="tab" aria-selected="false"><i data-lucide="github" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn" data-view="database" title="Switch to database" role="tab" aria-selected="false"><i data-lucide="database" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn active" data-view="terminal" title="Terminal launchers (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="zap" class="lucide-icon"></i></button>
+                <span class="files-view-toggle-sep" aria-hidden="true"></span>
+                <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
+              </div>
+              <div class="files-sidebar-actions">
+                <button class="files-icon-btn" id="ft-refresh" title="Refresh tmux sessions"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
+                <button class="files-icon-btn files-maximize-btn" title="Maximize sidebar"><i data-lucide="maximize-2" class="lucide-icon"></i></button>
+              </div>
+            </div>
+            <div id="ft-body" class="ft-body">
+              <div class="ft-section">
+                <div class="ft-section-title">Quick launches</div>
+                <div class="ft-list" id="ft-list-launches"><div class="ft-empty">Loading…</div></div>
+              </div>
+              <div class="ft-section">
+                <div class="ft-section-title">Running tmux sessions</div>
+                <div class="ft-list" id="ft-list-tmux"><div class="ft-empty">—</div></div>
+              </div>
+              <div class="ft-section">
+                <div class="ft-section-title">Shortcuts &amp; hints</div>
+                <div class="ft-hints">
+                  <div><kbd>Ctrl-b</kbd> <kbd>d</kbd> — detach tmux (session keeps running)</div>
+                  <div><kbd>tmux ls</kbd> — list sessions</div>
+                  <div><kbd>tmux attach -t NAME</kbd> — re-attach</div>
+                  <div><kbd>Ctrl-`</kbd> — new terminal tab from anywhere</div>
+                  <div><kbd>Ctrl-F</kbd> — find in terminal output</div>
+                  <div class="ft-hint-note">PTY sessions survive tab close, refresh, and webagent restarts when wrapped in <code>tmux</code>. Idle GC disabled by default.</div>
+                </div>
+              </div>
+            </div>
           </div>
         </aside>
 

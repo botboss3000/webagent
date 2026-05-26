@@ -1100,7 +1100,12 @@ function buildPaneForTab(tab, mode) {
       try {
         // tab.path is the backend session_id (see pushTerminalTab). Passing
         // the existing id on restore reattaches to the running shell.
-        tab.instance = createTerminalInstance(host, tab.path);
+        tab.instance = createTerminalInstance(host, tab.path, {
+          initialCommand: tab.initialCommand || '',
+        });
+        // Consume the command — buildPaneForTab can be called again later
+        // (e.g. pane mode swap), but the shell already has it.
+        tab.initialCommand = '';
         // Drive the per-tab status dot from the WS state machine.
         tab.instance.onStateChange((s) => _updateTabConnDot(tab.path, s));
         tab.instance.fit();
@@ -1921,7 +1926,8 @@ function startInlineRename(tab, labelEl) {
   input.select();
 }
 
-function pushTerminalTab(sessionId, name) {
+function pushTerminalTab(sessionId, name, opts) {
+  opts = opts || {};
   openTabs.push({
     // The tab path doubles as the backend session_id — terminal tabs use a
     // 'terminal:<uuid>' prefix that can't collide with real file paths.
@@ -1931,6 +1937,9 @@ function pushTerminalTab(sessionId, name) {
     instance: null,           // set by buildPaneForTab once xterm is opened
     dirty: false,
     binary: false,
+    // If set, typed into the shell once on first WS open. Not persisted —
+    // persistTabs() strips it so reloads don't re-run the command.
+    initialCommand: opts.initialCommand || '',
   });
 }
 
@@ -1941,6 +1950,23 @@ function openNewTerminalTab() {
   renderTabs();
   renderEditorPanes();
   persistTabs();
+}
+
+// Like openNewTerminalTab but pre-types `command` into the shell. Used by
+// the sidebar's quick-launch and tmux-session lists.
+export function openNewTerminalTabWithCommand(command, name) {
+  const id = newTerminalSessionId();
+  pushTerminalTab(id, name, { initialCommand: command || '' });
+  activeTabPath = id;
+  renderTabs();
+  renderEditorPanes();
+  persistTabs();
+  // On mobile the sidebar fills the screen; switch to the strip so the
+  // newly-opened terminal becomes visible — same pattern as the "+" button.
+  const sidebar = document.getElementById('files-sidebar');
+  if (sidebar && isMobileLayout() && sidebar.dataset.state === 'max') {
+    setSidebarState('strip');
+  }
 }
 
 function initFilesTerminalButton() {
@@ -2122,7 +2148,7 @@ function initSidebarViewSwitcher() {
   if (!sidebar) return;
   // Restore last view (default: explorer)
   const stored = localStorage.getItem(LS_SIDEBAR_VIEW);
-  const want = (stored === 'git' || stored === 'database') ? stored : 'explorer';
+  const want = (stored === 'git' || stored === 'database' || stored === 'terminal') ? stored : 'explorer';
   applySidebarView(want);
   // The toggle icons live in BOTH panel headers (so each header has its
   // own copy). Delegate click handling at the sidebar level so we catch
@@ -2139,13 +2165,13 @@ function initSidebarViewSwitcher() {
   });
 }
 
-const VIEW_TITLE = { explorer: 'Explorer', git: 'Source control', database: 'Database' };
-const VIEW_SWITCH = { explorer: 'explorer', git: 'source control', database: 'database' };
+const VIEW_TITLE = { explorer: 'Explorer', git: 'Source control', database: 'Database', terminal: 'Terminal launchers' };
+const VIEW_SWITCH = { explorer: 'explorer', git: 'source control', database: 'database', terminal: 'terminal launchers' };
 
 function applySidebarView(view) {
   const sidebar = document.getElementById('files-sidebar');
   if (!sidebar) return;
-  if (view !== 'explorer' && view !== 'git' && view !== 'database') view = 'explorer';
+  if (view !== 'explorer' && view !== 'git' && view !== 'database' && view !== 'terminal') view = 'explorer';
   sidebar.dataset.view = view;
   // Update aria-selected on every view-toggle button (in panel headers
   // and in the strip). The Settings toggle button shares .files-view-toggle-btn
@@ -2177,6 +2203,11 @@ function applySidebarView(view) {
     // Lazy-load the git panel the first time, refresh on subsequent shows.
     openGitPanel(sidebar);
   }
+  if (view === 'terminal' && state !== 'strip') {
+    openTerminalLaunchersPanel();
+  } else {
+    stopTerminalLaunchersPolling();
+  }
   // Right-pane swap: Database view replaces the file editor with the relocated
   // db table view. Settings is an independent overlay that wins, so leave the
   // pane swap alone whenever Settings is open.
@@ -2194,6 +2225,126 @@ function applySidebarView(view) {
       if (editorMain) editorMain.hidden = false;
       try { stopAutoRefresh(); } catch (_) {}
     }
+  }
+}
+
+// ── Terminal launchers sidebar panel ──────────────────────────────
+//
+// Two lists (quick launches, live tmux sessions) and a static hints
+// section. Quick launches come from /api/v1/terminal/quick-launches and
+// are essentially static for the lifetime of the page; tmux sessions are
+// polled every 5s while the panel is visible.
+
+let _ftQuickLaunchesLoaded = false;
+let _ftTmuxPollTimer = null;
+
+function ftEscapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+function ftRenderLaunches(items) {
+  const host = document.getElementById('ft-list-launches');
+  if (!host) return;
+  if (!items || !items.length) {
+    host.innerHTML = '<div class="ft-empty">No quick launches configured</div>';
+    return;
+  }
+  host.innerHTML = '';
+  for (const it of items) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'ft-row';
+    row.title = it.command ? ('Run: ' + it.command) : 'Open a plain shell';
+    const ic = it.icon || 'terminal';
+    row.innerHTML = '<i data-lucide="' + ftEscapeHtml(ic) + '" class="lucide-icon ft-row-icon"></i>' +
+                    '<span class="ft-row-label">' + ftEscapeHtml(it.name) + '</span>';
+    row.addEventListener('click', () => {
+      openNewTerminalTabWithCommand(it.command || '', it.name || undefined);
+    });
+    host.appendChild(row);
+  }
+  if (window.lucide) {
+    try { window.lucide.createIcons({ nodes: Array.from(host.querySelectorAll('[data-lucide]:not(.lucide)')) }); } catch (_) {}
+  }
+}
+
+function ftRenderTmux(items) {
+  const host = document.getElementById('ft-list-tmux');
+  if (!host) return;
+  if (!items || !items.length) {
+    host.innerHTML = '<div class="ft-empty">No tmux sessions running</div>';
+    return;
+  }
+  host.innerHTML = '';
+  for (const it of items) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'ft-row';
+    row.title = "Attach: tmux attach -t '" + (it.name || '') + "'";
+    const dot = it.attached ? 'ft-row-dot ft-row-dot-on' : 'ft-row-dot';
+    row.innerHTML =
+      '<i data-lucide="square-terminal" class="lucide-icon ft-row-icon"></i>' +
+      '<span class="ft-row-label">' + ftEscapeHtml(it.name) + '</span>' +
+      '<span class="ft-row-meta">' + ftEscapeHtml(it.windows + (it.windows === 1 ? ' win' : ' wins')) + '</span>' +
+      '<span class="' + dot + '" title="' + (it.attached ? 'attached' : 'detached') + '"></span>';
+    row.addEventListener('click', () => {
+      const cmd = "tmux attach -t '" + String(it.name).replace(/'/g, "'\\''") + "'";
+      openNewTerminalTabWithCommand(cmd, 'tmux: ' + it.name);
+    });
+    host.appendChild(row);
+  }
+  if (window.lucide) {
+    try { window.lucide.createIcons({ nodes: Array.from(host.querySelectorAll('[data-lucide]:not(.lucide)')) }); } catch (_) {}
+  }
+}
+
+async function ftLoadQuickLaunches() {
+  try {
+    const data = await apiFetch('/api/v1/terminal/quick-launches');
+    ftRenderLaunches(Array.isArray(data) ? data : []);
+    _ftQuickLaunchesLoaded = true;
+  } catch (e) {
+    const host = document.getElementById('ft-list-launches');
+    if (host) host.innerHTML = '<div class="ft-empty ft-error">Error: ' + ftEscapeHtml(e.message || e) + '</div>';
+  }
+}
+
+async function ftLoadTmuxSessions() {
+  try {
+    const data = await apiFetch('/api/v1/terminal/tmux-sessions');
+    ftRenderTmux(Array.isArray(data) ? data : []);
+  } catch (e) {
+    const host = document.getElementById('ft-list-tmux');
+    if (host) host.innerHTML = '<div class="ft-empty ft-error">Error: ' + ftEscapeHtml(e.message || e) + '</div>';
+  }
+}
+
+function openTerminalLaunchersPanel() {
+  // Quick launches are effectively static; load once per page lifetime.
+  if (!_ftQuickLaunchesLoaded) ftLoadQuickLaunches();
+  // tmux list refreshes on every panel show, then polls every 5s while
+  // the panel stays open.
+  ftLoadTmuxSessions();
+  stopTerminalLaunchersPolling();
+  _ftTmuxPollTimer = setInterval(ftLoadTmuxSessions, 5000);
+  // Wire the refresh button once. Repeat-safe: removeEventListener-then-add
+  // would be wordy, so we use a sentinel attribute.
+  const btn = document.getElementById('ft-refresh');
+  if (btn && !btn.dataset.wired) {
+    btn.dataset.wired = '1';
+    btn.addEventListener('click', () => {
+      ftLoadQuickLaunches();
+      ftLoadTmuxSessions();
+    });
+  }
+}
+
+function stopTerminalLaunchersPolling() {
+  if (_ftTmuxPollTimer) {
+    clearInterval(_ftTmuxPollTimer);
+    _ftTmuxPollTimer = null;
   }
 }
 
