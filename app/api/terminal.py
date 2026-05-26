@@ -45,8 +45,10 @@ _sessions_lock = asyncio.Lock()
 MAX_SESSIONS_PER_USER = int(os.environ.get("TERMINAL_MAX_SESSIONS_PER_USER", "20"))
 
 # How long a session may sit unattended (no WebSocket connected) before the
-# GC pass kills it. Default 24h; set to 0 to disable.
-IDLE_TIMEOUT_SECS = int(os.environ.get("TERMINAL_IDLE_TIMEOUT_HOURS", "24")) * 3600
+# GC pass kills it. Default 0 (disabled) so long-running processes like
+# `claude remote-control` survive browser closures indefinitely; set to a
+# positive number of hours to enable the GC.
+IDLE_TIMEOUT_SECS = int(os.environ.get("TERMINAL_IDLE_TIMEOUT_HOURS", "0")) * 3600
 
 # How often the GC pass runs. Cheaper than the timeout — 5 minutes catches
 # stale sessions quickly without burning cycles.
