@@ -334,14 +334,12 @@
 
   <!-- Hidden native <select> kept for tabs.js compat -->
   <select id="main-tab-select" style="display:none;" aria-hidden="true">
+    <option value="admin-tools">Admin Tools</option>
     <option value="autoagent" selected>Dashboard</option>
+    <option value="agents">Agents</option>
     <option value="stream">Stream</option>
     <option value="flow">Flow</option>
     <option value="loop-visual">Runtime Loop</option>
-    <option value="database">Database</option>
-    <option value="agents">Agents</option>
-    <option value="app-config">App Config</option>
-    <option value="files">Admin Tools</option>
     <option value="account">Manage Account</option>
   </select>
 
@@ -349,8 +347,14 @@
   <div id="main-tabs-wrap">
     <button type="button" id="main-tabs-chev-left" class="main-tabs-chev left" aria-label="Scroll tabs left">&#10094;</button>
     <div id="main-tabs" role="tablist">
+      <button type="button" class="main-tab" data-value="admin-tools" role="tab">
+        <i data-lucide="wrench" class="lucide-icon"></i>Admin Tools
+      </button>
       <button type="button" class="main-tab active" data-value="autoagent" role="tab">
         <i data-lucide="palette" class="lucide-icon"></i>Dashboard
+      </button>
+      <button type="button" class="main-tab" data-value="agents" role="tab">
+        <i data-lucide="bot" class="lucide-icon"></i>Agents
       </button>
       <button type="button" class="main-tab" data-value="stream" role="tab">
         <i data-lucide="radio-tower" class="lucide-icon"></i>Stream
@@ -360,18 +364,6 @@
       </button>
       <button type="button" class="main-tab" data-value="loop-visual" role="tab">
         <i data-lucide="repeat" class="lucide-icon"></i>Runtime Loop
-      </button>
-      <button type="button" class="main-tab" data-value="database" role="tab">
-        <i data-lucide="database" class="lucide-icon"></i>Database
-      </button>
-      <button type="button" class="main-tab" data-value="agents" role="tab">
-        <i data-lucide="bot" class="lucide-icon"></i>Agents
-      </button>
-      <button type="button" class="main-tab" data-value="app-config" role="tab">
-        <i data-lucide="sliders-horizontal" class="lucide-icon"></i>App Config
-      </button>
-      <button type="button" class="main-tab" data-value="files" role="tab">
-        <i data-lucide="wrench" class="lucide-icon"></i>Admin Tools
       </button>
     </div>
     <button type="button" id="main-tabs-chev-right" class="main-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
@@ -528,17 +520,39 @@
 
         <!-- Footer: page nav (left) + prompt bar (right) -->
         <div id="autoagent-footer">
-          <!-- Page nav: dropdown + new / delete buttons -->
+          <!-- Page nav: custom dropdown mirroring the chat-header agent/session
+               dropdowns, with a per-row ⋮ menu (Rename / Delete). -->
           <div id="autoagent-page-nav">
-            <select id="autoagent-page-select" class="aa-page-select" title="Switch page"></select>
-            <button id="autoagent-new-page-btn" class="aa-icon-btn" title="New page">+</button>
-            <button id="autoagent-delete-page-btn" class="aa-icon-btn aa-delete-btn" title="Delete page" disabled><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>
+            <span id="aa-page-label">Page:
+              <div id="autoagent-page-dropdown" class="session-dropdown">
+                <button id="autoagent-page-dropdown-trigger" type="button" class="status-select session-dropdown-trigger">
+                  <span id="autoagent-page-dropdown-label">—</span>
+                  <i data-lucide="chevron-down" style="width:12px;height:12px;flex-shrink:0;"></i>
+                </button>
+                <div id="autoagent-page-dropdown-menu" class="session-dropdown-menu" hidden></div>
+              </div>
+              <button id="autoagent-new-page-btn" title="New page" class="header-plus-btn"><i data-lucide="plus" style="width:14px;height:14px;"></i></button>
+            </span>
           </div>
 
-          <!-- Prompt bar -->
+          <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #chat-input-row,
+               #ac-int-admin-chat-input-row, #agent-builder-bar-row. Style rules
+               live in ui/css/app1.css under the "Chat-pill" block. -->
           <div id="autoagent-prompt-bar">
-            <input type="text" id="autoagent-prompt-input" class="aa-prompt-input" placeholder="Tell the page agent what to build or change..." maxlength="2000">
-            <button id="autoagent-send-btn" class="aa-send-btn" title="Send to page agent">&#9654;</button>
+            <div id="autoagent-prompt-row" class="chat-pill">
+              <button type="button" id="autoagent-attach-btn" class="chat-pill-attach" title="Attach files">
+                <i data-lucide="paperclip" style="width:18px;height:18px;"></i>
+              </button>
+              <textarea id="autoagent-prompt-input" class="chat-pill-input" rows="2"
+                placeholder="Tell the page agent what to build or change..."
+                maxlength="2000" autocomplete="off"></textarea>
+              <button type="button" id="autoagent-voice-btn" class="chat-pill-voice" title="Record voice">
+                <i data-lucide="mic" style="width:18px;height:18px;"></i>
+              </button>
+              <button type="button" id="autoagent-send-btn" class="chat-pill-send" title="Send to page agent">
+                <i data-lucide="send" style="width:16px;height:16px;"></i>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -551,6 +565,27 @@
           <span id="agents-toolbar-sub"> &middot; Agent templates &middot; system prompts &middot; model assignments</span>
         </div>
         <button id="btn-new-agent">+ New agent</button>
+      </div>
+
+      <!-- Agent Builder chat bar — page-level assistant for creating and modifying agents -->
+      <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #chat-input-row,
+           #ac-int-admin-chat-input-row, #autoagent-prompt-row. Style rules live
+           in ui/css/app1.css under the "Chat-pill" block. -->
+      <div id="agent-builder-bar">
+        <div id="agent-builder-bar-row" class="chat-pill">
+          <button type="button" id="agent-builder-bar-attach" class="chat-pill-attach" title="Attach files">
+            <i data-lucide="paperclip" style="width:18px;height:18px;"></i>
+          </button>
+          <textarea id="agent-builder-bar-input" class="chat-pill-input" rows="2"
+            placeholder="use AI to create your agent or manage your fleet"
+            autocomplete="off"></textarea>
+          <button type="button" id="agent-builder-bar-voice" class="chat-pill-voice" title="Record voice">
+            <i data-lucide="mic" style="width:18px;height:18px;"></i>
+          </button>
+          <button type="button" id="agent-builder-bar-send" class="chat-pill-send" title="Send to Agent Builder">
+            <i data-lucide="send" style="width:16px;height:16px;"></i>
+          </button>
+        </div>
       </div>
 
       <!-- Card grid -->
@@ -582,13 +617,13 @@
       </div>
     </div>
 
-    <!-- App Config tab -->
-    <div id="tab-app-config" class="tab-content">
-      <div id="app-config-container">
+    <!-- App Config UI: lives inside Admin Tools as the Settings view.
+         Markup stays here at boot; files.js moves it into #files-settings-main. -->
+    <div id="app-config-container" hidden>
 
         <!-- Header -->
         <header id="app-config-header">
-          <div class="ac-page-title">App Config</div>
+          <div class="ac-page-title">Settings</div>
         </header>
 
         <!-- Tab strip with chevron-scroll carousel -->
@@ -700,9 +735,11 @@
             <div id="ac-int-admin-chat-card" style="margin-bottom:16px;">
               <div class="ac-label" style="margin-bottom:6px;">Use AI to create or customize an existing integration</div>
               <div id="ac-int-admin-chat-messages" style="max-height:280px;overflow-y:auto;display:none;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px;font-size:13px;"></div>
-              <div id="ac-int-admin-chat-input-row">
-                <textarea id="ac-int-admin-chat-input" rows="2" placeholder="e.g. Create a Slack integration with send_message and list_channels tools" autocomplete="off"></textarea>
-                <button id="ac-int-admin-chat-send" title="Send message" disabled><i data-lucide="send" style="width:18px;height:18px;"></i></button>
+              <!-- CHAT-PILL-SYNC: see ui/css/app1.css ".chat-pill" block. No
+                   attach/voice; .no-voice keeps the send button always visible. -->
+              <div id="ac-int-admin-chat-input-row" class="chat-pill no-voice">
+                <textarea id="ac-int-admin-chat-input" class="chat-pill-input" rows="2" placeholder="e.g. Create a Slack integration with send_message and list_channels tools" autocomplete="off"></textarea>
+                <button id="ac-int-admin-chat-send" class="chat-pill-send" title="Send message" disabled><i data-lucide="send" style="width:18px;height:18px;"></i></button>
               </div>
               <div id="ac-int-admin-chat-error" class="ac-hint" style="display:none;margin-top:6px;color:#f7768e;"></div>
             </div>
@@ -2534,12 +2571,14 @@
           </section>
 
         </div><!-- /app-config-content -->
-      </div><!-- /app-config-container -->
-    </div><!-- /tab-app-config -->
+    </div><!-- /app-config-container -->
 
     <div id="tab-account" class="tab-content"></div>
 
-    <div id="tab-database" class="tab-content">
+    <!-- Database viewer markup, parked here so relocateAdminToolsContainers()
+         (in files.js) can move the pieces into the Admin Tools sidebar/main
+         hosts at boot. Hidden until then. -->
+    <div id="db-viewer-park" hidden>
       <div id="db-viewer">
         <div id="db-toolbar" style="display:none;">
           <button id="db-show-hidden-btn" style="background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-3);padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;margin-left:auto;display:inline-flex;align-items:center;gap:4px;"><i data-lucide="eye" style="width:12px;height:12px;"></i> Hide hidden</button>
@@ -2591,16 +2630,16 @@
     </div>
 
     <!-- ── Files tab: VS Code-style file editor ───────────────── -->
-    <div id="tab-files" class="tab-content">
+    <div id="tab-admin-tools" class="tab-content">
       <div id="files-restricted-overlay" style="display:none;">
         <div class="files-restricted-card">
           <div class="files-restricted-icon"><i data-lucide="lock" style="width:32px;height:32px;"></i></div>
           <div class="files-restricted-title">Restricted Access</div>
-          <div class="files-restricted-desc">The Files editor is only available for admin users.</div>
+          <div class="files-restricted-desc">Admin Tools is only available for admin users.</div>
           <div class="files-restricted-desc files-restricted-diag" id="files-restricted-diag"></div>
         </div>
       </div>
-      <div id="files-editor" class="files-editor">
+      <div id="admin-tools" class="admin-tools">
         <!-- Sidebar: tabbed between Explorer (file tree) and GitHub manager.
              The header replaces the old "EXPLORER" text with two icon
              buttons (files + github). The icon for the current view is
@@ -2615,7 +2654,9 @@
             <button class="files-strip-btn files-strip-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="explorer" title="Switch to explorer"><i data-lucide="files" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-strip-view" data-view="git" title="Switch to source control"><i data-lucide="github" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-strip-view" data-view="database" title="Switch to database"><i data-lucide="database" class="lucide-icon"></i></button>
             <button class="files-strip-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
+            <button class="files-strip-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
           </div>
 
           <!-- Explorer panel (file tree) -->
@@ -2624,8 +2665,10 @@
               <div class="files-view-toggle" role="tablist" aria-label="Sidebar view">
                 <button class="files-view-toggle-btn active" data-view="explorer" title="Explorer (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="files" class="lucide-icon"></i></button>
                 <button class="files-view-toggle-btn" data-view="git" title="Switch to source control" role="tab" aria-selected="false"><i data-lucide="github" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn" data-view="database" title="Switch to database" role="tab" aria-selected="false"><i data-lucide="database" class="lucide-icon"></i></button>
                 <span class="files-view-toggle-sep" aria-hidden="true"></span>
                 <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
               </div>
               <div class="files-sidebar-actions">
                 <button class="files-icon-btn" id="files-new-file" title="New file"><i data-lucide="file-plus" class="lucide-icon"></i></button>
@@ -2649,8 +2692,10 @@
               <div class="files-view-toggle" role="tablist" aria-label="Sidebar view">
                 <button class="files-view-toggle-btn" data-view="explorer" title="Switch to explorer" role="tab" aria-selected="false"><i data-lucide="files" class="lucide-icon"></i></button>
                 <button class="files-view-toggle-btn active" data-view="git" title="Source control (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="github" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn" data-view="database" title="Switch to database" role="tab" aria-selected="false"><i data-lucide="database" class="lucide-icon"></i></button>
                 <span class="files-view-toggle-sep" aria-hidden="true"></span>
                 <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
               </div>
               <div class="files-sidebar-actions">
                 <button class="files-icon-btn" id="fg-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
@@ -2660,6 +2705,27 @@
             <div id="fg-body" class="fg-body">
               <div class="fg-loading">Loading…</div>
             </div>
+          </div>
+
+          <!-- Database panel: hosts the relocated #db-sidebar (table list +
+               refresh/reset/collapse toolbar). The panel header below carries
+               the explorer/git/database view toggles; #db-sidebar carries its
+               own internal toolbar. -->
+          <div class="files-sidebar-panel" id="files-panel-database" data-view="database" hidden>
+            <div class="files-sidebar-header">
+              <div class="files-view-toggle" role="tablist" aria-label="Sidebar view">
+                <button class="files-view-toggle-btn" data-view="explorer" title="Switch to explorer" role="tab" aria-selected="false"><i data-lucide="files" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn" data-view="git" title="Switch to source control" role="tab" aria-selected="false"><i data-lucide="github" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn active" data-view="database" title="Database (current view)" role="tab" aria-selected="true" aria-disabled="true"><i data-lucide="database" class="lucide-icon"></i></button>
+                <span class="files-view-toggle-sep" aria-hidden="true"></span>
+                <button class="files-view-toggle-btn files-terminal-new" title="Open a new terminal tab"><i data-lucide="terminal" class="lucide-icon"></i></button>
+                <button class="files-view-toggle-btn files-settings-toggle-btn" title="Toggle Settings" aria-pressed="false"><i data-lucide="settings" class="lucide-icon"></i></button>
+              </div>
+              <div class="files-sidebar-actions">
+                <button class="files-icon-btn files-maximize-btn" title="Maximize sidebar"><i data-lucide="maximize-2" class="lucide-icon"></i></button>
+              </div>
+            </div>
+            <div id="db-sidebar-host" class="db-sidebar-host"></div>
           </div>
         </aside>
 
@@ -2691,6 +2757,16 @@
             <span id="files-status-info" class="files-status-info"></span>
           </div>
         </main>
+
+        <!-- Settings view: replaces the file editor area when the Settings
+             sidebar button is toggled on. files.js moves #app-config-container
+             into here at boot. -->
+        <main class="files-main files-settings-main" id="files-settings-main" hidden></main>
+
+        <!-- Database view: replaces the file editor area when the Database
+             sidebar view is active. files.js moves #db-table-view (and the
+             #db-toolbar) into here at boot. -->
+        <main class="files-main files-database-main" id="files-database-main" hidden></main>
       </div>
     </div>
 
@@ -2739,11 +2815,14 @@
     <div id="chat-input-area" class="chat-footer-drop-target">
       <button id="chat-expand-btn" title="Expand input" class="chat-expand-btn">↗</button>
       <div id="chat-preview-bar" style="display:none;"></div>
-      <div id="chat-input-row">
-        <button id="chat-attach-btn" title="Attach files (or drag & drop onto chat)"><i data-lucide="paperclip" style="width:18px;height:18px;"></i></button>
-        <textarea id="chat-input" rows="2" placeholder="Chat with the agent" autocomplete="off"></textarea>
-        <button id="chat-voice-btn" title="Record voice"><i data-lucide="mic" style="width:18px;height:18px;"></i></button>
-        <button id="chat-send" title="Send message" disabled><i data-lucide="send" style="width:18px;height:18px;"></i></button>
+      <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #ac-int-admin-chat-input-row,
+           #agent-builder-bar-row, #autoagent-prompt-row. Style rules live in
+           ui/css/app1.css under the "Chat-pill" block. -->
+      <div id="chat-input-row" class="chat-pill">
+        <button id="chat-attach-btn" class="chat-pill-attach" title="Attach files (or drag & drop onto chat)"><i data-lucide="paperclip" style="width:18px;height:18px;"></i></button>
+        <textarea id="chat-input" class="chat-pill-input" rows="2" placeholder="Chat with the agent" autocomplete="off"></textarea>
+        <button id="chat-voice-btn" class="chat-pill-voice" title="Record voice"><i data-lucide="mic" style="width:18px;height:18px;"></i></button>
+        <button id="chat-send" class="chat-pill-send" title="Send message" disabled><i data-lucide="send" style="width:18px;height:18px;"></i></button>
         <input type="file" id="chat-file-input" multiple accept="image/*,audio/*,video/*,.pdf,.txt,.md,.csv,.json" hidden>
       </div>
       <div id="chat-footer-drop-overlay">

@@ -224,8 +224,25 @@ body {
     font-style: italic;
   }
 
-#chat-input-row,
-#ac-int-admin-chat-input-row {
+/* ── Chat-pill ─────────────────────────────────────────────────────────────
+   CHAT-PILL-SYNC: single source of truth for every chat-style "pill" input
+   in the app. Apply these classes to opt in:
+     .chat-pill        — outer flex row (the rounded container)
+     .chat-pill-input  — textarea / text input inside the pill
+     .chat-pill-attach — left-side paperclip / attach icon button
+     .chat-pill-voice  — right-side mic icon button
+     .chat-pill-send   — right-side send icon button
+   Row state classes:
+     .has-text   — set by JS when input has content (swaps mic→send)
+     .no-voice   — force send-only (used by web-chat sign-in gate)
+   Known pills using these classes:
+     #chat-input-row              (web chat — chat.js)
+     #ac-int-admin-chat-input-row (integration admin chat)
+     #agent-builder-bar-row       (agents page — agents.js)
+     #autoagent-prompt-row        (dashboard — autoagent.js)
+   When tweaking, change here and every pill in the app updates. */
+
+.chat-pill {
     display: flex;
     gap: 4px;
     align-items: flex-end;
@@ -236,10 +253,9 @@ body {
     padding: 4px;
     transition: border-color 0.15s;
   }
-#chat-input-row:focus-within,
-#ac-int-admin-chat-input-row:focus-within { border-color: #7dcfff; }
-#chat-input,
-#ac-int-admin-chat-input {
+.chat-pill:focus-within { border-color: #7dcfff; }
+
+.chat-pill-input {
     flex: 1;
     min-width: 0;
     background: transparent;
@@ -251,17 +267,70 @@ body {
     outline: none;
     font-family: inherit;
     resize: none;
+    -webkit-appearance: none;
+            appearance: none;
+    box-shadow: none;
   }
-#chat-input:focus,
-#ac-int-admin-chat-input:focus { border: none; }
-#chat-input::placeholder,
-#ac-int-admin-chat-input::placeholder { color: #3b4261; }
-/* Toggle send vs mic by row state */
-  #chat-input-row #chat-send { display: none; }
-#chat-input-row.has-text #chat-send { display: inline-flex; }
-#chat-input-row.has-text #chat-voice-btn { display: none; }
-#chat-input-row.no-voice #chat-voice-btn { display: none !important; }
-#chat-input-row.no-voice #chat-send { display: inline-flex; }
+.chat-pill-input:focus { border: none; outline: none; box-shadow: none; }
+.chat-pill-input::placeholder { color: #3b4261; }
+
+/* Send / mic swap driven by .has-text on the row */
+.chat-pill .chat-pill-send  { display: none; }
+.chat-pill.has-text .chat-pill-send  { display: inline-flex; }
+.chat-pill.has-text .chat-pill-voice { display: none; }
+.chat-pill.no-voice .chat-pill-voice { display: none !important; }
+.chat-pill.no-voice .chat-pill-send  { display: inline-flex; }
+
+.chat-pill-attach,
+.chat-pill-voice {
+    background: none;
+    border: none;
+    color: #565f89;
+    cursor: pointer;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border-radius: 50%;
+    transition: 0.15s;
+    align-self: flex-end;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+.chat-pill-attach:hover,
+.chat-pill-voice:hover {
+    color: #7dcfff;
+    background: #7dcfff15;
+  }
+.chat-pill-attach i,
+.chat-pill-voice i { pointer-events: none; }
+.chat-pill-voice.recording {
+    color: #f7768e;
+    background: #f7768e15;
+    animation: pulse 1s infinite;
+  }
+
+.chat-pill-send {
+    background: #7dcfff;
+    border: none;
+    border-radius: 50%;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    color: #0d0d1a;
+    cursor: pointer;
+    transition: 0.15s;
+    align-self: flex-end;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+.chat-pill-send:hover { background: #89ddff; }
+.chat-pill-send:disabled { opacity: 0.4; cursor: default; }
+.chat-pill-send i { pointer-events: none; }
+
 .chat-expand-btn {
     position: absolute;
     top: 4px;
@@ -287,80 +356,6 @@ body {
 .chat-expand-btn:hover {
     color: #7dcfff;
     border-color: #7dcfff;
-  }
-#chat-send,
-#ac-int-admin-chat-send {
-    background: #7dcfff;
-    border: none;
-    border-radius: 50%;
-    width: 34px;
-    height: 34px;
-    padding: 0;
-    color: #0d0d1a;
-    cursor: pointer;
-    transition: 0.15s;
-    align-self: flex-end;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-  }
-#chat-send:hover,
-#ac-int-admin-chat-send:hover { background: #89ddff; }
-#chat-send:disabled,
-#ac-int-admin-chat-send:disabled { opacity: 0.4; cursor: default; }
-#chat-send i,
-#ac-int-admin-chat-send i { pointer-events: none; }
-
-/* Attach button in input row */
-  #chat-attach-btn {
-    background: none;
-    border: none;
-    color: #565f89;
-    cursor: pointer;
-    width: 34px;
-    height: 34px;
-    padding: 0;
-    border-radius: 50%;
-    transition: 0.15s;
-    align-self: flex-end;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-  }
-#chat-attach-btn:hover {
-    color: #7dcfff;
-    background: #7dcfff15;
-  }
-#chat-attach-btn i { pointer-events: none; }
-
-/* Voice button in input row */
-  #chat-voice-btn {
-    background: none;
-    border: none;
-    color: #565f89;
-    cursor: pointer;
-    width: 34px;
-    height: 34px;
-    padding: 0;
-    border-radius: 50%;
-    transition: 0.15s;
-    align-self: flex-end;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-  }
-#chat-voice-btn:hover {
-    color: #7dcfff;
-    background: #7dcfff15;
-  }
-#chat-voice-btn i { pointer-events: none; }
-#chat-voice-btn.recording {
-    color: #f7768e;
-    background: #f7768e15;
-    animation: pulse 1s infinite;
   }
 
 /* ── Preview bar (above input row) ── */
@@ -842,7 +837,6 @@ body.light-mode #terminal-container,
 body.light-mode #terminal-side,
 body.light-mode #stream-viewer,
 body.light-mode #loop-container,
-body.light-mode #db-viewer,
 body.light-mode #loop-list,
 body.light-mode #stream-list {
     background: #fffaf5;
@@ -902,37 +896,31 @@ body.light-mode #chat-input-area {
     border-top: none;
     background: transparent;
   }
-body.light-mode #chat-input-row,
-body.light-mode #ac-int-admin-chat-input-row {
-    background: #ffffff;
-    border-color: #ffdec4;
+/* CHAT-PILL-SYNC: light-mode counterparts to the .chat-pill block above. */
+body.light-mode .chat-pill {
+    background: #fffaf5;
+    border-color: #ffcfa1;
   }
-body.light-mode #chat-input-row:focus-within,
-body.light-mode #ac-int-admin-chat-input-row:focus-within { border-color: #ff8c42; }
-body.light-mode #chat-input,
-body.light-mode #ac-int-admin-chat-input {
+body.light-mode .chat-pill:focus-within { border-color: #ff8c42; }
+body.light-mode .chat-pill-input {
     background: transparent;
     border: none;
-    color: #3d2c2e;
+    color: #3a2400;
   }
-body.light-mode #chat-input::placeholder,
-body.light-mode #ac-int-admin-chat-input::placeholder { color: #cca08a; }
-body.light-mode #chat-send,
-body.light-mode #ac-int-admin-chat-send {
+body.light-mode .chat-pill-input::placeholder { color: #cca08a; }
+body.light-mode .chat-pill-attach,
+body.light-mode .chat-pill-voice { color: #c08858; }
+body.light-mode .chat-pill-attach:hover,
+body.light-mode .chat-pill-voice:hover {
+    color: #ff8c42;
+    background: #ff8c4215;
+  }
+body.light-mode .chat-pill-send {
     background: #ff8c42;
     color: #ffffff;
   }
-body.light-mode #chat-send:hover,
-body.light-mode #ac-int-admin-chat-send:hover { background: #ff7a2e; }
-body.light-mode #chat-attach-btn,
-body.light-mode #chat-voice-btn {
-    color: #b09580;
-  }
-body.light-mode #chat-attach-btn:hover,
-body.light-mode #chat-voice-btn:hover {
-    color: #ff8c42;
-    background: #fff5eb;
-  }
+body.light-mode .chat-pill-send:hover { background: #ff7a2a; }
+body.light-mode .chat-pill-send:disabled { opacity: 0.4; }
 body.light-mode .chat-expand-btn {
     background: #fff6f0;
     border-color: #ffdec4;
@@ -1788,6 +1776,35 @@ body.light-mode .user-dropdown-add-account { color: #cc6a28; }
     padding: 24px;
     text-align: center;
   }
+  .account-pref-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    cursor: pointer;
+    padding: 4px 0;
+  }
+  .account-pref-row input[type="checkbox"] {
+    margin-top: 3px;
+    flex-shrink: 0;
+    cursor: pointer;
+  }
+  .account-pref-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .account-pref-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #c0caf5;
+  }
+  .account-pref-desc {
+    font-size: 11px;
+    color: #565f89;
+    line-height: 1.4;
+  }
+  body.light-mode .account-pref-title { color: #3d2c2e; }
+  body.light-mode .account-pref-desc { color: #a07955; }
 
 /* Light-mode for Manage Account tab */
   body.light-mode .account-header { border-bottom-color: #ffdec4; }

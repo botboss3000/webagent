@@ -111,7 +111,7 @@ body.light-mode {
   --files-active-indicator:  #007acc;
 }
 
-#tab-files {
+#tab-admin-tools {
   background: var(--files-bg);
   color: var(--files-text);
   overflow: hidden;
@@ -124,11 +124,11 @@ body.light-mode {
    (new-file / new-folder / refresh / collapse-all / Up / Home /
    sidebar-toggle / tab-close / save) plus icons inside tabs and
    tree rows. */
-#tab-files .lucide-icon,
-#tab-files i[data-lucide],
-#tab-files svg { pointer-events: none; }
+#tab-admin-tools .lucide-icon,
+#tab-admin-tools i[data-lucide],
+#tab-admin-tools svg { pointer-events: none; }
 
-.files-editor {
+.admin-tools {
   display: flex;
   flex-direction: row;
   width: 100%;
@@ -161,7 +161,7 @@ body.light-mode {
   border-right: none;
 }
 
-/* Maximized sidebar — fills the entire #tab-files area, hiding the editor
+/* Maximized sidebar — fills the entire #tab-admin-tools area, hiding the editor
    pane underneath. Useful on small / mobile screens where the side-by-side
    layout doesn't fit. The resize handle is hidden because dragging makes
    no sense while the sidebar owns 100% width. */
@@ -1172,6 +1172,65 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
   display: inline-block;
 }
 
+/* Settings toggle button: shares .files-view-toggle-btn styling but its
+   .active state means "Settings view is showing" — it must stay clickable
+   so the user can toggle it off, so we override the disabling rule above. */
+.files-view-toggle-btn.files-settings-toggle-btn.active,
+.files-strip-btn.files-settings-toggle-btn.active {
+  color: var(--files-text-strong);
+  background: var(--files-btn-hover);
+  opacity: 1;
+  cursor: pointer;
+}
+
+/* Settings view: takes the place of .files-main when Settings is toggled on.
+   Same flex layout so it fills the right side; scrolls its own content. */
+.files-settings-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
+}
+/* Database view: takes the place of .files-main when the Database sidebar
+   view is active. Hosts the relocated #db-toolbar + #db-table-view. */
+.files-database-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.files-main[hidden],
+.files-settings-main[hidden],
+.files-database-main[hidden] { display: none; }
+
+/* Database sidebar panel: hosts the relocated #db-sidebar (with its own
+   refresh / reset / collapse toolbar). The panel header above carries the
+   explorer/git/database view toggles. */
+#files-panel-database .db-sidebar-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#files-panel-database #db-sidebar {
+  width: 100% !important;
+  min-width: 0 !important;
+  border-right: none;
+  flex: 1;
+  min-height: 0;
+}
+/* The original collapse animation shrunk #db-sidebar to 32px; inside the
+   new sidebar host we keep the panel filling 100% and rely on the existing
+   `.collapsed *` rules to hide the inner refresh/reset/list elements. */
+#files-panel-database #db-sidebar.collapsed {
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
 /* "New terminal tab" button — not a view switcher, so it never enters the
    greyed-out active state. */
 .files-view-toggle-btn.files-terminal-new {
@@ -1202,6 +1261,82 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 .files-terminal-host .xterm-viewport { scrollbar-width: thin; scrollbar-color: #2a2a4a transparent; }
 .files-terminal-host .xterm-viewport::-webkit-scrollbar { width: 6px; }
 .files-terminal-host .xterm-viewport::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+
+/* Wrapper that owns the horizontal scrollbar in no-wrap mode. The host
+   element sits inside this and is sized wider than the wrapper when no-wrap
+   is on, producing a real horizontal scrollbar at the bottom of the pane
+   that the user can swipe / drag to see off-screen content. */
+.files-terminal-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;          /* WRAP mode: clip nothing because host fits */
+  display: flex;
+  flex-direction: column;
+  /* Don't stretch the host across the cross-axis — in no-wrap mode the
+     host sets its own explicit width: 300% to overflow horizontally. */
+  align-items: flex-start;
+}
+.files-terminal-scroll.files-terminal-scroll-nowrap {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #2a2a4a transparent;
+}
+.files-terminal-scroll.files-terminal-scroll-nowrap::-webkit-scrollbar { height: 14px; }
+.files-terminal-scroll.files-terminal-scroll-nowrap::-webkit-scrollbar-thumb { background: #565f89; border-radius: 4px; min-width: 40px; }
+.files-terminal-scroll.files-terminal-scroll-nowrap::-webkit-scrollbar-thumb:hover { background: #7aa2f7; }
+.files-terminal-scroll.files-terminal-scroll-nowrap::-webkit-scrollbar-track { background: #1a1a2e; }
+
+/* No-wrap mode: force the host to be wider than its scroll wrapper. The
+   fitAddon measures the host (not the wrapper) so xterm gets enough cols
+   to render long lines unwrapped, and the wrapper's overflow-x exposes
+   the off-screen portion as a horizontal scroll. 300% gives 3x the visible
+   width — wide enough for almost any real shell output. */
+.files-terminal-host.files-terminal-host-nowrap {
+  width: 300%;
+  min-width: 300%;
+  flex: 1;
+}
+
+/* Mobile long-press context menu (Copy / Paste / Select all / Clear).
+   Floats above the terminal, positioned near the touch point. */
+.files-terminal-ctxmenu {
+  position: fixed;
+  z-index: 10000;
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+}
+.files-terminal-ctxmenu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: transparent;
+  border: none;
+  color: #c0caf5;
+  text-align: left;
+  padding: 9px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+}
+.files-terminal-ctxmenu-item:hover,
+.files-terminal-ctxmenu-item:active { background: #2a2a4a; }
+.files-terminal-ctxmenu-item.disabled,
+.files-terminal-ctxmenu-item[disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+.files-terminal-ctxmenu-item .lucide-icon { width: 16px; height: 16px; flex-shrink: 0; }
 
 /* Drop-target highlight when the user drags a file tree row onto a terminal.
    The host accepts text/plain (the absolute path) and pastes it shell-quoted

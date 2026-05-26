@@ -80,6 +80,22 @@ class DatabasePageStore(PageStore):
             return False
         return await get_db().pages_delete(user_id, safe(slug))
 
+    async def rename_page(self, user_id: str, slug: str, new_title: str) -> bool:
+        safe_slug = safe(slug)
+        existing = await get_db().pages_get(user_id, safe_slug)
+        if not existing:
+            return False
+        # html=None on upsert preserves the existing body and only updates
+        # the metadata columns (title + agent_context + updated_at).
+        await get_db().pages_upsert(
+            user_id=user_id,
+            slug=safe_slug,
+            title=new_title,
+            agent_context=existing.get("agent_context") or "",
+            html=None,
+        )
+        return True
+
     async def ensure_home_page(self, user_id: str, seed_html: str) -> None:
         existing = await get_db().pages_get(user_id, "home")
         if existing:

@@ -3,6 +3,7 @@
 import { app } from '../state.js';
 import { apiPath } from '../config.js';
 import { getAuthToken, authUrl } from '../left-login.js';
+import { isMobileLayout, setSidebarState } from '../files.js';
 
 let queryTable = () => {};
 let startAutoRefresh = () => {};
@@ -118,15 +119,21 @@ export function renderTableList() {
       app.dbSelectedTable = item.dataset.table;
       localStorage.setItem('lastDbTable', item.dataset.table);
       renderTableList();
-      
+
       // Load user layout/settings before requerying DB
       try {
         const hidden = localStorage.getItem('dbHiddenCols');
         if (hidden) app.dbHiddenCols = JSON.parse(hidden);
         else app.dbHiddenCols = {};
       } catch (e) { app.dbHiddenCols = {}; }
-      
+
       queryTable(app.dbSelectedTable).then(() => startAutoRefresh());
+      // On mobile the sidebar fills the screen in 'max' state. Collapse it
+      // to the strip so the table viewer that just loaded becomes visible.
+      const sidebar = document.getElementById('files-sidebar');
+      if (sidebar && isMobileLayout() && sidebar.dataset.state === 'max') {
+        setSidebarState('strip');
+      }
     });
   });
   el.querySelectorAll('.db-table-reset-btn').forEach((btn) => {

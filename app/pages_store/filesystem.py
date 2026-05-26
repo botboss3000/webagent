@@ -121,6 +121,18 @@ class FilesystemPageStore(PageStore):
             os.remove(path)
         return True
 
+    async def rename_page(self, user_id: str, slug: str, new_title: str) -> bool:
+        safe_slug = safe(slug)
+        pages = self._load_manifest(user_id)
+        now = datetime.now(timezone.utc).isoformat()
+        for page in pages:
+            if page["slug"] == safe_slug:
+                page["title"] = new_title
+                page["updated_at"] = now
+                self._save_manifest(user_id, pages)
+                return True
+        return False
+
     async def ensure_home_page(self, user_id: str, seed_html: str) -> None:
         pages = self._load_manifest(user_id)
         if not any(p["slug"] == "home" for p in pages):

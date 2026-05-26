@@ -5,9 +5,8 @@ import { startLoop, stopLoop, setLoopLevel, toggleAutoScroll } from './loop.js';
 import { startLoopVisual, stopLoopVisual } from './loop-logic.js';
 import { startAutoAgent, stopAutoAgent } from './autoagent.js';
 import { startAgents, stopAgents } from './agents.js';
-import { startAppConfig, stopAppConfig } from './app-config.js';
 import { startAccount } from './account.js';
-import { startFiles, stopFiles } from './files.js';
+import { startAdminTools, stopAdminTools } from './files.js';
 import { refreshTutorial } from './tutorial.js';
 
 function setChatSideVisible(visible) {
@@ -27,6 +26,16 @@ export function initTabs() {
   }
 
   function activateTab(tabValue, userInitiated) {
+    // Back-compat: 'files' was the legacy id for what is now 'admin-tools'.
+    // Saved state in older browsers will still hold 'files'.
+    if (tabValue === 'files') tabValue = 'admin-tools';
+    // Back-compat: 'database' was its own top-level tab; it now lives as a
+    // sidebar view inside Admin Tools. Redirect and request that sub-view.
+    if (tabValue === 'database') {
+      tabValue = 'admin-tools';
+      try { localStorage.setItem('files.sidebarView', 'database'); } catch (_) {}
+    }
+
     document.querySelectorAll('.tab-content').forEach((c) => c.classList.remove('active'));
     const targetContent = document.getElementById('tab-' + tabValue);
     if (targetContent) {
@@ -59,67 +68,51 @@ export function initTabs() {
       stopLoopVisual();
       stopAutoAgent();
       stopAgents();
-      stopAppConfig();
+      stopAdminTools();
       startStream();
     } else if (tabValue === 'flow') {
       stopStream();
       stopLoopVisual();
       stopAutoAgent();
       stopAgents();
-      stopAppConfig();
+      stopAdminTools();
       startLoop();
     } else if (tabValue === 'loop-visual') {
       stopStream();
       stopLoop();
       stopAutoAgent();
       stopAgents();
-      stopAppConfig();
+      stopAdminTools();
       startLoopVisual();
-    } else if (tabValue === 'database') {
-      stopStream();
-      stopLoop();
-      stopLoopVisual();
-      stopAutoAgent();
-      stopAgents();
-      stopAppConfig();
     } else if (tabValue === 'autoagent') {
       stopStream();
       stopLoop();
       stopLoopVisual();
       stopAgents();
-      stopAppConfig();
+      stopAdminTools();
       startAutoAgent();
     } else if (tabValue === 'agents') {
       stopStream();
       stopLoop();
       stopLoopVisual();
       stopAutoAgent();
-      stopAppConfig();
+      stopAdminTools();
       startAgents();
-    } else if (tabValue === 'app-config') {
-      stopStream();
-      stopLoop();
-      stopLoopVisual();
-      stopAutoAgent();
-      stopAgents();
-      startAppConfig();
     } else if (tabValue === 'account') {
       stopStream();
       stopLoop();
       stopLoopVisual();
       stopAutoAgent();
       stopAgents();
-      stopAppConfig();
-      stopFiles();
+      stopAdminTools();
       startAccount();
-    } else if (tabValue === 'files') {
+    } else if (tabValue === 'admin-tools') {
       stopStream();
       stopLoop();
       stopLoopVisual();
       stopAutoAgent();
       stopAgents();
-      stopAppConfig();
-      startFiles();
+      startAdminTools();
     }
 
     // Re-render tutorial hint badges for the newly active tab. Defer a tick

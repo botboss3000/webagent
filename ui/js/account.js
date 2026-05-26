@@ -10,6 +10,7 @@
 
 import { renderAvatar } from './user-avatar.js';
 import { getActive, updateActive, removeAccount, listAccounts, upsertAccount } from './accounts.js';
+import { getPrefs, setGlobalEnabled } from './tutorial.js';
 
 let _wired = false;
 
@@ -116,6 +117,21 @@ function renderTab() {
   `;
   wrap.appendChild(pw);
 
+  // ── Preferences ──
+  const prefs = document.createElement('section');
+  prefs.className = 'account-section';
+  prefs.innerHTML = `
+    <h3 class="account-section-title">Preferences</h3>
+    <label class="account-pref-row">
+      <input type="checkbox" id="account-tutorial-global">
+      <span class="account-pref-text">
+        <span class="account-pref-title">Show tutorial hints</span>
+        <span class="account-pref-desc">Numbered hover popovers highlighting features on each page. Fine-grained per-page toggles live in App Config → User Management.</span>
+      </span>
+    </label>
+  `;
+  wrap.appendChild(prefs);
+
   // ── Danger zone ──
   const danger = document.createElement('section');
   danger.className = 'account-section account-danger-zone';
@@ -180,6 +196,14 @@ function wireHandlers() {
 
   const delBtn = document.getElementById('account-delete-confirm-btn');
   if (delBtn) delBtn.addEventListener('click', onDeleteAccount);
+
+  const tutorialGlobal = document.getElementById('account-tutorial-global');
+  if (tutorialGlobal) {
+    tutorialGlobal.checked = getPrefs().globalEnabled;
+    tutorialGlobal.addEventListener('change', () => {
+      setGlobalEnabled(tutorialGlobal.checked);
+    });
+  }
 }
 
 async function onSaveProfile() {
