@@ -27,7 +27,7 @@
               <i data-lucide="puzzle" class="lucide-icon ac-tab-icon"></i>Agent Abilities
             </button>
             <button type="button" class="ac-tab" data-section="database" role="tab">
-              <i data-lucide="database" class="lucide-icon ac-tab-icon"></i>Database
+              <i data-lucide="database" class="lucide-icon ac-tab-icon"></i>Data Management
             </button>
             <button type="button" class="ac-tab" data-section="optimizer" role="tab">
               <i data-lucide="zap" class="lucide-icon ac-tab-icon"></i>Optimizer Stats
@@ -1510,13 +1510,13 @@
 
           </section>
 
-          <!-- ── Storage (DB + Secrets + Migration) ── -->
+          <!-- ── Data Management (DB + Secrets + Storage + Migration) ── -->
           <section id="ac-section-database" class="ac-section">
             <div class="ac-section-header">
               <i data-lucide="database" class="lucide-icon ac-section-icon"></i>
               <div>
-                <h2 class="ac-section-title">Storage</h2>
-                <p class="ac-section-desc">Application data backend, secrets vault, and data migration.</p>
+                <h2 class="ac-section-title">Data Management</h2>
+                <p class="ac-section-desc">Application data backend, secrets vault, chat-attachment storage, and data migration.</p>
               </div>
             </div>
 
@@ -1525,12 +1525,12 @@
             </div>
 
             <!-- ── Application Data ── -->
-            <div class="ac-card">
-              <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
+            <details class="ac-card" open>
+              <summary class="ac-card-label">
                 <i data-lucide="server" class="lucide-icon" style="width:14px;height:14px;color:var(--accent);"></i>
                 Application Data
                 <span id="ac-storage-active-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
-              </div>
+              </summary>
 
               <label class="ac-label" style="margin-top:10px;">Provider</label>
               <select id="ac-storage-db-provider" class="ac-input">
@@ -1565,15 +1565,15 @@
                 <div id="ac-db-current-mode" class="ac-hint" style="margin-top:6px;"></div>
                 <div id="ac-db-status" class="ac-hint" style="margin-top:4px;"></div>
               </details>
-            </div>
+            </details>
 
             <!-- ── Secrets Vault ── -->
-            <div class="ac-card">
-              <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
+            <details class="ac-card" open>
+              <summary class="ac-card-label">
                 <i data-lucide="key-round" class="lucide-icon" style="width:14px;height:14px;color:#bb9af7;"></i>
                 Secrets Vault
                 <span id="ac-storage-secrets-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
-              </div>
+              </summary>
 
               <label class="ac-label" style="margin-top:10px;">Provider</label>
               <select id="ac-storage-secrets-provider" class="ac-input">
@@ -1595,15 +1595,15 @@
                 <button id="ac-storage-secrets-save" class="ac-btn ac-btn-primary">Activate</button>
               </div>
               <pre id="ac-storage-secrets-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;display:none;"></pre>
-            </div>
+            </details>
 
             <!-- ── Page Storage ── -->
-            <div class="ac-card">
-              <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
+            <details class="ac-card" open>
+              <summary class="ac-card-label">
                 <i data-lucide="layout-template" class="lucide-icon" style="width:14px;height:14px;color:#9ece6a;"></i>
                 Page Storage
                 <span id="ac-storage-pages-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
-              </div>
+              </summary>
 
               <label class="ac-label" style="margin-top:10px;">Mode</label>
               <select id="ac-storage-pages-mode" class="ac-input">
@@ -1618,15 +1618,48 @@
                 <button id="ac-storage-pages-save" class="ac-btn ac-btn-primary">Activate</button>
               </div>
               <pre id="ac-storage-pages-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;display:none;"></pre>
-            </div>
+            </details>
+
+            <!-- ── Chat Attachments (per-row storage backend) ── -->
+            <details class="ac-card" open>
+              <summary class="ac-card-label">
+                <i data-lucide="paperclip" class="lucide-icon" style="width:14px;height:14px;color:#bb9af7;"></i>
+                Chat Attachments
+                <span id="ac-attach-active-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+              </summary>
+
+              <div class="ac-hint" style="margin-top:8px;">
+                Where chat attachments (images, voice, dropped files) are stored. Switch any time — existing files keep working because each attachment row remembers which backend wrote it.
+              </div>
+
+              <div id="ac-attach-env-banner" class="ac-info-banner" hidden style="margin-top:10px;border-left-color:#e0af68;color:#e0af68;font-size:11px;">
+                Config is env-locked (WEBAGENT_CONFIG_SOURCE=env or WEBAGENT_ATTACHMENTS_STORE set). Backend can be inspected but not changed from this UI.
+              </div>
+
+              <label class="ac-label" style="margin-top:10px;">Backend</label>
+              <select id="ac-attach-mode" class="ac-input"></select>
+
+              <div id="ac-attach-blurb" class="ac-hint" style="margin-top:6px;line-height:1.5;"></div>
+
+              <div id="ac-attach-fields" style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
+
+              <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;align-items:center;">
+                <button id="ac-attach-save" class="ac-btn ac-btn-primary">Activate Backend</button>
+                <button id="ac-attach-save-cfg" class="ac-btn">Save Provider Settings</button>
+                <button id="ac-attach-test" class="ac-btn">Test</button>
+                <span id="ac-attach-status" class="ac-hint" style="margin-left:6px;"></span>
+              </div>
+
+              <div id="ac-attach-counts" class="ac-hint" style="margin-top:8px;font-size:11px;"></div>
+            </details>
 
             <!-- ── Encryption ── -->
-            <div class="ac-card">
-              <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
+            <details class="ac-card" open>
+              <summary class="ac-card-label">
                 <i data-lucide="lock" class="lucide-icon" style="width:14px;height:14px;color:#7dcfff;"></i>
                 Encryption
                 <span id="ac-storage-enc-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
-              </div>
+              </summary>
 
               <div id="ac-storage-enc-vault-warning" class="ac-info-banner" style="display:none;margin-top:10px;border-left-color:#f7768e;color:#f7768e;font-size:11px;">
                 Secrets vault is set to <strong>inline_db</strong> while the database backend is remote. Encryption keys would live in the same DB they protect. Switch the Secrets Vault provider above before enabling per-tenant encryption.
@@ -1657,15 +1690,15 @@
               </div>
 
               <pre id="ac-storage-enc-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;display:none;"></pre>
-            </div>
+            </details>
 
             <!-- ── Stream Buffer (in-memory per-turn event log for WS replay) ── -->
-            <div class="ac-card">
-              <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
+            <details class="ac-card" open>
+              <summary class="ac-card-label">
                 <i data-lucide="activity" class="lucide-icon" style="width:14px;height:14px;color:#7dcfff;"></i>
                 Stream Buffer
                 <span id="ac-storage-sbuf-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;"></span>
-              </div>
+              </summary>
               <div class="ac-hint" style="margin-top:8px;">
                 Each chat turn keeps its events (stream tokens, tool calls, results) in memory so a refresh or session switch can replay what was missed. Buffer is dropped this many seconds after the turn finishes. 0 = drop immediately. Max 3600.
               </div>
@@ -1675,15 +1708,15 @@
                 <button id="ac-storage-sbuf-save" class="ac-btn ac-btn-primary">Save</button>
                 <span id="ac-storage-sbuf-status" class="ac-hint" style="margin-left:6px;"></span>
               </div>
-            </div>
+            </details>
 
             <!-- ── Agent Prompt Templates ── -->
-            <div class="ac-card">
-              <div class="ac-card-label" style="display:flex;align-items:center;gap:8px;">
+            <details class="ac-card" open>
+              <summary class="ac-card-label">
                 <i data-lucide="file-stack" class="lucide-icon" style="width:14px;height:14px;color:#9ece6a;"></i>
                 Agent Prompt Templates
                 <span id="ac-tpl-sync-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
-              </div>
+              </summary>
               <div class="ac-hint" style="margin-top:8px;">
                 Templates seed from <code>app/context/agents/*.json</code> at boot. Re-seed never overwrites slots edited from the admin UI (<code>source = admin</code>) unless you click <strong>Force Re-Seed</strong>.
               </div>
@@ -1695,11 +1728,11 @@
               <div id="ac-tpl-hash-row" class="ac-hint" style="margin-top:8px;font-family:var(--mono,monospace);font-size:10px;word-break:break-all;"></div>
               <div id="ac-tpl-list" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;"></div>
               <pre id="ac-tpl-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:240px;overflow-y:auto;display:none;"></pre>
-            </div>
+            </details>
 
             <!-- ── Data Migration ── -->
             <details class="ac-card">
-              <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;font-weight:600;">
+              <summary class="ac-card-label">
                 <i data-lucide="arrow-right-left" class="lucide-icon" style="width:14px;height:14px;color:#9ece6a;"></i>
                 Data Migration
               </summary>
