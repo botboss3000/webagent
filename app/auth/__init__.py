@@ -177,6 +177,9 @@ async def register(req: RegisterRequest):
 
 class AccessModeResponse(BaseModel):
     access_mode: str  # public_anonymous | public_registered | admin_approval | private
+    # ── PRESENTATION-MODE START ── (delete this field to drop the demo flag from the API)
+    presentation_mode: bool = False
+    # ── PRESENTATION-MODE END ──
 
 
 @router.get("/access-mode", response_model=AccessModeResponse)
@@ -184,8 +187,13 @@ async def access_mode():
     """Public endpoint: returns the current registration/access policy.
     Used by the sign-in modal and chat UI to gate registration and anonymous use.
     """
-    from app.admin.settings import get_access_mode as _gam
-    return AccessModeResponse(access_mode=_gam())
+    from app.admin.settings import get_access_mode as _gam, _load_app_settings
+    # ── PRESENTATION-MODE START ── (drop the kwarg below to remove from the API)
+    return AccessModeResponse(
+        access_mode=_gam(),
+        presentation_mode=bool(_load_app_settings().get("presentation_mode", False)),
+    )
+    # ── PRESENTATION-MODE END ──
 
 
 @router.post("/logout")

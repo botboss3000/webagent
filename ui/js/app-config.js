@@ -17,7 +17,8 @@
 
 import { apiPath } from './config.js';
 import { app } from './state.js';
-import { isAdmin, showRestrictedModal } from './left-login.js';
+// ── PRESENTATION-MODE: `isPresentationMode` is the only new import; drop it to remove the demo gate.
+import { isAdmin, showRestrictedModal, isPresentationMode } from './left-login.js';
 import { icon } from './icons.js';
 import { loadSessionChat, populateSessionSelect } from './sessions.js';
 import { loopSessionChanged } from './loop.js';
@@ -2152,6 +2153,10 @@ async function _loadUserManagement() {
       const mode = data.access_mode || 'public_anonymous';
       const radio = document.querySelector(`input[name="ac-um-access-mode"][value="${mode}"]`);
       if (radio) radio.checked = true;
+      // ── PRESENTATION-MODE START ── (delete to remove checkbox load)
+      const presCb = _qs('ac-um-presentation-mode');
+      if (presCb) presCb.checked = !!data.presentation_mode;
+      // ── PRESENTATION-MODE END ──
     }
   } catch (e) {
     console.warn('user-management: could not load access mode', e);
@@ -2161,6 +2166,12 @@ async function _loadUserManagement() {
   if (isAdmin()) {
     await _loadUsersList();
   } else {
+    // ── PRESENTATION-MODE START ── (delete this block to restore "admin only" empty state)
+    if (isPresentationMode()) {
+      await _renderSelfOnlyUsersList();
+      return;
+    }
+    // ── PRESENTATION-MODE END ──
     const tbody = _qs('ac-um-users-tbody');
     if (tbody) tbody.innerHTML = `<tr><td colspan="8" class="ac-table-empty">Admin access required to view users.</td></tr>`;
     const sum = _qs('ac-um-users-summary');
@@ -2168,11 +2179,64 @@ async function _loadUserManagement() {
   }
 }
 
+// ── PRESENTATION-MODE START ── (delete this function to remove demo self-row rendering)
+async function _renderSelfOnlyUsersList() {
+  const tbody = _qs('ac-um-users-tbody');
+  const summary = _qs('ac-um-users-summary');
+  if (!tbody) return;
+  const userId = localStorage.getItem('auth_user_id') || '';
+  const token = localStorage.getItem('auth_token') || '';
+  if (!userId || !token) {
+    tbody.innerHTML = `<tr><td colspan="8" class="ac-table-empty">Sign in to see your own row in this demo.</td></tr>`;
+    if (summary) summary.textContent = 'Other users are hidden in presentation mode';
+    return;
+  }
+  let profile = null;
+  try {
+    const res = await fetch(`/api/v1/user/profile?user_id=${encodeURIComponent(userId)}`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    if (res.ok) profile = await res.json();
+  } catch (_) {}
+  const username = localStorage.getItem('auth_username') || userId;
+  const displayName = localStorage.getItem('auth_display_name') || username;
+  const isUserAdmin = !!(profile && profile.is_admin);
+  const role = isUserAdmin
+    ? `<span class="ac-um-badge ac-um-badge-admin">admin</span>`
+    : `<span class="ac-um-badge ac-um-badge-member">member</span>`;
+  const status = `<span class="ac-um-badge ac-um-badge-approved">active</span>`;
+  tbody.innerHTML = `
+    <tr>
+      <td>
+        <div style="font-weight:600;color:var(--fg-1);">${_esc(displayName)}</div>
+        <div style="font-size:10px;color:var(--fg-muted);">${_esc(username)}</div>
+      </td>
+      <td style="text-align:center;">${role}</td>
+      <td style="text-align:center;">${status}</td>
+      <td style="text-align:right;">—</td>
+      <td style="text-align:right;">—</td>
+      <td style="font-size:10px;color:var(--fg-muted);">—</td>
+      <td style="font-size:10px;color:var(--fg-muted);">—</td>
+      <td style="text-align:center;color:var(--fg-muted);font-size:11px;">read-only</td>
+    </tr>
+    <tr>
+      <td colspan="8" style="text-align:center;color:var(--fg-muted);font-size:11px;padding:10px;font-style:italic;background:rgba(125,207,255,0.05);">
+        Other user details are hidden in presentation mode.
+      </td>
+    </tr>`;
+  if (summary) summary.textContent = 'Showing your own row only (presentation mode)';
+}
+// ── PRESENTATION-MODE END ──
+
 async function _saveUserManagement() {
   if (!isAdmin()) { showRestrictedModal(); return; }
   const selected = document.querySelector('input[name="ac-um-access-mode"]:checked');
   const mode = selected ? selected.value : 'public_anonymous';
   const extendCb = _qs('ac-extend-llm-to-agents');
+  // ── PRESENTATION-MODE START ── (delete this line to drop the demo toggle)
+  const presCb = _qs('ac-um-presentation-mode');
+  const presentation = !!(presCb && presCb.checked);
+  // ── PRESENTATION-MODE END ──
 
   const statusEl = _qs('ac-um-status');
   try {
@@ -2182,6 +2246,9 @@ async function _saveUserManagement() {
       body: JSON.stringify({
         access_mode: mode,
         extend_llm_to_agents: extendCb ? extendCb.checked : true,
+        // ── PRESENTATION-MODE START ── (delete the next line to drop the demo toggle)
+        presentation_mode: presentation,
+        // ── PRESENTATION-MODE END ──
       }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -2193,7 +2260,10 @@ async function _saveUserManagement() {
     }
     // Broadcast to other modules (sign-in modal, chat gate)
     try {
-      window.dispatchEvent(new CustomEvent('access-mode-changed', { detail: { access_mode: mode } }));
+      window.dispatchEvent(new CustomEvent('access-mode-changed', {
+        // ── PRESENTATION-MODE: drop the `presentation_mode` key in the detail to remove
+        detail: { access_mode: mode, presentation_mode: presentation },
+      }));
     } catch {}
   } catch (e) {
     if (statusEl) {
