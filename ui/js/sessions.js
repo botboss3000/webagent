@@ -112,23 +112,23 @@ export async function populateAgentSelect(userId) {
   if (!userId) return;
 
   try {
-    const [agentsRes, templatesRes] = await Promise.all([
-      fetch(apiPath(`/api/v1/agents?user_id=${encodeURIComponent(userId)}`)),
-      fetch(apiPath(`/api/v1/agents/templates?user_id=${encodeURIComponent(userId)}`)),
-    ]);
+    const agentsRes = await fetch(apiPath(`/api/v1/agents?user_id=${encodeURIComponent(userId)}`));
     const agentsData = agentsRes.ok ? await agentsRes.json() : { agents: [] };
-    const templatesData = templatesRes.ok ? await templatesRes.json() : { templates: [] };
 
     const saved = localStorage.getItem('selectedAgentId');
     const pinned = _getPinnedAgents();
 
-    const templates = (templatesData.templates || []).filter(t => t.id !== 'admin-agent');
+    // Only the user's actual custom agents appear in the chat-header dropdown.
+    // System templates are creation seeds, not chat targets — they're surfaced
+    // in the "New agent" modal's template picker (see agents.js).
     const customs = agentsData.agents || [];
 
-    _agentsCache = [
-      ...templates.map(t => ({ id: t.id, name: t.name || t.id, type: 'template', pinned: pinned.has(t.id) })),
-      ...customs.map(a => ({ id: a.id, name: a.name || a.id.slice(0, 12), type: 'custom', pinned: pinned.has(a.id) })),
-    ];
+    _agentsCache = customs.map(a => ({
+      id: a.id,
+      name: a.name || a.id.slice(0, 12),
+      type: 'custom',
+      pinned: pinned.has(a.id),
+    }));
     _agentsCache.sort(_agentSortFn);
 
     // Pre-select order:
@@ -153,7 +153,7 @@ export async function populateAgentSelect(userId) {
       found = _agentsCache.find(a => a.id === saved);
     }
     if (!found) {
-      found = _agentsCache.find(a => a.type === 'custom') || null;
+      found = _agentsCache[0] || null;
     }
     app.currentAgentId = (found && found.id) || '';
 
@@ -167,6 +167,10 @@ export async function populateAgentSelect(userId) {
 
     _renderAgentRows();
     _setAgentTriggerLabel();
+
+    // Sessions are scoped to an agent — refresh the session list now that
+    // currentAgentId is settled.
+    populateSessionSelect(userId);
   } catch (e) {
     console.warn('Failed to load agents for selector:', e);
   }
@@ -274,6 +278,12 @@ export function renderUserDropdown() {
 // Cache of last-fetched sessions (used when rendering rows without refetch)
 let _sessionsCache = [];
 
+// Monotonic counter — on init we fire one fetch from populateUserSelect (no
+// agent filter yet) and another from populateAgentSelect (filtered once the
+// agent is resolved). Whichever resolves last would otherwise win, so we
+// tag each call and drop responses from stale calls.
+let _sessionFetchSeq = 0;
+
 function _truncate(s, n) {
   return (s && s.length > n) ? s.slice(0, n) + '…' : (s || '');
 }
@@ -321,12 +331,16 @@ export async function populateSessionSelect(userId) {
     _setTriggerLabel();
     return;
   }
+  const mySeq = ++_sessionFetchSeq;
   try {
     const token = localStorage.getItem('auth_token');
-    const res = await fetch(
-      apiPath(`/api/v1/db/sessions?db=local.db&user_id=${encodeURIComponent(userId)}${token ? '&token=' + encodeURIComponent(token) : ''}`),
-    );
+    const agentId = app.currentAgentId || '';
+    let url = `/api/v1/db/sessions?db=local.db&user_id=${encodeURIComponent(userId)}`;
+    if (agentId) url += `&agent_id=${encodeURIComponent(agentId)}`;
+    if (token) url += `&token=${encodeURIComponent(token)}`;
+    const res = await fetch(apiPath(url));
     const data = await res.json();
+    if (mySeq !== _sessionFetchSeq) return; // a newer fetch superseded us
     _sessionsCache = (data.sessions || []).map(s => ({
       id: s.id,
       title: s.title || 'New Session',
@@ -559,6 +573,9 @@ export function initSessions() {
 
   function openMenu() {
     if (!menu) return;
+    // Opening one header dropdown closes the other — treat the gesture as
+    // an outside-click for any peer menu.
+    closeAgentMenu();
     menu.hidden = false;
     dropdown.classList.add('open');
   }
@@ -782,6 +799,9 @@ export function initSessions() {
 
   function openAgentMenu() {
     if (!agentMenu) return;
+    // Opening one header dropdown closes the other — treat the gesture as
+    // an outside-click for any peer menu.
+    closeMenu();
     agentMenu.hidden = false;
     agentDropdown.classList.add('open');
   }

@@ -289,8 +289,15 @@ async def list_sessions(
     request: Request,
     user_id: str = Query(..., description="User ID"),
     db: str = Query("local.db", description="Database filename"),
+    agent_id: Optional[str] = Query(None, description="Filter to sessions bound to this agent"),
 ):
-    """List sessions for a user (owner or participant)."""
+    """List sessions for a user (owner or participant).
+
+    When ``agent_id`` is supplied, only sessions bound to that agent are
+    returned. Sessions with a NULL ``agent_id`` (never bound to an agent)
+    are filtered out in that case — they appear as orphans that don't
+    belong to any specific agent.
+    """
     # Resolve requester identities from token
     _token = ""
     _auth_header = request.headers.get("Authorization", "")
@@ -316,20 +323,25 @@ async def list_sessions(
             cur.execute("PRAGMA table_info(sessions)")
             sess_cols = {row[1] for row in cur.fetchall()}
             has_pinned = "pinned" in sess_cols
+
+            select_cols = 's.id, s.title, s.created_at, s.user_id, s.participants, s.agent_id'
             if has_pinned:
-                cur.execute(
-                    'SELECT s.id, s.title, s.created_at, s.user_id, s.participants, s.pinned '
-                    'FROM sessions s LEFT JOIN agents a ON s.agent_id = a.id '
-                    'WHERE s.agent_id IS NULL OR a.id IS NOT NULL '
-                    'ORDER BY s.pinned DESC, s.created_at DESC'
-                )
-            else:
-                cur.execute(
-                    'SELECT s.id, s.title, s.created_at, s.user_id, s.participants '
-                    'FROM sessions s LEFT JOIN agents a ON s.agent_id = a.id '
-                    'WHERE s.agent_id IS NULL OR a.id IS NOT NULL '
-                    'ORDER BY s.created_at DESC'
-                )
+                select_cols += ', s.pinned'
+
+            where_clause = '(s.agent_id IS NULL OR a.id IS NOT NULL)'
+            params: list = []
+            if agent_id:
+                where_clause = 's.agent_id = ?'
+                params.append(agent_id)
+
+            order_clause = 's.pinned DESC, s.created_at DESC' if has_pinned else 's.created_at DESC'
+            sql = (
+                f'SELECT {select_cols} '
+                f'FROM sessions s LEFT JOIN agents a ON s.agent_id = a.id '
+                f'WHERE {where_clause} '
+                f'ORDER BY {order_clause}'
+            )
+            cur.execute(sql, params)
             for row in cur.fetchall():
                 owner_id = row[3]
                 participants_raw = row[4] or "[]"
@@ -340,11 +352,12 @@ async def list_sessions(
                 participant_ids = {p.get("id") for p in participants if isinstance(p, dict)}
                 all_ids = ({owner_id} | participant_ids) - {None}
                 if requester_identities & all_ids:
-                    pinned_val = bool(row[5]) if has_pinned else False
+                    pinned_val = bool(row[6]) if has_pinned else False
                     sessions.append({
                         "id": row[0],
                         "title": row[1] or row[0][:12],
                         "created_at": row[2],
+                        "agent_id": row[5],
                         "pinned": pinned_val,
                     })
         except sqlite3.OperationalError:
