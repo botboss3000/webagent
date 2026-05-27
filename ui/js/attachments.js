@@ -11,6 +11,39 @@
 import { app } from './state.js';
 import { apiPath } from './config.js';
 import { icon } from './icons.js';
+import { putAttachment, getObjectUrl, deleteAttachment as idbDelete } from './attachments-idb.js';
+
+// Active server-side attachment backend. Synced opportunistically by the
+// Data Management page's bootstrap fetch (see ui/js/data-management.js).
+// We also do a best-effort fetch the first time an upload happens so this
+// works even before the user opens Data Management.
+let _backendCache = null;
+let _backendFetched = false;
+
+async function _resolveBackend() {
+  if (_backendCache) return _backendCache;
+  try {
+    if (window.__webagentAttachmentBackend) {
+      _backendCache = window.__webagentAttachmentBackend;
+      return _backendCache;
+    }
+  } catch {}
+  if (_backendFetched) return 'local';
+  _backendFetched = true;
+  try {
+    const uid = (typeof localStorage !== 'undefined' && localStorage.getItem('auth_user_id')) || '';
+    const res = await fetch(apiPath('/admin/storage/attachments/status?requesting_user_id=' + encodeURIComponent(uid)));
+    if (res.ok) {
+      const data = await res.json();
+      _backendCache = data.mode || 'local';
+      try { window.__webagentAttachmentBackend = _backendCache; } catch {}
+    }
+  } catch {
+    // Non-admin or unauthenticated — the endpoint will 403/401. Treat the
+    // default as 'local' (the server still owns the actual decision).
+  }
+  return _backendCache || 'local';
+}
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -88,22 +121,50 @@ export async function uploadAndPreview(file, opts = {}) {
   previewBar.style.display = 'flex';
 
   try {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('user_id', app.currentUserId);
-    formData.append('session_id', app.currentSessionId);
+    const backend = await _resolveBackend();
+    let data;
+    if (backend === 'browser') {
+      // Metadata-only POST; bytes stay in the user's IndexedDB.
+      const fd = new FormData();
+      fd.append('user_id', app.currentUserId);
+      fd.append('session_id', app.currentSessionId);
+      fd.append('original_name', file.name);
+      fd.append('mime_type', file.type || 'application/octet-stream');
+      fd.append('size_bytes', String(file.size));
+      const r1 = await fetch(apiPath('/api/v1/upload'), { method: 'POST', body: fd });
+      if (!r1.ok) {
+        const err = await r1.json().catch(() => ({ detail: r1.statusText }));
+        throw new Error(err.detail || 'Upload (metadata) failed');
+      }
+      data = await r1.json();
+      // Stash the bytes locally under the assigned attachment_id.
+      await putAttachment({
+        id: data.attachment_id,
+        blob: file,
+        mime_type: data.mime_type,
+        name: data.original_name,
+        size: data.size_bytes,
+      });
+      // Mint a local object URL so the preview chip + chat bubble can render.
+      data.url = await getObjectUrl(data.attachment_id) || '';
+    } else {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('user_id', app.currentUserId);
+      formData.append('session_id', app.currentSessionId);
 
-    const res = await fetch(apiPath('/api/v1/upload'), {
-      method: 'POST',
-      body: formData,
-    });
+      const res = await fetch(apiPath('/api/v1/upload'), {
+        method: 'POST',
+        body: formData,
+      });
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(err.detail || 'Upload failed');
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || 'Upload failed');
+      }
+
+      data = await res.json();
     }
-
-    const data = await res.json();
 
     // Replace chip with success preview
     chip.className = 'chat-attachment-pill';
@@ -133,6 +194,11 @@ export async function uploadAndPreview(file, opts = {}) {
       if (idx >= 0) targetPending.splice(idx, 1);
       if (targetPending.length === 0) previewBar.style.display = 'none';
       if (onChange) onChange(targetPending);
+      // If the bytes lived in IndexedDB, evict them along with the row.
+      if (data.storage_provider === 'browser') {
+        idbDelete(data.attachment_id).catch(() => {});
+        fetch(apiPath('/api/v1/upload/' + data.attachment_id), { method: 'DELETE' }).catch(() => {});
+      }
     });
     chip.appendChild(removeBtn);
 
@@ -295,17 +361,48 @@ export function addAttachmentsToMessage(msgObj) {
 
 // ── Render attachments in chat bubbles ─────────────────────────────────────
 
+function _isBrowserStored(att) {
+  if (att.storage_provider === 'browser') return true;
+  const p = att.storage_path || '';
+  return p.startsWith('indexeddb://');
+}
+
+function _resolveAttachmentUrl(att) {
+  // Returns a thenable; null indicates "no resolvable URL". For browser-stored
+  // attachments we mint an object URL from IndexedDB; otherwise we use the
+  // server-provided URL or fall back to the local /uploads route.
+  if (_isBrowserStored(att) && att.attachment_id) {
+    return getObjectUrl(att.attachment_id);
+  }
+  return Promise.resolve(att.url || (att.storage_path ? `/uploads/${att.storage_path}` : ''));
+}
+
+function _setSrcAsync(el, attrName, att, missingClass) {
+  // For browser-stored bytes the URL is async; render with an empty src and
+  // swap it in when IDB resolves. For server-stored bytes we still go through
+  // the same path for consistency.
+  _resolveAttachmentUrl(att).then(url => {
+    if (url) {
+      el[attrName] = url;
+    } else if (missingClass) {
+      el.classList.add(missingClass);
+      el.alt = `(missing) ${att.original_name || ''}`;
+    }
+  }).catch(() => {
+    if (missingClass) el.classList.add(missingClass);
+  });
+}
+
 export function renderAttachmentElement(att) {
   const mime = att.mime_type || '';
-  const url = att.url || `/uploads/${att.storage_path}`;
 
   // Image
   if (mime.startsWith('image/')) {
     const img = document.createElement('img');
-    img.src = url;
     img.alt = att.original_name || 'attachment';
     img.className = 'chat-attachment-img';
     img.loading = 'lazy';
+    _setSrcAsync(img, 'src', att, 'chat-attachment-missing');
     return img;
   }
 
@@ -318,10 +415,10 @@ export function renderAttachmentElement(att) {
     label.innerHTML = `${icon('mic', { size: '12px' })} ${att.original_name || 'Voice recording'}`;
     wrapper.appendChild(label);
     const audio = document.createElement('audio');
-    audio.src = url;
     audio.controls = true;
     audio.className = 'chat-audio-player';
     audio.preload = 'metadata';
+    _setSrcAsync(audio, 'src', att);
     wrapper.appendChild(audio);
     return wrapper;
   }
@@ -329,20 +426,20 @@ export function renderAttachmentElement(att) {
   // Video
   if (mime.startsWith('video/')) {
     const video = document.createElement('video');
-    video.src = url;
     video.controls = true;
     video.className = 'chat-attachment-video';
     video.preload = 'metadata';
+    _setSrcAsync(video, 'src', att);
     return video;
   }
 
   // Default: download link
   const link = document.createElement('a');
-  link.href = url;
   link.innerHTML = `${icon('paperclip', { size: '12px' })} ${att.original_name || 'Download attachment'}`;
   link.className = 'chat-attachment-link';
   link.target = '_blank';
   link.rel = 'noopener';
+  _setSrcAsync(link, 'href', att);
   return link;
 }
 

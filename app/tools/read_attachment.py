@@ -12,7 +12,7 @@ import logging
 from typing import Optional
 
 from app.db import get_db
-from app.db.attachments import read_file
+from app.db.attachments import read_file, public_url_for
 
 logger = logging.getLogger(__name__)
 
@@ -58,18 +58,28 @@ async def read_attachment(attachment_id: str) -> str:
 
     mime = att["mime_type"]
     storage_path = att["storage_path"]
+    storage_provider = att.get("storage_provider") or "local"
     size_str = _format_size(att["size_bytes"])
 
-    # Fetch bytes
-    file_bytes = await read_file(storage_path)
+    # Browser backend keeps bytes in the user's IndexedDB; the server has nothing to read.
+    if storage_provider == "browser":
+        return json.dumps({
+            "status": "error",
+            "message": (
+                f"Attachment '{att['original_name']}' is stored in the user's browser "
+                "(IndexedDB backend). Server-side tools cannot read its bytes."
+            ),
+        })
+
+    # Fetch bytes via the row's backend (not just the active one).
+    file_bytes = await read_file(storage_path, storage_provider=storage_provider)
     if file_bytes is None:
         return json.dumps({
             "status": "error",
-            "message": f"File not found on storage: {storage_path}",
+            "message": f"File not found on storage ({storage_provider}): {storage_path}",
         })
 
-    # Build a public-facing URL hint for image/audio/video types
-    public_url = f"/uploads/{storage_path}"
+    public_url = public_url_for(storage_path, storage_provider=storage_provider) or f"/uploads/{storage_path}"
 
     # ── Text files ──
     if mime in ("text/plain", "text/markdown", "text/csv", "text/html", "application/json"):
