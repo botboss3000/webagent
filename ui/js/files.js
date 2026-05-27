@@ -1455,12 +1455,12 @@ function buildFindBar(tab) {
   bar.className = 'files-findbar';
   bar.hidden = true;
   bar.innerHTML =
-    '<input type="text" class="files-findbar-input files-findbar-find"    placeholder="Find" spellcheck="false">' +
+    '<input type="text" class="files-findbar-input files-findbar-find"    placeholder="Find" spellcheck="false" autocomplete="off" data-lpignore="true" data-1p-ignore="true">' +
     '<span class="files-findbar-count">0 / 0</span>' +
     '<button type="button" class="files-findbar-btn" data-act="prev"  title="Previous (Shift+Enter)"><i data-lucide="chevron-up" class="lucide-icon"></i></button>' +
     '<button type="button" class="files-findbar-btn" data-act="next"  title="Next (Enter)"><i data-lucide="chevron-down" class="lucide-icon"></i></button>' +
     '<button type="button" class="files-findbar-btn" data-act="case"  title="Match case">Aa</button>' +
-    '<input type="text" class="files-findbar-input files-findbar-replace" placeholder="Replace" spellcheck="false">' +
+    '<input type="text" class="files-findbar-input files-findbar-replace" placeholder="Replace" spellcheck="false" autocomplete="off" data-lpignore="true" data-1p-ignore="true">' +
     '<button type="button" class="files-findbar-btn" data-act="replace"     title="Replace">↩</button>' +
     '<button type="button" class="files-findbar-btn" data-act="replace-all" title="Replace all">↩↩</button>' +
     '<button type="button" class="files-findbar-btn" data-act="close" title="Close (Esc)"><i data-lucide="x" class="lucide-icon"></i></button>';
@@ -2230,7 +2230,7 @@ function buildTerminalFindBar() {
   bar.className = 'files-terminal-findbar';
   bar.hidden = true;
   bar.innerHTML =
-    '<input type="text" class="files-terminal-findbar-input" placeholder="Find in terminal" spellcheck="false">' +
+    '<input type="text" class="files-terminal-findbar-input" placeholder="Find in terminal" spellcheck="false" autocomplete="off" data-lpignore="true" data-1p-ignore="true">' +
     '<button type="button" class="files-terminal-findbar-btn" data-act="case" title="Match case">Aa</button>' +
     '<button type="button" class="files-terminal-findbar-btn" data-act="prev" title="Previous (Shift+Enter)"><i data-lucide="chevron-up" class="lucide-icon"></i></button>' +
     '<button type="button" class="files-terminal-findbar-btn" data-act="next" title="Next (Enter)"><i data-lucide="chevron-down" class="lucide-icon"></i></button>' +

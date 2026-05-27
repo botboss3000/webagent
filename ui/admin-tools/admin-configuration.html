@@ -150,8 +150,8 @@
             </div>
 
             <div class="ac-field" style="margin-bottom:12px;">
-              <input type="search" id="ac-int-search" class="ac-input" placeholder="Search integrations…" autocomplete="off">
-              <div id="ac-int-search-empty" class="ac-hint" style="display:none;margin-top:6px;">No integrations match your search.</div>
+              <input type="search" id="ac-int-filter" name="ac-int-filter" class="ac-input" placeholder="Search integrations…" autocomplete="off" data-lpignore="true" data-1p-ignore="true">
+              <div id="ac-int-filter-empty" class="ac-hint" style="display:none;margin-top:6px;">No integrations match your search.</div>
             </div>
 
             <!-- Integration Admin Chat -->
@@ -1799,7 +1799,7 @@
               </div>
               <div class="ac-field" style="margin-top:10px;">
                 <div style="display:flex;gap:8px;">
-                  <input type="password" id="ac-gh-token-input" class="ac-input" placeholder="ghp_... or github_pat_..." style="flex:1;">
+                  <input type="password" id="ac-gh-token-input" class="ac-input" placeholder="ghp_... or github_pat_..." autocomplete="off" data-lpignore="true" data-1p-ignore="true" style="flex:1;">
                   <button id="ac-gh-token-save" class="ac-btn ac-btn-primary" style="flex-shrink:0;">Save</button>
                 </div>
                 <div id="ac-gh-token-status" class="ac-status" style="display:none;margin-top:6px;"></div>

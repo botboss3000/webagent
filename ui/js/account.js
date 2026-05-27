@@ -80,11 +80,11 @@ function renderTab() {
     <h3 class="account-section-title">Profile</h3>
     <div class="account-field">
       <label for="account-email">Email / username</label>
-      <input id="account-email" type="email" value="${escapeAttr(active.username || '')}">
+      <input id="account-email" type="email" name="username" autocomplete="username" value="${escapeAttr(active.username || '')}">
     </div>
     <div class="account-field">
       <label for="account-display">Display name</label>
-      <input id="account-display" type="text" value="${escapeAttr(active.display_name || '')}">
+      <input id="account-display" type="text" name="name" autocomplete="name" value="${escapeAttr(active.display_name || '')}">
     </div>
     <div class="account-row">
       <button id="account-save-profile" class="account-btn account-btn-primary">Save changes</button>
