@@ -2614,9 +2614,12 @@ const _CONN_ICONS = {
   snapchat:  'zap',
   twitch:    'tv',
   // Agent Tools
-  codebase_admin: 'folder-cog',
-  create_tools:   'wrench',
-  automation:     'clock',
+  codebase_admin:   'folder-cog',
+  create_tools:     'wrench',
+  automation:       'clock',
+  web_access:       'globe',
+  browser_control:  'mouse-pointer-2',
+  image_generation: 'image',
 };
 
 async function _renderConnectionsTab(body, agent) {
@@ -2690,7 +2693,7 @@ async function _renderConnectionsTab(body, agent) {
   body.appendChild(searchEmpty);
 
   const sections = [
-    { key: 'ability',     label: 'Agent Tools',  hint: 'Privileged capabilities — codebase edits, tool creation, automation.' },
+    { key: 'ability',     label: 'Agent Tools',  hint: 'Privileged capabilities — web access, browser control, image gen, codebase edits, tool creation, automation.' },
     { key: 'channel',     label: 'Channels',     hint: 'How this agent sends and receives messages.' },
     { key: 'integration', label: 'Integrations', hint: 'Services and data sources this agent can access.' },
     { key: 'social',      label: 'Social Media', hint: 'Social platforms this agent can post and interact on.' },

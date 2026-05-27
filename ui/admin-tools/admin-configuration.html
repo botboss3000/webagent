@@ -97,6 +97,45 @@
               <div id="ac-settings-saved-list" style="display:flex;flex-direction:column;gap:6px;margin-top:8px;"></div>
               <div id="ac-settings-parallel-count" class="ac-hint" style="margin-top:6px;text-align:right;"></div>
             </div>
+
+            <!-- Image Generation provider (separate from the chat LLM) -->
+            <div class="ac-section-header" style="margin-top:24px;">
+              <i data-lucide="image" class="lucide-icon ac-section-icon"></i>
+              <div>
+                <h3 class="ac-section-title" style="font-size:14px;">Image Generation</h3>
+                <p class="ac-section-desc">Provider for the <code>generate_image</code> tool. Many text LLMs can't produce images, so this is configured separately. Enable the <strong>Image Generation</strong> ability below to expose the tool to agents.</p>
+              </div>
+            </div>
+            <div class="ac-card">
+              <div class="ac-field">
+                <label class="ac-label">Provider</label>
+                <select id="ac-img-provider" class="ac-input"></select>
+                <div class="ac-hint" id="ac-img-provider-hint" style="margin-top:4px;"></div>
+              </div>
+              <div class="ac-field">
+                <label class="ac-label">Base URL</label>
+                <input type="text" id="ac-img-base-url" class="ac-input" placeholder="https://api.openai.com/v1" autocomplete="off">
+                <div class="ac-hint">Auto-filled from the provider preset. Edit for custom endpoints (e.g. OpenAI-compatible self-hosted).</div>
+              </div>
+              <div class="ac-field">
+                <label class="ac-label">API Key</label>
+                <input type="text" id="ac-img-api-key" class="ac-input" placeholder="sk-..." autocomplete="off">
+                <div class="ac-hint">Stored on this device only. Never sent elsewhere.</div>
+              </div>
+              <div class="ac-field" id="ac-img-model-group">
+                <label class="ac-label">Model</label>
+                <div style="position:relative;">
+                  <input type="text" id="ac-img-model-search" class="ac-input" placeholder="Search image models…" autocomplete="off">
+                  <div id="ac-img-model-dropdown" class="ac-model-dropdown" style="display:none;"></div>
+                </div>
+                <div id="ac-img-model-status" class="ac-hint"></div>
+              </div>
+              <div class="ac-actions">
+                <button id="ac-img-save" class="ac-btn ac-btn-primary">Save</button>
+                <button id="ac-img-clear" class="ac-btn ac-btn-ghost">Clear</button>
+                <span id="ac-img-status" class="ac-status" style="display:none;"></span>
+              </div>
+            </div>
           </section>
 
 
@@ -185,6 +224,81 @@
                 <button id="ac-int-create_tools-save" class="ac-btn ac-btn-primary">Enable Create Tools</button>
               </div>
               <span id="ac-int-create_tools-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+            </div>
+
+            <!-- Web Access -->
+            <div class="ac-card" id="ac-int-web_access-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <i data-lucide="globe" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#7aa2f7;"></i>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Web Access</div>
+                  <div class="ac-hint" style="margin:0;">Lets the agent search the web (DuckDuckGo), look up weather, and geocode addresses via OpenStreetMap. No API keys needed.</div>
+                </div>
+                <span id="ac-int-web_access-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
+              </div>
+
+              <div id="ac-int-web_access-configured" style="display:none;font-size:12px;">
+                <div class="ac-hint" style="margin:0;">Web Access is available on the agent's <strong>Abilities</strong> tab. Bundles <code>web_search</code>, <code>get_weather</code>, and <code>maps_geocode</code>.</div>
+                <div style="margin-top:12px;display:flex;gap:8px;">
+                  <button id="ac-int-web_access-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                </div>
+              </div>
+
+              <div id="ac-int-web_access-form" style="display:block;">
+                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Web Access as a toggle to agent admins. Uses free public endpoints (DuckDuckGo, Open-Meteo, Nominatim) — no platform credentials required.</div>
+                <button id="ac-int-web_access-save" class="ac-btn ac-btn-primary">Enable Web Access</button>
+              </div>
+              <span id="ac-int-web_access-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+            </div>
+
+            <!-- Browser Control -->
+            <div class="ac-card" id="ac-int-browser_control-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <i data-lucide="mouse-pointer-2" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#9ece6a;"></i>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Browser Control</div>
+                  <div class="ac-hint" style="margin:0;">Lets the agent drive a real headless Chromium browser (navigate, click, type, screenshot, JS eval) and make arbitrary outbound HTTP requests.</div>
+                </div>
+                <span id="ac-int-browser_control-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
+              </div>
+
+              <div id="ac-int-browser_control-configured" style="display:none;font-size:12px;">
+                <div class="ac-hint" style="margin:0;">Browser Control is available on the agent's <strong>Abilities</strong> tab. Bundles <code>browser_action</code> (Playwright) and <code>http_request</code>.</div>
+                <div style="margin-top:12px;display:flex;gap:8px;">
+                  <button id="ac-int-browser_control-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                </div>
+              </div>
+
+              <div id="ac-int-browser_control-form" style="display:block;">
+                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Browser Control as a toggle to agent admins. Each session gets its own persistent Chromium instance.</div>
+                <button id="ac-int-browser_control-save" class="ac-btn ac-btn-primary">Enable Browser Control</button>
+              </div>
+              <span id="ac-int-browser_control-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+            </div>
+
+            <!-- Image Generation -->
+            <div class="ac-card" id="ac-int-image_generation-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <i data-lucide="image" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#bb9af7;"></i>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Image Generation</div>
+                  <div class="ac-hint" style="margin:0;">Lets the agent generate images from text prompts. Pick a provider + model in the <strong>Image Generation</strong> card just above the Agent Abilities section first.</div>
+                </div>
+                <span id="ac-int-image_generation-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
+              </div>
+
+              <div id="ac-int-image_generation-configured" style="display:none;font-size:12px;">
+                <div class="ac-hint" style="margin:0;">Image Generation is available on the agent's <strong>Abilities</strong> tab. Generated images are saved under <code>visuals/users/&lt;user_id&gt;/</code>.</div>
+                <div style="margin-top:12px;display:flex;gap:8px;">
+                  <button id="ac-int-image_generation-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                </div>
+              </div>
+
+              <div id="ac-int-image_generation-form" style="display:block;">
+                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Image Generation as a toggle to agent admins. The agent's <code>generate_image</code> tool uses whichever provider you configured under Image Generation.</div>
+                <button id="ac-int-image_generation-save" class="ac-btn ac-btn-primary">Enable Image Generation</button>
+              </div>
+              <span id="ac-int-image_generation-status" class="ac-status" style="display:none;margin-top:8px;"></span>
             </div>
 
             <!-- Automation -->
