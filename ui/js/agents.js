@@ -14,12 +14,11 @@ import { fetchAllToolMeta } from './loop-logic.js';
 import { NODE_PANEL_INFO } from './loop-node-data.js';
 import { LOOP_W, LOOP_H, LOOP_NODES, TOGGLEABLE_NODES, renderLoopDiagram } from './loop-diagram.js';
 import { icon } from './icons.js';
+import { wireChatPillUploads } from './attachments.js';
 // ── PRESENTATION-MODE START ── (delete the next 2 lines + the canEdit override below to remove)
 import { isPresentationMode } from './left-login.js';
 import { applyPresentationGate } from './presentation-mode.js';
 // ── PRESENTATION-MODE END ──
-import { wireChatPillUploads } from './attachments.js';
-
 function _triggerKeyPlaceholder(triggerType) {
   const map = {
     slash_command: 'Slash command (e.g. /optimize)',
