@@ -17,6 +17,7 @@ import { initBilling } from './billing.js';
 import { initAppConfig } from './app-config.js';
 import { initAccount } from './account.js';
 import { initFiles, relocateAdminToolsContainers } from './files.js';
+import { initDataManagement } from './data-management.js';
 import { initChatResize } from './chatResize.js';
 import { initTutorial } from './tutorial.js';
 import { fetchAdminStatus, isAdmin, fetchAccessMode, isPresentationMode } from './left-login.js';
@@ -202,6 +203,7 @@ _anonReady.then(() => {
   // getElementById() lookups hit the final DOM positions.
   _safeInit('relocateAdminToolsContainers', relocateAdminToolsContainers);
   _safeInit('initDbViewer',    initDbViewer);
+  _safeInit('initDataManagement', initDataManagement);
   _safeInit('initAutoAgent',   initAutoAgent);
   _safeInit('initAgents',      initAgents);
   _safeInit('initBilling',     initBilling);

@@ -135,6 +135,15 @@ async def upload_file(
     if file is None or not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
 
+    if backend == "browser":
+        # Multipart upload with bytes while the browser backend is active: the
+        # bytes have nowhere to live server-side. Reject so the client falls
+        # back to the metadata-only path.
+        raise HTTPException(
+            status_code=409,
+            detail="Browser backend is active — send metadata only (omit `file=`).",
+        )
+
     mime_type_eff = file.content_type or mime_type or "application/octet-stream"
     _validate_mime(mime_type_eff)
 

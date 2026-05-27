@@ -2569,7 +2569,7 @@ function initSidebarViewSwitcher() {
 const VIEW_TITLE = {
   explorer: 'File Manager',
   git: 'Source control',
-  database: 'Database',
+  database: 'Data Management',
   terminal: 'Terminal launchers',
   settings: 'Admin Configuration',
   interactions: 'Interactions',
@@ -2578,7 +2578,7 @@ const VIEW_TITLE = {
 const VIEW_SWITCH = {
   explorer: 'file manager',
   git: 'source control',
-  database: 'database',
+  database: 'data management',
   terminal: 'terminal launchers',
   settings: 'admin configuration',
   interactions: 'interactions',
@@ -2840,11 +2840,15 @@ export function relocateAdminToolsContainers() {
     acHost.appendChild(acContainer);
     acContainer.removeAttribute('hidden');
   }
-  // Database viewer — sidebar host receives #db-sidebar; main host receives
-  // #db-toolbar then #db-table-view. The empty #db-panel and #db-viewer
-  // wrappers are dropped once their children have been moved.
+  // Database viewer — sidebar host receives #db-sidebar; the Tables main
+  // pane receives #db-toolbar then #db-table-view. The empty #db-panel and
+  // #db-viewer wrappers are dropped once their children have been moved.
+  // The Data Management page wraps both with a Tables/Storage tab strip,
+  // so when the new tab containers exist they take precedence as the
+  // relocation targets.
   const dbSbHost = document.getElementById('db-sidebar-host');
-  const dbMainHost = document.getElementById('files-database-main');
+  const dbMainHost = document.getElementById('dm-main-tables')
+                   || document.getElementById('files-database-main');
   const dbSidebar = document.getElementById('db-sidebar');
   const dbToolbar = document.getElementById('db-toolbar');
   const dbTableView = document.getElementById('db-table-view');
