@@ -1368,6 +1368,7 @@ class SupabaseBackend(StorageBackend):
         size_bytes: int,
         storage_path: str,
         metadata: Optional[dict] = None,
+        storage_provider: str = "local",
     ) -> str:
         """Insert an attachment record. Returns the attachment id."""
         import uuid
@@ -1382,11 +1383,12 @@ class SupabaseBackend(StorageBackend):
                 "mime_type": mime_type,
                 "size_bytes": size_bytes,
                 "storage_path": storage_path,
+                "storage_provider": storage_provider,
                 "metadata": json.dumps(metadata or {}),
             })
             .execute()
         )
-        logger.debug("Inserted attachment %s: %s", att_id, original_name)
+        logger.debug("Inserted attachment %s: %s (provider=%s)", att_id, original_name, storage_provider)
         return att_id
 
     async def get_attachment(self, attachment_id: str) -> Optional[dict]:
