@@ -22,6 +22,7 @@ import { icon } from './icons.js';
 import { loadSessionChat, populateSessionSelect } from './sessions.js';
 import { loopSessionChanged } from './loop.js';
 import { loopVisualSessionChanged } from './loop-logic.js';
+import { wireChatPillUploads } from './attachments.js';
 
 // ── Auth-aware fetch ──────────────────────────────────────────────────────
 function _fetch(url, opts = {}) {
@@ -1145,6 +1146,16 @@ function _intAdminSetBusy(busy) {
   if (send) send.disabled = busy || !(input && input.value.trim());
 }
 
+// Integration Admin chat has its own send flow (separate template, no main
+// chat forwarding), so it keeps its own preview bar and pending-attachments
+// list rather than sharing the main chat's.
+const _intAdminPending = [];
+function _intAdminClearPending() {
+  _intAdminPending.length = 0;
+  const bar = _qs('ac-int-admin-preview-bar');
+  if (bar) { bar.innerHTML = ''; bar.style.display = 'none'; }
+}
+
 async function _intAdminSend() {
   const input = _qs('ac-int-admin-chat-input');
   if (!input) return;
@@ -1167,6 +1178,10 @@ async function _intAdminSend() {
     user_id: app.currentUserId,
     agent_template_id: 'integration-admin-agent',
   };
+  if (_intAdminPending.length > 0) {
+    payload.attachment_ids = _intAdminPending.map(a => a.attachment_id);
+    _intAdminClearPending();
+  }
 
   if (_intAdminAbort) { try { _intAdminAbort.abort(); } catch (_) {} }
   _intAdminAbort = new AbortController();
@@ -1241,6 +1256,19 @@ function _initIntegrationAdminChat() {
       _intAdminSend();
     }
   });
+
+  const row = _qs('ac-int-admin-chat-input-row');
+  const bar = _qs('ac-int-admin-preview-bar');
+  if (row && bar) {
+    wireChatPillUploads(row, input, {
+      previewBar: bar,
+      pending: _intAdminPending,
+      onChange: (pending) => {
+        bar.style.display = pending.length > 0 ? 'flex' : 'none';
+      },
+    });
+  }
+
   sync();
   _intAdminWired = true;
 }

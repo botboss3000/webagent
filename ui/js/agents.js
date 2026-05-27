@@ -14,6 +14,7 @@ import { fetchAllToolMeta } from './loop-logic.js';
 import { NODE_PANEL_INFO } from './loop-node-data.js';
 import { LOOP_W, LOOP_H, LOOP_NODES, TOGGLEABLE_NODES, renderLoopDiagram } from './loop-diagram.js';
 import { icon } from './icons.js';
+import { wireChatPillUploads } from './attachments.js';
 
 function _triggerKeyPlaceholder(triggerType) {
   const map = {
@@ -578,6 +579,11 @@ function _bindAgentBuilderBar() {
       if (mainVoice) mainVoice.click();
     });
   }
+
+  // Paste images + drop files onto this pill. Uploads land in the main chat
+  // preview bar, mirroring the attach-button forwarding above; the prompt
+  // submits via the main chat send so attachment_ids ride along.
+  wireChatPillUploads(row, input);
 
   sync();
 
