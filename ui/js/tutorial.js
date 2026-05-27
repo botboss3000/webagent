@@ -1,70 +1,79 @@
 'use strict';
 
 /**
- * Tutorial hints — numbered hover popovers attached to features on each page.
+ * Tutorial — a single linear walkthrough of the app's main features.
  *
- * State lives in localStorage under "tutorialPrefs":
- *   { globalEnabled: boolean, pages: { [pageId]: boolean } }
+ * One ordered TOUR array of 12 steps. Each step has a tab (where it lives),
+ * a CSS selector for its target element, and the popover title/body. Badges
+ * for the steps that target the active tab (plus the always-visible header
+ * steps and the chat-panel steps when the chat side is showing) are
+ * rendered as numbered circles using each step's **global** index. The
+ * popover's Prev/Next buttons walk the entire TOUR — auto-switching tabs
+ * on boundary crossings and skipping past steps whose targets don't
+ * currently resolve.
  *
- * Pages map 1:1 to the main-tab values from index.html (admin-tools,
- * autoagent, agents, flow, loop-visual, account). The chat-panel
- * hints render alongside whichever main tab is active when the chat side is
- * visible.
- *
- * Each hint has a target CSS selector. If the selector doesn't resolve at
- * render time (page not loaded, element hidden, user lacks permission, etc.)
- * the badge is silently skipped. Badges are absolutely positioned in a
- * single fixed overlay layer and repositioned on scroll/resize.
+ * Prefs live in localStorage under "tutorialPrefs" as { enabled: bool }.
+ * Older state ({ globalEnabled, pages }) is migrated on read.
  */
 
 const STORAGE_KEY = 'tutorialPrefs';
 const TICK_MS = 500;
 
-const PAGE_LABELS = {
-  'admin-tools': 'Admin Tools',
-  'autoagent':   'Pages',
-  'agents':      'Agents',
-  'account':     'Manage Account',
-  'chat':        'Chat Panel',
-};
+// Single ordered tour. `tab` values:
+//   '*'        — always visible (header / overlay targets)
+//   'chat'     — chat-panel target; rendered when the chat side is visible
+//   <tabId>    — main-tab id; rendered when that tab is active
+const TOUR = [
+  { tab: '*', selector: '#chat-toggle-btn',
+    title: 'Show or hide the chat',
+    body: 'This icon in the top bar shows or hides the chat panel — it’s where you talk to your agents. An agent is already set up for you, so click it to slide the panel open and start chatting.' },
 
-// Hints are deliberately sparse — at most two per page, each one covering a
-// cluster of related features. The bar for adding a new hint is: would a
-// first-time user be stuck without it? Obvious things (text inputs, send
-// buttons, paperclip = attach, mic = voice, save buttons that say "Save") get
-// no hint. We point at things that are non-obvious or have consequences.
-const HINTS = {
-  'admin-tools': [
-    { selector: '.files-sidebar-strip', title: 'Sidebar views',
-      body: 'These icons switch between the file explorer, source control, database viewer, terminal launcher, interactions log and the runtime-loop graph. Each one opens in its own main panel, so you can leave a terminal running while you browse files.' },
-    { selector: '.files-settings-toggle-btn', title: 'Admin configuration',
-      body: 'Behind the gear: App Settings, User Management, default LLM, Agent Abilities, Optimizer, Git, Automation and Events — most of the global app config lives here.' },
-  ],
+  { tab: 'chat', selector: '#chat-input',
+    title: 'Say hi to your agent',
+    body: 'Type a message and press Enter; Shift+Enter adds a newline. The ↗ button in the input opens a bigger editor when you need it.' },
 
-  autoagent: [
-    { selector: '#autoagent-page-dropdown-trigger', title: 'Pages',
-      body: 'Switch between your generated pages here, or use + to start a new one. Each row has a ⋮ menu for rename and delete.' },
-    { selector: '#autoagent-prompt-input', title: 'Build with prompts',
-      body: 'Describe a change in plain English — e.g. "add a dashboard with three stat cards" — and the agent edits the page. The preview below refreshes automatically after each change.' },
-  ],
+  { tab: 'chat', selector: '#session-dropdown-trigger',
+    title: 'Sessions, attachments and voice',
+    body: 'Each session is its own conversation thread with its own history — switch or start fresh from this dropdown. The paperclip attaches files (drag-and-drop also works) and the mic records a voice message the agent transcribes.' },
 
-  agents: [
-    { selector: '#btn-new-agent', title: 'Create an agent',
-      body: 'Start from a template for a known-good config (model, abilities and system prompts pre-filled), or start blank for full control.' },
-    { selector: '#agents-grid', title: 'Customize an agent',
-      body: 'Click any card to expand it. Inside you can edit slot-based system prompts (persona, instructions, etc.), toggle which abilities the agent is allowed to call, and pick its model. Some abilities require confirmation before each run.' },
-  ],
+  { tab: 'agents', selector: '#agents-grid',
+    title: 'Browse and customize agents',
+    body: 'Each card is one agent. Click to expand it — tabs across the top let you edit the system prompt, toggle which tools the agent can call, pick its model, and connect channels like Telegram.' },
 
-  account: [
-    { selector: '#account-delete-trigger', title: 'Delete account',
-      body: 'Permanently removes your account, sessions and data. Requires your password — no undo. (Profile and password changes above just need their Save buttons.)' },
-  ],
+  { tab: 'agents', selector: '#btn-new-agent',
+    title: 'Create your own',
+    body: '+ New agent starts one. Pick a template for a known-good config or start blank for full control.' },
 
-  chat: [
-    { selector: '#agent-dropdown-trigger', title: 'Agent + sessions',
-      body: 'The top dropdowns pick which agent answers and which session (a separate conversation thread with its own history) you’re in. Switching agents mid-session is fine — the thread stays put.' },
-  ],
-};
+  { tab: 'agents', selector: '#agent-builder-bar-row',
+    title: 'Or describe what you want',
+    body: 'Or just tell the Agent Builder, in plain English, what you need. It will create or tune the agent for you — no manual config required.' },
+
+  { tab: 'autoagent', selector: '#autoagent-new-page-btn',
+    title: 'AI-built custom pages',
+    body: 'Pages are custom UIs the AI builds for you. Hit + to create one — give it a name like “My Dashboard”.' },
+
+  { tab: 'autoagent', selector: '#autoagent-prompt-input',
+    title: 'Tell the Visualizer what to build',
+    body: 'Describe what you want — e.g. “Add three stat cards showing my goals” — and the Visualizer agent generates it. The preview above refreshes after each change.' },
+
+  { tab: 'autoagent', selector: '#autoagent-page-dropdown-trigger',
+    title: 'Switch and manage pages',
+    body: 'Jump between your pages here. Each row’s ⋮ menu has rename and delete.' },
+
+  { tab: 'admin-tools', selector: '.files-sidebar-strip',
+    title: 'Sidebar views',
+    body: 'Behind-the-scenes tools: file browser, source control, database, terminal — plus live Interactions and Runtime Loop views that show what your agents are doing right now.' },
+
+  { tab: 'admin-tools', selector: '.files-settings-toggle-btn',
+    title: 'App configuration',
+    body: 'The gear opens admin settings: pick the default LLM, manage users, turn on powerful agent tools, and connect integrations like Google, Slack, Telegram and OAuth.' },
+
+  { tab: 'account', selector: '#account-tutorial-global',
+    title: 'Your account & this tour',
+    body: 'You’re set. Profile and password live here. You can turn the tour off — or replay it — with this toggle.' },
+];
+
+const TOTAL = TOUR.length;
 
 // ── State ────────────────────────────────────────────────────────────────
 
@@ -73,7 +82,7 @@ let _overlay = null;
 let _activePopover = null;
 let _activeBadge = null;
 let _tickTimer = null;
-let _badges = []; // { el, hint, target }
+let _badges = []; // { el, hint, target, step }  step = 1-based global index
 let _scrollListener = null;
 let _resizeListener = null;
 
@@ -83,56 +92,34 @@ function _loadPrefs() {
     if (raw) {
       const p = JSON.parse(raw);
       if (p && typeof p === 'object') {
-        return {
-          globalEnabled: p.globalEnabled !== false,
-          pages: p.pages && typeof p.pages === 'object' ? p.pages : {},
-        };
+        if (typeof p.enabled === 'boolean') return { enabled: p.enabled };
+        // Migrate the old { globalEnabled, pages } shape.
+        if (typeof p.globalEnabled === 'boolean') return { enabled: p.globalEnabled };
       }
     }
   } catch (_) {}
-  return { globalEnabled: true, pages: {} };
+  return { enabled: true };
 }
 
 function _savePrefs(prefs) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs)); } catch (_) {}
-  // Notify any open settings UI to re-render
   document.dispatchEvent(new CustomEvent('tutorial-prefs-changed', { detail: prefs }));
 }
 
-export function getPrefs() { return _loadPrefs(); }
-
-export function isPageEnabled(pageId) {
+// Returns a back-compat shape so callers using either `.enabled` or the old
+// `.globalEnabled` keep working.
+export function getPrefs() {
   const p = _loadPrefs();
-  if (!p.globalEnabled) return false;
-  return p.pages[pageId] !== false;
+  return { enabled: p.enabled, globalEnabled: p.enabled };
 }
 
-export function setPageEnabled(pageId, enabled) {
-  const p = _loadPrefs();
-  p.pages[pageId] = !!enabled;
-  _savePrefs(p);
-  if (_currentPage === pageId || pageId === 'chat') {
-    refreshTutorial(_currentPage);
-  }
-}
-
-export function setGlobalEnabled(enabled) {
-  const p = _loadPrefs();
-  p.globalEnabled = !!enabled;
-  // Re-enabling globally wipes any per-page dismissals from the popover's
-  // "Hide hints on this page" checkbox, so the user sees every hint again.
-  if (p.globalEnabled) p.pages = {};
-  _savePrefs(p);
+export function setEnabled(enabled) {
+  _savePrefs({ enabled: !!enabled });
   refreshTutorial(_currentPage);
 }
 
-export function getPageList() {
-  return Object.keys(HINTS).map(id => ({
-    id,
-    label: PAGE_LABELS[id] || id,
-    count: HINTS[id].length,
-  }));
-}
+// Back-compat alias — account.js imports `setGlobalEnabled`.
+export const setGlobalEnabled = setEnabled;
 
 // ── Overlay + badge rendering ───────────────────────────────────────────
 
@@ -161,8 +148,7 @@ function _clearBadges() {
 
 function _resolveAnchor(hint) {
   // Hints can target a normal selector, or use an anchor block to position
-  // relative to another element (used when the feature isn't a single DOM
-  // node — e.g. "step 3" pointing inside an expanded card).
+  // relative to another element.
   if (hint.anchor && hint.anchor.selector) {
     const el = document.querySelector(hint.anchor.selector);
     if (!el) return null;
@@ -175,7 +161,6 @@ function _resolveAnchor(hint) {
 
 function _positionBadge(badge, target, position) {
   const rect = target.el.getBoundingClientRect();
-  // Skip if target is hidden or offscreen
   if (rect.width === 0 && rect.height === 0) {
     badge.style.display = 'none';
     return;
@@ -203,7 +188,6 @@ function _positionBadge(badge, target, position) {
       break;
   }
 
-  // Clamp to viewport so badges never escape the screen
   x = Math.max(4, Math.min(window.innerWidth - 26, x));
   y = Math.max(4, Math.min(window.innerHeight - 26, y));
 
@@ -223,18 +207,14 @@ function _positionPopover(popover, badge) {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   const margin = 8;
-  const pad = 8; // min distance from viewport edge
+  const pad = 8;
 
-  // ── Mobile / narrow viewport: pin the popover to the viewport width and
-  // stack it above or below the badge, whichever side has more room. This
-  // guarantees no horizontal clipping regardless of badge position.
   if (vw <= 600) {
     const width = Math.max(220, vw - pad * 2);
     popover.style.width = width + 'px';
     popover.style.maxWidth = 'none';
     popover.style.left = pad + 'px';
 
-    // Need offsetHeight at the new width, so read after setting it
     const ph = popover.offsetHeight || 160;
 
     const roomBelow = vh - br.bottom - margin - pad;
@@ -250,7 +230,6 @@ function _positionPopover(popover, badge) {
     popover.style.top = y + 'px';
     popover.setAttribute('data-arrow', arrow);
 
-    // Point the arrow at the badge horizontally
     const badgeCenter = br.left + br.width / 2;
     const popLeft = pad;
     const arrowOffset = Math.max(10, Math.min(width - 20, badgeCenter - popLeft - 5));
@@ -258,8 +237,6 @@ function _positionPopover(popover, badge) {
     return;
   }
 
-  // ── Desktop: try right of badge, then left, then below, then above.
-  // Reset any mobile-only overrides from a previous call.
   popover.style.width = '';
   popover.style.maxWidth = '';
   popover.style.removeProperty('--tutorial-arrow-pos');
@@ -270,28 +247,23 @@ function _positionPopover(popover, badge) {
   let x, y, arrow;
 
   if (br.right + margin + pw <= vw - pad) {
-    // Fits to the right
     x = br.right + margin;
     y = br.top;
     arrow = 'left';
   } else if (br.left - margin - pw >= pad) {
-    // Fits to the left
     x = br.left - pw - margin;
     y = br.top;
     arrow = 'right';
   } else if (br.bottom + margin + ph <= vh - pad) {
-    // Stack below
     x = Math.max(pad, Math.min(vw - pw - pad, br.left - 8));
     y = br.bottom + margin;
     arrow = 'top';
   } else {
-    // Stack above
     x = Math.max(pad, Math.min(vw - pw - pad, br.left - 8));
     y = Math.max(pad, br.top - ph - margin);
     arrow = 'bottom';
   }
 
-  // Final safety clamp — never let any edge escape the viewport
   x = Math.max(pad, Math.min(vw - pw - pad, x));
   y = Math.max(pad, Math.min(vh - ph - pad, y));
 
@@ -311,7 +283,78 @@ function _closePopover() {
   }
 }
 
-function _openPopover(badge, hint, step, total) {
+// ── Linear navigation across the global TOUR ────────────────────────────
+
+function _isChatVisible() {
+  const chatSide = document.getElementById('chat-side');
+  return !!(chatSide && chatSide.style.display !== 'none' &&
+    getComputedStyle(chatSide).display !== 'none');
+}
+
+function _stepInCurrentContext(step) {
+  if (step.tab === '*') return true;
+  if (step.tab === _currentPage) return true;
+  if (step.tab === 'chat' && _isChatVisible()) return true;
+  return false;
+}
+
+function _switchToTab(tab, cb) {
+  if (tab === '*') { cb(); return; }
+  if (tab === 'chat') {
+    // Mobile may have hidden the chat panel — reveal it so the chat-side
+    // badges can render.
+    if (!_isChatVisible() && typeof window.__applyChatVisible === 'function') {
+      window.__applyChatVisible(true);
+    }
+    refreshTutorial(_currentPage);
+    requestAnimationFrame(() => requestAnimationFrame(cb));
+    return;
+  }
+  // A main tab: drive the hidden <select> that tabs.js listens on.
+  const sel = document.getElementById('main-tab-select');
+  if (!sel) { cb(); return; }
+  if (sel.value !== tab) {
+    sel.value = tab;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  // tabs.js's change handler calls refreshTutorial, which defers one frame
+  // before rendering — wait two rAFs so badges are in place when we look
+  // one up.
+  requestAnimationFrame(() => requestAnimationFrame(cb));
+}
+
+function _gotoStep(targetStep, direction) {
+  while (targetStep >= 1 && targetStep <= TOTAL) {
+    const step = TOUR[targetStep - 1];
+    if (_stepInCurrentContext(step)) {
+      const b = _badges.find(x => x.step === targetStep);
+      if (b) {
+        _openPopover(b.el, b.hint, targetStep, TOTAL);
+        return;
+      }
+      // In-context but the target didn't resolve (element hidden, etc.) —
+      // keep walking.
+      targetStep += direction;
+      continue;
+    }
+    // Out of current context; switch and resume the walk on the other side.
+    const want = targetStep;
+    _switchToTab(step.tab, () => {
+      const b2 = _badges.find(x => x.step === want);
+      if (b2) {
+        _openPopover(b2.el, b2.hint, want, TOTAL);
+      } else {
+        _gotoStep(want + direction, direction);
+      }
+    });
+    return;
+  }
+  _closePopover();
+}
+
+// ── Popover ─────────────────────────────────────────────────────────────
+
+function _openPopover(badge, step, stepNum, total) {
   _closePopover();
   badge.classList.add('active');
   _activeBadge = badge;
@@ -324,12 +367,12 @@ function _openPopover(badge, hint, step, total) {
 
   const stepLabel = document.createElement('span');
   stepLabel.className = 'tutorial-popover-step';
-  stepLabel.textContent = `Step ${step} / ${total}`;
+  stepLabel.textContent = `Step ${stepNum} / ${total}`;
   header.appendChild(stepLabel);
 
   const title = document.createElement('div');
   title.className = 'tutorial-popover-title';
-  title.textContent = hint.title || '';
+  title.textContent = step.title || '';
   header.appendChild(title);
 
   const close = document.createElement('button');
@@ -344,47 +387,31 @@ function _openPopover(badge, hint, step, total) {
 
   const body = document.createElement('div');
   body.className = 'tutorial-popover-body';
-  body.textContent = hint.body || '';
+  body.textContent = step.body || '';
   pop.appendChild(body);
 
   const footer = document.createElement('div');
   footer.className = 'tutorial-popover-footer';
-
-  const cbLabel = document.createElement('label');
-  cbLabel.className = 'tutorial-popover-checkbox';
-  const cb = document.createElement('input');
-  cb.type = 'checkbox';
-  cb.checked = false;
-  cb.addEventListener('change', () => {
-    if (cb.checked) {
-      setPageEnabled(_currentPage, false);
-    }
-  });
-  cbLabel.appendChild(cb);
-  cbLabel.appendChild(document.createTextNode('Hide hints on this page'));
-  footer.appendChild(cbLabel);
 
   const nav = document.createElement('div');
   nav.className = 'tutorial-popover-nav';
   const prev = document.createElement('button');
   prev.type = 'button';
   prev.textContent = '‹';
-  prev.title = 'Previous hint';
-  prev.disabled = step <= 1;
+  prev.title = 'Previous step';
+  prev.disabled = stepNum <= 1;
   prev.addEventListener('click', (e) => {
     e.stopPropagation();
-    const target = _badges[step - 2];
-    if (target) _openPopover(target.el, target.hint, step - 1, total);
+    _gotoStep(stepNum - 1, -1);
   });
   const next = document.createElement('button');
   next.type = 'button';
   next.textContent = '›';
-  next.title = 'Next hint';
-  next.disabled = step >= total;
+  next.title = 'Next step';
+  next.disabled = stepNum >= total;
   next.addEventListener('click', (e) => {
     e.stopPropagation();
-    const target = _badges[step];
-    if (target) _openPopover(target.el, target.hint, step + 1, total);
+    _gotoStep(stepNum + 1, +1);
   });
   nav.appendChild(prev);
   nav.appendChild(next);
@@ -417,61 +444,54 @@ function _renderForPage(pageId) {
   _clearBadges();
   if (!pageId) return;
 
-  // Both the current page hints and the always-visible chat panel hints
-  const pageIds = [pageId];
-  // Show chat hints alongside on any tab where chat is visible (most desktop
-  // tabs except for full-screen pages). Keep it simple — only add when the
-  // chat side is actually displayed.
-  const chatSide = document.getElementById('chat-side');
-  const chatVisible = chatSide && chatSide.style.display !== 'none' &&
-    getComputedStyle(chatSide).display !== 'none';
-  if (chatVisible && pageId !== 'chat') pageIds.push('chat');
+  const prefs = _loadPrefs();
+  if (!prefs.enabled) return;
 
+  const chatVisible = _isChatVisible();
   const overlay = _ensureOverlay();
 
-  for (const pid of pageIds) {
-    if (!isPageEnabled(pid)) continue;
-    const hints = HINTS[pid] || [];
-    const total = hints.length;
-    hints.forEach((hint, idx) => {
-      const target = _resolveAnchor(hint);
-      if (!target) return;
+  TOUR.forEach((step, idx) => {
+    const stepNum = idx + 1;
+    const inContext =
+      step.tab === '*' ||
+      step.tab === pageId ||
+      (step.tab === 'chat' && chatVisible);
+    if (!inContext) return;
 
-      const badge = document.createElement('div');
-      badge.className = 'tutorial-badge';
-      // Continue numbering across page+chat hints by using each page's own index
-      badge.textContent = String(idx + 1);
-      badge.title = hint.title || '';
-      badge.setAttribute('role', 'button');
-      badge.setAttribute('tabindex', '0');
-      badge.setAttribute('aria-label', `Hint ${idx + 1}: ${hint.title || ''}`);
+    const target = _resolveAnchor(step);
+    if (!target) return;
 
-      const open = (e) => {
-        e.stopPropagation();
-        if (_activeBadge === badge) {
-          _closePopover();
-        } else {
-          _openPopover(badge, hint, idx + 1, total);
-        }
-      };
-      badge.addEventListener('click', open);
-      badge.addEventListener('mouseenter', () => {
-        // Hover-to-open, but don't override an explicit open from another badge
-        if (!_activePopover) _openPopover(badge, hint, idx + 1, total);
-      });
-      badge.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(e); }
-      });
+    const badge = document.createElement('div');
+    badge.className = 'tutorial-badge';
+    badge.textContent = String(stepNum);
+    badge.title = step.title || '';
+    badge.setAttribute('role', 'button');
+    badge.setAttribute('tabindex', '0');
+    badge.setAttribute('aria-label', `Step ${stepNum}: ${step.title || ''}`);
 
-      overlay.appendChild(badge);
-      _badges.push({ el: badge, hint, target });
-      _positionBadge(badge, target, target.position);
+    const open = (e) => {
+      e.stopPropagation();
+      if (_activeBadge === badge) {
+        _closePopover();
+      } else {
+        _openPopover(badge, step, stepNum, TOTAL);
+      }
+    };
+    badge.addEventListener('click', open);
+    badge.addEventListener('mouseenter', () => {
+      if (!_activePopover) _openPopover(badge, step, stepNum, TOTAL);
     });
-  }
+    badge.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(e); }
+    });
+
+    overlay.appendChild(badge);
+    _badges.push({ el: badge, hint: step, target, step: stepNum });
+    _positionBadge(badge, target, target.position);
+  });
 
   if (_badges.length === 0) return;
 
-  // Keep badges aligned with their targets as the page scrolls/animates
   _scrollListener = () => _repositionAll();
   window.addEventListener('scroll', _scrollListener, true);
   _resizeListener = () => _repositionAll();
@@ -483,7 +503,7 @@ function _renderForPage(pageId) {
 
 export function refreshTutorial(pageId) {
   _currentPage = pageId || _currentPage;
-  // Defer one frame so newly-activated tab content has laid out
+  // Defer one frame so newly-activated tab content has laid out.
   requestAnimationFrame(() => {
     _renderForPage(_currentPage);
   });
@@ -499,122 +519,4 @@ export function initTutorial() {
   // after with the same id, but this avoids a flash on first paint.
   const saved = localStorage.getItem('lastActiveTab');
   if (saved) refreshTutorial(saved);
-}
-
-// ── User-management settings UI ─────────────────────────────────────────
-
-export function renderTutorialPrefsCard(container) {
-  if (!container) return;
-  const prefs = _loadPrefs();
-  const pages = getPageList();
-
-  container.innerHTML = '';
-
-  const card = document.createElement('div');
-  card.className = 'ac-card';
-  card.id = 'ac-tutorial-card';
-
-  const label = document.createElement('div');
-  label.className = 'ac-card-label';
-  label.textContent = 'Tutorial Hints';
-  card.appendChild(label);
-
-  const sub = document.createElement('div');
-  sub.className = 'ac-card-sublabel';
-  sub.textContent =
-    'Numbered hover popovers that highlight features on each page. ' +
-    'Turn them off globally, or pick which pages should show them.';
-  card.appendChild(sub);
-
-  // Global toggle
-  const globalRow = document.createElement('div');
-  globalRow.className = 'tutorial-global-row';
-  const globalLabel = document.createElement('label');
-  const globalCb = document.createElement('input');
-  globalCb.type = 'checkbox';
-  globalCb.id = 'ac-tutorial-global';
-  globalCb.checked = prefs.globalEnabled;
-  globalCb.addEventListener('change', () => {
-    setGlobalEnabled(globalCb.checked);
-    renderTutorialPrefsCard(container);
-  });
-  globalLabel.appendChild(globalCb);
-  globalLabel.appendChild(document.createTextNode(' Show tutorial hints across the app'));
-  globalRow.appendChild(globalLabel);
-
-  const globalDesc = document.createElement('span');
-  globalDesc.className = 'tutorial-global-desc';
-  globalDesc.textContent = prefs.globalEnabled ? 'All hints enabled' : 'All hints hidden';
-  globalRow.appendChild(globalDesc);
-  card.appendChild(globalRow);
-
-  // Per-page list
-  const listLabel = document.createElement('div');
-  listLabel.style.cssText = 'margin-top:14px;font-size:11px;color:var(--fg-3);text-transform:uppercase;letter-spacing:0.05em;font-weight:600;';
-  listLabel.textContent = 'Per-page hints';
-  card.appendChild(listLabel);
-
-  const list = document.createElement('div');
-  list.className = 'tutorial-page-list';
-
-  pages.forEach(p => {
-    const row = document.createElement('div');
-    row.className = 'tutorial-page-row';
-    const enabled = prefs.pages[p.id] !== false;
-    if (!prefs.globalEnabled || !enabled) row.classList.add('disabled');
-
-    const left = document.createElement('span');
-    left.className = 'tutorial-page-name';
-    left.textContent = p.label;
-    const count = document.createElement('span');
-    count.className = 'tutorial-page-count';
-    count.textContent = `${p.count} hint${p.count === 1 ? '' : 's'}`;
-    left.appendChild(count);
-    row.appendChild(left);
-
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = enabled;
-    cb.disabled = !prefs.globalEnabled;
-    cb.addEventListener('change', () => {
-      setPageEnabled(p.id, cb.checked);
-      renderTutorialPrefsCard(container);
-    });
-    row.appendChild(cb);
-
-    list.appendChild(row);
-  });
-
-  card.appendChild(list);
-
-  // Actions
-  const actions = document.createElement('div');
-  actions.className = 'tutorial-actions';
-  const enableAll = document.createElement('button');
-  enableAll.type = 'button';
-  enableAll.textContent = 'Enable all';
-  enableAll.addEventListener('click', () => {
-    const p = _loadPrefs();
-    p.globalEnabled = true;
-    p.pages = {};
-    pages.forEach(pg => { p.pages[pg.id] = true; });
-    _savePrefs(p);
-    refreshTutorial(_currentPage);
-    renderTutorialPrefsCard(container);
-  });
-  const disableAll = document.createElement('button');
-  disableAll.type = 'button';
-  disableAll.textContent = 'Disable all';
-  disableAll.addEventListener('click', () => {
-    const p = _loadPrefs();
-    pages.forEach(pg => { p.pages[pg.id] = false; });
-    _savePrefs(p);
-    refreshTutorial(_currentPage);
-    renderTutorialPrefsCard(container);
-  });
-  actions.appendChild(enableAll);
-  actions.appendChild(disableAll);
-  card.appendChild(actions);
-
-  container.appendChild(card);
 }
