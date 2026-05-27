@@ -18,15 +18,15 @@ body {
     overflow: hidden;
   }
 
-/* ── Split layout ── */
-  #app-container {
+/* ── Stage: split layout ── */
+  #stage {
     display: flex;
     flex: 1;
     overflow: hidden;
   }
 
-/* ── Left: Terminal ── */
-  #terminal-side {
+/* ── Left: Main panel ── */
+  #main-panel {
     flex: 1;
     display: flex;
     flex-direction: column;
@@ -61,7 +61,7 @@ body {
   }
 
 /* ── Right: Chat panel ── */
-  #chat-side {
+  #chat-panel {
     width: 380px;
     min-width: 280px;
     display: flex;
@@ -92,9 +92,9 @@ body {
 #chat-header button:hover { color: #7dcfff; }
 
 /* ── Chat input area ── */
-/* Bottom aligns with #terminal-side (which has 8px margin), so the pill
+/* Bottom aligns with #main-panel (which has 8px margin), so the pill
    sits level with the pages card instead of pushed to the bottom of the
-   chat rail. */
+   chat panel. */
   #chat-input-area {
     display: flex;
     flex-direction: column;
@@ -529,8 +529,8 @@ body {
     border: 1px solid #7dcfff30;
   }
 
-/* ── Status bar ── */
-  #status-bar {
+/* ── Main header ── */
+  #main-header {
     display: flex;
     align-items: center;
     gap: 10px;
@@ -857,7 +857,7 @@ to { opacity: 1; transform: translateY(0); }
     color: #3d2c2e;
   }
 
-body.light-mode #status-bar {
+body.light-mode #main-header {
     background: transparent;
     border-bottom: none;
   }
@@ -868,7 +868,7 @@ body.light-mode .status-select {
   }
 body.light-mode .status-select:focus { border-color: #ff8c42; }
 body.light-mode #terminal-container,
-body.light-mode #terminal-side,
+body.light-mode #main-panel,
 body.light-mode #loop-container,
 body.light-mode #loop-list {
     background: #fffaf5;
@@ -893,7 +893,7 @@ body.light-mode .db-table tr:hover td { background: #fff5eb; }
 body.light-mode .db-row-even td { background: #fff2e6; }
 body.light-mode .db-hint { color: #b09580; }
 
-body.light-mode #chat-side {
+body.light-mode #chat-panel {
     background: #fff7f0;
     border-left-color: #ffdec4;
   }

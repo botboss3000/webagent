@@ -166,14 +166,14 @@ pre,
   font-family: var(--font-mono);
 }
 
-/* ── 4. App container gap ───────────────────────────────────── */
-#app-container {
+/* ── 4. Stage gap ───────────────────────────────────────────── */
+#stage {
   gap: 0;
   min-height: 0;
 }
 
-/* ── 5. Status bar → pill ───────────────────────────────────── */
-#status-bar {
+/* ── 5. Main header → pill ──────────────────────────────────── */
+#main-header {
   border: none;
   border-radius: 0;
   background: transparent;
@@ -183,14 +183,14 @@ pre,
   z-index: 1000;
 }
 
-body.light-mode #status-bar {
+body.light-mode #main-header {
   border: none;
   background: transparent;
   box-shadow: none;
 }
 
-/* ── 6. Stage (terminal-side) → floating card ───────────────── */
-#terminal-side {
+/* ── 6. Main panel → floating card ──────────────────────────── */
+#main-panel {
   background:
     linear-gradient(180deg, rgba(255,255,255,0.02), transparent),
     var(--bg-elev);
@@ -200,12 +200,12 @@ body.light-mode #status-bar {
   box-shadow: var(--shadow-rest);
 }
 
-body.light-mode #terminal-side {
+body.light-mode #main-panel {
   background: #fffaf5;
   border-color: rgba(180,140,90,0.10);
 }
 
-/* Tab toolbars inside stage — match card,
+/* Tab toolbars inside the main panel — match card,
 soft divider */
 #loop-toolbar,
 #db-toolbar,
@@ -232,8 +232,8 @@ body.light-mode #loop-list {
   background: transparent;
 }
 
-/* ── 7. Chat rail → floating card ───────────────────────────── */
-#chat-side {
+/* ── 7. Chat panel → floating card ──────────────────────────── */
+#chat-panel {
   border-left: none;
   background:
     linear-gradient(180deg, rgba(255,255,255,0.02), transparent),
@@ -244,7 +244,7 @@ body.light-mode #loop-list {
   box-shadow: var(--shadow-rest);
 }
 
-body.light-mode #chat-side {
+body.light-mode #chat-panel {
   background: var(--bg-1);
   border-color: rgba(180,140,90,0.10);
   border-left: none;
@@ -648,7 +648,7 @@ body.light-mode #agents-list-header { border-bottom-color: rgba(180,140,90,0.12)
 
 /* ── Responsive — stack at narrow viewport ───────────────────── */
 @media (max-width: 800px) {
-#app-container { gap: 10px; }
-#chat-side { border-left: none; }
+#stage { gap: 10px; }
+#chat-panel { border-left: none; }
 body { padding: 10px; gap: 10px; }
 }

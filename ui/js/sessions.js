@@ -561,6 +561,7 @@ export function initSessions() {
         localStorage.removeItem('auth_display_name');
         localStorage.removeItem('remember_token');
       }
+      localStorage.removeItem('anonUserId');
       localStorage.removeItem('terminalUserId');
       window.location.reload();
     });

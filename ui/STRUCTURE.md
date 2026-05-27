@@ -1,0 +1,85 @@
+# UI Structure & Naming
+
+Reference for the top-level layout containers in `index.html`. Keep this file
+in sync when adding or renaming structural regions.
+
+## Layout tree
+
+```
+body
+├── .stargaze-canvas               (animated background)
+├── .stargaze-overlay              (gradient overlay)
+│
+├── #main-header                   ← top bar
+│   ├── #main-tabs-wrap            (chevron-scroll carousel)
+│   │   ├── #main-tabs-chev-left
+│   │   ├── #main-tabs             (role="tablist")
+│   │   │   └── .main-tab          (Pages / Agent Manager / Admin Tools)
+│   │   └── #main-tabs-chev-right
+│   └── #status-right              (right side: chat toggle, user menu)
+│       ├── #chat-toggle-btn
+│       └── #user-dropdown
+│           ├── #top-user-id       (trigger)
+│           └── #user-dropdown-menu
+│
+├── #stage                         ← split container (whole app layout)
+│   ├── #main-panel                ← left pane (tab content)
+│   │   ├── #tab-autoagent         (Pages — current default)
+│   │   ├── #tab-agents            (Agent Manager)
+│   │   ├── #tab-account           (Account, opened from user menu)
+│   │   └── #tab-admin-tools       (Admin Tools — admins only)
+│   │
+│   ├── #chat-resize-handle        (drag bar — desktop only)
+│   │
+│   └── #chat-panel                ← right pane
+│       ├── #chat-header           (agent + session pickers)
+│       ├── #chat-messages
+│       │   └── #chat-messages-inner
+│       └── #chat-input-area
+│           └── #chat-input-row    (the chat pill)
+│
+└── modals (siblings of #stage, position: fixed)
+    ├── #chat-expand-modal         (full-screen compose)
+    ├── #cell-modal                (DB cell viewer)
+    └── #feedback-modal            (send feedback)
+```
+
+## Names at a glance
+
+| Region | ID | Notes |
+|---|---|---|
+| Whole split layout | `#stage` | Holds main panel + chat panel. |
+| Top bar | `#main-header` | Tabs on the left, account/chat-toggle on the right. |
+| Left pane | `#main-panel` | Where tab content (Pages, Agents, Admin Tools, Account) renders. |
+| Right pane | `#chat-panel` | The chat column. Has its own `#chat-header` inside it. |
+
+Don't reuse "main" or "header" for nested children — `#chat-header` is the
+chat panel's own header and is intentionally distinct from `#main-header`.
+
+## Legacy names (do not reintroduce)
+
+The following IDs were renamed; the old names should not come back:
+
+| Old | New |
+|---|---|
+| `#app-container` | `#stage` |
+| `#terminal-side` | `#main-panel` |
+| `#chat-side` | `#chat-panel` |
+| `#status-bar` | `#main-header` |
+
+"Terminal" in the UI no longer refers to the left pane. It now refers only
+to the real PTY shell inside Admin Tools (`ui/js/terminal.js`,
+`app/api/terminal.py`).
+
+## LocalStorage keys
+
+Container-related keys stored on the client:
+
+| Key | Purpose |
+|---|---|
+| `anonUserId` | Anonymous user UUID. Used when no `auth_token` is present so chat history and sessions stick across reloads. Migrated from legacy `terminalUserId` on first load. |
+| `terminalSessionId` | Current session UUID. Legacy name — not yet renamed. |
+| `chatPanelWidth` | Drag-resize width of `#chat-panel` (desktop). |
+| `webagent_theme` | `'light'`, `'dark'`, or `'system'`. |
+| `lastActiveTab` | Which `#main-tabs` tab to restore on load. |
+| `webagent.chatVisible.<key>` | Per-layout chat panel show/hide. |
