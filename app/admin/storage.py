@@ -39,6 +39,14 @@ from app.pages_store import (
     list_modes as list_pages_modes,
     get_status as get_pages_status,
 )
+from app.attachments_store import (
+    get_mode as get_attachments_mode,
+    set_mode as set_attachments_mode,
+    list_modes as list_attachments_modes,
+    get_provider_config as get_attachments_provider_config,
+    set_provider_config as set_attachments_provider_config,
+    get_status as get_attachments_status,
+)
 from app.encryption import (
     get_encryption,
     get_level as get_enc_level,
@@ -352,6 +360,108 @@ async def set_pages_store_mode(body: PagesModeBody):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "mode": body.mode}
+
+
+# ── Routes: attachment store ───────────────────────────────────────────────
+
+
+class AttachmentsModeBody(BaseModel):
+    requesting_user_id: str
+    mode: str
+
+
+class AttachmentsProviderConfigBody(BaseModel):
+    requesting_user_id: str
+    provider: str
+    config: Dict[str, Any] = {}
+
+
+@router.get("/attachments/status")
+async def attachments_status(requesting_user_id: str = Query(...)):
+    """Return the active attachment backend + persisted provider configs + counts."""
+    await _require_admin(requesting_user_id)
+    status = get_attachments_status()
+    # Add per-backend attachment counts so admins can see where existing files live.
+    counts: Dict[str, int] = {m: 0 for m in status.get("available", [])}
+    try:
+        from app.db import get_db
+        db = get_db()
+        try:
+            raw = db.get_raw_client()
+            res = raw.table("attachments").select("storage_provider").execute()
+            for row in (res.data or []):
+                prov = (row or {}).get("storage_provider") or "local"
+                counts[prov] = counts.get(prov, 0) + 1
+        except Exception:
+            # Backends without a generic raw client / select fall through silently.
+            pass
+    except Exception:
+        pass
+    status["counts"] = counts
+    return status
+
+
+@router.post("/attachments/mode")
+async def set_attachments_store_mode(body: AttachmentsModeBody):
+    """Switch the active attachment backend (admin only, global)."""
+    await _require_admin(body.requesting_user_id)
+    if _env_locked():
+        raise HTTPException(status_code=403, detail="Config is env-locked.")
+    if body.mode not in list_attachments_modes():
+        raise HTTPException(status_code=400, detail=f"Unknown mode {body.mode}")
+    try:
+        set_attachments_mode(body.mode)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "mode": body.mode}
+
+
+@router.post("/attachments/provider-config")
+async def set_attachments_provider_cfg(body: AttachmentsProviderConfigBody):
+    """Persist provider-specific config (bucket, region, prefix, etc.)."""
+    await _require_admin(body.requesting_user_id)
+    if _env_locked():
+        raise HTTPException(status_code=403, detail="Config is env-locked.")
+    if body.provider not in list_attachments_modes():
+        raise HTTPException(status_code=400, detail=f"Unknown provider {body.provider}")
+    try:
+        set_attachments_provider_config(body.provider, body.config or {})
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "provider": body.provider, "config": get_attachments_provider_config(body.provider)}
+
+
+@router.post("/attachments/test")
+async def test_attachments_backend(body: AttachmentsModeBody):
+    """Construct the configured backend and write+read+delete a probe object."""
+    await _require_admin(body.requesting_user_id)
+    if body.mode not in list_attachments_modes():
+        raise HTTPException(status_code=400, detail=f"Unknown mode {body.mode}")
+    from app.attachments_store import get_store_for_provider
+    try:
+        store = get_store_for_provider(body.mode)
+    except Exception as e:
+        return {"ok": False, "error": f"Could not construct backend: {e}"}
+
+    if body.mode == "browser":
+        return {"ok": True, "note": "Browser backend stores bytes in the client; nothing to test server-side."}
+
+    probe = b"webagent-attachments-probe"
+    try:
+        result = await store.store(
+            user_id="__probe__",
+            file_bytes=probe,
+            filename="probe.txt",
+            mime_type="text/plain",
+        )
+        path = result["storage_path"]
+        got = await store.read(path)
+        await store.delete(path)
+        if got != probe:
+            return {"ok": False, "error": "Probe round-trip mismatch."}
+        return {"ok": True, "storage_path": path, "url_sample": result.get("public_url", "")}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 # ── Routes: data migration ──────────────────────────────────────────────────
