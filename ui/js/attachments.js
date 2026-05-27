@@ -14,9 +14,9 @@ import { icon } from './icons.js';
 import { putAttachment, getObjectUrl, deleteAttachment as idbDelete } from './attachments-idb.js';
 
 // Active server-side attachment backend. Synced opportunistically by the
-// Data Management page's bootstrap fetch (see ui/js/data-management.js).
+// Chat Attachments card's bootstrap fetch (see ui/js/data-management.js).
 // We also do a best-effort fetch the first time an upload happens so this
-// works even before the user opens Data Management.
+// works even before the user opens App Configuration → Data Management.
 let _backendCache = null;
 let _backendFetched = false;
 
