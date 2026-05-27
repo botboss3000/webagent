@@ -2099,6 +2099,14 @@
                 </select>
                 <div class="ac-hint">Picks how the chat shrinks and the saved page appears when the app first loads. Saved per browser; applied on the next reload.</div>
               </div>
+              <div class="ac-field" style="margin-top:14px;">
+                <label class="ac-label" for="ac-boot-mobile-mode">Mobile boot</label>
+                <select id="ac-boot-mobile-mode" class="ac-input">
+                  <option value="chat-first">Always start with chat full-screen</option>
+                  <option value="memory">Remember last view (chat or page)</option>
+                </select>
+                <div class="ac-hint">Mobile only. "Always" forces the chat-first boot then animates to the saved view. "Remember" skips the animation and goes straight to whichever panel you had open last.</div>
+              </div>
             </div>
           </section>
 
