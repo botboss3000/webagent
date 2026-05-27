@@ -86,6 +86,24 @@ async def _require_admin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Admin access required")
 
 
+# ── PRESENTATION-MODE START ── (delete this helper to remove demo file-tree access)
+async def _require_admin_or_presentation_read(request: Request) -> None:
+    """Allow non-admin callers through ONLY when AppSettings.presentation_mode is on.
+    Used for read-only listings that should be visible in the demo walkthrough.
+    Mutations still use _require_admin and stay locked down.
+    """
+    if await _is_admin(_user_id(request)):
+        return
+    try:
+        from app.admin.settings import _load_app_settings
+        if _load_app_settings().get("presentation_mode"):
+            return
+    except Exception:
+        pass
+    raise HTTPException(status_code=403, detail="Admin access required")
+# ── PRESENTATION-MODE END ──
+
+
 # ── Path resolution ─────────────────────────────────────────────────
 
 def _resolve(path_str: str) -> Path:
@@ -161,7 +179,9 @@ async def list_tree(request: Request, path: str = "", show_hidden: bool = False)
     `path` defaults to the project root; an absolute path browses
     anywhere on the host filesystem.
     """
-    await _require_admin(request)
+    # ── PRESENTATION-MODE START ── (swap the next line back to `_require_admin` to drop the demo read access)
+    await _require_admin_or_presentation_read(request)
+    # ── PRESENTATION-MODE END ──
     target = _resolve(path)
     if not target.exists():
         raise HTTPException(status_code=404, detail="Path not found")
@@ -174,6 +194,12 @@ async def list_tree(request: Request, path: str = "", show_hidden: bool = False)
         target_str == project_root_str
         or target_str.startswith(project_root_str + "/")
     )
+
+    # ── PRESENTATION-MODE START ── (delete this block to remove demo path clamping)
+    # Non-admin demo viewers may only browse inside the project root.
+    if not is_under_project_root and not await _is_admin(_user_id(request)):
+        raise HTTPException(status_code=403, detail="Restricted in presentation mode")
+    # ── PRESENTATION-MODE END ──
 
     dirs, files = [], []
     try:
