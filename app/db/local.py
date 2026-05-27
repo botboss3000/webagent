@@ -1871,6 +1871,17 @@ class LocalBackend(StorageBackend):
                     _copied, _del_cur.rowcount,
                 )
 
+            # ── Migration 027: add tutorial_prefs to user_profiles ──
+            # Stores per-user tutorial walkthrough state as a JSON blob
+            # ({"enabled": bool, "currentStep": int}) so the toggle and step
+            # progress follow the user across devices.
+            cursor = conn.execute("PRAGMA table_info(user_profiles)")
+            up_cols = {row[1] for row in cursor.fetchall()}
+            if "tutorial_prefs" not in up_cols:
+                conn.execute("ALTER TABLE user_profiles ADD COLUMN tutorial_prefs TEXT")
+                conn.commit()
+                logger.info("Added user_profiles.tutorial_prefs column")
+
             # ── Seed: agent templates from app/context/agents/*.json (full schema) ──
             self._seed_agent_templates_from_json_files(conn)
 
