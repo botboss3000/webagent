@@ -808,9 +808,10 @@ function renderTableData(result, silent) {
       hideBtnHtml = `<button class="${btnClass}" data-table="${tableName}" data-col="${col}" title="${isHiddenNow ? 'Show' : 'Hide'} column">${icon}</button>`;
     }
 
-    html += `<th class="db-th${filterClass}" data-col="${col}"${style} draggable="true">
+    const safeColTitle = String(col).replace(/"/g, '&quot;');
+    html += `<th class="db-th${filterClass}" data-col="${col}"${style} draggable="true" title="${safeColTitle}">
       ${hideBtnHtml}
-      <span class="th-text" data-col="${col}">
+      <span class="th-text" data-col="${col}" title="${safeColTitle}">
         <span class="th-name">${col}</span>
         <span class="th-sort">${sortArrow}</span>
         <span class="th-funnel">${hasFilter ? ' 🔽' : ''}</span>
