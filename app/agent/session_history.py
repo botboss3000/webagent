@@ -16,8 +16,28 @@ from app.models.schemas import InteractionRecord
 
 logger = logging.getLogger(__name__)
 
-TOOL_MARKER = "\n\n[Tool calls: "
+TOOL_MARKER = "\n\n[Tool calls: "  # legacy — kept for backward compat with old rows
 INTERNAL_TOOL_NAMES = frozenset({"memory_search", "memory_save"})
+
+
+def _extract_tool_calls_from_output(output_str: Optional[str]) -> Optional[List[Dict[str, Any]]]:
+    """Try to extract tool_calls from the interaction's output JSON field.
+
+    New rows (post-clean-content fix) store tool calls in the `output` field
+    as ``{"role": "assistant", "content": "...", "tool_calls": [...]}``.
+    Legacy rows have no output field and rely on the ``[Tool calls: ...]``
+    marker in the content string.
+    """
+    if not output_str:
+        return None
+    try:
+        parsed = json.loads(output_str)
+        tc = parsed.get("tool_calls")
+        if tc and isinstance(tc, list):
+            return tc
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return None
 
 
 def interactions_to_openai_messages(
@@ -31,7 +51,8 @@ def interactions_to_openai_messages(
     - Drops rows whose id is in exclude_interaction_ids (e.g. current user turn
       appended again by stream_agent_events).
     - Omits internal tools from the model transcript.
-    - Rebuilds assistant tool_calls from the persisted [Tool calls: ...] suffix.
+    - Rebuilds assistant tool_calls from the output field (new) or the
+      persisted [Tool calls: ...] suffix (legacy fallback).
     """
     exclude = exclude_interaction_ids or set()
     filtered: List[InteractionRecord] = []
@@ -60,6 +81,27 @@ def interactions_to_openai_messages(
             i += 1
         elif r.role == "assistant":
             content = r.content or ""
+
+            # NEW: try clean path first — read tool calls from the output field
+            tool_calls_from_output = _extract_tool_calls_from_output(r.output)
+            if tool_calls_from_output:
+                # Clean content (no marker), tool calls from output field.
+                # These are already in OpenAI format: {id, type, function: {name, arguments}}.
+                out.append({
+                    "role": "assistant",
+                    "content": content.strip() or None,
+                    "tool_calls": tool_calls_from_output,
+                })
+                i += 1
+                # Consume following tool rows, pairing by tool_call_id
+                while i < n and filtered[i].role == "tool":
+                    tr = filtered[i]
+                    if tr.tool_call_id:
+                        out.append({"role": "tool", "content": tr.content, "tool_call_id": tr.tool_call_id})
+                    i += 1
+                continue
+
+            # LEGACY: parse tool calls from the [Tool calls: ...] marker in content
             if TOOL_MARKER in content:
                 base, _, rest = content.partition(TOOL_MARKER)
                 json_part = rest.strip()

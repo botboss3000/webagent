@@ -1913,8 +1913,11 @@ async function _loadAndRenderSlots(panelEl, agent, _isEditable) {
   listEl.innerHTML = '<div style="font-size:12px;color:var(--fg-muted,#565f89);">Loading slots…</div>';
   let data = null;
   try {
+    const token = localStorage.getItem('auth_token');
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
     const res = await fetch(
-      `/api/v1/agents/${encodeURIComponent(agent.id)}/slots?user_id=${encodeURIComponent(app.currentUserId)}`
+      `/api/v1/agents/${encodeURIComponent(agent.id)}/slots?user_id=${encodeURIComponent(app.currentUserId)}`,
+      { headers }
     );
     if (res.ok) data = await res.json();
   } catch (e) { /* ignore — fall back to empty list */ }

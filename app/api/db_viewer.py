@@ -318,13 +318,17 @@ async def list_sessions(
             has_pinned = "pinned" in sess_cols
             if has_pinned:
                 cur.execute(
-                    'SELECT id, title, created_at, user_id, participants, pinned '
-                    'FROM sessions ORDER BY pinned DESC, created_at DESC'
+                    'SELECT s.id, s.title, s.created_at, s.user_id, s.participants, s.pinned '
+                    'FROM sessions s LEFT JOIN agents a ON s.agent_id = a.id '
+                    'WHERE s.agent_id IS NULL OR a.id IS NOT NULL '
+                    'ORDER BY s.pinned DESC, s.created_at DESC'
                 )
             else:
                 cur.execute(
-                    'SELECT id, title, created_at, user_id, participants '
-                    'FROM sessions ORDER BY created_at DESC'
+                    'SELECT s.id, s.title, s.created_at, s.user_id, s.participants '
+                    'FROM sessions s LEFT JOIN agents a ON s.agent_id = a.id '
+                    'WHERE s.agent_id IS NULL OR a.id IS NOT NULL '
+                    'ORDER BY s.created_at DESC'
                 )
             for row in cur.fetchall():
                 owner_id = row[3]
