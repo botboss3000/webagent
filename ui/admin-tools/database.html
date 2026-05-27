@@ -1,9 +1,22 @@
 <template data-slot="#files-sidebar">
-          <!-- Database panel: top header hosts the database-file selector
-               (session/agent dropdown styling); below it the relocated
-               #db-sidebar carries refresh + reset and the table list. -->
+          <!-- Data Management panel: the panel header carries a Tables /
+               Storage tab strip. Tables tab hosts the existing database
+               viewer (relocated #db-sidebar lives in #dm-sb-tables);
+               Storage tab is filled by ui/js/data-management.js. -->
           <div class="files-sidebar-panel" id="files-panel-database" data-view="database" hidden>
             <div class="files-sidebar-header">
+              <div class="dm-sb-tabs" role="tablist" aria-label="Data Management tabs">
+                <button type="button" class="dm-sb-tab active" data-dm-tab="tables" role="tab" aria-selected="true">
+                  <i data-lucide="table" style="width:13px;height:13px;flex-shrink:0;"></i>
+                  Tables
+                </button>
+                <button type="button" class="dm-sb-tab" data-dm-tab="storage" role="tab" aria-selected="false">
+                  <i data-lucide="hard-drive" style="width:13px;height:13px;flex-shrink:0;"></i>
+                  Storage
+                </button>
+              </div>
+            </div>
+            <div class="dm-sb-pane" id="dm-sb-tables" data-dm-pane="tables">
               <div id="db-select-wrap" class="db-select-dropdown">
                 <select id="db-select" title="Switch database" hidden>
                   <option value="local.db">local.db</option>
@@ -15,16 +28,32 @@
                 </button>
                 <ul id="db-select-menu" class="db-select-dropdown-menu" role="listbox" hidden></ul>
               </div>
+              <div id="db-sidebar-host" class="db-sidebar-host"></div>
             </div>
-            <div id="db-sidebar-host" class="db-sidebar-host"></div>
+            <div class="dm-sb-pane" id="dm-sb-storage" data-dm-pane="storage" hidden>
+              <div class="dm-storage-sb">
+                <div class="dm-storage-sb-section">
+                  <div class="dm-storage-sb-label">Active backend</div>
+                  <div class="dm-storage-sb-active" id="dm-storage-active">—</div>
+                </div>
+                <div class="dm-storage-sb-section">
+                  <div class="dm-storage-sb-label">Backends</div>
+                  <ul class="dm-storage-sb-list" id="dm-storage-sb-list"></ul>
+                </div>
+              </div>
+            </div>
           </div>
 </template>
 
 <template data-slot="#admin-tools">
-  <!-- Database view: replaces the file editor area when the Database
-       sidebar view is active. files.js moves #db-table-view (and the
-       #db-toolbar) into here at boot. -->
-  <main class="files-main files-database-main" id="files-database-main" data-view="database" hidden></main>
+  <!-- Data Management main view: replaces the file editor area when the
+       Database sidebar view is active. Two main panes wrap the previously-
+       monolithic db viewer; the relocator drops #db-toolbar + #db-table-view
+       into #dm-main-tables, and #dm-main-storage is filled by data-management.js. -->
+  <main class="files-main files-database-main" id="files-database-main" data-view="database" hidden>
+    <div class="dm-main-pane" id="dm-main-tables" data-dm-pane="tables"></div>
+    <div class="dm-main-pane" id="dm-main-storage" data-dm-pane="storage" hidden></div>
+  </main>
 </template>
 
 <template data-slot="#main-panel">

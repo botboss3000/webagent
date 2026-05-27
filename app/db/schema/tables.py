@@ -367,6 +367,7 @@ TABLES: List[Table] = [
         Column("mime_type", "TEXT", nullable=False),
         Column("size_bytes", "INTEGER", nullable=False),
         Column("storage_path", "TEXT", nullable=False),
+        Column("storage_provider", "TEXT", nullable=False, default="'local'"),
         Column("metadata", "TEXT", nullable=False, default="'{}'"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),

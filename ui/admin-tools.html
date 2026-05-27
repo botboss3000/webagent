@@ -9,7 +9,7 @@
 <div id="admin-tools" class="admin-tools">
   <!-- Sidebar: a persistent left strip with view-switch icons, plus a
        panel to its right showing the active view (Explorer / Source
-       control / Database / Terminal launchers). The collapse toggle
+       control / Data Management / Terminal launchers). The collapse toggle
        in the strip flips between split (strip + panel) and strip
        (icon column only). -->
   <aside id="files-sidebar" class="files-sidebar" data-view="explorer" data-state="split">
@@ -22,7 +22,7 @@
     <div class="files-sidebar-strip" aria-label="Sidebar strip">
       <button class="files-strip-btn files-maximize-btn" title="Collapse sidebar"><i data-lucide="chevrons-left" class="lucide-icon"></i></button>
       <button class="files-strip-btn files-strip-view files-settings-toggle-btn" data-view="settings" title="Admin Configuration"><i data-lucide="settings" class="lucide-icon"></i></button>
-      <button class="files-strip-btn files-strip-view" data-view="database" title="Database"><i data-lucide="database" class="lucide-icon"></i></button>
+      <button class="files-strip-btn files-strip-view" data-view="database" title="Data Management"><i data-lucide="database" class="lucide-icon"></i></button>
       <button class="files-strip-btn files-strip-view" data-view="explorer" title="File Manager"><i data-lucide="folder-tree" class="lucide-icon"></i></button>
       <button class="files-strip-btn files-strip-view" data-view="terminal" title="Terminal Launcher"><i data-lucide="terminal" class="lucide-icon"></i></button>
       <button class="files-strip-btn files-strip-view" data-view="git" title="Source Control"><i data-lucide="git-branch" class="lucide-icon"></i></button>
@@ -30,7 +30,7 @@
       <button class="files-strip-btn files-strip-view" data-view="runtime-loop" title="Runtime Loop"><i data-lucide="repeat" class="lucide-icon"></i></button>
     </div>
 
-    <!-- Sub-page sidebar panels (Explorer / Git / Database / Terminal /
+    <!-- Sub-page sidebar panels (Explorer / Git / Data Management / Terminal /
          Interactions / Runtime Loop) are injected here by the partial
          loader from ui/admin-tools/*.html. -->
   </aside>
@@ -44,6 +44,6 @@
   </button>
 
   <!-- Sub-page main areas (file editor / git / terminal / interactions /
-       runtime-loop / settings / database) are injected here by the
+       runtime-loop / settings / data management) are injected here by the
        partial loader from ui/admin-tools/*.html. -->
 </div>

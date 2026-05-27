@@ -600,6 +600,7 @@ CREATE TABLE IF NOT EXISTS attachments (
     mime_type       TEXT NOT NULL,
     size_bytes      INTEGER NOT NULL,
     storage_path    TEXT NOT NULL,
+    storage_provider TEXT NOT NULL DEFAULT 'local',
     metadata        TEXT NOT NULL DEFAULT '{}',  -- JSON: duration (voice), dimensions (image)
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -1881,6 +1882,19 @@ class LocalBackend(StorageBackend):
                 conn.execute("ALTER TABLE user_profiles ADD COLUMN tutorial_prefs TEXT")
                 conn.commit()
                 logger.info("Added user_profiles.tutorial_prefs column")
+
+            # ── Migration 028: add storage_provider to attachments ──
+            # Records which backend (local / browser / supabase / s3 / gcs) was
+            # active when each file was uploaded, so retrieval works after the
+            # admin switches the active backend.
+            cursor = conn.execute("PRAGMA table_info(attachments)")
+            att_cols = {row[1] for row in cursor.fetchall()}
+            if att_cols and "storage_provider" not in att_cols:
+                conn.execute(
+                    "ALTER TABLE attachments ADD COLUMN storage_provider TEXT NOT NULL DEFAULT 'local'"
+                )
+                conn.commit()
+                logger.info("Added attachments.storage_provider column")
 
             # ── Seed: agent templates from app/context/agents/*.json (full schema) ──
             self._seed_agent_templates_from_json_files(conn)
@@ -3999,19 +4013,22 @@ class LocalBackend(StorageBackend):
         size_bytes: int,
         storage_path: str,
         metadata: Optional[dict] = None,
+        storage_provider: str = "local",
     ) -> str:
         """Insert an attachment record. Returns the attachment id."""
         att_id = _uuid()
         conn = self._get_conn()
         try:
             conn.execute(
-                """INSERT INTO attachments (id, user_id, session_id, original_name, mime_type, size_bytes, storage_path, metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (att_id, user_id, session_id, original_name, mime_type, size_bytes, storage_path,
-                 json.dumps(metadata or {})),
+                """INSERT INTO attachments
+                   (id, user_id, session_id, original_name, mime_type, size_bytes,
+                    storage_path, storage_provider, metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (att_id, user_id, session_id, original_name, mime_type, size_bytes,
+                 storage_path, storage_provider, json.dumps(metadata or {})),
             )
             conn.commit()
-            logger.debug("Inserted attachment %s: %s", att_id, original_name)
+            logger.debug("Inserted attachment %s: %s (provider=%s)", att_id, original_name, storage_provider)
             return att_id
         finally:
             conn.close()

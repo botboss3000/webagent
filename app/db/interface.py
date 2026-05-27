@@ -456,6 +456,7 @@ class StorageBackend(ABC):
         size_bytes: int,
         storage_path: str,
         metadata: Optional[dict] = None,
+        storage_provider: str = "local",
     ) -> str:
         """Insert an attachment record. Returns the attachment id."""
         ...
