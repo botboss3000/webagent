@@ -2114,6 +2114,21 @@ async function _saveGitHubToken() {
 function _initAppSettings() {
   const saveBtn = _qs('ac-app-settings-save');
   if (saveBtn) saveBtn.addEventListener('click', _saveAppSettings);
+  _initBootAnimation();
+}
+
+const _BOOT_ANIM_ALLOWED = ['chat-slide-right', 'page-slide-in', 'crossfade'];
+
+function _initBootAnimation() {
+  const sel = _qs('ac-boot-animation');
+  if (!sel) return;
+  let saved = localStorage.getItem('bootAnimation');
+  if (!_BOOT_ANIM_ALLOWED.includes(saved)) saved = 'chat-slide-right';
+  sel.value = saved;
+  sel.addEventListener('change', () => {
+    const val = _BOOT_ANIM_ALLOWED.includes(sel.value) ? sel.value : 'chat-slide-right';
+    localStorage.setItem('bootAnimation', val);
+  });
 }
 
 async function _loadAppSettings() {

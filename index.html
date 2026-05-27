@@ -213,6 +213,18 @@
       document.body.classList.toggle('chat-visible', visible);
       document.body.classList.toggle('chat-hidden', !visible);
     } catch (_) {}
+    // Pre-paint: always boot with chat full-screen. The saved tab partial
+    // takes a moment to mount, and without this we briefly flash the wrong
+    // tab content. tabs.js removes boot-chat-only and adds boot-revealing
+    // once the saved tab is activated. The data-boot-anim attribute picks
+    // which CSS transition variant runs during the reveal.
+    try {
+      var anim = localStorage.getItem('bootAnimation') || 'chat-slide-right';
+      var allowed = { 'chat-slide-right': 1, 'page-slide-in': 1, 'crossfade': 1 };
+      if (!allowed[anim]) anim = 'chat-slide-right';
+      document.body.classList.add('boot-chat-only');
+      document.body.setAttribute('data-boot-anim', anim);
+    } catch (_) {}
   })();
 </script>
 <script>
@@ -337,7 +349,7 @@
   <!-- Hidden native <select> kept for tabs.js compat -->
   <select id="main-tab-select" style="display:none;" aria-hidden="true">
     <option value="admin-tools">Admin Tools</option>
-    <option value="autoagent" selected>Pages</option>
+    <option value="autoagent">Pages</option>
     <option value="agents">Agent Manager</option>
     <option value="account">Manage Account</option>
   </select>
@@ -349,7 +361,7 @@
       <button type="button" class="main-tab" data-value="admin-tools" role="tab">
         <i data-lucide="wrench" class="lucide-icon"></i>Admin Tools
       </button>
-      <button type="button" class="main-tab active" data-value="autoagent" role="tab">
+      <button type="button" class="main-tab" data-value="autoagent" role="tab">
         <i data-lucide="files" class="lucide-icon"></i>Pages
       </button>
       <button type="button" class="main-tab" data-value="agents" role="tab">
@@ -432,7 +444,7 @@
   <!-- Main panel -->
   <div id="main-panel">
     <!-- Tab content -->
-    <div id="tab-autoagent" class="tab-content active"></div>
+    <div id="tab-autoagent" class="tab-content"></div>
     <div id="tab-agents" class="tab-content"></div>
     <div id="tab-account" class="tab-content"></div>
     <div id="tab-admin-tools" class="tab-content"></div>

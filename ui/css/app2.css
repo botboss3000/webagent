@@ -508,3 +508,67 @@
   .db-pick-action:hover { background: var(--files-btn-hover); }
   .db-pick-action.danger { color: var(--files-danger); }
   .db-pick-action.danger:hover { background: var(--files-danger-hov); }
+
+  /* ── Boot sequence ─────────────────────────────────────────────
+     On first paint, chat fills the stage and main-panel is collapsed,
+     so we never flash the wrong saved tab while its partial mounts.
+     tabs.js removes .boot-chat-only and adds .boot-revealing once the
+     saved tab is activated; the data-boot-anim attribute on <body>
+     picks which transition runs during the reveal. */
+  body.boot-chat-only #main-panel {
+    flex: 0 0 0 !important;
+    width: 0 !important;
+    min-width: 0 !important;
+    overflow: hidden;
+    opacity: 0;
+    pointer-events: none;
+  }
+  body.boot-chat-only #chat-panel {
+    flex: 1 1 100% !important;
+    width: auto !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    /* Desktop chat panel normally has a fixed pixel width; clear it so
+       flex fills the stage. */
+  }
+  body.boot-chat-only #chat-resize-handle { display: none !important; }
+  /* Mobile: boot always shows chat full-screen, even if saved state
+     was chat-hidden. The existing .chat-hidden rule (which hides chat)
+     must be overridden while boot-chat-only is on. */
+  @media (max-width: 800px) {
+    body.boot-chat-only.chat-hidden #chat-panel,
+    body.boot-chat-only.chat-hidden #chat-resize-handle { display: flex !important; }
+    body.boot-chat-only #main-panel { display: none !important; }
+  }
+
+  /* Reveal transitions — scoped so normal resize/layout interactions
+     never pay for these eases. Removed by tabs.js once the animation
+     duration has elapsed. */
+  body.boot-revealing #main-panel,
+  body.boot-revealing #chat-panel {
+    transition:
+      flex-grow 420ms ease-out,
+      flex-basis 420ms ease-out,
+      width 420ms ease-out,
+      max-width 420ms ease-out,
+      min-width 420ms ease-out,
+      opacity 380ms ease-out,
+      transform 420ms ease-out;
+  }
+
+  /* Variant: page-slide-in — main panel slides in from the right edge
+     with a small extra offset while chat shrinks to its column. */
+  body.boot-chat-only[data-boot-anim="page-slide-in"] #main-panel {
+    transform: translateX(80px);
+  }
+
+  /* Variant: crossfade — no horizontal motion, opacity only on main;
+     chat width still re-collapses but very fast so it feels like a snap. */
+  body.boot-revealing[data-boot-anim="crossfade"] #chat-panel {
+    transition: width 160ms ease-out, flex-basis 160ms ease-out,
+                flex-grow 160ms ease-out, max-width 160ms ease-out;
+  }
+  body.boot-revealing[data-boot-anim="crossfade"] #main-panel {
+    transition: opacity 420ms ease-out, flex-grow 160ms ease-out,
+                flex-basis 160ms ease-out, width 160ms ease-out;
+  }
