@@ -6,7 +6,8 @@ user agents. Also exposes the user profile (including is_admin flag).
 
 Endpoints
 ---------
-GET  /api/v1/user/profile               — user profile + admin flag
+GET  /api/v1/user/profile               — user profile + admin flag + tutorial prefs
+PUT  /api/v1/user/tutorial-prefs        — persist tutorial walkthrough state (cross-device)
 GET  /api/v1/agents                     — list all agents/templates visible to the user
 POST /api/v1/agents                     — create a new custom agent (cloned from default)
 GET  /api/v1/agents/{agent_id}          — get a single custom agent
@@ -196,19 +197,55 @@ async def _require_ability_enabled(db, agent_id: str, ability_id: str) -> None:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+def _parse_tutorial_prefs(raw):
+    """Parse the stored tutorial_prefs JSON blob into a dict; return None if absent/broken."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    import json as _json
+    try:
+        v = _json.loads(raw)
+        return v if isinstance(v, dict) else None
+    except Exception:
+        return None
+
+
 @router.get("/user/profile")
 async def get_user_profile(user_id: str = Query(...)):
-    """Return user profile including is_admin flag."""
+    """Return user profile including is_admin flag and tutorial walkthrough state."""
     db = get_db()
     profile = await db.get_user_profile(user_id)
     if not profile:
         # Return a safe default rather than 404 — profile is auto-created on first write
-        return {"user_id": user_id, "is_admin": False, "default_agent_id": None}
+        return {
+            "user_id": user_id,
+            "is_admin": False,
+            "default_agent_id": None,
+            "tutorial_prefs": None,
+        }
     return {
         "user_id": profile["user_id"],
         "is_admin": bool(profile.get("is_admin")),
         "default_agent_id": profile.get("default_agent_id"),
+        "tutorial_prefs": _parse_tutorial_prefs(profile.get("tutorial_prefs")),
     }
+
+
+class TutorialPrefsRequest(BaseModel):
+    user_id: str
+    prefs: Dict[str, Any]
+
+
+@router.put("/user/tutorial-prefs")
+async def update_tutorial_prefs(req: TutorialPrefsRequest, request: Request):
+    """Persist the tutorial walkthrough state for this user (cross-device).
+
+    Body: { user_id, prefs: { enabled: bool, currentStep: int } }
+    """
+    uid = await assert_caller_is(request, req.user_id)
+    import json as _json
+    db = get_db()
+    await db.upsert_user_profile(uid, tutorial_prefs=_json.dumps(req.prefs))
+    return {"tutorial_prefs": req.prefs}
 
 
 @router.get("/agents/templates")
