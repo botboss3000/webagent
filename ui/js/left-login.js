@@ -13,6 +13,10 @@ let restrictedOverlayEl = null;
 
 let _accessMode = 'public_anonymous';
 let _accessModeFetched = false;
+// ── PRESENTATION-MODE START ── (delete these two lines + isPresentationMode() below to remove)
+let _presentationMode = false;
+export function isPresentationMode() { return _presentationMode; }
+// ── PRESENTATION-MODE END ──
 
 /** Read the app's current access_mode (cached). */
 export function getAccessMode() {
@@ -26,11 +30,16 @@ export async function fetchAccessMode() {
     if (res.ok) {
       const data = await res.json();
       _accessMode = data.access_mode || 'public_anonymous';
+      // ── PRESENTATION-MODE START ── (delete the next line to remove)
+      _presentationMode = !!data.presentation_mode;
+      // ── PRESENTATION-MODE END ──
     }
   } catch (e) { /* keep default */ }
   _accessModeFetched = true;
   try {
-    window.dispatchEvent(new CustomEvent('access-mode-loaded', { detail: { access_mode: _accessMode } }));
+    window.dispatchEvent(new CustomEvent('access-mode-loaded', {
+      detail: { access_mode: _accessMode, presentation_mode: _presentationMode },
+    }));
   } catch {}
   return _accessMode;
 }
@@ -43,6 +52,11 @@ function _applyRegistrationVisibility() {
 // Re-apply visibility whenever the mode changes from the User Management tab
 window.addEventListener('access-mode-changed', e => {
   _accessMode = (e.detail && e.detail.access_mode) || _accessMode;
+  // ── PRESENTATION-MODE START ── (delete the next 3 lines to remove)
+  if (e.detail && typeof e.detail.presentation_mode === 'boolean') {
+    _presentationMode = e.detail.presentation_mode;
+  }
+  // ── PRESENTATION-MODE END ──
   _applyRegistrationVisibility();
 });
 
