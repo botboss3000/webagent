@@ -28,6 +28,11 @@
 
   <!-- Footer: page nav (left) + prompt bar (right) -->
   <div id="autoagent-footer">
+    <!-- Chevron at the top edge: lowers (collapses) the footer so the
+         viewport gets more room. Click again to raise it back. -->
+    <button type="button" id="autoagent-footer-toggle" class="aa-footer-toggle" title="Hide search and chat" aria-label="Hide search and chat" aria-expanded="true">
+      <span class="aa-footer-toggle-icon"><i data-lucide="chevron-down" style="width:14px;height:14px;"></i></span>
+    </button>
     <!-- Page nav: custom dropdown mirroring the chat-header agent/session
          dropdowns, with a per-row ⋮ menu (Rename / Delete). -->
     <div id="autoagent-page-nav">
