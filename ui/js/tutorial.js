@@ -1,5 +1,7 @@
 'use strict';
 
+import { app } from './state.js';
+
 /**
  * Tutorial — a single linear walkthrough of the app's main features.
  *
@@ -15,9 +17,11 @@
  * Advancing past the final step auto-disables the tour. Each popover also
  * exposes a "Hide all hints" checkbox that turns the tour off immediately.
  *
- * Prefs live in localStorage under "tutorialPrefs" as
- * { enabled: bool, currentStep: number }. Older shapes
- * ({ globalEnabled, pages }) are migrated on read.
+ * State lives in two places: localStorage["tutorialPrefs"] is the
+ * synchronous local cache; user_profiles.tutorial_prefs in the database
+ * is the cross-device source of truth. On boot we hydrate from the server
+ * (overwriting local), and every change writes through to both. Older
+ * local shapes ({ globalEnabled, pages }) are migrated on read.
  */
 
 const STORAGE_KEY = 'tutorialPrefs';
@@ -108,9 +112,61 @@ function _loadPrefs() {
   return { enabled: true, currentStep: 1 };
 }
 
-function _savePrefs(prefs) {
+function _writeLocal(prefs) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs)); } catch (_) {}
   document.dispatchEvent(new CustomEvent('tutorial-prefs-changed', { detail: prefs }));
+}
+
+function _savePrefs(prefs) {
+  _writeLocal(prefs);
+  // Fire-and-forget server sync — localStorage is the local truth, the
+  // server is the cross-device source of truth.
+  _syncToServer(prefs);
+}
+
+function _authHeaders() {
+  const t = localStorage.getItem('auth_token');
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
+async function _syncToServer(prefs) {
+  const uid = app.currentUserId;
+  if (!uid) return;
+  try {
+    await fetch('/api/v1/user/tutorial-prefs', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
+      body: JSON.stringify({ user_id: uid, prefs }),
+    });
+  } catch (e) {
+    // Offline / 401 — local cache still wins for this session; next change
+    // will retry.
+    console.warn('tutorial: server sync failed', e);
+  }
+}
+
+async function _hydrateFromServer() {
+  const uid = app.currentUserId;
+  if (!uid) return;
+  try {
+    const res = await fetch(`/api/v1/user/profile?user_id=${encodeURIComponent(uid)}`, {
+      headers: { ..._authHeaders() },
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    const server = data && data.tutorial_prefs;
+    if (!server || typeof server !== 'object') return;
+    const enabled = typeof server.enabled === 'boolean' ? server.enabled : true;
+    const rawStep = typeof server.currentStep === 'number' ? server.currentStep : 1;
+    const currentStep = Math.max(1, Math.min(TOTAL, rawStep));
+    // Skip the write if it'd be a no-op to avoid a redundant render + event.
+    const cur = _loadPrefs();
+    if (cur.enabled === enabled && cur.currentStep === currentStep) return;
+    _writeLocal({ enabled, currentStep });
+    refreshTutorial(_currentPage);
+  } catch (e) {
+    console.warn('tutorial: server hydrate failed', e);
+  }
 }
 
 function _persistCurrentStep(n) {
@@ -567,4 +623,8 @@ export function initTutorial() {
   // after with the same id, but this avoids a flash on first paint.
   const saved = localStorage.getItem('lastActiveTab');
   if (saved) refreshTutorial(saved);
+
+  // Pull the cross-device state from the server; overwrites local if it
+  // differs and re-renders.
+  _hydrateFromServer();
 }
