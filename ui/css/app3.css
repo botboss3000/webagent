@@ -995,6 +995,39 @@ body.light-mode .th-funnel {
   margin-top: 2px;
 }
 
+/* Collapsible card (<details class="ac-card">). The default disclosure
+   triangle is hidden; the card label gets its own chevron that rotates
+   on open/close. Default state is `open` so behavior matches non-collapsible
+   cards for first-time visitors. */
+details.ac-card > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+details.ac-card > summary::-webkit-details-marker { display: none; }
+details.ac-card > summary::after {
+  content: "";
+  display: inline-block;
+  margin-left: auto;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--fg-3, #565f89);
+  border-bottom: 2px solid var(--fg-3, #565f89);
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform 0.18s ease;
+  flex-shrink: 0;
+}
+details.ac-card[open] > summary::after {
+  transform: rotate(-135deg) translateY(2px);
+}
+details.ac-card > summary.ac-card-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* Hide everything that is not the summary when collapsed, restore when open. */
+details.ac-card:not([open]) > *:not(summary) { display: none; }
+
 /* Field */
 .ac-field {
   margin-top: 14px;
