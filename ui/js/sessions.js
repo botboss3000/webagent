@@ -15,11 +15,25 @@ import {
   switchTo,
   onChange as onAccountsChange,
 } from './accounts.js';
-import { showLeftOverlay } from './left-login.js';
+import { showLeftOverlay, authHeaders } from './left-login.js';
 import { randomUUID } from './uuid.js';
 
 export function generateUUID() {
   return randomUUID();
+}
+
+/**
+ * Interrupt the backend agent loop for a session (best-effort, fire-and-forget).
+ * This tells the server to cancel any in-flight LLM stream for the given session,
+ * so the agent stops processing when the user navigates away.
+ */
+function interruptSession(sessionId) {
+  if (!sessionId) return;
+  fetch(apiPath('/api/v1/chat/interrupt'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ session_id: sessionId }),
+  }).catch(() => { /* best-effort */ });
 }
 
 // ── Agent selector ───────────────────────────────────────────────────────────
@@ -595,9 +609,10 @@ export function initSessions() {
 
   function switchToSession(sid) {
     if (!sid || sid === app.currentSessionId) { closeMenu(); return; }
-    // Tear down the LOCAL SSE fetch only — the BACKEND agent loop keeps
-    // running for the session we're leaving. Its events still accumulate
-    // in the server-side RunBuffer so we can replay them if we come back.
+    // Interrupt the backend agent loop for the session we're leaving so it
+    // stops processing immediately instead of running to completion silently.
+    interruptSession(app.currentSessionId);
+    // Tear down the LOCAL SSE fetch.
     abortChatStream();
     app.currentSessionId = sid;
     localStorage.setItem('terminalSessionId', app.currentSessionId);
@@ -722,6 +737,8 @@ export function initSessions() {
   }
 
   async function deleteSession(sid) {
+    // Interrupt the backend agent loop for the session being deleted.
+    interruptSession(sid);
     try {
       const res = await fetch(apiPath('/api/v1/db/sessions/' + encodeURIComponent(sid) + '?db=local.db'), { method: 'DELETE' });
       if (res.ok) {
@@ -781,6 +798,9 @@ export function initSessions() {
     sessionNewBtn.addEventListener('pointerdown', (ev) => {
       ev.preventDefault();
       closeMenu();
+      // Interrupt the backend agent loop for the current session before creating
+      // a new one, so the old agent stops processing immediately.
+      interruptSession(app.currentSessionId);
       abortChatStream();
       app.currentSessionId = generateUUID();
       localStorage.setItem('terminalSessionId', app.currentSessionId);
@@ -821,6 +841,9 @@ export function initSessions() {
 
   function switchToAgent(aid) {
     if (!aid || aid === app.currentAgentId) { closeAgentMenu(); return; }
+    // Interrupt the backend agent loop for the current session before switching
+    // to a different agent (which starts a brand-new session).
+    interruptSession(app.currentSessionId);
     abortChatStream();
     app.currentAgentId = aid;
     localStorage.setItem('selectedAgentId', aid);
