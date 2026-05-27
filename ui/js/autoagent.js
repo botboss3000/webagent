@@ -2,6 +2,7 @@
 
 import { app } from './state.js';
 import { apiPath } from './config.js';
+import { wireChatPillUploads } from './attachments.js';
 
 // ── Module state ───────────────────────────────────────────────────────────────
 
@@ -69,6 +70,11 @@ export function initAutoAgent() {
       if (mainVoice) mainVoice.click();
     });
   }
+
+  // Paste images + drop files onto this pill. Uploads land in the main chat
+  // preview bar, matching the attach-button forwarding above; the prompt
+  // submits via the main chat send so attachment_ids ride along.
+  wireChatPillUploads(row, input);
 
   if (newBtn) newBtn.addEventListener('click', () => showNewPageDialog());
 

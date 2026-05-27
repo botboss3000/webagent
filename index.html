@@ -468,32 +468,26 @@
         </span>
       </span>
     </div>
-    <div id="chat-messages" class="chat-drop-target">
+    <div id="chat-messages">
       <div id="chat-messages-inner">
         <div class="chat-bubble agent">
           <span class="label">Assistant</span>
           Terminal agent ready. Ask me anything — I'll show tool calls in the terminal log.
         </div>
       </div>
-      <div id="chat-drop-overlay">
-        <span>Drop files here</span>
-      </div>
     </div>
-    <div id="chat-input-area" class="chat-footer-drop-target">
+    <div id="chat-input-area">
       <button id="chat-expand-btn" title="Expand input" class="chat-expand-btn">↗</button>
       <div id="chat-preview-bar" style="display:none;"></div>
       <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #ac-int-admin-chat-input-row,
            #agent-builder-bar-row, #autoagent-prompt-row. Style rules live in
            ui/css/app1.css under the "Chat-pill" block. -->
       <div id="chat-input-row" class="chat-pill">
-        <button id="chat-attach-btn" class="chat-pill-attach" title="Attach files (or drag & drop onto chat)"><i data-lucide="paperclip" style="width:18px;height:18px;"></i></button>
+        <button id="chat-attach-btn" class="chat-pill-attach" title="Attach files (or paste / drop onto the chat pill)"><i data-lucide="paperclip" style="width:18px;height:18px;"></i></button>
         <textarea id="chat-input" class="chat-pill-input" rows="2" placeholder="Chat with the agent" autocomplete="off"></textarea>
         <button id="chat-voice-btn" class="chat-pill-voice" title="Record voice"><i data-lucide="mic" style="width:18px;height:18px;"></i></button>
         <button id="chat-send" class="chat-pill-send" title="Send message" disabled><i data-lucide="send" style="width:18px;height:18px;"></i></button>
         <input type="file" id="chat-file-input" multiple accept="image/*,audio/*,video/*,.pdf,.txt,.md,.csv,.json" hidden>
-      </div>
-      <div id="chat-footer-drop-overlay">
-        <span>Drop files here</span>
       </div>
     </div>
   </div>

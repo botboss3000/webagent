@@ -51,42 +51,12 @@ export function initAttachments() {
     if (row) row.classList.add('no-voice');
   }
 
-  // Drag & drop — set up a drop zone on a container
-  function setupDropZone(el, overlayClass) {
-    if (!el) return;
-    let counter = 0;
-    el.addEventListener('dragenter', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      counter++;
-      if (counter === 1) el.classList.add('drag-over');
-    });
-    el.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-    });
-    el.addEventListener('dragleave', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      counter--;
-      if (counter <= 0) { counter = 0; el.classList.remove('drag-over'); }
-    });
-    el.addEventListener('drop', async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      counter = 0;
-      el.classList.remove('drag-over');
-      const files = Array.from(e.dataTransfer.files);
-      for (const file of files) {
-        await uploadAndPreview(file);
-      }
-    });
-  }
-
-  // Drop zone 1: chat messages area
-  setupDropZone(document.getElementById('chat-messages'));
-  // Drop zone 2: chat footer
-  setupDropZone(document.getElementById('chat-input-area'));
+  // Main chat pill: paste + drop scoped to the chat field (composer pill).
+  // Other pills (Pages, Agents, admin) wire themselves via wireChatPillUploads.
+  wireChatPillUploads(
+    document.getElementById('chat-input-row'),
+    document.getElementById('chat-input'),
+  );
 
   // Expose attachment_ids to chat send flow
   app.getPendingAttachmentIds = () => pendingAttachments.map(a => a.attachment_id);
@@ -98,7 +68,7 @@ export function initAttachments() {
 
 // ── Upload ─────────────────────────────────────────────────────────────────
 
-async function uploadAndPreview(file) {
+export async function uploadAndPreview(file, opts = {}) {
   if (!file) return;
 
   const maxSize = 25 * 1024 * 1024; // 25MB
@@ -107,7 +77,10 @@ async function uploadAndPreview(file) {
     return;
   }
 
-  const previewBar = document.getElementById('chat-preview-bar');
+  const previewBar = opts.previewBar || document.getElementById('chat-preview-bar');
+  const targetPending = opts.pending || pendingAttachments;
+  const onChange = opts.onChange;
+  if (!previewBar) return;
   const chip = document.createElement('span');
   chip.className = 'chat-attachment-pill uploading';
   chip.innerHTML = `${icon('upload', { size: '12px' })} ${file.name}`;
@@ -156,18 +129,88 @@ async function uploadAndPreview(file) {
     removeBtn.title = 'Remove attachment';
     removeBtn.addEventListener('click', () => {
       chip.remove();
-      const idx = pendingAttachments.findIndex(a => a.attachment_id === data.attachment_id);
-      if (idx >= 0) pendingAttachments.splice(idx, 1);
-      if (pendingAttachments.length === 0) previewBar.style.display = 'none';
+      const idx = targetPending.findIndex(a => a.attachment_id === data.attachment_id);
+      if (idx >= 0) targetPending.splice(idx, 1);
+      if (targetPending.length === 0) previewBar.style.display = 'none';
+      if (onChange) onChange(targetPending);
     });
     chip.appendChild(removeBtn);
 
     // Store
-    pendingAttachments.push(data);
+    targetPending.push(data);
+    if (onChange) onChange(targetPending);
   } catch (err) {
     chip.className = 'chat-attachment-pill error';
     chip.textContent = `${file.name}: ${err.message}`;
-    setTimeout(() => { chip.remove(); if (pendingAttachments.length === 0) previewBar.style.display = 'none'; }, 3000);
+    setTimeout(() => { chip.remove(); if (targetPending.length === 0) previewBar.style.display = 'none'; }, 3000);
+  }
+}
+
+// ── Shared paste + drag/drop wiring for any chat pill ──────────────────────
+// Drop targets the pill row (= the chat field). Paste targets the input.
+// Caller can route uploads to a custom preview bar / pending list via opts.
+
+function _dragHasFiles(e) {
+  if (!e.dataTransfer) return false;
+  const types = e.dataTransfer.types;
+  if (!types) return false;
+  for (let i = 0; i < types.length; i++) {
+    if (types[i] === 'Files') return true;
+  }
+  return false;
+}
+
+export function wireChatPillUploads(rowEl, inputEl, opts = {}) {
+  if (rowEl && !rowEl.dataset.chatPillUploadsWired) {
+    rowEl.dataset.chatPillUploadsWired = '1';
+    let counter = 0;
+    rowEl.addEventListener('dragenter', (e) => {
+      if (!_dragHasFiles(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      counter++;
+      if (counter === 1) rowEl.classList.add('drag-over');
+    });
+    rowEl.addEventListener('dragover', (e) => {
+      if (!_dragHasFiles(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    });
+    rowEl.addEventListener('dragleave', (e) => {
+      if (!_dragHasFiles(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      counter--;
+      if (counter <= 0) { counter = 0; rowEl.classList.remove('drag-over'); }
+    });
+    rowEl.addEventListener('drop', async (e) => {
+      if (!_dragHasFiles(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      counter = 0;
+      rowEl.classList.remove('drag-over');
+      const files = Array.from(e.dataTransfer.files);
+      for (const file of files) await uploadAndPreview(file, opts);
+    });
+  }
+
+  if (inputEl && !inputEl.dataset.chatPillPasteWired) {
+    inputEl.dataset.chatPillPasteWired = '1';
+    inputEl.addEventListener('paste', async (e) => {
+      const items = e.clipboardData && e.clipboardData.items;
+      if (!items) return;
+      const files = [];
+      for (const item of items) {
+        if (item.kind === 'file') {
+          const f = item.getAsFile();
+          if (f) files.push(f);
+        }
+      }
+      if (files.length === 0) return;  // plain text paste — let the default run
+      e.preventDefault();
+      for (const file of files) await uploadAndPreview(file, opts);
+    });
   }
 }
 
