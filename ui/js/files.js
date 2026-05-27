@@ -15,6 +15,10 @@ import { startAppConfig, stopAppConfig } from './app-config.js';
 import { startAutoRefresh, stopAutoRefresh } from './db/pagination.js';
 import { startLoop, stopLoop, renderInteractionsSidebar } from './loop.js';
 import { startLoopVisual, stopLoopVisual, renderRuntimeLoopSidebar } from './loop-logic.js';
+// ── PRESENTATION-MODE START ── (delete the next 2 lines + the calls to these helpers below)
+import { isPresentationMode } from './left-login.js';
+import { enablePresentationMode, applyPresentationGate } from './presentation-mode.js';
+// ── PRESENTATION-MODE END ──
 
 const API_BASE = '/api/v1/files';
 const LS_SIDEBAR_VIEW = 'files.sidebarView';   // 'explorer' | 'git' | 'database'
@@ -2673,6 +2677,11 @@ function applySidebarView(view) {
     const tab = getActiveTerminalTab();
     if (tab && tab.instance) setTimeout(() => tab.instance.fit(), 30);
   }
+  // ── PRESENTATION-MODE START ── (delete to drop demo re-gating per-view)
+  // Each sub-view re-renders DOM lazily; re-apply the gate so freshly-mounted
+  // buttons/inputs become disabled too. Safe-nav controls are skipped inside.
+  try { setTimeout(() => applyPresentationGate(document.getElementById('tab-admin-tools')), 50); } catch (_) {}
+  // ── PRESENTATION-MODE END ──
 }
 
 // ── Terminal launchers sidebar panel ──────────────────────────────
@@ -2869,7 +2878,11 @@ export async function startAdminTools() {
 
   const overlay = document.getElementById('files-restricted-overlay');
   const editor = document.getElementById('admin-tools');
-  if (!isAdmin) {
+  // ── PRESENTATION-MODE START ── (delete the `presentationViewer` line + the
+  // `&& !presentationViewer` clause below to restore strict admin-only access)
+  const presentationViewer = !isAdmin && isPresentationMode();
+  if (!isAdmin && !presentationViewer) {
+  // ── PRESENTATION-MODE END ──
     if (overlay) overlay.style.display = 'flex';
     if (editor) editor.style.display = 'none';
     const diag = document.getElementById('files-restricted-diag');
@@ -2896,6 +2909,11 @@ export async function startAdminTools() {
   }
   if (overlay) overlay.style.display = 'none';
   if (editor) editor.style.display = 'flex';
+  // ── PRESENTATION-MODE START ── (delete this block to disable demo gating)
+  if (presentationViewer) {
+    try { enablePresentationMode(); } catch (e) { console.warn('presentation mode failed', e); }
+  }
+  // ── PRESENTATION-MODE END ──
 
   // Load tree (always refresh on tab activation so the user sees current state)
   await loadRoot();

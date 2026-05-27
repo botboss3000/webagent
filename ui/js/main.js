@@ -19,7 +19,7 @@ import { initAccount } from './account.js';
 import { initFiles, relocateAdminToolsContainers } from './files.js';
 import { initChatResize } from './chatResize.js';
 import { initTutorial } from './tutorial.js';
-import { fetchAdminStatus, isAdmin } from './left-login.js';
+import { fetchAdminStatus, isAdmin, fetchAccessMode, isPresentationMode } from './left-login.js';
 import './icons.js'; // auto-renders Lucide icons on DOM mutations
 import { randomUUID } from './uuid.js';
 
@@ -138,17 +138,22 @@ function _safeInit(name, fn) {
 // Apply Admin Tools tab visibility based on the user's is_admin flag.
 // The tab button + main-header <select> option are hidden for anyone who
 // is not an admin (anonymous visitors and signed-in non-admin users alike).
+// ── PRESENTATION-MODE: this function also shows the tab when presentation_mode
+//    is on — see the `showTab` line. Remove the `|| isPresentationMode()` part
+//    plus the `access-mode-loaded` listener at the bottom of this block to
+//    restore strict admin-only visibility.
 function _applyAdminToolsVisibility() {
   const admin = isAdmin();
+  const showTab = admin || isPresentationMode();
   document.querySelectorAll('.main-tab[data-value="admin-tools"]').forEach(el => {
-    el.style.display = admin ? '' : 'none';
+    el.style.display = showTab ? '' : 'none';
   });
   const opt = document.querySelector('#main-tab-select option[value="admin-tools"]');
-  if (opt) opt.disabled = !admin;
+  if (opt) opt.disabled = !showTab;
 
-  // If the last-active tab was Admin Tools but the user is no longer admin,
+  // If the last-active tab was Admin Tools but the user can't see it any more,
   // bounce them to Pages so they don't see an empty pane.
-  if (!admin) {
+  if (!showTab) {
     const sel = document.getElementById('main-tab-select');
     if (sel && sel.value === 'admin-tools') {
       sel.value = 'autoagent';
@@ -158,6 +163,9 @@ function _applyAdminToolsVisibility() {
 }
 
 window.addEventListener('admin-status-loaded', _applyAdminToolsVisibility);
+// ── PRESENTATION-MODE START ── (delete the next line + the fetchAccessMode call below)
+window.addEventListener('access-mode-loaded', _applyAdminToolsVisibility);
+// ── PRESENTATION-MODE END ──
 
 // Wait for anon session (if needed) before running the rest of init,
 // so auth_token + user_id are available for all downstream modules.
@@ -167,6 +175,9 @@ _anonReady.then(() => {
   // and dispatch 'admin-status-loaded' to refine the visibility.
   _applyAdminToolsVisibility();
   fetchAdminStatus();
+  // ── PRESENTATION-MODE START ── (delete the next line to stop fetching the demo flag)
+  fetchAccessMode();
+  // ── PRESENTATION-MODE END ──
 
   _safeInit('initStorageUi',        initStorageUi);
   _safeInit('initChat',             initChat);
