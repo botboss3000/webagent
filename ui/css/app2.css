@@ -72,15 +72,15 @@
 
   /* ── Responsive ── */
   @media (max-width: 800px) {
-    #app-container { flex-direction: column; }
-    #chat-side { width: 100%; min-width: 0; border-left: none; border-top: 1px solid #2a2a4a; flex: 1; min-height: 0; max-height: none; }
-    #terminal-side { flex: 1; min-height: 0; }
-    body.chat-hidden #chat-side,
+    #stage { flex-direction: column; }
+    #chat-panel { width: 100%; min-width: 0; border-left: none; border-top: 1px solid #2a2a4a; flex: 1; min-height: 0; max-height: none; }
+    #main-panel { flex: 1; min-height: 0; }
+    body.chat-hidden #chat-panel,
     body.chat-hidden #chat-resize-handle { display: none !important; }
-    body.chat-visible #terminal-side { display: none !important; }
+    body.chat-visible #main-panel { display: none !important; }
   }
 
-  /* ── Tab buttons in status bar ── */
+  /* ── Tab buttons in main header ── */
   .tab-btn-group {
     display: flex;
     align-items: center;

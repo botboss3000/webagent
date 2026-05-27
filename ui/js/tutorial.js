@@ -361,9 +361,9 @@ function _closePopover() {
 // ── Linear navigation across the global TOUR ────────────────────────────
 
 function _isChatVisible() {
-  const chatSide = document.getElementById('chat-side');
-  return !!(chatSide && chatSide.style.display !== 'none' &&
-    getComputedStyle(chatSide).display !== 'none');
+  const chatPanel = document.getElementById('chat-panel');
+  return !!(chatPanel && chatPanel.style.display !== 'none' &&
+    getComputedStyle(chatPanel).display !== 'none');
 }
 
 function _stepInCurrentContext(step) {
@@ -376,7 +376,7 @@ function _stepInCurrentContext(step) {
 function _switchToTab(tab, cb) {
   if (tab === '*') { cb(); return; }
   if (tab === 'chat') {
-    // Mobile may have hidden the chat panel — reveal it so the chat-side
+    // Mobile may have hidden the chat panel — reveal it so the chat-panel
     // badges can render.
     if (!_isChatVisible() && typeof window.__applyChatVisible === 'function') {
       window.__applyChatVisible(true);

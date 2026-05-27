@@ -7,10 +7,10 @@ import { startAccount } from './account.js';
 import { startAdminTools, stopAdminTools } from './files.js';
 import { refreshTutorial } from './tutorial.js';
 
-function setChatSideVisible(visible) {
-  const chatSide = document.getElementById('chat-side');
+function setChatPanelVisible(visible) {
+  const chatPanel = document.getElementById('chat-panel');
   const resizeHandle = document.getElementById('chat-resize-handle');
-  if (chatSide) chatSide.style.display = visible ? '' : 'none';
+  if (chatPanel) chatPanel.style.display = visible ? '' : 'none';
   if (resizeHandle) resizeHandle.style.display = visible ? '' : 'none';
 }
 
@@ -62,13 +62,13 @@ export function initTabs() {
         if (typeof window.__applyChatVisible === 'function') {
           window.__applyChatVisible(false);
         } else {
-          setChatSideVisible(false);
+          setChatPanelVisible(false);
         }
       }
     } else {
       const stored = localStorage.getItem('chatPanelVisible');
       const visible = stored === null ? true : stored !== 'false';
-      setChatSideVisible(visible);
+      setChatPanelVisible(visible);
     }
 
     // Flow + Runtime Loop are now sidebar views inside Admin Tools, so

@@ -84,10 +84,17 @@ export function bindDom() {
   app.toolLogClose = document.getElementById('tool-log-close');
   app.dbToolbar = document.getElementById('db-toolbar');
 
-  // Use auth_user_id if logged in, otherwise anonymous UUID
+  // Use auth_user_id if logged in, otherwise anonymous UUID.
+  // One-time migration: copy legacy `terminalUserId` to the new `anonUserId`
+  // key so existing anon visitors keep their identity.
   const authUserId = localStorage.getItem('auth_user_id');
+  const legacyAnon = localStorage.getItem('terminalUserId');
+  if (legacyAnon && !localStorage.getItem('anonUserId')) {
+    localStorage.setItem('anonUserId', legacyAnon);
+  }
+  if (legacyAnon) localStorage.removeItem('terminalUserId');
   app.localUserId =
-    localStorage.getItem('terminalUserId') || authUserId || 'ddbd80a2-e46f-436e-a165-4f63469218d9';
+    localStorage.getItem('anonUserId') || authUserId || 'ddbd80a2-e46f-436e-a165-4f63469218d9';
 
   try {
     const saved = localStorage.getItem('dbColumnOrder');

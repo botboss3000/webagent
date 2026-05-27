@@ -92,18 +92,18 @@
      actual layout containers — NOT `body > *` — so dynamically-appended popups
      (.tutorial-popover, .session-row-actions, .feedback-modal, etc.) keep their
      own `position: fixed` instead of being forced into `position: relative`. */
-  #app-container { position: relative; z-index: 2; }
-  #status-bar { position: relative; }
+  #stage { position: relative; z-index: 2; }
+  #main-header { position: relative; }
 
-  /* —— Chat side: transparent — sits on the background directly —— */
-  #chat-side,
-  #chat-side > #chat-header,
-  #chat-side > #chat-messages {
+  /* —— Chat panel: transparent — sits on the background directly —— */
+  #chat-panel,
+  #chat-panel > #chat-header,
+  #chat-panel > #chat-messages {
     background: transparent !important;
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
   }
-  #chat-side {
+  #chat-panel {
     border-left: none !important;
     box-shadow: none !important;
   }
@@ -111,7 +111,7 @@
     border-bottom: 1px solid color-mix(in oklab, currentColor 8%, transparent) !important;
   }
   /* Message bubbles get their own glass surface */
-  #chat-side .chat-bubble {
+  #chat-panel .chat-bubble {
     background: color-mix(in oklab, currentColor 6%, transparent) !important;
     border: 1px solid color-mix(in oklab, currentColor 9%, transparent) !important;
     backdrop-filter: blur(10px) saturate(140%) !important;
@@ -132,8 +132,8 @@
     overflow: visible;
   }
 
-  /* —— Main page area: a real panel (glass) —— */
-  #terminal-side {
+  /* —— Main panel: a real panel (glass) —— */
+  #main-panel {
     background: color-mix(in oklab, currentColor 4%, transparent) !important;
     border: 1px solid color-mix(in oklab, currentColor 10%, transparent) !important;
     border-radius: 16px !important;
@@ -146,7 +146,7 @@
     overflow: hidden !important;
     position: relative;
   }
-  body.light-mode #terminal-side {
+  body.light-mode #main-panel {
     box-shadow:
       0 1px 0 rgba(255,255,255,0.6) inset,
       0 15px 50px -25px rgba(80,40,10,0.18) !important;
@@ -173,8 +173,8 @@
   body.light-mode .spot { --spot-color: rgba(217, 111, 31, 0.13); }
 
   /* Size variants */
-  #terminal-side.spot { --spot-radius: 600px; --spot-color: rgba(155, 187, 255, 0.07); }
-  body.light-mode #terminal-side.spot { --spot-color: rgba(217, 111, 31, 0.07); }
+  #main-panel.spot { --spot-radius: 600px; --spot-color: rgba(155, 187, 255, 0.07); }
+  body.light-mode #main-panel.spot { --spot-color: rgba(217, 111, 31, 0.07); }
   .main-tab.spot         { --spot-radius: 140px; }
   .chat-bubble.spot      { --spot-radius: 240px; }
   #chat-input-area.spot  { --spot-radius: 360px; }
@@ -199,12 +199,12 @@
       var w = parseInt(localStorage.getItem('chatPanelWidth'), 10);
       if (!isNaN(w) && w > 0) {
         var s = document.createElement('style');
-        s.textContent = '@media (min-width: 801px) { #chat-side{width:' + w + 'px;} }';
+        s.textContent = '@media (min-width: 801px) { #chat-panel{width:' + w + 'px;} }';
         document.head.appendChild(s);
       }
     } catch (_) {}
-    // Pre-paint: set body class for mobile chat/terminal visibility so the wrong
-    // panel never flashes during initial render.
+    // Pre-paint: set body class for mobile chat/main panel visibility so the
+    // wrong panel never flashes during initial render.
     try {
       var isMobile = window.innerWidth <= 800;
       var key = isMobile ? 'chatPanelVisibleMobile' : 'chatPanelVisible';
@@ -257,10 +257,10 @@
     } catch (_) { return window.__chatVisibilityDefault(); }
   };
   window.__applyChatVisible = function (visible) {
-    var chatSide = document.getElementById('chat-side');
+    var chatPanel = document.getElementById('chat-panel');
     var handle = document.getElementById('chat-resize-handle');
     var btn = document.getElementById('chat-toggle-btn');
-    var terminalSide = document.getElementById('terminal-side');
+    var mainPanel = document.getElementById('main-panel');
     var isMobile = window.__isMobileChatLayout();
     // Body class drives mobile show/hide via CSS — keep inline display untouched on mobile.
     if (document.body) {
@@ -269,14 +269,14 @@
     }
     if (isMobile) {
       // Clear any inline display from prior desktop toggles; CSS owns visibility now.
-      if (chatSide) chatSide.style.display = '';
-      if (handle)   handle.style.display   = '';
-      if (terminalSide) terminalSide.style.display = '';
+      if (chatPanel) chatPanel.style.display = '';
+      if (handle)    handle.style.display    = '';
+      if (mainPanel) mainPanel.style.display = '';
     } else {
       // Desktop: chat side-by-side; toggle hides chat only.
-      if (chatSide) chatSide.style.display = visible ? '' : 'none';
-      if (handle)   handle.style.display   = visible ? '' : 'none';
-      if (terminalSide) terminalSide.style.display = '';
+      if (chatPanel) chatPanel.style.display = visible ? '' : 'none';
+      if (handle)    handle.style.display    = visible ? '' : 'none';
+      if (mainPanel) mainPanel.style.display = '';
     }
     if (btn) btn.classList.toggle('active', visible);
     try { localStorage.setItem(window.__chatVisibilityKey(), String(visible)); } catch (_) {}
@@ -332,7 +332,7 @@
   })();
 </script>
 
-<div id="status-bar">
+<div id="main-header">
 
   <!-- Hidden native <select> kept for tabs.js compat -->
   <select id="main-tab-select" style="display:none;" aria-hidden="true">
@@ -426,11 +426,11 @@
 
 </div>
 
-<!-- Split container -->
-<div id="app-container">
+<!-- Stage: split container -->
+<div id="stage">
 
-  <!-- Terminal side -->
-  <div id="terminal-side">
+  <!-- Main panel -->
+  <div id="main-panel">
     <!-- Tab content -->
     <div id="tab-autoagent" class="tab-content active"></div>
     <div id="tab-agents" class="tab-content"></div>
@@ -442,8 +442,8 @@
   <!-- Chat resize handle -->
   <div id="chat-resize-handle"></div>
 
-  <!-- Chat side -->
-  <div id="chat-side">
+  <!-- Chat panel -->
+  <div id="chat-panel">
     <div id="chat-header">
       <span id="header-user-session">
         <span id="agent-label">Agent:
@@ -1365,7 +1365,7 @@
   /* —— Spotlight tracking for cards / bubbles / dropdowns / panels —— */
   // Selectors to apply spotlight to
   var SPOT_SELECTORS = [
-    '#terminal-side',
+    '#main-panel',
     '#chat-input-area',
     '.chat-bubble',
     '.tab-select-popup',

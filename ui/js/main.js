@@ -136,7 +136,7 @@ function _safeInit(name, fn) {
 }
 
 // Apply Admin Tools tab visibility based on the user's is_admin flag.
-// The tab button + status-bar <select> option are hidden for anyone who
+// The tab button + main-header <select> option are hidden for anyone who
 // is not an admin (anonymous visitors and signed-in non-admin users alike).
 function _applyAdminToolsVisibility() {
   const admin = isAdmin();

@@ -2821,7 +2821,7 @@ function initSettingsToggle() {
 }
 
 // Relocate detached markup (App Config and the Database viewer) into the
-// Admin Tools layout. The originals are parked at the bottom of #app-container
+// Admin Tools layout. The originals are parked at the bottom of #stage
 // in index.html so this module owns their final mount point. Idempotent.
 export function relocateAdminToolsContainers() {
   // App Config — Settings view host

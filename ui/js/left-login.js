@@ -121,7 +121,7 @@ export async function fetchAdminStatus() {
 export function showRestrictedModal() {
   hideRestrictedModal();
 
-  const side = document.getElementById('terminal-side');
+  const side = document.getElementById('main-panel');
   if (!side) return;
 
   restrictedOverlayEl = document.createElement('div');
@@ -161,7 +161,7 @@ export function showRestrictedModal() {
 export function hideRestrictedModal() {
   if (restrictedOverlayEl && restrictedOverlayEl.parentNode) {
     restrictedOverlayEl.parentNode.removeChild(restrictedOverlayEl);
-    const side = document.getElementById('terminal-side');
+    const side = document.getElementById('main-panel');
     if (side) side.style.position = '';
   }
   restrictedOverlayEl = null;
@@ -171,7 +171,7 @@ export function hideRestrictedModal() {
 export function showLeftOverlay() {
   hideLeftOverlay();
 
-  const side = document.getElementById('terminal-side');
+  const side = document.getElementById('main-panel');
   if (!side) return;
 
   // Hide all tab content
@@ -326,13 +326,13 @@ export function showLeftOverlay() {
 export function hideLeftOverlay() {
   if (overlayEl && overlayEl.parentNode) {
     overlayEl.parentNode.removeChild(overlayEl);
-    const side = document.getElementById('terminal-side');
+    const side = document.getElementById('main-panel');
     if (side) side.style.position = '';
   }
   overlayEl = null;
 
   // Show tab content again (only the currently active one)
-  const side2 = document.getElementById('terminal-side');
+  const side2 = document.getElementById('main-panel');
   if (side2) {
     side2.querySelectorAll('.tab-content').forEach(el => {
       el.style.display = el.classList.contains('active') ? '' : 'none';
