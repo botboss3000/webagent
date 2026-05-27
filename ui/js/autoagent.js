@@ -90,20 +90,22 @@ export function initAutoAgent() {
 // ── Footer toggle (chevron at top edge of the footer) ────────────────────────
 
 function _bindFooterToggle() {
-  const btn = document.getElementById('autoagent-footer-toggle');
-  const footer = document.getElementById('autoagent-footer');
-  if (!btn || !footer) return;
-  btn.addEventListener('click', () => {
-    const collapsed = footer.classList.toggle('aa-collapsed');
-    btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-    btn.title = collapsed ? 'Show search and chat' : 'Hide search and chat';
-    btn.setAttribute('aria-label', btn.title);
-    const wrap = btn.querySelector('.aa-footer-toggle-icon');
-    if (wrap) {
-      const name = collapsed ? 'chevron-up' : 'chevron-down';
-      wrap.innerHTML = `<i data-lucide="${name}" style="width:14px;height:14px;"></i>`;
+  const collapseBtn = document.getElementById('autoagent-footer-toggle');
+  const expandBtn   = document.getElementById('autoagent-footer-expand');
+  const footer      = document.getElementById('autoagent-footer');
+  if (!footer || (!collapseBtn && !expandBtn)) return;
+
+  function setCollapsed(collapsed) {
+    footer.classList.toggle('aa-collapsed', collapsed);
+    if (collapseBtn) collapseBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    if (expandBtn) {
+      if (collapsed) expandBtn.removeAttribute('hidden');
+      else expandBtn.setAttribute('hidden', '');
     }
-  });
+  }
+
+  if (collapseBtn) collapseBtn.addEventListener('click', () => setCollapsed(true));
+  if (expandBtn)   expandBtn.addEventListener('click',   () => setCollapsed(false));
 }
 
 // ── Page dropdown (mirrors web-chat session dropdown) ─────────────────────────

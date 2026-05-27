@@ -28,11 +28,6 @@
 
   <!-- Footer: page nav (left) + prompt bar (right) -->
   <div id="autoagent-footer">
-    <!-- Chevron at the top edge: lowers (collapses) the footer so the
-         viewport gets more room. Click again to raise it back. -->
-    <button type="button" id="autoagent-footer-toggle" class="aa-footer-toggle" title="Hide search and chat" aria-label="Hide search and chat" aria-expanded="true">
-      <span class="aa-footer-toggle-icon"><i data-lucide="chevron-down" style="width:14px;height:14px;"></i></span>
-    </button>
     <!-- Page nav: custom dropdown mirroring the chat-header agent/session
          dropdowns, with a per-row ⋮ menu (Rename / Delete). -->
     <div id="autoagent-page-nav">
@@ -45,6 +40,9 @@
           <div id="autoagent-page-dropdown-menu" class="session-dropdown-menu" hidden></div>
         </div>
         <button id="autoagent-new-page-btn" title="New page" class="header-plus-btn"><i data-lucide="plus" style="width:14px;height:14px;"></i></button>
+        <!-- Collapse chevron: lowers the page-nav + chat footer so the
+             viewport uses the full height. Sits next to the +. -->
+        <button id="autoagent-footer-toggle" type="button" class="header-plus-btn aa-footer-toggle" title="Hide search and chat" aria-label="Hide search and chat" aria-expanded="true"><i data-lucide="chevron-down" style="width:14px;height:14px;"></i></button>
       </span>
     </div>
 
@@ -68,4 +66,8 @@
       </div>
     </div>
   </div>
+
+  <!-- Floating expand button: shown only when the footer is collapsed.
+       Hovers over the bottom-right corner of the viewport. -->
+  <button id="autoagent-footer-expand" type="button" class="aa-footer-expand" title="Show search and chat" aria-label="Show search and chat" hidden><i data-lucide="chevron-up" style="width:16px;height:16px;"></i></button>
 </div>
