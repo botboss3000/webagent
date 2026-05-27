@@ -125,8 +125,8 @@ function renderTab() {
     <label class="account-pref-row">
       <input type="checkbox" id="account-tutorial-global">
       <span class="account-pref-text">
-        <span class="account-pref-title">Show tutorial hints</span>
-        <span class="account-pref-desc">Numbered hover popovers highlighting features on each page. Fine-grained per-page toggles live in App Config → User Management.</span>
+        <span class="account-pref-title">Show app tour</span>
+        <span class="account-pref-desc">Numbered hover popovers that walk you through the main features of the app — chat, agents, pages and admin tools. Turn off once you’re comfortable; turn back on to replay.</span>
       </span>
     </label>
   `;
