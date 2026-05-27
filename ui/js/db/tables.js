@@ -2,8 +2,10 @@
 
 import { app } from '../state.js';
 import { apiPath } from '../config.js';
-import { getAuthToken, authUrl } from '../left-login.js';
+import { getAuthToken, authUrl, isAdmin } from '../left-login.js';
 import { isMobileLayout, setSidebarState } from '../files.js';
+
+const RESTRICTED_TRUNCATE_TIP = 'Restricted: only admins can clear tables';
 
 let queryTable = () => {};
 let startAutoRefresh = () => {};
@@ -117,15 +119,19 @@ export function renderTableList() {
     el.innerHTML = '<div class="db-hint">No tables found</div>';
     return;
   }
+  const admin = isAdmin();
   el.innerHTML = app.dbTables
     .map(
       (t) => {
         const isBold = ['interactions', 'context_templates', 'agent_templates'].includes(t.name);
         const fontStyle = isBold ? 'font-weight: bold;' : '';
+        const resetBtn = admin
+          ? `<button class="db-table-reset-btn" data-table="${t.name}" title="Delete all rows">🗑️</button>`
+          : `<button class="db-table-reset-btn restricted" data-table="${t.name}" disabled title="${RESTRICTED_TRUNCATE_TIP}">🗑️</button>`;
         return `<div class="db-table-item${app.dbSelectedTable === t.name ? ' active' : ''}" data-table="${t.name}">
       <span style="${fontStyle}">${t.name}</span>
       <span class="count">${t.row_count}</span>
-      <button class="db-table-reset-btn" data-table="${t.name}" title="Delete all rows">🗑️</button>
+      ${resetBtn}
     </div>`;
       }
     )
@@ -156,6 +162,7 @@ export function renderTableList() {
   el.querySelectorAll('.db-table-reset-btn').forEach((btn) => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
+      if (!isAdmin()) return;  // hover tooltip on the button explains why
       const table = btn.dataset.table;
       try {
         const dbName = document.getElementById('db-select').value;
