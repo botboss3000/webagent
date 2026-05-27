@@ -62,6 +62,7 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "write_source":                  {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": False, "agent_types": ["admin"]},
     "edit_source":                   {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": False, "agent_types": ["admin"]},
     "delete_source":                 {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": False, "agent_types": ["admin"]},
+    "resolve_conflict":              {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": False, "agent_types": ["admin"]},
     "run_command":                   {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": True,  "agent_types": ["admin"]},
     "restart_server":                {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": True,  "agent_types": ["admin"]},
     # ── Auth / comms ──

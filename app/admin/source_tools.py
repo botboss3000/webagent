@@ -26,6 +26,12 @@ BASE = "http://localhost:8080"
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # app/../
 
+try:
+    from app.admin.guardrails import check_path as _guard_check_path  # type: ignore
+except Exception:  # pragma: no cover
+    async def _guard_check_path(path: str, action: str = "read") -> None:  # type: ignore
+        return None
+
 
 def _safe_path(path: str) -> Optional[Path]:
     """Resolve a path relative to the project root. Return None if outside."""
@@ -36,6 +42,23 @@ def _safe_path(path: str) -> Optional[Path]:
     if not str(p).startswith(str(_PROJECT_ROOT)):
         return None  # outside project root
     return p
+
+
+def _mini_diff(before: str, after: str, path: str, context: int = 2) -> str:
+    """Return a compact unified diff snippet showing only the changed hunks."""
+    before_lines = before.splitlines(keepends=False)
+    after_lines = after.splitlines(keepends=False)
+    diff = difflib.unified_diff(
+        before_lines, after_lines,
+        fromfile=path, tofile=path, n=context, lineterm="",
+    )
+    out = list(diff)
+    if not out:
+        return "(no textual change)"
+    text = "\n".join(out)
+    if len(text) > 2000:
+        text = text[:2000] + "\n... (diff truncated)"
+    return text
 
 
 def _run_subprocess(cmd: List[str], timeout: int = 30) -> dict:
@@ -91,11 +114,49 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
     # FILE OPERATIONS
     # ═══════════════════════════════════════════════════════════════════════
 
-    # ── read_source: no confirmation needed, read only ──
-    async def _read_source(path: str) -> str:
-        """Read file contents. Safe — no changes made."""
-        data = await _api_get("/admin/source/read", {"path": path})
-        return data["content"]
+    # ── read_source: direct disk read, offset/limit support ──
+    async def _read_source(path: str, offset: int = 1, limit: int = 2000) -> str:
+        """Read file contents from disk. Supports line-range slicing for large files.
+
+        offset is 1-indexed (line numbers shown in cat -n format).
+        Default limit is 2000 lines; the response includes a truncation hint
+        when the file extends beyond the returned slice."""
+        safe = _safe_path(path)
+        if not safe:
+            return "Error: path is outside the project root"
+        try:
+            await _guard_check_path(str(safe), "read")
+        except PermissionError as e:
+            return f"Error: {e}"
+        if not safe.exists():
+            return f"Error: file not found: {path}"
+        if not safe.is_file():
+            return f"Error: not a file: {path}"
+
+        try:
+            text = safe.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return f"Error: {path} is not UTF-8 text"
+
+        lines = text.split("\n")
+        total = len(lines)
+        if offset < 1:
+            offset = 1
+        if limit <= 0:
+            limit = 2000
+        start = offset - 1
+        end = min(start + limit, total)
+        sliced = lines[start:end]
+        # Render with line numbers so the agent can re-target patches precisely
+        width = len(str(end if end > 0 else 1))
+        body = "\n".join(f"{str(i + 1).rjust(width)}\t{ln}"
+                         for i, ln in enumerate(sliced, start=start))
+        header = f"{path} ({total} lines, showing {offset}-{end})"
+        suffix = ""
+        if end < total:
+            suffix = (f"\n... ({total - end} more lines — call read_source("
+                     f"path={path!r}, offset={end + 1}, limit={limit}) to continue)")
+        return f"{header}\n{body}{suffix}"
 
     tools["read_source"] = ToolInfo(
         name="read_source",
@@ -104,6 +165,8 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Path to the file (relative to project root or absolute)"},
+                "offset": {"type": "integer", "description": "First line to return (1-indexed). Default 1.", "default": 1},
+                "limit": {"type": "integer", "description": "Max lines to return. Default 2000.", "default": 2000},
             },
             "required": ["path"],
         },
@@ -197,7 +260,7 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
         if old_string in current:
             result = current.replace(old_string, new_string, 1)
             _write_file_direct(safe, result)
-            return f"Patched (exact match) — {path}"
+            return f"Patched (exact match) — {path}\n\n{_mini_diff(current, result, path)}"
 
         # Strategy 2: whitespace-normalized match
         def _norm(s):
@@ -234,7 +297,7 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
                         break
                 if found:
                     _write_file_direct(safe, result)
-                    return f"Patched (fuzzy whitespace match) — {path}"
+                    return f"Patched (fuzzy whitespace match) — {path}\n\n{_mini_diff(current, result, path)}"
 
         # Strategy 3: truncated old_string (remove trailing context)
         for truncate_to in range(len(old_string) - 1, len(old_string) // 2, -1):
@@ -244,7 +307,7 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
                 result = current.replace(truncated, new_string, 1)
                 if result != current:
                     _write_file_direct(safe, result)
-                    return f"Patched (truncated match to {truncate_to} chars) — {path}"
+                    return f"Patched (truncated match to {truncate_to} chars) — {path}\n\n{_mini_diff(current, result, path)}"
 
         # Strategy 4: unique-line match
         old_lines = old_string.strip().split('\n')
@@ -254,9 +317,12 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
                 result = current.replace(ul, new_string, 1)
                 if result != current:
                     _write_file_direct(safe, result)
-                    return f"Patched (unique-line match: '{ul[:50]}...') — {path}"
+                    return f"Patched (unique-line match: '{ul[:50]}...') — {path}\n\n{_mini_diff(current, result, path)}"
 
-        return f"Error: could not find a match for old_string in {path}. Use edit_source with exact text, or search_source first to find the exact content."
+        return (f"Error: could not find a match for old_string in {path}. "
+                "Two-strike rule: do NOT retry patch_source with another variant. "
+                "Instead, read_source the exact region (with offset/limit), then either "
+                "patch_source with the exact text or write_source the whole file.")
 
     tools["patch_source"] = ToolInfo(
         name="patch_source",
@@ -545,27 +611,33 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
     # ── git_tool: structured git operations ──
     async def _git_tool(operation: str, args: str = "") -> str:
         """Run a structured git operation. Read-only by default; mutating needs confirmation."""
-        safe_ops = {"status", "log", "diff", "show", "branch", "stash", "remote", "config", "ls-files", "rev-parse"}
-        mutating_ops = {"add", "commit", "push", "pull", "reset", "checkout", "merge", "rebase", "stash apply"}
+        safe_ops = {"status", "log", "diff", "show", "branch", "stash", "remote",
+                    "config", "ls-files", "rev-parse", "blame", "describe",
+                    "for-each-ref", "reflog", "cat-file", "fsck", "shortlog",
+                    "name-rev", "tag", "worktree"}
+        mutating_ops = {"add", "commit", "push", "pull", "fetch", "reset",
+                        "checkout", "restore", "switch", "merge", "rebase",
+                        "cherry-pick", "revert", "stash apply", "stash pop",
+                        "stash drop", "clean", "mv", "rm", "apply"}
 
         op = operation.lower().strip()
         if op not in safe_ops and op not in mutating_ops:
             known = ', '.join(sorted(safe_ops | mutating_ops))
             return f"Error: unknown git operation '{operation}'. Known: {known}"
 
-        cmd = ["git", op]
+        cmd = ["git"] + op.split()  # supports "stash apply", "stash pop", etc.
         if args:
             import shlex
             cmd.extend(shlex.split(args))
 
-        result = _run_subprocess(cmd, timeout=30)
+        result = _run_subprocess(cmd, timeout=60)
         output = result["stdout"] or result["stderr"]
         if result["exit_code"] != 0 and not output:
             output = f"Command failed (exit {result['exit_code']})"
 
         prefix = f"[Git {op}] "
         if op in mutating_ops:
-            prefix = f"[Git {op} — MUTATING, confirm first] "
+            prefix = f"[Git {op}] "
         return prefix + (output.strip() or "(no output)")
 
     tools["git_tool"] = ToolInfo(
@@ -576,15 +648,80 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
             "properties": {
                 "operation": {
                     "type": "string",
-                    "description": "Git operation to run. Read-only: status, log, diff, show, branch, stash, remote, config, ls-files, rev-parse. Mutating (ask first): add, commit, push, pull, reset, checkout, merge, rebase.",
+                    "description": (
+                        "Git operation. Read-only (no confirm): status, log, diff, show, "
+                        "branch, stash, remote, config, ls-files, rev-parse, blame, "
+                        "reflog, tag, describe. Mutating: add, commit, push, pull, fetch, "
+                        "reset, checkout, restore, switch, merge, rebase, cherry-pick, "
+                        "revert, stash apply/pop/drop, clean. "
+                        "For continue/abort on conflicts pass via args (e.g. operation='cherry-pick', args='--continue')."
+                    ),
                 },
-                "args": {"type": "string", "description": "Additional arguments (e.g. '--oneline -5' for log)", "default": ""},
+                "args": {"type": "string", "description": "Additional arguments (e.g. '--oneline -5' for log, '--continue' for cherry-pick)", "default": ""},
             },
             "required": ["operation"],
         },
     )
 
+    # ── resolve_conflict: strip merge markers and keep chosen side ──
+    _CONFLICT_RE = re.compile(
+        r"^<{7} .*?\n(.*?)^={7}\n(.*?)^>{7} .*?\n",
+        re.DOTALL | re.MULTILINE,
+    )
+
+    async def _resolve_conflict(path: str, choice: str = "ours") -> str:
+        """Resolve all conflict markers in a file by keeping one side.
+
+        choice: 'ours' (keep <<<<<<< side), 'theirs' (keep >>>>>>> side),
+        or 'both' (keep both sides concatenated, markers removed)."""
+        safe = _safe_path(path)
+        if not safe:
+            return "Error: path is outside the project root"
+        if not safe.exists():
+            return f"Error: file not found: {path}"
+        text = safe.read_text(encoding="utf-8")
+
+        choice = choice.lower().strip()
+        if choice not in {"ours", "theirs", "both"}:
+            return "Error: choice must be 'ours', 'theirs', or 'both'"
+
+        count = 0
+
+        def _sub(match):
+            nonlocal count
+            count += 1
+            ours, theirs = match.group(1), match.group(2)
+            if choice == "ours":
+                return ours
+            if choice == "theirs":
+                return theirs
+            return ours + theirs
+
+        new_text = _CONFLICT_RE.sub(_sub, text)
+        if count == 0:
+            return f"No conflict markers found in {path}."
+        _write_file_direct(safe, new_text)
+        return f"Resolved {count} conflict block(s) in {path} — kept '{choice}'."
+
+    tools["resolve_conflict"] = ToolInfo(
+        name="resolve_conflict",
+        handler=_resolve_conflict,
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path to the conflicted file"},
+                "choice": {
+                    "type": "string",
+                    "enum": ["ours", "theirs", "both"],
+                    "description": "Which side of every conflict block to keep. 'ours'=HEAD/current, 'theirs'=incoming, 'both'=concatenate.",
+                    "default": "ours",
+                },
+            },
+            "required": ["path"],
+        },
+    )
+
     logger.info(
-        "Injected admin tools: read/write/edit/patch/delete/run/run_python/restart/search/dir/git (%d tools)",
+        "Injected admin tools: read/write/edit/patch/delete/run/run_python/restart/search/dir/git/resolve_conflict (%d tools)",
         len(tools),
     )
