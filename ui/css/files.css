@@ -1785,19 +1785,19 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 .fg-graph-row-head {
   display: flex;
   align-items: stretch;
-  min-height: var(--row-h, 44px);
+  height: var(--row-h, 44px);
+  overflow: hidden;
 }
 .fg-graph-row-head:hover { background: var(--files-row-hover); }
 .fg-graph-row:focus-visible .fg-graph-row-head { background: var(--files-row-hover); }
 .fg-graph-row:focus-visible { border-left-color: var(--files-active-indicator); }
-.fg-graph-row.head { border-left-color: var(--files-active-indicator); }
 .fg-graph-row.unpulled { opacity: 0.85; }
 .fg-graph-row.other-branch { opacity: 0.7; }
 .fg-graph-row.open .fg-graph-row-head { background: var(--files-row-hover); }
 
 .fg-graph-col {
   flex-shrink: 0;
-  min-height: var(--row-h, 44px);
+  height: var(--row-h, 44px);
 }
 .fg-graph-svg {
   display: block;
@@ -2121,3 +2121,46 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 .rl-node-dot[data-state="error"]  { background: #f7768e; }
 .rl-node-row.rl-state-active .rl-row-label { color: var(--files-text-strong); }
 .rl-node-row.rl-state-error  .rl-row-label { color: #f7768e; }
+
+/* ── PRESENTATION-MODE START ── (delete this entire block to remove the demo styling) */
+body.presentation-mode #tab-admin-tools button:disabled,
+body.presentation-mode #tab-admin-tools input:disabled,
+body.presentation-mode #tab-admin-tools textarea:disabled,
+body.presentation-mode #tab-admin-tools select:disabled,
+body.presentation-mode #tab-agents button:disabled,
+body.presentation-mode #tab-agents input:disabled,
+body.presentation-mode #tab-agents textarea:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+body.presentation-mode .files-tree-row,
+body.presentation-mode .ft-list-row,
+body.presentation-mode .conn-card {
+  cursor: not-allowed;
+}
+.presentation-banner {
+  background: rgba(125,207,255,0.10);
+  border-bottom: 1px solid rgba(125,207,255,0.4);
+  color: #7dcfff;
+  font-size: 12px;
+  padding: 8px 14px;
+  line-height: 1.5;
+}
+.presentation-banner strong { color: #c0caf5; }
+#presentation-tooltip {
+  position: fixed;
+  z-index: 99998;
+  background: #1a1a2e;
+  color: #c0caf5;
+  border: 1px solid #7dcfff;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  max-width: 280px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.45);
+}
+#presentation-tooltip.visible { opacity: 1; }
+/* ── PRESENTATION-MODE END ── */

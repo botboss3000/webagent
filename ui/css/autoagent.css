@@ -11,6 +11,43 @@
   padding: 0 20px 12px;
   background: transparent;
   flex-shrink: 0;
+  position: relative;
+}
+
+/* Chevron at the top edge of the footer: collapses the search+chat row so
+   the viewport can use the full height. Centered above the page nav. */
+.aa-footer-toggle {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 18px;
+  margin: 0 0 2px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: #565f89;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+.aa-footer-toggle:hover {
+  opacity: 1;
+  color: #c0caf5;
+  background: rgba(122, 162, 247, 0.08);
+}
+
+#autoagent-footer.aa-collapsed > #autoagent-page-nav,
+#autoagent-footer.aa-collapsed > #autoagent-prompt-bar {
+  display: none;
+}
+
+body.light-mode .aa-footer-toggle { color: #b09580; }
+body.light-mode .aa-footer-toggle:hover {
+  color: #3d2c2e;
+  background: rgba(255, 140, 66, 0.10);
 }
 
 /* ── Page Nav Bar ── */
