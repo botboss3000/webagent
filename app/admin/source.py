@@ -106,10 +106,18 @@ def resolve_path(raw_path: str) -> Path:
     """
     Resolve a path. If relative, it's relative to the project root.
     Unrestricted — any path the OS user can access is allowed.
+
+    On Windows, paths like ``/tmp`` have ``is_absolute() == False`` but
+    ``p.root == '\\'``, and Python's Path division (``PROJECT_ROOT / p``)
+    *still* treats them as absolute (it sees the root separator and replaces
+    the left side, producing ``C:\\tmp``).  To prevent this we strip the
+    leading separator before joining so they land inside the project tree.
     """
     p = Path(raw_path)
-    if not p.is_absolute():
-        p = PROJECT_ROOT / p
+    if not p.is_absolute() or (os.name == 'nt' and not p.drive and p.root and len(p.root) == 1):
+        # Strip leading separator on Windows so Path division doesn't treat
+        # it as absolute (e.g. /tmp -> tmp -> PROJECT_ROOT/tmp).
+        p = PROJECT_ROOT / str(p).lstrip('\\/')
     return p.resolve()
 
 

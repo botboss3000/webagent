@@ -9,12 +9,17 @@
 .db-table td {
     padding: 4px 10px;
     border-bottom: 1px solid #1a1a2e;
+    border-right: 1px solid var(--files-border-strong);
     color: #c0caf5;
     max-width: 300px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+.db-table td.db-row-delete-td,
+.db-table th.db-row-delete-th { border-right: none; }
+.db-table td:last-child,
+.db-table th:last-child { border-right: none; }
 .db-table tr:hover td { background: #1a1a2e55; }
 .db-row-even td { background: #14142a; }
 .db-table tr[style*="height:100px"] .db-cell-pre { max-height: 50px; }
