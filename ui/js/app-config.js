@@ -2115,6 +2115,7 @@ function _initAppSettings() {
   const saveBtn = _qs('ac-app-settings-save');
   if (saveBtn) saveBtn.addEventListener('click', _saveAppSettings);
   _initBootAnimation();
+  _initBootMobileMode();
 }
 
 const _BOOT_ANIM_ALLOWED = ['chat-slide-right', 'page-slide-in', 'crossfade'];
@@ -2128,6 +2129,20 @@ function _initBootAnimation() {
   sel.addEventListener('change', () => {
     const val = _BOOT_ANIM_ALLOWED.includes(sel.value) ? sel.value : 'chat-slide-right';
     localStorage.setItem('bootAnimation', val);
+  });
+}
+
+const _BOOT_MOBILE_ALLOWED = ['chat-first', 'memory'];
+
+function _initBootMobileMode() {
+  const sel = _qs('ac-boot-mobile-mode');
+  if (!sel) return;
+  let saved = localStorage.getItem('bootMobileMode');
+  if (!_BOOT_MOBILE_ALLOWED.includes(saved)) saved = 'chat-first';
+  sel.value = saved;
+  sel.addEventListener('change', () => {
+    const val = _BOOT_MOBILE_ALLOWED.includes(sel.value) ? sel.value : 'chat-first';
+    localStorage.setItem('bootMobileMode', val);
   });
 }
 

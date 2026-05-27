@@ -572,3 +572,35 @@
     transition: opacity 420ms ease-out, flex-grow 160ms ease-out,
                 flex-basis 160ms ease-out, width 160ms ease-out;
   }
+
+  /* ── Loading spinner ───────────────────────────────────────────
+     Centered on the viewport while body.is-booting is set by the
+     pre-paint script. Removed by tabs.js once init completes. */
+  .boot-spinner {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    width: 36px;
+    height: 36px;
+    margin: -18px 0 0 -18px;
+    border-radius: 50%;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    z-index: 9999;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 220ms ease-out, visibility 0s linear 220ms;
+    animation: boot-spinner-spin 720ms linear infinite;
+  }
+  body.is-booting .boot-spinner {
+    opacity: 1;
+    visibility: visible;
+    transition: opacity 120ms ease-in, visibility 0s linear 0s;
+  }
+  @keyframes boot-spinner-spin {
+    to { transform: rotate(360deg); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .boot-spinner { animation: none; }
+  }

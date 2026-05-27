@@ -124,6 +124,9 @@ export function initTabs() {
   // then on the next frame drop .boot-chat-only so the layout changes
   // animate instead of snapping. Remove .boot-revealing after the
   // animation duration so normal interactions don't pay the ease cost.
+  // .is-booting drives the loading spinner and is dropped at the end
+  // of the reveal — or immediately if the pre-paint skipped chat-first
+  // (mobile + bootMobileMode=memory + saved chat-hidden).
   if (document.body.classList.contains('boot-chat-only')) {
     requestAnimationFrame(() => {
       document.body.classList.add('boot-revealing');
@@ -131,8 +134,11 @@ export function initTabs() {
         document.body.classList.remove('boot-chat-only');
         setTimeout(() => {
           document.body.classList.remove('boot-revealing');
+          document.body.classList.remove('is-booting');
         }, 480);
       });
     });
+  } else {
+    document.body.classList.remove('is-booting');
   }
 }
