@@ -1,6 +1,7 @@
 {
   "extend_llm_to_agents": true,
   "access_mode": "public_anonymous",
+  "presentation_mode": true,
   "stream_buffer_retention_seconds": 60,
   "feedback_enabled": true,
   "feedback_relay_url": "",
