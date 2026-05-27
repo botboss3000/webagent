@@ -1785,19 +1785,19 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 .fg-graph-row-head {
   display: flex;
   align-items: stretch;
-  min-height: var(--row-h, 44px);
+  height: var(--row-h, 44px);
+  overflow: hidden;
 }
 .fg-graph-row-head:hover { background: var(--files-row-hover); }
 .fg-graph-row:focus-visible .fg-graph-row-head { background: var(--files-row-hover); }
 .fg-graph-row:focus-visible { border-left-color: var(--files-active-indicator); }
-.fg-graph-row.head { border-left-color: var(--files-active-indicator); }
 .fg-graph-row.unpulled { opacity: 0.85; }
 .fg-graph-row.other-branch { opacity: 0.7; }
 .fg-graph-row.open .fg-graph-row-head { background: var(--files-row-hover); }
 
 .fg-graph-col {
   flex-shrink: 0;
-  min-height: var(--row-h, 44px);
+  height: var(--row-h, 44px);
 }
 .fg-graph-svg {
   display: block;
