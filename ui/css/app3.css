@@ -196,6 +196,25 @@ body.light-mode #db-table-list::-webkit-scrollbar-thumb:hover {
     border-color: #f7768e;
   }
 
+/* Non-admin view: keep button visible so the hover tooltip can explain why
+ * it's disabled, but dim it and override hover affordances. */
+.db-cell-edit.restricted,
+.db-row-delete.restricted,
+.db-table-reset-btn.restricted,
+#db-reset.restricted {
+    opacity: 0.35;
+    cursor: not-allowed;
+    filter: grayscale(100%);
+  }
+.db-cell-edit.restricted:hover,
+.db-row-delete.restricted:hover,
+.db-table-reset-btn.restricted:hover,
+#db-reset.restricted:hover {
+    color: inherit;
+    border-color: inherit;
+    opacity: 0.35;
+  }
+
 .db-table td,
 .db-table th {
     overflow: hidden;

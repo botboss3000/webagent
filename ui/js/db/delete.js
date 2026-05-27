@@ -4,7 +4,7 @@ import { app } from '../state.js';
 import { getPKColumns } from './columns.js';
 import { queryTable } from './query-render.js';
 import { apiPath } from '../config.js';
-import { authHeaders, isAuthenticated } from '../left-login.js';
+import { authHeaders, isAuthenticated, isAdmin } from '../left-login.js';
 
 export function initDbRowDelete() {
   document.getElementById('db-table-data').addEventListener('click', async (e) => {
@@ -16,6 +16,7 @@ export function initDbRowDelete() {
       alert('You must be logged in to delete rows.');
       return;
     }
+    if (!isAdmin()) return;  // hover tooltip on the button explains why
     if (!app.dbCurrentResult) return;
 
     const ri = parseInt(btn.dataset.ri, 10);

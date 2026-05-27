@@ -35,6 +35,128 @@ def _invalidate_tables_cache(db_path: Path) -> None:
     _TABLES_CACHE.pop(str(db_path), None)
 
 
+# ── Per-user row-level access control ─────────────────────────────────────
+# Tables where filtering uses a column on the table itself.
+_USER_ID_COLUMN: dict[str, str] = {
+    "sessions": "user_id",
+    "session_summaries": "user_id",
+    "memories": "user_id",
+    "memory_links": "user_id",
+    "agent_credentials": "user_id",
+    "auth_elements": "user_id",
+    "data_sources": "user_id",
+    "skills": "user_id",
+    "skill_executions": "user_id",
+    "skill_feedback": "user_id",
+    "attachments": "user_id",
+    "channel_identities": "user_id",
+    "webhook_registrations": "user_id",
+    "provider_ratings": "user_id",
+    "user_profiles": "user_id",
+    "tenant_key_meta": "user_id",
+    "usage_events": "user_id",
+    "subscriptions": "user_id",
+    "trials": "user_id",
+    "payment_accounts": "user_id",
+    "payments": "user_id",
+    "billing_exemptions": "user_id",
+    "linking_codes": "source_user_id",
+}
+
+# Tables reached via a FK to a table with a user_id column.
+# Map: table -> (fk_column, parent_table, parent_pk, parent_user_col)
+_LINKED_USER_TABLES: dict[str, tuple[str, str, str, str]] = {
+    "interactions": ("session_id", "sessions", "id", "user_id"),
+    "session_interrupts": ("session_id", "sessions", "id", "user_id"),
+    "memory_chunks": ("memory_id", "memories", "id", "user_id"),
+    "memory_timeline": ("memory_id", "memories", "id", "user_id"),
+    "webhook_event_log": ("webhook_id", "webhook_registrations", "id", "user_id"),
+    "doc_chunks": ("data_source_id", "data_sources", "id", "user_id"),
+}
+
+# Tables only admins may read. Catalogs, system configs, and agent-scoped
+# tables whose membership lives in JSON arrays we don't want to parse in SQL.
+_ADMIN_ONLY_TABLES: set[str] = {
+    "agent_templates",
+    "agent_prompt_templates",
+    "app_meta",
+    "billing_configs",
+    "tools",
+    "agents",
+    "agent_connections",
+    "agent_abilities",
+    "agent_data_sources",
+    "agent_prompts",
+}
+
+
+async def require_admin(_auth: dict = Depends(require_db_auth)) -> dict:
+    """FastAPI dependency: require the caller to be a global admin."""
+    _uid, is_admin = _get_caller(_auth)
+    if not is_admin:
+        raise HTTPException(status_code=403, detail="Admin privileges required")
+    return _auth
+
+
+def _get_caller(payload: Optional[dict]) -> tuple[Optional[str], bool]:
+    """Extract (user_id, is_admin) from a JWT payload.
+
+    Admin status is looked up from local.db's user_profiles table — the
+    same source `app.db.local.is_user_admin` consults — so the check is
+    consistent regardless of which db file is being viewed.
+    """
+    if not payload:
+        return None, False
+    user_id = payload.get("user_id") or payload.get("sub")
+    if not user_id:
+        return None, False
+    is_admin = False
+    try:
+        conn = sqlite3.connect(str(_DB_FILES_DIR / "local.db"))
+        row = conn.execute(
+            "SELECT is_admin FROM user_profiles WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        conn.close()
+        if row and row[0]:
+            is_admin = True
+    except sqlite3.Error:
+        pass
+    return user_id, is_admin
+
+
+def _acl_clause(table: str, user_id: Optional[str], is_admin: bool) -> tuple[Optional[str], list]:
+    """Return (where_fragment, params) restricting `table` to rows owned by `user_id`.
+
+    - Admins: returns (None, []) — no filtering.
+    - Non-admins on admin-only tables, unknown tables, or with no user_id:
+      returns ("1=0", []) — denies all rows.
+    - Otherwise returns the table-specific predicate.
+    """
+    if is_admin:
+        return None, []
+    if not user_id:
+        return "1=0", []
+    if table in _ADMIN_ONLY_TABLES:
+        return "1=0", []
+    if table in _USER_ID_COLUMN:
+        col = _USER_ID_COLUMN[table]
+        return f'"{col}" = ?', [user_id]
+    if table in _LINKED_USER_TABLES:
+        fk, parent, parent_pk, parent_user = _LINKED_USER_TABLES[table]
+        return (
+            f'"{fk}" IN (SELECT "{parent_pk}" FROM "{parent}" WHERE "{parent_user}" = ?)',
+            [user_id],
+        )
+    if table == "wallets":
+        return '"owner_type" = ? AND "owner_id" = ?', ["user", user_id]
+    if table == "wallet_transactions":
+        return (
+            '"wallet_id" IN (SELECT "id" FROM "wallets" WHERE "owner_type" = ? AND "owner_id" = ?)',
+            ["user", user_id],
+        )
+    # Unknown table — deny by default for non-admins.
+    return "1=0", []
+
 
 def _get_db_path(name: str = "local.db") -> Path:
     if Path(name).name != name:
@@ -70,7 +192,9 @@ async def list_tables(
 ):
     """List all tables in the database."""
     db_path = _get_db_path(db)
-    cache_key = str(db_path)
+    user_id, is_admin = _get_caller(_auth)
+    # Cache is keyed by (db_path, is_admin, user_id) — row counts differ per caller.
+    cache_key = f"{db_path}|{1 if is_admin else 0}|{user_id or ''}"
 
     # Try cache: valid if the db file hasn't been touched since we cached, and
     # the TTL hasn't elapsed. mtime+size is a cheap stat that catches all writes.
@@ -101,12 +225,20 @@ async def list_tables(
                 {"name": col[1], "type": col[2], "notnull": bool(col[3]), "pk": bool(col[5])}
                 for col in cur.fetchall()
             ]
-            # Get row count
-            cur.execute(f'SELECT COUNT(*) FROM "{name}"')
-            count = cur.fetchone()[0]
+            # Row count is scoped to what the caller is allowed to see.
+            clause, params = _acl_clause(name, user_id, is_admin)
+            where_sql = f" WHERE {clause}" if clause else ""
+            try:
+                cur.execute(f'SELECT COUNT(*) FROM "{name}"{where_sql}', params)
+                count = cur.fetchone()[0]
+            except sqlite3.OperationalError:
+                # ACL parent table missing (e.g. FTS or stale schema) — treat as 0
+                # for non-admins; admins still see the real count via the
+                # unfiltered query above falling through.
+                count = 0
             tables.append({"name": name, "columns": columns, "row_count": count})
         conn.close()
-        payload = {"tables": tables, "db": db}
+        payload = {"tables": tables, "db": db, "is_admin": is_admin}
         _TABLES_CACHE[cache_key] = (mtime, size, now + _TABLES_CACHE_TTL_S, payload)
         return payload
     except sqlite3.Error as e:
@@ -114,8 +246,19 @@ async def list_tables(
 
 
 @router.get("/users")
-async def list_users(db: str = Query("local.db", description="Database filename")):
-    """List distinct user IDs from the database."""
+async def list_users(
+    db: str = Query("local.db", description="Database filename"),
+    _auth: dict = Depends(require_db_auth),
+):
+    """List distinct user IDs from the database.
+
+    Non-admins only see their own user_id (so they can't enumerate other
+    accounts via this endpoint).
+    """
+    user_id, is_admin = _get_caller(_auth)
+    if not is_admin:
+        return {"users": [user_id] if user_id else [], "db": db}
+
     db_path = _get_db_path(db)
     try:
         conn = sqlite3.connect(str(db_path))
@@ -677,9 +820,9 @@ class UpdateRowRequest(BaseModel):
 @router.put("/update")
 async def update_row(
     req: UpdateRowRequest,
-    _auth: dict = Depends(require_db_auth),
+    _auth: dict = Depends(require_admin),
 ):
-    """Update a row in a table."""
+    """Update a row in a table. Admin-only."""
     db_path = _get_db_path(req.db)
     try:
         conn = sqlite3.connect(str(db_path))
@@ -731,9 +874,9 @@ class DeleteRowRequest(BaseModel):
 @router.delete("/row")
 async def delete_row(
     req: DeleteRowRequest,
-    _auth: dict = Depends(require_db_auth),
+    _auth: dict = Depends(require_admin),
 ):
-    """Delete a single row from a table, identified by the `where` clause."""
+    """Delete a single row from a table, identified by the `where` clause. Admin-only."""
     db_path = _get_db_path(req.db)
     try:
         conn = sqlite3.connect(str(db_path))
@@ -778,9 +921,9 @@ async def delete_row(
 async def reset_database(
     db: str = Query("local.db", description="Database filename"),
     exclude: list[str] = Query(default=["agent_templates", "agent_prompts", "auth_elements"], description="List of tables to exclude from reset"),
-    _auth: dict = Depends(require_db_auth),
+    _auth: dict = Depends(require_admin),
 ):
-    """Delete ALL rows from ALL tables. Skips excluded tables."""
+    """Delete ALL rows from ALL tables. Skips excluded tables. Admin-only."""
     db_path = _get_db_path(db)
     try:
         conn = sqlite3.connect(str(db_path))
@@ -817,9 +960,9 @@ async def reset_database(
 async def truncate_table(
     table: str = Query(..., description="Table name to truncate"),
     db: str = Query("local.db", description="Database filename"),
-    _auth: dict = Depends(require_db_auth),
+    _auth: dict = Depends(require_admin),
 ):
-    """Delete ALL rows from a table."""
+    """Delete ALL rows from a table. Admin-only."""
     db_path = _get_db_path(db)
     try:
         conn = sqlite3.connect(str(db_path))
@@ -871,18 +1014,30 @@ async def column_values(
         if column not in columns:
             raise HTTPException(status_code=404, detail=f"Column '{column}' not found in table '{table}'")
 
-        # Build query
-        if search:
-            query = f'SELECT DISTINCT "{column}" FROM "{table}" WHERE CAST("{column}" AS TEXT) LIKE ? ORDER BY "{column}" ASC'
-            cur.execute(query, [f"%{search}%"])
-        else:
-            query = f'SELECT DISTINCT "{column}" FROM "{table}" ORDER BY "{column}" ASC'
-            cur.execute(query)
+        # Restrict to the caller's rows (admins see everything).
+        user_id, is_admin = _get_caller(_auth)
+        acl_clause, acl_params = _acl_clause(table, user_id, is_admin)
 
+        where_parts = []
+        params: list = []
+        if acl_clause:
+            where_parts.append(acl_clause)
+            params.extend(acl_params)
+        if search:
+            where_parts.append(f'CAST("{column}" AS TEXT) LIKE ?')
+            params.append(f"%{search}%")
+
+        where_sql = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+        query = f'SELECT DISTINCT "{column}" FROM "{table}"{where_sql} ORDER BY "{column}" ASC'
+        cur.execute(query, params)
         values = [row[0] for row in cur.fetchall()]
 
-        # Total distinct count (without search)
-        cur.execute(f'SELECT COUNT(DISTINCT "{column}") FROM "{table}"')
+        # Total distinct count, scoped to the caller's rows.
+        count_where = (" WHERE " + acl_clause) if acl_clause else ""
+        cur.execute(
+            f'SELECT COUNT(DISTINCT "{column}") FROM "{table}"{count_where}',
+            acl_params if acl_clause else [],
+        )
         total = cur.fetchone()[0]
 
         conn.close()
@@ -951,9 +1106,15 @@ async def query_table(
         if not filter_specs and filter_col and filter_col in columns and filter_val:
             filter_specs.append({"col": filter_col, "op": filter_op, "val": filter_val})
 
-        # Build WHERE clause
+        # Build WHERE clause. ACL goes first so it always applies, regardless
+        # of any user-supplied filters.
         where_clauses = []
         where_params = []
+        user_id, is_admin = _get_caller(_auth)
+        acl_clause, acl_params = _acl_clause(table, user_id, is_admin)
+        if acl_clause:
+            where_clauses.append(acl_clause)
+            where_params.extend(acl_params)
         for spec in filter_specs:
             col = spec["col"]
             op = spec["op"]
@@ -1053,9 +1214,9 @@ async def list_databases(
 @router.delete("/file")
 async def delete_database_file(
     db: str = Query(..., description="Database filename to delete"),
-    _auth=Depends(require_db_auth),
+    _auth=Depends(require_admin),
 ):
-    """Delete a .db file (plus sidecar -wal/-shm) from the db directory.
+    """Delete a .db file (plus sidecar -wal/-shm) from the db directory. Admin-only.
 
     Refuses to delete local.db (primary app database).
     """
