@@ -163,13 +163,32 @@ body.light-mode .tutorial-popover-body { color: #334155; }
 .tutorial-popover-footer {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 8px;
   padding-top: 8px;
   border-top: 1px solid var(--border, #2a2a4a);
 }
 
 body.light-mode .tutorial-popover-footer { border-top-color: #e2e8f0; }
+
+.tutorial-popover-hideall {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-3, #565f89);
+  cursor: pointer;
+  user-select: none;
+}
+.tutorial-popover-hideall input {
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent, #7dcfff);
+}
+.tutorial-popover-hideall:hover { color: var(--fg-1, #c0caf5); }
+body.light-mode .tutorial-popover-hideall { color: #475569; }
+body.light-mode .tutorial-popover-hideall:hover { color: #0f172a; }
+body.light-mode .tutorial-popover-hideall input { accent-color: #2563eb; }
 
 .tutorial-popover-nav {
   display: inline-flex;

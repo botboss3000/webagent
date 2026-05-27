@@ -7,13 +7,17 @@
  * a CSS selector for its target element, and the popover title/body. Badges
  * for the steps that target the active tab (plus the always-visible header
  * steps and the chat-panel steps when the chat side is showing) are
- * rendered as numbered circles using each step's **global** index. The
- * popover's Prev/Next buttons walk the entire TOUR — auto-switching tabs
- * on boundary crossings and skipping past steps whose targets don't
- * currently resolve.
+ * rendered as numbered circles using each step's **global** index. Past
+ * steps (below the persisted `currentStep`) drop their badges so only the
+ * upcoming ones glow; going back via Prev brings them back. The popover's
+ * Prev/Next buttons walk the entire TOUR — auto-switching tabs on boundary
+ * crossings and skipping past steps whose targets don't currently resolve.
+ * Advancing past the final step auto-disables the tour. Each popover also
+ * exposes a "Hide all hints" checkbox that turns the tour off immediately.
  *
- * Prefs live in localStorage under "tutorialPrefs" as { enabled: bool }.
- * Older state ({ globalEnabled, pages }) is migrated on read.
+ * Prefs live in localStorage under "tutorialPrefs" as
+ * { enabled: bool, currentStep: number }. Older shapes
+ * ({ globalEnabled, pages }) are migrated on read.
  */
 
 const STORAGE_KEY = 'tutorialPrefs';
@@ -92,13 +96,16 @@ function _loadPrefs() {
     if (raw) {
       const p = JSON.parse(raw);
       if (p && typeof p === 'object') {
-        if (typeof p.enabled === 'boolean') return { enabled: p.enabled };
-        // Migrate the old { globalEnabled, pages } shape.
-        if (typeof p.globalEnabled === 'boolean') return { enabled: p.globalEnabled };
+        const enabled =
+          typeof p.enabled === 'boolean' ? p.enabled :
+          typeof p.globalEnabled === 'boolean' ? p.globalEnabled : true;
+        const rawStep = typeof p.currentStep === 'number' ? p.currentStep : 1;
+        const currentStep = Math.max(1, Math.min(TOTAL, rawStep));
+        return { enabled, currentStep };
       }
     }
   } catch (_) {}
-  return { enabled: true };
+  return { enabled: true, currentStep: 1 };
 }
 
 function _savePrefs(prefs) {
@@ -106,15 +113,27 @@ function _savePrefs(prefs) {
   document.dispatchEvent(new CustomEvent('tutorial-prefs-changed', { detail: prefs }));
 }
 
+function _persistCurrentStep(n) {
+  const prefs = _loadPrefs();
+  const clamped = Math.max(1, Math.min(TOTAL, n));
+  if (prefs.currentStep === clamped) return;
+  _savePrefs({ enabled: prefs.enabled, currentStep: clamped });
+}
+
 // Returns a back-compat shape so callers using either `.enabled` or the old
 // `.globalEnabled` keep working.
 export function getPrefs() {
   const p = _loadPrefs();
-  return { enabled: p.enabled, globalEnabled: p.enabled };
+  return { enabled: p.enabled, globalEnabled: p.enabled, currentStep: p.currentStep };
 }
 
 export function setEnabled(enabled) {
-  _savePrefs({ enabled: !!enabled });
+  // Re-enabling rewinds to step 1 so the user gets the full tour again.
+  const prefs = _loadPrefs();
+  _savePrefs({
+    enabled: !!enabled,
+    currentStep: enabled ? 1 : prefs.currentStep,
+  });
   refreshTutorial(_currentPage);
 }
 
@@ -324,9 +343,18 @@ function _switchToTab(tab, cb) {
 }
 
 function _gotoStep(targetStep, direction) {
+  // Advancing past the final step finishes the tour and turns it off.
+  if (targetStep > TOTAL) {
+    setEnabled(false);
+    return;
+  }
+
   while (targetStep >= 1 && targetStep <= TOTAL) {
     const step = TOUR[targetStep - 1];
     if (_stepInCurrentContext(step)) {
+      // Persist before re-rendering so badges below the new step are filtered.
+      _persistCurrentStep(targetStep);
+      _renderForPage(_currentPage);
       const b = _badges.find(x => x.step === targetStep);
       if (b) {
         _openPopover(b.el, b.hint, targetStep, TOTAL);
@@ -339,6 +367,7 @@ function _gotoStep(targetStep, direction) {
     }
     // Out of current context; switch and resume the walk on the other side.
     const want = targetStep;
+    _persistCurrentStep(want);
     _switchToTab(step.tab, () => {
       const b2 = _badges.find(x => x.step === want);
       if (b2) {
@@ -393,6 +422,20 @@ function _openPopover(badge, step, stepNum, total) {
   const footer = document.createElement('div');
   footer.className = 'tutorial-popover-footer';
 
+  const hideAll = document.createElement('label');
+  hideAll.className = 'tutorial-popover-hideall';
+  const hideCb = document.createElement('input');
+  hideCb.type = 'checkbox';
+  hideCb.addEventListener('change', (e) => {
+    e.stopPropagation();
+    if (hideCb.checked) setEnabled(false);
+  });
+  hideAll.appendChild(hideCb);
+  const hideTxt = document.createElement('span');
+  hideTxt.textContent = 'Hide all hints';
+  hideAll.appendChild(hideTxt);
+  footer.appendChild(hideAll);
+
   const nav = document.createElement('div');
   nav.className = 'tutorial-popover-nav';
   const prev = document.createElement('button');
@@ -406,9 +449,10 @@ function _openPopover(badge, step, stepNum, total) {
   });
   const next = document.createElement('button');
   next.type = 'button';
-  next.textContent = '›';
-  next.title = 'Next step';
-  next.disabled = stepNum >= total;
+  // Last step's Next finishes the tour and disables it.
+  const isLast = stepNum >= total;
+  next.textContent = isLast ? '✓' : '›';
+  next.title = isLast ? 'Finish tour' : 'Next step';
   next.addEventListener('click', (e) => {
     e.stopPropagation();
     _gotoStep(stepNum + 1, +1);
@@ -447,11 +491,15 @@ function _renderForPage(pageId) {
   const prefs = _loadPrefs();
   if (!prefs.enabled) return;
 
+  const currentStep = prefs.currentStep;
   const chatVisible = _isChatVisible();
   const overlay = _ensureOverlay();
 
   TOUR.forEach((step, idx) => {
     const stepNum = idx + 1;
+    // Hide badges for steps the user has already advanced past. Prev brings
+    // them back by decrementing currentStep.
+    if (stepNum < currentStep) return;
     const inContext =
       step.tab === '*' ||
       step.tab === pageId ||

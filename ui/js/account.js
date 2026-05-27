@@ -203,6 +203,11 @@ function wireHandlers() {
     tutorialGlobal.addEventListener('change', () => {
       setGlobalEnabled(tutorialGlobal.checked);
     });
+    // Keep the toggle in sync when the popover's "Hide all hints" flips it.
+    document.addEventListener('tutorial-prefs-changed', (e) => {
+      if (!document.body.contains(tutorialGlobal)) return;
+      tutorialGlobal.checked = !!(e.detail && e.detail.enabled);
+    });
   }
 }
 
