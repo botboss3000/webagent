@@ -192,13 +192,18 @@ export async function populateUserSelect() {
   }
   // Re-render the dropdown contents so the current-row + other accounts stay fresh
   renderUserDropdown();
-  // Populate session select for current user
+  // Refresh the agent list, which in turn refreshes sessions filtered by the
+  // resolved agent. Going through populateAgentSelect (rather than calling
+  // populateSessionSelect directly here) guarantees currentAgentId is set
+  // before the session query fires — otherwise the first fetch would have
+  // no agent_id filter and could clobber the filtered result on slow
+  // networks. Skipped while the session menu is open so the user doesn't
+  // lose their place mid-click.
   if (app.currentUserId) {
-    // Skip refresh while dropdown is open so user doesn't lose place
     const menu = document.getElementById('session-dropdown-menu');
     const isOpen = menu && !menu.hidden;
     if (!isOpen) {
-      populateSessionSelect(app.currentUserId);
+      populateAgentSelect(app.currentUserId);
     }
   }
 }
@@ -943,8 +948,10 @@ export function initSessions() {
     });
   }
 
+  // populateUserSelect now drives populateAgentSelect, which in turn drives
+  // populateSessionSelect — see the comment in populateUserSelect for why we
+  // funnel through that chain instead of starting two fetches in parallel.
   populateUserSelect().then(function () {
-    if (app.currentUserId) populateAgentSelect(app.currentUserId);
     if (app.currentSessionId) {
       loadSessionChat(app.currentSessionId);
     }
