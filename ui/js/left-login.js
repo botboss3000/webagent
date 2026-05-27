@@ -71,9 +71,50 @@ export function isAuthenticated() {
   return !!getAuthToken();
 }
 
-/** Check if the current user is admin (user_id === "admin_default"). */
+let _userIsAdmin = false;
+let _adminStatusFetched = false;
+
+/** Check if the current user is admin.
+ *
+ * Returns true when:
+ *   - the bootstrap user_id "admin_default" is signed in (legacy shortcut), OR
+ *   - the cached profile fetched via fetchAdminStatus() reports is_admin = 1.
+ */
 export function isAdmin() {
-  return localStorage.getItem('auth_user_id') === 'admin_default';
+  if (localStorage.getItem('auth_user_id') === 'admin_default') return true;
+  return _userIsAdmin;
+}
+
+/** Fetch the signed-in user's is_admin flag from /api/v1/user/profile and cache it.
+ * Dispatches an 'admin-status-loaded' event when done so the tab strip
+ * can update Admin Tools visibility. Anonymous visitors (no auth_token)
+ * resolve to is_admin=false without a network call.
+ */
+export async function fetchAdminStatus() {
+  const userId = localStorage.getItem('auth_user_id');
+  const token = localStorage.getItem('auth_token');
+  if (!userId || !token) {
+    _userIsAdmin = false;
+    _adminStatusFetched = true;
+    try {
+      window.dispatchEvent(new CustomEvent('admin-status-loaded', { detail: { is_admin: false } }));
+    } catch {}
+    return false;
+  }
+  try {
+    const res = await fetch(`/api/v1/user/profile?user_id=${encodeURIComponent(userId)}`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      _userIsAdmin = !!data.is_admin;
+    }
+  } catch (e) { /* keep default */ }
+  _adminStatusFetched = true;
+  try {
+    window.dispatchEvent(new CustomEvent('admin-status-loaded', { detail: { is_admin: _userIsAdmin } }));
+  } catch {}
+  return _userIsAdmin;
 }
 
 /** Show a "RESTRICTED ACCESS" overlay modal for non-admin users. */

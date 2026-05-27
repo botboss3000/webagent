@@ -1961,44 +1961,54 @@
               </div>
             </div>
 
-            <div class="ac-card">
-              <div class="ac-card-label">Access Mode</div>
-              <div class="ac-card-sublabel">Choose how new users can join this instance.</div>
-
-              <div id="ac-um-mode-group" style="display:flex;flex-direction:column;gap:10px;margin-top:12px;">
-                <label class="ac-um-radio">
-                  <input type="radio" name="ac-um-access-mode" value="public_anonymous" checked>
-                  <div>
-                    <div class="ac-um-radio-title">Open — anonymous users allowed</div>
-                    <div class="ac-um-radio-desc">Anyone can join. Visitors can chat without signing in. <em>(default)</em></div>
-                  </div>
-                </label>
-                <label class="ac-um-radio">
-                  <input type="radio" name="ac-um-access-mode" value="public_registered">
-                  <div>
-                    <div class="ac-um-radio-title">Open — registered users only</div>
-                    <div class="ac-um-radio-desc">Anyone can register, but chat requires a signed-in account.</div>
-                  </div>
-                </label>
-                <label class="ac-um-radio">
-                  <input type="radio" name="ac-um-access-mode" value="admin_approval">
-                  <div>
-                    <div class="ac-um-radio-title">Admin approval required</div>
-                    <div class="ac-um-radio-desc">New users register but cannot sign in until an admin approves them.</div>
-                  </div>
-                </label>
-                <label class="ac-um-radio">
-                  <input type="radio" name="ac-um-access-mode" value="private">
-                  <div>
-                    <div class="ac-um-radio-title">Private</div>
-                    <div class="ac-um-radio-desc">Registration is disabled. Only existing accounts can sign in.</div>
-                  </div>
-                </label>
+            <div class="ac-card" id="ac-um-access-card">
+              <div id="ac-um-access-header" style="display:flex;align-items:center;cursor:pointer;user-select:none;gap:10px;">
+                <i data-lucide="key-round" class="lucide-icon" style="width:16px;height:16px;color:var(--fg-muted);"></i>
+                <div style="flex:1;">
+                  <div class="ac-card-label" style="margin:0;">Access Mode</div>
+                  <div class="ac-card-sublabel" style="margin:0;">Choose how new users can join this instance.</div>
+                </div>
+                <span id="ac-um-access-chevron" style="display:flex;align-items:center;transition:transform 0.2s;color:var(--fg-muted);transform:rotate(90deg);">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+                </span>
               </div>
 
-              <div class="ac-actions" style="margin-top:14px;">
-                <button id="ac-um-save" class="ac-btn ac-btn-primary">Save</button>
-                <span id="ac-um-status" class="ac-status" style="display:none;"></span>
+              <div id="ac-um-access-body" style="margin-top:12px;">
+                <div id="ac-um-mode-group" style="display:flex;flex-direction:column;gap:10px;">
+                  <label class="ac-um-radio">
+                    <input type="radio" name="ac-um-access-mode" value="public_anonymous" checked>
+                    <div>
+                      <div class="ac-um-radio-title">Open — anonymous users allowed</div>
+                      <div class="ac-um-radio-desc">Anyone can join. Visitors can chat without signing in. <em>(default)</em></div>
+                    </div>
+                  </label>
+                  <label class="ac-um-radio">
+                    <input type="radio" name="ac-um-access-mode" value="public_registered">
+                    <div>
+                      <div class="ac-um-radio-title">Open — registered users only</div>
+                      <div class="ac-um-radio-desc">Anyone can register, but chat requires a signed-in account.</div>
+                    </div>
+                  </label>
+                  <label class="ac-um-radio">
+                    <input type="radio" name="ac-um-access-mode" value="admin_approval">
+                    <div>
+                      <div class="ac-um-radio-title">Admin approval required</div>
+                      <div class="ac-um-radio-desc">New users register but cannot sign in until an admin approves them.</div>
+                    </div>
+                  </label>
+                  <label class="ac-um-radio">
+                    <input type="radio" name="ac-um-access-mode" value="private">
+                    <div>
+                      <div class="ac-um-radio-title">Private</div>
+                      <div class="ac-um-radio-desc">Registration is disabled. Only existing accounts can sign in.</div>
+                    </div>
+                  </label>
+                </div>
+
+                <div class="ac-actions" style="margin-top:14px;">
+                  <button id="ac-um-save" class="ac-btn ac-btn-primary">Save</button>
+                  <span id="ac-um-status" class="ac-status" style="display:none;"></span>
+                </div>
               </div>
             </div>
 
