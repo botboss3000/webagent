@@ -2068,6 +2068,20 @@
                 <div style="margin-top:10px;padding:10px 12px;background:rgba(224,175,104,0.12);border:1px solid rgba(224,175,104,0.4);border-radius:6px;color:#e0af68;font-size:13px;line-height:1.5;">
                   <strong>Warning:</strong> Any agents currently configured to use the app default LLM will have their LLM disconnected. They will stop working until an admin assigns them a custom LLM.
                 </div>
+                <!-- PRESENTATION-MODE START — delete this entire block to remove the demo toggle -->
+                <div class="ac-field" style="margin-top:18px;padding-top:18px;border-top:1px solid var(--border,#2a2a4a);">
+                  <label class="ac-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                    <input type="checkbox" id="ac-presentation-mode" style="width:15px;height:15px;accent-color:#7aa2f7;cursor:pointer;">
+                    Presentation mode (read-only admin demo)
+                  </label>
+                  <div class="ac-hint">
+                    Lets anonymous + non-admin visitors browse the Admin Tools as a
+                    read-only walkthrough. Clicking any mutating control shows a hover
+                    notice. <strong>Turn this off once you fork the app to your own
+                    repo to fully restrict access.</strong>
+                  </div>
+                </div>
+                <!-- PRESENTATION-MODE END -->
               </div>
               <div class="ac-actions">
                 <button id="ac-app-settings-save" class="ac-btn ac-btn-primary">Save</button>

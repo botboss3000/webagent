@@ -78,6 +78,7 @@ export function initAutoAgent() {
 
   if (newBtn) newBtn.addEventListener('click', () => showNewPageDialog());
 
+  _bindFooterToggle();
   _bindPageDropdown();
 
   // New-page dialog confirm/cancel
@@ -89,6 +90,25 @@ export function initAutoAgent() {
   if (dialogInput)   dialogInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') submitNewPage();
     if (e.key === 'Escape') hideNewPageDialog();
+  });
+}
+
+// ── Footer toggle (chevron at top edge of the footer) ────────────────────────
+
+function _bindFooterToggle() {
+  const btn = document.getElementById('autoagent-footer-toggle');
+  const footer = document.getElementById('autoagent-footer');
+  if (!btn || !footer) return;
+  btn.addEventListener('click', () => {
+    const collapsed = footer.classList.toggle('aa-collapsed');
+    btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    btn.title = collapsed ? 'Show search and chat' : 'Hide search and chat';
+    btn.setAttribute('aria-label', btn.title);
+    const wrap = btn.querySelector('.aa-footer-toggle-icon');
+    if (wrap) {
+      const name = collapsed ? 'chevron-up' : 'chevron-down';
+      wrap.innerHTML = `<i data-lucide="${name}" style="width:14px;height:14px;"></i>`;
+    }
   });
 }
 
