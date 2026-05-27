@@ -33,8 +33,8 @@ When `presentation_mode` is on in `app-settings.json`:
 
 ## Toggling it on/off
 
-Sign in as admin → Admin Tools → Settings → User Management → Access Mode
-card → check or uncheck **"Presentation mode (read-only admin demo)"** → Save.
+Sign in as admin → Admin Tools → App Configuration → **App Settings** tab →
+check or uncheck **"Presentation mode (read-only admin demo)"** → Save.
 
 ## Removing it entirely (clone-time)
 
