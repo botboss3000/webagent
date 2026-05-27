@@ -2123,6 +2123,10 @@ async function _loadAppSettings() {
     const data = await res.json();
     const cb = _qs('ac-extend-llm-to-agents');
     if (cb) cb.checked = data.extend_llm_to_agents !== false;
+    // ── PRESENTATION-MODE START ── (delete to remove the demo toggle load)
+    const presCb = _qs('ac-presentation-mode');
+    if (presCb) presCb.checked = !!data.presentation_mode;
+    // ── PRESENTATION-MODE END ──
   } catch (e) {
     console.warn('app-config: could not load app settings', e);
   }
@@ -2131,11 +2135,19 @@ async function _loadAppSettings() {
 async function _saveAppSettings() {
   const cb = _qs('ac-extend-llm-to-agents');
   const statusEl = _qs('ac-app-settings-status');
+  // ── PRESENTATION-MODE START ── (delete these 2 lines to remove the demo toggle save)
+  const presCb = _qs('ac-presentation-mode');
+  const presentation = !!(presCb && presCb.checked);
+  // ── PRESENTATION-MODE END ──
   try {
     const res = await _fetch(apiPath('/admin/settings/app'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ extend_llm_to_agents: cb ? cb.checked : true }),
+      body: JSON.stringify({
+        extend_llm_to_agents: cb ? cb.checked : true,
+        // ── PRESENTATION-MODE: delete the next line to drop the demo toggle from save
+        presentation_mode: presentation,
+      }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     if (statusEl) {
@@ -2144,6 +2156,13 @@ async function _saveAppSettings() {
       statusEl.style.display = 'block';
       setTimeout(() => { statusEl.style.display = 'none'; }, 3000);
     }
+    // ── PRESENTATION-MODE START ── (delete to drop the broadcast; harmless otherwise)
+    try {
+      window.dispatchEvent(new CustomEvent('access-mode-changed', {
+        detail: { presentation_mode: presentation },
+      }));
+    } catch {}
+    // ── PRESENTATION-MODE END ──
   } catch (e) {
     if (statusEl) {
       statusEl.textContent = `Error: ${e.message}`;
@@ -2181,10 +2200,6 @@ async function _loadUserManagement() {
       const mode = data.access_mode || 'public_anonymous';
       const radio = document.querySelector(`input[name="ac-um-access-mode"][value="${mode}"]`);
       if (radio) radio.checked = true;
-      // ── PRESENTATION-MODE START ── (delete to remove checkbox load)
-      const presCb = _qs('ac-um-presentation-mode');
-      if (presCb) presCb.checked = !!data.presentation_mode;
-      // ── PRESENTATION-MODE END ──
     }
   } catch (e) {
     console.warn('user-management: could not load access mode', e);
@@ -2261,10 +2276,6 @@ async function _saveUserManagement() {
   const selected = document.querySelector('input[name="ac-um-access-mode"]:checked');
   const mode = selected ? selected.value : 'public_anonymous';
   const extendCb = _qs('ac-extend-llm-to-agents');
-  // ── PRESENTATION-MODE START ── (delete this line to drop the demo toggle)
-  const presCb = _qs('ac-um-presentation-mode');
-  const presentation = !!(presCb && presCb.checked);
-  // ── PRESENTATION-MODE END ──
 
   const statusEl = _qs('ac-um-status');
   try {
@@ -2274,9 +2285,6 @@ async function _saveUserManagement() {
       body: JSON.stringify({
         access_mode: mode,
         extend_llm_to_agents: extendCb ? extendCb.checked : true,
-        // ── PRESENTATION-MODE START ── (delete the next line to drop the demo toggle)
-        presentation_mode: presentation,
-        // ── PRESENTATION-MODE END ──
       }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -2288,10 +2296,7 @@ async function _saveUserManagement() {
     }
     // Broadcast to other modules (sign-in modal, chat gate)
     try {
-      window.dispatchEvent(new CustomEvent('access-mode-changed', {
-        // ── PRESENTATION-MODE: drop the `presentation_mode` key in the detail to remove
-        detail: { access_mode: mode, presentation_mode: presentation },
-      }));
+      window.dispatchEvent(new CustomEvent('access-mode-changed', { detail: { access_mode: mode } }));
     } catch {}
   } catch (e) {
     if (statusEl) {
