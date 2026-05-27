@@ -16,7 +16,7 @@ import { startAutoRefresh, stopAutoRefresh } from './db/pagination.js';
 import { startLoop, stopLoop, renderInteractionsSidebar } from './loop.js';
 import { startLoopVisual, stopLoopVisual, renderRuntimeLoopSidebar } from './loop-logic.js';
 // ── PRESENTATION-MODE START ── (delete the next 2 lines + the calls to these helpers below)
-import { isPresentationMode } from './left-login.js';
+import { isPresentationMode, showRestrictedModal } from './left-login.js';
 import { enablePresentationMode, applyPresentationGate } from './presentation-mode.js';
 // ── PRESENTATION-MODE END ──
 
@@ -2481,6 +2481,15 @@ function initSidebarMaximize() {
       e.stopPropagation();
       const v = stripView.dataset.view;
       if (!v) return;
+      // Belt-and-braces: non-admin clicking a strip view should re-show the
+      // restricted overlay rather than activate the sub-page. The parent
+      // gate in startAdminTools normally hides this strip already; this
+      // covers DevTools-style bypasses where someone unhides #admin-tools
+      // without re-running /check-access.
+      if (!isAdmin) {
+        showRestrictedModal();
+        return;
+      }
       applySidebarView(v);
       try { localStorage.setItem(LS_SIDEBAR_VIEW, v); } catch (_) {}
       // Other views need the panel column visible — expand from strip
@@ -2645,6 +2654,13 @@ function applySidebarView(view) {
   document.querySelectorAll('#admin-tools .files-main[data-view]').forEach((el) => {
     el.hidden = (el.id !== wantId);
   });
+  // Non-admin (or pre-check-access): stop here. Skip per-view background
+  // work (polls, fetches, lazy panel renders) so a non-admin who somehow
+  // reaches this code path — or the brief window before startAdminTools'
+  // /check-access has set the local isAdmin flag — doesn't kick off
+  // database/loop/git polling. startAdminTools re-calls applySidebarView
+  // after the access check so the side effects fire for real admins.
+  if (!isAdmin) return;
   // Per-view background work (poll loops, lazy renders).
   if (view === 'database') {
     try { startAutoRefresh(); } catch (_) {}
@@ -2919,6 +2935,15 @@ export async function startAdminTools() {
   }
   // ── PRESENTATION-MODE END ──
 
+  // Re-apply the current sidebar view now that admin status is confirmed.
+  // initFiles() called applySidebarView() before /check-access resolved, at
+  // which point the cached isAdmin() may still have been false — so the
+  // per-view side effects (git/terminal/database panels) were skipped by
+  // the guard. Re-running here lets them fire for the real admin.
+  const sb = document.getElementById('files-sidebar');
+  const view = sb?.dataset.view || 'explorer';
+  applySidebarView(view);
+
   // Load tree (always refresh on tab activation so the user sees current state)
   await loadRoot();
 
@@ -2931,16 +2956,6 @@ export async function startAdminTools() {
   if (activeTermTab && activeTermTab.instance) {
     setTimeout(() => activeTermTab.instance.fit(), 30);
   }
-
-  // Resume background polling for whichever view is currently active.
-  // The view persists across top-level tab switches; we just need to
-  // restart its loop now that Admin Tools is on screen again.
-  const sb = document.getElementById('files-sidebar');
-  const view = sb?.dataset.view;
-  if (view === 'settings')          try { startAppConfig(); } catch (_) {}
-  else if (view === 'database')     try { startAutoRefresh(); } catch (_) {}
-  else if (view === 'interactions') try { startLoop(); } catch (_) {}
-  else if (view === 'runtime-loop') try { startLoopVisual(); } catch (_) {}
 }
 
 export function stopAdminTools() {

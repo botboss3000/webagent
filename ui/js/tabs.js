@@ -115,4 +115,24 @@ export function initTabs() {
   }
 
   activateTab(tabSelect.value);
+
+  // Reveal the saved tab. The pre-paint script (index.html) sets
+  // body.boot-chat-only so chat fills the stage at first paint and the
+  // wrong tab never flashes. Now that the saved tab content has been
+  // mounted by activateTab(), play the chosen transition: add
+  // .boot-revealing FIRST (so its transition rules are registered),
+  // then on the next frame drop .boot-chat-only so the layout changes
+  // animate instead of snapping. Remove .boot-revealing after the
+  // animation duration so normal interactions don't pay the ease cost.
+  if (document.body.classList.contains('boot-chat-only')) {
+    requestAnimationFrame(() => {
+      document.body.classList.add('boot-revealing');
+      requestAnimationFrame(() => {
+        document.body.classList.remove('boot-chat-only');
+        setTimeout(() => {
+          document.body.classList.remove('boot-revealing');
+        }, 480);
+      });
+    });
+  }
 }
