@@ -14,40 +14,50 @@
   position: relative;
 }
 
-/* Chevron at the top edge of the footer: collapses the search+chat row so
-   the viewport can use the full height. Centered above the page nav. */
-.aa-footer-toggle {
-  align-self: center;
+/* Collapse the whole footer when toggled — viewport takes the full height
+   and the floating expand button is shown via the rule below. */
+#autoagent-footer.aa-collapsed { display: none; }
+
+/* Floating expand button: round, semi-transparent, hovers over the
+   bottom-right corner of the container (no visible footer). */
+.aa-footer-expand {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  z-index: 5;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 32px;
-  height: 18px;
-  margin: 0 0 2px;
+  height: 32px;
   padding: 0;
-  background: transparent;
-  border: none;
-  color: #565f89;
-  border-radius: 6px;
-  cursor: pointer;
-  opacity: 0.7;
-  transition: opacity 0.15s, color 0.15s, background 0.15s;
-}
-.aa-footer-toggle:hover {
-  opacity: 1;
+  border: 1px solid #2a2a4a;
+  border-radius: 50%;
+  background: rgba(18, 18, 30, 0.72);
   color: #c0caf5;
-  background: rgba(122, 162, 247, 0.08);
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
-
-#autoagent-footer.aa-collapsed > #autoagent-page-nav,
-#autoagent-footer.aa-collapsed > #autoagent-prompt-bar {
-  display: none;
+.aa-footer-expand:hover {
+  background: rgba(30, 30, 60, 0.92);
+  border-color: #7aa2f7;
+  color: #7dcfff;
 }
+.aa-footer-expand[hidden] { display: none; }
 
-body.light-mode .aa-footer-toggle { color: #b09580; }
-body.light-mode .aa-footer-toggle:hover {
+body.light-mode .aa-footer-expand {
+  background: rgba(255, 255, 255, 0.85);
+  border-color: #ffdec4;
   color: #3d2c2e;
-  background: rgba(255, 140, 66, 0.10);
+  box-shadow: 0 4px 12px rgba(61, 44, 46, 0.18);
+}
+body.light-mode .aa-footer-expand:hover {
+  background: rgba(255, 250, 245, 0.98);
+  border-color: #ff8c42;
+  color: #cc6a28;
 }
 
 /* ── Page Nav Bar ── */
@@ -185,6 +195,7 @@ body.light-mode #aa-page-label { color: #b09580; }
   flex-direction: column;
   height: 100%;
   width: 100%;
+  position: relative;
 }
 
 /* ── Prompt Bar ──
