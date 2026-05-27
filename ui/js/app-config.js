@@ -2130,6 +2130,16 @@ async function _saveAppSettings() {
 function _initUserManagement() {
   _qs('ac-um-save')?.addEventListener('click', _saveUserManagement);
   _qs('ac-um-users-header')?.addEventListener('click', _toggleUsersCard);
+  _qs('ac-um-access-header')?.addEventListener('click', _toggleAccessModeCard);
+}
+
+function _toggleAccessModeCard() {
+  const body = _qs('ac-um-access-body');
+  const chev = _qs('ac-um-access-chevron');
+  if (!body) return;
+  const open = body.style.display === 'none';
+  body.style.display = open ? '' : 'none';
+  if (chev) chev.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)';
 }
 
 async function _loadUserManagement() {

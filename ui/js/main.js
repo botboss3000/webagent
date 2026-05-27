@@ -19,7 +19,7 @@ import { initAccount } from './account.js';
 import { initFiles, relocateAdminToolsContainers } from './files.js';
 import { initChatResize } from './chatResize.js';
 import { initTutorial } from './tutorial.js';
-import { isAuthenticated, showLeftOverlay, hideLeftOverlay } from './left-login.js';
+import { fetchAdminStatus, isAdmin } from './left-login.js';
 import './icons.js'; // auto-renders Lucide icons on DOM mutations
 import { randomUUID } from './uuid.js';
 
@@ -135,13 +135,39 @@ function _safeInit(name, fn) {
   }
 }
 
+// Apply Admin Tools tab visibility based on the user's is_admin flag.
+// The tab button + status-bar <select> option are hidden for anyone who
+// is not an admin (anonymous visitors and signed-in non-admin users alike).
+function _applyAdminToolsVisibility() {
+  const admin = isAdmin();
+  document.querySelectorAll('.main-tab[data-value="admin-tools"]').forEach(el => {
+    el.style.display = admin ? '' : 'none';
+  });
+  const opt = document.querySelector('#main-tab-select option[value="admin-tools"]');
+  if (opt) opt.disabled = !admin;
+
+  // If the last-active tab was Admin Tools but the user is no longer admin,
+  // bounce them to Pages so they don't see an empty pane.
+  if (!admin) {
+    const sel = document.getElementById('main-tab-select');
+    if (sel && sel.value === 'admin-tools') {
+      sel.value = 'autoagent';
+      sel.dispatchEvent(new Event('change'));
+    }
+  }
+}
+
+window.addEventListener('admin-status-loaded', _applyAdminToolsVisibility);
+
 // Wait for anon session (if needed) before running the rest of init,
 // so auth_token + user_id are available for all downstream modules.
 _anonReady.then(() => {
-  // ── Left panel login gate ───────────────────────────────────────────
-  if (!isAuthenticated()) {
-    showLeftOverlay();
-  }
+  // Hide Admin Tools immediately (synchronous check covers admin_default
+  // bootstrap); fetchAdminStatus() will re-check against the server profile
+  // and dispatch 'admin-status-loaded' to refine the visibility.
+  _applyAdminToolsVisibility();
+  fetchAdminStatus();
+
   _safeInit('initStorageUi',        initStorageUi);
   _safeInit('initChat',             initChat);
   _safeInit('ensureAttachmentsInit', ensureAttachmentsInit);
@@ -155,6 +181,9 @@ _anonReady.then(() => {
   }
 
   _safeInit('initTabs',        initTabs);
+  // Re-apply once tabs have read lastActiveTab from localStorage — bounces
+  // the user off admin-tools if it was their last tab but they aren't admin.
+  _applyAdminToolsVisibility();
   _safeInit('initLoop',        initLoop);
   _safeInit('initLoopVisual',  initLoopVisual);
   // Move parked Admin Tools markup (App Config + Database viewer) into the
