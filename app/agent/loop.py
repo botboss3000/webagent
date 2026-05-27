@@ -66,8 +66,15 @@ _current_api_key = None
 # These are always treated as destructive regardless of agent safety_policy.
 # Per-agent additions live in agents.safety_policy.destructive_tools.
 # Per-tool overrides live in tools.requires_confirmation.
-DESTRUCTIVE_TOOLS = frozenset({"edit_source", "write_source", "delete_source",
-                                "run_command", "restart_server"})
+# `write_source`, `edit_source`, and `delete_source` are NOT in this set —
+# the agent is trusted to execute explicit user commands directly.
+# The permission nuance (direct command vs. autonomous decision) is handled
+# by the agent's system prompt, which tells the LLM:
+#   "If the user directly commands a delete, just do it.
+#    If you decide to delete on your own initiative, ask first."
+# What remains gated: arbitrary shell commands (with read-only exemption)
+# and server restart.
+DESTRUCTIVE_TOOLS = frozenset({"run_command", "restart_server"})
 
 # ── run_command per-arg exemption: read-only shell commands skip the gate ──
 # `run_command` is destructive by default (it can do anything), but inspect-only
@@ -1230,14 +1237,14 @@ async def stream_agent_events(
                     "tool_calls": full_tool_calls,
                 })
 
-                # Persist intermediate assistant message (with tool calls)
+                # Persist intermediate assistant message — clean content, no tool-call echo
                 assistant_content = collected_content or ""
-                if full_tool_calls:
-                    tool_calls_summary = json.dumps([
-                        {"name": tc["function"]["name"], "args": tc["function"]["arguments"]}
-                        for tc in full_tool_calls
-                    ])
-                    assistant_content += f"\n\n[Tool calls: {tool_calls_summary}]"
+                # Tool calls are stored in the `output` field (line 1247 below),
+                # NOT embedded in the content string. The legacy `\n\n[Tool calls: ...]`
+                # suffix was removed because it contaminated message history: the LLM
+                # would see its own tool calls echoed as text in the next turn, causing
+                # it to write tool calls as text instead of making structured calls.
+                # session_history.py reads tool calls from the `output` field instead.
                 meta_asst = _build_meta("assistant", input_tokens, output_tokens, llm_cost)
                 inp = _build_input()
                 outp = json.dumps({"role": "assistant", "content": collected_content, "tool_calls": full_tool_calls})

@@ -19,10 +19,13 @@
 | Tool | Action | Requires confirmation |
 |------|--------|-----------------------|
 | `read_source` | Read any file on the system | ❌ No |
-| `write_source` | Create or overwrite files (auto-backup) | ✅ Yes |
-| `edit_source` | Replace exact text in a file | ✅ Yes |
-| `delete_source` | Delete files or directories | ✅ Yes |
-| `run_command` | Execute arbitrary shell commands | ✅ Yes |
+| `write_source` | Create or overwrite files (auto-backup) | ❌ No — just write |
+| `edit_source` | Replace exact text in a file | ❌ No — just edit |
+| `delete_source` | Delete files or directories | ❌ No if user commands it. ✅ Yes if own initiative |
+| `search_source` | grep-style regex search across files | ❌ No — always safe |
+| `read_directory` | List files with size and metadata | ❌ No — always safe |
+| `git_tool` | Structured git operations | ❌ No for read-only (status/log/diff). ✅ Yes for mutating (commit/push) |
+| `run_command` | Execute arbitrary shell commands | ❌ No for read-only. ✅ Yes for mutating |
 | `restart_server` | Kill and restart the webAgent process | ✅ Yes |
 
 ## How injection works
