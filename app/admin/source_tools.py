@@ -423,7 +423,18 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
         if search_path.is_file():
             files_to_search = [search_path]
         else:
-            files_to_search = list(search_path.rglob("*"))
+            # Exclude large/irrelevant dirs to avoid hangs
+            _EXCLUDE_DIRS = {"__pycache__", "node_modules", ".git", ".venv",
+                             "venv", "env", ".source-backups", "temp",
+                             ".mypy_cache", ".pytest_cache", ".cache"}
+            all_files = []
+            for f in search_path.rglob("*"):
+                if any(part in _EXCLUDE_DIRS for part in f.parts):
+                    continue
+                all_files.append(f)
+                if len(all_files) > 50000:
+                    return "Error: too many files to search (50,000+). Narrow your search path or file pattern."
+            files_to_search = all_files
             if file_pattern:
                 files_to_search = [f for f in files_to_search
                                    if f.is_file() and f.match(file_pattern)]
@@ -474,6 +485,10 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
 
         lines: List[str] = []
 
+        _EXCLUDE_DIRS = {"__pycache__", "node_modules", ".git", ".venv",
+                         "venv", "env", ".source-backups", "temp",
+                         ".mypy_cache", ".pytest_cache", ".cache"}
+
         def _walk(p: Path, current_depth: int):
             if current_depth > depth:
                 return
@@ -483,6 +498,8 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
                 return
             for entry in entries:
                 if entry.name.startswith("."):
+                    continue
+                if entry.is_dir() and entry.name in _EXCLUDE_DIRS:
                     continue
                 indent = "  " * current_depth
                 if entry.is_dir():
