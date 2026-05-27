@@ -185,6 +185,7 @@
 </style>
 </head>
 <body>
+<div id="boot-spinner" class="boot-spinner" aria-hidden="true"></div>
 <canvas class="stargaze-canvas" id="stargaze-bg"></canvas>
 <div class="stargaze-overlay"></div>
 <script>
@@ -213,17 +214,26 @@
       document.body.classList.toggle('chat-visible', visible);
       document.body.classList.toggle('chat-hidden', !visible);
     } catch (_) {}
-    // Pre-paint: always boot with chat full-screen. The saved tab partial
-    // takes a moment to mount, and without this we briefly flash the wrong
-    // tab content. tabs.js removes boot-chat-only and adds boot-revealing
-    // once the saved tab is activated. The data-boot-anim attribute picks
-    // which CSS transition variant runs during the reveal.
+    // Pre-paint: boot with chat full-screen so the saved tab partial has
+    // time to mount before it animates in. tabs.js removes boot-chat-only
+    // and adds boot-revealing once the saved tab is activated. is-booting
+    // drives the centered spinner and is also cleared by tabs.js. On
+    // mobile, bootMobileMode='memory' + a saved chat-hidden state skips
+    // the chat-first boot entirely and restores the last page directly.
     try {
+      var isMobileBoot = window.innerWidth <= 800;
+      var mobileMode = localStorage.getItem('bootMobileMode') || 'chat-first';
+      if (mobileMode !== 'chat-first' && mobileMode !== 'memory') mobileMode = 'chat-first';
+      var savedChatHiddenMobile = localStorage.getItem('chatPanelVisibleMobile') === 'false';
+      var skipChatFirst = isMobileBoot && mobileMode === 'memory' && savedChatHiddenMobile;
       var anim = localStorage.getItem('bootAnimation') || 'chat-slide-right';
       var allowed = { 'chat-slide-right': 1, 'page-slide-in': 1, 'crossfade': 1 };
       if (!allowed[anim]) anim = 'chat-slide-right';
-      document.body.classList.add('boot-chat-only');
-      document.body.setAttribute('data-boot-anim', anim);
+      document.body.classList.add('is-booting');
+      if (!skipChatFirst) {
+        document.body.classList.add('boot-chat-only');
+        document.body.setAttribute('data-boot-anim', anim);
+      }
     } catch (_) {}
   })();
 </script>
