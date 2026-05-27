@@ -5,7 +5,20 @@ import { getPKColumns, getDisplayColumns, saveColumnOrder } from "./columns.js";
 import { initColumnResize } from "./columnResize.js";
 import { formatJsonAsHtml } from "../json-tree.js";
 import { apiPath } from "../config.js";
-import { authUrl } from "../left-login.js";
+import { authUrl, isAdmin } from "../left-login.js";
+
+const RESTRICTED_EDIT_TIP = 'Restricted: only admins can edit rows';
+const RESTRICTED_DELETE_TIP = 'Restricted: only admins can delete rows';
+
+function editBtnHtml() {
+  if (isAdmin()) return '<button class="db-cell-edit" title="Edit inline">✎</button>';
+  return `<button class="db-cell-edit restricted" disabled title="${RESTRICTED_EDIT_TIP}">✎</button>`;
+}
+
+function deleteBtnHtml(ri) {
+  if (isAdmin()) return `<button class="db-row-delete" data-ri="${ri}" title="Delete row">🗑</button>`;
+  return `<button class="db-row-delete restricted" data-ri="${ri}" disabled title="${RESTRICTED_DELETE_TIP}">🗑</button>`;
+}
 
 /**
  * ── Persistence helpers ──
@@ -428,15 +441,22 @@ const HAS_HOVER = typeof window !== 'undefined' && window.matchMedia
   : true;
 
 let _cellOverlay = null;
+let _cellOverlayAdmin = null;
 function getCellOverlay() {
-  if (_cellOverlay && _cellOverlay.isConnected) return _cellOverlay;
-  // The cell may have been wiped (edit mode replaces innerHTML); rebuild.
+  // Rebuild when the cell was wiped (edit mode replaces innerHTML) or when
+  // admin status flipped since the last build (so the edit button picks up
+  // the restricted state).
+  const adminNow = isAdmin();
+  if (_cellOverlay && _cellOverlay.isConnected && _cellOverlayAdmin === adminNow) {
+    return _cellOverlay;
+  }
   const span = document.createElement('span');
   span.className = 'db-cell-overlay';
   span.innerHTML =
-    '<button class="db-cell-edit" title="Edit inline">✎</button>' +
+    editBtnHtml() +
     '<button class="db-cell-expand" title="Open full viewer">↗</button>';
   _cellOverlay = span;
+  _cellOverlayAdmin = adminNow;
   return span;
 }
 
@@ -604,7 +624,7 @@ function renderTableData(result, silent) {
       : `<pre class="db-cell-pre">${display}</pre>`;
     if (HAS_HOVER) return inner;
     // Touch fallback: inline buttons so first-tap access still works.
-    return `<button class="db-cell-edit" title="Edit inline">✎</button>${inner}<button class="db-cell-expand" title="Open full viewer">↗</button>`;
+    return `${editBtnHtml()}${inner}<button class="db-cell-expand" title="Open full viewer">↗</button>`;
   }
 
   // Column width strategy
@@ -623,7 +643,7 @@ function renderTableData(result, silent) {
     const trStyle = isInteractions ? ' style="height:100px"' : '';
     const pkAttr = pk !== null && pk !== undefined ? ` data-pk="${String(pk).replace(/"/g, '&quot;')}"` : '';
     let h = `<tr class="${rowClass}" data-ri="${ri}"${pkAttr}${trStyle}>`;
-    h += `<td class="db-row-delete-td"><button class="db-row-delete" data-ri="${ri}" title="Delete row">🗑</button></td>`;
+    h += `<td class="db-row-delete-td">${deleteBtnHtml(ri)}</td>`;
     for (const col of displayCols) {
       const val = row[col];
       const w = getColWidth(result.table, col);
@@ -632,7 +652,7 @@ function renderTableData(result, silent) {
       const { html: display, isJson } = fmtCell(val);
       const safeVal = String(val).replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const inner = isJson ? `<div class="db-cell-json">${display}</div>` : `<pre class="db-cell-pre">${display}</pre>`;
-      const touchButtons = HAS_HOVER ? '' : '<button class="db-cell-edit" title="Edit inline">✎</button>';
+      const touchButtons = HAS_HOVER ? '' : editBtnHtml();
       const touchExpand = HAS_HOVER ? '' : '<button class="db-cell-expand" title="Open full viewer">↗</button>';
       h += `<td class="db-cell ${cls}"${style} data-row="${ri}" data-col="${col}" data-val="${safeVal}">${touchButtons}${inner}${touchExpand}</td>`;
     }

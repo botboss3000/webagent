@@ -5,7 +5,7 @@ import { getPKColumns } from './columns.js';
 import { cancelEditing, renderTableData } from './query-render.js';
 import { openCellPopup } from './modal.js';
 import { apiPath } from '../config.js';
-import { authHeaders, isAuthenticated } from '../left-login.js';
+import { authHeaders, isAuthenticated, isAdmin } from '../left-login.js';
 
 export async function saveEdit(cell, newValue) {
   if (!app.editingCell || !app.dbCurrentResult) return;
@@ -70,6 +70,7 @@ export function initDbCellEditors() {
 
     // Admin-only editing: require authentication
     if (!isAuthenticated()) return;
+    if (!isAdmin()) return;  // hover tooltip on the button explains why
     if (
       app.editingCell &&
       app.editingCell.rowIndex === ri &&

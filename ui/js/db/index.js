@@ -1,8 +1,9 @@
 'use strict';
 
+import { app } from '../state.js';
 import { queryTable } from './query-render.js';
 import { initJsonToggle } from '../json-tree.js';
-import { setTableDeps } from './tables.js';
+import { setTableDeps, renderTableList, fetchTables } from './tables.js';
 import { initGlobalColumnResizeListeners } from './columnResize.js';
 import { initDbCellEditors } from './edit.js';
 import { initDbRowDelete } from './delete.js';
@@ -22,4 +23,15 @@ export function initDbViewer() {
   initDbPaginationAndToolbar();
   initCellModal();
   runInitialDbTableLoad();
+
+  // Admin status arrives after init. When it lands, re-fetch table counts
+  // (server-side filtering now depends on admin status) and re-render the
+  // current view so button restricted-state matches the loaded admin flag.
+  window.addEventListener('admin-status-loaded', () => {
+    const dbName = document.getElementById('db-select')?.value || 'local.db';
+    fetchTables(dbName).then(() => {
+      renderTableList();
+      if (app.dbSelectedTable) queryTable(app.dbSelectedTable);
+    });
+  });
 }

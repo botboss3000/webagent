@@ -4,8 +4,10 @@ import { app } from '../state.js';
 import { queryTable, updatePageInfo, cancelEditing, loadPersistedDbState, getSortForTable } from './query-render.js';
 import { fetchTables, renderTableList, updateTableCounts } from './tables.js';
 import { apiPath } from '../config.js';
-import { authUrl } from '../left-login.js';
+import { authUrl, isAdmin } from '../left-login.js';
 import { randomUUID } from '../uuid.js';
+
+const RESTRICTED_RESET_TIP = 'Restricted: only admins can reset the database';
 
 const QUERY_REFRESH_MS = 3000;
 const TABLES_REFRESH_MS = 20000;
@@ -80,8 +82,28 @@ export function initDbPaginationAndToolbar() {
   const resetOptions = document.getElementById('db-reset-options');
   const resetApply = document.getElementById('db-reset-apply');
 
+  // Reflect the admin-only restriction on the toolbar reset button so it
+  // gets a hover tooltip and a disabled look for non-admins. We refresh
+  // this whenever admin status is loaded — the page renders before the
+  // profile fetch completes.
+  function syncResetBtnState() {
+    if (!resetBtn) return;
+    if (isAdmin()) {
+      resetBtn.classList.remove('restricted');
+      resetBtn.disabled = false;
+      resetBtn.title = '';
+    } else {
+      resetBtn.classList.add('restricted');
+      resetBtn.disabled = true;
+      resetBtn.title = RESTRICTED_RESET_TIP;
+    }
+  }
+  syncResetBtnState();
+  window.addEventListener('admin-status-loaded', syncResetBtnState);
+
   resetBtn.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (!isAdmin()) return;  // hover tooltip on the button explains why
     const isVisible = resetDropdown.style.display === 'block';
     
     if (!isVisible) {
