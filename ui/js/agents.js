@@ -2961,7 +2961,7 @@ function _buildConnectionBody(conn, canEdit = true, agentId = null) {
     el.innerHTML = `
       <label class="conn-field-label">Bot Token</label>
       <div class="conn-token-row">
-        <input type="text" class="conn-token-input agents-input" placeholder="Enter bot token..." value="${_esc(tokenVal)}" autocomplete="one-time-code" style="font-family:monospace;">
+        <input type="text" class="conn-token-input agents-input" placeholder="Enter bot token..." value="${_esc(tokenVal)}" autocomplete="off" data-lpignore="true" data-1p-ignore="true" style="font-family:monospace;">
         <button class="agents-btn primary conn-save-btn">Save</button>
       </div>
       <span class="conn-field-hint">From <a href="https://t.me/BotFather" target="_blank" style="color:#7aa2f7">@BotFather</a> &mdash; format: <code style="font-size:10px;color:#a9b1d6;">1234567890:ABCdef...</code></span>

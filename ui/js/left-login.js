@@ -198,7 +198,7 @@ export function showLeftOverlay() {
       </p>
       <div style="margin-bottom:12px;">
         <label style="display:block; font-size:12px; font-weight:600; color:#a9b1d6; margin-bottom:4px;">Email</label>
-        <input type="email" id="left-login-user" value="" style="
+        <input type="email" id="left-login-user" name="username" autocomplete="username" value="" style="
           width:100%; padding:9px 12px; background:#0d0d1a; border:1px solid #2a2a4a;
           border-radius:6px; color:#c0caf5; font-size:14px; font-family:inherit;
           outline:none; box-sizing:border-box;
@@ -206,7 +206,7 @@ export function showLeftOverlay() {
       </div>
       <div style="margin-bottom:12px;">
         <label style="display:block; font-size:12px; font-weight:600; color:#a9b1d6; margin-bottom:4px;">Password</label>
-        <input type="password" id="left-login-pass" value="" style="
+        <input type="password" id="left-login-pass" name="password" autocomplete="current-password" value="" style="
           width:100%; padding:9px 12px; background:#0d0d1a; border:1px solid #2a2a4a;
           border-radius:6px; color:#c0caf5; font-size:14px; font-family:inherit;
           outline:none; box-sizing:border-box;
@@ -237,7 +237,7 @@ export function showLeftOverlay() {
       </p>
       <div style="margin-bottom:12px;">
         <label style="display:block; font-size:12px; font-weight:600; color:#a9b1d6; margin-bottom:4px;">Email</label>
-        <input type="email" id="left-reg-user" value="" style="
+        <input type="email" id="left-reg-user" name="email" autocomplete="email" value="" style="
           width:100%; padding:9px 12px; background:#0d0d1a; border:1px solid #2a2a4a;
           border-radius:6px; color:#c0caf5; font-size:14px; font-family:inherit;
           outline:none; box-sizing:border-box;
@@ -245,7 +245,7 @@ export function showLeftOverlay() {
       </div>
       <div style="margin-bottom:12px;">
         <label style="display:block; font-size:12px; font-weight:600; color:#a9b1d6; margin-bottom:4px;">Display Name (optional)</label>
-        <input type="text" id="left-reg-display" value="" placeholder="Your name" style="
+        <input type="text" id="left-reg-display" name="name" autocomplete="name" value="" placeholder="Your name" style="
           width:100%; padding:9px 12px; background:#0d0d1a; border:1px solid #2a2a4a;
           border-radius:6px; color:#c0caf5; font-size:14px; font-family:inherit;
           outline:none; box-sizing:border-box;
@@ -253,7 +253,7 @@ export function showLeftOverlay() {
       </div>
       <div style="margin-bottom:12px;">
         <label style="display:block; font-size:12px; font-weight:600; color:#a9b1d6; margin-bottom:4px;">Password</label>
-        <input type="password" id="left-reg-pass" value="" style="
+        <input type="password" id="left-reg-pass" name="new-password" autocomplete="new-password" value="" style="
           width:100%; padding:9px 12px; background:#0d0d1a; border:1px solid #2a2a4a;
           border-radius:6px; color:#c0caf5; font-size:14px; font-family:inherit;
           outline:none; box-sizing:border-box;
@@ -261,7 +261,7 @@ export function showLeftOverlay() {
       </div>
       <div style="margin-bottom:12px;">
         <label style="display:block; font-size:12px; font-weight:600; color:#a9b1d6; margin-bottom:4px;">Confirm Password</label>
-        <input type="password" id="left-reg-pass2" value="" style="
+        <input type="password" id="left-reg-pass2" name="new-password-confirm" autocomplete="new-password" value="" style="
           width:100%; padding:9px 12px; background:#0d0d1a; border:1px solid #2a2a4a;
           border-radius:6px; color:#c0caf5; font-size:14px; font-family:inherit;
           outline:none; box-sizing:border-box;

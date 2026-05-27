@@ -195,7 +195,7 @@ function renderTokenSection() {
     <details class="fg-section fg-token">
       <summary><span>GitHub token</span><span class="fg-token-status" id="fg-token-status-label">—</span></summary>
       <div class="fg-token-row">
-        <input type="password" id="fg-token-input" class="fg-input" placeholder="ghp_… / github_pat_…">
+        <input type="password" id="fg-token-input" class="fg-input" placeholder="ghp_… / github_pat_…" autocomplete="off" data-lpignore="true" data-1p-ignore="true">
         <button class="fg-btn fg-btn-primary" id="fg-token-save-btn">Save</button>
       </div>
       <div id="fg-token-result" class="fg-result" hidden></div>

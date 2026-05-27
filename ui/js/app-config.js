@@ -1246,9 +1246,10 @@ function _initIntegrationAdminChat() {
 }
 
 function _initIntegrationsSearch(providers) {
-  const input = _qs('ac-int-search');
+  const input = _qs('ac-int-filter');
   if (!input) return;
-  const emptyEl = _qs('ac-int-search-empty');
+  input.value = '';
+  const emptyEl = _qs('ac-int-filter-empty');
   const cards = providers
     .map(p => {
       const card = document.getElementById(`ac-int-${p}-card`);
