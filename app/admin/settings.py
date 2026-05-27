@@ -716,6 +716,163 @@ async def get_models(
         return {"error": str(e), "models": []}
 
 
+# ── Image-generation provider config ─────────────────────────────────────
+#
+# Mirrors the LLM provider flow above but stored under service="image_gen".
+# Read order (own → admin_default → none) matches load_image_provider_for_user
+# in app/tools/image_generation.py so the tool sees the same config the UI
+# saved.
+
+class ImageProviderConfig(BaseModel):
+    provider: str
+    base_url: str = ""
+    api_key: str
+    model: str = ""
+    api_shape: str = ""  # openai | stability | gemini — auto-filled from preset
+
+
+@router.get("/image-providers")
+async def get_image_providers():
+    """Return known image-gen provider presets."""
+    from app.tools.image_generation import IMAGE_PROVIDER_PRESETS
+    return IMAGE_PROVIDER_PRESETS
+
+
+@router.get("/image-provider", response_model=ImageProviderConfig)
+async def get_image_provider(
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Get the image-gen provider config for the requesting user (falls back
+    to admin_default so anonymous users still see what the admin set up)."""
+    user_id = _resolve_user_id(authorization or "", token or "")
+    cfg: dict = {}
+    try:
+        from app.db import get_db
+        db = get_db()
+        for uid in (user_id, "admin_default"):
+            elem = await db.auth_element_get(uid, "image_gen", "default")
+            if elem:
+                c = elem.get("config", {})
+                if isinstance(c, str):
+                    c = json.loads(c)
+                c["api_key"] = elem.get("secret_ref", "")
+                cfg = c
+                break
+    except Exception as e:
+        logger.debug("get_image_provider failed: %s", e)
+
+    return ImageProviderConfig(
+        provider=cfg.get("provider", ""),
+        base_url=cfg.get("base_url", ""),
+        api_key=cfg.get("api_key", ""),
+        model=cfg.get("model", ""),
+        api_shape=cfg.get("api_shape", ""),
+    )
+
+
+@router.post("/image-provider", response_model=dict)
+async def set_image_provider(
+    config: ImageProviderConfig,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Save the image-gen provider config for the requesting user."""
+    from app.db import get_db
+    from app.tools.image_generation import IMAGE_PROVIDER_PRESETS
+
+    user_id = _resolve_user_id(authorization or "", token or "")
+    preset = IMAGE_PROVIDER_PRESETS.get(config.provider, {})
+    base_url = config.base_url or preset.get("base_url", "")
+    api_shape = config.api_shape or preset.get("api_shape", "openai")
+
+    db = get_db()
+    await db.auth_element_set(
+        user_id=user_id,
+        service="image_gen",
+        config={
+            "provider": config.provider,
+            "base_url": base_url,
+            "model": config.model,
+            "api_shape": api_shape,
+        },
+        secret_ref=config.api_key,
+        label="default",
+    )
+    logger.info("Image-gen provider config saved for user %s: %s", user_id[:12], config.provider)
+    return {"status": "ok", "provider": config.provider}
+
+
+@router.post("/image-provider/clear", response_model=dict)
+async def clear_image_provider(
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Clear the image-gen provider config for the requesting user."""
+    from app.db import get_db
+    user_id = _resolve_user_id(authorization or "", token or "")
+    db = get_db()
+    deleted = await db.auth_element_delete(user_id, "image_gen", "default")
+    return {"status": "ok", "deleted": deleted}
+
+
+@router.get("/image-models")
+async def get_image_models(
+    provider: str = "",
+    api_key: str = Query("", alias="api_key"),
+    base_url: str = Query("", alias="base_url"),
+):
+    """Return a model list for the image provider.
+
+    For OpenAI-compatible image hosts, this hits `<base_url>/models` and
+    filters down to ids that look image-capable (best effort).
+    For Stability and Gemini, returns the preset's suggested_models since
+    those providers don't expose a generic `/models` listing for images.
+    """
+    from app.tools.image_generation import IMAGE_PROVIDER_PRESETS
+    preset = IMAGE_PROVIDER_PRESETS.get(provider, {})
+    shape = preset.get("api_shape", "openai")
+    suggested = preset.get("suggested_models", [])
+
+    if shape in ("stability", "gemini"):
+        return {"error": None, "models": [{"id": m, "name": m} for m in suggested]}
+
+    used_base = (base_url or preset.get("base_url", "")).rstrip("/")
+    if not used_base:
+        return {"error": "No base_url provided", "models": []}
+    if not api_key:
+        # Still useful to show suggested_models so the user can save a config
+        # before testing the API key.
+        return {"error": None, "models": [{"id": m, "name": m} for m in suggested]}
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                used_base + "/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            if resp.status_code == 401:
+                return {"error": "Invalid API key", "models": []}
+            resp.raise_for_status()
+            data = resp.json() or {}
+            rows = data.get("data") or []
+            keywords = ("image", "dall-e", "dalle", "flux", "sdxl", "stable", "playground", "imagen", "diffus")
+            models = []
+            for m in rows:
+                mid = (m.get("id") or "").lower()
+                if any(k in mid for k in keywords):
+                    models.append({"id": m["id"], "name": m.get("name", m["id"])})
+            # If filter caught nothing, fall back to the suggested list so the
+            # UI never strands the user without a model option.
+            if not models:
+                models = [{"id": x, "name": x} for x in suggested]
+            models.sort(key=lambda x: x["id"])
+            return {"error": None, "models": models}
+    except Exception as e:
+        logger.warning("Failed to fetch image models: %s", e)
+        return {"error": str(e), "models": [{"id": m, "name": m} for m in suggested]}
+
+
 @router.get("/metadata", response_model=MetadataSetting)
 async def get_metadata_setting():
     return MetadataSetting(enabled=_is_metadata_enabled())

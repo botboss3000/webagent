@@ -1819,9 +1819,12 @@ _CHANNEL_CONFIG_KEY: dict[str, str] = {
 # with `secret_ref="enabled"` under `ability_{name}` means the app admin has
 # turned the ability on, after which agent admins can enable it per-agent.
 _ABILITY_CONFIG_KEY: dict[str, str] = {
-    "codebase_admin": "ability_codebase_admin",
-    "create_tools":   "ability_create_tools",
-    "automation":     "ability_automation",
+    "codebase_admin":   "ability_codebase_admin",
+    "create_tools":     "ability_create_tools",
+    "automation":       "ability_automation",
+    "web_access":       "ability_web_access",
+    "browser_control":  "ability_browser_control",
+    "image_generation": "ability_image_generation",
 }
 
 
@@ -2100,9 +2103,12 @@ async def get_integration_config(
         # Channels (admin enable/disable; per-agent creds live in Connections)
         "telegram_configured":       channel_enabled.get("telegram", False),
         # Agent Tools (host-side privileged capabilities)
-        "codebase_admin_configured": ability_enabled.get("codebase_admin", False),
-        "create_tools_configured":   ability_enabled.get("create_tools", False),
-        "automation_configured":     ability_enabled.get("automation", False),
+        "codebase_admin_configured":   ability_enabled.get("codebase_admin", False),
+        "create_tools_configured":     ability_enabled.get("create_tools", False),
+        "automation_configured":       ability_enabled.get("automation", False),
+        "web_access_configured":       ability_enabled.get("web_access", False),
+        "browser_control_configured":  ability_enabled.get("browser_control", False),
+        "image_generation_configured": ability_enabled.get("image_generation", False),
     }
 
 

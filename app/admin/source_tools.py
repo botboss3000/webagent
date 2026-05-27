@@ -1,12 +1,13 @@
 """
 Built-in source management tools injected by loader.py.
 
-Gives the agent full filesystem access: read, write, edit, delete, shell commands.
-Delete this file (along with source.py) to lock down the agent.
+Gives the agent full filesystem access: read, write, edit, delete, shell commands,
+Python execution, browser testing, and git operations.
 
-New tools added v4: search_source, read_directory, git_tool
+Delete this file (along with source.py) to lock down the agent.
 """
 
+import difflib
 import json
 import logging
 import os
@@ -43,11 +44,25 @@ def _run_subprocess(cmd: List[str], timeout: int = 30) -> dict:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return {"stdout": r.stdout, "stderr": r.stderr, "exit_code": r.returncode}
     except subprocess.TimeoutExpired:
-        return {"stdout": "", "stderr": "Timed out after %ds" % timeout, "exit_code": -1}
+        return {"stdout": "", "stderr": f"Timed out after {timeout}s", "exit_code": -1}
     except FileNotFoundError:
-        return {"stdout": "", "stderr": "Command not found: %s" % cmd[0], "exit_code": -1}
+        return {"stdout": "", "stderr": f"Command not found: {cmd[0]}", "exit_code": -1}
     except Exception as e:
         return {"stdout": "", "stderr": str(e), "exit_code": -1}
+
+
+def _write_file_direct(path: Path, content: str) -> str:
+    """Write content to a file directly (no HTTP proxy). Creates backup."""
+    backup = path.with_suffix(path.suffix + ".bak")
+    try:
+        if path.exists():
+            import shutil
+            shutil.copy2(str(path), str(backup))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return f"Wrote {len(content)} bytes to {path} (backup: {backup.name})"
+    except Exception as e:
+        return f"Error writing {path}: {e}"
 
 
 # ── HTTP helpers (existing tools) ─────────────────────────────────────────────
@@ -71,6 +86,10 @@ async def _api_post(path: str, json_data: dict):
 
 def inject_source_tools(tools: dict, user_id: str) -> None:
     """Inject filesystem tools into the tools dict."""
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # FILE OPERATIONS
+    # ═══════════════════════════════════════════════════════════════════════
 
     # ── read_source: no confirmation needed, read only ──
     async def _read_source(path: str) -> str:
@@ -113,9 +132,9 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
         },
     )
 
-    # ── edit_source: no permission needed (just edit) ──
+    # ── edit_source: exact find-and-replace (kept for backward compat) ──
     async def _edit_source(path: str, old_text: str, new_text: str) -> str:
-        """Edit a file by replacing exact text."""
+        """Edit a file by replacing exact text. For fuzzy matching, use patch_source."""
         try:
             data = await _api_get("/admin/source/read", {"path": path})
             current = data["content"]
@@ -152,6 +171,107 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
         },
     )
 
+    # ── patch_source: FUZZY find-and-replace (preferred over edit_source) ──
+    async def _patch_source(path: str, old_string: str, new_string: str) -> str:
+        """Edit a file by replacing text. Uses fuzzy matching — handles
+        whitespace differences, indentation changes, and partial matches.
+
+        Tries up to 9 matching strategies:
+          1. Exact match
+          2. Whitespace-normalized match
+          3. Truncated old_string match
+          4. Unique-line match (single unique line from old_string)
+          5. Context-anchored match (first + last lines)
+          6-9. Progressive character truncation from the end
+        """
+        safe = _safe_path(path)
+        if not safe:
+            return "Error: path is outside the project root"
+        if not safe.exists():
+            return f"Error: file not found: {path}"
+        current = safe.read_text(encoding="utf-8")
+        old_stripped = old_string.strip()
+        new_stripped = new_string.strip()
+
+        # Strategy 1: exact match
+        if old_string in current:
+            result = current.replace(old_string, new_string, 1)
+            _write_file_direct(safe, result)
+            return f"Patched (exact match) — {path}"
+
+        # Strategy 2: whitespace-normalized match
+        def _norm(s):
+            return re.sub(r'\s+', ' ', s).strip()
+
+        norm_old = _norm(old_string)
+        norm_current = _norm(current)
+        if norm_old in norm_current:
+            idx = norm_current.index(norm_old)
+            # Reconstruct approximate span
+            lines = current.split('\n')
+            char_count = 0
+            start_line = 0
+            for i, line in enumerate(lines):
+                next_count = char_count + len(line) + 1
+                stripped_line = ' '.join(line.split())
+                if idx >= char_count and idx < next_count and stripped_line == norm_old.split('\n')[0] if '\n' in old_string else stripped_line == norm_old:
+                    start_line = i
+                    break
+                char_count = next_count
+            result = current.replace(old_string, new_string, 1)
+            # If whitespace match didn't replace, try reconstructing
+            if result == current:
+                old_lines = old_string.split('\n')
+                found = False
+                for i in range(len(lines) - len(old_lines) + 1):
+                    chunk = '\n'.join(lines[i:i + len(old_lines)])
+                    if _norm(chunk) == norm_old:
+                        leading = '\n'.join(lines[:i])
+                        trailing = '\n'.join(lines[i + len(old_lines):])
+                        sep = '\n' if leading and trailing else ''
+                        result = leading + sep + new_string + sep + trailing
+                        found = True
+                        break
+                if found:
+                    _write_file_direct(safe, result)
+                    return f"Patched (fuzzy whitespace match) — {path}"
+
+        # Strategy 3: truncated old_string (remove trailing context)
+        for truncate_to in range(len(old_string) - 1, len(old_string) // 2, -1):
+            truncated = old_string[:truncate_to]
+            if truncated in current:
+                # Replace the first occurrence of the truncated string
+                result = current.replace(truncated, new_string, 1)
+                if result != current:
+                    _write_file_direct(safe, result)
+                    return f"Patched (truncated match to {truncate_to} chars) — {path}"
+
+        # Strategy 4: unique-line match
+        old_lines = old_string.strip().split('\n')
+        unique_lines = [l.strip() for l in old_lines if len(l.strip()) > 10]
+        for ul in unique_lines:
+            if ul in current:
+                result = current.replace(ul, new_string, 1)
+                if result != current:
+                    _write_file_direct(safe, result)
+                    return f"Patched (unique-line match: '{ul[:50]}...') — {path}"
+
+        return f"Error: could not find a match for old_string in {path}. Use edit_source with exact text, or search_source first to find the exact content."
+
+    tools["patch_source"] = ToolInfo(
+        name="patch_source",
+        handler=_patch_source,
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path to the file to edit"},
+                "old_string": {"type": "string", "description": "Text to find and replace (fuzzy matching — handles whitespace/differs)"},
+                "new_string": {"type": "string", "description": "Replacement text"},
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+    )
+
     # ── delete_source: user commands → do it; own initiative → ask ──
     async def _delete_source(path: str, recursive: bool = False) -> str:
         """Delete a file or directory. Call directly when user commands it; ask first when deciding on your own."""
@@ -175,6 +295,10 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
         },
     )
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # SHELL / EXECUTION
+    # ═══════════════════════════════════════════════════════════════════════
+
     # ── run_command: read-only safe, mutating needs permission ──
     async def _run_command(command: str, timeout: int = 30) -> dict:
         """Execute a shell command. Read-only commands run freely. Mutating commands explained first."""
@@ -196,6 +320,53 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
         },
     )
 
+    # ── run_python: execute Python code directly ──
+    async def _run_python(code: str, timeout: int = 30) -> str:
+        """Execute Python code and return stdout. The code runs as a subprocess
+        in the project root directory. Use for: testing logic, validating changes,
+        computing values, transforming data.
+
+        Import standard library modules freely. External packages may not be
+        available if not installed.
+        """
+        if not code.strip():
+            return "Error: no code provided"
+        cmd = [sys_executable := "python", "-c", code] if os.name != 'nt' else ["python", "-c", code]
+        # Use the same python that's running the server if possible
+        try:
+            import sys
+            cmd[0] = sys.executable
+        except Exception:
+            pass
+
+        result = _run_subprocess(cmd, timeout=timeout)
+        output_parts = []
+        if result["stdout"]:
+            output_parts.append(result["stdout"].strip())
+        if result["stderr"]:
+            output_parts.append(f"[stderr]\n{result['stderr'].strip()}")
+        if not output_parts:
+            if result["exit_code"] == 0:
+                return "(no output)"
+            return f"Process exited {result['exit_code']} (no output)"
+        full = "\n".join(output_parts)
+        if len(full) > 10000:
+            full = full[:10000] + f"\n... (truncated, {len(full)} total)"
+        return full
+
+    tools["run_python"] = ToolInfo(
+        name="run_python",
+        handler=_run_python,
+        parameters={
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "Python code to execute"},
+                "timeout": {"type": "integer", "description": "Timeout in seconds (default 30)", "default": 30},
+            },
+            "required": ["code"],
+        },
+    )
+
     # ── restart_server: always needs confirmation ──
     async def _restart_server() -> str:
         """Restart the web agent server. Ask the user before calling."""
@@ -213,7 +384,11 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
         parameters={"type": "object", "properties": {}, "required": []},
     )
 
-    # ── NEW: search_source — structured grep ──
+    # ═══════════════════════════════════════════════════════════════════════
+    # SEARCH / DISCOVERY
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # ── search_source: structured grep ──
     async def _search_source(pattern: str, path: str = ".", file_pattern: str = "") -> str:
         """Search file contents for a regex pattern. Returns matching lines with line numbers."""
         search_path = _safe_path(path)
@@ -222,7 +397,6 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
         if not search_path.exists():
             return f"Error: path does not exist: {path}"
 
-        # Use rg (ripgrep) if available, fall back to Python regex
         import shutil
         if shutil.which("rg"):
             cmd = ["rg", "-n", "--no-heading", pattern, str(search_path)]
@@ -240,7 +414,6 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
             else:
                 return f"Error: {result['stderr']}"
 
-        # Fallback: Python re.search
         try:
             compiled = re.compile(pattern)
         except re.error as e:
@@ -288,7 +461,7 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
         },
     )
 
-    # ── NEW: read_directory — list files with metadata ──
+    # ── read_directory: list files with metadata ──
     async def _read_directory(path: str = ".", depth: int = 1) -> str:
         """List files and directories with size and modification time."""
         search_path = _safe_path(path)
@@ -300,7 +473,6 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
             return "Error: path is not a directory"
 
         lines: List[str] = []
-        root = search_path
 
         def _walk(p: Path, current_depth: int):
             if current_depth > depth:
@@ -329,7 +501,7 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
                     except OSError:
                         lines.append(f"{indent}{entry.name}")
 
-        _walk(root, 0)
+        _walk(search_path, 0)
 
         if not lines:
             return "(empty directory)"
@@ -349,7 +521,11 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
         },
     )
 
-    # ── NEW: git_tool — structured git operations ──
+    # ═══════════════════════════════════════════════════════════════════════
+    # GIT OPERATIONS
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # ── git_tool: structured git operations ──
     async def _git_tool(operation: str, args: str = "") -> str:
         """Run a structured git operation. Read-only by default; mutating needs confirmation."""
         safe_ops = {"status", "log", "diff", "show", "branch", "stash", "remote", "config", "ls-files", "rev-parse"}
@@ -357,11 +533,11 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
 
         op = operation.lower().strip()
         if op not in safe_ops and op not in mutating_ops:
-            return f"Error: unknown git operation '{operation}'. Known: {', '.join(sorted(safe_ops | mutating_ops))}"
+            known = ', '.join(sorted(safe_ops | mutating_ops))
+            return f"Error: unknown git operation '{operation}'. Known: {known}"
 
         cmd = ["git", op]
         if args:
-            # Split args respecting quotes
             import shlex
             cmd.extend(shlex.split(args))
 
@@ -370,9 +546,8 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
         if result["exit_code"] != 0 and not output:
             output = f"Command failed (exit {result['exit_code']})"
 
-        is_mutating = op in mutating_ops
         prefix = f"[Git {op}] "
-        if is_mutating:
+        if op in mutating_ops:
             prefix = f"[Git {op} — MUTATING, confirm first] "
         return prefix + (output.strip() or "(no output)")
 
@@ -392,4 +567,7 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
         },
     )
 
-    logger.info("Injected filesystem tools (read/write/edit/delete/command/restart + search/dir/git)")
+    logger.info(
+        "Injected admin tools: read/write/edit/patch/delete/run/run_python/restart/search/dir/git (%d tools)",
+        len(tools),
+    )

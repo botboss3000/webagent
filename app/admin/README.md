@@ -18,15 +18,18 @@
 
 | Tool | Action | Requires confirmation |
 |------|--------|-----------------------|
-| `read_source` | Read any file on the system | ❌ No |
-| `write_source` | Create or overwrite files (auto-backup) | ❌ No — just write |
-| `edit_source` | Replace exact text in a file | ❌ No — just edit |
-| `delete_source` | Delete files or directories | ❌ No if user commands it. ✅ Yes if own initiative |
-| `search_source` | grep-style regex search across files | ❌ No — always safe |
-| `read_directory` | List files with size and metadata | ❌ No — always safe |
-| `git_tool` | Structured git operations | ❌ No for read-only (status/log/diff). ✅ Yes for mutating (commit/push) |
-| `run_command` | Execute arbitrary shell commands | ❌ No for read-only. ✅ Yes for mutating |
-| `restart_server` | Kill and restart the webAgent process | ✅ Yes |
+| **`read_source`** | Read any file on the system | ❌ No |
+| **`write_source`** | Create or overwrite files (auto-backup) | ❌ No |
+| **`edit_source`** | Replace exact text (exact match required) | ❌ No |
+| **`patch_source`** | Fuzzy find-and-replace (handles whitespace diffs) | ❌ No |
+| **`delete_source`** | Delete files or directories | ❌ No if user commands. ✅ Yes if own initiative |
+| **`search_source`** | grep-style regex search (ripgrep or Python fallback) | ❌ No |
+| **`read_directory`** | List files with size, configurable depth | ❌ No |
+| **`run_python`** | Execute Python code in subprocess | ❌ No |
+| **`browser_test`** | Fetch web page, verify content (HTTP-level) | ❌ No |
+| **`git_tool`** | Structured git ops (status/log/diff/commit/push) | ❌ No for read-only. ✅ for mutating |
+| **`run_command`** | Execute shell commands | ❌ No for read-only. ✅ for mutating |
+| **`restart_server`** | Kill and restart the webAgent process | ✅ Yes |
 
 ## How injection works
 

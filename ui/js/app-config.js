@@ -54,6 +54,13 @@ let _parallelProviders = [];
 let _parallelUidCounter = 0;
 let _modelFetchDebounce = null;
 
+// Image-gen state (separate provider config from the chat LLM)
+let _imgAllModels = [];
+let _imgSelectedModel = '';
+let _imgProviderPresets = {};
+let _imgCurrentProvider = 'openai';
+let _imgModelFetchDebounce = null;
+
 // Integration Admin chat state
 let _intAdminSessionId = null;
 let _intAdminAbort = null;
@@ -546,6 +553,227 @@ function _renderParallelRows() {
 
 
 // ─────────────────────────────────────────────────────────────────────────
+// ── SECTION 1b: Image Generation provider ────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
+function _initImageGen() {
+  const saveBtn = _qs('ac-img-save');
+  if (!saveBtn) return;
+  saveBtn.addEventListener('click', _saveImageGen);
+  _qs('ac-img-clear')?.addEventListener('click', _clearImageGen);
+
+  const apiKeyEl  = _qs('ac-img-api-key');
+  const baseUrlEl = _qs('ac-img-base-url');
+  const provEl    = _qs('ac-img-provider');
+  const modelSrch = _qs('ac-img-model-search');
+
+  const scheduleFetch = () => {
+    if (_imgModelFetchDebounce) clearTimeout(_imgModelFetchDebounce);
+    _imgModelFetchDebounce = setTimeout(() => { _fetchImageModels(); }, 500);
+  };
+  apiKeyEl?.addEventListener('input', scheduleFetch);
+  baseUrlEl?.addEventListener('input', scheduleFetch);
+
+  provEl?.addEventListener('change', () => {
+    _imgCurrentProvider = provEl.value;
+    const preset = _imgProviderPresets[_imgCurrentProvider] || {};
+    if (baseUrlEl) baseUrlEl.value = preset.base_url || '';
+    const hintEl = _qs('ac-img-provider-hint');
+    if (hintEl) {
+      const suggested = (preset.suggested_models || []).join(', ');
+      hintEl.textContent = suggested ? `Suggested models: ${suggested}` : '';
+    }
+    _imgAllModels = [];
+    _imgSelectedModel = '';
+    if (modelSrch) modelSrch.value = '';
+    const dd = _qs('ac-img-model-dropdown'); if (dd) dd.style.display = 'none';
+    _fetchImageModels();
+  });
+
+  modelSrch?.addEventListener('focus', () => _renderImageModelDropdown(modelSrch.value.toLowerCase()));
+  modelSrch?.addEventListener('input', () => _renderImageModelDropdown(modelSrch.value.toLowerCase()));
+
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#ac-img-model-group')) {
+      const dd = _qs('ac-img-model-dropdown');
+      if (dd) dd.style.display = 'none';
+    }
+  });
+}
+
+async function _fetchImageProviderPresets() {
+  try {
+    const res = await _fetch(apiPath('/admin/settings/image-providers'));
+    if (!res.ok) return;
+    _imgProviderPresets = await res.json();
+    const sel = _qs('ac-img-provider');
+    if (!sel) return;
+    sel.innerHTML = '';
+    for (const [key, preset] of Object.entries(_imgProviderPresets)) {
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = preset.name || key;
+      sel.appendChild(opt);
+    }
+  } catch (e) {
+    console.warn('ac: failed to load image provider presets', e);
+  }
+}
+
+async function _loadImageGen() {
+  await _fetchImageProviderPresets();
+  try {
+    const res = await _fetch(apiPath('/admin/settings/image-provider'));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    _imgCurrentProvider = data.provider || 'openai';
+    const sel = _qs('ac-img-provider');
+    if (sel) {
+      sel.value = _imgProviderPresets[_imgCurrentProvider] ? _imgCurrentProvider : (Object.keys(_imgProviderPresets)[0] || '');
+      _imgCurrentProvider = sel.value;
+    }
+    const preset = _imgProviderPresets[_imgCurrentProvider] || {};
+    const baseUrlEl = _qs('ac-img-base-url');
+    if (baseUrlEl) baseUrlEl.value = data.base_url || preset.base_url || '';
+    const apiKeyEl = _qs('ac-img-api-key');
+    if (apiKeyEl) apiKeyEl.value = data.api_key || '';
+    _imgSelectedModel = data.model || '';
+    const modelSrch = _qs('ac-img-model-search');
+    if (modelSrch) modelSrch.value = _imgSelectedModel;
+    const hintEl = _qs('ac-img-provider-hint');
+    if (hintEl) {
+      const suggested = (preset.suggested_models || []).join(', ');
+      hintEl.textContent = suggested ? `Suggested models: ${suggested}` : '';
+    }
+    const statusEl = _qs('ac-img-model-status');
+    if (statusEl) {
+      statusEl.textContent = _imgSelectedModel ? `Selected: ${_imgSelectedModel}` : '';
+      statusEl.style.color = _imgSelectedModel ? '#9ece6a' : 'var(--fg-3)';
+    }
+    _fetchImageModels();
+  } catch (e) {
+    console.warn('ac: failed to load image-gen config', e);
+  }
+}
+
+async function _fetchImageModels() {
+  const statusEl = _qs('ac-img-model-status');
+  const apiKey = _qs('ac-img-api-key')?.value?.trim() || '';
+  const baseUrl = _qs('ac-img-base-url')?.value?.trim()
+    || _imgProviderPresets[_imgCurrentProvider]?.base_url
+    || '';
+
+  const params = new URLSearchParams({ provider: _imgCurrentProvider });
+  if (apiKey) params.set('api_key', apiKey);
+  if (baseUrl) params.set('base_url', baseUrl);
+
+  if (statusEl) { statusEl.textContent = 'Loading models…'; statusEl.style.color = 'var(--fg-3)'; }
+  try {
+    const res = await _fetch(apiPath(`/admin/settings/image-models?${params.toString()}`));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.error) {
+      if (statusEl) { statusEl.textContent = data.error; statusEl.style.color = 'var(--fg-3)'; }
+      _imgAllModels = data.models || [];
+      return;
+    }
+    _imgAllModels = data.models || [];
+    if (statusEl) {
+      statusEl.textContent = _imgAllModels.length
+        ? `${_imgAllModels.length} models available. Type to filter.`
+        : 'No models available.';
+      statusEl.style.color = 'var(--fg-3)';
+    }
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = `Failed to load models: ${e.message}`; statusEl.style.color = 'var(--danger)'; }
+    _imgAllModels = [];
+  }
+}
+
+function _renderImageModelDropdown(filter) {
+  const dd = _qs('ac-img-model-dropdown');
+  if (!dd) return;
+  if (!_imgAllModels.length) { dd.style.display = 'none'; return; }
+  const filtered = filter
+    ? _imgAllModels.filter(m => (m.id || '').toLowerCase().includes(filter) || (m.name || '').toLowerCase().includes(filter))
+    : _imgAllModels;
+  if (!filtered.length) { dd.style.display = 'none'; return; }
+  dd.innerHTML = '';
+  dd.style.display = 'block';
+  filtered.slice(0, 200).forEach(m => {
+    const item = document.createElement('div');
+    item.className = 'ac-model-item';
+    if (m.id === _imgSelectedModel) item.style.background = 'var(--bg-tint)';
+    item.innerHTML = `<span style="font-weight:500;">${_esc(m.id)}</span> <span style="color:var(--fg-3);font-size:11px;margin-left:6px;">${_esc(m.name || '')}</span>`;
+    item.addEventListener('click', () => {
+      _imgSelectedModel = m.id;
+      const srch = _qs('ac-img-model-search');
+      if (srch) srch.value = m.id;
+      dd.style.display = 'none';
+      const statusEl = _qs('ac-img-model-status');
+      if (statusEl) { statusEl.textContent = `Selected: ${m.id}`; statusEl.style.color = 'var(--success)'; }
+    });
+    dd.appendChild(item);
+  });
+}
+
+async function _saveImageGen() {
+  if (!isAdmin()) { showRestrictedModal(); return; }
+  const provider = _imgCurrentProvider || 'openai';
+  const baseUrl  = _qs('ac-img-base-url')?.value?.trim() || '';
+  const apiKey   = _qs('ac-img-api-key')?.value?.trim() || '';
+  const typedModel = _qs('ac-img-model-search')?.value?.trim() || '';
+  const model    = _imgSelectedModel || typedModel;
+  const statusEl = _qs('ac-img-status');
+  const _show = (msg, color) => {
+    if (!statusEl) return;
+    statusEl.textContent = msg;
+    statusEl.style.color = color;
+    statusEl.style.display = 'block';
+    setTimeout(() => { statusEl.style.display = 'none'; }, 3500);
+  };
+
+  if (!apiKey) return _show('Please enter an API Key', 'var(--danger)');
+  if (!model)  return _show('Please select a model',   'var(--danger)');
+
+  try {
+    const res = await _fetch(apiPath('/admin/settings/image-provider'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, base_url: baseUrl, api_key: apiKey, model }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _show('Saved.', 'var(--success)');
+  } catch (e) {
+    _show('Save failed: ' + e.message, 'var(--danger)');
+  }
+}
+
+async function _clearImageGen() {
+  if (!isAdmin()) { showRestrictedModal(); return; }
+  const statusEl = _qs('ac-img-status');
+  try {
+    const res = await _fetch(apiPath('/admin/settings/image-provider/clear'), { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _qs('ac-img-api-key').value = '';
+    _qs('ac-img-model-search').value = '';
+    _imgSelectedModel = '';
+    if (statusEl) {
+      statusEl.textContent = 'Cleared.';
+      statusEl.style.color = 'var(--success)';
+      statusEl.style.display = 'block';
+      setTimeout(() => { statusEl.style.display = 'none'; }, 2500);
+    }
+  } catch (e) {
+    if (statusEl) {
+      statusEl.textContent = 'Clear failed: ' + e.message;
+      statusEl.style.color = 'var(--danger)';
+      statusEl.style.display = 'block';
+    }
+  }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────
 // ── SECTION 2b: Integrations ─────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -858,7 +1086,7 @@ function _initIntegrations() {
   const comingSoonChannels = ['whatsapp', 'slack', 'discord', 'email', 'twilio'];
 
   // Agent Tools (admin enable/disable; per-agent toggles in the Abilities tab)
-  const abilities = ['codebase_admin', 'create_tools', 'automation'];
+  const abilities = ['codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation'];
   for (const a of abilities) {
     _initCollapsible(a);
     _qs(`ac-int-${a}-save`)?.addEventListener('click', () => _enableAbility(a));
@@ -1067,13 +1295,16 @@ async function _loadIntegrations() {
     _applyProviderStatus('amazon',    data.amazon_configured,    data.amazon_client_id,    data.amazon_redirect_uri,       data.amazon_scopes,    data.amazon_redirect_uri_suggested);
     _applyScraperStatus(data);
     _applyChannelStatus('telegram', data.telegram_configured);
-    _applyAbilityStatus('codebase_admin', data.codebase_admin_configured);
-    _applyAbilityStatus('create_tools',   data.create_tools_configured);
-    _applyAbilityStatus('automation',     data.automation_configured);
+    _applyAbilityStatus('codebase_admin',   data.codebase_admin_configured);
+    _applyAbilityStatus('create_tools',     data.create_tools_configured);
+    _applyAbilityStatus('automation',       data.automation_configured);
+    _applyAbilityStatus('web_access',       data.web_access_configured);
+    _applyAbilityStatus('browser_control',  data.browser_control_configured);
+    _applyAbilityStatus('image_generation', data.image_generation_configured);
     // Browser session is per-user — fetched from a separate endpoint.
     _loadBrowserSessionStatus();
   } catch (e) {
-    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram', 'codebase_admin', 'create_tools', 'automation']) {
+    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram', 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation']) {
       const s = _qs(`ac-int-${p}-status`);
       if (s) { s.textContent = `Failed to load: ${e.message}`; s.style.color = '#f7768e'; s.style.display = 'block'; }
     }
@@ -2109,6 +2340,7 @@ async function _userAction(act, uid, name) {
 export function initAppConfig() {
   _initNav();
   _initLLM();
+  _initImageGen();
   _initIntegrations();
   _initDatabase();
   _initOptimizer();
@@ -2128,6 +2360,7 @@ export async function startAppConfig() {
 
   // Load all sections in parallel (non-blocking)
   _loadLLM();
+  _loadImageGen();
   _loadIntegrations();
   _loadDatabase();
   _loadOptimizer();

@@ -27,7 +27,10 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "web_search":                    {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     "browser_action":                {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     "http_request":                  {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
-    # ── DB & context ──
+    "maps_geocode":                  {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    # ── Image generation (gated by image_generation) ──
+    "generate_image":                {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    # ── DB & context (gated by codebase_admin) ──
     "db_query":                      {"stages": ["execute_tools"],                                "destructive": True,  "agent_types": []},
     # ── Memory ──
     "memory":                        {"stages": ["memory_search", "memory_save", "execute_tools"], "destructive": False, "agent_types": []},
@@ -667,109 +670,150 @@ class ToolLoader:
             },
         )
 
-        # ── Web search ──
-        tools["web_search"] = ToolInfo(
-            name="web_search",
-            handler=_core_web_search,
-            parameters={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "The search query"},
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum results to return (default 5, max 10)",
-                        "default": 5,
+        # ── Web Access ability (web_search, get_weather, maps_geocode) ──
+        # Gated by the "web_access" toggle in App Config → Agent Abilities.
+        # Bundles lightweight web lookup tools that don't drive a real browser.
+        if "web_access" in enabled_providers:
+            tools["web_search"] = ToolInfo(
+                name="web_search",
+                handler=_core_web_search,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "The search query"},
+                        "max_results": {
+                            "type": "integer",
+                            "description": "Maximum results to return (default 5, max 10)",
+                            "default": 5,
+                        },
                     },
+                    "required": ["query"],
                 },
-                "required": ["query"],
-            },
-        )
-
-        # ── Browser action (persistent Chromium) ──
-        from app.tools.browser import browser_action as _core_browser_action
-
-        async def _browser_action_wrapper(
-            action: str,
-            selector: Optional[str] = None,
-            text: Optional[str] = None,
-            url: Optional[str] = None,
-            js: Optional[str] = None,
-            timeout_ms: int = 5000,
-            full_page: bool = True,
-        ):
-            return await _core_browser_action(
-                user_id=user_id,
-                session_id=user_id,
-                action=action,
-                selector=selector,
-                text=text,
-                url=url,
-                js=js,
-                timeout_ms=timeout_ms,
-                full_page=full_page,
             )
 
-        tools["browser_action"] = ToolInfo(
-            name="browser_action",
-            handler=_browser_action_wrapper,
-            parameters={
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["navigate", "click", "type", "get_text", "get_html", "screenshot", "wait", "evaluate", "title", "url", "close"],
-                        "description": "Browser action to perform",
-                    },
-                    "selector": {"type": "string", "description": "CSS selector (for click, type, get_text)"},
-                    "text": {"type": "string", "description": "Text to type (for type action)"},
-                    "url": {"type": "string", "description": "URL to navigate to (for navigate action)"},
-                    "js": {"type": "string", "description": "JavaScript code (for evaluate action)"},
-                    "timeout_ms": {"type": "integer", "description": "Wait timeout in ms (default 5000)", "default": 5000},
-                    "full_page": {"type": "boolean", "description": "Full page screenshot", "default": True},
-                },
-                "required": ["action"],
-            },
-        )
-
-        # ── DB query (context documents) ──
-        async def _db_query_wrapper(
-            action: str,
-            context_type: Optional[str] = None,
-            context_id: Optional[str] = None,
-            title: Optional[str] = None,
-            content: Optional[str] = None,
-            tags: Optional[List[str]] = None,
-        ):
-            return await _core_db_query(
-                action=action,
-                context_type=context_type,
-                context_id=context_id,
-                title=title,
-                content=content,
-                tags=tags,
-                user_id=user_id,
+            # Maps & geocoding (Nominatim — free, no API key)
+            from app.tools.maps import maps_geocode as _core_maps_geocode, TOOL_PARAMETERS as _MAPS_PARAMS
+            tools["maps_geocode"] = ToolInfo(
+                name="maps_geocode",
+                handler=_core_maps_geocode,
+                parameters=_MAPS_PARAMS,
             )
 
-        tools["db_query"] = ToolInfo(
-            name="db_query",
-            handler=_db_query_wrapper,
-            parameters={
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["list", "get", "insert", "update", "delete"],
-                        "description": "Action to perform: list, get, insert, update, or delete (delete clears content)",
+        # ── Browser Control ability (browser_action, http_request) ──
+        # Gated by the "browser_control" toggle. Real browser automation +
+        # arbitrary outbound HTTP — separate from the lighter Web Access set
+        # because these can fetch private endpoints and drive headless Chromium.
+        if "browser_control" in enabled_providers:
+            from app.tools.browser import browser_action as _core_browser_action
+
+            async def _browser_action_wrapper(
+                action: str,
+                selector: Optional[str] = None,
+                text: Optional[str] = None,
+                url: Optional[str] = None,
+                js: Optional[str] = None,
+                timeout_ms: int = 5000,
+                full_page: bool = True,
+            ):
+                return await _core_browser_action(
+                    user_id=user_id,
+                    session_id=user_id,
+                    action=action,
+                    selector=selector,
+                    text=text,
+                    url=url,
+                    js=js,
+                    timeout_ms=timeout_ms,
+                    full_page=full_page,
+                )
+
+            tools["browser_action"] = ToolInfo(
+                name="browser_action",
+                handler=_browser_action_wrapper,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["navigate", "click", "type", "get_text", "get_html", "screenshot", "wait", "evaluate", "title", "url", "close"],
+                            "description": "Browser action to perform",
+                        },
+                        "selector": {"type": "string", "description": "CSS selector (for click, type, get_text)"},
+                        "text": {"type": "string", "description": "Text to type (for type action)"},
+                        "url": {"type": "string", "description": "URL to navigate to (for navigate action)"},
+                        "js": {"type": "string", "description": "JavaScript code (for evaluate action)"},
+                        "timeout_ms": {"type": "integer", "description": "Wait timeout in ms (default 5000)", "default": 5000},
+                        "full_page": {"type": "boolean", "description": "Full page screenshot", "default": True},
                     },
-                    "context_type": {"type": "string", "description": "Document type (agent, user, skills, tools, tasks, memory, project, jobs) — for list/insert actions"},
-                    "context_id": {"type": "string", "description": "Document ID — for get/update/delete actions"},
-                    "title": {"type": "string", "description": "Title — for insert action"},
-                    "content": {"type": "string", "description": "Content body — for insert/update actions"},
-                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional tags — for insert action"},
+                    "required": ["action"],
                 },
-                "required": ["action"],
-            },
-        )
+            )
+
+        # ── Image Generation ability (generate_image) ──
+        # Uses the admin-configured image-gen provider (App Config → Default LLM
+        # → Image Generation). Outputs saved under visuals/users/{user_id}/.
+        if "image_generation" in enabled_providers:
+            from app.tools.image_generation import (
+                generate_image as _core_generate_image,
+                TOOL_PARAMETERS as _IMG_PARAMS,
+            )
+
+            async def _generate_image_wrapper(prompt: str, size: str = "1024x1024",
+                                              n: int = 1, quality: Optional[str] = None,
+                                              style: Optional[str] = None):
+                return await _core_generate_image(
+                    user_id=user_id, prompt=prompt, size=size, n=n,
+                    quality=quality, style=style,
+                )
+
+            tools["generate_image"] = ToolInfo(
+                name="generate_image",
+                handler=_generate_image_wrapper,
+                parameters=_IMG_PARAMS,
+            )
+
+        # ── DB query (context documents) — gated by codebase_admin ──
+        # Lets an agent read/edit its own prompt slots. Powerful, so it lives
+        # under the same ability that exposes file-edit/run-command tools.
+        if "codebase_admin" in enabled_providers:
+            async def _db_query_wrapper(
+                action: str,
+                context_type: Optional[str] = None,
+                context_id: Optional[str] = None,
+                title: Optional[str] = None,
+                content: Optional[str] = None,
+                tags: Optional[List[str]] = None,
+            ):
+                return await _core_db_query(
+                    action=action,
+                    context_type=context_type,
+                    context_id=context_id,
+                    title=title,
+                    content=content,
+                    tags=tags,
+                    user_id=user_id,
+                )
+
+            tools["db_query"] = ToolInfo(
+                name="db_query",
+                handler=_db_query_wrapper,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["list", "get", "insert", "update", "delete"],
+                            "description": "Action to perform: list, get, insert, update, or delete (delete clears content)",
+                        },
+                        "context_type": {"type": "string", "description": "Document type (agent, user, skills, tools, tasks, memory, project, jobs) — for list/insert actions"},
+                        "context_id": {"type": "string", "description": "Document ID — for get/update/delete actions"},
+                        "title": {"type": "string", "description": "Title — for insert action"},
+                        "content": {"type": "string", "description": "Content body — for insert/update actions"},
+                        "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional tags — for insert action"},
+                    },
+                    "required": ["action"],
+                },
+            )
 
         # ── Memory (persistent knowledge pages) ──
         async def _memory_wrapper(
@@ -868,19 +912,20 @@ class ToolLoader:
             },
         )
 
-        # ── Weather ──
-        tools["get_weather"] = ToolInfo(
-            name="get_weather",
-            handler=_core_get_weather,
-            parameters={
-                "type": "object",
-                "properties": {
-                    "location": {"type": "string", "description": "City name or 'lat,lon' coordinates (e.g. 'London', '40.71,-74.01')"},
-                    "units": {"type": "string", "enum": ["metric", "imperial"], "description": "metric = Celsius/km/h, imperial = Fahrenheit/mph", "default": "metric"},
+        # ── Weather (gated by web_access; same ability as web_search) ──
+        if "web_access" in enabled_providers:
+            tools["get_weather"] = ToolInfo(
+                name="get_weather",
+                handler=_core_get_weather,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "location": {"type": "string", "description": "City name or 'lat,lon' coordinates (e.g. 'London', '40.71,-74.01')"},
+                        "units": {"type": "string", "enum": ["metric", "imperial"], "description": "metric = Celsius/km/h, imperial = Fahrenheit/mph", "default": "metric"},
+                    },
+                    "required": ["location"],
                 },
-                "required": ["location"],
-            },
-        )
+            )
 
         # ── Calculator ──
         tools["calculate"] = ToolInfo(
@@ -895,46 +940,47 @@ class ToolLoader:
             },
         )
 
-        # ── HTTP Request tool (outbound GET/POST/PUT/DELETE/PATCH) ──
-        tools["http_request"] = ToolInfo(
-            name="http_request",
-            handler=_core_http_request,
-            parameters={
-                "type": "object",
-                "properties": {
-                    "method": {
-                        "type": "string",
-                        "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
-                        "description": "HTTP method",
-                        "default": "GET",
+        # ── HTTP Request (gated by browser_control; same ability as browser_action) ──
+        if "browser_control" in enabled_providers:
+            tools["http_request"] = ToolInfo(
+                name="http_request",
+                handler=_core_http_request,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "method": {
+                            "type": "string",
+                            "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
+                            "description": "HTTP method",
+                            "default": "GET",
+                        },
+                        "url": {"type": "string", "description": "Full URL including scheme (e.g. https://api.example.com/data)"},
+                        "headers": {
+                            "type": "object",
+                            "description": "Optional dict of HTTP headers",
+                            "additionalProperties": {"type": "string"},
+                            "default": {},
+                        },
+                        "body": {
+                            "type": "object",
+                            "description": "Request body (dict for JSON/form, string for text)",
+                            "default": {},
+                        },
+                        "body_type": {
+                            "type": "string",
+                            "enum": ["json", "form", "text"],
+                            "description": "How to encode body",
+                            "default": "json",
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": "Request timeout in seconds",
+                            "default": 30,
+                        },
                     },
-                    "url": {"type": "string", "description": "Full URL including scheme (e.g. https://api.example.com/data)"},
-                    "headers": {
-                        "type": "object",
-                        "description": "Optional dict of HTTP headers",
-                        "additionalProperties": {"type": "string"},
-                        "default": {},
-                    },
-                    "body": {
-                        "type": "object",
-                        "description": "Request body (dict for JSON/form, string for text)",
-                        "default": {},
-                    },
-                    "body_type": {
-                        "type": "string",
-                        "enum": ["json", "form", "text"],
-                        "description": "How to encode body",
-                        "default": "json",
-                    },
-                    "timeout": {
-                        "type": "integer",
-                        "description": "Request timeout in seconds",
-                        "default": 30,
-                    },
+                    "required": ["url"],
                 },
-                "required": ["url"],
-            },
-        )
+            )
 
         # ── Webhook management (generic inbound webhooks) ──
         async def _register_webhook_wrapper(name: str, instructions: str = ""):

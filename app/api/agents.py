@@ -1068,9 +1068,12 @@ _CONNECTION_CATALOG = [
     {"connection_type": "amazon",    "section": "marketplace", "display_name": "Amazon Seller",    "status": "available"},
 
     # ── Agent Tools (host-side privileged capabilities) ──
-    {"connection_type": "codebase_admin", "section": "ability", "display_name": "Codebase Admin", "status": "available"},
-    {"connection_type": "create_tools",   "section": "ability", "display_name": "Create Tools",   "status": "available"},
-    {"connection_type": "automation",     "section": "ability", "display_name": "Automation",     "status": "available"},
+    {"connection_type": "codebase_admin",   "section": "ability", "display_name": "Codebase Admin",   "status": "available"},
+    {"connection_type": "create_tools",     "section": "ability", "display_name": "Create Tools",     "status": "available"},
+    {"connection_type": "automation",       "section": "ability", "display_name": "Automation",       "status": "available"},
+    {"connection_type": "web_access",       "section": "ability", "display_name": "Web Access",       "status": "available"},
+    {"connection_type": "browser_control",  "section": "ability", "display_name": "Browser Control",  "status": "available"},
+    {"connection_type": "image_generation", "section": "ability", "display_name": "Image Generation", "status": "available"},
 ]
 
 
