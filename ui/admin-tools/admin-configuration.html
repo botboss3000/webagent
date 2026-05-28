@@ -328,6 +328,31 @@
               <span id="ac-int-automation-status" class="ac-status" style="display:none;margin-top:8px;"></span>
             </div>
 
+            <!-- Visualizer -->
+            <div class="ac-card" id="ac-int-visualizer-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <i data-lucide="layout" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#7aa2f7;"></i>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Visualizer</div>
+                  <div class="ac-hint" style="margin:0;">Lets the agent create, edit, rename, and delete pages in the user's <strong>Pages</strong> workspace. Typically only the Page Builder / Visualizer agent needs this on.</div>
+                </div>
+                <span id="ac-int-visualizer-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
+              </div>
+
+              <div id="ac-int-visualizer-configured" style="display:none;font-size:12px;">
+                <div class="ac-hint" style="margin:0;">Visualizer is available on the agent's <strong>Abilities</strong> tab. Agent admins must toggle it on per agent before the page-authoring tools are exposed.</div>
+                <div style="margin-top:12px;display:flex;gap:8px;">
+                  <button id="ac-int-visualizer-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                </div>
+              </div>
+
+              <div id="ac-int-visualizer-form" style="display:block;">
+                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Visualizer as a per-agent toggle. With the toggle off, an agent cannot see <code>render_visual</code>, <code>create_page</code>, or any other page-authoring tool.</div>
+                <button id="ac-int-visualizer-save" class="ac-btn ac-btn-primary">Enable Visualizer</button>
+              </div>
+              <span id="ac-int-visualizer-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+            </div>
+
             <!-- ── Channels ── -->
             <div class="ac-section-header" style="margin-top:24px;">
               <i data-lucide="message-square" class="lucide-icon ac-section-icon"></i>

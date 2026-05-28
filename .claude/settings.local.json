@@ -24,7 +24,10 @@
       "Bash(node --check ui/js/sessions.js)",
       "Bash(node --input-type=module --check)",
       "Bash(git add *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(sqlite3 *)",
+      "Bash(.venv/bin/python *)",
+      "Read(//proc/5078/**)"
     ]
   }
 }

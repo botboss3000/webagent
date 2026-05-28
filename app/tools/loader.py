@@ -543,12 +543,18 @@ class ToolLoader:
             except ImportError:
                 pass  # admin/source_tools.py not present — source editing disabled
 
-        # ── Visualizer tools (p5.js creative coding) ──
-        try:
-            from app.visualizer import register_tools as _register_visualizer_tools
-            _register_visualizer_tools(tools, user_id)
-        except ImportError:
-            pass  # app/visualizer/ not available — visual rendering disabled
+        # ── Visualizer tools (page builder: render_visual, list/create/delete/rename/get pages) ──
+        # Gated by the "visualizer" ability — only agents whose admin has
+        # toggled it on get the page-authoring tools. Without this gate every
+        # agent (including admin-agent) would see render_visual and could
+        # decide to write conversational replies as HTML to the user's home
+        # page.
+        if "visualizer" in enabled_providers:
+            try:
+                from app.visualizer import register_tools as _register_visualizer_tools
+                _register_visualizer_tools(tools, user_id)
+            except ImportError:
+                pass  # app/visualizer/ not available — visual rendering disabled
 
         # ── Delegation tools — injected for non-pipeline agents ──
         # Allows agents to hand off to each other mid-conversation.

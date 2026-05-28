@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional, Set
 
 from app.db.interface import StorageBackend
@@ -18,6 +19,22 @@ logger = logging.getLogger(__name__)
 
 TOOL_MARKER = "\n\n[Tool calls: "  # legacy — kept for backward compat with old rows
 INTERNAL_TOOL_NAMES = frozenset({"memory_search", "memory_save"})
+
+# Reasoning models (Gemini 3.1 Pro, DeepSeek, etc.) stream <think>...</think>
+# blocks as part of `content`. Replaying that back to the model on subsequent
+# turns causes some providers (notably Gemini via DeepInfra) to return empty
+# responses, which the loop then treats as the final answer.
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", flags=re.DOTALL)
+_THINK_UNCLOSED_RE = re.compile(r"<think>.*$", flags=re.DOTALL)
+
+
+def strip_think_blocks(content: Optional[str]) -> str:
+    """Remove `<think>...</think>` reasoning spans (and unclosed trailing ones)."""
+    if not content or "<think>" not in content:
+        return content or ""
+    cleaned = _THINK_BLOCK_RE.sub("", content)
+    cleaned = _THINK_UNCLOSED_RE.sub("", cleaned)
+    return cleaned.strip()
 
 
 def _extract_tool_calls_from_output(output_str: Optional[str]) -> Optional[List[Dict[str, Any]]]:
@@ -80,7 +97,7 @@ def interactions_to_openai_messages(
             out.append({"role": "user", "content": r.content})
             i += 1
         elif r.role == "assistant":
-            content = r.content or ""
+            content = strip_think_blocks(r.content)
 
             # NEW: try clean path first — read tool calls from the output field
             tool_calls_from_output = _extract_tool_calls_from_output(r.output)

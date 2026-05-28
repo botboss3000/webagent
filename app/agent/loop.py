@@ -894,6 +894,7 @@ async def stream_agent_events(
     turn_count = 0
     original_max_turns = max_turns  # the configured block size; used to rearm at each ceiling
     last_extension_at = 0           # ceiling turn at which we last extended (0 = not yet)
+    empty_retry_used = False        # safety net: one retry per session for an empty LLM reply
 
     try:
         # Build loop config — drives per-node enable/disable at runtime.
@@ -1231,9 +1232,16 @@ async def stream_agent_events(
                         tool_args = {}
                     yield {"type": "tool_call", "level": "agent", "tool": tool_name, "args": tool_args}
 
+                # Strip <think>...</think> before replaying to the LLM.
+                # Reasoning-model providers (e.g. Gemini 3.1 Pro via DeepInfra)
+                # return empty on the next turn when they see their own prior
+                # think-block, which falls through to the "no tool calls" branch
+                # and ends the loop after one productive turn.
+                from app.agent.session_history import strip_think_blocks
+                replay_content = strip_think_blocks(collected_content) or None
                 messages.append({
                     "role": "assistant",
-                    "content": collected_content or None,
+                    "content": replay_content,
                     "tool_calls": full_tool_calls,
                 })
 
@@ -1578,6 +1586,24 @@ async def stream_agent_events(
                 yield {"type": "pipeline", "level": "pipeline",
                        "step": "check_continue", "turn": turn_count,
                        "max_turns": max_turns, "will_continue": turn_count < max_turns}
+                continue
+
+            # ── Empty-response safety net ──
+            # If the LLM returned nothing (no content + no tool calls), don't
+            # treat it as the final answer — it's almost always a transient
+            # provider hiccup. Nudge once and try again. Only retry on turns
+            # after the first; an empty first-turn reply is honored as-is.
+            _empty_reply = not (collected_content or "").strip()
+            if _empty_reply and turn_count > 1 and not empty_retry_used:
+                yield {"type": "pipeline", "level": "pipeline",
+                       "step": "empty_response_retry", "turn": turn_count,
+                       "message": "LLM returned empty content + no tool calls; retrying once."}
+                messages.append({
+                    "role": "system",
+                    "content": "Your previous response was empty. Continue the task: either call the next tool, or write the final answer for the user.",
+                })
+                empty_retry_used = True
+                turn_count -= 1  # Don't burn a turn on the retry
                 continue
 
             # ── No tool calls → final response ──

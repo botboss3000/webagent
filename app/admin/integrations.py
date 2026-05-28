@@ -1825,6 +1825,7 @@ _ABILITY_CONFIG_KEY: dict[str, str] = {
     "web_access":       "ability_web_access",
     "browser_control":  "ability_browser_control",
     "image_generation": "ability_image_generation",
+    "visualizer":       "ability_visualizer",
 }
 
 
@@ -2109,6 +2110,7 @@ async def get_integration_config(
         "web_access_configured":       ability_enabled.get("web_access", False),
         "browser_control_configured":  ability_enabled.get("browser_control", False),
         "image_generation_configured": ability_enabled.get("image_generation", False),
+        "visualizer_configured":       ability_enabled.get("visualizer", False),
     }
 
 
