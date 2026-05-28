@@ -9,6 +9,14 @@ import { termWsUrl, apiPath } from './config.js';
 const MAX_RECONNECT_DELAY = 30000; // 30s max
 const INITIAL_RECONNECT_DELAY = 500; // 500ms first retry
 
+// Liveness: server pings every 25s. If we haven't seen ANY frame from the
+// server in this many ms we assume the socket is half-open (mobile sleep,
+// NAT rebind, hung proxy) and force-close so onclose fires and reconnect
+// kicks in. Without this the WS stays readyState===OPEN and keystrokes
+// vanish into the void.
+const LIVENESS_TIMEOUT_MS = 60000;
+const LIVENESS_CHECK_MS = 10000;
+
 const DEFAULT_FONT_SIZE = 14;
 const MIN_FONT_SIZE = 8;
 const MAX_FONT_SIZE = 32;
@@ -76,6 +84,8 @@ export function createTerminalInstance(container, sessionId, opts) {
   let reconnectTimer = null;
   let reconnectAttempts = 0;
   let disposed = false;
+  let lastServerFrameTs = 0;
+  let livenessTimer = null;
 
   // Connection state machine used to drive the per-tab status dot in the UI.
   // 'connecting' = WS opening for the first time / scheduled reconnect in flight
@@ -105,6 +115,26 @@ export function createTerminalInstance(container, sessionId, opts) {
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
+    }
+  }
+
+  function _armLiveness() {
+    _disarmLiveness();
+    lastServerFrameTs = Date.now();
+    livenessTimer = setInterval(() => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - lastServerFrameTs > LIVENESS_TIMEOUT_MS) {
+        // Force-close so onclose fires and scheduleReconnect runs. The
+        // server may have already gone but the client hasn't been told.
+        try { ws.close(); } catch (_) {}
+      }
+    }, LIVENESS_CHECK_MS);
+  }
+
+  function _disarmLiveness() {
+    if (livenessTimer) {
+      clearInterval(livenessTimer);
+      livenessTimer = null;
     }
   }
 
@@ -145,6 +175,7 @@ export function createTerminalInstance(container, sessionId, opts) {
     ws.onopen = () => {
       reconnectAttempts = 0;
       setState('connected');
+      _armLiveness();
       try { term.focus(); } catch (_) {}
       try {
         ws.send(JSON.stringify({ type: 'resize', rows: term.rows, cols: term.cols }));
@@ -161,6 +192,8 @@ export function createTerminalInstance(container, sessionId, opts) {
     };
 
     ws.onmessage = (ev) => {
+      // Any frame is proof of life for the liveness watchdog.
+      lastServerFrameTs = Date.now();
       if (ev.data instanceof ArrayBuffer) {
         const data = new Uint8Array(ev.data);
         if (data.length === 0) {
@@ -171,7 +204,15 @@ export function createTerminalInstance(container, sessionId, opts) {
       } else if (typeof ev.data === 'string') {
         try {
           const msg = JSON.parse(ev.data);
-          if (msg.type === 'ping') return;
+          if (msg.type === 'ping') {
+            // Reply so the server's inbound-silence watchdog sees us alive.
+            try {
+              if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'pong' }));
+              }
+            } catch (_) {}
+            return;
+          }
         } catch {
           term.write(ev.data);
         }
@@ -179,6 +220,7 @@ export function createTerminalInstance(container, sessionId, opts) {
     };
 
     ws.onclose = (ev) => {
+      _disarmLiveness();
       if (disposed) return;
       // 4401 = auth failed, 4002 = per-user session cap exceeded. Both are
       // hard stops; retrying just spams the server with rejected handshakes.
@@ -256,10 +298,38 @@ export function createTerminalInstance(container, sessionId, opts) {
     connect();
   }
 
+  // Mobile/laptop sleep, switching tabs, or losing wifi all leave the WS in
+  // states where the browser won't tell us the connection died until much
+  // later (or ever). When the tab becomes visible again or the browser says
+  // we're back online, kick a reconnect immediately if the socket isn't OPEN
+  // — much faster than waiting for the exponential backoff to tick around.
+  const _onVisibility = () => {
+    if (disposed) return;
+    if (document.visibilityState !== 'visible') return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      reconnectAttempts = 0;
+      cancelReconnect();
+      connect();
+    }
+  };
+  const _onOnline = () => {
+    if (disposed) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      reconnectAttempts = 0;
+      cancelReconnect();
+      connect();
+    }
+  };
+  document.addEventListener('visibilitychange', _onVisibility);
+  window.addEventListener('online', _onOnline);
+
   function dispose() {
     if (disposed) return;
     disposed = true;
     cancelReconnect();
+    _disarmLiveness();
+    document.removeEventListener('visibilitychange', _onVisibility);
+    window.removeEventListener('online', _onOnline);
     if (ws) {
       ws.onclose = null;
       ws.onerror = null;

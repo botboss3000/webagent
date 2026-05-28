@@ -1312,6 +1312,27 @@ function buildPaneForTab(tab, mode) {
     scrollWrap.appendChild(host);
     pane.appendChild(scrollWrap);
 
+    // "Disconnected" overlay — shown whenever the WS isn't connected so the
+    // user knows their keystrokes aren't reaching the shell (the xterm canvas
+    // still looks live even when the socket is dead). pointer-events:none in
+    // CSS keeps clicks going through to xterm for focus restore.
+    const overlay = document.createElement('div');
+    overlay.className = 'files-terminal-overlay';
+    const overlayText = document.createElement('div');
+    overlayText.className = 'files-terminal-overlay-text';
+    overlay.appendChild(overlayText);
+    pane.appendChild(overlay);
+
+    // Clicking anywhere on the pane should restore xterm focus. xterm's input
+    // is in a hidden helper textarea that only auto-focuses when the click
+    // lands on a row glyph; clicks on padding/margins otherwise look focused
+    // but actually drop input on the floor.
+    host.addEventListener('mousedown', () => {
+      if (tab.instance) {
+        try { tab.instance.focus(); } catch (_) {}
+      }
+    });
+
     // Drag-and-drop: dropping a file from the file tree pastes its absolute
     // path (shell-quoted) at the current prompt. The tree marshals the path
     // as text/plain in dragstart; here we just unpack and forward to the PTY.
@@ -1358,8 +1379,15 @@ function buildPaneForTab(tab, mode) {
         // Consume the command — buildPaneForTab can be called again later
         // (e.g. pane mode swap), but the shell already has it.
         tab.initialCommand = '';
-        // Drive the per-tab status dot from the WS state machine.
-        tab.instance.onStateChange((s) => _updateTabConnDot(tab.path, s));
+        // Drive the per-tab status dot AND the pane overlay from the WS
+        // state machine. The dot is a small at-a-glance hint on the tab; the
+        // overlay is the loud "your keystrokes aren't reaching the shell"
+        // signal on the pane itself.
+        tab.instance.onStateChange((s) => {
+          _updateTabConnDot(tab.path, s);
+          pane.classList.toggle('files-terminal-disconnected', s !== 'connected');
+          overlayText.textContent = _connStateTitle(s);
+        });
         tab.instance.fit();
         // Belt-and-braces second fit after another paint — covers any
         // late layout shift from the address bar settling on iOS Safari.
