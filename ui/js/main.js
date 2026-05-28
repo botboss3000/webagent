@@ -26,11 +26,11 @@ import { randomUUID } from './uuid.js';
 
 bindDom();
 
-// ── Anonymous session for public agent URLs ──────────────────────────────
-// If the server injected __agentId and no auth token exists, create an
-// anonymous session so the visitor can chat without logging in.
+// ── Anonymous session ─────────────────────────────────────────────────────
+// If no auth token exists, create an anonymous session so the visitor can
+// chat without signing in.  Works for both the main page and public agent
+// URL pages (/{agentId}).
 async function _initAnonSession() {
-  if (!window.__agentId) return;
   if (localStorage.getItem('auth_token')) return;
 
   let browserId = localStorage.getItem('anon_browser_id');
@@ -40,14 +40,19 @@ async function _initAnonSession() {
   }
 
   try {
-    const res = await fetch(`/api/v1/agents/${window.__agentId}/anon-session`, {
+    // Use the public agent URL endpoint if __agentId is set (creates identity
+    // tied to that agent), otherwise use the generic anonymous endpoint.
+    const url = window.__agentId
+      ? `/api/v1/agents/${window.__agentId}/anon-session`
+      : '/api/v1/auth/anonymous';
+    const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ browser_id: browserId }),
     });
     if (!res.ok) return;
     const data = await res.json();
-    localStorage.setItem('auth_token', data.token);
+    localStorage.setItem('auth_token', data.access_token || data.token);
     localStorage.setItem('auth_user_id', data.user_id);
     app.currentUserId = data.user_id;
     app.localUserId = data.user_id;

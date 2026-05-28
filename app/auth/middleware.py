@@ -21,6 +21,7 @@ PUBLIC_PATHS = {
     "/api/v1/auth/login",
     "/api/v1/auth/recall",
     "/api/v1/auth/logout",
+    "/api/v1/auth/anonymous",
     "/test",
     "/privacy",
     "/tos",

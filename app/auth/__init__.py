@@ -65,6 +65,35 @@ class RecallResponse(BaseModel):
     display_name: str
 
 
+class AnonymousRequest(BaseModel):
+    browser_id: str | None = None
+
+
+class AnonymousResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user_id: str
+
+
+@router.post("/anonymous", response_model=AnonymousResponse)
+async def create_anonymous_session(req: AnonymousRequest):
+    """Issue a JWT for an anonymous visitor on the main page.
+
+    Does not require an agent_id (unlike the per-agent anon-session
+    endpoint), so any page visitor can get a token and start chatting.
+    The identity is persisted as a channel_identity (web_anonymous) so
+    sessions and interactions are properly associated.
+    """
+    import uuid as _uuid_mod
+    from app.communications.auth import get_or_create_identity
+
+    browser_id = req.browser_id or _uuid_mod.uuid4().hex
+    identity = await get_or_create_identity(channel="web_anonymous", external_id=browser_id)
+
+    token = create_access_token(username=identity.user_id, user_id=identity.user_id)
+    return AnonymousResponse(access_token=token, user_id=identity.user_id)
+
+
 @router.post("/login", response_model=LoginResponse)
 async def login(req: LoginRequest):
     """Authenticate with username and password.

@@ -1896,49 +1896,6 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Added attachments.storage_provider column")
 
-            # ── Migration 029: drop session_id FK from attachments ──
-            # The FK constraint on session_id REFERENCES sessions(id) breaks paste-to-attach
-            # because the frontend creates a new session client-side before it exists in the DB.
-            # We drop the constraint — the app manages the relationship at the code level.
-            cursor = conn.execute("PRAGMA foreign_key_list(attachments)")
-            _has_session_fk = any(
-                row["from"] == "session_id" for row in cursor.fetchall()
-            )
-            if _has_session_fk:
-                logger.info("Migration 029: dropping attachments.session_id FK constraint")
-                conn.execute("PRAGMA foreign_keys = OFF")
-                conn.execute(
-                    """CREATE TABLE attachments_v2 (
-                        id              TEXT PRIMARY KEY,
-                        user_id         TEXT NOT NULL,
-                        session_id      TEXT,
-                        original_name   TEXT NOT NULL,
-                        mime_type       TEXT NOT NULL,
-                        size_bytes      INTEGER NOT NULL,
-                        storage_path    TEXT NOT NULL,
-                        storage_provider TEXT NOT NULL DEFAULT 'local',
-                        metadata        TEXT NOT NULL DEFAULT '{}',
-                        created_at      TEXT NOT NULL DEFAULT (datetime('now'))
-                    )"""
-                )
-                conn.execute(
-                    """INSERT INTO attachments_v2
-                       SELECT id, user_id, session_id, original_name, mime_type,
-                              size_bytes, storage_path, storage_provider, metadata, created_at
-                       FROM attachments"""
-                )
-                conn.execute("DROP TABLE attachments")
-                conn.execute("ALTER TABLE attachments_v2 RENAME TO attachments")
-                conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_attachments_user ON attachments(user_id)"
-                )
-                conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_attachments_session ON attachments(session_id)"
-                )
-                conn.execute("PRAGMA foreign_keys = ON")
-                conn.commit()
-                logger.info("Migration 029 complete: attachments FK constraint removed")
-
             # ── Seed: agent templates from app/context/agents/*.json (full schema) ──
             self._seed_agent_templates_from_json_files(conn)
 
@@ -4792,7 +4749,7 @@ class LocalBackend(StorageBackend):
                     tpl.get("provider", ""),
                     tpl.get("temperature", 0.7),
                     tpl.get("max_tokens", 8192),
-                    json.dumps({**json.loads(tpl.get("metadata", "{}")), "owner_user_id": user_id}),
+                    tpl.get("metadata", "{}"),
                     template_id,
                     tpl.get("trigger_type", "user_input"),
                     tpl.get("trigger_key"),
