@@ -5,6 +5,7 @@ import { loopSessionChanged } from './loop.js';
 import { loopVisualSessionChanged } from './loop-logic.js';
 import { autoAgentSessionChanged } from './autoagent.js';
 import { abortChatStream } from './chat.js';
+import { consumeReplayedEventsFor } from './agentWs.js';
 import { apiPath } from './config.js';
 import { icon } from './icons.js';
 import { renderAvatar } from './user-avatar.js';
@@ -623,6 +624,24 @@ export function initSessions() {
     _renderSessionRows();
     _setTriggerLabel();
     closeMenu();
+
+    // Drain any WS-replayed events that arrived BEFORE we navigated here
+    // (e.g. user hard-refreshed onto the home page while a run was in
+    // flight on this session). agentWs.js stashed them keyed by sid.
+    try {
+      const pending = consumeReplayedEventsFor(sid);
+      for (const ev of pending) {
+        if (ev.type === 'stream' && typeof app.appendStreamToActiveBubble === 'function') {
+          app.appendStreamToActiveBubble(ev.content || '', ev.turn_id);
+        } else if (ev.type === 'response' && typeof app.finalizeAgentResponse === 'function') {
+          app.finalizeAgentResponse(ev.content || '', ev.turn_id, true);
+        } else if (ev.type === 'interrupted' && typeof app.updateLastBubble === 'function') {
+          app.updateLastBubble('(interrupted)', 'interrupted');
+          app.isProcessing = false;
+          if (app.chatSend) app.chatSend.disabled = false;
+        }
+      }
+    } catch (_pendErr) { /* never let drain break navigation */ }
 
     // Ask the WS to replay any events for THIS (newly-active) session that
     // we missed while we were on the other one. The server checks its
