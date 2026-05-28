@@ -1083,6 +1083,81 @@ function initTabCarousel() {
   window.addEventListener('resize', updateTabCarousel);
 }
 
+// Shortcut-key panel in the terminal tab bar. On mobile keyboards there
+// are no arrow keys, so the bottom row + middle cell of this 3x3 pad
+// pipes ANSI cursor escapes into the active terminal. The remaining
+// cells are placeholders for future shortcuts.
+function initTerminalKeypad() {
+  const btn = document.getElementById('files-term-keypad-btn');
+  const panel = document.getElementById('files-term-keypad-panel');
+  if (!btn || !panel || btn.dataset.wired) return;
+  btn.dataset.wired = '1';
+
+  // ANSI escapes sent into the PTY for each pad key. Shift+Enter uses the
+  // ESC+CR sequence (a.k.a. Alt-Enter), which readline-based REPLs and
+  // Claude Code's input handler interpret as "insert newline, don't submit".
+  const KEY_ESC = {
+    up:            '\x1b[A',
+    down:          '\x1b[B',
+    right:         '\x1b[C',
+    left:          '\x1b[D',
+    'shift-enter': '\x1b\r',
+  };
+
+  function positionPanel() {
+    // Panel lives in a `position: fixed` layer because the tab wrap has
+    // overflow:hidden, which would clip an in-flow absolutely-positioned
+    // dropdown. Anchor it to the button's bottom-right.
+    const rect = btn.getBoundingClientRect();
+    const panelW = panel.offsetWidth || 120;
+    const pad = 4;
+    let left = rect.right - panelW;
+    if (left < pad) left = pad;
+    panel.style.top = (rect.bottom + pad) + 'px';
+    panel.style.left = left + 'px';
+  }
+
+  function setOpen(open) {
+    panel.hidden = !open;
+    btn.classList.toggle('is-open', open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) positionPanel();
+  }
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setOpen(panel.hidden);
+  });
+
+  window.addEventListener('resize', () => { if (!panel.hidden) positionPanel(); });
+  window.addEventListener('scroll', () => { if (!panel.hidden) positionPanel(); }, true);
+
+  panel.addEventListener('click', (e) => {
+    const key = e.target.closest('.files-term-keypad-key');
+    if (!key) return;
+    e.stopPropagation();
+    const action = key.dataset.key;
+    const esc = KEY_ESC[action];
+    if (!esc) return; // blank placeholder — no-op for now
+    const tab = getActiveTerminalTab();
+    if (tab && tab.instance && tab.instance.paste) {
+      tab.instance.paste(esc);
+      try { tab.instance.focus(); } catch (_) {}
+    }
+  });
+
+  // Click anywhere outside the panel closes it.
+  document.addEventListener('click', (e) => {
+    if (panel.hidden) return;
+    if (panel.contains(e.target) || btn.contains(e.target)) return;
+    setOpen(false);
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !panel.hidden) setOpen(false);
+  });
+}
+
 function renderEditorPanes() {
   const fileContent = document.getElementById('files-content');
   const termContent = document.getElementById('files-term-content');
@@ -1998,6 +2073,7 @@ export function initFiles() {
 
   initSidebarResize();
   initTabCarousel();
+  initTerminalKeypad();
   installFilesDropGuard();
   initSidebarViewSwitcher();
   initSettingsToggle();

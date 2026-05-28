@@ -511,6 +511,66 @@ body.light-mode {
 #files-tabs-next { border-right: none; border-left: 1px solid var(--files-border); }
 .files-tabs-chev .lucide-icon { width: 14px; height: 14px; }
 
+/* Terminal-only shortcut keypad: a popover anchored to the right side of
+   the tab bar that exposes arrow-key buttons. Targets mobile use, where
+   on-screen keyboards lack arrow keys for shells / TUIs. */
+.files-term-keypad-wrap {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  flex-shrink: 0;
+}
+.files-term-keypad-btn {
+  width: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--files-bg-sidebar);
+  border: none;
+  border-left: 1px solid var(--files-border);
+  color: var(--files-text);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  z-index: 2;
+}
+.files-term-keypad-btn:hover { background: var(--files-bg-tab-hover); color: var(--files-text-strong); }
+.files-term-keypad-btn.is-open { background: var(--files-bg-tab-hover); color: var(--files-text-strong); }
+.files-term-keypad-btn .lucide-icon { width: 14px; height: 14px; }
+
+.files-term-keypad-panel {
+  position: fixed;
+  z-index: 1000;
+  display: grid;
+  grid-template-columns: repeat(3, 36px);
+  grid-template-rows: repeat(2, 36px);
+  gap: 4px;
+  padding: 6px;
+  background: var(--files-bg-sidebar);
+  border: 1px solid var(--files-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+.files-term-keypad-panel[hidden] { display: none; }
+.files-term-keypad-key {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--files-bg);
+  border: 1px solid var(--files-border);
+  border-radius: 4px;
+  color: var(--files-text);
+  cursor: pointer;
+  padding: 0;
+}
+.files-term-keypad-key:hover { background: var(--files-bg-tab-hover); color: var(--files-text-strong); }
+.files-term-keypad-key:active { background: var(--files-active-indicator); color: #fff; }
+.files-term-keypad-key .lucide-icon { width: 18px; height: 18px; }
+.files-term-keypad-key[data-key^="blank-"] { cursor: default; opacity: 0.35; }
+.files-term-keypad-key[data-key^="blank-"]:hover { background: var(--files-bg); color: var(--files-text); }
+
 .files-tabs {
   display: flex;
   flex-direction: row;

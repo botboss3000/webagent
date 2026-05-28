@@ -15,6 +15,7 @@ from app.models.schemas import ChatRequest, ChatResponse
 from app.db import get_db
 from app.agent.prompts import (
     build_system_prompt,
+    build_user_message_content,
     format_attachments_for_prompt,
     CONTEXT_SECTION_TYPES,
 )
@@ -522,8 +523,8 @@ async def chat(request: ChatRequest, fastapi_request: Request):
 
         # ── Resolve attachment references ──
         attachment_context = None
+        attachment_docs: List[Dict[str, Any]] = []
         if request.attachment_ids:
-            attachment_docs = []
             for att_id in request.attachment_ids:
                 att = await db.get_attachment(att_id)
                 if att:
@@ -539,6 +540,9 @@ async def chat(request: ChatRequest, fastapi_request: Request):
                         for a in attachment_docs
                     ],
                 })
+        user_message_content = await build_user_message_content(
+            request.message, attachment_docs,
+        )
 
         # Build system prompt with brain context + dynamic tools
         # context_docs is already the resolved per-caller slot list.
@@ -610,7 +614,7 @@ async def chat(request: ChatRequest, fastapi_request: Request):
         assistant_reply = await run_agent_loop_buffered(
             user_id=request.user_id,
             session_id=request.session_id,
-            user_message=request.message,
+            user_message=user_message_content,
             system_prompt=system_prompt,
             agent_id=agent["id"],
             history=history,
@@ -932,8 +936,8 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
 
         # ── Resolve attachment references (SSE) ──
         attachment_context = None
+        attachment_docs: List[Dict[str, Any]] = []
         if request.attachment_ids:
-            attachment_docs = []
             for att_id in request.attachment_ids:
                 att = await db.get_attachment(att_id)
                 if att:
@@ -941,6 +945,9 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             if attachment_docs:
                 attachment_context = format_attachments_for_prompt(attachment_docs)
                 yield f"data: {json.dumps({'type': 'attachment', 'level': 'agent', 'attachments': [{'id': a['id'], 'original_name': a['original_name'], 'mime_type': a['mime_type'], 'size_bytes': a['size_bytes'], 'storage_path': a.get('storage_path', '')} for a in attachment_docs]})}\n\n"
+        user_message_content = await build_user_message_content(
+            request.message, attachment_docs,
+        )
 
         _agent_id_for_prompt_sse = agent.get("id") if agent else None
         system_prompt = await build_system_prompt(
@@ -985,7 +992,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                     async for event in stream_agent_events(
                         user_id=request.user_id,
                         session_id=request.session_id,
-                        user_message=request.message,
+                        user_message=user_message_content,
                         system_prompt=system_prompt,
                         agent_id=agent["id"],
                         history=history,

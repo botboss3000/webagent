@@ -102,7 +102,11 @@ async def read_attachment(attachment_id: str) -> str:
                 "message": f"Failed to decode text file: {e}",
             })
 
-    # ── Images (placeholder — real OCR requires tesseract or vision model) ──
+    # ── Images ──
+    # The chat pipeline inlines images attached to the current user message as
+    # vision content parts (see app/agent/prompts.build_user_message_content),
+    # so the model can already see them directly. This tool is now mainly a
+    # metadata lookup / re-inspection hint.
     elif mime.startswith("image/"):
         return json.dumps({
             "status": "ok",
@@ -113,8 +117,10 @@ async def read_attachment(attachment_id: str) -> str:
             "content": (
                 f"[Image file: {att['original_name']} ({mime}, {size_str})]\n"
                 f"The image is accessible at: {public_url}\n"
-                "Note: Local OCR is not yet available. If you have vision capabilities, "
-                "describe the image to the user based on its filename and metadata."
+                "If this image was attached to the most recent user message, it "
+                "has already been included with that message as a vision content "
+                "part — you can describe it directly. For images attached to "
+                "earlier turns, only metadata is available here."
             ),
         }, indent=2)
 
