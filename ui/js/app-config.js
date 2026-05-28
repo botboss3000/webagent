@@ -1088,7 +1088,7 @@ function _initIntegrations() {
   const comingSoonChannels = ['whatsapp', 'slack', 'discord', 'email', 'twilio'];
 
   // Agent Tools (admin enable/disable; per-agent toggles in the Abilities tab)
-  const abilities = ['codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation'];
+  const abilities = ['codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer'];
   for (const a of abilities) {
     _initCollapsible(a);
     _qs(`ac-int-${a}-save`)?.addEventListener('click', () => _enableAbility(a));
@@ -1331,10 +1331,11 @@ async function _loadIntegrations() {
     _applyAbilityStatus('web_access',       data.web_access_configured);
     _applyAbilityStatus('browser_control',  data.browser_control_configured);
     _applyAbilityStatus('image_generation', data.image_generation_configured);
+    _applyAbilityStatus('visualizer',       data.visualizer_configured);
     // Browser session is per-user — fetched from a separate endpoint.
     _loadBrowserSessionStatus();
   } catch (e) {
-    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram', 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation']) {
+    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram', 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer']) {
       const s = _qs(`ac-int-${p}-status`);
       if (s) { s.textContent = `Failed to load: ${e.message}`; s.style.color = '#f7768e'; s.style.display = 'block'; }
     }
