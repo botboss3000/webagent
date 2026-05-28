@@ -77,6 +77,30 @@ function linkifyText(text) {
   return frag;
 }
 
+// ── session_seq persistence ──
+// Live in localStorage so a hard refresh mid-stream still tells the server
+// what we've already seen, and the WS replay can pick up from there instead
+// of dumping every buffered event back at us (or — worse — none, if the
+// in-memory map was lost and we end up filtering replayed events for an
+// unknown session).
+const _LAST_SEQ_LS_KEY = 'webagent.lastSessionSeq.v1';
+function _persistLastSessionSeq() {
+  try {
+    localStorage.setItem(_LAST_SEQ_LS_KEY, JSON.stringify(app.lastSessionSeq || {}));
+  } catch (_) { /* quota / private mode — non-fatal */ }
+}
+function _loadLastSessionSeq() {
+  try {
+    const raw = localStorage.getItem(_LAST_SEQ_LS_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      app.lastSessionSeq = parsed;
+    }
+  } catch (_) { /* corrupt — drop silently */ }
+}
+_loadLastSessionSeq();
+
 function addChatBubble(role, text, extraClass, imageUrl, turnId) {
   const bubble = document.createElement('div');
   bubble.className = 'chat-bubble ' + role + (extraClass ? ' ' + extraClass : '');
@@ -362,6 +386,27 @@ async function sendMessage() {
     headersReceivedAt: null,
   };
 
+  // Whether we observed a terminal event (response / error / interrupted).
+  // If the reader closes without one, we force-unlock the UI in the
+  // post-loop guard — otherwise the chat input stays disabled forever
+  // and looks like a "disconnect". See the SSE-stuck-state bug.
+  let _sseTerminalSeen = false;
+
+  // Idle watchdog: if no bytes arrive for SSE_IDLE_MS we abort the fetch
+  // so the user gets a real error instead of an indefinite `…`. Reset on
+  // each chunk; cleared in `finally`.
+  const SSE_IDLE_MS = 60000;
+  let _sseIdleTimer = null;
+  const _armIdleTimer = () => {
+    if (_sseIdleTimer) clearTimeout(_sseIdleTimer);
+    _sseIdleTimer = setTimeout(() => {
+      _sseIdleTimer = null;
+      if (app._sseAbortController) {
+        try { app._sseAbortController.abort('idle-timeout'); } catch (_) {}
+      }
+    }, SSE_IDLE_MS);
+  };
+
   try {
     // POST to SSE streaming endpoint — read the response stream.
     // This is the primary source of chat bubble updates.
@@ -376,6 +421,7 @@ async function sendMessage() {
 
     if (!resp.ok) {
       updateLastBubble('Server error: ' + resp.status, 'error');
+      _sseTerminalSeen = true;
       app.isProcessing = false;
       app.chatSend.disabled = false;
       window.__sseActive = false;
@@ -386,11 +432,13 @@ async function sendMessage() {
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    _armIdleTimer();
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       if (value) _sseDiag.bytes += value.byteLength;
+      _armIdleTimer();
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
@@ -417,6 +465,7 @@ async function sendMessage() {
           const prev = app.lastSessionSeq[_sid] || 0;
           if (event.session_seq > prev) {
             app.lastSessionSeq[_sid] = event.session_seq;
+            _persistLastSessionSeq();
           }
         }
 
@@ -428,6 +477,7 @@ async function sendMessage() {
         } else if (event.type === 'response') {
           app.agentBuffer = '';
           updateLastBubble(event.content);
+          _sseTerminalSeen = true;
           app.isProcessing = false;
           app.chatSend.disabled = false;
           if (typeof app.populateSessionSelect === 'function') {
@@ -436,14 +486,54 @@ async function sendMessage() {
         } else if (event.type === 'error') {
           updateLastBubble('Error: ' + event.message, 'error');
           app.agentBuffer = '';
+          _sseTerminalSeen = true;
+          app.isProcessing = false;
+          app.chatSend.disabled = false;
+        } else if (event.type === 'interrupted') {
+          // Without this branch the bubble sits on `…` forever — `interrupted`
+          // events are terminal but were previously dropped by this switch.
+          const msg = event.message ? '(interrupted: ' + event.message + ')' : '(interrupted)';
+          updateLastBubble(app.agentBuffer ? app.agentBuffer + '\n\n' + msg : msg, 'interrupted');
+          app.agentBuffer = '';
+          _sseTerminalSeen = true;
           app.isProcessing = false;
           app.chatSend.disabled = false;
         }
         // tool_call / tool_result / pipeline / db handled by WS -> debug panels
       }
     }
+
+    // Reader closed cleanly but server never sent a terminal event.
+    // Force-unlock the UI so the user can keep typing.
+    if (!_sseTerminalSeen && app.isProcessing) {
+      console.warn('[chat/stream] reader closed without terminal event', {
+        bytes: _sseDiag.bytes, events: _sseDiag.eventCount,
+        lastEventType: _sseDiag.lastEventType,
+      });
+      const stalled = app.agentBuffer
+        ? app.agentBuffer + '\n\n(stream ended unexpectedly)'
+        : '(stream ended unexpectedly — please retry)';
+      updateLastBubble(stalled, 'error');
+      app.agentBuffer = '';
+      app.isProcessing = false;
+      app.chatSend.disabled = false;
+    }
   } catch (e) {
     if (e.name === 'AbortError') {
+      // Two ways we land here:
+      //   1. The idle watchdog fired (no bytes for SSE_IDLE_MS) — surface
+      //      a clear error so the user isn't stuck staring at `…`.
+      //   2. abortChatStream() / a new sendMessage aborted — silent.
+      const idleAbort = e.message === 'idle-timeout' || (e.reason === 'idle-timeout');
+      if (idleAbort && app.isProcessing) {
+        const stalled = app.agentBuffer
+          ? app.agentBuffer + '\n\n(no response for ' + Math.round(SSE_IDLE_MS / 1000) + 's — please retry)'
+          : '(no response for ' + Math.round(SSE_IDLE_MS / 1000) + 's — please retry)';
+        updateLastBubble(stalled, 'error');
+        app.agentBuffer = '';
+        app.isProcessing = false;
+        app.chatSend.disabled = false;
+      }
       window.__sseActive = false;
       return;
     }
@@ -475,6 +565,10 @@ async function sendMessage() {
       app.chatSend.disabled = false;
     }
   } finally {
+    if (_sseIdleTimer) {
+      clearTimeout(_sseIdleTimer);
+      _sseIdleTimer = null;
+    }
     window.__sseActive = false;
   }
 }

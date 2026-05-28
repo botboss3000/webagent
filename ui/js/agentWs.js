@@ -10,6 +10,36 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT_DELAY = 30000;
 const INITIAL_RECONNECT_DELAY = 500;
 
+// ── Pending replay buffer ──
+// When the WS reconnects (or a fresh page load completes its handshake) the
+// server can replay buffered `stream` / `response` / `interrupted` events
+// for any of the user's sessions that still have an in-flight run. If those
+// events arrive while the UI is on a DIFFERENT session — or before the
+// user has navigated anywhere — we used to drop them. Now we stash them
+// per-session and `consumeReplayedEventsFor(sid)` lets the chat module
+// flush them when the user switches in. Capped per session to avoid leaks
+// for runaway runs.
+const _pendingReplay = new Map(); // session_id -> Array<event>
+const PENDING_REPLAY_CAP = 500;
+
+function _stashReplay(sid, event) {
+  if (!sid) return;
+  let arr = _pendingReplay.get(sid);
+  if (!arr) {
+    arr = [];
+    _pendingReplay.set(sid, arr);
+  }
+  if (arr.length >= PENDING_REPLAY_CAP) return; // drop oldest-overflow silently
+  arr.push(event);
+}
+
+export function consumeReplayedEventsFor(sid) {
+  if (!sid) return [];
+  const arr = _pendingReplay.get(sid) || [];
+  _pendingReplay.delete(sid);
+  return arr;
+}
+
 export function setAgentStatus(state) {
   if (!app.aDot || !app.aStat) return;
   app.aDot.className = 'status-dot ' + state;
@@ -107,6 +137,14 @@ export function connectAgent() {
       const prev = app.lastSessionSeq[_sid] || 0;
       if (event.session_seq > prev) {
         app.lastSessionSeq[_sid] = event.session_seq;
+        // Mirror to localStorage so a hard refresh doesn't lose the cursor
+        // and the server can replay-from-correct-seq on next handshake.
+        try {
+          localStorage.setItem(
+            'webagent.lastSessionSeq.v1',
+            JSON.stringify(app.lastSessionSeq),
+          );
+        } catch (_) { /* quota / private mode — non-fatal */ }
       }
     }
 
@@ -147,10 +185,20 @@ export function connectAgent() {
         break;
 
       case 'interrupted':
-        if (eventSessionId && eventSessionId !== app.currentSessionId) break;
-        if (window.__sseActive) break;
+        // `interrupted` is terminal. We deliberately do NOT gate on
+        // `__sseActive` — if the SSE path was driving this turn it has
+        // either already finalized or it just bailed (the server only
+        // emits one terminal per turn). Skipping here used to leave the
+        // chat input locked because the SSE reader didn't handle
+        // `interrupted` either. Now both paths converge on this state.
+        if (eventSessionId && eventSessionId !== app.currentSessionId) {
+          if (event.replayed) _stashReplay(eventSessionId, event);
+          break;
+        }
         app.updateLastBubble('(interrupted)', 'interrupted');
         app.agentBuffer = '';
+        app.isProcessing = false;
+        if (app.chatSend) app.chatSend.disabled = false;
         break;
 
       case 'user_message':
@@ -170,7 +218,11 @@ export function connectAgent() {
         // path that lets a refresh / session-switch mid-stream reattach
         // to the in-flight run. Route to the bubble for this event's
         // turn_id so we don't accidentally append to an old turn's bubble.
-        if (eventSessionId && eventSessionId !== app.currentSessionId) break;
+        if (eventSessionId && eventSessionId !== app.currentSessionId) {
+          // Foreign-session replay: stash for when the user navigates in.
+          if (event.replayed) _stashReplay(eventSessionId, event);
+          break;
+        }
         if (window.__sseActive) break;
         if (typeof app.appendStreamToActiveBubble === 'function') {
           try { app.appendStreamToActiveBubble(event.content || '', event.turn_id); } catch(_) {}
@@ -181,7 +233,10 @@ export function connectAgent() {
         // Final assistant reply from an event-triggered run OR replayed
         // final from an in-flight run we reconnected to. SSE is not
         // running for these, so the WS is the only path to a live update.
-        if (eventSessionId && eventSessionId !== app.currentSessionId) break;
+        if (eventSessionId && eventSessionId !== app.currentSessionId) {
+          if (event.replayed) _stashReplay(eventSessionId, event);
+          break;
+        }
         if (window.__sseActive) break;
         if (typeof app.finalizeAgentResponse === 'function') {
           try { app.finalizeAgentResponse(event.content || '', event.turn_id, !!event.replayed); } catch(_) {}
