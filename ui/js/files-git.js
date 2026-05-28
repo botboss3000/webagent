@@ -673,6 +673,28 @@ async function doCheckout(rootEl, branch) {
   await applyPostSync(rootEl, result, r, `Switched to ${branch}`);
 }
 
+// Restart the server, wait for /health to come back, then hard-reload
+// the page. Used by the refresh buttons in the source-control and
+// terminal sidebars. Safe to call without confirmation — the caller
+// is responsible for that.
+export async function restartServerAndReload({ timeoutMs = 60000 } = {}) {
+  try {
+    await fetch(apiPath('/api/v1/restart'), { method: 'POST', headers: authHeaders() });
+  } catch (_) { /* expected: server cut the connection */ }
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    await new Promise(r => setTimeout(r, 1000));
+    try {
+      const h = await fetch(apiPath('/health'));
+      if (h.ok) {
+        window.location.reload();
+        return true;
+      }
+    } catch (_) {}
+  }
+  return false;
+}
+
 // Shared follow-through for any action that may have brought in backend
 // code: if the response says backend_changed, restart the server and wait
 // for /health to come back; otherwise just refresh the sidebar.
@@ -774,7 +796,22 @@ export async function openGitPanel(rootEl) {
   if (!_opened) {
     _opened = true;
     const refresh = rootEl.querySelector('#fg-refresh');
-    if (refresh) refresh.addEventListener('click', () => refreshGit(rootEl));
+    if (refresh) {
+      refresh.addEventListener('click', async () => {
+        if (refresh.dataset.busy === '1') return;
+        refresh.dataset.busy = '1';
+        const origTitle = refresh.title;
+        refresh.title = 'Restarting server…';
+        refresh.classList.add('is-spinning');
+        const ok = await restartServerAndReload();
+        if (!ok) {
+          refresh.dataset.busy = '';
+          refresh.title = origTitle;
+          refresh.classList.remove('is-spinning');
+          alert('Server did not come back within 60s. Check `journalctl -u webagent -f`.');
+        }
+      });
+    }
     initGitMainPills();
   }
   await refreshGit(rootEl);

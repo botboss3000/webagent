@@ -8,7 +8,7 @@
 // main panels (explorer vs terminal). The directory tree is rendered
 // lazily — each folder fetches its children on first expand.
 
-import { openGitPanel, renderGitMain } from './files-git.js';
+import { openGitPanel, renderGitMain, restartServerAndReload } from './files-git.js';
 import { createTerminalInstance } from './terminal.js';
 import { randomUUID } from './uuid.js';
 import { startAppConfig, stopAppConfig } from './app-config.js';
@@ -2806,9 +2806,20 @@ function openTerminalLaunchersPanel() {
   const btn = document.getElementById('ft-refresh');
   if (btn && !btn.dataset.wired) {
     btn.dataset.wired = '1';
-    btn.addEventListener('click', () => {
-      ftLoadQuickLaunches();
-      ftLoadTmuxSessions();
+    btn.title = 'Restart server & reload page';
+    btn.addEventListener('click', async () => {
+      if (btn.dataset.busy === '1') return;
+      btn.dataset.busy = '1';
+      const origTitle = btn.title;
+      btn.title = 'Restarting server…';
+      btn.classList.add('is-spinning');
+      const ok = await restartServerAndReload();
+      if (!ok) {
+        btn.dataset.busy = '';
+        btn.title = origTitle;
+        btn.classList.remove('is-spinning');
+        alert('Server did not come back within 60s. Check `journalctl -u webagent -f`.');
+      }
     });
   }
   // Wire the "New terminal" primary action in the launcher panel. Replaces
