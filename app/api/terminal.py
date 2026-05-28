@@ -724,16 +724,53 @@ async def terminal_websocket(websocket: WebSocket):
     # one, fall back to a shared id so the page still works.
     session_id = websocket.query_params.get("session_id") or _FALLBACK_SESSION_ID
 
-    # ── Heartbeat ping to keep connection alive ──
-    HEARTBEAT_INTERVAL = 25  # seconds
+    # ── Bidirectional liveness ──
+    # Server pings every HEARTBEAT_INTERVAL. The client replies with
+    # {"type":"pong"} (or sends any other frame, e.g. a keystroke). If we see
+    # no inbound frame for CLIENT_SILENCE_TIMEOUT, the peer is dead (mobile
+    # backgrounded, NAT rebinding, hung proxy) — we force-close so the client
+    # reconnect logic actually fires. Without this check, a half-open TCP
+    # connection lets us cheerfully send into the void for ~10 minutes before
+    # the kernel notices, during which keystrokes vanish silently.
+    HEARTBEAT_INTERVAL = 25         # seconds — send-side keepalive
+    CLIENT_SILENCE_TIMEOUT = 45     # seconds — inbound-silence death threshold
+    SEND_TIMEOUT = 10               # seconds — bound any single send
+
+    last_client_frame_ts = time.monotonic()
+    closing = asyncio.Event()
+
+    async def _force_close(reason: str) -> None:
+        if closing.is_set():
+            return
+        closing.set()
+        try:
+            await websocket.close(code=1011, reason=reason[:120])
+        except Exception:
+            pass
 
     async def _heartbeat():
-        """Send periodic ping frames to keep WS alive through proxies."""
+        """Periodic ping + inbound-silence watchdog."""
         try:
-            while True:
+            while not closing.is_set():
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
+                if closing.is_set():
+                    break
+                if time.monotonic() - last_client_frame_ts > CLIENT_SILENCE_TIMEOUT:
+                    logger.info(
+                        "Terminal %s: no client frames for >%ds, closing",
+                        session_id, CLIENT_SILENCE_TIMEOUT,
+                    )
+                    await _force_close("client silent")
+                    break
                 try:
-                    await websocket.send_json({"type": "ping"})
+                    await asyncio.wait_for(
+                        websocket.send_json({"type": "ping"}),
+                        timeout=SEND_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    logger.info("Terminal %s: ping send timed out, closing", session_id)
+                    await _force_close("ping timeout")
+                    break
                 except (WebSocketDisconnect, Exception):
                     break
         except asyncio.CancelledError:
@@ -771,21 +808,40 @@ async def terminal_websocket(websocket: WebSocket):
     scrollback = session.get_scrollback()
     if scrollback:
         try:
-            await websocket.send_bytes(scrollback)
+            await asyncio.wait_for(
+                websocket.send_bytes(scrollback), timeout=SEND_TIMEOUT,
+            )
         except Exception:
             pass
 
     try:
         async def reader_task():
-            """Background: pump PTY output → WebSocket."""
+            """Background: pump PTY output → WebSocket.
+            Every send is bounded — a hung client must not pin this coroutine."""
             try:
-                while True:
+                while not closing.is_set():
                     data = await session.read_output()
                     if data is None:
-                        await websocket.send_bytes(b"")
+                        try:
+                            await asyncio.wait_for(
+                                websocket.send_bytes(b""), timeout=SEND_TIMEOUT,
+                            )
+                        except Exception:
+                            pass
                         break
-                    await websocket.send_bytes(data=data)
-            except (WebSocketDisconnect, Exception):
+                    try:
+                        await asyncio.wait_for(
+                            websocket.send_bytes(data=data), timeout=SEND_TIMEOUT,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "Terminal %s: send_bytes timed out, closing", session_id,
+                        )
+                        await _force_close("send timeout")
+                        break
+                    except (WebSocketDisconnect, Exception):
+                        break
+            except Exception:
                 pass
 
         reader = asyncio.ensure_future(reader_task())
@@ -793,6 +849,9 @@ async def terminal_websocket(websocket: WebSocket):
         try:
             while True:
                 msg = await websocket.receive()
+                # Any inbound frame (keystroke, resize, pong) counts as proof
+                # of life for the silence watchdog.
+                last_client_frame_ts = time.monotonic()
 
                 if msg.get("type") == "websocket.disconnect":
                     break
@@ -808,6 +867,8 @@ async def terminal_websocket(websocket: WebSocket):
                             session.resize(ctrl["rows"], ctrl["cols"])
                         elif ctrl.get("type") == "input":
                             session.write_input(ctrl["data"].encode("utf-8"))
+                        # Other JSON control types (e.g. "pong") only matter
+                        # for liveness, which we already updated above.
                     except (json.JSONDecodeError, TypeError):
                         session.write_input(text.encode("utf-8"))
 

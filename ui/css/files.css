@@ -1413,10 +1413,40 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
   background: #0d0d1a;
   padding: 0;
   display: none;
+  position: relative;          /* anchor for .files-terminal-overlay */
 }
 .files-editor-pane.files-terminal-pane.active {
   display: flex;
   flex-direction: column;
+}
+
+/* "Reconnecting…" / "Disconnected" overlay. Shown when the per-instance WS
+   state is anything other than 'connected'. pointer-events:none so the
+   underlying xterm still receives clicks (and gets focused) — the overlay
+   is purely informational. */
+.files-terminal-overlay {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(13, 13, 26, 0.55);
+  pointer-events: none;
+  z-index: 5;
+}
+.files-editor-pane.files-terminal-pane.files-terminal-disconnected .files-terminal-overlay {
+  display: flex;
+}
+.files-terminal-overlay-text {
+  background: #1a1a2e;
+  color: #c0caf5;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  font-size: 13px;
+  letter-spacing: 0.2px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
 }
 .files-terminal-host {
   flex: 1;
