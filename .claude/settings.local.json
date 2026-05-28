@@ -23,7 +23,8 @@
       "Bash(node --check ui/js/agentWs.js)",
       "Bash(node --check ui/js/sessions.js)",
       "Bash(node --input-type=module --check)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git push *)"
     ]
   }
 }
