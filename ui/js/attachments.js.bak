@@ -266,8 +266,6 @@ export function wireChatPillUploads(rowEl, inputEl, opts = {}) {
     inputEl.addEventListener('paste', async (e) => {
       const items = e.clipboardData && e.clipboardData.items;
       if (!items) return;
-
-      // Phase 1: direct File items (Chrome/Edge/Safari)
       const files = [];
       for (const item of items) {
         if (item.kind === 'file') {
@@ -275,66 +273,9 @@ export function wireChatPillUploads(rowEl, inputEl, opts = {}) {
           if (f) files.push(f);
         }
       }
-      if (files.length > 0) {
-        e.preventDefault();
-        for (const file of files) await uploadAndPreview(file, opts);
-        return;
-      }
-
-      // Phase 2: Firefox - images are in string items
-      const hasImageType = Array.from(items).some(
-        i => i.kind === 'string' && i.type.startsWith('image/')
-      );
-      const hasHtml = Array.from(items).some(
-        i => i.kind === 'string' && i.type === 'text/html'
-      );
-
-      if (!hasImageType && !hasHtml) return;  // plain text paste
-
-      // Prevent default so Firefox doesn't show its error message
+      if (files.length === 0) return;  // plain text paste — let the default run
       e.preventDefault();
-
-      // Try async Clipboard API first (works in Firefox with permissions)
-      try {
-        const clipboardItems = await navigator.clipboard.read();
-        const imageFiles = [];
-        for (const ci of clipboardItems) {
-          for (const type of ci.types) {
-            if (type.startsWith('image/')) {
-              const blob = await ci.getType(type);
-              const ext = type.split('/')[1] || 'png';
-              imageFiles.push(new File(
-                [blob],
-                'clipboard-' + Date.now() + '.' + ext,
-                { type }
-              ));
-            }
-          }
-        }
-        if (imageFiles.length > 0) {
-          for (const file of imageFiles) await uploadAndPreview(file, opts);
-          return;
-        }
-      } catch {
-        // Clipboard API not available
-      }
-
-      // Fallback: extract data URL from HTML string items
-      for (const item of items) {
-        if (item.kind === 'string' && item.type === 'text/html') {
-          item.getAsString(function(html) {
-            var re = /src\s*=\s*"(data:image\/[^"]+)"/;
-            var m = html.match(re);
-            if (m && m[1]) {
-              fetch(m[1]).then(function(r) { return r.blob(); }).then(function(blob) {
-                var ext = blob.type.split('/')[1] || 'png';
-                var f = new File([blob], 'clipboard-' + Date.now() + '.' + ext, { type: blob.type });
-                uploadAndPreview(f, opts);
-              });
-            }
-          });
-        }
-      }
+      for (const file of files) await uploadAndPreview(file, opts);
     });
   }
 }

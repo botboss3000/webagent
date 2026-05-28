@@ -352,6 +352,16 @@ async function sendMessage() {
   // Signal to WS handler that SSE is the active display source
   window.__sseActive = true;
 
+  // Diagnostics for "Request failed: …" / "Error in input stream" investigations.
+  const _sseDiag = {
+    startedAt: performance.now(),
+    bytes: 0,
+    eventCount: 0,
+    lastEventType: null,
+    lastEventAt: null,
+    headersReceivedAt: null,
+  };
+
   try {
     // POST to SSE streaming endpoint — read the response stream.
     // This is the primary source of chat bubble updates.
@@ -362,6 +372,7 @@ async function sendMessage() {
       body: JSON.stringify(payload),
       signal: app._sseAbortController.signal,
     });
+    _sseDiag.headersReceivedAt = performance.now();
 
     if (!resp.ok) {
       updateLastBubble('Server error: ' + resp.status, 'error');
@@ -379,6 +390,7 @@ async function sendMessage() {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      if (value) _sseDiag.bytes += value.byteLength;
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
@@ -392,6 +404,9 @@ async function sendMessage() {
         } catch {
           continue;
         }
+        _sseDiag.eventCount += 1;
+        _sseDiag.lastEventType = event.type;
+        _sseDiag.lastEventAt = performance.now();
 
         // Track highest session_seq the client has seen for this session.
         // Used by agentWs.js on reconnect to ask the server for replay
@@ -432,8 +447,30 @@ async function sendMessage() {
       window.__sseActive = false;
       return;
     }
+    const now = performance.now();
+    const diag = {
+      errorName: e && e.name,
+      errorMessage: e && e.message,
+      msSinceStart: Math.round(now - _sseDiag.startedAt),
+      msSinceHeaders: _sseDiag.headersReceivedAt
+        ? Math.round(now - _sseDiag.headersReceivedAt) : null,
+      msSinceLastEvent: _sseDiag.lastEventAt
+        ? Math.round(now - _sseDiag.lastEventAt) : null,
+      bytesReceived: _sseDiag.bytes,
+      eventCount: _sseDiag.eventCount,
+      lastEventType: _sseDiag.lastEventType,
+      online: navigator.onLine,
+      visibility: document.visibilityState,
+    };
+    console.warn('[chat/stream] failed', diag, e);
     if (app.isProcessing) {
-      updateLastBubble('Request failed: ' + e.message, 'error');
+      updateLastBubble(
+        'Request failed: ' + e.message
+          + ' (after ' + diag.msSinceStart + 'ms, '
+          + diag.eventCount + ' events, last='
+          + (diag.lastEventType || 'none') + ')',
+        'error',
+      );
       app.isProcessing = false;
       app.chatSend.disabled = false;
     }

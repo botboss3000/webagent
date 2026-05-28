@@ -1,0 +1,324 @@
+/* ── AutoAgent Tab ── */
+
+/* ── Footer (page nav above prompt bar, mirroring the web-chat header) ──
+   Background intentionally matches #tab-autoagent so the bottom-faded
+   iframe melts into the footer with no visible seam. */
+
+#autoagent-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 20px 12px;
+  background: transparent;
+  flex-shrink: 0;
+  position: relative;
+}
+
+/* Chevron at the top edge of the footer: collapses the search+chat row so
+   the viewport can use the full height. Centered above the page nav. */
+.aa-footer-toggle {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 18px;
+  margin: 0 0 2px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: #565f89;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+.aa-footer-toggle:hover {
+  opacity: 1;
+  color: #c0caf5;
+  background: rgba(122, 162, 247, 0.08);
+}
+
+#autoagent-footer.aa-collapsed > #autoagent-page-nav,
+#autoagent-footer.aa-collapsed > #autoagent-prompt-bar {
+  display: none;
+}
+
+body.light-mode .aa-footer-toggle { color: #b09580; }
+body.light-mode .aa-footer-toggle:hover {
+  color: #3d2c2e;
+  background: rgba(255, 140, 66, 0.10);
+}
+
+/* ── Page Nav Bar ── */
+
+#autoagent-page-nav { width: 100%; }
+
+#aa-page-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #565f89;
+  font-size: 11px;
+  width: 100%;
+}
+#aa-page-label .session-dropdown { flex: 1 1 auto; min-width: 0; }
+
+/* The shared .session-dropdown-trigger #session-dropdown-label rule in
+   app1.css uses an ID descendant selector that doesn't pick up our new
+   label id — re-declare the truncation rules here. */
+#autoagent-page-dropdown-trigger #autoagent-page-dropdown-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+}
+
+body.light-mode #aa-page-label { color: #b09580; }
+
+/* The page selector lives at the bottom of the Pages tab, so flip the menu
+   upward to keep it on-screen. */
+#autoagent-page-dropdown-menu {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
+
+/* ── New Page Dialog ── */
+
+#aa-new-page-dialog {
+  display: none;
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.65);
+  z-index: 200;
+  align-items: center;
+  justify-content: center;
+}
+
+.aa-dialog-box {
+  background: #12121e;
+  border: 1px solid #2a2a4a;
+  border-radius: 10px;
+  padding: 22px 24px;
+  width: 320px;
+  max-width: 90%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.aa-dialog-box h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e0def4;
+}
+
+.aa-dialog-input {
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  color: #c0caf5;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.aa-dialog-input:focus {
+  border-color: #7aa2f7;
+}
+
+.aa-dialog-input::placeholder { color: #3b3f66; }
+
+.aa-dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.aa-dialog-btn {
+  padding: 6px 16px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s;
+}
+
+.aa-dialog-btn-primary {
+  background: #7aa2f7;
+  color: #0a0a0f;
+  border-color: #7aa2f7;
+}
+
+.aa-dialog-btn-primary:hover { background: #9ab8ff; }
+
+.aa-dialog-btn-cancel {
+  background: transparent;
+  color: #565f89;
+  border-color: #2a2a4a;
+}
+
+.aa-dialog-btn-cancel:hover { background: #1a1a2e; color: #c0caf5; }
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+#tab-autoagent {
+  display: none;
+  flex-direction: column;
+  height: 100%;
+  background: #000;
+}
+
+#tab-autoagent.active {
+  display: flex;
+}
+
+#autoagent-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+}
+
+/* ── Prompt Bar ──
+   CHAT-PILL-SYNC: pill styles are shared with #chat-input-row,
+   #ac-int-admin-chat-input-row, and #agent-builder-bar-row via the
+   .chat-pill* classes in ui/css/app1.css. Only wrapper-specific rules
+   (flex behavior in the footer, two-line textarea height) live here. */
+
+#autoagent-prompt-bar {
+  width: 100%;
+}
+
+#autoagent-prompt-input {
+  min-height: 52px;
+  max-height: 160px;
+}
+
+/* ── Viewport (iframe area) ──
+   Soft fade at the bottom so iframe content melts into the footer area
+   as it approaches the prompt bar — mirrors #agents-grid's top fade. */
+
+#autoagent-viewport {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 24px), transparent 100%);
+          mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 24px), transparent 100%);
+}
+
+.aa-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #000;
+}
+
+/* ── Placeholder State ── */
+
+.aa-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 12px;
+  color: #565f89;
+}
+
+.aa-placeholder-icon {
+  font-size: 48px;
+  opacity: 0.4;
+}
+
+.aa-placeholder-text {
+  font-size: 15px;
+  font-weight: 500;
+  color: #7aa2f7;
+}
+
+.aa-placeholder-hint {
+  font-size: 12px;
+  color: #3b3f66;
+  font-style: italic;
+}
+
+/* ── Loading State ── */
+
+.aa-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 16px;
+  color: #7dcfff;
+  font-size: 14px;
+}
+
+.aa-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid #1e1e3a;
+  border-top-color: #7dcfff;
+  border-radius: 50%;
+  animation: aa-spin 0.8s linear infinite;
+}
+
+@keyframes aa-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ═══════════════════════════════════════════════
+   LIGHT MODE OVERRIDES
+   ═══════════════════════════════════════════════ */
+body.light-mode #tab-autoagent {
+  background: #fffaf5;
+}
+body.light-mode #autoagent-footer {
+  background: transparent;
+}
+/* CHAT-PILL-SYNC: light-mode pill colors come from .chat-pill* in app1.css. */
+body.light-mode .aa-iframe {
+  background: #fffaf5;
+}
+body.light-mode .aa-placeholder {
+  color: #b09580;
+}
+body.light-mode .aa-placeholder-text {
+  color: #cc6a28;
+}
+body.light-mode .aa-placeholder-hint {
+  color: #cca08a;
+}
+body.light-mode .aa-spinner {
+  border-color: #ffdec4;
+  border-top-color: #ff8c42;
+}
+body.light-mode .aa-dialog-box {
+  background: #ffffff;
+  border-color: #ffdec4;
+}
+body.light-mode .aa-dialog-box h3 { color: #3d2c2e; }
+body.light-mode .aa-dialog-input {
+  background: #fffaf5;
+  border-color: #ffdec4;
+  color: #3d2c2e;
+}
+body.light-mode .aa-dialog-input:focus { border-color: #ff8c42; }
+body.light-mode .aa-dialog-btn-primary {
+  background: #ff8c42;
+  border-color: #ff8c42;
+}
+body.light-mode .aa-dialog-btn-cancel {
+  border-color: #ffdec4;
+  color: #b09580;
+}
+body.light-mode .aa-dialog-btn-cancel:hover { background: #fff2e6; color: #3d2c2e; }
