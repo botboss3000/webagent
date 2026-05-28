@@ -2,11 +2,19 @@
 Prompt construction with dynamic tool descriptions from database.
 """
 
-from typing import List, Dict, Optional
+import base64
+import logging
+from typing import Any, Dict, List, Optional, Union
+
 from app.db.system_prompt_fragments import (
     format_tool_subheadings_markdown,
     get_prompt_fragments,
 )
+
+logger = logging.getLogger(__name__)
+
+_VISION_INLINE_MAX_BYTES = 20 * 1024 * 1024
+_VISION_INLINE_MIMES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
 
 # Legacy slot names — kept as a public list so the prompt-build pipeline (and
@@ -141,7 +149,66 @@ def format_attachments_for_prompt(attachments: List[Dict]) -> str:
         lines.append(f"    attachment_id: `{att_id}` — use `read_attachment` tool to process")
     lines.append("")
     lines.append("Use the `read_attachment` tool to read content from attached files.")
+    lines.append(
+        "Image attachments are inlined directly with this user message and "
+        "are visible to vision-capable models — no need to call `read_attachment` "
+        "for them on this turn."
+    )
     return "\n".join(lines)
+
+
+async def build_user_message_content(
+    user_text: str,
+    attachment_docs: Optional[List[Dict]] = None,
+) -> Union[str, List[Dict[str, Any]]]:
+    """Build the LLM `content` field for the user message.
+
+    Inlines image attachments as `image_url` parts (data URLs) so vision-capable
+    models can see them directly. Non-image attachments are left to the
+    `read_attachment` tool. Returns a plain string when there are no inlinable
+    images, preserving the original message shape.
+    """
+    if not attachment_docs:
+        return user_text
+
+    image_parts: List[Dict[str, Any]] = []
+    for att in attachment_docs:
+        mime = (att.get("mime_type") or "").lower()
+        if mime not in _VISION_INLINE_MIMES:
+            continue
+        size = att.get("size_bytes") or 0
+        if size and size > _VISION_INLINE_MAX_BYTES:
+            logger.info(
+                "Skipping inline of attachment %s: %d bytes exceeds %d limit",
+                att.get("id"), size, _VISION_INLINE_MAX_BYTES,
+            )
+            continue
+        storage_provider = att.get("storage_provider") or "local"
+        if storage_provider == "browser":
+            # Bytes live in the user's browser IndexedDB; the server can't read them.
+            continue
+        storage_path = att.get("storage_path")
+        if not storage_path:
+            continue
+        try:
+            from app.db.attachments import read_file
+            file_bytes = await read_file(storage_path, storage_provider=storage_provider)
+        except Exception as e:
+            logger.warning("read_file failed for attachment %s: %s", att.get("id"), e)
+            continue
+        if not file_bytes:
+            continue
+        b64 = base64.b64encode(file_bytes).decode("ascii")
+        image_parts.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime};base64,{b64}"},
+        })
+
+    if not image_parts:
+        return user_text
+
+    text_part = {"type": "text", "text": user_text or ""}
+    return [text_part, *image_parts]
 
 
 

@@ -711,7 +711,7 @@ def _check_user_confirmed(messages: List[Dict[str, Any]], tool_name: str) -> boo
 async def stream_agent_events(
     user_id: str,
     session_id: str,
-    user_message: str,
+    user_message: Any,
     system_prompt: str,
     agent_id: str,
     history: Optional[List[Dict[str, Any]]] = None,
@@ -1638,7 +1638,7 @@ async def stream_agent_events(
 async def run_agent_loop_buffered(
     user_id: str,
     session_id: str,
-    user_message: str,
+    user_message: Any,
     system_prompt: str,
     agent_id: str,
     history=None,
