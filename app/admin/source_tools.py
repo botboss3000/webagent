@@ -625,20 +625,28 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
             known = ', '.join(sorted(safe_ops | mutating_ops))
             return f"Error: unknown git operation '{operation}'. Known: {known}"
 
-        cmd = ["git"] + op.split()  # supports "stash apply", "stash pop", etc.
+        git_args = op.split()  # supports "stash apply", "stash pop", etc.
         if args:
             import shlex
-            cmd.extend(shlex.split(args))
+            git_args.extend(shlex.split(args))
 
-        result = _run_subprocess(cmd, timeout=60)
-        output = result["stdout"] or result["stderr"]
-        if result["exit_code"] != 0 and not output:
-            output = f"Command failed (exit {result['exit_code']})"
+        # Run through the same helper the Source Control UI's commit/push buttons
+        # use, so the agent authenticates identically (GitHub token injected for
+        # network ops) and always runs in the project root. Fall back to a plain
+        # subprocess if the github module can't be imported.
+        try:
+            from app.api.github import _run_git, _get_token, _cache_token
+            _cache_token(_get_token())
+            stdout, stderr, exit_code = _run_git(git_args, timeout=60)
+        except Exception:
+            result = _run_subprocess(["git"] + git_args, timeout=60)
+            stdout, stderr, exit_code = result["stdout"], result["stderr"], result["exit_code"]
 
-        prefix = f"[Git {op}] "
-        if op in mutating_ops:
-            prefix = f"[Git {op}] "
-        return prefix + (output.strip() or "(no output)")
+        output = stdout or stderr
+        if exit_code != 0 and not output:
+            output = f"Command failed (exit {exit_code})"
+
+        return f"[Git {op}] " + (output.strip() or "(no output)")
 
     tools["git_tool"] = ToolInfo(
         name="git_tool",

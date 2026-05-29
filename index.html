@@ -107,7 +107,11 @@
     -webkit-backdrop-filter: none !important;
   }
   #chat-panel {
-    border-left: none !important;
+    /* design-system.css styles this as a floating card (full border + 22px
+       radius + shadow). Strip all of it so the chat sits edgeless on the
+       stage — otherwise a faint hairline traces the top/right/bottom. */
+    border: none !important;
+    border-radius: 0 !important;
     box-shadow: none !important;
   }
   #chat-header {

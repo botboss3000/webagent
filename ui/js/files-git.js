@@ -11,6 +11,7 @@
 //   openGitPanel(rootEl)    — first activation hook (fetches status/log)
 
 import { apiPath } from './config.js';
+import { app } from './state.js';
 
 // ── DOM building blocks ────────────────────────────────────────────
 
@@ -201,10 +202,20 @@ function renderChangesSection(s) {
 
 function renderCommitSection(s) {
   const enabled = s.file_count > 0;
+  // The star hands the whole job to the Source Controller agent: it reviews
+  // the changes, writes a commit note, and commits + pushes. Enabled whenever
+  // there's something to do — uncommitted changes OR unpushed local commits.
+  const starEnabled = s.file_count > 0 || (s.ahead || 0) > 0;
+  const starTitle = starEnabled
+    ? 'Hand off to the Source Controller agent — review changes, write a note, commit & push'
+    : 'Nothing to commit or push';
   return `
     <div class="fg-section fg-commit">
       <div class="fg-commit-row">
         <input type="text" id="fg-commit-msg" class="fg-input" placeholder="${enabled ? 'Commit message…' : 'No changes to commit'}" ${enabled ? '' : 'disabled'}>
+        <button class="fg-btn fg-star-btn" id="fg-sc-star-btn" ${starEnabled ? '' : 'disabled'} title="${starTitle}" aria-label="Source Controller: review, commit & push">
+          <i data-lucide="star" class="lucide-icon"></i>
+        </button>
         <button class="fg-btn fg-btn-primary" id="fg-commit-btn" ${enabled ? '' : 'disabled'} title="Stage all + commit">
           <i data-lucide="check" class="lucide-icon"></i>
         </button>
@@ -277,10 +288,10 @@ function renderGraphRow(c, idx, g) {
         </div>
         <div class="fg-graph-meta">
           <div class="fg-graph-msg-line">
-            ${badge}${branchLabels}
             <span class="fg-graph-msg">${escapeHtml(c.message || '')}</span>
           </div>
           <div class="fg-graph-sub">
+            ${badge || branchLabels ? `<span class="fg-graph-tags">${badge}${branchLabels}</span>` : ''}
             <code class="fg-hash">${escapeHtml(c.hash)}</code>
             <span class="fg-graph-date" title="${escapeHtml(c.date_iso || '')} — ${escapeHtml(c.date_relative || '')}">${escapeHtml(shortDate)}</span>
             <span class="fg-graph-author" title="${escapeHtml(c.author || '')}">${escapeHtml(c.author || '')}</span>
@@ -414,6 +425,9 @@ function wireEvents(rootEl, s, g) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doCommit(rootEl); }
   });
 
+  const scStarBtn = body.querySelector('#fg-sc-star-btn');
+  if (scStarBtn) scStarBtn.addEventListener('click', () => handoffToSourceController(rootEl));
+
   const pushBtn = body.querySelector('#fg-push-btn');
   if (pushBtn) pushBtn.addEventListener('click', () => doPush(rootEl));
   const pullBtn = body.querySelector('#fg-pull-btn');
@@ -449,9 +463,29 @@ function wireEvents(rootEl, s, g) {
   const tokSave = body.querySelector('#fg-token-save-btn');
   if (tokSave) tokSave.addEventListener('click', () => doSaveToken(rootEl));
   const tokInput = body.querySelector('#fg-token-input');
-  if (tokInput) tokInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSaveToken(rootEl); }
-  });
+  if (tokInput) {
+    tokInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSaveToken(rootEl); }
+    });
+    // When the user focuses while the masked saved value is shown, clear
+    // the field and switch back to password type so they can paste a new
+    // token. On blur with nothing typed, restore the mask so it stays
+    // visible that a token is configured.
+    tokInput.addEventListener('focus', () => {
+      const masked = tokInput.dataset.maskedValue;
+      if (masked && tokInput.value === masked) {
+        tokInput.value = '';
+        tokInput.type = 'password';
+      }
+    });
+    tokInput.addEventListener('blur', () => {
+      const masked = tokInput.dataset.maskedValue;
+      if (masked && !tokInput.value) {
+        tokInput.value = masked;
+        tokInput.type = 'text';
+      }
+    });
+  }
 
   // Commit graph rows → click the row to load full commit detail in the
   // git main panel. The sidebar row gets a `.selected` class to mark the
@@ -720,7 +754,9 @@ async function doSaveToken(rootEl) {
   const input = body.querySelector('#fg-token-input');
   const result = body.querySelector('#fg-token-result');
   const token = (input.value || '').trim();
-  if (!token) {
+  // The field auto-fills with the masked saved token (e.g. "ghp_****")
+  // on load — don't try to save that back, it's a marker, not a token.
+  if (!token || token === input.dataset.maskedValue) {
     showResult(result, 'Enter a GitHub token', 'error');
     return;
   }
@@ -736,6 +772,7 @@ async function doSaveToken(rootEl) {
 
 async function refreshTokenStatus(rootEl) {
   const label = rootEl.querySelector('#fg-token-status-label');
+  const input = rootEl.querySelector('#fg-token-input');
   if (!label) return;
   try {
     const r = await ghFetch('/api/v1/github/token-status');
@@ -744,11 +781,164 @@ async function refreshTokenStatus(rootEl) {
     label.title = r.configured ? `GitHub token configured (${r.masked})` : 'No GitHub token set';
     label.textContent = '';
     label.classList.toggle('ok', !!r.configured);
+    // Show the saved (masked) token in the input so it's visually obvious
+    // a token is configured. The mask is `ghp_****` — already safe to
+    // display. We switch the input to plain text while the mask is shown,
+    // and back to password as soon as the user focuses to enter a new
+    // value (see focus/blur wiring in wireEvents).
+    if (input) {
+      if (r.configured && r.masked) {
+        input.dataset.maskedValue = r.masked;
+        input.value = r.masked;
+        input.type = 'text';
+      } else {
+        delete input.dataset.maskedValue;
+        if (input.value === input.dataset.maskedValue) input.value = '';
+        input.type = 'password';
+      }
+    }
   } catch (_) {
     label.title = 'Token status unknown';
     label.textContent = '';
     label.classList.remove('ok');
   }
+}
+
+// ── Source Controller handoff (the ⭐ button) ──────────────────────
+//
+// Clicking the star hands the whole commit+push job to a dedicated
+// "Source Controller" agent (cloned from the `source-controller` system
+// template). We find-or-create that agent for the user, make sure its
+// source-control ability (codebase_admin → git_tool) is on, switch the
+// chat to it in a fresh session, reveal the chat, and submit a ready-made
+// message that already carries the remote URL + author email so the agent
+// doesn't have to look anything up. Mirrors the Dashboard→chat handoff in
+// autoagent.js.
+
+const SOURCE_CONTROLLER_TEMPLATE_ID = 'source-controller';
+let _scAgentId = null;  // per-page cache: userId-scoped agent id
+
+function _currentUserId() {
+  return (app && app.currentUserId) || localStorage.getItem('webagent_active_user_id') || '';
+}
+
+async function _findSourceControllerAgent(userId) {
+  try {
+    const res = await fetch(apiPath(`/api/v1/agents?user_id=${encodeURIComponent(userId)}`));
+    if (!res.ok) return null;
+    const data = await res.json();
+    const match = (data.agents || []).find(a => a.template_id === SOURCE_CONTROLLER_TEMPLATE_ID);
+    return match ? match.id : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Turn on the source-control ability so git_tool loads for this agent.
+// Idempotent — safe to call on an agent that already has it enabled.
+async function _enableSourceControlAbility(userId, agentId) {
+  try {
+    await fetch(apiPath(`/api/v1/agents/${encodeURIComponent(agentId)}/connections/codebase_admin`), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, enabled: true }),
+    });
+  } catch (_) { /* if this fails the agent will report it lacks git access */ }
+}
+
+async function _createSourceControllerAgent(userId) {
+  const res = await fetch(apiPath('/api/v1/agents'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: userId,
+      name: 'Source Controller',
+      description: 'Reviews the changes, writes a commit note, then commits and pushes.',
+      template_id: SOURCE_CONTROLLER_TEMPLATE_ID,
+    }),
+  });
+  if (!res.ok) throw new Error(`agent create failed (${res.status})`);
+  const data = await res.json();
+  const id = data.agent && data.agent.id;
+  if (!id) throw new Error('agent create returned no id');
+  await _enableSourceControlAbility(userId, id);
+  // Refresh the chat header's agent dropdown so the new agent is selectable.
+  if (app && typeof app.populateAgentSelect === 'function') {
+    try { await app.populateAgentSelect(userId); } catch (_) {}
+  }
+  return id;
+}
+
+async function _ensureSourceControllerAgent(userId) {
+  if (_scAgentId) return _scAgentId;
+  let id = await _findSourceControllerAgent(userId);
+  if (id) {
+    await _enableSourceControlAbility(userId, id);  // guarantee git is on
+  } else {
+    id = await _createSourceControllerAgent(userId);
+  }
+  _scAgentId = id;
+  return id;
+}
+
+function _buildSourceControlMessage(rootEl) {
+  const s = _state.status || {};
+  const remote = s.remote_url || 'the configured GitHub remote';
+  const branch = s.branch || 'the current branch';
+  let email = localStorage.getItem('auth_username') || '';
+  if (email && email.indexOf('@') === -1) email = '';  // only use it if it looks like an email
+  const typedNote = ((rootEl.querySelector('#fg-commit-msg') || {}).value || '').trim();
+
+  let msg = `Commit and push the local changes in this repository to the GitHub remote ${remote}`;
+  if (email) msg += `, authored with the email ${email}`;
+  msg += ` (current branch: ${branch}). First review the changes (git status + diff), then write an appropriate commit note, run your safety checks, and verify there are no issues before committing and pushing. When done, report the note you used, the commit hash, and the push result.`;
+  if (typedNote) {
+    msg += `\n\nThe user typed this commit note — refine and use it if it fits: "${typedNote}"`;
+  }
+  return msg;
+}
+
+async function handoffToSourceController(rootEl) {
+  const body = rootEl.querySelector('#fg-body');
+  const result = body ? body.querySelector('#fg-commit-result') : null;
+  const starBtn = body ? body.querySelector('#fg-sc-star-btn') : null;
+
+  const userId = _currentUserId();
+  if (!userId) {
+    showResult(result, 'Sign in to use the Source Controller', 'error');
+    return;
+  }
+
+  const message = _buildSourceControlMessage(rootEl);
+
+  if (starBtn) starBtn.disabled = true;
+  showResult(result, 'Starting Source Controller…', 'info');
+
+  let agentId;
+  try {
+    agentId = await _ensureSourceControllerAgent(userId);
+  } catch (e) {
+    if (starBtn) starBtn.disabled = false;
+    showResult(result, `Could not start Source Controller: ${e.message}`, 'error');
+    return;
+  }
+
+  // Switch the chat to the Source Controller (starts a fresh session), make
+  // sure the chat panel is visible, then drop in the message and send it.
+  if (app && typeof app.switchToAgent === 'function') {
+    app.switchToAgent(agentId);
+  }
+  if (typeof window.__applyChatVisible === 'function') {
+    try { window.__applyChatVisible(true); } catch (_) {}
+  }
+  if (app && app.chatInput && app.chatSend) {
+    app.chatInput.value = message;
+    app.chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+    app.chatSend.click();
+  }
+
+  if (starBtn) starBtn.disabled = false;
+  showResult(result, 'Source Controller is on the chat →', 'success');
 }
 
 // ── Refresh / open hooks ───────────────────────────────────────────
