@@ -15,8 +15,41 @@ import { apiPath } from './config.js';
 // ── DOM building blocks ────────────────────────────────────────────
 
 const GRAPH_LANE_W = 14;   // pixels per graph lane (column width)
-const GRAPH_ROW_H  = 44;   // pixels per commit row (must match CSS)
+const GRAPH_ROW_H  = 38;   // pixels per commit row (must match CSS)
 const GRAPH_DOT_R  = 4;    // commit dot radius
+
+// Max lane index this commit row actually touches (dot, in/out/parent/merge
+// lanes). Used to size the SVG column per-row so the text snaps as close to
+// the tree as possible — VS-Code style, instead of reserving the global
+// max-lane width for every single row.
+function rowLaneSpan(c) {
+  let max = c.lane || 0;
+  const arrIn  = c.lanes_in  || [];
+  const arrOut = c.lanes_out || [];
+  for (let i = 0; i < arrIn.length;  i++) if (arrIn[i]  && i > max) max = i;
+  for (let i = 0; i < arrOut.length; i++) if (arrOut[i] && i > max) max = i;
+  if (c.parent_lanes)    for (const p of c.parent_lanes)    if (p > max) max = p;
+  if (c.merge_in_lanes)  for (const m of c.merge_in_lanes)  if (m > max) max = m;
+  return max + 1;
+}
+
+// Compact relative-time formatter: "now", "12m", "2h", "3d", "2w", "5mo",
+// "1y". Falls back to whatever git's %ar string is if the ISO is missing
+// or unparseable.
+function shortRelativeTime(iso, fallback) {
+  if (!iso) return fallback || '';
+  const t = Date.parse(iso);
+  if (isNaN(t)) return fallback || '';
+  const sec = Math.max(0, (Date.now() - t) / 1000);
+  if (sec < 45)              return 'now';
+  if (sec < 60 * 60)         return Math.round(sec / 60) + 'm';
+  if (sec < 60 * 60 * 24)    return Math.round(sec / 3600) + 'h';
+  const day = sec / 86400;
+  if (day < 7)               return Math.round(day) + 'd';
+  if (day < 30)              return Math.round(day / 7) + 'w';
+  if (day < 365)             return Math.round(day / 30.4375) + 'mo';
+  return Math.round(day / 365.25) + 'y';
+}
 
 // VS-Code-ish lane colour palette (works on dark + light backgrounds)
 const LANE_COLORS = [
@@ -260,8 +293,11 @@ function renderGraphRow(c, idx, g) {
         .map(([name]) => `<span class="fg-branch-tag" title="branch tip">${escapeHtml(name)}</span>`)
         .join('')
     : '';
-  // Graph column width is fixed by max_lane * lane width
-  const graphW = (g.max_lane || 1) * GRAPH_LANE_W;
+  // Per-row graph width: only as wide as the lanes this row actually
+  // touches, so single-lane rows snap their text right next to the dot
+  // and rows with branches push the text out only as far as needed.
+  const graphW = rowLaneSpan(c) * GRAPH_LANE_W;
+  const shortDate = shortRelativeTime(c.date_iso, c.date_relative);
   return `
     <div class="${cls}" data-hash="${escapeHtml(c.full_hash)}" data-short="${escapeHtml(c.hash)}" data-lane="${c.lane}" data-idx="${idx}" tabindex="0" role="button">
       <div class="fg-graph-row-head">
@@ -275,8 +311,8 @@ function renderGraphRow(c, idx, g) {
           </div>
           <div class="fg-graph-sub">
             <code class="fg-hash">${escapeHtml(c.hash)}</code>
-            <span class="fg-graph-author">${escapeHtml(c.author || '')}</span>
-            <span class="fg-graph-date" title="${escapeHtml(c.date_iso || '')}">${escapeHtml(c.date_relative || '')}</span>
+            <span class="fg-graph-date" title="${escapeHtml(c.date_iso || '')} — ${escapeHtml(c.date_relative || '')}">${escapeHtml(shortDate)}</span>
+            <span class="fg-graph-author" title="${escapeHtml(c.author || '')}">${escapeHtml(c.author || '')}</span>
           </div>
         </div>
       </div>

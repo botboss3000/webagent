@@ -28,6 +28,40 @@ function _updateInputRowState() {
   row.classList.toggle('has-text', hasText);
 }
 
+// CHAT-PILL-SYNC: auto-grow any .chat-pill-input textarea up to 6 lines, then
+// scroll. Min-height (34px) and max-height (124px) live in ui/css/app1.css.
+// The single line of an empty pill therefore matches the height of the round
+// send/mic icon buttons, keeping the pill compact.
+function _autoResizePill(el) {
+  if (!el || el.tagName !== 'TEXTAREA') return;
+  // Reset so shrinking works — scrollHeight only ever grows.
+  el.style.height = 'auto';
+  const maxH = parseFloat(getComputedStyle(el).maxHeight) || 124;
+  const next = Math.min(el.scrollHeight, maxH);
+  el.style.height = next + 'px';
+  el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden';
+}
+
+// Delegated input listener resizes every chat-pill textarea (web chat, agents
+// builder, page agent, integration admin) without each module having to wire
+// its own handler. Programmatic value changes still need to dispatch 'input'
+// or call _autoResizePill directly — see _restoreDraft / sendMessage below.
+document.addEventListener('input', (e) => {
+  const t = e.target;
+  if (t && t.classList && t.classList.contains('chat-pill-input')) {
+    _autoResizePill(t);
+  }
+}, true);
+
+// Run once on load so any pre-populated value (draft restore, server-injected
+// text) sizes correctly before the user types. Also re-runs on window resize
+// because the textarea's content width — and therefore wrap count — shifts.
+function _resizeAllPills() {
+  document.querySelectorAll('.chat-pill-input').forEach(_autoResizePill);
+}
+window.addEventListener('load', _resizeAllPills);
+window.addEventListener('resize', _resizeAllPills);
+
 function applyChatGate() {
   if (!app.chatInput || !app.chatSend) return;
   const allowed = _canChat();
@@ -375,6 +409,7 @@ async function sendMessage() {
   app.chatInput.value = '';
   app.chatSend.disabled = true;
   _updateInputRowState();
+  _autoResizePill(app.chatInput);
   _clearDraft();
 
   // Advance the poll cursor so auto-poll doesn't re-render this message
@@ -757,6 +792,7 @@ export function initChat() {
   app.appendStreamToActiveBubble = appendStreamToActiveBubble;
   app.finalizeAgentResponse = finalizeAgentResponse;
   app.ensureStreamingBubbleForActiveTurn = ensureStreamingBubbleForActiveTurn;
+  app.autoResizeChatInput = () => _autoResizePill(app.chatInput);
 
   app.chatSend.addEventListener('click', sendMessage);
   app.chatInput.addEventListener('keydown', (e) => {

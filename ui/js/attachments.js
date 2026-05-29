@@ -76,9 +76,13 @@ export function initAttachments() {
     }
   });
 
-  // Voice recording
-  if (voiceBtn && navigator.mediaDevices) {
-    voiceBtn.addEventListener('click', () => startVoiceRecording(voiceBtn));
+  // Voice dictation: browser Web Speech API transcribes the user's voice
+  // straight into the chat-input textarea. Falls back to .no-voice when the
+  // browser doesn't expose SpeechRecognition at all (Firefox desktop, some
+  // mobile browsers). See startSpeechDictation() below for details.
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (voiceBtn && SR) {
+    voiceBtn.addEventListener('click', () => startSpeechDictation(voiceBtn));
   } else if (voiceBtn) {
     const row = document.getElementById('chat-input-row');
     if (row) row.classList.add('no-voice');
@@ -348,53 +352,107 @@ function clearPendingAttachments() {
   }
 }
 
-// ── Voice Recording ────────────────────────────────────────────────────────
+// ── Voice Dictation (Web Speech API) ───────────────────────────────────────
+// The mic button drives the browser's built-in speech-to-text. We keep a
+// single recognition instance per page; toggling the mic starts or stops it.
+// Interim results stream into the textarea in real time so the user sees
+// what's being transcribed; final results are committed on phrase boundaries.
 
-let mediaRecorder = null;
-let audioChunks = [];
-let isRecording = false;
+let recognition = null;        // SpeechRecognition instance (kept across toggles)
+let isDictating = false;
+let dictationBaseText = '';    // textarea value when dictation started — final results append to this
+let dictationInputEl = null;   // active textarea for the in-progress session
 
-async function startVoiceRecording(btn) {
-  if (isRecording) {
-    // Stop recording
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      mediaRecorder.stop();
-    }
-    btn.innerHTML = icon('mic', { size: '16px' });
+function _ensureRecognition() {
+  if (recognition) return recognition;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return null;
+  recognition = new SR();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = (navigator.language || 'en-US');
+  return recognition;
+}
+
+function _fireInput(el) {
+  // Programmatic value changes don't dispatch 'input' on their own — fire it
+  // so chat.js sees the new content (has-text toggle, send-button enable,
+  // draft save, _autoResizePill via the delegated listener in chat.js).
+  if (!el) return;
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function _stopDictation(btn) {
+  if (!isDictating) return;
+  try { recognition && recognition.stop(); } catch (_) { /* already stopped */ }
+  isDictating = false;
+  if (btn) {
+    btn.innerHTML = icon('mic', { size: '18px' });
+    btn.title = 'Voice dictation';
     btn.classList.remove('recording');
-    isRecording = false;
+  }
+  dictationInputEl = null;
+}
+
+function startSpeechDictation(btn) {
+  const input = document.getElementById('chat-input');
+  if (!input) return;
+
+  // Second tap = stop.
+  if (isDictating) { _stopDictation(btn); return; }
+
+  const rec = _ensureRecognition();
+  if (!rec) {
+    alert('Voice dictation is not supported in this browser. Try Chrome, Edge, or Safari.');
     return;
   }
 
+  dictationInputEl = input;
+  // Snapshot the textarea so the user can keep typed text and we only append
+  // newly-dictated phrases. Pad with a space if the prior content didn't end
+  // in one, so "hello" + dictated "world" doesn't smash into "helloworld".
+  dictationBaseText = input.value;
+  if (dictationBaseText && !/\s$/.test(dictationBaseText)) dictationBaseText += ' ';
+
+  rec.onresult = (event) => {
+    if (!dictationInputEl) return;
+    let finalText = '';
+    let interimText = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const r = event.results[i];
+      if (r.isFinal) finalText += r[0].transcript;
+      else           interimText += r[0].transcript;
+    }
+    if (finalText) {
+      // Commit final phrase into the base so subsequent interim results don't
+      // overwrite it. Trim leading whitespace the API sometimes prepends.
+      dictationBaseText += finalText.replace(/^\s+/, '');
+      if (!/\s$/.test(dictationBaseText)) dictationBaseText += ' ';
+    }
+    dictationInputEl.value = dictationBaseText + interimText;
+    _fireInput(dictationInputEl);
+  };
+  rec.onerror = (e) => {
+    // 'no-speech', 'aborted', 'audio-capture' — fall through to stop UI.
+    if (e && e.error === 'not-allowed') {
+      alert('Microphone access denied. Allow it in the browser settings to use voice dictation.');
+    }
+    _stopDictation(btn);
+  };
+  rec.onend = () => { _stopDictation(btn); };
+
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    audioChunks = [];
-    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) audioChunks.push(e.data);
-    };
-
-    mediaRecorder.onstop = async () => {
-      stream.getTracks().forEach(t => t.stop());
-      const blob = new Blob(audioChunks, { type: 'audio/webm' });
-      btn.innerHTML = icon('mic', { size: '18px' });
-      btn.title = 'Record voice';
-      btn.classList.remove('recording');
-      isRecording = false;
-
-      // Upload the recording
-      const file = new File([blob], `voice-${Date.now()}.webm`, { type: 'audio/webm' });
-      await uploadAndPreview(file);
-    };
-
-    mediaRecorder.start();
+    rec.start();
+    isDictating = true;
     btn.innerHTML = icon('circle-stop', { size: '18px' });
-    btn.title = 'Stop recording';
+    btn.title = 'Stop dictation';
     btn.classList.add('recording');
-    isRecording = true;
+    input.focus();
   } catch (err) {
-    alert('Microphone access denied: ' + err.message);
+    // InvalidStateError — the previous session is still finalizing. Surface
+    // it and reset so the next tap works.
+    isDictating = false;
+    btn.classList.remove('recording');
   }
 }
 

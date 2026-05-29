@@ -1939,7 +1939,7 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 .fg-graph-row-head {
   display: flex;
   align-items: stretch;
-  height: var(--row-h, 44px);
+  height: var(--row-h, 38px);
   overflow: hidden;
 }
 .fg-graph-row-head:hover { background: var(--files-row-hover); }
@@ -1951,7 +1951,7 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 
 .fg-graph-col {
   flex-shrink: 0;
-  height: var(--row-h, 44px);
+  height: var(--row-h, 38px);
 }
 .fg-graph-svg {
   display: block;
@@ -1960,17 +1960,18 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 .fg-graph-meta {
   flex: 1;
   min-width: 0;
-  padding: 4px 8px 4px 4px;
+  padding: 3px 8px 3px 6px;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 1px;
+  gap: 2px;
 }
 .fg-graph-msg-line {
   display: flex;
   align-items: center;
   gap: 4px;
   font-size: 12px;
+  line-height: 1.25;
   color: var(--files-text-strong);
   white-space: nowrap;
   overflow: hidden;
@@ -1987,8 +1988,10 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
   display: flex;
   gap: 6px;
   font-size: 10px;
+  line-height: 1.2;
   color: var(--files-text-faint);
   align-items: center;
+  min-width: 0;
 }
 .fg-hash {
   font-family: var(--font-mono, monospace);
@@ -1997,9 +2000,20 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
   border-radius: 2px;
   font-size: 10px;
   color: var(--files-text-muted);
+  flex-shrink: 0;
 }
-.fg-graph-author { color: var(--files-text-muted); }
-.fg-graph-date { margin-left: auto; }
+.fg-graph-date {
+  color: var(--files-text-faint);
+  flex-shrink: 0;
+}
+.fg-graph-author {
+  color: var(--files-text-faint);
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
 
 .fg-graph-badge {
   display: inline-block;

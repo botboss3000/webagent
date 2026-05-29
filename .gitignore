@@ -93,11 +93,16 @@ uploads/*
 !uploads/.gitkeep
 visuals/
 
-# Launcher build output (single .exe at launcher/webagent.exe + scratch dirs)
+# Launcher build output: the single portable webagent.exe now lands at the
+# PROJECT ROOT (built from launcher/ via launcher/scripts/build_exe.py).
+# Scratch build dirs stay under launcher/. None of these are committed.
+/webagent.exe
 launcher/*.exe
 launcher/snapshot*.svg
 launcher/assets/webagent.ico
 launcher/assets/webagent_256.png
+launcher/dist/
+launcher/build/
 
 # launcher_android runtime bridge file (Browser button host↔proot)
 launcher_android/.browser-bridge
