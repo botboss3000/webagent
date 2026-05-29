@@ -19,6 +19,8 @@ Endpoints used (all already exist in the backend):
 from __future__ import annotations
 
 import json
+import mimetypes
+from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 import httpx
@@ -163,12 +165,35 @@ class WebAgentClient:
         return []
 
     # ── chat ───────────────────────────────────────────────────────────
+    async def upload_image(self, path: str, session_id: Optional[str] = None) -> dict[str, Any]:
+        """Upload a local image file; return its attachment dict (incl. id)."""
+        p = Path(path)
+        if not p.is_file():
+            raise WebAgentError(f"not a file: {path}")
+        mime = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+        data: dict[str, str] = {"user_id": self.user_id}
+        if session_id:
+            data["session_id"] = session_id
+        files = {"file": (p.name, p.read_bytes(), mime)}
+        r = await self._client.post(
+            "/api/v1/upload", data=data, files=files, headers=self._headers()
+        )
+        if r.status_code != 200:
+            detail = ""
+            try:
+                detail = r.json().get("detail", "")
+            except Exception:
+                detail = r.text[:160]
+            raise WebAgentError(f"upload failed ({r.status_code}): {detail}")
+        return r.json().get("attachment", {}) or {}
+
     async def stream_chat(
         self,
         message: str,
         session_id: str,
         agent_id: Optional[str] = None,
         agent_template_id: Optional[str] = None,
+        attachment_ids: Optional[list[str]] = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """POST the message and yield parsed SSE event dicts as they arrive."""
         payload: dict[str, Any] = {
@@ -180,6 +205,8 @@ class WebAgentClient:
             payload["agent_id"] = agent_id
         elif agent_template_id:
             payload["agent_template_id"] = agent_template_id
+        if attachment_ids:
+            payload["attachment_ids"] = attachment_ids
 
         async with self._client.stream(
             "POST",

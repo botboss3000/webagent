@@ -318,7 +318,8 @@ ConfirmModal { align: center middle; }
 
 /* ───────────────────── chat screen ────────────────────────────── */
 
-ChatScreen { background: #0a0a14; }
+/* No Screen-level scrollbar (kills the blue line down the right edge). */
+ChatScreen { background: #0a0a14; scrollbar-size: 0 0; }
 
 #chat-status {
     height: 1;
@@ -326,6 +327,17 @@ ChatScreen { background: #0a0a14; }
     background: #14143a;
     color: #d0d0e8;
     padding: 0 2;
+}
+
+/* middle region: holds EITHER the welcome animation OR the transcript */
+#chat-body {
+    width: 100%;
+    height: 1fr;
+}
+
+#chat-welcome {
+    width: 100%;
+    height: 1fr;
 }
 
 #chat-log {
@@ -343,14 +355,26 @@ ChatScreen { background: #0a0a14; }
     scrollbar-background-active: #14143a;
 }
 
+/* thin animated "thinking" strip, mounted above the input while streaming */
+#chat-thinking {
+    width: 100%;
+    height: 3;
+    border-top: solid #2a2a44;
+}
+
+/* multi-line editor: Enter sends, Shift+Enter newline; grows to 3 lines */
 #chat-input {
     width: 100%;
     height: 3;
+    max-height: 5;
     border: round #2a2a55;
     background: #0d0d1f;
     color: #e6e6f0;
+    scrollbar-size: 0 0;
 }
 #chat-input:focus { border: round #39ff14; }
+#chat-input > .text-area--cursor { background: #39ff14; color: #0a0a14; }
+#chat-input > .text-area--selection { background: #1d4d2a; }
 
 #chat-hints {
     height: 1;
@@ -379,6 +403,12 @@ ChatScreen { background: #0a0a14; }
 .msg-pipe {
     width: 100%;
     color: #6a6a8a;
+    padding: 0 1;
+}
+/* per-response stats line: model - tokens - time - cost */
+.msg-stats {
+    width: 100%;
+    color: #5a5a7a;
     padding: 0 1;
 }
 
