@@ -9,6 +9,7 @@ in sync when adding or renaming structural regions.
 body
 ├── .stargaze-canvas               (animated background)
 ├── .stargaze-overlay              (gradient overlay)
+├── #cursor-glow                   (full-viewport cursor-follow glow, behind #stage)
 │
 ├── #main-header                   ← top bar
 │   ├── #main-tabs-wrap            (chevron-scroll carousel)

@@ -136,7 +136,6 @@ export function renderGitPanel(rootEl) {
                    renderChangesSection(s) +
                    renderCommitSection(s) +
                    renderSyncSection(s) +
-                   renderTokenSection() +
                    renderGraphSection(s, g);
   wireEvents(rootEl, s, g);
   if (window.lucide) window.lucide.createIcons({ nodes: Array.from(body.querySelectorAll('[data-lucide]:not(.lucide)')) });
@@ -162,7 +161,14 @@ function renderHeader(s) {
         <i data-lucide="chevron-down" class="lucide-icon fg-branch-chev"></i>
         ${sync}
       </button>
-      <div class="fg-remote-row" title="${remote}">${remote}</div>
+      <div class="fg-remote-token-row">
+        <div class="fg-remote-row" title="${remote}">${remote}</div>
+        <span class="fg-token-status-dot" id="fg-token-status-label" title="Token status">—</span>
+        <input type="password" id="fg-token-input" class="fg-input fg-token-input-inline" placeholder="GitHub token…" autocomplete="off" data-lpignore="true" data-1p-ignore="true" title="GitHub token">
+        <button class="fg-btn fg-btn-primary fg-token-save-inline" id="fg-token-save-btn" title="Save GitHub token">Save</button>
+        <a class="fg-token-help-link" href="https://github.com/settings/tokens" target="_blank" rel="noopener" title="Create or manage GitHub tokens (opens in new tab)" aria-label="GitHub token help">?</a>
+      </div>
+      <div id="fg-token-result" class="fg-result fg-token-result-inline" hidden></div>
       <div class="fg-branch-menu" id="fg-branch-menu" hidden role="listbox" aria-label="Switch branch">
         <div class="fg-branch-menu-loading">Loading branches…</div>
       </div>
@@ -212,49 +218,14 @@ function renderSyncSection(s) {
   if (!s.has_remote) return '';
   return `
     <div class="fg-section fg-sync">
-      <button class="fg-btn" id="fg-pull-btn" title="Pull current branch (restarts server if backend changed)"><i data-lucide="arrow-down" class="lucide-icon"></i> Pull</button>
-      <button class="fg-btn" id="fg-push-btn" title="Push current branch"><i data-lucide="arrow-up" class="lucide-icon"></i> Push</button>
+      <button class="fg-btn" id="fg-pull-btn" title="Pull current branch"><i data-lucide="arrow-up" class="lucide-icon"></i> Pull</button>
+      <button class="fg-btn" id="fg-push-btn" title="Push current branch"><i data-lucide="arrow-down" class="lucide-icon"></i> Push</button>
       <button class="fg-btn" id="fg-merge-btn" title="Merge another branch into the current branch"><i data-lucide="git-merge" class="lucide-icon"></i> Merge…</button>
       <div id="fg-sync-result" class="fg-result" hidden></div>
       <div class="fg-merge-menu" id="fg-merge-menu" hidden role="listbox" aria-label="Pick branch to merge in">
         <div class="fg-branch-menu-loading">Loading branches…</div>
       </div>
     </div>
-  `;
-}
-
-function renderTokenSection() {
-  return `
-    <details class="fg-section fg-token">
-      <summary><span>GitHub token</span><span class="fg-token-status" id="fg-token-status-label">—</span></summary>
-      <div class="fg-token-row">
-        <input type="password" id="fg-token-input" class="fg-input" placeholder="ghp_… / github_pat_…" autocomplete="off" data-lpignore="true" data-1p-ignore="true">
-        <button class="fg-btn fg-btn-primary" id="fg-token-save-btn">Save</button>
-      </div>
-      <div id="fg-token-result" class="fg-result" hidden></div>
-      <details class="fg-token-hint">
-        <summary>How to create a GitHub token →</summary>
-        <div class="fg-token-hint-body">
-          <p><strong>Classic token:</strong></p>
-          <ol>
-            <li>Go to <a href="https://github.com/settings/tokens" target="_blank" rel="noopener">github.com/settings/tokens</a></li>
-            <li>Click <strong>Generate new token (classic)</strong></li>
-            <li>Give it a name (e.g. "webAgent")</li>
-            <li>Select scope: <strong>repo</strong> (full control)</li>
-            <li>Click <strong>Generate token</strong> and copy it</li>
-          </ol>
-          <p><strong>Fine-grained token:</strong></p>
-          <ol>
-            <li>Go to <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noopener">tokens (fine-grained)</a></li>
-            <li>Click <strong>Generate new token (fine-grained)</strong></li>
-            <li>Select this repository only</li>
-            <li>Permissions → <strong>Contents: Read and write</strong></li>
-            <li>Click <strong>Generate token</strong> and copy it</li>
-          </ol>
-          <p class="fg-token-hint-foot">Paste the token above and click Save. It's stored locally in provider.json.</p>
-        </div>
-      </details>
-    </details>
   `;
 }
 
@@ -731,33 +702,17 @@ export async function restartServerAndReload({ timeoutMs = 60000 } = {}) {
   return false;
 }
 
-// Shared follow-through for any action that may have brought in backend
-// code: if the response says backend_changed, restart the server and wait
-// for /health to come back; otherwise just refresh the sidebar.
+// Shared follow-through for any sync action (pull / merge / checkout).
+// Always just refreshes the sidebar — no whole-app reload, no automatic
+// server restart. If the response indicates backend code came in we
+// surface a hint so the user can restart manually when convenient.
 async function applyPostSync(rootEl, resultEl, response, doneLabel) {
   const summary = response.message || `${doneLabel} successful`;
-  if (!response.backend_changed) {
-    showResult(resultEl, `${summary} (no restart needed)`, 'success');
-    await refreshGit(rootEl);
-    return;
-  }
-  showResult(resultEl, `${summary} — restarting server…`, 'info');
-  try {
-    await fetch(apiPath('/api/v1/restart'), { method: 'POST', headers: authHeaders() });
-  } catch (_) { /* expected: server cut the connection */ }
-  const start = Date.now();
-  while (Date.now() - start < 60000) {
-    await new Promise(r => setTimeout(r, 1000));
-    try {
-      const h = await fetch(apiPath('/health'));
-      if (h.ok) {
-        showResult(resultEl, `${doneLabel} — server back up`, 'success');
-        await refreshGit(rootEl);
-        return;
-      }
-    } catch (_) {}
-  }
-  showResult(resultEl, 'Timed out waiting for server', 'error');
+  const hint = response.backend_changed
+    ? ' (backend code changed — restart server when convenient)'
+    : '';
+  showResult(resultEl, summary + hint, 'success');
+  await refreshGit(rootEl);
 }
 
 async function doSaveToken(rootEl) {
@@ -784,10 +739,15 @@ async function refreshTokenStatus(rootEl) {
   if (!label) return;
   try {
     const r = await ghFetch('/api/v1/github/token-status');
-    label.textContent = r.configured ? r.masked : 'not set';
+    // Dot-only indicator now: tooltip carries the detail so the row
+    // stays one line even in a narrow sidebar.
+    label.title = r.configured ? `GitHub token configured (${r.masked})` : 'No GitHub token set';
+    label.textContent = '';
     label.classList.toggle('ok', !!r.configured);
   } catch (_) {
-    label.textContent = '—';
+    label.title = 'Token status unknown';
+    label.textContent = '';
+    label.classList.remove('ok');
   }
 }
 
@@ -818,9 +778,10 @@ export async function refreshGit(rootEl) {
     _state.loading = false;
   }
   renderGitPanel(rootEl);
-  // Keep the git main in sync with the latest status (only the overview
-  // mode reads from `_state.status`; other modes own their own payload).
-  if (_gitMainState.mode === 'overview') {
+  // Keep the git main in sync with the latest status — the Commit page's
+  // overview strip reads from `_state.status`, so re-render whenever the
+  // status changes and Commit is the active mode.
+  if (_gitMainState.mode === 'commit') {
     try { renderGitMain(); } catch (_) {}
   }
 }
@@ -828,26 +789,8 @@ export async function refreshGit(rootEl) {
 let _opened = false;
 export async function openGitPanel(rootEl) {
   if (!rootEl) return;
-  // Always re-render on open — the panel state may be stale.
   if (!_opened) {
     _opened = true;
-    const refresh = rootEl.querySelector('#fg-refresh');
-    if (refresh) {
-      refresh.addEventListener('click', async () => {
-        if (refresh.dataset.busy === '1') return;
-        refresh.dataset.busy = '1';
-        const origTitle = refresh.title;
-        refresh.title = 'Restarting server…';
-        refresh.classList.add('is-spinning');
-        const ok = await restartServerAndReload();
-        if (!ok) {
-          refresh.dataset.busy = '';
-          refresh.title = origTitle;
-          refresh.classList.remove('is-spinning');
-          alert('Server did not come back within 60s. Check `journalctl -u webagent -f`.');
-        }
-      });
-    }
     initGitMainPills();
   }
   await refreshGit(rootEl);
@@ -862,11 +805,11 @@ export async function openGitPanel(rootEl) {
 // most-recently-viewed payload of each mode so users can switch back.
 
 const _gitMainState = {
-  mode: 'overview',
+  mode: 'commit',
   payload: null,
   // Per-mode "last payload" memory so the user can click a disabled mode
   // pill once it has data behind it.
-  byMode: { overview: null, commit: null, diff: null, compare: null },
+  byMode: { commit: null, diff: null, compare: null },
 };
 
 let _gitMainPillsWired = false;
@@ -893,9 +836,10 @@ function updateGitMainPills() {
     const active = mode === _gitMainState.mode;
     pill.classList.toggle('active', active);
     pill.setAttribute('aria-selected', active ? 'true' : 'false');
-    // Overview is always enabled; other pills enable once they've ever
+    // Commit is always enabled (it's the default landing view, with an
+    // overview strip on top). Diff/compare enable once they've ever
     // been rendered with a payload.
-    if (mode === 'overview') {
+    if (mode === 'commit') {
       pill.disabled = false;
     } else {
       pill.disabled = !_gitMainState.byMode[mode];
@@ -917,74 +861,61 @@ export function renderGitMain(mode, payload) {
   body.dataset.mode = _gitMainState.mode;
   updateGitMainPills();
   switch (_gitMainState.mode) {
-    case 'commit':
-      return _gmRenderCommit(body, _gitMainState.payload);
     case 'diff':
       return _gmRenderDiffPlaceholder(body, _gitMainState.payload);
     case 'compare':
       return _gmRenderComparePlaceholder(body, _gitMainState.payload);
-    case 'overview':
+    case 'commit':
     default:
-      return _gmRenderOverview(body);
+      return _gmRenderCommit(body, _gitMainState.payload);
   }
 }
 
-function _gmRenderOverview(body) {
+// Compact one-line overview strip for the Commit page header — branch,
+// remote, working-tree state. Shows what the old Overview tab showed but
+// in a single horizontal band so the commit detail itself stays the
+// focus of the page.
+function renderOverviewStrip() {
   const s = _state.status;
-  if (!s) {
-    body.innerHTML = '<div class="fg-main-loading">Loading…</div>';
-    return;
-  }
+  if (!s) return '';
   const branch = escapeHtml(s.branch || '—');
   const remote = escapeHtml(s.remote_url || 'no remote');
   const dirty = (s.staged || []).length + (s.unstaged || []).length + (s.untracked || []).length;
   let sync = '';
   if (s.has_remote && (s.ahead > 0 || s.behind > 0)) {
-    sync = `<span class="fg-ahead">↑${s.ahead}</span><span class="fg-behind">↓${s.behind}</span>`;
+    sync = `<span class="fg-strip-sync"><span class="fg-ahead">↑${s.ahead}</span><span class="fg-behind">↓${s.behind}</span></span>`;
   } else if (s.has_remote) {
-    sync = '<span class="fg-sync-clean">in sync</span>';
+    sync = '<span class="fg-strip-sync fg-sync-clean">in sync</span>';
   } else {
-    sync = '<span class="fg-sync-clean">no remote</span>';
+    sync = '<span class="fg-strip-sync fg-sync-clean">no remote</span>';
   }
-  body.innerHTML = `
-    <div class="fg-main-overview">
-      <div class="fg-main-overview-card">
-        <div class="fg-main-overview-row">
-          <i data-lucide="git-branch" class="lucide-icon"></i>
-          <div class="fg-main-overview-label">Branch</div>
-          <div class="fg-main-overview-val">${branch} ${sync}</div>
-        </div>
-        <div class="fg-main-overview-row">
-          <i data-lucide="cloud" class="lucide-icon"></i>
-          <div class="fg-main-overview-label">Remote</div>
-          <div class="fg-main-overview-val">${remote}</div>
-        </div>
-        <div class="fg-main-overview-row">
-          <i data-lucide="file-diff" class="lucide-icon"></i>
-          <div class="fg-main-overview-label">Working tree</div>
-          <div class="fg-main-overview-val">${dirty ? dirty + ' uncommitted change' + (dirty === 1 ? '' : 's') : 'clean'}</div>
-        </div>
-      </div>
-      <div class="fg-main-overview-hint">
-        Select a commit in the sidebar's graph to see its full detail here.
-      </div>
+  const tree = dirty
+    ? `<span class="fg-strip-tree dirty">${dirty} uncommitted</span>`
+    : '<span class="fg-strip-tree clean">working tree clean</span>';
+  return `
+    <div class="fg-strip-overview">
+      <span class="fg-strip-cell" title="Current branch"><i data-lucide="git-branch" class="lucide-icon"></i><span class="fg-strip-val">${branch}</span>${sync}</span>
+      <span class="fg-strip-cell fg-strip-remote" title="${remote}"><i data-lucide="cloud" class="lucide-icon"></i><span class="fg-strip-val">${remote}</span></span>
+      <span class="fg-strip-cell" title="Working tree state"><i data-lucide="file-diff" class="lucide-icon"></i>${tree}</span>
     </div>
   `;
-  if (window.lucide) window.lucide.createIcons({ nodes: Array.from(body.querySelectorAll('[data-lucide]:not(.lucide)')) });
 }
 
 async function _gmRenderCommit(body, payload) {
   if (!payload || !payload.hash) {
-    body.innerHTML = '<div class="fg-main-empty">No commit selected.</div>';
+    body.innerHTML = renderOverviewStrip() + '<div class="fg-main-empty">No commit selected.</div>';
+    if (window.lucide) window.lucide.createIcons({ nodes: Array.from(body.querySelectorAll('[data-lucide]:not(.lucide)')) });
     return;
   }
-  body.innerHTML = '<div class="fg-main-loading">Loading commit…</div>';
+  body.innerHTML = renderOverviewStrip() + '<div class="fg-main-loading">Loading commit…</div>';
+  if (window.lucide) window.lucide.createIcons({ nodes: Array.from(body.querySelectorAll('[data-lucide]:not(.lucide)')) });
   try {
     const d = await ghFetch(`/api/v1/github/commit/${encodeURIComponent(payload.hash)}`);
-    body.innerHTML = `<div class="fg-main-commit">${renderCommitDetail(d)}</div>`;
+    body.innerHTML = renderOverviewStrip() + `<div class="fg-main-commit">${renderCommitDetail(d)}</div>`;
     if (window.lucide) window.lucide.createIcons({ nodes: Array.from(body.querySelectorAll('[data-lucide]:not(.lucide)')) });
   } catch (e) {
-    body.innerHTML = `<div class="fg-error">${escapeHtml(e.message || e)}</div>`;
+    body.innerHTML = renderOverviewStrip() + `<div class="fg-error">${escapeHtml(e.message || e)}</div>`;
+    if (window.lucide) window.lucide.createIcons({ nodes: Array.from(body.querySelectorAll('[data-lucide]:not(.lucide)')) });
   }
 }
 
