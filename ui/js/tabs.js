@@ -116,29 +116,8 @@ export function initTabs() {
 
   activateTab(tabSelect.value);
 
-  // Reveal the saved tab. The pre-paint script (index.html) sets
-  // body.boot-chat-only so chat fills the stage at first paint and the
-  // wrong tab never flashes. Now that the saved tab content has been
-  // mounted by activateTab(), play the chosen transition: add
-  // .boot-revealing FIRST (so its transition rules are registered),
-  // then on the next frame drop .boot-chat-only so the layout changes
-  // animate instead of snapping. Remove .boot-revealing after the
-  // animation duration so normal interactions don't pay the ease cost.
-  // .is-booting drives the loading spinner and is dropped at the end
-  // of the reveal — or immediately if the pre-paint skipped chat-first
-  // (mobile + bootMobileMode=memory + saved chat-hidden).
-  if (document.body.classList.contains('boot-chat-only')) {
-    requestAnimationFrame(() => {
-      document.body.classList.add('boot-revealing');
-      requestAnimationFrame(() => {
-        document.body.classList.remove('boot-chat-only');
-        setTimeout(() => {
-          document.body.classList.remove('boot-revealing');
-          document.body.classList.remove('is-booting');
-        }, 480);
-      });
-    });
-  } else {
-    document.body.classList.remove('is-booting');
-  }
+  // The spinner was shown in the header during init (pre-paint script
+  // set body.is-booting). Now that the tab content is mounted, clear
+  // is-booting so the spinner fades out immediately.
+  document.body.classList.remove('is-booting');
 }

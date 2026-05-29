@@ -149,7 +149,6 @@ body.light-mode {
   min-width: 160px;
   max-width: 600px;
   background: var(--files-bg-sidebar);
-  border-right: 1px solid var(--files-border);
   flex-shrink: 0;
   overflow: hidden;
   transition: width 0.18s ease, min-width 0.18s ease;
@@ -432,14 +431,16 @@ body.light-mode {
 /* ── Resize handle ───────────────────────────────────────── */
 
 .files-resize-handle {
-  width: 4px;
+  width: 6px;
+  margin-left: -6px;        /* zero net layout width — overlaps sidebar edge so
+                               there is no visible gap between sidebar and main */
   cursor: col-resize;
   background: transparent;
   flex-shrink: 0;
   position: relative;
   z-index: 2;
 }
-.files-resize-handle:hover { background: var(--files-resize-hov); }
+.files-resize-handle:hover { background: transparent; }
 .files-resize-handle.dragging { background: var(--files-resize-active); }
 .files-sidebar.collapsed + .files-resize-handle { display: none; }
 
@@ -538,38 +539,82 @@ body.light-mode {
 .files-term-keypad-btn.is-open { background: var(--files-bg-tab-hover); color: var(--files-text-strong); }
 .files-term-keypad-btn .lucide-icon { width: 14px; height: 14px; }
 
-.files-term-keypad-panel {
-  position: fixed;
-  z-index: 1000;
-  display: grid;
-  grid-template-columns: repeat(3, 36px);
-  grid-template-rows: repeat(2, 36px);
-  gap: 4px;
-  padding: 6px;
+/* Sticky shortcut bar at the bottom of the terminal main. Replaces the
+   legacy popover. Horizontally scrollable on mobile; finger-friendly hit
+   targets; sticky modifier chips (Ctrl, tmux) light up while armed and
+   stay solid when locked via long-press. */
+.files-term-keybar {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
   background: var(--files-bg-sidebar);
-  border: 1px solid var(--files-border);
-  border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  border-top: 1px solid var(--files-border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex-shrink: 0;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
 }
-.files-term-keypad-panel[hidden] { display: none; }
-.files-term-keypad-key {
-  width: 36px;
-  height: 36px;
+.files-term-keybar[hidden] { display: none; }
+.files-term-keybar::-webkit-scrollbar { height: 6px; }
+.files-term-keybar::-webkit-scrollbar-thumb { background: var(--files-border-strong); border-radius: 3px; }
+.ftk-chip {
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  min-width: 38px;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 6px;
   background: var(--files-bg);
   border: 1px solid var(--files-border);
-  border-radius: 4px;
-  color: var(--files-text);
+  color: var(--files-text-strong);
+  font-family: "Fira Code", Menlo, Monaco, monospace;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
-  padding: 0;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
-.files-term-keypad-key:hover { background: var(--files-bg-tab-hover); color: var(--files-text-strong); }
-.files-term-keypad-key:active { background: var(--files-active-indicator); color: #fff; }
-.files-term-keypad-key .lucide-icon { width: 18px; height: 18px; }
-.files-term-keypad-key[data-key^="blank-"] { cursor: default; opacity: 0.35; }
-.files-term-keypad-key[data-key^="blank-"]:hover { background: var(--files-bg); color: var(--files-text); }
+.ftk-chip:hover { background: var(--files-bg-tab-hover); }
+.ftk-chip:active { transform: translateY(1px); }
+.ftk-chip .lucide-icon { width: 18px; height: 18px; }
+.ftk-chip-mod { background: var(--files-bg-tab-hover); }
+/* Armed (one-shot): pulsing outline using the accent indicator. */
+.ftk-chip[data-armed="1"] {
+  background: var(--files-active-indicator);
+  color: var(--files-text-strong);
+  box-shadow: 0 0 0 2px var(--files-active-indicator) inset;
+}
+/* Locked (long-press): solid filled state distinct from the armed pulse. */
+.ftk-chip[data-locked="1"] {
+  background: var(--files-active-indicator);
+  color: var(--files-bg);
+  border-color: var(--files-active-indicator);
+}
+/* Mic listening: pulses to signal the bar is recording. Animation is
+   defined in CSS so it works without JS keeping a timer. */
+.ftk-chip[data-listening="1"] {
+  animation: ftkPulse 1.1s ease-in-out infinite;
+  background: var(--danger, var(--files-active-indicator));
+  color: var(--files-bg);
+  border-color: transparent;
+}
+@keyframes ftkPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+.ftk-sep {
+  flex-shrink: 0;
+  width: 1px;
+  height: 22px;
+  background: var(--files-border);
+  margin: 0 2px;
+}
 
 .files-tabs {
   display: flex;

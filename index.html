@@ -131,6 +131,29 @@
     position: absolute;
     overflow: visible;
   }
+  /* Chat pill: borderless, sits directly on the stage. A very faint glass
+     tint keeps the input legible without reading as a separate panel. */
+  #chat-panel .chat-pill {
+    background: color-mix(in oklab, currentColor 5%, transparent) !important;
+    border: 1px solid transparent !important;
+    backdrop-filter: blur(10px) saturate(140%) !important;
+    -webkit-backdrop-filter: blur(10px) saturate(140%) !important;
+  }
+  #chat-panel .chat-pill:focus-within {
+    border-color: transparent !important;
+    background: color-mix(in oklab, currentColor 7%, transparent) !important;
+  }
+  #chat-panel .chat-pill.drag-over {
+    border: 1px dashed color-mix(in oklab, currentColor 25%, transparent) !important;
+    background: color-mix(in oklab, currentColor 10%, transparent) !important;
+  }
+  #chat-panel .chat-pill-input {
+    background: transparent !important;
+  }
+  #chat-panel .chat-expand-btn {
+    background: transparent !important;
+    border-color: transparent !important;
+  }
 
   /* —— Main panel: a real panel (glass) —— */
   #main-panel {
@@ -142,7 +165,7 @@
     box-shadow:
       0 1px 0 color-mix(in oklab, currentColor 6%, transparent) inset,
       0 20px 60px -30px rgba(0,0,0,0.6) !important;
-    margin: 8px !important;
+    margin: 8px 1px 8px 8px !important;
     overflow: hidden !important;
     position: relative;
   }
@@ -185,7 +208,6 @@
 </style>
 </head>
 <body>
-<div id="boot-spinner" class="boot-spinner" aria-hidden="true"></div>
 <canvas class="stargaze-canvas" id="stargaze-bg"></canvas>
 <div class="stargaze-overlay"></div>
 <script>
@@ -214,26 +236,12 @@
       document.body.classList.toggle('chat-visible', visible);
       document.body.classList.toggle('chat-hidden', !visible);
     } catch (_) {}
-    // Pre-paint: boot with chat full-screen so the saved tab partial has
-    // time to mount before it animates in. tabs.js removes boot-chat-only
-    // and adds boot-revealing once the saved tab is activated. is-booting
-    // drives the centered spinner and is also cleared by tabs.js. On
-    // mobile, bootMobileMode='memory' + a saved chat-hidden state skips
-    // the chat-first boot entirely and restores the last page directly.
+    // Boot: show a compact spinner in the header while JS initialises.
+    // The main panel and tabs are accessible from the start — no full-screen
+    // spinner or collapsed main panel. is-booting is removed by tabs.js once
+    // the tab content is mounted.
     try {
-      var isMobileBoot = window.innerWidth <= 800;
-      var mobileMode = localStorage.getItem('bootMobileMode') || 'chat-first';
-      if (mobileMode !== 'chat-first' && mobileMode !== 'memory') mobileMode = 'chat-first';
-      var savedChatHiddenMobile = localStorage.getItem('chatPanelVisibleMobile') === 'false';
-      var skipChatFirst = isMobileBoot && mobileMode === 'memory' && savedChatHiddenMobile;
-      var anim = localStorage.getItem('bootAnimation') || 'chat-slide-right';
-      var allowed = { 'chat-slide-right': 1, 'page-slide-in': 1, 'crossfade': 1 };
-      if (!allowed[anim]) anim = 'chat-slide-right';
       document.body.classList.add('is-booting');
-      if (!skipChatFirst) {
-        document.body.classList.add('boot-chat-only');
-        document.body.setAttribute('data-boot-anim', anim);
-      }
     } catch (_) {}
   })();
 </script>
@@ -389,12 +397,18 @@
 
   <!-- User menu -->
   <span id="status-right">
+    <span id="boot-spinner" class="boot-spinner" aria-hidden="true"></span>
     <button id="chat-toggle-btn" class="chat-toggle-btn active" title="Toggle chat panel">
       <i data-lucide="message-square" class="lucide-icon" style="width:14px;height:14px;"></i>
     </button>
     <div class="user-dropdown" id="user-dropdown">
       <span id="top-user-id" class="user-dropdown-trigger" title="Account">
-        <span id="top-user-avatar-slot"></span>
+        <span id="top-user-avatar-slot"><!-- Default icon shown before JS renders the avatar -->
+          <svg class="user-avatar-default" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;opacity:0.55;">
+            <circle cx="12" cy="8" r="4"></circle>
+            <path d="M4 20c0-4 4-7 8-7s8 3 8 7"></path>
+          </svg>
+        </span>
       </span>
       <div id="user-dropdown-menu" class="user-dropdown-menu" style="display:none;">
         <!-- Current user row + Manage Account button -->

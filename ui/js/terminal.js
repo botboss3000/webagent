@@ -31,6 +31,13 @@ export function createTerminalInstance(container, sessionId, opts) {
   // has it in its history.
   const initialCommand = typeof opts.initialCommand === 'string' ? opts.initialCommand : '';
   let initialCommandSent = false;
+  // Friendly name passed up to the backend on each connect; the server stores
+  // it on the TerminalSession so other devices see a useful label in the
+  // "Your sessions" sidebar list instead of the raw UUID. May be a function
+  // for late binding (e.g. tab rename) — re-evaluated on every connect.
+  const nameProvider = typeof opts.nameProvider === 'function'
+    ? opts.nameProvider
+    : (typeof opts.name === 'string' ? () => opts.name : null);
   const initialFontSize = (typeof opts.fontSize === 'number' && opts.fontSize >= MIN_FONT_SIZE && opts.fontSize <= MAX_FONT_SIZE)
     ? opts.fontSize : DEFAULT_FONT_SIZE;
 
@@ -103,13 +110,55 @@ export function createTerminalInstance(container, sessionId, opts) {
   }
 
   term.onData((data) => {
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
+    // Optional global hook used by the mobile shortcut bar to wrap soft-
+    // keyboard keystrokes under an armed Ctrl / tmux modifier. Defined on
+    // window (not imported) to avoid a cycle between files.js and this
+    // module. Returning a string replaces `data`; throwing is swallowed.
+    let out = data;
+    if (typeof window.__termInputTransform === 'function') {
+      try {
+        const t = window.__termInputTransform(data);
+        if (typeof t === 'string') out = t;
+      } catch (_) {}
+    }
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(out);
   });
   term.onResize(({ rows, cols }) => {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'resize', rows, cols }));
     }
   });
+
+  // xterm.js WriteBuffer rejects writes once ~50 chunks are pending, throwing
+  // "write data discarded, use flow control to avoid losing data". When a PTY
+  // dumps a lot quickly (e.g. `find /`, `cat large-file`) onmessage fires faster
+  // than xterm can parse, so we queue here and serialise via the term.write
+  // (data, callback) signature — only one write is ever in flight.
+  // MAX_WRITE_QUEUE caps memory in pathological cases; drop oldest so the most
+  // recent output (what the user is watching) is preserved.
+  const MAX_WRITE_QUEUE = 2000;
+  let _writeQueue = [];
+  let _writeBusy = false;
+  function _enqueueWrite(data) {
+    _writeQueue.push(data);
+    if (_writeQueue.length > MAX_WRITE_QUEUE) {
+      _writeQueue.splice(0, _writeQueue.length - MAX_WRITE_QUEUE);
+    }
+    _pumpWrites();
+  }
+  function _pumpWrites() {
+    if (_writeBusy || _writeQueue.length === 0 || disposed) return;
+    const chunk = _writeQueue.shift();
+    _writeBusy = true;
+    try {
+      term.write(chunk, () => {
+        _writeBusy = false;
+        _pumpWrites();
+      });
+    } catch (_) {
+      _writeBusy = false;
+    }
+  }
 
   function cancelReconnect() {
     if (reconnectTimer) {
@@ -169,7 +218,16 @@ export function createTerminalInstance(container, sessionId, opts) {
         return t ? '&token=' + encodeURIComponent(t) : '';
       } catch (_) { return ''; }
     })();
-    ws = new WebSocket(termWsUrl() + '?session_id=' + encodeURIComponent(sessionId) + tokenParam);
+    let nameParam = '';
+    if (nameProvider) {
+      try {
+        const n = nameProvider();
+        if (n) nameParam = '&name=' + encodeURIComponent(String(n).slice(0, 80));
+      } catch (_) {}
+    }
+    ws = new WebSocket(
+      termWsUrl() + '?session_id=' + encodeURIComponent(sessionId) + tokenParam + nameParam,
+    );
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
@@ -197,9 +255,9 @@ export function createTerminalInstance(container, sessionId, opts) {
       if (ev.data instanceof ArrayBuffer) {
         const data = new Uint8Array(ev.data);
         if (data.length === 0) {
-          term.write('\r\n\x1b[31m[Process exited — reconnecting]\x1b[0m\r\n');
+          _enqueueWrite('\r\n\x1b[31m[Process exited — reconnecting]\x1b[0m\r\n');
         } else {
-          term.write(data);
+          _enqueueWrite(data);
         }
       } else if (typeof ev.data === 'string') {
         try {
@@ -214,7 +272,7 @@ export function createTerminalInstance(container, sessionId, opts) {
             return;
           }
         } catch {
-          term.write(ev.data);
+          _enqueueWrite(ev.data);
         }
       }
     };
@@ -328,6 +386,8 @@ export function createTerminalInstance(container, sessionId, opts) {
     disposed = true;
     cancelReconnect();
     _disarmLiveness();
+    _writeQueue = [];
+    _writeBusy = false;
     document.removeEventListener('visibilitychange', _onVisibility);
     window.removeEventListener('online', _onOnline);
     if (ws) {
@@ -400,6 +460,16 @@ export function createTerminalInstance(container, sessionId, opts) {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(text);
   }
 
+  // Update the friendly session name server-side without forcing a reconnect.
+  // Used when the user renames the tab inline.
+  function setName(name) {
+    if (disposed) return;
+    const n = String(name || '').slice(0, 80);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try { ws.send(JSON.stringify({ type: 'set_name', name: n })); } catch (_) {}
+    }
+  }
+
   // CSS classes for wrap mode are applied by the caller (files.js) on the
   // host and its scroll wrapper before term.open() runs, so the initial
   // fit() below already measures the right host width.
@@ -411,7 +481,7 @@ export function createTerminalInstance(container, sessionId, opts) {
     term, fitAddon, fit, focus, reconnect, dispose, closeBackendSession,
     onStateChange, getState,
     findNext, findPrevious, clearSearch,
-    paste,
+    paste, setName,
     setWrap, getWrap,
     setFontSize, getFontSize, zoomIn, zoomOut, resetZoom,
   };

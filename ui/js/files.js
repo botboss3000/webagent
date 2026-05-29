@@ -108,7 +108,12 @@ async function apiFetch(path, opts = {}) {
   if (opts.body && !('Content-Type' in headers)) {
     headers['Content-Type'] = 'application/json';
   }
-  const res = await fetch(API_BASE + withUserIdParam(path), Object.assign({}, opts, { headers }));
+  // Paths that already start with /api/ are absolute — used by the terminal
+  // launcher panel to hit /api/v1/terminal/... endpoints. Everything else is
+  // a files-relative subpath ('/tree?...', '/write', etc.) and gets the
+  // /api/v1/files prefix.
+  const url = path.startsWith('/api/') ? withUserIdParam(path) : (API_BASE + withUserIdParam(path));
+  const res = await fetch(url, Object.assign({}, opts, { headers }));
   if (!res.ok) {
     let detail = res.statusText;
     try { const j = await res.json(); detail = j.detail || detail; } catch (_) {}
@@ -1087,75 +1092,334 @@ function initTabCarousel() {
 // are no arrow keys, so the bottom row + middle cell of this 3x3 pad
 // pipes ANSI cursor escapes into the active terminal. The remaining
 // cells are placeholders for future shortcuts.
-function initTerminalKeypad() {
-  const btn = document.getElementById('files-term-keypad-btn');
-  const panel = document.getElementById('files-term-keypad-panel');
-  if (!btn || !panel || btn.dataset.wired) return;
-  btn.dataset.wired = '1';
+// Replaces the legacy popover keypad. Sticky bottom bar of chips for
+// terminal-specific keys: Esc / Tab / arrows / Shift+Enter / Ctrl chord /
+// tmux prefix / common ^C/^D/^L/^R/^Z / hard-to-reach chars / Copy / Paste
+// / mic. Modifier chips (Ctrl, tmux) arm on tap and lock on long-press.
+// The tab-bar keyboard-icon button toggles the bar.
+function initTerminalKeybar() {
+  const toggleBtn = document.getElementById('files-term-keypad-btn');
+  const bar = document.getElementById('files-term-keybar');
+  if (!toggleBtn || !bar || toggleBtn.dataset.wired) return;
+  toggleBtn.dataset.wired = '1';
 
-  // ANSI escapes sent into the PTY for each pad key. Shift+Enter uses the
-  // ESC+CR sequence (a.k.a. Alt-Enter), which readline-based REPLs and
-  // Claude Code's input handler interpret as "insert newline, don't submit".
-  const KEY_ESC = {
-    up:            '\x1b[A',
-    down:          '\x1b[B',
-    right:         '\x1b[C',
-    left:          '\x1b[D',
-    'shift-enter': '\x1b\r',
-  };
+  const LS_KEY = 'files.terminalKeybarVisible';
 
-  function positionPanel() {
-    // Panel lives in a `position: fixed` layer because the tab wrap has
-    // overflow:hidden, which would clip an in-flow absolutely-positioned
-    // dropdown. Anchor it to the button's bottom-right.
-    const rect = btn.getBoundingClientRect();
-    const panelW = panel.offsetWidth || 120;
-    const pad = 4;
-    let left = rect.right - panelW;
-    if (left < pad) left = pad;
-    panel.style.top = (rect.bottom + pad) + 'px';
-    panel.style.left = left + 'px';
+  function defaultVisible() {
+    // Default ON for touch / small screens; OFF on desktop. User toggle
+    // overrides this once set.
+    if (typeof window.matchMedia !== 'function') return true;
+    return window.matchMedia('(pointer: coarse), (max-width: 800px)').matches;
   }
-
-  function setOpen(open) {
-    panel.hidden = !open;
-    btn.classList.toggle('is-open', open);
-    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    if (open) positionPanel();
+  function loadVisible() {
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw === null) return defaultVisible();
+    return raw === '1';
   }
-
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    setOpen(panel.hidden);
+  function applyVisible(v) {
+    bar.hidden = !v;
+    toggleBtn.classList.toggle('is-open', v);
+    toggleBtn.setAttribute('aria-pressed', v ? 'true' : 'false');
+    // Bar visibility changes the terminal host height — refit so xterm
+    // recomputes rows/cols.
+    const tab = getActiveTerminalTab();
+    if (tab && tab.instance) setTimeout(() => tab.instance.fit(), 30);
+  }
+  applyVisible(loadVisible());
+  toggleBtn.addEventListener('click', () => {
+    const next = bar.hidden;
+    try { localStorage.setItem(LS_KEY, next ? '1' : '0'); } catch (_) {}
+    applyVisible(next);
   });
 
-  window.addEventListener('resize', () => { if (!panel.hidden) positionPanel(); });
-  window.addEventListener('scroll', () => { if (!panel.hidden) positionPanel(); }, true);
-
-  panel.addEventListener('click', (e) => {
-    const key = e.target.closest('.files-term-keypad-key');
-    if (!key) return;
-    e.stopPropagation();
-    const action = key.dataset.key;
-    const esc = KEY_ESC[action];
-    if (!esc) return; // blank placeholder — no-op for now
+  // ── Modifier state ───────────────────────────────────────────────
+  // 'off' | 'armed' (one-shot) | 'locked' (until tapped again).
+  // tmux locked sends the Ctrl+B prefix once at lock time; subsequent keys
+  // pass through unmodified — tmux interprets them server-side.
+  const mod = { ctrl: 'off', tmux: 'off' };
+  function setMod(name, state) {
+    mod[name] = state;
+    const chip = bar.querySelector('[data-mod="' + name + '"]');
+    if (!chip) return;
+    chip.dataset.armed = state === 'armed' ? '1' : '';
+    chip.dataset.locked = state === 'locked' ? '1' : '';
+  }
+  function consumeArm() {
+    if (mod.ctrl === 'armed') setMod('ctrl', 'off');
+    if (mod.tmux === 'armed') setMod('tmux', 'off');
+  }
+  function sendToActive(bytes) {
     const tab = getActiveTerminalTab();
-    if (tab && tab.instance && tab.instance.paste) {
-      tab.instance.paste(esc);
-      try { tab.instance.focus(); } catch (_) {}
+    if (!tab || !tab.instance || !tab.instance.paste) return false;
+    tab.instance.paste(bytes);
+    try { tab.instance.focus(); } catch (_) {}
+    return true;
+  }
+
+  // Translate a chip key (data-key) into raw bytes the PTY expects. When
+  // Ctrl is armed/locked, arrows escalate to word-jump sequences.
+  function chipBytes(key) {
+    const PLAIN = {
+      esc:           '\x1b',
+      tab:           '\t',
+      up:            '\x1b[A',
+      down:          '\x1b[B',
+      right:         '\x1b[C',
+      left:          '\x1b[D',
+      'shift-enter': '\x1b\r',
+      'ctrl-c':      '\x03',
+      'ctrl-d':      '\x04',
+      'ctrl-l':      '\x0c',
+      'ctrl-r':      '\x12',
+      'ctrl-z':      '\x1a',
+      'lit-pipe':    '|',
+      'lit-tilde':   '~',
+      'lit-fwd':     '/',
+      'lit-bk':      '\\',
+      'lit-tick':    '`',
+    };
+    if (mod.ctrl !== 'off' && /^(up|down|left|right)$/.test(key)) {
+      const map = { up: 'A', down: 'B', right: 'C', left: 'D' };
+      return '\x1b[1;5' + map[key];
+    }
+    return Object.prototype.hasOwnProperty.call(PLAIN, key) ? PLAIN[key] : null;
+  }
+
+  // ── Long-press detection on modifier chips ───────────────────────
+  // 500 ms hold = lock; quick tap = arm. The synthetic click that fires
+  // after pointerup is suppressed when a long-press already ran.
+  function attachLongPress(chip, modName) {
+    const HOLD_MS = 500;
+    let timer = null;
+    let didLongPress = false;
+    let pressed = false;
+    function start(e) {
+      didLongPress = false;
+      pressed = true;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!pressed) return;
+        didLongPress = true;
+        const nextState = mod[modName] === 'locked' ? 'off' : 'locked';
+        setMod(modName, nextState);
+        if (modName === 'tmux' && nextState === 'locked') sendToActive('\x02');
+      }, HOLD_MS);
+    }
+    function cancel() {
+      pressed = false;
+      clearTimeout(timer);
+    }
+    chip.addEventListener('pointerdown',  start);
+    chip.addEventListener('pointerup',    cancel);
+    chip.addEventListener('pointercancel', cancel);
+    chip.addEventListener('pointerleave', cancel);
+    chip.addEventListener('click', (e) => {
+      if (didLongPress) {
+        e.preventDefault();
+        e.stopPropagation();
+        didLongPress = false;
+        return;
+      }
+      const cur = mod[modName];
+      if (cur === 'off') {
+        setMod(modName, 'armed');
+        // tmux: arming means "send prefix now, next key is the tmux command".
+        if (modName === 'tmux') sendToActive('\x02');
+      } else {
+        setMod(modName, 'off');
+      }
+    });
+  }
+  bar.querySelectorAll('.ftk-chip-mod[data-mod]').forEach((chip) => {
+    attachLongPress(chip, chip.dataset.mod);
+  });
+
+  // ── Non-modifier chip clicks ─────────────────────────────────────
+  bar.addEventListener('click', async (e) => {
+    const chip = e.target.closest('.ftk-chip');
+    if (!chip) return;
+    const key = chip.dataset.key;
+    if (!key) return;
+    // Modifier chips own their own click via attachLongPress.
+    if (chip.classList.contains('ftk-chip-mod')) return;
+    if (key === 'copy')  { await chipCopy();  consumeArm(); return; }
+    if (key === 'paste') { await chipPaste(); consumeArm(); return; }
+    if (key === 'mic')   { toggleMic(chip);   consumeArm(); return; }
+    const bytes = chipBytes(key);
+    if (bytes != null) {
+      sendToActive(bytes);
+      consumeArm();
     }
   });
 
-  // Click anywhere outside the panel closes it.
-  document.addEventListener('click', (e) => {
-    if (panel.hidden) return;
-    if (panel.contains(e.target) || btn.contains(e.target)) return;
-    setOpen(false);
-  });
+  // ── Copy / Paste chips ───────────────────────────────────────────
+  async function chipCopy() {
+    const tab = getActiveTerminalTab();
+    if (!tab || !tab.instance || !tab.instance.term) return;
+    let text = '';
+    try { text = tab.instance.term.getSelection() || ''; } catch (_) {}
+    if (!text) {
+      // No selection — grab the visible viewport so the user gets *something*.
+      try {
+        const t = tab.instance.term;
+        const buf = t.buffer.active;
+        const lines = [];
+        const end = buf.viewportY + t.rows;
+        for (let i = buf.viewportY; i < end; i++) {
+          const line = buf.getLine(i);
+          if (line) lines.push(line.translateToString(true));
+        }
+        text = lines.join('\n').replace(/\s+$/, '');
+      } catch (_) {}
+    }
+    if (!text) return;
+    try { await navigator.clipboard.writeText(text); } catch (_) {}
+  }
+  async function chipPaste() {
+    let text = '';
+    try { text = await navigator.clipboard.readText(); } catch (_) { return; }
+    if (text) sendToActive(text);
+  }
 
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !panel.hidden) setOpen(false);
-  });
+  // ── Microphone dictation ────────────────────────────────────────
+  // Web Speech API. One result is appended to the PTY input. Tap again to
+  // stop. We don't auto-submit (no trailing \n) so the user can review
+  // the recognised text before hitting Enter.
+  let recognition = null;
+  let listeningChip = null;
+  function toggleMic(chip) {
+    if (listeningChip === chip && recognition) {
+      try { recognition.stop(); } catch (_) {}
+      return;
+    }
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      alert('Speech recognition is not supported in this browser.');
+      return;
+    }
+    recognition = new SR();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = navigator.language || 'en-US';
+    recognition.onresult = (ev) => {
+      const text = Array.from(ev.results).map((r) => r[0].transcript).join(' ');
+      if (text) sendToActive(text);
+    };
+    const stopUi = () => {
+      chip.dataset.listening = '';
+      listeningChip = null;
+      recognition = null;
+    };
+    recognition.onend = stopUi;
+    recognition.onerror = stopUi;
+    try {
+      recognition.start();
+      chip.dataset.listening = '1';
+      listeningChip = chip;
+    } catch (_) { /* InvalidStateError — already running */ }
+  }
+
+  // ── Soft-keyboard transform ──────────────────────────────────────
+  // Lets the Ctrl chord work with characters the user types on the soft
+  // keyboard (not just other chips). Wired into terminal.js via
+  // window.__termInputTransform so we don't need a cross-module import.
+  window.__termInputTransform = (data) => {
+    if (mod.ctrl === 'off' && mod.tmux !== 'armed') return data;
+    let out = '';
+    if (mod.ctrl !== 'off') {
+      for (let i = 0; i < data.length; i++) {
+        const code = data.charCodeAt(i);
+        if (code >= 0x61 && code <= 0x7a) out += String.fromCharCode(code - 0x60);       // a-z
+        else if (code >= 0x41 && code <= 0x5a) out += String.fromCharCode(code - 0x40);  // A-Z
+        else out += data[i];
+      }
+    } else {
+      out = data;
+    }
+    consumeArm();
+    return out;
+  };
+}
+
+// ── Pinch-zoom on the terminal pane ───────────────────────────────
+// Two fingers on the terminal content scale the font size. Uses the
+// existing setTerminalFontSize (which propagates to every open terminal).
+function initTerminalPinchZoom() {
+  const host = document.getElementById('files-term-content');
+  if (!host || host.dataset.pinchWired) return;
+  host.dataset.pinchWired = '1';
+  let initialDist = 0;
+  let initialFontSize = 0;
+  function dist(touches) {
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.hypot(dx, dy);
+  }
+  host.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 2) return;
+    initialDist = dist(e.touches);
+    initialFontSize = getTerminalFontSize();
+  }, { passive: true });
+  host.addEventListener('touchmove', (e) => {
+    if (e.touches.length !== 2 || initialDist <= 0) return;
+    e.preventDefault(); // stop the page from pinch-zooming
+    const ratio = dist(e.touches) / initialDist;
+    setTerminalFontSize(Math.round(initialFontSize * ratio));
+  }, { passive: false });
+  function release(e) {
+    if (e.touches.length < 2) initialDist = 0;
+  }
+  host.addEventListener('touchend',    release, { passive: true });
+  host.addEventListener('touchcancel', release, { passive: true });
+}
+
+// ── Visual viewport refit ─────────────────────────────────────────
+// When the mobile soft keyboard opens/closes, the visual viewport shrinks
+// or grows. xterm sees its host height change only on a window resize,
+// not on visualViewport resize, so the prompt ends up under the keyboard.
+// Refit the active terminal each time the viewport changes.
+function initTerminalViewportRefit() {
+  const vv = window.visualViewport;
+  if (!vv || vv.dataset && vv.dataset.refitWired) return;
+  const handler = () => {
+    const tab = getActiveTerminalTab();
+    if (tab && tab.instance) setTimeout(() => tab.instance.fit(), 60);
+  };
+  vv.addEventListener('resize', handler);
+  vv.addEventListener('scroll', handler);
+}
+
+// ── Swipe between terminal tabs ───────────────────────────────────
+// Horizontal swipe on the tab strip switches to the previous / next
+// terminal tab. Threshold + axis check keep accidental vertical
+// scrolls from triggering a switch.
+function initTerminalTabSwipe() {
+  const strip = document.getElementById('files-term-tabs');
+  if (!strip || strip.dataset.swipeWired) return;
+  strip.dataset.swipeWired = '1';
+  let startX = 0, startY = 0, t0 = 0;
+  strip.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) return;
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    t0 = Date.now();
+  }, { passive: true });
+  strip.addEventListener('touchend', (e) => {
+    if (e.changedTouches.length !== 1) return;
+    const dx = e.changedTouches[0].clientX - startX;
+    const dy = e.changedTouches[0].clientY - startY;
+    if (Date.now() - t0 > 500) return;
+    if (Math.abs(dx) < 60) return;
+    if (Math.abs(dy) > Math.abs(dx)) return;
+    const termTabs = openTabs.filter((t) => t.kind === 'terminal');
+    if (termTabs.length < 2) return;
+    const cur = termTabs.findIndex((t) => t.path === activeTerminalId);
+    if (cur < 0) return;
+    const next = dx < 0
+      ? (cur + 1) % termTabs.length
+      : (cur - 1 + termTabs.length) % termTabs.length;
+    activateTab(termTabs[next].path);
+  }, { passive: true });
 }
 
 function renderEditorPanes() {
@@ -1375,6 +1639,9 @@ function buildPaneForTab(tab, mode) {
           initialCommand: tab.initialCommand || '',
           wrap: tab.wrap !== false,           // default true unless persisted false
           fontSize: getTerminalFontSize(),    // global setting, shared across tabs
+          // Re-evaluated on every (re)connect so inline-rename and the cached
+          // localStorage name are reflected on the server without reconnecting.
+          nameProvider: () => (tab.name || getTerminalSessionName(tab.path) || ''),
         });
         // Consume the command — buildPaneForTab can be called again later
         // (e.g. pane mode swap), but the shell already has it.
@@ -2101,7 +2368,10 @@ export function initFiles() {
 
   initSidebarResize();
   initTabCarousel();
-  initTerminalKeypad();
+  initTerminalKeybar();
+  initTerminalPinchZoom();
+  initTerminalViewportRefit();
+  initTerminalTabSwipe();
   installFilesDropGuard();
   initSidebarViewSwitcher();
   initSettingsToggle();
@@ -2436,6 +2706,14 @@ function startInlineRename(tab, labelEl) {
     if (save && v && v !== tab.name) {
       tab.name = v;
       persistTabs();
+      // For terminal tabs, cache the name locally AND push it to the server
+      // so the "Your sessions" list on other devices shows the new label.
+      if (tab.kind === 'terminal') {
+        try { setTerminalSessionName(tab.path, v); } catch (_) {}
+        if (tab.instance && typeof tab.instance.setName === 'function') {
+          try { tab.instance.setName(v); } catch (_) {}
+        }
+      }
     }
     renderTabs();   // rebuild — swaps the input back to a span
   }
@@ -2838,6 +3116,31 @@ function applySidebarView(view) {
 let _ftQuickLaunchesLoaded = false;
 let _ftTmuxPollTimer = null;
 
+// Friendly names for terminal sessions, scoped to the current user. Sent on
+// WS open via the `name` query param so other devices see a useful label in
+// the "Your sessions" list instead of the raw UUID.
+const LS_TERM_SESSION_NAMES = 'files.terminalSessionNames';
+function _loadTermNames() {
+  try {
+    const raw = localStorage.getItem(LS_TERM_SESSION_NAMES);
+    return raw ? (JSON.parse(raw) || {}) : {};
+  } catch (_) { return {}; }
+}
+function _saveTermNames(map) {
+  try { localStorage.setItem(LS_TERM_SESSION_NAMES, JSON.stringify(map)); } catch (_) {}
+}
+export function getTerminalSessionName(sessionId) {
+  if (!sessionId) return '';
+  return _loadTermNames()[sessionId] || '';
+}
+export function setTerminalSessionName(sessionId, name) {
+  if (!sessionId) return;
+  const map = _loadTermNames();
+  if (name) map[sessionId] = name;
+  else delete map[sessionId];
+  _saveTermNames(map);
+}
+
 function ftEscapeHtml(s) {
   return String(s || '').replace(/[&<>"']/g, (c) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
@@ -2921,14 +3224,120 @@ async function ftLoadTmuxSessions() {
   }
 }
 
+function _fmtIdle(secs) {
+  if (secs == null) return '';
+  if (secs < 60) return secs + 's';
+  if (secs < 3600) return Math.floor(secs / 60) + 'm';
+  if (secs < 86400) return Math.floor(secs / 3600) + 'h';
+  return Math.floor(secs / 86400) + 'd';
+}
+
+function _sessionLabel(sess) {
+  // Server-supplied name wins; then a local name this browser remembered; then
+  // an open tab's name in this browser; then a shortened id.
+  if (sess.name) return sess.name;
+  const localName = getTerminalSessionName(sess.session_id);
+  if (localName) return localName;
+  const openTab = openTabs.find((t) => t.kind === 'terminal' && t.path === sess.session_id);
+  if (openTab && openTab.name) return openTab.name;
+  // session_id is 'terminal:<uuid>' — show the first 8 chars of the uuid.
+  const raw = String(sess.session_id || '');
+  const tail = raw.startsWith('terminal:') ? raw.slice(9) : raw;
+  return tail.slice(0, 8) || 'session';
+}
+
+function ftRenderSessions(items) {
+  const host = document.getElementById('ft-list-sessions');
+  if (!host) return;
+  // Filter to live sessions only.
+  const live = (items || []).filter((s) => s && s.alive !== false);
+  if (!live.length) {
+    host.innerHTML = '<div class="ft-empty">No running sessions</div>';
+    return;
+  }
+  // Sort: attached first (in use right now), then by age desc.
+  live.sort((a, b) => {
+    const aAtt = (a.attached_clients || 0) > 0 ? 1 : 0;
+    const bAtt = (b.attached_clients || 0) > 0 ? 1 : 0;
+    if (aAtt !== bAtt) return bAtt - aAtt;
+    return (b.age_secs || 0) - (a.age_secs || 0);
+  });
+  host.innerHTML = '';
+  for (const s of live) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'ft-row';
+    const label = _sessionLabel(s);
+    const attached = (s.attached_clients || 0) > 0;
+    row.title = attached
+      ? 'Open: ' + label + ' (attached on ' + s.attached_clients + ' client' + (s.attached_clients === 1 ? '' : 's') + ')'
+      : 'Reattach: ' + label + (s.idle_secs != null ? ' (idle ' + _fmtIdle(s.idle_secs) + ')' : '');
+    const dotCls = attached ? 'ft-row-dot ft-row-dot-on' : 'ft-row-dot';
+    const meta = attached
+      ? ''
+      : (s.idle_secs != null ? _fmtIdle(s.idle_secs) + ' idle' : '');
+    row.innerHTML =
+      '<i data-lucide="square-terminal" class="lucide-icon ft-row-icon"></i>' +
+      '<span class="ft-row-label">' + ftEscapeHtml(label) + '</span>' +
+      (meta ? '<span class="ft-row-meta">' + ftEscapeHtml(meta) + '</span>' : '') +
+      '<span class="' + dotCls + '" title="' + (attached ? 'attached' : 'detached') + '"></span>';
+    row.addEventListener('click', () => openOrAttachTerminalSession(s.session_id, label));
+    host.appendChild(row);
+  }
+  if (window.lucide) {
+    try { window.lucide.createIcons({ nodes: Array.from(host.querySelectorAll('[data-lucide]:not(.lucide)')) }); } catch (_) {}
+  }
+}
+
+async function ftLoadSessions() {
+  try {
+    const data = await apiFetch('/api/v1/terminal/sessions');
+    ftRenderSessions(Array.isArray(data) ? data : []);
+  } catch (e) {
+    const host = document.getElementById('ft-list-sessions');
+    if (host) host.innerHTML = '<div class="ft-empty ft-error">Error: ' + ftEscapeHtml(e.message || e) + '</div>';
+  }
+}
+
+// Click handler for a "Your sessions" row. If we already have a tab open in
+// this browser for that session_id, activate it; otherwise add a tab with the
+// same id — the WebSocket layer reattaches to the live PTY automatically and
+// replays scrollback.
+function openOrAttachTerminalSession(sessionId, name) {
+  if (!sessionId) return;
+  const existing = openTabs.find((t) => t.kind === 'terminal' && t.path === sessionId);
+  if (existing) {
+    activeTerminalId = sessionId;
+    activateTab(sessionId);
+  } else {
+    pushTerminalTab(sessionId, name || undefined);
+    activeTerminalId = sessionId;
+    renderTabs();
+    renderEditorPanes();
+    persistTabs();
+  }
+  applySidebarView('terminal');
+  try { localStorage.setItem(LS_SIDEBAR_VIEW, 'terminal'); } catch (_) {}
+  const sidebar = document.getElementById('files-sidebar');
+  if (sidebar && isMobileLayout() && sidebar.dataset.state === 'max') {
+    setSidebarState('strip');
+  }
+}
+
 function openTerminalLaunchersPanel() {
   // Quick launches are effectively static; load once per page lifetime.
   if (!_ftQuickLaunchesLoaded) ftLoadQuickLaunches();
-  // tmux list refreshes on every panel show, then polls every 5s while
-  // the panel stays open.
+  // Sessions + tmux refresh on every panel show, then poll every 5s while
+  // the panel stays open. Sessions surface PTYs created on any device the
+  // user is signed into, so opening this panel on a new device shows the
+  // running shells from elsewhere and lets you reattach.
+  ftLoadSessions();
   ftLoadTmuxSessions();
   stopTerminalLaunchersPolling();
-  _ftTmuxPollTimer = setInterval(ftLoadTmuxSessions, 5000);
+  _ftTmuxPollTimer = setInterval(() => {
+    ftLoadSessions();
+    ftLoadTmuxSessions();
+  }, 5000);
   // Wire the refresh button once. Repeat-safe: removeEventListener-then-add
   // would be wordy, so we use a sentinel attribute.
   const btn = document.getElementById('ft-refresh');
@@ -2957,6 +3366,45 @@ function openTerminalLaunchersPanel() {
     newBtn.dataset.wired = '1';
     newBtn.addEventListener('click', () => openNewTerminalTab());
   }
+  // "New tmux session" — prompts for a name, then opens a tab that runs
+  // `tmux new -As <name>`. -A reattaches if a session by that name already
+  // exists, so clicking the same button twice reattaches instead of
+  // erroring. Sanitise the name to what tmux actually accepts.
+  const newTmuxBtn = document.getElementById('ft-new-tmux');
+  if (newTmuxBtn && !newTmuxBtn.dataset.wired) {
+    newTmuxBtn.dataset.wired = '1';
+    newTmuxBtn.addEventListener('click', () => promptNewTmuxSession());
+  }
+}
+
+function _sanitiseTmuxName(raw) {
+  // tmux disallows '.', ':' and whitespace in session names. Collapse to
+  // [A-Za-z0-9_-], replacing runs of unsupported chars with a single dash.
+  return String(raw || '')
+    .trim()
+    .replace(/[^A-Za-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+}
+
+function promptNewTmuxSession() {
+  // Suggest a fresh name like work-3 based on how many tmux tabs already exist.
+  const existing = openTabs.filter((t) => t.kind === 'terminal' && /^tmux:/.test(t.name || ''));
+  const suggested = 'work-' + (existing.length + 1);
+  const raw = window.prompt(
+    "New tmux session name (letters, numbers, '-' or '_'):",
+    suggested,
+  );
+  if (raw == null) return;
+  const name = _sanitiseTmuxName(raw);
+  if (!name) {
+    alert('Invalid name. Use letters, numbers, dashes, or underscores.');
+    return;
+  }
+  // -A = attach if it already exists, otherwise create. Single-quote the
+  // name; tmux session names can't contain a single quote, so no need to
+  // escape further.
+  openNewTerminalTabWithCommand("tmux new -As '" + name + "'", 'tmux: ' + name);
 }
 
 function stopTerminalLaunchersPolling() {
