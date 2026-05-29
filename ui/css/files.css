@@ -1686,7 +1686,15 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 }
 
 /* Header (branch + remote) */
-.fg-section-header { padding-top: 10px; padding-bottom: 8px; position: relative; }
+.fg-section-header {
+  padding-top: 10px;
+  padding-bottom: 8px;
+  position: relative;
+  /* No bottom divider — the header flows visually into the Changes
+     section below it. The other section dividers stay; only this one
+     is removed. */
+  border-bottom: none;
+}
 .fg-section-header.loading { opacity: 0.7; }
 .fg-branch-row {
   display: flex; align-items: center; gap: 6px;
@@ -1870,6 +1878,11 @@ input.fg-token-input-inline {
 /* Commit */
 .fg-commit-row { display: flex; gap: 6px; align-items: center; }
 .fg-commit-row #fg-commit-btn { width: 32px; justify-content: center; padding: 4px; }
+
+/* Source Controller handoff (⭐) — amber star, theme-aware via design-system vars */
+.fg-commit-row #fg-sc-star-btn { width: 32px; justify-content: center; padding: 4px; }
+.fg-star-btn .lucide-icon { color: var(--warning); }
+.fg-star-btn:hover:not(:disabled) { border-color: var(--warning); background: var(--warning-soft); }
 
 .fg-result {
   margin-top: 6px;
@@ -2056,6 +2069,18 @@ input.fg-token-input-inline {
   align-items: center;
   min-width: 0;
 }
+/* Container holding HEAD badge + branch tags on the second line. Shrinks
+   and clips first so the hash, date, and author always stay visible
+   even when the commit has many ref labels (e.g. HEAD, main, origin,
+   origin/main). */
+.fg-graph-tags {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
 .fg-hash {
   font-family: var(--font-mono, monospace);
   background: var(--files-btn-hover);
@@ -2076,6 +2101,7 @@ input.fg-token-input-inline {
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+  flex-shrink: 1;
 }
 
 .fg-graph-badge {
