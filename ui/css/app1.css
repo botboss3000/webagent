@@ -143,7 +143,7 @@ body {
 #chat-messages-inner {
     flex: 1;
     overflow-y: auto;
-    padding: 12px 12px 40px 12px;
+    padding: 12px 8px 40px 8px;
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -652,34 +652,7 @@ body {
     .chat-activity-dot, .ca-status-running { animation: none; }
   }
 
-.chat-expand-btn {
-    position: absolute;
-    top: 4px;
-    right: 4px;
-    background: #1a1a2e;
-    border: 1px solid #2a2a4a;
-    color: #565f89;
-    width: 20px;
-    height: 20px;
-    line-height: 18px;
-    text-align: center;
-    font-size: 11px;
-    cursor: pointer;
-    border-radius: 3px;
-    opacity: 0.35;
-    z-index: 10;
-    padding: 0;
-    transition: opacity 0.12s;
-  }
-#chat-input-area:hover .chat-expand-btn {
-    opacity: 1;
-  }
-.chat-expand-btn:hover {
-    color: #7dcfff;
-    border-color: #7dcfff;
-  }
-
-/* ── Preview bar (above input row) ── */
+	/* ── Preview bar (above input row) ── */
   #chat-preview-bar {
     display: none;
     gap: 6px;
@@ -1211,16 +1184,6 @@ body.light-mode .chat-pill-send:hover {
     background: #ff8c4215;
   }
 body.light-mode .chat-pill-send:disabled { opacity: 0.4; }
-body.light-mode .chat-expand-btn {
-    background: #fff6f0;
-    border-color: #ffdec4;
-    color: #cca08a;
-  }
-body.light-mode .chat-expand-btn:hover {
-    color: #ff8c42;
-    border-color: #ff8c42;
-  }
-
 body.light-mode .json-punc { color: #cca08a; }
 body.light-mode .json-null { color: #cca08a; font-style: italic; }
 body.light-mode .json-key { color: #cc6a28; }
@@ -1633,6 +1596,27 @@ body.light-mode .agent-row-item { color: #5c4a4a; }
   }
 .session-row-pin-icon,
 .agent-row-pin-icon { display: none; flex-shrink: 0; }
+.session-row-status {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+  }
+.session-status-running {
+    color: #7dcfff;
+    animation: session-status-spin 1s linear infinite;
+  }
+@keyframes session-status-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+.session-status-unread {
+    color: #9ece6a;
+  }
+body.light-mode .session-status-running { color: #0db9d7; }
+body.light-mode .session-status-unread { color: #73a64a; }
 .session-row-title,
 .agent-row-title {
     flex: 1;

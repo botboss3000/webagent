@@ -54,7 +54,16 @@ Screen {
     width: 100%;
     background: #0a0a14;
     padding: 0 1;
-    layout: horizontal;
+    /* Grid, not horizontal: the columns are sized deterministically from the
+     * spec, so the row lays out identically on the very first frame. With
+     * `layout: horizontal` + `width: 1fr` buttons, the first paint could
+     * mis-distribute (one button — Chat — ballooning to full width, the rest
+     * shoved off-screen) until a resize forced a re-layout. Keep grid-size ==
+     * the number of Button children in compose() (currently 7). */
+    layout: grid;
+    grid-size: 7;
+    grid-columns: 1fr;
+    grid-gutter: 0;
 }
 
 #header-buttons Button {
@@ -114,7 +123,13 @@ Screen {
     width: 100%;
     background: #0a0a14;
     padding: 0 1;
-    layout: horizontal;
+    /* Same fixed-column grid as #header-buttons (see the note there) so the row
+     * never balloons one button on first paint. Keep grid-size == the number of
+     * Button children in compose() (currently 6). */
+    layout: grid;
+    grid-size: 6;
+    grid-columns: 1fr;
+    grid-gutter: 0;
 }
 
 #footer-buttons Button {

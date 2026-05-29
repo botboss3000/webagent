@@ -606,7 +606,12 @@ class LauncherApp(App):
         except Exception:
             text = ""
         if text:
-            widget.post_message(events.Paste(text))
+            # Deliver exactly as the framework delivers a terminal bracketed
+            # paste (App._on_event → focused._forward_event): _forward_event
+            # marks the event "forwarded" so it isn't re-dispatched by the App
+            # when it bubbles, which a plain post_message would cause (double
+            # paste in TextArea, whose _on_paste doesn't stop propagation).
+            widget._forward_event(events.Paste(text))
 
     def copy_to_clipboard(self, text: str) -> None:
         """Mirror in-app copies (Ctrl+C in a field) to the real OS clipboard.

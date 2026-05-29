@@ -2016,6 +2016,14 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Migration 029 complete: attachments FK constraint removed")
 
+            # ── Migration: add read_at column to sessions (unread tracking) ──
+            cursor = conn.execute("PRAGMA table_info(sessions)")
+            sess_cols = {row[1] for row in cursor.fetchall()}
+            if "read_at" not in sess_cols:
+                conn.execute("ALTER TABLE sessions ADD COLUMN read_at TEXT")
+                conn.commit()
+                logger.info("Added sessions.read_at column")
+
             # ── Seed: agent templates from app/context/agents/*.json (full schema) ──
             self._seed_agent_templates_from_json_files(conn)
 

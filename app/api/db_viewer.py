@@ -7,6 +7,7 @@ import logging
 import os
 import sqlite3
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -511,10 +512,13 @@ async def list_sessions(
             sess_cols = {row[1] for row in cur.fetchall()}
             has_pinned = "pinned" in sess_cols
             has_sort_order = "sort_order" in sess_cols
+            has_read_at = "read_at" in sess_cols
 
             select_cols = 's.id, s.title, s.created_at, s.user_id, s.participants, s.agent_id'
             if has_pinned:
                 select_cols += ', s.pinned'
+            if has_read_at:
+                select_cols += ', s.read_at'
 
             where_clause = '(s.agent_id IS NULL OR a.id IS NOT NULL)'
             params: list = []
@@ -539,6 +543,15 @@ async def list_sessions(
                 f'ORDER BY {order_clause}'
             )
             cur.execute(sql, params)
+            # Pre-fetch run statuses for all sessions in one query
+            run_statuses = {}
+            try:
+                cur2 = conn.cursor()
+                cur2.execute("SELECT session_id, status, updated_at FROM session_runs")
+                for r in cur2.fetchall():
+                    run_statuses[r[0]] = {"status": r[1], "updated_at": r[2]}
+            except sqlite3.OperationalError:
+                pass
             for row in cur.fetchall():
                 owner_id = row[3]
                 participants_raw = row[4] or "[]"
@@ -550,18 +563,47 @@ async def list_sessions(
                 all_ids = ({owner_id} | participant_ids) - {None}
                 if requester_identities & all_ids:
                     pinned_val = bool(row[6]) if has_pinned else False
+                    sid = row[0]
+                    read_at = row[7] if has_read_at else None
+                    run = run_statuses.get(sid)
+                    run_status = run["status"] if run else None
+                    run_updated_at = run["updated_at"] if run else None
+                    # has_unread: session has a completed run that the user hasn't read yet
+                    has_unread = False
+                    if run_status in ("complete", "interrupted", "error") and run_updated_at:
+                        if not read_at or run_updated_at > read_at:
+                            has_unread = True
                     sessions.append({
-                        "id": row[0],
-                        "title": row[1] or row[0][:12],
+                        "id": sid,
+                        "title": row[1] or sid[:12],
                         "created_at": row[2],
                         "agent_id": row[5],
                         "pinned": pinned_val,
+                        "run_status": run_status,
+                        "has_unread": has_unread,
                     })
         except sqlite3.OperationalError:
             pass
 
         conn.close()
         return {"sessions": sessions, "db": db}
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sessions/{session_id}/read")
+async def mark_session_read(session_id: str, db: str = Query("local.db", description="Database filename")):
+    """Mark a session as read by setting read_at to now."""
+    db_path = _get_db_path(db)
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "UPDATE sessions SET read_at = ? WHERE id = ?",
+            (datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f+00:00"), session_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True, "session_id": session_id}
     except sqlite3.Error as e:
         raise HTTPException(status_code=500, detail=str(e))
 

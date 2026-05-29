@@ -5,6 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webAgent</title>
 <link rel="icon" href="./ui/favicon.svg" type="image/svg+xml">
+<!-- PWA: manifest + service worker -->
+<link rel="manifest" href="./ui/manifest.json">
+<meta name="theme-color" content="#0d0d1a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="webAgent">
+<link rel="apple-touch-icon" href="./ui/icons/icon-512x512.png">
 <!-- Fonts: Inter (sans) + JetBrains Mono (mono) -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -93,7 +100,10 @@
      (.tutorial-popover, .session-row-actions, .feedback-modal, etc.) keep their
      own `position: fixed` instead of being forced into `position: relative`. */
   #stage { position: relative; z-index: 2; }
-  #main-header { position: relative; }
+  /* z-index 3 keeps the header (and its dropdown menus, which open down over
+     the stage) above #stage, while staying above the z-index-1 cursor glow so
+     the glow never washes over the header. */
+  #main-header { position: relative; z-index: 3; }
 
   /* —— Chat panel: transparent — sits on the background directly —— */
   #chat-panel,
@@ -104,11 +114,34 @@
     -webkit-backdrop-filter: none !important;
   }
   #chat-panel {
-    border-left: none !important;
+    /* design-system.css styles this as a floating card (full border + 22px
+       radius + shadow). Strip all of it so the chat sits edgeless on the
+       stage — otherwise a faint hairline traces the top/right/bottom. */
+    border: none !important;
+    border-radius: 0 !important;
     box-shadow: none !important;
   }
   #chat-header {
     border-bottom: 1px solid color-mix(in oklab, currentColor 8%, transparent) !important;
+  }
+  /* Fade messages out as they scroll into the input zone, so nothing shows
+     below the pill or through its rounded corners. --chat-input-h tracks the
+     floating input area height (set by chat.js; 56px until JS runs). The band
+     is fully transparent across the whole input area and fades to opaque over
+     a 24px ramp just above it. chat.js reserves --chat-input-h + 24px of bottom
+     padding, so the newest message rests right at the opaque edge — crisp, not
+     cut off too high — while older messages dissolve before reaching the pill. */
+  #chat-messages {
+    -webkit-mask-image: linear-gradient(to bottom,
+      #000 0,
+      #000 calc(100% - var(--chat-input-h, 56px) - 24px),
+      transparent calc(100% - var(--chat-input-h, 56px)),
+      transparent 100%);
+            mask-image: linear-gradient(to bottom,
+      #000 0,
+      #000 calc(100% - var(--chat-input-h, 56px) - 24px),
+      transparent calc(100% - var(--chat-input-h, 56px)),
+      transparent 100%);
   }
   /* Message bubbles get their own glass surface */
   #chat-panel .chat-bubble {
@@ -130,18 +163,19 @@
     margin: 0 !important;
     position: absolute;
     overflow: visible;
+    bottom: 6px;
   }
-  /* Chat pill: borderless, sits directly on the stage. A very faint glass
-     tint keeps the input legible without reading as a separate panel. */
+  /* Chat pill: a soft-bordered control resting on the stage. The glass tint
+     is opaque enough that messages masked behind it never bleed through. */
   #chat-panel .chat-pill {
-    background: color-mix(in oklab, currentColor 5%, transparent) !important;
-    border: 1px solid transparent !important;
-    backdrop-filter: blur(10px) saturate(140%) !important;
-    -webkit-backdrop-filter: blur(10px) saturate(140%) !important;
+    background: color-mix(in oklab, currentColor 7%, transparent) !important;
+    border: 1px solid color-mix(in oklab, currentColor 12%, transparent) !important;
+    backdrop-filter: blur(12px) saturate(140%) !important;
+    -webkit-backdrop-filter: blur(12px) saturate(140%) !important;
   }
   #chat-panel .chat-pill:focus-within {
-    border-color: transparent !important;
-    background: color-mix(in oklab, currentColor 7%, transparent) !important;
+    border-color: color-mix(in oklab, currentColor 22%, transparent) !important;
+    background: color-mix(in oklab, currentColor 9%, transparent) !important;
   }
   #chat-panel .chat-pill.drag-over {
     border: 1px dashed color-mix(in oklab, currentColor 25%, transparent) !important;
@@ -165,7 +199,9 @@
     box-shadow:
       0 1px 0 color-mix(in oklab, currentColor 6%, transparent) inset,
       0 20px 60px -30px rgba(0,0,0,0.6) !important;
-    margin: 8px 1px 8px 8px !important;
+    /* top/bottom 0 so the card aligns with the chat pane (header top / input
+       pill bottom); left trimmed for a tighter gutter; right 1px to the handle. */
+    margin: 0 1px 6px 2px !important;
     overflow: hidden !important;
     position: relative;
   }
@@ -173,6 +209,13 @@
     box-shadow:
       0 1px 0 rgba(255,255,255,0.6) inset,
       0 15px 50px -25px rgba(80,40,10,0.18) !important;
+  }
+  /* Tighter on small screens — the outer margin ate too much width, squashing
+     content. Pull panels closer to the screen edge and trim chat padding. */
+  @media (max-width: 800px) {
+    #main-panel { margin: 2px !important; }
+    #chat-messages-inner { padding-left: 8px; padding-right: 8px; }
+    #chat-input-area { padding-left: 6px; padding-right: 6px; }
   }
 
   /* —— Dynamic cursor-follow spotlight — applied via JS to .spot elements —— */
@@ -200,7 +243,29 @@
   body.light-mode #main-panel.spot { --spot-color: rgba(217, 111, 31, 0.07); }
   .main-tab.spot         { --spot-radius: 140px; }
   .chat-bubble.spot      { --spot-radius: 240px; }
-  #chat-input-area.spot  { --spot-radius: 360px; }
+
+  /* —— Cursor glow: a single full-viewport layer behind every panel ——
+     This lives at the page-background level (below #stage), so the chat panel
+     (transparent) and main panel (glass) never clip it. Its only edges are the
+     screen edges, where the radial gradient has already faded to nothing — so
+     there is no visible hard edge anywhere around the chat panel. Driven in
+     viewport pixels by the pointermove handler below. */
+  #cursor-glow {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    background: radial-gradient(
+      var(--glow-radius, 520px) circle at var(--gx, -100%) var(--gy, -100%),
+      var(--glow-color, rgba(155, 187, 255, 0.06)) 0%,
+      transparent 60%
+    );
+    opacity: 0;
+    transition: opacity 0.4s ease;
+  }
+  #cursor-glow.is-on { opacity: 1; }
+  body.light-mode #cursor-glow { --glow-color: rgba(217, 111, 31, 0.06); }
+  @media (prefers-reduced-motion: reduce) { #cursor-glow { display: none; } }
 
   @media (prefers-reduced-motion: reduce) {
     .stargaze-canvas { display: none; }
@@ -210,6 +275,7 @@
 <body>
 <canvas class="stargaze-canvas" id="stargaze-bg"></canvas>
 <div class="stargaze-overlay"></div>
+<div id="cursor-glow"></div>
 <script>
   // Apply saved theme + chat panel width before paint to avoid flash on startup.
   (function () {
@@ -389,7 +455,7 @@
         <i data-lucide="files" class="lucide-icon"></i>Pages
       </button>
       <button type="button" class="main-tab" data-value="agents" role="tab">
-        <i data-lucide="bot" class="lucide-icon"></i>Agent Manager
+        <i data-lucide="bot" class="lucide-icon"></i>Agents
       </button>
     </div>
     <button type="button" id="main-tabs-chev-right" class="main-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
@@ -519,36 +585,30 @@
       </div>
     </div>
     <div id="chat-input-area">
-      <button id="chat-expand-btn" title="Expand input" class="chat-expand-btn">↗</button>
       <div id="chat-preview-bar" style="display:none;"></div>
       <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #ac-int-admin-chat-input-row,
            #agent-builder-bar-row, #autoagent-prompt-row. Style rules live in
            ui/css/app1.css under the "Chat-pill" block. -->
       <div id="chat-input-row" class="chat-pill">
-        <button id="chat-attach-btn" class="chat-pill-attach" title="Attach files (or paste / drop onto the chat pill)"><i data-lucide="paperclip" style="width:18px;height:18px;"></i></button>
-        <textarea id="chat-input" class="chat-pill-input" rows="2" placeholder="Chat with the agent" autocomplete="off"></textarea>
+        <!-- Activity ("thinking") indicator — floats just above the pill while
+             the agent works; the bar ticks through each interaction, and is
+             clickable to expand the panel listing every tool call this turn,
+             each independently expandable. Driven by ui/js/chat-activity.js.
+             Absolutely positioned, so it never affects the pill's grid layout. -->
+        <div id="chat-activity" class="chat-activity">
+          <div id="chat-activity-panel" class="chat-activity-panel" role="region" aria-label="Tool calls this turn" hidden></div>
+          <button type="button" id="chat-activity-bar" class="chat-activity-bar" aria-expanded="false" aria-controls="chat-activity-panel" title="Show tool calls from this turn">
+            <span class="chat-activity-dot" aria-hidden="true"></span>
+            <span class="chat-activity-text" aria-live="polite" aria-atomic="true"></span>
+            <span class="chat-activity-chevron" aria-hidden="true">›</span>
+          </button>
+        </div>
+        <button id="chat-attach-btn" class="chat-pill-attach" title="Attach files (or paste / drop onto the chat pill)"><i data-lucide="plus" style="width:18px;height:18px;"></i></button>
+        <textarea id="chat-input" class="chat-pill-input" rows="1" placeholder="Chat with the agent" autocomplete="off"></textarea>
         <button id="chat-voice-btn" class="chat-pill-voice" title="Record voice"><i data-lucide="mic" style="width:18px;height:18px;"></i></button>
         <button id="chat-send" class="chat-pill-send" title="Send message" disabled><i data-lucide="send" style="width:18px;height:18px;"></i></button>
         <input type="file" id="chat-file-input" multiple accept="image/*,audio/*,video/*,.pdf,.txt,.md,.csv,.json" hidden>
       </div>
-    </div>
-  </div>
-</div>
-
-<!-- Chat expand modal (full-screen textarea) -->
-<div id="chat-expand-modal">
-  <div id="chat-expand-backdrop"></div>
-  <div id="chat-expand-panel">
-    <div id="chat-expand-header">
-      <span id="chat-expand-title">Compose message</span>
-      <span id="chat-expand-actions">
-        <button id="chat-expand-send" disabled>Send</button>
-        <button id="chat-expand-close">&times;</button>
-      </span>
-    </div>
-    <textarea id="chat-expand-editor" spellcheck="false"></textarea>
-    <div id="chat-expand-footer">
-      <span id="chat-expand-hint">Ctrl+Enter to send &nbsp;·&nbsp; Esc to close</span>
     </div>
   </div>
 </div>
@@ -1011,6 +1071,16 @@
     import('./ui/js/attachments.js'),
     import('./ui/js/data-sources.js'),
   ]);
+
+  // ── Register service worker for PWA support ──
+  if ('serviceWorker' in navigator) {
+    try {
+      const reg = await navigator.serviceWorker.register('/sw.js');
+      console.log('[PWA] Service worker registered:', reg.scope);
+    } catch (err) {
+      console.warn('[PWA] Service worker registration failed:', err);
+    }
+  }
 </script>
 <!-- ── Lucide icons + horizontal tab strip with carousel ───────── -->
 <script>
@@ -1366,9 +1436,17 @@
     else requestAnimationFrame(frame);
   }
 
+  var glowEl = document.getElementById('cursor-glow');
+  var glowOn = false;
   window.addEventListener('pointermove', function (e) {
     targetX = e.clientX / window.innerWidth;
     targetY = e.clientY / window.innerHeight;
+    // Drive the full-viewport cursor glow in viewport pixels.
+    if (glowEl) {
+      glowEl.style.setProperty('--gx', e.clientX + 'px');
+      glowEl.style.setProperty('--gy', e.clientY + 'px');
+      if (!glowOn) { glowEl.classList.add('is-on'); glowOn = true; }
+    }
     var dx = e.clientX - lastPX, dy = e.clientY - lastPY;
     var speed = Math.hypot(dx, dy);
     if (speed > 4 && Math.random() < Math.min(0.5, speed / 60)) {
@@ -1389,6 +1467,10 @@
     lastPX = e.clientX;
     lastPY = e.clientY;
   });
+  // Fade the cursor glow out when the pointer leaves the window.
+  document.addEventListener('mouseleave', function () {
+    if (glowEl && glowOn) { glowEl.classList.remove('is-on'); glowOn = false; }
+  });
   window.addEventListener('scroll', function () { scrollY = window.scrollY || 0; }, { passive: true });
   window.addEventListener('resize', function () {
     DPR = Math.min(window.devicePixelRatio || 1, 2);
@@ -1402,7 +1484,6 @@
   // Selectors to apply spotlight to
   var SPOT_SELECTORS = [
     '#main-panel',
-    '#chat-input-area',
     '.chat-bubble',
     '.tab-select-popup',
     '.tab-option',
