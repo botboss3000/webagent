@@ -152,9 +152,12 @@ def _safe_agent(agent: dict) -> dict:
     if isinstance(meta_raw, str):
         try:
             meta = _json.loads(meta_raw)
+            # Guard against double-encoded JSON (a JSON string inside a JSON string).
+            if isinstance(meta, str):
+                meta = _json.loads(meta)
         except Exception:
-            pass
-    result["llm_config"] = meta.get("llm_config") or {"use_default": True}
+            meta = {}
+    result["llm_config"] = meta.get("llm_config") if isinstance(meta, dict) else {"use_default": True}
     return result
 
 

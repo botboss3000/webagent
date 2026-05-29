@@ -373,8 +373,8 @@ ChatScreen { background: #0a0a14; scrollbar-size: 0 0; }
     scrollbar-size: 0 0;
 }
 #chat-input:focus { border: round #39ff14; }
-#chat-input > .text-area--cursor { background: #39ff14; color: #0a0a14; }
-#chat-input > .text-area--selection { background: #1d4d2a; }
+#chat-input .text-area--cursor { background: #39ff14; color: #0a0a14; }
+#chat-input .text-area--selection { background: #1d4d2a; }
 
 #chat-hints {
     height: 1;

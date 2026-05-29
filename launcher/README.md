@@ -46,14 +46,21 @@ animation styles (including `Off`) without opening the panel.
 cd launcher
 uv sync --extra build
 uv run python scripts/build_exe.py
-# → launcher/webagent.exe   (single portable file in the launcher root)
+# → webagent.exe   (single portable file at the PROJECT ROOT)
 ```
 
 The build script regenerates the Lucide-bot icon, runs PyInstaller in
-onefile mode, moves the result to `launcher/webagent.exe`, and removes
-the `build/` and `dist/` scratch folders so the only artifact left is
-the .exe itself. Drop it anywhere — first launch will ask for the path
+onefile mode, moves the result to **`webagent.exe` at the project root**
+(the repo's top folder, parent of `launcher/`), and removes the
+`launcher/build` and `launcher/dist` scratch folders so the only artifact
+left is the .exe. Drop it anywhere — first launch will ask for the path
 to the webagent project folder.
+
+> **Standalone window + emoji:** the .exe opens in its own console window. On
+> Windows 10 that legacy console can't draw colour emoji, so the chat uses
+> clean ASCII glyphs (`>>`, `ok`, `*`) there. If you instead launch the exe
+> from **Windows Terminal**, it auto-detects that and switches to emoji
+> (🔧 ✅ 🟢 …). Force either way with `WEBAGENT_EMOJI=1` / `WEBAGENT_EMOJI=0`.
 
 ## Keyboard
 

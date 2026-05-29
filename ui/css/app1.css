@@ -270,6 +270,10 @@ body {
 .chat-pill {
     display: flex;
     gap: 4px;
+    /* flex-end keeps the icon buttons pinned to the bottom so the send/mic
+       circle stays at the bottom-right of the pill no matter how tall the
+       textarea grows. The textarea itself stretches via flex sizing so its
+       caret + first line always sit at the TOP of the pill. */
     align-items: flex-end;
     width: 100%;
     background: #0d0d1a;
@@ -295,6 +299,18 @@ body {
     padding: 8px 6px;
     color: #c0caf5;
     font-size: 13px;
+    /* Explicit line-height so the JS auto-resize and the min/max heights
+       below all line up. 1 line of content = 18px; pill min row height
+       (18 + 8 + 8 padding = 34px) matches the icon-button height. */
+    line-height: 18px;
+    /* CHAT-PILL-SYNC: matches the chat-pill icon button height (34px) so a
+       single-line pill is no taller than the send/mic circles. */
+    min-height: 34px;
+    /* 6 visible content lines: 18px * 6 = 108px, plus 8px+8px vertical
+       padding = 124px. JS toggles overflow-y to 'auto' when content
+       exceeds this. */
+    max-height: 124px;
+    overflow-y: hidden;
     outline: none;
     font-family: inherit;
     resize: none;

@@ -35,6 +35,7 @@ from textual.widgets import Collapsible, Input, Label, ListItem, ListView, Stati
 
 from .api_client import WebAgentClient, WebAgentError
 from .config import LauncherConfig
+from .glyphs import G
 from .palette import build_palette_from_config
 from .server import ServerController
 from .stage import AnimatedStage
@@ -130,37 +131,50 @@ class ChatInput(TextArea):
     ]
 
     class Submitted(Message):
-        def __init__(self, value: str) -> None:
+        def __init__(self, widget: "ChatInput", value: str) -> None:
+            self.input = widget
             self.value = value
             super().__init__()
 
+        @property
+        def control(self) -> "ChatInput":
+            return self.input
+
     class ImagesDropped(Message):
-        def __init__(self, paths: list[str]) -> None:
+        def __init__(self, widget: "ChatInput", paths: list[str]) -> None:
+            self.input = widget
             self.paths = paths
             super().__init__()
 
-    def _on_key(self, event: events.Key) -> None:
+        @property
+        def control(self) -> "ChatInput":
+            return self.input
+
+    async def _on_key(self, event: events.Key) -> None:
+        # NOTE: base TextArea._on_key is async — we MUST await super().
         key = event.key
         if key == "enter":
             event.stop()
             event.prevent_default()
-            self.post_message(self.Submitted(self.text))
+            self.post_message(self.Submitted(self, self.text))
             return
         if key in ("shift+enter", "ctrl+enter", "ctrl+j"):
             event.stop()
             event.prevent_default()
             self.insert("\n")
             return
-        super()._on_key(event)
+        await super()._on_key(event)
 
-    def _on_paste(self, event: events.Paste) -> None:
+    async def _on_paste(self, event: events.Paste) -> None:
+        # Only intercept when the paste is an image-file drop; otherwise let
+        # the base class do its normal (undo-aware) text insert.
         imgs = _extract_image_paths(event.text)
-        event.stop()
-        event.prevent_default()
         if imgs:
-            self.post_message(self.ImagesDropped(imgs))
-        else:
-            self.insert(event.text)
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.ImagesDropped(self, imgs))
+            return
+        await super()._on_paste(event)
 
     def action_doc_start(self) -> None:
         try:
@@ -291,7 +305,7 @@ class ChatScreen(Screen):
         yield Static("connecting...", id="chat-status")
         with Container(id="chat-body"):
             yield VerticalScroll(id="chat-log")
-        yield ChatInput(id="chat-input", soft_wrap=True, tab_behaviour="focus")
+        yield ChatInput(id="chat-input", soft_wrap=True, tab_behavior="focus")
         yield Static(self._hints_idle(), id="chat-hints")
 
     def on_mount(self) -> None:
@@ -399,10 +413,10 @@ class ChatScreen(Screen):
     def _server_dot(self) -> tuple[str, str]:
         st = self.controller.state.status if self.controller else "running"
         if st == "running":
-            return "* live", GREEN
+            return f"{G.DOT_LIVE} live", GREEN
         if st in ("starting", "stopping"):
-            return "* " + st, AMBER
-        return "* " + st, RED
+            return f"{G.DOT_WARN} {st}", AMBER
+        return f"{G.DOT_DEAD} {st}", RED
 
     def _refresh_status(self) -> None:
         dot, color = self._server_dot()
@@ -414,7 +428,7 @@ class ChatScreen(Screen):
         t.append(dot, style=color)
         if self.is_processing:
             t.append("  -  ", style=DIM)
-            t.append("thinking...", style=AMBER)
+            t.append(f"{G.THINKING} thinking...", style=AMBER)
             if self._t_in or self._t_out:
                 t.append(
                     f"  {_fmt_tokens(self._t_in)} in / {_fmt_tokens(self._t_out)} out",
@@ -434,7 +448,7 @@ class ChatScreen(Screen):
     def _hints_idle(self) -> str:
         att = ""
         if self._pending_attachments:
-            att = f"[{len(self._pending_attachments)} img]  -  "
+            att = f"{G.IMAGE} {len(self._pending_attachments)}  -  "
         return (att + "Enter send  -  Shift+Enter newline  -  F2 agent  -  "
                 "F3 session  -  Ctrl+N new  -  Ctrl+G new-agent  -  Esc home")
 
@@ -467,11 +481,11 @@ class ChatScreen(Screen):
         self._pending_tools.clear()
 
     def _info(self, msg: str) -> None:
-        self._mount(Static(Text("- " + msg, style=DIM), classes="msg-pipe"))
+        self._mount(Static(Text(f"{G.BULLET} " + msg, style=DIM), classes="msg-pipe"))
 
     def _add_user(self, content: str) -> None:
         t = Text()
-        t.append("you\n", style=f"bold {CYAN}")
+        t.append(f"{G.USER}\n", style=f"bold {CYAN}")
         t.append(content)
         self._mount(Static(t, classes="msg-user"))
 
@@ -554,7 +568,7 @@ class ChatScreen(Screen):
         self._cur_text = ""
         args_text = self._fmt_args(args)
         body = Static(args_text, classes="tool-body")
-        col = Collapsible(body, title=f">> {tool}( {self._preview(args)} )", collapsed=True)
+        col = Collapsible(body, title=f"{G.TOOL} {tool}( {self._preview(args)} )", collapsed=True)
         col.add_class("tool-block")
         self._pending_tools.append({"tool": tool, "body": body, "col": col, "args": args_text})
         self._mount(col)
@@ -573,10 +587,10 @@ class ChatScreen(Screen):
             out = out[:4000] + "\n... (truncated)"
         divider = "\n" + "-" * 24 + "\n"
         entry["body"].update(entry["args"] + divider + out)
-        mark = "ERR" if error else "ok"
+        mark = G.ERR if error else G.OK
         dur = f" - {duration_ms}ms" if duration_ms else ""
         try:
-            entry["col"].title = f">> {tool}  [{mark}{dur}]"
+            entry["col"].title = f"{G.TOOL} {tool}  {mark}{dur}"
         except Exception:
             pass
 
@@ -623,7 +637,7 @@ class ChatScreen(Screen):
             return  # captured for stats; no visible line
         else:
             return
-        self._mount(Static(Text("- " + text, style=DIM), classes="msg-pipe"))
+        self._mount(Static(Text(f"{G.BULLET} " + text, style=DIM), classes="msg-pipe"))
 
     # ── sending ────────────────────────────────────────────────────────
     @on(ChatInput.Submitted, "#chat-input")
@@ -696,9 +710,9 @@ class ChatScreen(Screen):
                                                     self.session_id, **kwargs):
                 self._handle_event(ev)
         except WebAgentError as e:
-            self._finalize_error(f"! {e}")
+            self._finalize_error(f"{G.WARN} {e}")
         except Exception as e:  # noqa: BLE001
-            self._finalize_error(f"! stream error: {e}")
+            self._finalize_error(f"{G.WARN} stream error: {e}")
         finally:
             self.is_processing = False
             self._pending_tools.clear()
@@ -731,7 +745,7 @@ class ChatScreen(Screen):
         elif t == "response":
             self._finalize_assistant(ev.get("content", "") or "")
         elif t == "error":
-            self._finalize_error(f"! {ev.get('message', 'error')}")
+            self._finalize_error(f"{G.WARN} {ev.get('message', 'error')}")
         elif t == "interrupted":
             msg = ev.get("message") or ""
             self._finalize_error(f"(interrupted{': ' + msg if msg else ''})", style=AMBER)
@@ -781,12 +795,12 @@ class ChatScreen(Screen):
     async def _open_agent_picker(self) -> None:
         customs = await self.client.list_custom_agents()
         items: list[tuple[str, str]] = [
-            ("template:admin-agent", "[admin] " + _ADMIN_TEMPLATES["admin-agent"]),
-            ("template:integration-admin-agent", "[intg]  " + _ADMIN_TEMPLATES["integration-admin-agent"]),
+            ("template:admin-agent", f"{G.ADMIN} " + _ADMIN_TEMPLATES["admin-agent"]),
+            ("template:integration-admin-agent", f"{G.PLUG} " + _ADMIN_TEMPLATES["integration-admin-agent"]),
         ]
         for a in customs:
-            items.append((f"agent:{a['id']}", "[agent] " + (a.get("name") or a["id"][:8])))
-        items.append(("__new__", "[ + ]   New agent from template..."))
+            items.append((f"agent:{a['id']}", f"{G.AGENT} " + (a.get("name") or a["id"][:8])))
+        items.append(("__new__", f"{G.NEW} New agent from template..."))
         choice = await self.app.push_screen_wait(ListPicker("Select agent", items))
         if not choice:
             return
@@ -819,7 +833,7 @@ class ChatScreen(Screen):
     async def _open_session_picker(self) -> None:
         agent_id = self.resolved_agent_id if self.agent_kind == "template" else self.agent_value
         sessions = await self.client.list_sessions(agent_id or None)
-        items: list[tuple[str, str]] = [("__new__", "[ + ]  New session")]
+        items: list[tuple[str, str]] = [("__new__", f"{G.NEW} New session")]
         for s in sessions:
             items.append((s["id"], s.get("title") or s["id"][:8]))
         choice = await self.app.push_screen_wait(ListPicker("Sessions", items))
@@ -904,7 +918,7 @@ class ChatScreen(Screen):
         text = out if isinstance(out, str) else self._fmt_args(out)
         if len(text) > 4000:
             text = text[:4000] + "\n... (truncated)"
-        col = Collapsible(Static(text, classes="tool-body"), title=f">> {name}", collapsed=True)
+        col = Collapsible(Static(text, classes="tool-body"), title=f"{G.TOOL} {name}", collapsed=True)
         col.add_class("tool-block")
         self._mount(col)
 

@@ -198,9 +198,14 @@
   /* Size variants */
   #main-panel.spot { --spot-radius: 600px; --spot-color: rgba(155, 187, 255, 0.07); }
   body.light-mode #main-panel.spot { --spot-color: rgba(217, 111, 31, 0.07); }
+  /* Stage spot: covers the full flex parent that holds both panels, so the
+     cursor glow sits behind the chat panel and main panel rather than being
+     clipped to either. Its only hard edges are at the stage's outer bounds,
+     which line up with the viewport — so they stay out of sight. */
+  #stage.spot { --spot-radius: 520px; --spot-color: rgba(155, 187, 255, 0.06); }
+  body.light-mode #stage.spot { --spot-color: rgba(217, 111, 31, 0.06); }
   .main-tab.spot         { --spot-radius: 140px; }
   .chat-bubble.spot      { --spot-radius: 240px; }
-  #chat-input-area.spot  { --spot-radius: 360px; }
 
   @media (prefers-reduced-motion: reduce) {
     .stargaze-canvas { display: none; }
@@ -526,7 +531,7 @@
            ui/css/app1.css under the "Chat-pill" block. -->
       <div id="chat-input-row" class="chat-pill">
         <button id="chat-attach-btn" class="chat-pill-attach" title="Attach files (or paste / drop onto the chat pill)"><i data-lucide="paperclip" style="width:18px;height:18px;"></i></button>
-        <textarea id="chat-input" class="chat-pill-input" rows="2" placeholder="Chat with the agent" autocomplete="off"></textarea>
+        <textarea id="chat-input" class="chat-pill-input" rows="1" placeholder="Chat with the agent" autocomplete="off"></textarea>
         <button id="chat-voice-btn" class="chat-pill-voice" title="Record voice"><i data-lucide="mic" style="width:18px;height:18px;"></i></button>
         <button id="chat-send" class="chat-pill-send" title="Send message" disabled><i data-lucide="send" style="width:18px;height:18px;"></i></button>
         <input type="file" id="chat-file-input" multiple accept="image/*,audio/*,video/*,.pdf,.txt,.md,.csv,.json" hidden>
@@ -1401,8 +1406,8 @@
   /* —— Spotlight tracking for cards / bubbles / dropdowns / panels —— */
   // Selectors to apply spotlight to
   var SPOT_SELECTORS = [
+    '#stage',
     '#main-panel',
-    '#chat-input-area',
     '.chat-bubble',
     '.tab-select-popup',
     '.tab-option',

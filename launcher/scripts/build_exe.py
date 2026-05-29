@@ -5,10 +5,11 @@ Usage (from launcher/ directory):
     uv run python scripts/build_exe.py
 
 Output:
-    launcher/webagent.exe   (single portable file in the launcher root)
+    webagent.exe   (single portable file at the PROJECT ROOT, i.e. the
+    repository's top folder — the parent of launcher/)
 
 The script also cleans up PyInstaller's build/ and dist/ scratch folders
-so the only artifact left in the launcher folder is webagent.exe itself.
+(under launcher/) so the only artifact left is webagent.exe at the root.
 """
 
 from __future__ import annotations
@@ -21,11 +22,14 @@ from pathlib import Path
 
 EXE_NAME = "webagent.exe" if sys.platform == "win32" else "webagent"
 
-ROOT = Path(__file__).resolve().parents[1]
+# parents[1] = launcher/  ;  parents[2] = project root (repo top folder)
+LAUNCHER_DIR = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ROOT = LAUNCHER_DIR  # build inputs (spec, icon, scratch dirs) live under launcher/
 SPEC = ROOT / "webagent.spec"
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"
-FINAL = ROOT / EXE_NAME
+FINAL = PROJECT_ROOT / EXE_NAME  # final exe lands at the project root
 ICON = ROOT / "assets" / "webagent.ico"
 ICON_SCRIPT = ROOT / "scripts" / "generate_icon.py"
 
@@ -40,6 +44,17 @@ def _remove_path(p: Path) -> None:
             p.unlink()
     except OSError as e:
         print(f"[build] warn: could not remove {p}: {e}", file=sys.stderr)
+
+
+def _is_locked(p: Path) -> bool:
+    """True if the file exists but can't be opened for writing (in use)."""
+    if not p.exists():
+        return False
+    try:
+        with open(p, "ab"):
+            return False
+    except OSError:
+        return True
 
 
 def _is_locked(p: Path) -> bool:
@@ -113,7 +128,7 @@ def main() -> int:
 
     size_mb = FINAL.stat().st_size / (1024 * 1024)
     print(f"[build] OK -> {FINAL}  ({size_mb:.1f} MB)")
-    print(f"[build] (build/ and dist/ removed; webagent.exe is the only artifact)")
+    print(f"[build] (launcher/build and launcher/dist removed; exe is at the project root)")
     return 0
 
 
