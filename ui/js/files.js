@@ -1092,45 +1092,13 @@ function initTabCarousel() {
 // are no arrow keys, so the bottom row + middle cell of this 3x3 pad
 // pipes ANSI cursor escapes into the active terminal. The remaining
 // cells are placeholders for future shortcuts.
-// Replaces the legacy popover keypad. Sticky bottom bar of chips for
-// terminal-specific keys: Esc / Tab / arrows / Shift+Enter / Ctrl chord /
-// tmux prefix / common ^C/^D/^L/^R/^Z / hard-to-reach chars / Copy / Paste
-// / mic. Modifier chips (Ctrl, tmux) arm on tap and lock on long-press.
-// The tab-bar keyboard-icon button toggles the bar.
+// Always-visible sticky bottom bar of chips: Ctrl (one-shot/lock), ^C copy,
+// arrows, new-line, copy, paste, mic. Ctrl chip arms on tap, locks on
+// long-press so subsequent arrow taps become word-jump sequences.
 function initTerminalKeybar() {
-  const toggleBtn = document.getElementById('files-term-keypad-btn');
   const bar = document.getElementById('files-term-keybar');
-  if (!toggleBtn || !bar || toggleBtn.dataset.wired) return;
-  toggleBtn.dataset.wired = '1';
-
-  const LS_KEY = 'files.terminalKeybarVisible';
-
-  function defaultVisible() {
-    // Default ON for touch / small screens; OFF on desktop. User toggle
-    // overrides this once set.
-    if (typeof window.matchMedia !== 'function') return true;
-    return window.matchMedia('(pointer: coarse), (max-width: 800px)').matches;
-  }
-  function loadVisible() {
-    const raw = localStorage.getItem(LS_KEY);
-    if (raw === null) return defaultVisible();
-    return raw === '1';
-  }
-  function applyVisible(v) {
-    bar.hidden = !v;
-    toggleBtn.classList.toggle('is-open', v);
-    toggleBtn.setAttribute('aria-pressed', v ? 'true' : 'false');
-    // Bar visibility changes the terminal host height — refit so xterm
-    // recomputes rows/cols.
-    const tab = getActiveTerminalTab();
-    if (tab && tab.instance) setTimeout(() => tab.instance.fit(), 30);
-  }
-  applyVisible(loadVisible());
-  toggleBtn.addEventListener('click', () => {
-    const next = bar.hidden;
-    try { localStorage.setItem(LS_KEY, next ? '1' : '0'); } catch (_) {}
-    applyVisible(next);
-  });
+  if (!bar || bar.dataset.wired) return;
+  bar.dataset.wired = '1';
 
   // ── Modifier state ───────────────────────────────────────────────
   // 'off' | 'armed' (one-shot) | 'locked' (until tapped again).
@@ -1167,7 +1135,6 @@ function initTerminalKeybar() {
       right:         '\x1b[C',
       left:          '\x1b[D',
       'shift-enter': '\x1b\r',
-      'ctrl-c':      '\x03',
       'ctrl-d':      '\x04',
       'ctrl-l':      '\x0c',
       'ctrl-r':      '\x12',
@@ -1242,8 +1209,9 @@ function initTerminalKeybar() {
     if (!key) return;
     // Modifier chips own their own click via attachLongPress.
     if (chip.classList.contains('ftk-chip-mod')) return;
-    if (key === 'copy')  { await chipCopy();  consumeArm(); return; }
-    if (key === 'paste') { await chipPaste(); consumeArm(); return; }
+    if (key === 'copy')   { await chipCopy();  consumeArm(); return; }
+    if (key === 'ctrl-c') { await chipCopy();  consumeArm(); return; }
+    if (key === 'paste')  { await chipPaste(); consumeArm(); return; }
     if (key === 'mic')   { toggleMic(chip);   consumeArm(); return; }
     const bytes = chipBytes(key);
     if (bytes != null) {
@@ -1587,6 +1555,15 @@ function buildPaneForTab(tab, mode) {
     overlay.appendChild(overlayText);
     pane.appendChild(overlay);
 
+    // Scroll-to-bottom FAB — floats bottom-right; visible only when scrolled up.
+    const scrollBot = document.createElement('button');
+    scrollBot.className = 'files-term-scroll-bot';
+    scrollBot.type = 'button';
+    scrollBot.title = 'Scroll to bottom';
+    scrollBot.setAttribute('aria-label', 'Scroll to bottom');
+    scrollBot.innerHTML = '<i data-lucide="chevrons-down" class="lucide-icon"></i>';
+    pane.appendChild(scrollBot);
+
     // Clicking anywhere on the pane should restore xterm focus. xterm's input
     // is in a hidden helper textarea that only auto-focuses when the click
     // lands on a row glyph; clicks on padding/margins otherwise look focused
@@ -1646,6 +1623,19 @@ function buildPaneForTab(tab, mode) {
         // Consume the command — buildPaneForTab can be called again later
         // (e.g. pane mode swap), but the shell already has it.
         tab.initialCommand = '';
+        // Wire scroll-to-bottom FAB: show when viewport is not at the buffer end.
+        const _term = tab.instance && tab.instance.term;
+        if (_term && scrollBot) {
+          const _updateFab = () => {
+            const buf = _term.buffer.active;
+            scrollBot.classList.toggle('visible', buf.viewportY < buf.length - _term.rows);
+          };
+          _term.onScroll(_updateFab);
+          scrollBot.addEventListener('click', () => {
+            try { _term.scrollToBottom(); _term.focus(); } catch (_) {}
+          });
+          if (window.lucide) window.lucide.createIcons({ nodes: Array.from(scrollBot.querySelectorAll('[data-lucide]:not(.lucide)')) });
+        }
         // Drive the per-tab status dot AND the pane overlay from the WS
         // state machine. The dot is a small at-a-glance hint on the tab; the
         // overlay is the loud "your keystrokes aren't reaching the shell"
