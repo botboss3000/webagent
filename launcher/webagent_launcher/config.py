@@ -34,6 +34,23 @@ def _config_dir() -> Path:
 CONFIG_PATH = _config_dir() / "launcher.json"
 
 
+def tools_dir() -> Path:
+    """Per-user cache for tools the launcher downloads itself (e.g. ``uv``).
+
+    Lives next to launcher.json so a portable .exe keeps one private toolbox no
+    matter where the .exe sits. Created on demand by callers.
+    """
+    return _config_dir() / "tools"
+
+
+def default_install_dir() -> Path:
+    """Default folder offered on first run when the user installs from scratch.
+
+    Sits in the user's home so it's easy to find and needs no elevation.
+    """
+    return Path.home() / "webagent"
+
+
 @dataclass
 class LauncherConfig:
     project_path: str = ""
@@ -54,6 +71,7 @@ class LauncherConfig:
     chat_password: str = "admin"
     auto_start_server: bool = True        # start the server when the app opens
     auto_restart_server: bool = True      # watchdog: relaunch the server if it exits unexpectedly
+    health_check_restart: bool = True     # watchdog: relaunch if it stops answering health probes (hung)
     chat_default_view: bool = True        # open the chat screen on launch
     default_agent_ref: str = "admin-agent"  # "template:<id>" | "agent:<id>" | bare admin template id
     last_agent_ref: str = ""              # remembered last agent selection

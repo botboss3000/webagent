@@ -27,6 +27,7 @@ hidden_imports = textual_hidden + [
     "webagent_launcher.ascii_anim",
     "webagent_launcher.stage",
     "webagent_launcher.config",
+    "webagent_launcher.bootstrap",
     "webagent_launcher.palette",
     "webagent_launcher.reset",
     "webagent_launcher.screens",

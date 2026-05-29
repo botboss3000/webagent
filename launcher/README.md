@@ -5,6 +5,17 @@ Polished TUI that controls the webagent server. Bundles into a single
 
 ## What it does
 
+- **Install (first run)** — set everything up from nothing on a clean machine:
+  download the public webagent repo (via `git` if it's installed — which also
+  enables clean **Update**s later — otherwise a ZIP snapshot), fetch the
+  self-contained `uv` toolchain (which installs its own private Python),
+  `uv sync` every dependency, and download the **Playwright Chromium** browser
+  (~150 MB, into `%LOCALAPPDATA%\ms-playwright`) that the `browser_action` tool
+  drives. The end user needs **nothing** pre-installed — just the `.exe`.
+  Progress streams live in an install log. The first-run screen also still lets
+  you point at a webagent folder you already have. (The Chromium download is
+  best-effort: if it fails the server still runs and you can retry via Update —
+  only the browser tool needs it.)
 - **Launch** — starts `run.py` in the configured project folder, polls
   `http://localhost:8080` for readiness, optionally opens the browser
 - **Restart** — graceful CTRL-BREAK then re-launch
@@ -17,12 +28,30 @@ Polished TUI that controls the webagent server. Bundles into a single
   the error in the log and press Launch to re-arm it. A run that stays up ≥30s
   is treated as healthy and forgives earlier crashes. On by default; toggle via
   `auto_restart_server` in `launcher.json`.
+- **Health check (hung-server watchdog)** — a crash isn't the only way to lose
+  the server: it can stay *alive but wedged* (blocked event loop) and answer
+  nothing. While the server is running the launcher polls `http://localhost:8080`
+  every ~10s; **3 consecutive misses** (~30s unresponsive) is treated as hung and
+  the server is brought down and relaunched. It shares the same backoff and
+  5-strike give-up guard as the crash watchdog, and several misses are required
+  so a momentary blip under load can't cause a needless restart. On by default;
+  toggle via `health_check_restart` in `launcher.json`.
 - **Clear DB** — backs up and removes `app/db/local.db*` + `visuals/users/`
-- **Reset Python** — wipes `.venv` and re-runs `uv sync`
+- **Reset Python** — wipes `.venv` and re-runs `uv sync` (if `uv` isn't on PATH
+  it falls back to the launcher's own downloaded copy)
 - **Full Reset** — DB clear + Python reset
+- **Update** (`U`) — pull the latest code (`git pull` for a git checkout, else a
+  fresh ZIP over the top), re-run `uv sync`, and refresh the Playwright Chromium
+  browser (fast when it's already present). Your local data (DB, users,
+  generated pages) is kept — it isn't in the public repo. The server is stopped
+  during the update and restarted afterwards.
 - **Browser** — opens the saved URL (default `/index.html`)
 - **Chat** (`A`) — full keyboard-driven chat against the local server: live
-  token streaming, expandable tool-call blocks, agent/session pickers. A
+  token streaming, expandable tool-call blocks, agent/session pickers. The
+  header carries a **server dot** that tracks the connection in real time —
+  `live` (green), `reconnecting` (amber) while a watchdog relaunches, and
+  `disconnected` (red) when the server is down — so a crash/auto-restart is
+  visible right in the chat. A
   **static ascii banner** sits at the top of the transcript (agent · model ·
   session · date) and scrolls up with the conversation — no background
   animation in chat. A little ascii **guy walks on the input "pill"** while the
@@ -43,8 +72,10 @@ Polished TUI that controls the webagent server. Bundles into a single
   or the chat screen covers it, and resumes when you return. Lower the FPS
   slider (or pick `Off`) if the idle animation is still too busy for you.
 
-Configuration lives at `%APPDATA%\webagent\launcher.json`. The .exe can
-sit anywhere — first run prompts for your webagent project folder.
+Configuration lives at `%APPDATA%\webagent\launcher.json`; tools the launcher
+downloads itself (like `uv`) are cached under `%APPDATA%\webagent\tools`. The
+.exe can sit anywhere — on first run choose **Download & Install** to set
+everything up from scratch, or point it at a webagent folder you already have.
 
 ## Develop
 
@@ -71,8 +102,9 @@ The build script regenerates the Lucide-bot icon, runs PyInstaller in
 onefile mode, moves the result to **`webagent.exe` at the project root**
 (the repo's top folder, parent of `launcher/`), and removes the
 `launcher/build` and `launcher/dist` scratch folders so the only artifact
-left is the .exe. Drop it anywhere — first launch will ask for the path
-to the webagent project folder.
+left is the .exe. Drop it anywhere — first launch offers **Download & Install**
+(fetch the repo + uv + Python + all dependencies) or lets you point at a
+webagent folder you already have.
 
 > **Standalone window + emoji:** the .exe opens in its own console window. On
 > Windows 10 that legacy console can't draw colour emoji, so the chat uses
@@ -94,6 +126,7 @@ to the webagent project folder.
 | `D` | Clear DB (with confirm) |
 | `P` | Reset Python (with confirm) |
 | `F` | Full reset (with confirm) |
+| `U` | Update — re-pull code + re-sync dependencies (with confirm) |
 | `T` | Toggle inline theme & animation panel (in the log area) |
 | `C` | Cycle to next color preset |
 | `Space` | Cycle animation style (incl. `Off`) |

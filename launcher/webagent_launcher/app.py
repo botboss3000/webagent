@@ -16,7 +16,7 @@ from .chat_screen import ChatScreen
 from .config import LauncherConfig
 from .palette import build_palette_from_config
 from .reset import clear_database, full_reset, reset_venv
-from .screens import ConfirmModal, SettingsPanel, SetupScreen
+from .screens import ConfirmModal, InstallScreen, SettingsPanel, SetupResult, SetupScreen
 from .server import HEALTH_URL, ServerController, ServerState
 from .stage import AnimatedStage
 
@@ -54,6 +54,7 @@ class LauncherApp(App):
         Binding("d", "clear_db", "Clear DB"),
         Binding("p", "reset_python", "Reset Py"),
         Binding("f", "full_reset", "Full reset"),
+        Binding("u", "update", "Update"),
         Binding("t", "theme", "Theme"),
         Binding("c", "cycle_theme", "Cycle theme"),
         Binding("space", "cycle_anim", "Cycle anim"),
@@ -63,6 +64,7 @@ class LauncherApp(App):
         super().__init__()
         self.cfg = LauncherConfig.load()
         self.controller: ServerController | None = None
+        self._chat_screen: ChatScreen | None = None  # set while chat is open
         self._stage: AnimatedStage | None = None
         self._settings: SettingsPanel | None = None
         # Idle = pause the animation. Two independent reasons compose via OR:
@@ -120,6 +122,7 @@ class LauncherApp(App):
 
         # rows N-3 .. N-1
         with Horizontal(id="footer-buttons"):
+            yield Button("Update",     id="btn-update",    classes="muted")
             yield Button("Clear DB",   id="btn-cleardb",   classes="danger")
             yield Button("Reset Py",   id="btn-resetpy",   classes="danger")
             yield Button("Full Reset", id="btn-fullreset", classes="danger")
@@ -127,8 +130,8 @@ class LauncherApp(App):
 
         # row N
         yield Static(
-            "  A:chat  L:launch  R:restart  S:stop  B:browser  D:clear-db  "
-            "P:reset-py  F:full-reset  T:theme  C:cycle  Space:anim  Esc/Q:quit",
+            "  A:chat  L:launch  R:restart  S:stop  B:browser  U:update  "
+            "D:clear-db  P:reset-py  F:full-reset  T:theme  C:cycle  Esc/Q:quit",
             id="footer-bar",
         )
 
@@ -141,9 +144,27 @@ class LauncherApp(App):
         self.set_interval(1.0, self._refresh_uptime)
         if not self.cfg.is_valid_project():
             # Push setup non-blocking; finalize via callback
-            self.push_screen(SetupScreen(self.cfg), self._after_setup)
+            self.push_screen(SetupScreen(self.cfg), self._after_setup_choice)
         else:
             self._after_setup(True)
+
+    def _after_setup_choice(self, result: "SetupResult | None") -> None:
+        """First-run chooser result: install fresh (→ InstallScreen) or use an
+        existing folder (already saved by the setup screen)."""
+        if result is None:
+            self._log("[launcher] setup cancelled — press [T]/relaunch to configure")
+            return
+        if result.action == "install":
+            self.push_screen(InstallScreen(self.cfg, result.path), self._after_install)
+        else:  # "existing" — cfg.project_path already saved
+            self._after_setup(True)
+
+    def _after_install(self, ok: bool | None) -> None:
+        if ok and self.cfg.is_valid_project():
+            self._log("[launcher] install complete")
+            self._after_setup(True)
+        else:
+            self._log("[launcher] install did not complete — press [U] to retry, or relaunch")
 
     def _after_setup(self, ok: bool | None) -> None:
         if self.cfg.is_valid_project():
@@ -151,7 +172,9 @@ class LauncherApp(App):
             self._log(f"[launcher] project: {self.cfg.project_path}")
             self._log(
                 "[launcher] auto-restart: "
-                + ("ON (server relaunches if it disconnects)" if self.cfg.auto_restart_server else "OFF")
+                + ("ON (relaunch on crash)" if self.cfg.auto_restart_server else "OFF")
+                + "  ·  health check: "
+                + ("ON (relaunch if unresponsive)" if self.cfg.health_check_restart else "OFF")
             )
             # Auto-start the server so the chat can connect immediately.
             if self.cfg.auto_start_server and self.controller:
@@ -175,6 +198,7 @@ class LauncherApp(App):
             on_state_change=self._on_state_change,
             on_log_line=self._on_log_line,
             auto_restart=self.cfg.auto_restart_server,
+            health_check=self.cfg.health_check_restart,
         )
 
     # ── status / log plumbing ─────────────────────────────────────────
@@ -190,6 +214,14 @@ class LauncherApp(App):
     def _on_state_change(self, state: ServerState) -> None:
         self._update_status_widgets(state)
         self._update_launch_button(state)
+        # Push the change straight to the chat (if open) so its server dot flips
+        # the instant the server drops/recovers — not on the next 1 Hz poll.
+        chat = self._chat_screen
+        if chat is not None:
+            try:
+                chat.notify_server_state()
+            except Exception:
+                pass
 
     def _update_launch_button(self, state: ServerState | None = None) -> None:
         """Reflect server state in the Launch button label.
@@ -276,9 +308,12 @@ class LauncherApp(App):
         # Pause the home stage while chat covers it; resume when chat is popped.
         self._chat_covering = True
         self._sync_stage_idle()
-        self.push_screen(ChatScreen(self.cfg, self.controller), self._on_chat_closed)
+        chat = ChatScreen(self.cfg, self.controller)
+        self._chat_screen = chat
+        self.push_screen(chat, self._on_chat_closed)
 
     def _on_chat_closed(self, _result: object | None = None) -> None:
+        self._chat_screen = None
         self._chat_covering = False
         self._sync_stage_idle()
 
@@ -346,6 +381,42 @@ class LauncherApp(App):
     async def _do_full_reset(self) -> None:
         assert self.controller and self.cfg.project_dir()
         await full_reset(self.cfg.project_dir(), self.controller, self._log)
+
+    async def action_update(self) -> None:
+        if not self._require_project():
+            return
+
+        def _go(confirmed: bool | None) -> None:
+            if not confirmed:
+                return
+            asyncio.create_task(self._do_update())
+
+        self.push_screen(
+            ConfirmModal(
+                "Update webAgent?",
+                "Pulls the latest code (git pull, or a fresh download) and re-installs\n"
+                "dependencies. Your local data is kept. Server restarts. Proceed?",
+            ),
+            _go,
+        )
+
+    async def _do_update(self) -> None:
+        """Stop the server, refresh code + deps, then restart if it was running."""
+        from . import bootstrap
+
+        pdir = self.cfg.project_dir()
+        if not pdir or not self.controller:
+            return
+        # Disarm the watchdog so it can't relaunch against half-updated files.
+        self.controller.cancel_auto_restart()
+        was_running = self.controller.state.status in ("running", "starting")
+        if was_running:
+            await self.controller.stop()
+        ok = await bootstrap.update(pdir, self._log)
+        self._log(f"[launcher] update {'succeeded' if ok else 'failed'}")
+        if was_running:
+            await asyncio.sleep(0.3)
+            await self.controller.start()
 
     def action_theme(self) -> None:
         """Toggle the inline settings panel in the bottom (log) slot."""
@@ -453,6 +524,7 @@ class LauncherApp(App):
             "btn-restart": self.action_restart,
             "btn-stop": self.action_stop_server,
             "btn-browser": self.action_open_browser,
+            "btn-update": self.action_update,
             "btn-cleardb": self.action_clear_db,
             "btn-resetpy": self.action_reset_python,
             "btn-fullreset": self.action_full_reset,
