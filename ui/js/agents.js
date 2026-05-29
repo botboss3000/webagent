@@ -378,11 +378,24 @@ function _populateAgentTabBar(tabBar, agent, panel) {
   if (state?.automationEnabled) tabs.push(['automation','Automation']);
   if (_userIsAdmin) tabs.push(['members','Members']);
   tabs.push(['monetization','Monetization']);
+
+  // ── Compute synchronous counts ──
+  const toolCount = _toolsForAgent(agent).length;
+
   for (const [key, label] of tabs) {
     const btn = document.createElement('button');
     btn.className = 'agents-detail-tab' + (activeTab === key ? ' active' : '');
     btn.dataset.tab = key;
-    btn.textContent = label;
+    // Set label with count badge where applicable
+    if (key === 'tools') {
+      btn.innerHTML = `${label} <span class="tab-count-badge">${toolCount}</span>`;
+    } else if (key === 'connections') {
+      btn.innerHTML = `${label} <span class="tab-count-badge tab-count-badge-pending">…</span>`;
+    } else if (key === 'members') {
+      btn.innerHTML = `${label} <span class="tab-count-badge tab-count-badge-pending">…</span>`;
+    } else {
+      btn.textContent = label;
+    }
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const entry = _expandedAgents.get(agent.id);
@@ -398,6 +411,50 @@ function _populateAgentTabBar(tabBar, agent, panel) {
     });
     tabBar.appendChild(btn);
   }
+
+  // ── Async: fetch abilities count ──
+  _fetchAbilitiesCount(agent).then(count => {
+    const connBtn = tabBar.querySelector('.agents-detail-tab[data-tab="connections"]');
+    if (connBtn) {
+      connBtn.innerHTML = `Abilities <span class="tab-count-badge">${count}</span>`;
+    }
+  }).catch(() => {
+    const connBtn = tabBar.querySelector('.agents-detail-tab[data-tab="connections"]');
+    if (connBtn) {
+      connBtn.innerHTML = `Abilities <span class="tab-count-badge">0</span>`;
+    }
+  });
+
+  // ── Async: fetch members count ──
+  _fetchMembersCount(agent).then(count => {
+    const memBtn = tabBar.querySelector('.agents-detail-tab[data-tab="members"]');
+    if (memBtn) {
+      memBtn.innerHTML = `Members <span class="tab-count-badge">${count}</span>`;
+    }
+  }).catch(() => {
+    const memBtn = tabBar.querySelector('.agents-detail-tab[data-tab="members"]');
+    if (memBtn) {
+      memBtn.innerHTML = `Members <span class="tab-count-badge">0</span>`;
+    }
+  });
+}
+
+async function _fetchAbilitiesCount(agent) {
+  const res = await fetch(`/api/v1/agents/${agent.id}/abilities?user_id=${encodeURIComponent(app.currentUserId)}`);
+  if (!res.ok) return 0;
+  const data = await res.json();
+  const abilities = data.abilities || [];
+  // Count non-implicit, enabled abilities
+  return abilities.filter(a => !a.implicit && a.enabled).length;
+}
+
+async function _fetchMembersCount(agent) {
+  const res = await fetch(`/api/v1/agents/${encodeURIComponent(agent.id)}/members?user_id=${encodeURIComponent(app.currentUserId)}`);
+  if (!res.ok) return 0;
+  const data = await res.json();
+  const admins = data.admins || [];
+  const members = data.members || [];
+  return admins.length + members.length;
 }
 
 function _refreshAgentTabBar(agent) {

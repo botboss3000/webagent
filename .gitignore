@@ -88,6 +88,9 @@ app/db/.fuse_hidden*
 # Visuals user-generated artifacts
 visuals/users/
 
+# Runtime backup files created by write_source tool
+*.bak
+
 # Uploads
 uploads/*
 !uploads/.gitkeep

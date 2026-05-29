@@ -2457,6 +2457,21 @@ async function _loadAutomation() {
   await _loadAutomationConfig();
   _renderSchedFields();
   await _loadAutomationStatus();
+  _loadAutomationCount();
+}
+
+async function _loadAutomationCount() {
+  const badge = _qs('ac-automation-count-badge');
+  if (!badge) return;
+  try {
+    const r = await _fetch(apiPath('/admin/automations/count'));
+    if (r.ok) {
+      const d = await r.json();
+      badge.textContent = d.count ?? 0;
+    }
+  } catch (_) {
+    // leave badge as-is
+  }
 }
 
 async function _loadAutomationProviders() {
