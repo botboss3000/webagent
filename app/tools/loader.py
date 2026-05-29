@@ -780,8 +780,9 @@ class ToolLoader:
             )
 
         # ── Image Generation ability (generate_image) ──
-        # Uses the admin-configured image-gen provider (App Config → Default LLM
-        # → Image Generation). Outputs saved under visuals/users/{user_id}/.
+        # Uses whichever saved model is ticked for image output in
+        # App Config → Models (Image-out). Outputs saved under
+        # visuals/users/{user_id}/.
         if "image_generation" in enabled_providers:
             from app.tools.image_generation import (
                 generate_image as _core_generate_image,

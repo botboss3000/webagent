@@ -47,7 +47,6 @@ const SAFE_NAV_SELECTOR = [
   '.conn-search-input',
   '#ac-int-search',
   '#ac-settings-model-search',
-  '#ac-img-model-search',
   // Header user menu / theme toggle / dismiss buttons live outside but be safe
   '.user-dropdown-trigger',
   '.user-dropdown-menu *',

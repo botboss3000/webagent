@@ -387,8 +387,8 @@ function _populateAgentTabBar(tabBar, agent, panel) {
       e.stopPropagation();
       const entry = _expandedAgents.get(agent.id);
       if (entry) {
-        // Card is open → any tab click collapses it.
-        _expandedAgents.delete(agent.id);
+        // Card is open → switch to the clicked tab (never collapse from tab clicks).
+        _expandedAgents.set(agent.id, { tab: key });
       } else {
         // Collapsed → expand to the clicked tab.
         _expandedAgents.set(agent.id, { tab: key });
