@@ -1112,6 +1112,7 @@ _CONNECTION_CATALOG = [
     {"connection_type": "browser_control",  "section": "ability", "display_name": "Browser Control",  "status": "available"},
     {"connection_type": "image_generation", "section": "ability", "display_name": "Image Generation", "status": "available"},
     {"connection_type": "visualizer",       "section": "ability", "display_name": "Visualizer",       "status": "available"},
+    {"connection_type": "agent_orchestration", "section": "ability", "display_name": "Agent Orchestration", "status": "available"},
 ]
 
 

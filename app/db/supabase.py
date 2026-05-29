@@ -1425,6 +1425,46 @@ class SupabaseBackend(StorageBackend):
         )
         return len(res.data or []) > 0
 
+    async def update_attachment_metadata(self, attachment_id: str, patch: dict) -> bool:
+        """Merge `patch` into an attachment's metadata (preserving existing keys).
+        Returns True if a row was updated."""
+        res = (
+            self._client.table("attachments")
+            .select("metadata")
+            .eq("id", attachment_id)
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            return False
+        meta = res.data[0].get("metadata") or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        meta.update(patch or {})
+        upd = (
+            self._client.table("attachments")
+            .update({"metadata": meta})
+            .eq("id", attachment_id)
+            .execute()
+        )
+        return len(upd.data or []) > 0
+
+    async def update_interaction_content(self, interaction_id: str, content: str) -> bool:
+        """Replace an interaction row's content (persists injected attachment
+        descriptions into the user turn so later turns retain them)."""
+        res = (
+            self._client.table("interactions")
+            .update({"content": content})
+            .eq("id", interaction_id)
+            .execute()
+        )
+        return len(res.data or []) > 0
+
     async def check_interrupt(self, session_id: str) -> bool:
         try:
             res = (

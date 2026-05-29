@@ -540,8 +540,15 @@ async def chat(request: ChatRequest, fastapi_request: Request):
                         for a in attachment_docs
                     ],
                 })
+        _desc_out = {}
+        async for _dev in _maybe_describe_images(
+            db, request.user_id, request.message, user_interaction_id,
+            loop_config, attachment_docs, _desc_out,
+        ):
+            await _emit_to_visualizers(request.session_id, _dev)
         user_message_content = await build_user_message_content(
-            request.message, attachment_docs,
+            _desc_out.get("message_text", request.message),
+            _desc_out.get("inline_docs", attachment_docs),
         )
 
         # Build system prompt with brain context + dynamic tools
@@ -945,8 +952,15 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             if attachment_docs:
                 attachment_context = format_attachments_for_prompt(attachment_docs)
                 yield f"data: {json.dumps({'type': 'attachment', 'level': 'agent', 'attachments': [{'id': a['id'], 'original_name': a['original_name'], 'mime_type': a['mime_type'], 'size_bytes': a['size_bytes'], 'storage_path': a.get('storage_path', '')} for a in attachment_docs]})}\n\n"
+        _desc_out = {}
+        async for _dev in _maybe_describe_images(
+            db, request.user_id, request.message, user_interaction_id,
+            loop_config, attachment_docs, _desc_out,
+        ):
+            yield f"data: {json.dumps(_dev)}\n\n"
         user_message_content = await build_user_message_content(
-            request.message, attachment_docs,
+            _desc_out.get("message_text", request.message),
+            _desc_out.get("inline_docs", attachment_docs),
         )
 
         _agent_id_for_prompt_sse = agent.get("id") if agent else None
@@ -1153,6 +1167,115 @@ def unregister_visualizer_listener(session_id: str, websocket: Any):
         ]
         if not _visualizer_listeners[session_id]:
             del _visualizer_listeners[session_id]
+
+
+async def _maybe_describe_images(db, user_id, message, user_interaction_id,
+                                 loop_config, attachment_docs, out):
+    """Attachment Description step (async generator).
+
+    When an image is attached and the model(s) that will handle this turn cannot
+    see images, describe each image once via a separately-configured vision model
+    and fold the description into the user message as text — and persist it into
+    the user row so later turns retain it (the image itself is never stored).
+
+    Yields pipeline event dicts for the caller to emit on its own transport
+    (``await _emit_to_visualizers`` on the buffered path, ``yield`` on SSE) and
+    writes results into ``out``:
+      out["message_text"]  → text to send as the user message
+      out["inline_docs"]   → attachments to pass to build_user_message_content
+                             (images removed when described, so nothing re-inlines)
+    """
+    from app.agent.prompts import _VISION_INLINE_MIMES, describe_image_attachment
+
+    out["message_text"] = message
+    out["inline_docs"] = attachment_docs
+
+    image_atts = [a for a in (attachment_docs or [])
+                  if (a.get("mime_type") or "").lower() in _VISION_INLINE_MIMES]
+    if not image_atts or not loop_config.is_enabled("attachment_describe"):
+        return
+
+    from app.admin.settings import (
+        load_llm_capabilities_for_user, turn_models_image_capable, pick_describer,
+    )
+    try:
+        caps = await load_llm_capabilities_for_user(user_id)
+    except Exception as e:
+        logger.warning("attachment_describe: capability read failed: %s", e)
+        return
+    if turn_models_image_capable(caps):
+        return  # a turn model can see the image natively → leave it inlined
+
+    # Images are removed from native inlining; non-image attachments pass through.
+    out["inline_docs"] = [a for a in (attachment_docs or [])
+                          if (a.get("mime_type") or "").lower() not in _VISION_INLINE_MIMES]
+
+    describer = pick_describer(caps)
+    parts = [message] if message else []
+
+    if not describer:
+        for a in image_atts:
+            parts.append(
+                f"\n\n[Attached image — '{a.get('original_name', 'image')}']:\n"
+                "(An image was attached but no vision-capable model is configured to describe it.)"
+            )
+        out["message_text"] = "".join(parts).strip() or (message or "")
+        try:
+            await db.update_interaction_content(user_interaction_id, out["message_text"])
+        except Exception as e:
+            logger.debug("attachment_describe: persist (no_describer) failed: %s", e)
+        yield {"type": "pipeline", "level": "pipeline", "step": "attachment_describe_end",
+               "image_count": len(image_atts), "status": "no_describer"}
+        return
+
+    import time as _t
+    from datetime import datetime, timezone
+    yield {"type": "pipeline", "level": "pipeline", "step": "attachment_describe_start",
+           "image_count": len(image_atts), "vision_model": describer.get("model", "")}
+    _start = _t.time()
+    described = 0
+    cached = 0
+    for a in image_atts:
+        name = a.get("original_name", "image")
+        meta = a.get("metadata") or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {}
+        desc = None
+        if isinstance(meta, dict) and meta.get("vision_description") \
+                and meta.get("vision_describer_model") == describer.get("model"):
+            desc = meta.get("vision_description")
+            cached += 1
+        if not desc:
+            desc = await describe_image_attachment(a, describer, user_text_hint=message)
+            if desc:
+                described += 1
+                try:
+                    await db.update_attachment_metadata(a.get("id"), {
+                        "vision_description": desc,
+                        "vision_describer_model": describer.get("model", ""),
+                        "vision_described_at": datetime.now(timezone.utc).isoformat(),
+                    })
+                except Exception as e:
+                    logger.debug("attachment_describe: metadata cache failed: %s", e)
+        if desc:
+            parts.append(f"\n\n[Attached image — '{name}']:\n{desc}")
+        else:
+            parts.append(f"\n\n[Attached image — '{name}']:\n(Image could not be described.)")
+
+    out["message_text"] = "".join(parts).strip() or (message or "")
+    try:
+        await db.update_interaction_content(user_interaction_id, out["message_text"])
+    except Exception as e:
+        logger.debug("attachment_describe: persist failed: %s", e)
+
+    yield {"type": "pipeline", "level": "pipeline", "step": "attachment_describe_end",
+           "image_count": len(image_atts), "vision_model": describer.get("model", ""),
+           "described": described, "cached": cached,
+           "duration_ms": int((_t.time() - _start) * 1000),
+           "status": "ok" if (described or cached) else "partial"}
 
 
 async def _emit_to_visualizers(session_id: str, event: Dict[str, Any], user_id: Optional[str] = None):

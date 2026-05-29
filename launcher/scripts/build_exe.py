@@ -42,10 +42,32 @@ def _remove_path(p: Path) -> None:
         print(f"[build] warn: could not remove {p}: {e}", file=sys.stderr)
 
 
+def _is_locked(p: Path) -> bool:
+    """True if the file exists but can't be opened for writing (in use)."""
+    if not p.exists():
+        return False
+    try:
+        with open(p, "ab"):
+            return False
+    except OSError:
+        return True
+
+
 def main() -> int:
     if not SPEC.exists():
         print(f"[build] spec not found: {SPEC}", file=sys.stderr)
         return 1
+
+    # Fail fast & clearly if a running instance holds webagent.exe open — the
+    # final move would otherwise fail only AFTER a full PyInstaller build.
+    if _is_locked(FINAL):
+        print(
+            f"[build] ERROR: {FINAL.name} is in use (a launcher instance is "
+            f"running).\n[build] Close all running webagent.exe windows, then "
+            f"re-run this build.",
+            file=sys.stderr,
+        )
+        return 3
 
     # Regenerate the icon — guarantees a fresh clone produces a complete .exe.
     if ICON_SCRIPT.exists():
@@ -74,7 +96,18 @@ def main() -> int:
         return 2
 
     # Move the .exe to the launcher root, then nuke the scratch folders.
-    shutil.move(str(built), str(FINAL))
+    # Remove any stale final exe first so move() never hits "file exists".
+    _remove_path(FINAL)
+    try:
+        shutil.move(str(built), str(FINAL))
+    except (OSError, shutil.Error) as e:
+        print(
+            f"[build] ERROR: could not place {FINAL.name}: {e}\n"
+            f"[build] The freshly built exe is at: {built}\n"
+            f"[build] (Close any running webagent.exe and re-run, or copy it manually.)",
+            file=sys.stderr,
+        )
+        return 4
     _remove_path(DIST)
     _remove_path(BUILD)
 

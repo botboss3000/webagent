@@ -5,7 +5,7 @@
  *   row  0   status: ... pid: ... uptime: ... url: ...      (status strip)
  *   row 1-3  [Launch] [Restart] [Stop] [Browser] [Theme]    (header buttons)
  *   rows ⬇   animation + WEBAGENT logo                       (1fr)
- *            log pane                                        (1fr)
+ *            log pane  OR  inline settings panel (toggled)   (1fr)
  *   row N-3  [Clear DB] [Reset Py] [Full Reset] [Quit]      (footer buttons)
  *   row N-1  L:launch R:restart ... Q:quit                  (hint strip)
  *
@@ -187,17 +187,18 @@ Screen {
     scrollbar-background-active: #14143a;
 }
 
-/* ───────────────────── settings screen ────────────────────────── */
+/* ──────────── inline settings panel (occupies the bottom log slot) ── */
 
-SettingsScreen { align: center middle; }
-
+/* Hidden by default; the app sets display=True to swap it in for the log
+ * pane when Theme is toggled. Shares the bottom 1fr slot, so the stage
+ * above stays full-size and live-animating while settings are open. */
 #settings-panel {
-    width: 78;
-    max-width: 95%;
-    height: 32;
-    max-height: 90%;
+    display: none;
+    width: 100%;
+    height: 1fr;
+    min-height: 5;
     background: #0d0d1f;
-    border: round #39ff14;
+    border-top: solid #39ff14;
     padding: 0;
     layout: vertical;
 }
@@ -235,7 +236,7 @@ SettingsScreen { align: center middle; }
 #settings-body {
     width: 100%;
     height: 1fr;
-    padding: 1 2;
+    padding: 0 2;
     scrollbar-color: #39ff14 #14143a;
 }
 
@@ -246,9 +247,18 @@ SettingsScreen { align: center middle; }
 }
 
 #preset-list {
-    height: 8;
+    height: 6;
     border: round #2a2a44;
     background: #08081a;
+}
+
+/* the three animation sliders (Speed / Intensity / FPS) */
+#settings-body Slider {
+    height: 1;
+    width: 100%;
+}
+#settings-body Slider:focus {
+    background: #14143a;
 }
 
 /* ───────────────────── setup screen ───────────────────────────── */
@@ -305,3 +315,118 @@ ConfirmModal { align: center middle; }
     border: round #ffaabb;
     color: #ffccd5;
 }
+
+/* ───────────────────── chat screen ────────────────────────────── */
+
+ChatScreen { background: #0a0a14; }
+
+#chat-status {
+    height: 1;
+    width: 100%;
+    background: #14143a;
+    color: #d0d0e8;
+    padding: 0 2;
+}
+
+#chat-log {
+    width: 100%;
+    height: 1fr;
+    background: #0a0a14;
+    padding: 0 1;
+    overflow-y: scroll;
+    scrollbar-size-vertical: 1;
+    scrollbar-color: #39ff14 #14143a;
+    scrollbar-color-hover: #5dff4d #14143a;
+    scrollbar-color-active: #5dff4d #14143a;
+    scrollbar-background: #14143a;
+    scrollbar-background-hover: #14143a;
+    scrollbar-background-active: #14143a;
+}
+
+#chat-input {
+    width: 100%;
+    height: 3;
+    border: round #2a2a55;
+    background: #0d0d1f;
+    color: #e6e6f0;
+}
+#chat-input:focus { border: round #39ff14; }
+
+#chat-hints {
+    height: 1;
+    width: 100%;
+    background: #14143a;
+    color: #8a8aa8;
+    padding: 0 2;
+}
+
+/* messages */
+.msg-user {
+    width: 100%;
+    background: #0d1f1a;
+    color: #d8f5e0;
+    border-left: thick #5dd6ff;
+    padding: 0 1;
+    margin: 1 0 0 0;
+}
+.msg-agent {
+    width: 100%;
+    color: #e6e6f0;
+    padding: 0 1;
+    margin: 1 0 0 0;
+}
+.msg-error { color: #ff8aa0; }
+.msg-pipe {
+    width: 100%;
+    color: #6a6a8a;
+    padding: 0 1;
+}
+
+/* tool-call blocks */
+.tool-block {
+    width: 100%;
+    background: #0d0d1f;
+    border: round #3a3a18;
+    margin: 1 0 0 0;
+}
+.tool-block CollapsibleTitle { color: #ffb000; }
+.tool-body { color: #c8c8e0; padding: 0 1; }
+
+/* keyboard pickers — CLI-style scrolling selector docked to the bottom */
+ListPicker { align: center bottom; }
+#picker-panel {
+    width: 96%;
+    max-width: 120;
+    height: auto;
+    max-height: 60%;
+    background: #0d0d1f;
+    border: round #39ff14;
+    padding: 1 1;
+    margin: 0 0 1 0;
+}
+#picker-title {
+    color: #aaffaa;
+    text-style: bold;
+    padding: 0 1 1 1;
+}
+#picker-list {
+    height: auto;
+    max-height: 18;
+    background: #08081a;
+    border: round #2a2a44;
+}
+#picker-list > ListItem { padding: 0 1; }
+#picker-list > ListItem.--highlight { background: #16331a; color: #d8f5e0; }
+
+/* credentials modal */
+CredentialsModal { align: center middle; }
+#creds-panel {
+    width: 54;
+    height: auto;
+    background: #0d0d1f;
+    border: round #39ff14;
+    padding: 1 2;
+}
+#creds-panel .label { color: #aaffaa; text-style: bold; margin-bottom: 1; }
+#creds-panel .dim { color: #8a8aa8; margin-top: 1; }
+#creds-panel Input { margin-bottom: 1; }

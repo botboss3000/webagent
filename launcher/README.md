@@ -13,10 +13,17 @@ Polished TUI that controls the webagent server. Bundles into a single
 - **Reset Python** — wipes `.venv` and re-runs `uv sync`
 - **Full Reset** — DB clear + Python reset
 - **Browser** — opens the saved URL (default `/index.html`)
-- **Theme** — color preset picker (phosphor / amber / cyan / sunset /
-  vaporwave / neon tide / tricolor / rainbow / fire / ice / lime pulse / …)
-- **Animation** — plasma / flowfield / rings / static, all colored by
-  the active palette
+- **Theme** — inline settings panel that opens **in the log area** so the
+  animation above stays visible and updates **live** as you change it. Pick a
+  color preset (phosphor / amber / cyan / sunset / vaporwave / neon tide /
+  tricolor / rainbow / fire / ice / lime pulse / …), the animation style, and
+  drag the **Speed / Intensity / FPS** sliders (click-drag, or ←/→ when focused).
+- **Animation** — `Plasma` / `Flow Field` / `Rings` / `Noise` (scrolling TV
+  static), all colored by the active palette — plus **`Off`**, a motionless
+  solid ASCII graphic that stops the frame loop entirely (~0% CPU).
+- **Auto-idle** — the animation pauses itself whenever the launcher loses focus
+  or the chat screen covers it, and resumes when you return. Lower the FPS
+  slider (or pick `Off`) if the idle animation is still too busy for you.
 
 Configuration lives at `%APPDATA%\webagent\launcher.json`. The .exe can
 sit anywhere — first run prompts for your webagent project folder.
@@ -29,8 +36,9 @@ uv sync
 uv run python -m webagent_launcher
 ```
 
-Edit theme/animation live with `T`, `C` to cycle palettes, `Space` to
-cycle animation styles.
+Press `T` to toggle the inline theme/animation panel (it swaps into the log
+area; `Esc` or `T` again closes it). `C` cycles palettes and `Space` cycles
+animation styles (including `Off`) without opening the panel.
 
 ## Build the .exe
 
@@ -58,7 +66,8 @@ to the webagent project folder.
 | `D` | Clear DB (with confirm) |
 | `P` | Reset Python (with confirm) |
 | `F` | Full reset (with confirm) |
-| `T` | Theme & animation settings |
+| `T` | Toggle inline theme & animation panel (in the log area) |
+| `Esc` | Close the theme panel (when open) |
 | `C` | Cycle to next color preset |
-| `Space` | Cycle animation style |
+| `Space` | Cycle animation style (incl. `Off`) |
 | `Q` / `Ctrl+C` | Quit |

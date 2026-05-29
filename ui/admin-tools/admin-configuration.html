@@ -83,6 +83,20 @@
                 </div>
                 <div id="ac-settings-model-status" class="ac-hint"></div>
               </div>
+              <div class="ac-field" id="ac-settings-cap-group">
+                <label class="ac-label">Model capabilities</label>
+                <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap;">
+                  <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-2);cursor:pointer;">
+                    <input type="checkbox" id="ac-settings-cap-text" checked style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer;">
+                    Text
+                  </label>
+                  <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-2);cursor:pointer;">
+                    <input type="checkbox" id="ac-settings-cap-image" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer;">
+                    Image (vision)
+                  </label>
+                </div>
+                <div class="ac-hint">Auto-detected when you pick a model. Tick <strong>Image</strong> for a vision model so it can read attached images — or describe them for text-only models.</div>
+              </div>
               <div class="ac-actions">
                 <button id="ac-settings-save" class="ac-btn ac-btn-primary">Save</button>
                 <button id="ac-settings-clear" class="ac-btn ac-btn-ghost">Clear</button>
@@ -96,6 +110,7 @@
               <div class="ac-card-sublabel">Check multiple rows to send requests in parallel — fastest response wins.</div>
               <div id="ac-settings-saved-list" style="display:flex;flex-direction:column;gap:6px;margin-top:8px;"></div>
               <div id="ac-settings-parallel-count" class="ac-hint" style="margin-top:6px;text-align:right;"></div>
+              <div id="ac-settings-describer-hint" class="ac-hint" style="margin-top:4px;"></div>
             </div>
 
             <!-- Image Generation provider (separate from the chat LLM) -->

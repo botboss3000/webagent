@@ -263,10 +263,105 @@ def _apply_config_to_env(config: dict) -> None:
                     "api_key": p["api_key"],
                     "model": p.get("model", ""),
                     "rating": p.get("rating", 0),
+                    # carried so the loop's race can keep only image-capable racers
+                    "image_capable": p.get("image_capable", False),
                 })
         os.environ["MULTI_PROVIDERS"] = json.dumps(cleaned)
     else:
         os.environ.pop("MULTI_PROVIDERS", None)
+
+
+async def load_llm_capabilities_for_user(user_id: str) -> dict:
+    """Read the user's LLM config (own → admin_default) and return media-capability
+    info WITHOUT touching env vars.
+
+    Used by chat.py at attachment-resolution time to decide whether an attached
+    image must be described by a separate vision model before the turn runs. This
+    is a per-request DB read on purpose — the env vars set by
+    ``_apply_config_to_env`` are process-global and shared across users.
+
+    Shape:
+      {
+        "default": {model, provider, base_url, api_key, text_capable, image_capable},
+        "racers":  [{model, provider, base_url, api_key, enabled,
+                     text_capable, image_capable, use_for_image}, ...],
+        "parallel_mode": bool,
+      }
+    """
+    cfg = None
+    try:
+        from app.db import get_db
+        db = get_db()
+        for uid in (user_id, "admin_default"):
+            elem = await db.auth_element_get(uid, "llm", "default")
+            if elem:
+                c = elem.get("config") or {}
+                if isinstance(c, str):
+                    c = json.loads(c)
+                c["api_key"] = elem.get("secret_ref", "")
+                cfg = c
+                break
+    except Exception as e:
+        logger.debug("load_llm_capabilities_for_user DB read failed: %s", e)
+    if cfg is None:
+        cfg = _load_provider(user_id)
+
+    default = {
+        "model": cfg.get("model", ""),
+        "provider": cfg.get("provider", ""),
+        "base_url": cfg.get("base_url", ""),
+        "api_key": cfg.get("api_key", ""),
+        "text_capable": bool(cfg.get("text_capable", True)),
+        "image_capable": bool(cfg.get("image_capable", False)),
+    }
+    racers = []
+    for p in (cfg.get("multi_providers") or []):
+        racers.append({
+            "model": p.get("model", ""),
+            "provider": p.get("provider", "custom"),
+            "base_url": p.get("base_url", ""),
+            "api_key": p.get("api_key", ""),
+            "enabled": bool(p.get("enabled", True)),
+            "text_capable": bool(p.get("text_capable", True)),
+            "image_capable": bool(p.get("image_capable", False)),
+            "use_for_image": bool(p.get("use_for_image", False)),
+        })
+    return {
+        "default": default,
+        "racers": racers,
+        "parallel_mode": bool(cfg.get("parallel_mode", False)),
+    }
+
+
+def turn_models_image_capable(caps: dict) -> bool:
+    """Will the model(s) that actually handle this turn be able to see images?
+
+    Parallel mode with ≥2 enabled racers → true iff any enabled racer is
+    image-capable. Otherwise → the single default model's capability.
+    """
+    racers = caps.get("racers") or []
+    enabled = [r for r in racers if r.get("enabled")]
+    if caps.get("parallel_mode") and len(enabled) >= 2:
+        return any(r.get("image_capable") for r in enabled)
+    return bool((caps.get("default") or {}).get("image_capable"))
+
+
+def pick_describer(caps: dict) -> Optional[dict]:
+    """Choose the image-describer model when no turn model can see images.
+
+    Prefer the default model if it is image-capable, else the first racer flagged
+    ``use_for_image`` that is image-capable. Returns {model, provider, base_url,
+    api_key} or None when no image-capable describer is configured.
+    """
+    d = caps.get("default") or {}
+    if d.get("image_capable") and d.get("model") and d.get("api_key"):
+        return {"model": d["model"], "provider": d.get("provider", ""),
+                "base_url": d.get("base_url", ""), "api_key": d.get("api_key", "")}
+    for r in (caps.get("racers") or []):
+        if r.get("image_capable") and r.get("use_for_image") and r.get("model") and r.get("api_key"):
+            return {"model": r["model"], "provider": r.get("provider", ""),
+                    "base_url": r.get("base_url", ""), "api_key": r.get("api_key", "")}
+    return None
 
 
 def _load_app_settings() -> dict:
@@ -304,6 +399,9 @@ class ProviderConfig(BaseModel):
     api_key: str
     model: str = ""
     providers: dict = {}
+    # Media-capability of the default model (detected on save, user-overridable).
+    text_capable: bool = True
+    image_capable: bool = False
 
 
 class MultiProviderEntry(BaseModel):
@@ -311,8 +409,12 @@ class MultiProviderEntry(BaseModel):
     base_url: str = ""
     api_key: str = ""
     model: str = ""
-    enabled: bool = True
+    enabled: bool = True          # "use for text" — joins the response race
     rating: int = 0
+    # Media-capability (detected on save, user-overridable) + image routing role.
+    text_capable: bool = True
+    image_capable: bool = False
+    use_for_image: bool = False   # eligible to describe images for text-only models
 
 
 class MultiProvidersRequest(BaseModel):
@@ -447,6 +549,8 @@ async def set_provider(
         "api_key": current_key,
         "model": current_model,
         "providers": merged_providers,
+        "text_capable": config.text_capable,
+        "image_capable": config.image_capable,
     }
 
     # Save to DB (auth_elements table) — primary storage
@@ -461,6 +565,8 @@ async def set_provider(
                 "base_url": current_url,
                 "model": current_model,
                 "providers": merged_providers,
+                "text_capable": config.text_capable,
+                "image_capable": config.image_capable,
             },
             secret_ref=current_key,
             label="default",
@@ -629,6 +735,9 @@ async def set_multi_providers(
             "providers": merged.get("providers", {}),
             "parallel_mode": merged.get("parallel_mode", False),
             "multi_providers": merged.get("multi_providers", []),
+            # preserve the default model's detected capabilities across edits
+            "text_capable": merged.get("text_capable", True),
+            "image_capable": merged.get("image_capable", False),
         }
         await db.auth_element_set(
             user_id=user_id,
@@ -652,6 +761,27 @@ async def set_multi_providers(
         "count": count,
         "message": f"Multi-provider config saved. Mode: {mode}, {count} provider(s).",
     }
+
+
+def _detect_model_modalities(m: dict) -> tuple:
+    """Best-effort detection of a model's INPUT media types from a provider's
+    /models entry. Returns (text_capable, image_capable, modality_known).
+
+    Handles OpenRouter's ``architecture.input_modalities`` list and the legacy
+    ``modality`` string (e.g. "text+image->text"); falls back to
+    (text-only, unknown) when the provider reports nothing. Text input is
+    assumed for every chat model — image capability is the meaningful signal.
+    """
+    arch = m.get("architecture") or {}
+    mods = arch.get("input_modalities") or m.get("input_modalities")
+    if isinstance(mods, list) and mods:
+        low = [str(x).lower() for x in mods]
+        return (True, "image" in low, True)
+    modality = arch.get("modality") or m.get("modality")
+    if isinstance(modality, str) and modality:
+        inp = modality.split("->")[0].lower()
+        return (True, ("image" in inp or "vision" in inp), True)
+    return (True, False, False)
 
 
 @router.get("/models")
@@ -705,9 +835,13 @@ async def get_models(
             data = resp.json()
             models = []
             for m in data.get("data", []):
+                tcap, icap, known = _detect_model_modalities(m)
                 models.append({
                     "id": m["id"],
                     "name": m.get("name", m["id"]),
+                    "text_capable": tcap,
+                    "image_capable": icap,
+                    "modality_known": known,
                 })
             models.sort(key=lambda x: x["id"])
             return {"error": None, "models": models}

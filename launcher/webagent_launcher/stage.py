@@ -18,7 +18,7 @@ from rich.text import Text
 from textual.app import RenderResult
 from textual.widget import Widget
 
-from .ascii_anim import ANIM_STYLES, PLASMA, FLOWFIELD, RINGS, STATIC
+from .ascii_anim import ANIM_STYLES, PLASMA, FLOWFIELD, RINGS, STATIC, OFF
 from .palette import PaletteFn, rainbow_palette
 
 
@@ -66,6 +66,10 @@ class AnimatedStage(Widget):
         self._t0 = time.monotonic()
         self._noise: List[List[float]] | None = None
         self._noise_size: tuple[int, int] = (0, 0)
+        # Frame timer is created on mount and torn down whenever we should not
+        # be animating (style == OFF, or the app is idle/unfocused).
+        self._timer = None
+        self._idle = False
 
     # ── live config ───────────────────────────────────────────────────
     def set_palette(self, palette: PaletteFn) -> None:
@@ -75,6 +79,9 @@ class AnimatedStage(Widget):
         if style in ANIM_STYLES:
             self._style = style
             self._noise = None
+            # OFF stops the clock; any motion style (re)starts it. _sync_timer
+            # also forces one repaint so the new state shows immediately.
+            self._sync_timer()
 
     def set_speed(self, speed: float) -> None:
         self._speed = max(0.05, min(5.0, speed))
@@ -88,11 +95,37 @@ class AnimatedStage(Widget):
 
     def set_fps(self, fps: int) -> None:
         self._fps = max(4, min(60, fps))
-        # caller is expected to reset the interval
+        # Rebuild the interval at the new rate (only if we're animating).
+        self._sync_timer()
+
+    def set_idle(self, idle: bool) -> None:
+        """Pause the animation when the app loses focus; resume on focus.
+
+        Has no effect on the OFF style — that stays stopped regardless.
+        """
+        idle = bool(idle)
+        if idle != self._idle:
+            self._idle = idle
+            self._sync_timer()
 
     # ── lifecycle ─────────────────────────────────────────────────────
     def on_mount(self) -> None:
-        self._timer = self.set_interval(1.0 / self._fps, self.refresh)
+        self._sync_timer()
+
+    def _animating(self) -> bool:
+        """True when frames should be computed on a clock."""
+        return self._style != OFF and not self._idle
+
+    def _sync_timer(self) -> None:
+        """Tear down any existing frame timer, then (re)create it only if we
+        should be animating. Always forces one repaint so the current frame
+        (including the motionless OFF graphic) is drawn."""
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+        if self._animating() and self.is_mounted:
+            self._timer = self.set_interval(1.0 / self._fps, self.refresh)
+        self.refresh()
 
     # ── field samplers (copied from AsciiAnimation; trivial / no shared state) ─
     def _sample_plasma(self, x: float, y: float, t: float) -> float:
@@ -125,9 +158,11 @@ class AnimatedStage(Widget):
         return self._noise
 
     def _sample_static(self, x: float, y: float, t: float, w: int, h: int) -> float:
+        # `t` already carries the speed factor (render() multiplies by speed),
+        # so the scroll offsets must NOT multiply by speed again.
         noise = self._ensure_static_noise(w, h)
-        dx = int((t * 6.0 * self._speed) % w)
-        dy = int((t * 2.0 * self._speed) % h)
+        dx = int((t * 6.0) % w)
+        dy = int((t * 2.0) % h)
         ix = int(x * (w - 1) + dx) % w
         iy = int(y * (h - 1) + dy) % h
         nx = (ix + 1) % w
@@ -136,12 +171,23 @@ class AnimatedStage(Widget):
         u = ((x * (w - 1) + dx) % 1.0)
         return a * (1 - u) + b * u
 
+    def _sample_off_backdrop(self, x: float, y: float) -> float:
+        """Motionless field for the OFF state — depends on position only, no
+        time term, so the frame is a fixed, solid ASCII graphic (~0% CPU)."""
+        diag = math.sin((x + y) * 3.0)
+        dx = x - 0.5
+        dy = (y - 0.5) * 0.5
+        ring = math.sin(math.sqrt(dx * dx + dy * dy) * 9.0)
+        return (diag + ring + 2.0) / 4.0
+
     # ── render ────────────────────────────────────────────────────────
     def render(self) -> RenderResult:
         size = self.size
         w = max(2, size.width)
         h = max(2, size.height)
-        t = (time.monotonic() - self._t0) * self._speed
+        # OFF freezes time (t=0) so the logo + backdrop palette don't drift.
+        is_off = self._style == OFF
+        t = 0.0 if is_off else (time.monotonic() - self._t0) * self._speed
 
         # Compute logo placement (centered in the stage area)
         if self._show_logo and h > _LOGO_H:
@@ -159,8 +205,12 @@ class AnimatedStage(Widget):
         palette = self._palette
         intensity_scale = self._intensity
 
-        if self._style == PLASMA:
-            sampler: Callable[[float, float, float], float] = self._sample_plasma
+        if is_off:
+            sampler: Callable[[float, float, float], float] = (
+                lambda x, y, tt: self._sample_off_backdrop(x, y)
+            )
+        elif self._style == PLASMA:
+            sampler = self._sample_plasma
         elif self._style == FLOWFIELD:
             sampler = self._sample_flowfield
         elif self._style == RINGS:

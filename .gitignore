@@ -64,6 +64,16 @@ app/db/closer_*.db-journal
 app/db/closer_*.db-wal
 app/db/closer_*.db-shm
 
+# Optimizer runtime temp DBs (worker trials + planner sessions)
+app/db/test_*.db
+app/db/test_*.db-journal
+app/db/test_*.db-wal
+app/db/test_*.db-shm
+app/db/optimizer_*.db
+app/db/optimizer_*.db-journal
+app/db/optimizer_*.db-wal
+app/db/optimizer_*.db-shm
+
 # Runtime auth + config (per-machine, contains hashes/tokens)
 app/auth/users.json
 app/auth/users.json.bak

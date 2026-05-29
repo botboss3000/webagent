@@ -83,3 +83,4 @@ Container-related keys stored on the client:
 | `webagent_theme` | `'light'`, `'dark'`, or `'system'`. |
 | `lastActiveTab` | Which `#main-tabs` tab to restore on load. |
 | `webagent.chatVisible.<key>` | Per-layout chat panel show/hide. |
+| `webagent.chatDraft.v1` | Unsent text typed into the chat pill (`#chat-input`). Saved on every keystroke, restored on load so a refresh keeps the draft, cleared on send. See `ui/js/chat.js`. |
