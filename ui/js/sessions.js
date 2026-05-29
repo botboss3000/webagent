@@ -26,6 +26,7 @@ import {
   persistAgentOrder,
   persistSessionOrder,
   makeRowsReorderable,
+  attachRowLongPress,
 } from './ordering.js';
 
 export function generateUUID() {
@@ -100,11 +101,15 @@ function _renderAgentRows() {
     row.dataset.id = a.id;
     row.dataset.type = a.type;
     const label = a.name || a.id.slice(0, 12);
+    const configBtn = a.type === 'custom'
+      ? `<button class="agent-row-config" title="Configure agent" data-id="${a.id}">${icon('settings', { size: '14px' })}</button>`
+      : '';
     row.innerHTML = `
-      <span class="row-drag-handle" data-drag-handle title="Drag to reorder">${icon('grip-vertical', { size: '13px' })}</span>
+      <span class="row-drag-handle" data-drag-handle title="Drag to reorder · hold to pin">${icon('grip-vertical', { size: '13px' })}</span>
       <span class="agent-row-pin-icon">${icon('pin', { size: '12px' })}</span>
-      <span class="agent-row-title" title="${a.id}">${_truncate(label, 28).replace(/</g, '&lt;')}</span>
-      <button class="agent-row-kebab" title="Agent actions" data-id="${a.id}">${icon('more-vertical', { size: '14px' })}</button>
+      <span class="agent-row-title" title="Hold to rename">${_truncate(label, 28).replace(/</g, '&lt;')}</span>
+      ${configBtn}
+      <button class="agent-row-delete" title="Delete agent" data-id="${a.id}">${icon('trash-2', { size: '14px' })}</button>
     `;
     menu.appendChild(row);
   }
@@ -347,11 +352,11 @@ function _renderSessionRows() {
       statusHtml = `<span class="session-row-status session-status-unread" title="New response ready">${icon('check-circle', { size: '12px' })}</span>`;
     }
     row.innerHTML = `
-      <span class="row-drag-handle" data-drag-handle title="Drag to reorder">${icon('grip-vertical', { size: '13px' })}</span>
+      <span class="row-drag-handle" data-drag-handle title="Drag to reorder · hold to pin">${icon('grip-vertical', { size: '13px' })}</span>
       <span class="session-row-pin-icon">${icon('pin', { size: '12px' })}</span>
       ${statusHtml}
-      <span class="session-row-title" title="${s.id}">${_truncate(label, 28).replace(/</g, '&lt;')}</span>
-      <button class="session-row-kebab" title="Session actions" data-id="${s.id}">${icon('more-vertical', { size: '14px' })}</button>
+      <span class="session-row-title" title="Hold to rename">${_truncate(label, 28).replace(/</g, '&lt;')}</span>
+      <button class="session-row-delete" title="Delete session" data-id="${s.id}">${icon('trash-2', { size: '14px' })}</button>
     `;
     menu.appendChild(row);
   }
@@ -678,11 +683,6 @@ export function initSessions() {
   const sessionTrigger = document.getElementById('session-dropdown-trigger');
   const menu = document.getElementById('session-dropdown-menu');
 
-  function closeActionsPopup() {
-    const open = document.querySelector('.session-row-actions');
-    if (open) open.remove();
-  }
-
   function openMenu() {
     if (!menu) return;
     // Opening one header dropdown closes the other — treat the gesture as
@@ -696,7 +696,6 @@ export function initSessions() {
     if (!menu) return;
     menu.hidden = true;
     dropdown.classList.remove('open');
-    closeActionsPopup();
   }
 
   async function switchToSession(sid) {
@@ -751,43 +750,11 @@ export function initSessions() {
     } catch (_e) { /* socket may not be ready — replay on next reconnect */ }
   }
 
-  function openRowActions(sid, row) {
-    closeActionsPopup();
+  function confirmDeleteSession(sid) {
     const sess = _sessionsCache.find(s => s.id === sid);
-    if (!sess) return;
-    const popup = document.createElement('div');
-    popup.className = 'session-row-actions';
-    popup.dataset.id = sid;
-    popup.innerHTML = `
-      <button class="session-row-action" data-action="pin">${icon('pin', { size: '14px' })} ${sess.pinned ? 'Unpin' : 'Pin'}</button>
-      <button class="session-row-action" data-action="rename">${icon('pencil', { size: '14px' })} Rename</button>
-      <button class="session-row-action danger" data-action="delete">${icon('trash-2', { size: '14px' })} Delete</button>
-    `;
-    document.body.appendChild(popup);
-    // Position next to kebab, right-aligned, clamped to viewport
-    const kebab = row.querySelector('.session-row-kebab');
-    const kb = kebab.getBoundingClientRect();
-    const pw = popup.offsetWidth;
-    const ph = popup.offsetHeight;
-    let left = kb.right - pw;
-    let top  = kb.bottom + 4;
-    if (left < 4) left = 4;
-    if (left + pw > window.innerWidth - 4) left = window.innerWidth - pw - 4;
-    if (top + ph > window.innerHeight - 4) top = kb.top - ph - 4;
-    popup.style.left = left + 'px';
-    popup.style.top  = top + 'px';
-    // Actions routed here since popup is no longer inside the menu
-    popup.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const actionBtn = e.target.closest('.session-row-action');
-      if (!actionBtn) return;
-      const action = actionBtn.dataset.action;
-      closeActionsPopup();
-      if (!action) return;
-      if (action === 'pin') togglePin(sid);
-      else if (action === 'rename') startRename(sid, row);
-      else if (action === 'delete') deleteSession(sid);
-    });
+    const title = (sess && sess.title) || 'this session';
+    if (!window.confirm(`Delete "${title}"? This cannot be undone.`)) return;
+    deleteSession(sid);
   }
 
   async function patchSession(sid, body) {
@@ -877,15 +844,12 @@ export function initSessions() {
   if (menu) {
     menu.addEventListener('click', (e) => {
       e.stopPropagation();
-      // Kebab button?
-      const kebab = e.target.closest('.session-row-kebab');
-      if (kebab) {
-        const row = kebab.closest('.session-row');
+      // Delete button (right side of the row)
+      const delBtn = e.target.closest('.session-row-delete');
+      if (delBtn) {
+        const row = delBtn.closest('.session-row');
         const sid = row && row.dataset.id;
-        // Toggle: if popup already open for this row, close it
-        const existing = document.querySelector(`.session-row-actions[data-id="${sid}"]`);
-        if (existing) { closeActionsPopup(); return; }
-        if (sid) openRowActions(sid, row);
+        if (sid) confirmDeleteSession(sid);
         return;
       }
       // Row body click → switch session (ignore clicks inside rename input)
@@ -893,11 +857,18 @@ export function initSessions() {
       const row = e.target.closest('.session-row');
       if (row) switchToSession(row.dataset.id);
     });
-    // Drag the grip handle to reorder; persists per-account.
+    // Drag the grip handle to reorder; press-and-hold it to pin. Per-account.
     makeRowsReorderable(menu, {
       rowSelector: '.session-row',
       handleSelector: '.row-drag-handle',
       onReorder: _applySessionReorder,
+      onHandleLongPress: (sid) => togglePin(sid),
+    });
+    // Press-and-hold the row body to rename (grip + delete button opt out).
+    attachRowLongPress(menu, {
+      rowSelector: '.session-row',
+      ignoreSelector: '.row-drag-handle, .session-row-delete, .session-row-title-input',
+      onLongPress: (sid, row) => startRename(sid, row),
     });
   }
 
@@ -936,11 +907,6 @@ export function initSessions() {
   const agentTrigger  = document.getElementById('agent-dropdown-trigger');
   const agentMenu     = document.getElementById('agent-dropdown-menu');
 
-  function closeAgentActionsPopup() {
-    const open = document.querySelector('.agent-row-actions');
-    if (open) open.remove();
-  }
-
   function openAgentMenu() {
     if (!agentMenu) return;
     // Opening one header dropdown closes the other — treat the gesture as
@@ -954,7 +920,6 @@ export function initSessions() {
     if (!agentMenu) return;
     agentMenu.hidden = true;
     agentDropdown.classList.remove('open');
-    closeAgentActionsPopup();
   }
 
   function switchToAgent(aid) {
@@ -983,45 +948,78 @@ export function initSessions() {
   // right-side chat agent without duplicating session/teardown logic.
   app.switchToAgent = switchToAgent;
 
-  function openAgentRowActions(aid, row) {
-    closeAgentActionsPopup();
+  function startAgentRename(aid, row) {
+    const titleEl = row.querySelector('.agent-row-title');
+    if (!titleEl) return;
     const agent = _agentsCache.find(a => a.id === aid);
-    if (!agent) return;
-    const popup = document.createElement('div');
-    popup.className = 'agent-row-actions';
-    popup.dataset.id = aid;
-    // Templates can't be opened in Agents page (which lists custom agents only)
-    const configBtn = agent.type === 'custom'
-      ? `<button class="agent-row-action" data-action="config">${icon('settings', { size: '14px' })} Config</button>`
-      : '';
-    popup.innerHTML = `
-      <button class="agent-row-action" data-action="pin">${icon('pin', { size: '14px' })} ${agent.pinned ? 'Unpin' : 'Pin'}</button>
-      ${configBtn}
-    `;
-    document.body.appendChild(popup);
-    // Position next to the kebab, right-aligned, below it. Clamp inside viewport.
-    const kebab = row.querySelector('.agent-row-kebab');
-    const kb = kebab.getBoundingClientRect();
-    const pw = popup.offsetWidth;
-    const ph = popup.offsetHeight;
-    let left = kb.right - pw;
-    let top  = kb.bottom + 4;
-    if (left < 4) left = 4;
-    if (left + pw > window.innerWidth - 4) left = window.innerWidth - pw - 4;
-    if (top + ph > window.innerHeight - 4) top = kb.top - ph - 4;
-    popup.style.left = left + 'px';
-    popup.style.top  = top + 'px';
-    // Action clicks routed here (popup is no longer inside agentMenu)
-    popup.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const actionBtn = e.target.closest('.agent-row-action');
-      if (!actionBtn) return;
-      const action = actionBtn.dataset.action;
-      closeAgentActionsPopup();
-      if (!action) return;
-      if (action === 'pin') _toggleAgentPin(aid);
-      else if (action === 'config') { closeAgentMenu(); openAgentConfig(aid); }
+    const current = (agent && agent.name) || '';
+    const input = document.createElement('input');
+    input.type = 'text';
+    // Reuse the session input styling; the agent class lets the long-press
+    // handler opt out of re-triggering on the input.
+    input.className = 'agent-row-title-input session-row-title-input';
+    input.value = current;
+    titleEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let done = false;
+    const finish = async (commit) => {
+      if (done) return;
+      done = true;
+      const newName = input.value.trim();
+      if (commit && newName && newName !== current) {
+        const ok = await patchAgentName(aid, newName);
+        if (ok && agent) agent.name = newName;
+      }
+      _renderAgentRows();
+      _setAgentTriggerLabel();
+      // Keep the Agents page label in sync with the rename.
+      if (typeof app.refreshAgentsOrder === 'function') app.refreshAgentsOrder();
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
     });
+    input.addEventListener('blur', () => finish(true));
+  }
+
+  async function patchAgentName(aid, name) {
+    try {
+      const res = await fetch(apiPath('/api/v1/agents/' + encodeURIComponent(aid)), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: app.currentUserId, name }),
+      });
+      return res.ok;
+    } catch (e) {
+      console.warn('Failed to rename agent:', e);
+      return false;
+    }
+  }
+
+  async function confirmDeleteAgent(aid) {
+    const agent = _agentsCache.find(a => a.id === aid);
+    const name = (agent && agent.name) || 'this agent';
+    if (!window.confirm(`Delete agent "${name}"? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(
+        apiPath('/api/v1/agents/' + encodeURIComponent(aid) + '?user_id=' + encodeURIComponent(app.currentUserId)),
+        { method: 'DELETE' },
+      );
+      if (!res.ok) return;
+      // If the active agent was deleted, drop the saved selection so
+      // populateAgentSelect re-resolves to whatever agent remains.
+      if (aid === app.currentAgentId) {
+        try { localStorage.removeItem('selectedAgentId'); } catch (_) {}
+      }
+      // Re-fetch + re-render the dropdown (and the agent-scoped session list).
+      await populateAgentSelect(app.currentUserId);
+      // Mirror the removal on the Agents page if it's mounted.
+      if (typeof app.refreshAgentsOrder === 'function') app.refreshAgentsOrder();
+    } catch (e) {
+      console.warn('Failed to delete agent:', e);
+    }
   }
 
   function openAgentConfig(aid) {
@@ -1046,26 +1044,39 @@ export function initSessions() {
   if (agentMenu) {
     agentMenu.addEventListener('click', (e) => {
       e.stopPropagation();
-      // Kebab?
-      const kebab = e.target.closest('.agent-row-kebab');
-      if (kebab) {
-        const row = kebab.closest('.agent-row-item');
-        const aid = row && row.dataset.id;
-        const existing = document.querySelector(`.agent-row-actions[data-id="${aid}"]`);
-        if (existing) { closeAgentActionsPopup(); return; }
-        if (aid) openAgentRowActions(aid, row);
+      // Config button (right side)
+      const cfgBtn = e.target.closest('.agent-row-config');
+      if (cfgBtn) {
+        const aid = cfgBtn.dataset.id;
+        closeAgentMenu();
+        if (aid) openAgentConfig(aid);
         return;
       }
-      // Row body click → switch agent
+      // Delete button (far right)
+      const delBtn = e.target.closest('.agent-row-delete');
+      if (delBtn) {
+        const aid = delBtn.dataset.id;
+        if (aid) confirmDeleteAgent(aid);
+        return;
+      }
+      // Row body click → switch agent (ignore clicks inside the rename input)
+      if (e.target.closest('.agent-row-title-input')) return;
       const row = e.target.closest('.agent-row-item');
       if (row) switchToAgent(row.dataset.id);
     });
-    // Drag the grip handle to reorder; persists per-account and is mirrored on
-    // the Agents page.
+    // Drag the grip handle to reorder; press-and-hold it to pin. Per-account,
+    // mirrored on the Agents page.
     makeRowsReorderable(agentMenu, {
       rowSelector: '.agent-row-item',
       handleSelector: '.row-drag-handle',
       onReorder: _applyAgentReorder,
+      onHandleLongPress: (aid) => _toggleAgentPin(aid),
+    });
+    // Press-and-hold the row body to rename (grip + action buttons opt out).
+    attachRowLongPress(agentMenu, {
+      rowSelector: '.agent-row-item',
+      ignoreSelector: '.row-drag-handle, .agent-row-config, .agent-row-delete, .agent-row-title-input',
+      onLongPress: (aid, row) => startAgentRename(aid, row),
     });
   }
 

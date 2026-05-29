@@ -148,6 +148,27 @@ async def _ensure_page(user_id: str, session_id: str) -> Page:
     return page
 
 
+async def get_or_create_page(user_id: str, session_id: str) -> Page:
+    """Public accessor used by the live Browser panel (app/api/browser_stream.py).
+
+    Returns the live Playwright page for this user+session, creating the
+    browser/context/page on demand. Because it shares the same per-session key
+    as ``browser_action``, the human's Web tab and the agent's ``browser_action``
+    tool drive the **same** page — that is what makes the panel "AI-augmented":
+    whatever one does, the other sees live.
+    """
+    return await _ensure_page(user_id, session_id)
+
+
+def get_existing_page(user_id: str, session_id: str) -> Optional[Page]:
+    """Return the live page for this user+session if one exists, else None.
+
+    Does NOT create a browser — lets callers check whether the agent has
+    already opened a page before the human's panel forces one.
+    """
+    return _pages.get(_session_key(user_id, session_id))
+
+
 async def browser_action(
     user_id: str,
     session_id: str,

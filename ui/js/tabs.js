@@ -5,6 +5,7 @@ import { startAutoAgent, stopAutoAgent } from './autoagent.js';
 import { startAgents, stopAgents } from './agents.js';
 import { startAccount } from './account.js';
 import { startAdminTools, stopAdminTools } from './files.js';
+import { startWeb, stopWeb } from './web.js';
 import { refreshTutorial } from './tutorial.js';
 
 function setChatPanelVisible(visible) {
@@ -76,20 +77,29 @@ export function initTabs() {
     if (tabValue === 'autoagent') {
       stopAgents();
       stopAdminTools();
+      stopWeb();
       startAutoAgent();
     } else if (tabValue === 'agents') {
       stopAutoAgent();
       stopAdminTools();
+      stopWeb();
       startAgents();
     } else if (tabValue === 'account') {
       stopAutoAgent();
       stopAgents();
       stopAdminTools();
+      stopWeb();
       startAccount();
     } else if (tabValue === 'admin-tools') {
       stopAutoAgent();
       stopAgents();
+      stopWeb();
       startAdminTools();
+    } else if (tabValue === 'web') {
+      stopAutoAgent();
+      stopAgents();
+      stopAdminTools();
+      startWeb();
     }
 
     // Re-render tutorial hint badges for the newly active tab. Defer a tick
