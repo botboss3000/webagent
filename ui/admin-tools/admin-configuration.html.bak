@@ -24,7 +24,7 @@
               <i data-lucide="users" class="lucide-icon ac-tab-icon"></i>User Management
             </button>
             <button type="button" class="ac-tab active" data-section="llm" role="tab">
-              <i data-lucide="bot" class="lucide-icon ac-tab-icon"></i>Default LLM
+              <i data-lucide="bot" class="lucide-icon ac-tab-icon"></i>Models
             </button>
             <button type="button" class="ac-tab" data-section="database" role="tab">
               <i data-lucide="database" class="lucide-icon ac-tab-icon"></i>Data Management
@@ -56,8 +56,8 @@
             <div class="ac-section-header">
               <i data-lucide="bot" class="lucide-icon ac-section-icon"></i>
               <div>
-                <h2 class="ac-section-title">Default LLM</h2>
-                <p class="ac-section-desc">Configure the language model provider, API key, and default model.</p>
+                <h2 class="ac-section-title">Models</h2>
+                <p class="ac-section-desc">Add the models your agents use and tick what each one is for — answering (Text), reading images (Image-in), or creating images (Image-out). Capabilities are auto-detected.</p>
               </div>
             </div>
             <div class="ac-card">
@@ -84,7 +84,7 @@
                 <div id="ac-settings-model-status" class="ac-hint"></div>
               </div>
               <div class="ac-field" id="ac-settings-cap-group">
-                <label class="ac-label">Model capabilities</label>
+                <label class="ac-label">Capabilities</label>
                 <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap;">
                   <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-2);cursor:pointer;">
                     <input type="checkbox" id="ac-settings-cap-text" checked style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer;">
@@ -92,75 +92,41 @@
                   </label>
                   <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-2);cursor:pointer;">
                     <input type="checkbox" id="ac-settings-cap-image" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer;">
-                    Image (vision)
+                    Image-in (vision)
+                  </label>
+                  <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-2);cursor:pointer;">
+                    <input type="checkbox" id="ac-settings-cap-image-out" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer;">
+                    Image-out (generate)
                   </label>
                 </div>
-                <div class="ac-hint">Auto-detected when you pick a model. Tick <strong>Image</strong> for a vision model so it can read attached images — or describe them for text-only models.</div>
+                <div class="ac-hint">Auto-detected when you pick a model. <strong>Image-in</strong> = can read attached images; <strong>Image-out</strong> = can create images. Override if detection is wrong.</div>
               </div>
               <div class="ac-actions">
                 <button id="ac-settings-save" class="ac-btn ac-btn-primary">Save</button>
                 <button id="ac-settings-clear" class="ac-btn ac-btn-ghost">Clear</button>
                 <span id="ac-settings-status" class="ac-status" style="display:none;"></span>
               </div>
-            </div>
 
-            <!-- Saved / parallel providers -->
-            <div class="ac-card" id="ac-settings-saved-wrap" style="display:none;">
-              <div class="ac-card-label">Saved Configurations</div>
-              <div class="ac-card-sublabel">Check multiple rows to send requests in parallel — fastest response wins.</div>
-              <div id="ac-settings-saved-list" style="display:flex;flex-direction:column;gap:6px;margin-top:8px;"></div>
-              <div id="ac-settings-parallel-count" class="ac-hint" style="margin-top:6px;text-align:right;"></div>
-              <div id="ac-settings-describer-hint" class="ac-hint" style="margin-top:4px;"></div>
-            </div>
-
-            <!-- Image Generation provider (separate from the chat LLM) -->
-            <div class="ac-section-header" style="margin-top:24px;">
-              <i data-lucide="image" class="lucide-icon ac-section-icon"></i>
-              <div>
-                <h3 class="ac-section-title" style="font-size:14px;">Image Generation</h3>
-                <p class="ac-section-desc">Provider for the <code>generate_image</code> tool. Many text LLMs can't produce images, so this is configured separately. Enable the <strong>Image Generation</strong> ability below to expose the tool to agents.</p>
-              </div>
-            </div>
-            <div class="ac-card">
-              <div class="ac-field">
-                <label class="ac-label">Provider</label>
-                <select id="ac-img-provider" class="ac-input"></select>
-                <div class="ac-hint" id="ac-img-provider-hint" style="margin-top:4px;"></div>
-              </div>
-              <div class="ac-field">
-                <label class="ac-label">Base URL</label>
-                <input type="text" id="ac-img-base-url" class="ac-input" placeholder="https://api.openai.com/v1" autocomplete="off">
-                <div class="ac-hint">Auto-filled from the provider preset. Edit for custom endpoints (e.g. OpenAI-compatible self-hosted).</div>
-              </div>
-              <div class="ac-field">
-                <label class="ac-label">API Key</label>
-                <input type="text" id="ac-img-api-key" class="ac-input" placeholder="sk-..." autocomplete="off">
-                <div class="ac-hint">Stored on this device only. Never sent elsewhere.</div>
-              </div>
-              <div class="ac-field" id="ac-img-model-group">
-                <label class="ac-label">Model</label>
-                <div style="position:relative;">
-                  <input type="text" id="ac-img-model-search" class="ac-input" placeholder="Search image models…" autocomplete="off">
-                  <div id="ac-img-model-dropdown" class="ac-model-dropdown" style="display:none;"></div>
-                </div>
-                <div id="ac-img-model-status" class="ac-hint"></div>
-              </div>
-              <div class="ac-actions">
-                <button id="ac-img-save" class="ac-btn ac-btn-primary">Save</button>
-                <button id="ac-img-clear" class="ac-btn ac-btn-ghost">Clear</button>
-                <span id="ac-img-status" class="ac-status" style="display:none;"></span>
+              <!-- Saved models — same panel as the chooser above -->
+              <div id="ac-settings-saved-wrap" style="display:none;border-top:1px solid var(--border-soft);margin-top:16px;padding-top:14px;">
+                <div class="ac-card-label">Saved Models</div>
+                <div class="ac-card-sublabel">Tick how to use each model. Two or more ticked for <strong>Text</strong> race in parallel — fastest response wins.</div>
+                <div id="ac-settings-saved-list" style="margin-top:12px;"></div>
+                <div id="ac-settings-parallel-count" class="ac-hint" style="margin-top:6px;text-align:right;"></div>
+                <div id="ac-settings-describer-hint" class="ac-hint" style="margin-top:4px;"></div>
+                <div id="ac-settings-imagegen-hint" class="ac-hint" style="margin-top:2px;"></div>
               </div>
             </div>
           </section>
 
 
-          <!-- ── Integrations ── -->
-          <section id="ac-section-integrations" class="ac-section">
-            <div class="ac-section-header">
-              <i data-lucide="puzzle" class="lucide-icon ac-section-icon"></i>
-              <div>
-                <h2 class="ac-section-title">Agent Abilities</h2>
-                <p class="ac-section-desc">Channels and third-party services your agents can use. Only abilities enabled here can be turned on in an agent's Abilities tab.</p>
+	          <!-- ── User Management ── -->
+	          <section id="ac-section-user-management" class="ac-section">
+	            <div class="ac-section-header">
+	              <i data-lucide="users" class="lucide-icon ac-section-icon"></i>
+	              <div>
+	                <h2 class="ac-section-title">User Management</h2>
+	                <p class="ac-section-desc">Control who can sign up and use the app.</p>
               </div>
             </div>
 
