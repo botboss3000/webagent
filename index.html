@@ -184,11 +184,6 @@
   #chat-panel .chat-pill-input {
     background: transparent !important;
   }
-  #chat-panel .chat-expand-btn {
-    background: transparent !important;
-    border-color: transparent !important;
-  }
-
   /* —— Main panel: a real panel (glass) —— */
   #main-panel {
     background: color-mix(in oklab, currentColor 4%, transparent) !important;
@@ -585,7 +580,6 @@
       </div>
     </div>
     <div id="chat-input-area">
-      <button id="chat-expand-btn" title="Expand input" class="chat-expand-btn">↗</button>
       <div id="chat-preview-bar" style="display:none;"></div>
       <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #ac-int-admin-chat-input-row,
            #agent-builder-bar-row, #autoagent-prompt-row. Style rules live in
@@ -610,24 +604,6 @@
         <button id="chat-send" class="chat-pill-send" title="Send message" disabled><i data-lucide="send" style="width:18px;height:18px;"></i></button>
         <input type="file" id="chat-file-input" multiple accept="image/*,audio/*,video/*,.pdf,.txt,.md,.csv,.json" hidden>
       </div>
-    </div>
-  </div>
-</div>
-
-<!-- Chat expand modal (full-screen textarea) -->
-<div id="chat-expand-modal">
-  <div id="chat-expand-backdrop"></div>
-  <div id="chat-expand-panel">
-    <div id="chat-expand-header">
-      <span id="chat-expand-title">Compose message</span>
-      <span id="chat-expand-actions">
-        <button id="chat-expand-send" disabled>Send</button>
-        <button id="chat-expand-close">&times;</button>
-      </span>
-    </div>
-    <textarea id="chat-expand-editor" spellcheck="false"></textarea>
-    <div id="chat-expand-footer">
-      <span id="chat-expand-hint">Ctrl+Enter to send &nbsp;·&nbsp; Esc to close</span>
     </div>
   </div>
 </div>

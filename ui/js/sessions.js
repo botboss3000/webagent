@@ -339,9 +339,17 @@ function _renderSessionRows() {
     row.className = 'session-row' + (s.pinned ? ' pinned' : '') + (s.id === app.currentSessionId ? ' selected' : '');
     row.dataset.id = s.id;
     const label = s.title || 'New Session';
+    // Status indicator: spinning loader for running, checkmark for completed-unread, dot for read
+    let statusHtml = '';
+    if (s.run_status === 'running') {
+      statusHtml = `<span class="session-row-status session-status-running" title="Agent is thinking…">${icon('loader-2', { size: '12px' })}</span>`;
+    } else if (s.has_unread) {
+      statusHtml = `<span class="session-row-status session-status-unread" title="New response ready">${icon('check-circle', { size: '12px' })}</span>`;
+    }
     row.innerHTML = `
       <span class="row-drag-handle" data-drag-handle title="Drag to reorder">${icon('grip-vertical', { size: '13px' })}</span>
       <span class="session-row-pin-icon">${icon('pin', { size: '12px' })}</span>
+      ${statusHtml}
       <span class="session-row-title" title="${s.id}">${_truncate(label, 28).replace(/</g, '&lt;')}</span>
       <button class="session-row-kebab" title="Session actions" data-id="${s.id}">${icon('more-vertical', { size: '14px' })}</button>
     `;
@@ -389,6 +397,8 @@ export async function populateSessionSelect(userId) {
       title: s.title || 'New Session',
       created_at: s.created_at,
       pinned: !!s.pinned,
+      run_status: s.run_status || null,
+      has_unread: !!s.has_unread,
     }));
     // If current session not yet in DB (fresh session before first msg),
     // synthesize a row so trigger label shows "New Session" and it appears
@@ -398,6 +408,8 @@ export async function populateSessionSelect(userId) {
         title: 'New Session',
         created_at: null,
         pinned: false,
+        run_status: null,
+        has_unread: false,
       });
     }
     _renderSessionRows();

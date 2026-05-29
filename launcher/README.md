@@ -14,8 +14,9 @@ Polished TUI that controls the webagent server. Bundles into a single
   drives. The end user needs **nothing** pre-installed — just the `.exe`. The
   whole thing happens **inline in the launcher window** — the animated logo
   stays on screen the entire time, no pop-up modal. The install panel is a
-  **destination field** (pre-filled with `C:\webagent`, editable) with the
-  **Download & Install** button on the same row, so it's never clipped. Until a
+  **destination field** (pre-filled with `C:\webagent`, editable — paste a path
+  into it with `Ctrl+V`) with the **Download & Install** button on the same row,
+  so it's never clipped. Until a
   project exists, the normal controls are hidden and the footer becomes
   installer tabs — **Install** (this panel), **Manual Install** (copy-paste
   steps to do it by hand), **Health Check** (a full environment report: git & uv
@@ -218,7 +219,7 @@ whether your terminal reports `Ctrl+!` or `Ctrl+1`.
 | `Ctrl+#` / `Ctrl+3` | New session |
 | `Ctrl+$` / `Ctrl+4` | New agent |
 | `Ctrl+F` | Filter interactions (show/hide memory, loop steps, tools) |
-| `Ctrl+C` / `Ctrl+V` / `Ctrl+Z` | Copy / paste / undo (editor) |
+| `Ctrl+C` / `Ctrl+V` / `Ctrl+Z` | Copy / paste / undo (editor). `Ctrl+V` pastes from the **system clipboard** (works in every field, incl. the install box). |
 | `Enter` | Send · `Ctrl+J` newline |
 | `Up` / `Down` | Recall previous / next sent message (single-line input) |
 | `Esc` | Stop a running turn, then exit to home |

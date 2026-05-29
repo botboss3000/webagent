@@ -139,14 +139,14 @@ body.light-mode {
 /* Bottom padding intentionally trimmed so the page/chat cards finish ~8px
    above the viewport edge instead of leaving an extra strip of dead space. */
 body {
-  font-family: var(--font-sans);
-  background:
-    radial-gradient(70% 50% at 0% 0%,   rgba(125,207,255,0.06), transparent 60%),
-    radial-gradient(60% 50% at 100% 100%, rgba(187,154,247,0.05), transparent 60%),
-    var(--bg-0);
-  color: var(--fg-1);
-  padding: 10px 10px 8px;
-  gap: 5px;
+	  font-family: var(--font-sans);
+	  background:
+	    radial-gradient(70% 50% at 0% 0%,   rgba(125,207,255,0.06), transparent 60%),
+	    radial-gradient(60% 50% at 100% 100%, rgba(187,154,247,0.05), transparent 60%),
+	    var(--bg-0);
+	  color: var(--fg-1);
+	  padding: 6px 3px 4px;
+	  gap: 4px;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -191,14 +191,14 @@ body.light-mode #main-header {
 
 /* ── 6. Main panel → floating card ──────────────────────────── */
 #main-panel {
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.02), transparent),
-    var(--bg-elev);
-  border: 1px solid rgba(255,255,255,0.04);
-  border-radius: 22px;
-  overflow: hidden;
-  box-shadow: var(--shadow-rest);
-}
+	  background:
+	    linear-gradient(180deg, rgba(255,255,255,0.02), transparent),
+	    var(--bg-elev);
+	  border: 1px solid rgba(255,255,255,0.04);
+	  border-radius: 14px;
+	  overflow: hidden;
+	  box-shadow: var(--shadow-rest);
+	}
 
 body.light-mode #main-panel {
   background: #fffaf5;
@@ -646,9 +646,9 @@ card-aware borders ────────── */
 body.light-mode #agents-list-panel { border-right-color:  rgba(180,140,90,0.12); }
 body.light-mode #agents-list-header { border-bottom-color: rgba(180,140,90,0.12); }
 
-/* ── Responsive — stack at narrow viewport ───────────────────── */
-@media (max-width: 800px) {
-#stage { gap: 6px; }
-#chat-panel { border-left: none; }
-body { padding: 6px; gap: 6px; }
-}
+/* ── Responsive — stack at narrow viewport ───────────────────── */@media (max-width: 800px) {
+	#stage { gap: 0; }
+	#chat-panel { border-left: none; }
+	body { padding: 0; gap: 0; }
+	#main-panel { border-radius: 0; }
+	}

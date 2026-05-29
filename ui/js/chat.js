@@ -535,28 +535,7 @@ async function sendMessage() {
   }
 }
 
-function openChatExpand() {
-  const modal = document.getElementById('chat-expand-modal');
-  const editor = document.getElementById('chat-expand-editor');
-  const sendBtn = document.getElementById('chat-expand-send');
-  editor.value = app.chatInput.value;
-  sendBtn.disabled = !editor.value.trim();
-  modal.classList.add('open');
-  setTimeout(() => { editor.focus(); }, 100);
-}
 
-function closeChatExpand() {
-  document.getElementById('chat-expand-modal').classList.remove('open');
-}
-
-function sendFromExpand() {
-  const editor = document.getElementById('chat-expand-editor');
-  const text = editor.value;
-  if (!text.trim()) return;
-  app.chatInput.value = text;
-  closeChatExpand();
-  sendMessage();
-}
 
 export function abortChatStream() {
   if (app._sseAbortController) {
@@ -783,29 +762,6 @@ export function initChat() {
   // Runs again above once the access mode resolves, in case this first attempt
   // was gated out before we knew the visitor was allowed to chat.
   _restoreDraft();
-
-  // ── Expand button ──
-  document.getElementById('chat-expand-btn').addEventListener('click', openChatExpand);
-
-  // ── Expand modal events ──
-  const expandEditor = document.getElementById('chat-expand-editor');
-  const expandSend = document.getElementById('chat-expand-send');
-  expandSend.addEventListener('click', sendFromExpand);
-  expandEditor.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-      e.preventDefault();
-      sendFromExpand();
-    }
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      closeChatExpand();
-    }
-  });
-  expandEditor.addEventListener('input', () => {
-    expandSend.disabled = !expandEditor.value.trim();
-  });
-  document.getElementById('chat-expand-close').addEventListener('click', closeChatExpand);
-  document.getElementById('chat-expand-backdrop').addEventListener('click', closeChatExpand);
 
   // Reserve space at the bottom of the scrollable message list equal to the floating
   // input area's height so the last message clears the absolutely-positioned input.
