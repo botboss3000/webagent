@@ -14,14 +14,12 @@
 #
 # Env overrides:
 #   DISTRO          — proot-distro name (default: ubuntu)
-#   WEBAGENT_DIR    — webagent path inside the proot (default: ~/webagent)
-#   BROWSER_BRIDGE  — bridge file path inside the proot (default: /tmp/webagent_open.url)
+#   WEBAGENT_DIR    — webagent path inside the proot (default: /root/webagent)
 
 set -u
 
 DISTRO="${DISTRO:-ubuntu}"
 WEBAGENT_DIR="${WEBAGENT_DIR:-/root/webagent}"
-BROWSER_BRIDGE="${BROWSER_BRIDGE:-/tmp/webagent_open.url}"
 
 c_red='\033[1;31m'; c_grn='\033[1;32m'; c_ylw='\033[1;33m'; c_blu='\033[1;34m'; c_off='\033[0m'
 say()  { printf "%b[launcher]%b %s\n" "$c_blu" "$c_off" "$*"; }
@@ -41,8 +39,9 @@ if ! command -v proot-distro >/dev/null 2>&1; then
     pkg update -y && pkg install -y proot-distro || { err "pkg install failed"; exit 1; }
 fi
 
-# 3. distro — check rootfs directory directly (more reliable than parsing `list`)
-if [ ! -d "$PREFIX/var/lib/proot-distro/installed-rootfs/${DISTRO}" ]; then
+# 3. distro — probe by attempting a no-op login. Works across proot-distro
+# versions (the rootfs path moved between releases, so a fs check is brittle).
+if ! proot-distro login "${DISTRO}" -- /bin/true >/dev/null 2>&1; then
     warn "distro '${DISTRO}' not installed. installing (this can take a few minutes)..."
     proot-distro install "${DISTRO}" || { err "distro install failed"; exit 1; }
 fi
@@ -61,10 +60,13 @@ if [ -z "$TERMUX_OPEN_URL_BIN" ]; then
 fi
 
 # 6. Browser-bridge tailer.
-# proot-distro mounts the Termux fs at /data/data/com.termux. The proot's
-# /tmp lives inside the rootfs at:
-PROOT_ROOTFS="$PREFIX/var/lib/proot-distro/installed-rootfs/${DISTRO}"
-PROOT_BRIDGE_HOST="${PROOT_ROOTFS}${BROWSER_BRIDGE}"
+# We put the bridge file inside the project dir (which IS bind-mounted into
+# the proot) — that way both sides see it via the bind mount, no matter
+# where proot-distro keeps its rootfs internally. The launcher (Python, in
+# proot) writes to ${WEBAGENT_DIR}/launcher_android/.browser-bridge; this
+# script (Termux side) reads the same file at the host bind-mount source.
+BRIDGE_PROOT="${WEBAGENT_DIR}/launcher_android/.browser-bridge"
+PROOT_BRIDGE_HOST="${SCRIPT_DIR}/.browser-bridge"
 mkdir -p "$(dirname "$PROOT_BRIDGE_HOST")" 2>/dev/null || true
 : > "$PROOT_BRIDGE_HOST" 2>/dev/null || true
 
@@ -106,7 +108,7 @@ proot-distro login "${DISTRO}" --bind "${PROJECT_DIR_HOST}:${WEBAGENT_DIR}" -- /
         \"\$LAUNCHER_VENV/bin/pip\" install --quiet textual
     fi
     export WEBAGENT_PROJECT_DIR='${WEBAGENT_DIR}'
-    export WEBAGENT_BROWSER_BRIDGE='${BROWSER_BRIDGE}'
+    export WEBAGENT_BROWSER_BRIDGE='${BRIDGE_PROOT}'
     cd '${WEBAGENT_DIR}/launcher_android'
     exec \"\$LAUNCHER_VENV/bin/python\" -m launcher_android
 "
