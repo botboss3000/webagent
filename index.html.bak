@@ -389,7 +389,7 @@
         <i data-lucide="files" class="lucide-icon"></i>Pages
       </button>
       <button type="button" class="main-tab" data-value="agents" role="tab">
-        <i data-lucide="bot" class="lucide-icon"></i>Agents
+        <i data-lucide="bot" class="lucide-icon"></i>Agent Manager
       </button>
     </div>
     <button type="button" id="main-tabs-chev-right" class="main-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>

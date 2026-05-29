@@ -174,6 +174,8 @@ function eventToNodeId(event) {
       case 'memory_search_end':     return 'memory_search';
       case 'build_prompt':          return 'build_prompt';
       case 'attachment':            return 'resolve_attach';
+      case 'attachment_describe_start':
+      case 'attachment_describe_end': return 'attachment_describe';
 
       // LOOP INIT
       case 'load_tools':            return 'load_tools';

@@ -101,6 +101,34 @@ function _loadLastSessionSeq() {
 }
 _loadLastSessionSeq();
 
+// ── chat draft persistence ──
+// Keep whatever the user has typed (but not yet sent) in the chat pill so a
+// page refresh doesn't lose it. Stored as plain text in localStorage; this
+// mirrors the in-memory pill, which is already global across session switches.
+const _DRAFT_LS_KEY = 'webagent.chatDraft.v1';
+function _saveDraft() {
+  try {
+    const v = app.chatInput ? app.chatInput.value : '';
+    if (v) localStorage.setItem(_DRAFT_LS_KEY, v);
+    else localStorage.removeItem(_DRAFT_LS_KEY);
+  } catch (_) { /* quota / private mode — non-fatal */ }
+}
+function _clearDraft() {
+  try { localStorage.removeItem(_DRAFT_LS_KEY); } catch (_) { /* non-fatal */ }
+}
+function _restoreDraft() {
+  try {
+    const v = localStorage.getItem(_DRAFT_LS_KEY);
+    if (!v || !app.chatInput) return;
+    if (app.chatInput.value) return;   // don't clobber anything already present
+    if (!_canChat()) return;           // locked apps keep the pill empty
+    app.chatInput.value = v;
+    _updateInputRowState();
+    if (app.chatSend) app.chatSend.disabled = !v.trim();
+    if (app.autoResizeChatInput) app.autoResizeChatInput();
+  } catch (_) { /* non-fatal */ }
+}
+
 function addChatBubble(role, text, extraClass, imageUrl, turnId) {
   const bubble = document.createElement('div');
   bubble.className = 'chat-bubble ' + role + (extraClass ? ' ' + extraClass : '');
@@ -347,6 +375,7 @@ async function sendMessage() {
   app.chatInput.value = '';
   app.chatSend.disabled = true;
   _updateInputRowState();
+  _clearDraft();
 
   // Advance the poll cursor so auto-poll doesn't re-render this message
   if (window.__chatPollLastAt !== undefined) {
@@ -740,11 +769,17 @@ export function initChat() {
     if (!_canChat()) { app.chatSend.disabled = true; _updateInputRowState(); return; }
     app.chatSend.disabled = !app.chatInput.value.trim();
     _updateInputRowState();
+    _saveDraft();
   });
 
   // Apply gating immediately with cached value, then re-apply once mode is loaded
   applyChatGate();
-  fetchAccessMode().then(applyChatGate);
+  fetchAccessMode().then(() => { applyChatGate(); _restoreDraft(); });
+
+  // Restore any unsent draft from a previous page load so a refresh keeps it.
+  // Runs again above once the access mode resolves, in case this first attempt
+  // was gated out before we knew the visitor was allowed to chat.
+  _restoreDraft();
 
   // ── Expand button ──
   document.getElementById('chat-expand-btn').addEventListener('click', openChatExpand);

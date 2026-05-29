@@ -43,11 +43,20 @@ class LauncherConfig:
     theme_color_c: str = "#ff00ff"
     theme_speed: float = 1.0
     animation_intensity: float = 1.0
-    animation_style: str = "plasma"  # plasma | flowfield | rings | static
+    animation_style: str = "plasma"  # plasma | flowfield | rings | static (Noise) | off
     char_ramp: str = " .:-=+*#%@"
     fps: int = 24
     auto_launch_browser: bool = True
     last_browser_url: str = "http://localhost:8080/index.html"
+
+    # ── in-TUI chat client ─────────────────────────────────────────────
+    chat_username: str = "admin"          # local server login (default admin)
+    chat_password: str = "admin"
+    auto_start_server: bool = True        # start the server when the app opens
+    chat_default_view: bool = True        # open the chat screen on launch
+    default_agent_ref: str = "admin-agent"  # "template:<id>" | "agent:<id>" | bare admin template id
+    last_agent_ref: str = ""              # remembered last agent selection
+    last_session_id: str = ""             # remembered last session
 
     # ── persistence ────────────────────────────────────────────────────
     @classmethod

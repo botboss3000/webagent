@@ -14,7 +14,8 @@ from textual.widgets import Button, Input, Label, ListItem, ListView, Select, St
 
 from .config import LauncherConfig
 from .palette import PRESETS, Preset, apply_preset_to_config, build_palette_from_config
-from .ascii_anim import ANIM_STYLES
+from .ascii_anim import ANIM_STYLES, ANIM_LABELS
+from .widgets import Slider
 
 
 # ── first-run setup ────────────────────────────────────────────────────
@@ -73,37 +74,25 @@ class SetupScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-# ── settings screen ────────────────────────────────────────────────────
-class SettingsScreen(ModalScreen[bool]):
-    """Theme + animation settings. Live-updates the parent app via callback."""
+# ── inline settings panel ───────────────────────────────────────────────
+class SettingsPanel(Vertical):
+    """Theme + animation settings, mounted INLINE where the log pane sits.
 
-    BINDINGS = [
-        Binding("escape", "close", "Close", priority=True, show=True),
-        Binding("q",      "close", "Close", priority=True, show=False),
-        Binding("left,h",  "prev_preset", "Prev preset"),
-        Binding("right,l", "next_preset", "Next preset"),
-        Binding("up,k",    "prev_anim",   "Prev animation"),
-        Binding("down,j",  "next_anim",   "Next animation"),
-        Binding("comma",                "speed_down",     "Slower"),
-        Binding("full_stop",            "speed_up",       "Faster"),
-        Binding("left_square_bracket",  "intensity_down", "Less"),
-        Binding("right_square_bracket", "intensity_up",   "More"),
-        Binding("minus",                "fps_down",       "FPS-"),
-        Binding("equals_sign",          "fps_up",         "FPS+"),
-        Binding("plus",                 "fps_up",         "FPS+"),
-    ]
+    Replaces the old centered modal so the animation stage above stays fully
+    visible and updates live as the controls change. The owning app toggles
+    this panel's visibility and handles saving/closing via callbacks.
+    """
 
-    def action_close(self) -> None:
-        try:
-            self.cfg.save()
-        except Exception:
-            pass
-        self.dismiss(True)
-
-    def __init__(self, cfg: LauncherConfig, on_change: Callable[[], None]) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        cfg: LauncherConfig,
+        on_change: Callable[[], None],
+        on_close: Callable[[], None],
+    ) -> None:
+        super().__init__(id="settings-panel")
         self.cfg = cfg
         self._on_change = on_change
+        self._on_close = on_close
         self._preset_idx = self._guess_preset_idx()
 
     def _guess_preset_idx(self) -> int:
@@ -113,116 +102,71 @@ class SettingsScreen(ModalScreen[bool]):
         return 0
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="settings-panel"):
-            # Sticky header so the Close button is ALWAYS visible
-            with Horizontal(id="settings-header"):
-                yield Static("[b]Theme & Animation[/b]", id="settings-title")
-                yield Button("Close (Esc)", variant="primary", id="settings-close")
+        # Sticky header so the Close button is ALWAYS visible
+        with Horizontal(id="settings-header"):
+            yield Static("[b]Theme & Animation[/b]", id="settings-title")
+            yield Button("Close (Esc)", variant="primary", id="settings-close")
 
-            # Scrollable body — content can grow without hiding the header
-            with VerticalScroll(id="settings-body"):
-                yield Label("Color preset (Left/Right or click):", classes="label")
-                yield ListView(
-                    *[ListItem(Label(f"  {p.name}")) for p in PRESETS],
-                    id="preset-list",
-                    initial_index=self._preset_idx,
-                )
+        # Scrollable body. Style + the three sliders sit at the TOP so the most
+        # used controls (the "it's too much" knobs) are visible without
+        # scrolling; the preset list and ramp live below and scroll if needed.
+        with VerticalScroll(id="settings-body"):
+            yield Label("Animation style (Off = stop it):", classes="label")
+            yield Select(
+                [(ANIM_LABELS.get(s, s.title()), s) for s in ANIM_STYLES],
+                value=self.cfg.animation_style if self.cfg.animation_style in ANIM_STYLES else "plasma",
+                id="anim-style",
+                allow_blank=False,
+            )
 
-                yield Label("Animation style:", classes="label")
-                yield Select(
-                    [(s.title(), s) for s in ANIM_STYLES],
-                    value=self.cfg.animation_style if self.cfg.animation_style in ANIM_STYLES else "plasma",
-                    id="anim-style",
-                    allow_blank=False,
-                )
+            yield Label("Motion (drag, or ←/→ when focused):", classes="label")
+            yield Slider(
+                "Speed", self.cfg.theme_speed, 0.05, 5.0, 0.05,
+                formatter=lambda v: f"{v:.2f}x", id="speed-slider",
+            )
+            yield Slider(
+                "Intensity", self.cfg.animation_intensity, 0.0, 2.0, 0.05,
+                formatter=lambda v: f"{v:.2f}", id="intensity-slider",
+            )
+            yield Slider(
+                "FPS", float(self.cfg.fps), 4, 60, 2,
+                formatter=lambda v: f"{int(round(v))}", id="fps-slider",
+            )
 
-                yield Label(
-                    f"Speed: [b]{self.cfg.theme_speed:.2f}[/b]  (',' slower  '.' faster)",
-                    id="speed-label",
-                    classes="label",
-                )
-                yield Label(
-                    f"Intensity: [b]{self.cfg.animation_intensity:.2f}[/b]  ('[' less  ']' more)",
-                    id="intensity-label",
-                    classes="label",
-                )
-                yield Label(
-                    f"FPS: [b]{self.cfg.fps}[/b]  ('-' slower  '+' faster)",
-                    id="fps-label",
-                    classes="label",
-                )
+            yield Label("Color preset (↑/↓ or click):", classes="label")
+            yield ListView(
+                *[ListItem(Label(f"  {p.name}")) for p in PRESETS],
+                id="preset-list",
+                initial_index=self._preset_idx,
+            )
 
-                yield Label("Character ramp (typed):", classes="label")
-                yield Input(value=self.cfg.char_ramp, id="ramp-input")
+            yield Label("Character ramp (typed):", classes="label")
+            yield Input(value=self.cfg.char_ramp, id="ramp-input")
 
-    # ── actions ────────────────────────────────────────────────────
-    def action_prev_preset(self) -> None:
-        self._preset_idx = (self._preset_idx - 1) % len(PRESETS)
-        self.query_one("#preset-list", ListView).index = self._preset_idx
-        self._apply_preset()
+    def focus_first(self) -> None:
+        """Focus the Speed slider when the panel opens so ←/→ adjust motion
+        immediately (the most common 'it's too much' tweak)."""
+        try:
+            self.query_one("#speed-slider", Slider).focus()
+        except Exception:
+            pass
 
-    def action_next_preset(self) -> None:
-        self._preset_idx = (self._preset_idx + 1) % len(PRESETS)
-        self.query_one("#preset-list", ListView).index = self._preset_idx
-        self._apply_preset()
-
-    def action_prev_anim(self) -> None:
-        cur = self.cfg.animation_style if self.cfg.animation_style in ANIM_STYLES else "plasma"
-        idx = ANIM_STYLES.index(cur)
-        new = ANIM_STYLES[(idx - 1) % len(ANIM_STYLES)]
-        self.cfg.animation_style = new
-        self.query_one("#anim-style", Select).value = new
-        self._notify()
-
-    def action_next_anim(self) -> None:
-        cur = self.cfg.animation_style if self.cfg.animation_style in ANIM_STYLES else "plasma"
-        idx = ANIM_STYLES.index(cur)
-        new = ANIM_STYLES[(idx + 1) % len(ANIM_STYLES)]
-        self.cfg.animation_style = new
-        self.query_one("#anim-style", Select).value = new
-        self._notify()
-
-    def action_speed_up(self) -> None:
-        self.cfg.theme_speed = min(5.0, round(self.cfg.theme_speed + 0.1, 2))
-        self.query_one("#speed-label", Label).update(
-            f"Speed: [b]{self.cfg.theme_speed:.2f}[/b]  (',' slower  '.' faster)"
-        )
-        self._notify()
-
-    def action_speed_down(self) -> None:
-        self.cfg.theme_speed = max(0.05, round(self.cfg.theme_speed - 0.1, 2))
-        self.query_one("#speed-label", Label).update(
-            f"Speed: [b]{self.cfg.theme_speed:.2f}[/b]  (',' slower  '.' faster)"
-        )
-        self._notify()
-
-    def action_intensity_up(self) -> None:
-        self.cfg.animation_intensity = min(2.0, round(self.cfg.animation_intensity + 0.1, 2))
-        self.query_one("#intensity-label", Label).update(
-            f"Intensity: [b]{self.cfg.animation_intensity:.2f}[/b]  ('[' less  ']' more)"
-        )
-        self._notify()
-
-    def action_intensity_down(self) -> None:
-        self.cfg.animation_intensity = max(0.0, round(self.cfg.animation_intensity - 0.1, 2))
-        self.query_one("#intensity-label", Label).update(
-            f"Intensity: [b]{self.cfg.animation_intensity:.2f}[/b]  ('[' less  ']' more)"
-        )
-        self._notify()
-
-    def action_fps_up(self) -> None:
-        self.cfg.fps = min(60, self.cfg.fps + 2)
-        self.query_one("#fps-label", Label).update(
-            f"FPS: [b]{self.cfg.fps}[/b]  ('-' slower  '+' faster)"
-        )
-        self._notify()
-
-    def action_fps_down(self) -> None:
-        self.cfg.fps = max(4, self.cfg.fps - 2)
-        self.query_one("#fps-label", Label).update(
-            f"FPS: [b]{self.cfg.fps}[/b]  ('-' slower  '+' faster)"
-        )
-        self._notify()
+    def sync_from_config(self) -> None:
+        """Refresh every control from cfg. Call this after the app's Space/C
+        cycle shortcuts so the open panel doesn't show stale values."""
+        try:
+            sel = self.query_one("#anim-style", Select)
+            if self.cfg.animation_style in ANIM_STYLES and sel.value != self.cfg.animation_style:
+                sel.value = self.cfg.animation_style
+            # Sliders: update without re-posting Changed (no feedback loop).
+            self.query_one("#speed-slider", Slider)._set_value(self.cfg.theme_speed, notify=False)
+            self.query_one("#intensity-slider", Slider)._set_value(self.cfg.animation_intensity, notify=False)
+            self.query_one("#fps-slider", Slider)._set_value(float(self.cfg.fps), notify=False)
+            # Preset highlight (guard prevents a redundant re-apply).
+            self._preset_idx = self._guess_preset_idx()
+            self.query_one("#preset-list", ListView).index = self._preset_idx
+        except Exception:
+            pass
 
     # ── widget events ──────────────────────────────────────────────
     @on(ListView.Highlighted, "#preset-list")
@@ -230,13 +174,30 @@ class SettingsScreen(ModalScreen[bool]):
         idx = event.list_view.index or 0
         if idx != self._preset_idx:
             self._preset_idx = idx
-            self._apply_preset()
+            preset: Preset = PRESETS[idx]
+            apply_preset_to_config(preset, self.cfg)
+            self._notify()
 
     @on(Select.Changed, "#anim-style")
     def _anim_changed(self, event: Select.Changed) -> None:
         if event.value:
             self.cfg.animation_style = str(event.value)
             self._notify()
+
+    @on(Slider.Changed, "#speed-slider")
+    def _speed_changed(self, event: Slider.Changed) -> None:
+        self.cfg.theme_speed = round(event.value, 2)
+        self._notify()
+
+    @on(Slider.Changed, "#intensity-slider")
+    def _intensity_changed(self, event: Slider.Changed) -> None:
+        self.cfg.animation_intensity = round(event.value, 2)
+        self._notify()
+
+    @on(Slider.Changed, "#fps-slider")
+    def _fps_changed(self, event: Slider.Changed) -> None:
+        self.cfg.fps = int(round(event.value))
+        self._notify()
 
     @on(Input.Changed, "#ramp-input")
     def _ramp_changed(self, event: Input.Changed) -> None:
@@ -246,14 +207,9 @@ class SettingsScreen(ModalScreen[bool]):
 
     @on(Button.Pressed, "#settings-close")
     def _close(self) -> None:
-        self.action_close()
+        self._on_close()
 
     # ── helpers ────────────────────────────────────────────────────
-    def _apply_preset(self) -> None:
-        preset: Preset = PRESETS[self._preset_idx]
-        apply_preset_to_config(preset, self.cfg)
-        self._notify()
-
     def _notify(self) -> None:
         try:
             self._on_change()

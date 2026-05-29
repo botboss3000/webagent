@@ -30,7 +30,10 @@ hidden_imports = textual_hidden + [
     "webagent_launcher.palette",
     "webagent_launcher.reset",
     "webagent_launcher.screens",
+    "webagent_launcher.widgets",
     "webagent_launcher.server",
+    "webagent_launcher.chat_screen",
+    "webagent_launcher.api_client",
     # Networking + process control
     "httpx",
     "psutil",

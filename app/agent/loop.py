@@ -33,10 +33,18 @@ from app.billing import pricing as _billing_pricing
 from app.billing import wallet as _billing_wallet
 
 
-def _fire_optimizer(user_id: str, session_id: str, channel: Optional[str] = None) -> None:
+def _fire_optimizer(user_id: str, session_id: str, channel: Optional[str] = None,
+                    agent_template_id: Optional[str] = None) -> None:
     """Fire-and-forget optimizer task with error trapping.
     Only fires if optimizer config mode is 'live'.
+    Never fires for the admin agent — it edits the codebase, it is not a
+    user-facing chat agent whose prompt the optimizer should rewrite, and
+    auto-spawning the Planner on its sessions is exactly the "calling on
+    optimizer agents" behavior we want to stop.
     """
+    if agent_template_id == "admin-agent":
+        logger.debug("Optimizer: skipped for session %s (admin agent)", session_id)
+        return
     try:
         from app.optimizer.config import load_config
         cfg = load_config()
@@ -917,7 +925,44 @@ async def stream_agent_events(
         # Use list to track state across function boundaries
         first_stream_chunk_state = [True]  # [is_first_chunk]
 
+        # ── Stall / runaway guard ────────────────────────────────────────────
+        # Safety nets so an agent can't go "rogue": loop on the same tool call,
+        # or run until the request times out. They only trip on pathological
+        # behavior, never on normal multi-step work. All thresholds env-tunable.
+        import collections as _collections
+        _loop_start_ts = time.time()
+        _tool_call_counts = _collections.Counter()   # signature -> times seen
+        stall_strikes = 0
+        stall_stop_msg = None     # when set, break out of the loop and finalize
+        input_tokens = output_tokens = llm_cost = None   # pre-init for finalize
+        try:
+            _MAX_IDENTICAL_CALLS = max(2, int(os.environ.get("AGENT_MAX_IDENTICAL_TOOL_CALLS", "3")))
+        except (ValueError, TypeError):
+            _MAX_IDENTICAL_CALLS = 3
+        try:
+            _MAX_STALL_STRIKES = max(1, int(os.environ.get("AGENT_MAX_STALL_STRIKES", "4")))
+        except (ValueError, TypeError):
+            _MAX_STALL_STRIKES = 4
+        try:
+            _MAX_WALL_SECONDS = float(os.environ.get("AGENT_MAX_WALL_SECONDS", "300"))
+        except (ValueError, TypeError):
+            _MAX_WALL_SECONDS = 300.0
+
         while turn_count < max_turns:
+            # Wall-clock safety cap — finish gracefully instead of timing out.
+            # (>0 guard: 0/negative disables it and can't trip on turn 1.)
+            if _MAX_WALL_SECONDS > 0 and (time.time() - _loop_start_ts) > _MAX_WALL_SECONDS:
+                yield {"type": "pipeline", "level": "pipeline",
+                       "step": "stall_guard_stop", "reason": "wall_clock",
+                       "elapsed_s": round(time.time() - _loop_start_ts, 1),
+                       "turn": turn_count}
+                stall_stop_msg = (
+                    "I stopped because this task hit the safety time limit — I didn't "
+                    "want to leave you waiting on a request that may be stuck. Here's "
+                    "where I got to; tell me how you'd like to proceed, or try breaking "
+                    "it into smaller steps."
+                )
+                break
             if loop_config.is_enabled("interrupt_chk"):
                 await _check_interrupt(session_id, interrupt_event)
 
@@ -1097,7 +1142,34 @@ async def stream_agent_events(
                 except (json.JSONDecodeError, TypeError):
                     _multi_providers_list = []
 
-                if len(_multi_providers_list) >= 2:
+                # ── Attachment Description: when an image is inlined in the
+                #    messages, only let image-capable providers race — a text-only
+                #    racer would answer blind or error. chat.py already described
+                #    the image when NO selected model could see it, so an inlined
+                #    image here implies at least one image-capable racer exists. ──
+                def _msgs_have_image(msgs):
+                    for _m in msgs:
+                        _c = _m.get("content")
+                        if isinstance(_c, list) and any(
+                            isinstance(_p, dict) and _p.get("type") == "image_url" for _p in _c
+                        ):
+                            return True
+                    return False
+
+                _has_image = _msgs_have_image(messages)
+                if _has_image:
+                    _multi_providers_list = [p for p in _multi_providers_list if p.get("image_capable")]
+                    if not _multi_providers_list:
+                        logger.warning(
+                            "Parallel race: image present but no image-capable provider "
+                            "configured; falling back to single-provider path"
+                        )
+
+                # A race normally needs >=2 providers; with an inlined image a
+                # single image-capable provider still uses the race path (so that
+                # model is used, not the env-default single model).
+                _min_racers = 1 if _has_image else 2
+                if len(_multi_providers_list) >= _min_racers:
                     _used_parallel = True
                     _parallel_had_error = False
 
@@ -1335,6 +1407,48 @@ async def stream_agent_events(
                                "op": "insert_interaction", "role": "tool",
                                "tool_name": tool_name, "id": inter_id, "ms": db_dur}
                     else:
+                        # ── Stall guard: identical-call loop detection ──────────
+                        # If the agent calls the SAME tool with the SAME arguments
+                        # too many times, it is looping (e.g. run_worker_trials x6).
+                        # Block the repeat, tell it to change approach, count a
+                        # strike, and move on without executing.
+                        _sig = f"{tool_name}|{tc.function.arguments or ''}"
+                        _tool_call_counts[_sig] += 1
+                        if _tool_call_counts[_sig] >= _MAX_IDENTICAL_CALLS:
+                            stall_strikes += 1
+                            _loop_warn = (
+                                f"Loop guard: you have called `{tool_name}` with identical "
+                                f"arguments {_tool_call_counts[_sig]} times. That is not making "
+                                f"progress, so I did not run it again. Do NOT repeat the same "
+                                f"call — take a different approach, use a different tool, or "
+                                f"stop and give the user your best answer or a clarifying question."
+                            )
+                            yield {"type": "pipeline", "level": "pipeline",
+                                   "step": "stall_guard_loop", "tool": tool_name,
+                                   "count": _tool_call_counts[_sig], "strikes": stall_strikes}
+                            yield {
+                                "type": "tool_result", "level": "agent", "tool": tool_name,
+                                "result": json.dumps({"status": "loop_blocked", "message": _loop_warn}),
+                                "duration_ms": 0, "error": True,
+                                "error_type": "loop_blocked", "recoverable": True,
+                            }
+                            tool_msg = {"role": "tool", "content": _loop_warn, "tool_call_id": tc.id}
+                            messages.append(tool_msg)
+                            inp = _build_input()
+                            outp = json.dumps({"role": "tool", "content": _loop_warn, "tool_call_id": tc.id, "name": tool_name, "success": False})
+                            inter_id = await db.insert_interaction(
+                                user_id, session_id, role="tool", content=_loop_warn,
+                                parent_id=asst_id, tool_call_id=tc.id, tool_name=tool_name,
+                                channel=channel,
+                                metadata=json.dumps({"success": False, "duration_ms": 0, "input_params": tool_args, "error_message": "loop_blocked"}),
+                                input_data=inp, output_data=outp,
+                                sender_id=agent_id, receiver_id=agent_id,
+                            )
+                            yield {"type": "db", "level": "db",
+                                   "op": "insert_interaction", "role": "tool",
+                                   "tool_name": tool_name, "id": inter_id, "ms": 0}
+                            continue
+
                         # ── Guardrail: confirmation required for destructive tools ──
                         # effective_destructive merges the hardcoded baseline with the
                         # agent's safety_policy.destructive_tools and per-tool flags.
@@ -1583,6 +1697,18 @@ async def stream_agent_events(
                         except Exception as track_err:
                             logger.debug(f"Skill tracking skipped for {tool_name}: {track_err}")
 
+                # ── Stall guard: too many loop strikes → stop cleanly ──
+                if stall_strikes >= _MAX_STALL_STRIKES:
+                    yield {"type": "pipeline", "level": "pipeline",
+                           "step": "stall_guard_stop", "reason": "repeated_loops",
+                           "strikes": stall_strikes, "turn": turn_count}
+                    stall_stop_msg = (
+                        "I stopped because I kept repeating the same step without making "
+                        "progress and I didn't want to spin in a loop. Could you clarify "
+                        "what you'd like, or point me at the specific file or area to change?"
+                    )
+                    break
+
                 yield {"type": "pipeline", "level": "pipeline",
                        "step": "check_continue", "turn": turn_count,
                        "max_turns": max_turns, "will_continue": turn_count < max_turns}
@@ -1633,7 +1759,33 @@ async def stream_agent_events(
 
             yield {"type": "response", "level": "agent", "content": prefix_content(collected_content)}
             if loop_config.is_enabled("fire_optimizer"):
-                _fire_optimizer(user_id, session_id, channel)
+                _fire_optimizer(user_id, session_id, channel, agent_template_id)
+            return
+
+        # ── Stall guard stop — finalize cleanly (skip the max-turns message) ──
+        if stall_stop_msg is not None:
+            messages.append({"role": "assistant", "content": stall_stop_msg})
+            meta_final = _build_meta("assistant", input_tokens, output_tokens, llm_cost)
+            inp = _build_input()
+            outp = json.dumps({"role": "assistant", "content": stall_stop_msg})
+            db_start = time.time()
+            inter_id = await db.insert_interaction(
+                user_id, session_id, role="assistant", content=stall_stop_msg,
+                parent_id=parent_interaction_id,
+                channel=channel,
+                metadata=meta_final,
+                input_data=inp,
+                output_data=outp,
+                sender_id=agent_id,
+                receiver_id=user_id,
+            )
+            db_dur = int((time.time() - db_start) * 1000)
+            yield {"type": "db", "level": "db",
+                   "op": "insert_interaction", "role": "assistant",
+                   "tool_name": None, "id": inter_id, "ms": db_dur}
+            yield {"type": "response", "level": "agent", "content": prefix_content(stall_stop_msg)}
+            if loop_config.is_enabled("fire_optimizer"):
+                _fire_optimizer(user_id, session_id, channel, agent_template_id)
             return
 
         # ── Max turns reached ──
@@ -1646,18 +1798,18 @@ async def stream_agent_events(
             "content": prefix_content("I've reached the maximum number of turns. What would you like to do next?"),
         }
         if loop_config.is_enabled("fire_optimizer"):
-            _fire_optimizer(user_id, session_id, channel)
+            _fire_optimizer(user_id, session_id, channel, agent_template_id)
     except asyncio.CancelledError as e:
         logger.info(f"Agent loop for session {session_id} cancelled: {e}")
         yield {"type": "interrupted", "level": "agent", "message": str(e)}
         if loop_config.is_enabled("fire_optimizer"):
-            _fire_optimizer(user_id, session_id, channel)
+            _fire_optimizer(user_id, session_id, channel, agent_template_id)
         return
     except Exception as e:
         logger.error(f"Agent loop error: {e}", exc_info=True)
         yield {"type": "error", "level": "agent", "message": f"Unexpected error in agent loop: {e}"}
         if loop_config.is_enabled("fire_optimizer"):
-            _fire_optimizer(user_id, session_id, channel)
+            _fire_optimizer(user_id, session_id, channel, agent_template_id)
         return
 
 

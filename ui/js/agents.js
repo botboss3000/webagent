@@ -2629,6 +2629,8 @@ const _CONN_ICONS = {
   web_access:       'globe',
   browser_control:  'mouse-pointer-2',
   image_generation: 'image',
+  visualizer:       'layout-dashboard',
+  agent_orchestration: 'workflow',
 };
 
 async function _renderConnectionsTab(body, agent) {
@@ -3816,6 +3818,11 @@ function _lvNodeHint(nd, agent) {
     case 'resolve_attach':
       return 'Resolves uploaded file IDs into metadata for the system prompt';
 
+    case 'attachment_describe':
+      return isCustom
+        ? 'Describe images for non-vision models — click to toggle'
+        : 'When the turn model can\'t see images, a vision model describes them and the text is injected';
+
     case 'build_prompt':
       return isCustom
         ? 'Click to edit prompt sections'
@@ -4338,6 +4345,15 @@ function _lvShowEditPanel(nd, nodeEl, container, agent) {
         'On first use, copies the default agent\'s context documents into this agent\'s context. Disable if you want this agent to start with a completely blank context (no inherited personality, skills, or task workflows from the default template).',
         {
           dbEffect: 'Inserts context_documents rows (one-time copy). Once copied, toggling this off has no effect — the docs already exist. To reset, delete the agent\'s context docs manually.',
+          effectiveWhen: 'Next message sent',
+          effectiveClass: 'immediate'
+        });
+      break;
+    case 'attachment_describe':
+      _lvRenderGatedNodeEditor(body, agent, 'attachment_describe', 'Attachment Description',
+        'When an image is attached and the model(s) handling this turn cannot see images, a separately-configured vision model describes each image once and the description is injected into the message as text (and persisted, so later turns keep it). The image describer is whichever model you mark image-capable in App Config → Default LLM. Disable for agents that never need to read images.',
+        {
+          dbEffect: 'Calls the configured vision model once per new image; caches the description on the attachment row and updates the user interaction content. No new tables.',
           effectiveWhen: 'Next message sent',
           effectiveClass: 'immediate'
         });

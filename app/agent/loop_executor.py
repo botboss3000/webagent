@@ -36,7 +36,7 @@ DEFAULT_NODE_ORDER: List[str] = [
     "slash_cmd", "ensure_session", "agent_resolve", "participants", "save_user_msg",
     # CONTEXT (chat.py)
     "load_context", "copy_defaults", "skip_gate", "memory_search", "resolve_attach",
-    "build_prompt", "build_history",
+    "attachment_describe", "build_prompt", "build_history",
     # LOOP INIT (stream_agent_events, before while-loop)
     "load_provider", "load_tools", "data_src_load", "integration_status", "assemble_msgs",
     # INFERENCE (per-turn while-loop)
@@ -76,6 +76,7 @@ GATED_NODES: frozenset = frozenset({
     "fire_optimizer",  # Skip optimizer trigger after completion
     "copy_defaults",   # Skip copying default context docs on first use
     "data_src_load",   # Skip per-agent external data-source tool injection
+    "attachment_describe",  # Skip describing images for non-multimodal models
 })
 
 

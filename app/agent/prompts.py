@@ -157,6 +157,40 @@ def format_attachments_for_prompt(attachments: List[Dict]) -> str:
     return "\n".join(lines)
 
 
+async def _attachment_to_image_data_url(att: Dict) -> Optional[str]:
+    """Read an image attachment's bytes and return a base64 data URL, or None when
+    the attachment isn't an inlinable image or can't be read. Shared by
+    `build_user_message_content` (native inline) and `describe_image_attachment`
+    (the vision sub-step) so the mime/size/storage guards live in one place."""
+    mime = (att.get("mime_type") or "").lower()
+    if mime not in _VISION_INLINE_MIMES:
+        return None
+    size = att.get("size_bytes") or 0
+    if size and size > _VISION_INLINE_MAX_BYTES:
+        logger.info(
+            "Skipping inline of attachment %s: %d bytes exceeds %d limit",
+            att.get("id"), size, _VISION_INLINE_MAX_BYTES,
+        )
+        return None
+    storage_provider = att.get("storage_provider") or "local"
+    if storage_provider == "browser":
+        # Bytes live in the user's browser IndexedDB; the server can't read them.
+        return None
+    storage_path = att.get("storage_path")
+    if not storage_path:
+        return None
+    try:
+        from app.db.attachments import read_file
+        file_bytes = await read_file(storage_path, storage_provider=storage_provider)
+    except Exception as e:
+        logger.warning("read_file failed for attachment %s: %s", att.get("id"), e)
+        return None
+    if not file_bytes:
+        return None
+    b64 = base64.b64encode(file_bytes).decode("ascii")
+    return f"data:{mime};base64,{b64}"
+
+
 async def build_user_message_content(
     user_text: str,
     attachment_docs: Optional[List[Dict]] = None,
@@ -173,42 +207,75 @@ async def build_user_message_content(
 
     image_parts: List[Dict[str, Any]] = []
     for att in attachment_docs:
-        mime = (att.get("mime_type") or "").lower()
-        if mime not in _VISION_INLINE_MIMES:
-            continue
-        size = att.get("size_bytes") or 0
-        if size and size > _VISION_INLINE_MAX_BYTES:
-            logger.info(
-                "Skipping inline of attachment %s: %d bytes exceeds %d limit",
-                att.get("id"), size, _VISION_INLINE_MAX_BYTES,
-            )
-            continue
-        storage_provider = att.get("storage_provider") or "local"
-        if storage_provider == "browser":
-            # Bytes live in the user's browser IndexedDB; the server can't read them.
-            continue
-        storage_path = att.get("storage_path")
-        if not storage_path:
-            continue
-        try:
-            from app.db.attachments import read_file
-            file_bytes = await read_file(storage_path, storage_provider=storage_provider)
-        except Exception as e:
-            logger.warning("read_file failed for attachment %s: %s", att.get("id"), e)
-            continue
-        if not file_bytes:
-            continue
-        b64 = base64.b64encode(file_bytes).decode("ascii")
-        image_parts.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:{mime};base64,{b64}"},
-        })
+        url = await _attachment_to_image_data_url(att)
+        if url:
+            image_parts.append({"type": "image_url", "image_url": {"url": url}})
 
     if not image_parts:
         return user_text
 
     text_part = {"type": "text", "text": user_text or ""}
     return [text_part, *image_parts]
+
+
+async def describe_image_attachment(
+    att: Dict,
+    describer_cfg: Dict[str, Any],
+    user_text_hint: str = "",
+) -> Optional[str]:
+    """Call a configured vision model ONCE to describe a single image attachment.
+
+    Returns the description text, or None when the image can't be read, the
+    describer config is incomplete, or the call fails. This is a single
+    in-process completion — no session, no agent loop, no HTTP self-call.
+    Generic by design: future voice/video describers follow the same shape.
+    """
+    url = await _attachment_to_image_data_url(att)
+    if not url:
+        return None
+    base_url = describer_cfg.get("base_url", "")
+    api_key = describer_cfg.get("api_key", "")
+    model = describer_cfg.get("model", "")
+    if not (base_url and api_key and model):
+        return None
+
+    try:
+        from openai import AsyncOpenAI
+    except ImportError:
+        from app.openai_compat import AsyncOpenAI
+
+    sys_line = (
+        "You are an image-description assistant. Describe the attached image in "
+        "thorough, faithful detail so that another AI model which cannot see the "
+        "image can fully understand it. Include any visible text verbatim, plus "
+        "layout, objects, people, colours, charts and notable details. Do not add "
+        "commentary or speculation beyond what is visible."
+    )
+    user_parts: List[Dict[str, Any]] = []
+    hint = (user_text_hint or "").strip()
+    if hint:
+        user_parts.append({"type": "text",
+                           "text": f"The user's message accompanying this image: {hint}"})
+    user_parts.append({"type": "text", "text": "Describe this image in detail."})
+    user_parts.append({"type": "image_url", "image_url": {"url": url}})
+
+    try:
+        client = AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=30.0)
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": sys_line},
+                {"role": "user", "content": user_parts},
+            ],
+            temperature=0.0,
+            max_tokens=768,
+        )
+        if resp and resp.choices:
+            text = (resp.choices[0].message.content or "").strip()
+            return text or None
+    except Exception as e:
+        logger.warning("describe_image_attachment failed for %s: %s", att.get("id"), e)
+    return None
 
 
 

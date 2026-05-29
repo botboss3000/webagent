@@ -272,6 +272,20 @@ class ToolLoader:
         if enabled_providers is None:
             enabled_providers = set()
 
+        # ── Orchestration gating ─────────────────────────────────────────────
+        # `_is_opt_agent`   → this run IS the optimizer's own Planner/Closer.
+        #                     Only these get the internal optimizer-pipeline
+        #                     tools (run_worker_trials / handoff_to_closer /
+        #                     deploy_optimization). No normal agent ever sees
+        #                     them — otherwise agents (e.g. admin) discover them
+        #                     via list_tools/search_tools and loop on them.
+        # `_orchestration_on` → the agent admin enabled the "agent_orchestration"
+        #                     ability for this agent. Gates the opt-in tools that
+        #                     let an agent reach OTHER agents/pipelines:
+        #                     run_optimizer + delegate_to_agent. Off by default.
+        _is_opt_agent = agent_template_id in ("opt_planner", "opt_closer")
+        _orchestration_on = "agent_orchestration" in enabled_providers
+
         # ── create_tool (gated by the "create_tools" ability) ──
         if "create_tools" in enabled_providers:
             from app.tools.registry import create_tool as _builtin_create_tool, VALID_NODE_IDS as _VALID_NODE_IDS
@@ -354,8 +368,9 @@ class ToolLoader:
         )
 
         # ── run_optimizer (trigger interactive optimizer session) ──
-        # Skip registering for optimizer sub-agents to prevent recursion
-        if not user_id.startswith("opt_"):
+        # Opt-in: only injected when the agent has the "agent_orchestration"
+        # ability enabled. Skipped for optimizer sub-agents (recursion guard).
+        if not user_id.startswith("opt_") and _orchestration_on:
             async def _run_optimizer_wrapper(feedback: str = "", skill_name: str = "", criteria: str = ""):
                 """Start an interactive optimizer session. User chats with the Planner agent."""
                 # Safety check: if we're already in an optimizer session, don't create another
@@ -556,10 +571,12 @@ class ToolLoader:
             except ImportError:
                 pass  # app/visualizer/ not available — visual rendering disabled
 
-        # ── Delegation tools — injected for non-pipeline agents ──
-        # Allows agents to hand off to each other mid-conversation.
+        # ── Delegation tools — OPT-IN, non-pipeline agents only ──
+        # Allows agents to hand off to each other mid-conversation. Gated by the
+        # "agent_orchestration" ability so a normal agent can't auto-discover
+        # and hand off to (or loop on) other agents/workers. Off by default.
         _is_pipeline = agent_template_id in ("opt_planner", "opt_closer")
-        if not _is_pipeline:
+        if not _is_pipeline and _orchestration_on:
             try:
                 from app.tools.delegation import build_delegation_tools
                 _delegation = build_delegation_tools(user_id)
@@ -579,10 +596,12 @@ class ToolLoader:
                     },
                 }
                 for _dname, _dhandler in _delegation.items():
+                    # NOTE: ToolInfo has no `description` field — the loop derives
+                    # the description from the handler's docstring. Passing it
+                    # here used to raise TypeError, silently disabling delegation.
                     tools[_dname] = ToolInfo(
                         name=_dname,
                         handler=_dhandler,
-                        description=_dhandler.__doc__ or "",
                         parameters=_delegation_schemas.get(_dname, {"type": "object", "properties": {}, "required": []}),
                     )
             except Exception as _de:
@@ -610,11 +629,15 @@ class ToolLoader:
         )
 
         # ── Tool discovery ──
+        # Optimizer-pipeline tools are advertised ONLY to the optimizer's own
+        # Planner/Closer agents. For every other agent this is empty so
+        # list_tools / search_tools never surface them (the bug that made the
+        # admin agent discover run_worker_trials and loop on it).
         BUILTIN_TOOLS = {
             "run_worker_trials": "Run isolated worker test agents to test proposed optimization changes. Each worker creates a test agent, sends the original user message, and returns the full transcript + metrics.",
             "handoff_to_closer": "Hand off optimization results to the Closer agent. Pass summary, judging_criteria, baseline_transcript, and worker_results.",
             "deploy_optimization": "Deploy approved optimization changes to the user's agent. Pass changes_json with element, element_type, and new_content.",
-        }
+        } if _is_opt_agent else {}
 
         async def _list_tools_wrapper():
             result = json.loads(await _core_list_tools(user_id=user_id))
@@ -1529,6 +1552,15 @@ class ToolLoader:
             },
         )
 
+        # ── Lock optimizer-pipeline tools to the Planner/Closer ──────────────
+        # The wrappers above are defined unconditionally (cheap closures), but a
+        # normal agent must never be able to CALL them. Remove them unless this
+        # run is the optimizer's own sub-agent. This is the guard that stops the
+        # admin agent (or any agent) from invoking run_worker_trials et al.
+        if not _is_opt_agent:
+            for _opt_only in ("run_worker_trials", "handoff_to_closer", "deploy_optimization"):
+                tools.pop(_opt_only, None)
+
         # ── check_oauth_connection ──────────────────────────────────────────────
         # Only registered when at least one OAuth provider is enabled AND
         # admin-configured for this agent. Its provider enum is restricted
@@ -1790,8 +1822,11 @@ async def load_tools(
     TIER_1_ALWAYS_ON = {
         "list_tools", "search_tools", "get_tool_definition",
         "get_time", "get_date", "calculate", "read_attachment",
-        "delegate_to_agent", "list_delegatable_agents", "register_user",
+        "register_user",
     }
+    # NOTE: delegate_to_agent / list_delegatable_agents are deliberately NOT
+    # always-on. They are opt-in via the "agent_orchestration" ability and are
+    # only injected (in _inject_builtin_tools) when that ability is enabled.
     if allowed_tools:
         disabled = set(allowed_tools)
         for name in list(tools.keys()):

@@ -271,6 +271,10 @@ async function _loadLLM() {
         modelStatus.textContent = '';
       }
     }
+    const _capText = _qs('ac-settings-cap-text');
+    const _capImage = _qs('ac-settings-cap-image');
+    if (_capText)  _capText.checked  = data.text_capable !== false;
+    if (_capImage) _capImage.checked = !!data.image_capable;
     _fetchModels();
   } catch (e) {
     console.warn('ac: failed to load LLM settings', e);
@@ -376,6 +380,10 @@ function _renderModelDropdown(filter) {
       dd.style.display = 'none';
       const statusEl = _qs('ac-settings-model-status');
       if (statusEl) { statusEl.textContent = `Selected: ${m.id}`; statusEl.style.color = '#9ece6a'; }
+      const capText = _qs('ac-settings-cap-text');
+      const capImage = _qs('ac-settings-cap-image');
+      if (capText)  capText.checked  = m.text_capable !== false;
+      if (capImage) capImage.checked = !!m.image_capable;
     });
     dd.appendChild(item);
   });
@@ -391,7 +399,9 @@ async function _saveLLM() {
   if (!apiKey)     return _showLLMStatus('Please enter an API Key', 'error');
   if (!_selectedModel) return _showLLMStatus('Please select a model', 'error');
 
-  const payload = { provider, base_url: baseUrl, api_key: apiKey, model: _selectedModel, providers: _providerConfigs };
+  const capText  = _qs('ac-settings-cap-text')?.checked !== false;
+  const capImage = !!_qs('ac-settings-cap-image')?.checked;
+  const payload = { provider, base_url: baseUrl, api_key: apiKey, model: _selectedModel, providers: _providerConfigs, text_capable: capText, image_capable: capImage };
   try {
     const res = await _fetch(apiPath('/admin/settings/provider'), {
       method: 'POST',
@@ -412,6 +422,9 @@ async function _saveLLM() {
         model:    _selectedModel,
         enabled:  true,
         rating:   0,
+        text_capable:  capText,
+        image_capable: capImage,
+        use_for_image: capImage,
         _uid: ++_parallelUidCounter,
       });
     } else if (apiKey && dupe.api_key !== apiKey) {
@@ -465,6 +478,9 @@ async function _loadParallelProviders() {
       model:    p.model    || '',
       enabled:  p.enabled  !== false,
       rating:   p.rating   || 0,
+      text_capable:  p.text_capable  !== false,
+      image_capable: !!p.image_capable,
+      use_for_image: !!p.use_for_image,
       _uid: ++_parallelUidCounter,
     }));
   } catch (e) {
@@ -482,6 +498,9 @@ async function _saveParallelProviders() {
       model:    p.model,
       enabled:  p.enabled,
       rating:   p.rating || 0,
+      text_capable:  p.text_capable !== false,
+      image_capable: !!p.image_capable,
+      use_for_image: !!p.use_for_image,
     })),
   };
   try {
@@ -515,6 +534,7 @@ function _renderParallelRows() {
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = p.enabled;
+    cb.title = 'Use for text responses (joins the parallel race)';
     cb.style.cssText = 'width:16px;height:16px;accent-color:var(--accent);cursor:pointer;flex-shrink:0;';
     cb.addEventListener('change', () => {
       p.enabled = cb.checked;
@@ -526,6 +546,22 @@ function _renderParallelRows() {
     modelSpan.textContent = p.model || '—';
     modelSpan.style.cssText = 'flex:1;font-size:12px;color:var(--fg-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;';
     row.appendChild(modelSpan);
+
+    const imgLabel = document.createElement('label');
+    imgLabel.title = 'This model can see images — use it to read/describe attached images';
+    imgLabel.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:10px;color:var(--fg-3);cursor:pointer;margin-right:8px;flex-shrink:0;';
+    const imgCb = document.createElement('input');
+    imgCb.type = 'checkbox';
+    imgCb.checked = !!p.image_capable;
+    imgCb.style.cssText = 'width:14px;height:14px;accent-color:var(--accent);cursor:pointer;';
+    imgCb.addEventListener('change', () => {
+      p.image_capable = imgCb.checked;
+      p.use_for_image = imgCb.checked;
+      _saveParallelProviders().then(_renderParallelRows);
+    });
+    imgLabel.appendChild(imgCb);
+    imgLabel.appendChild(document.createTextNode('img'));
+    row.appendChild(imgLabel);
 
     const rColor = p.rating < 0 ? '#f7768e' : p.rating > 0 ? '#9ece6a' : '#565f89';
     const ratingSpan = document.createElement('span');
@@ -550,6 +586,14 @@ function _renderParallelRows() {
   if (countEl) {
     countEl.textContent = `${enabledCount} checked (need 2+ for parallel)`;
     countEl.style.color = enabledCount < 2 ? '#f7768e' : '#565f89';
+  }
+
+  const describerHint = _qs('ac-settings-describer-hint');
+  if (describerHint) {
+    const describer = _parallelProviders.find(p => p.image_capable);
+    describerHint.textContent = describer
+      ? `Image describer: ${describer.model}`
+      : 'No image-capable model marked — text-only models won\'t see attached images.';
   }
 }
 

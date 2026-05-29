@@ -4111,6 +4111,46 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
+    async def update_attachment_metadata(self, attachment_id: str, patch: dict) -> bool:
+        """Merge `patch` into an attachment's metadata JSON (preserving existing keys
+        such as image dimensions). Returns True if a row was updated."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT metadata FROM attachments WHERE id = ?", (attachment_id,)
+            ).fetchone()
+            if not row:
+                return False
+            try:
+                meta = json.loads(row["metadata"] or "{}")
+                if not isinstance(meta, dict):
+                    meta = {}
+            except Exception:
+                meta = {}
+            meta.update(patch or {})
+            cur = conn.execute(
+                "UPDATE attachments SET metadata = ? WHERE id = ?",
+                (json.dumps(meta), attachment_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    async def update_interaction_content(self, interaction_id: str, content: str) -> bool:
+        """Replace an interaction row's content (used to persist injected attachment
+        descriptions into the user turn so later turns retain them)."""
+        conn = self._get_conn()
+        try:
+            cur = conn.execute(
+                "UPDATE interactions SET content = ? WHERE id = ?",
+                (content, interaction_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
     async def check_interrupt(self, session_id: str) -> bool:
         conn = self._get_conn()
         try:

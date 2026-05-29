@@ -1866,6 +1866,14 @@ async def get_admin_configured_providers(user_id: Optional[str] = None) -> set[s
         except Exception as e:
             logger.debug("auth_element_get failed for ability %s: %s", service_key, e)
 
+    # ── agent_orchestration — pure behavioral toggle, always "configured" ──
+    # Unlike codebase_admin / browser_control (host-privileged, need an app-admin
+    # enable in App Config), this ability only controls whether an agent may
+    # delegate to other agents or trigger the optimizer. There is no platform
+    # secret to set, so it is always available for the per-agent toggle; the
+    # per-agent agent_connections row is the only gate.
+    configured.add("agent_orchestration")
+
     # Cache per service_key — facebook & instagram share `meta_oauth_config`.
     seen: dict[str, bool] = {}
     for ct, service_key in _CONNECTION_ADMIN_CONFIG_KEY.items():

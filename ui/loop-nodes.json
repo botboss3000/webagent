@@ -32,6 +32,9 @@
     "memory_search": [
       { "name": "Settings → Source",     "type": "admin",   "desc": "View and manage memory pages used for brain context injection" }
     ],
+    "attachment_describe": [
+      { "name": "App Config → Default LLM", "type": "admin", "desc": "Set per-model Text/Image capability and pick the image describer model" }
+    ],
     "build_prompt": [
       { "name": "Settings → Agent",      "type": "admin",   "desc": "Edit the agent's core directive, persona, and context sections" }
     ],
@@ -220,6 +223,15 @@
         { "key": "Reads",   "val": "attachments table by attachment_id list" },
         { "key": "Injects", "val": "# [USER ATTACHMENTS] — name, mime_type, size, attachment_id" },
         { "key": "Tool",    "val": "read_attachment — agent uses this to fetch file content" }
+      ]
+    },
+    "attachment_describe": {
+      "desc": "When the model handling the turn can't see images, a separately-configured vision model describes each attached image once and the description is injected into the user message (and persisted, so later turns keep it). Active only on turns where it actually runs.",
+      "details": [
+        { "key": "Fires when", "val": "An image is attached AND no selected text model is image-capable" },
+        { "key": "Model",      "val": "The image describer chosen in App Config → Default LLM (per-model Image capability)" },
+        { "key": "Injects",    "val": "[Attached image — <name>]: <description> into the user message" },
+        { "key": "Toggle",     "val": "Per-agent on/off; skip for agents that never handle images" }
       ]
     },
     "build_prompt": {

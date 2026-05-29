@@ -6,16 +6,17 @@ import asyncio
 import webbrowser
 from pathlib import Path
 
-from textual import on
+from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical  # noqa: F401
 from textual.widgets import Button, Footer, Label, RichLog, Static
 
+from .chat_screen import ChatScreen
 from .config import LauncherConfig
 from .palette import build_palette_from_config
 from .reset import clear_database, full_reset, reset_venv
-from .screens import ConfirmModal, SettingsScreen, SetupScreen
+from .screens import ConfirmModal, SettingsPanel, SetupScreen
 from .server import HEALTH_URL, ServerController, ServerState
 from .stage import AnimatedStage
 
@@ -39,6 +40,7 @@ class LauncherApp(App):
     BINDINGS = [
         Binding("ctrl+c", "request_quit", "Quit"),
         Binding("q", "request_quit", "Quit"),
+        Binding("a", "open_chat", "Chat"),
         Binding("l", "launch", "Launch"),
         Binding("r", "restart", "Restart"),
         Binding("s", "stop_server", "Stop"),
@@ -49,6 +51,7 @@ class LauncherApp(App):
         Binding("t", "theme", "Theme"),
         Binding("c", "cycle_theme", "Cycle theme"),
         Binding("space", "cycle_anim", "Cycle anim"),
+        Binding("escape", "close_theme", "Close theme", show=False),
     ]
 
     def __init__(self) -> None:
@@ -56,6 +59,12 @@ class LauncherApp(App):
         self.cfg = LauncherConfig.load()
         self.controller: ServerController | None = None
         self._stage: AnimatedStage | None = None
+        self._settings: SettingsPanel | None = None
+        # Idle = pause the animation. Two independent reasons compose via OR:
+        #   _blurred       → terminal/app lost focus
+        #   _chat_covering → the chat screen is pushed over the home stage
+        self._blurred = False
+        self._chat_covering = False
 
     # ── compose ────────────────────────────────────────────────────────
     def compose(self) -> ComposeResult:
@@ -83,19 +92,26 @@ class LauncherApp(App):
 
         # rows 1-3
         with Horizontal(id="header-buttons"):
-            yield Button("Launch",  id="btn-launch",  classes="primary")
+            yield Button("Chat",    id="btn-chat",    classes="primary")
+            yield Button("Launch",  id="btn-launch")
             yield Button("Restart", id="btn-restart")
             yield Button("Stop",    id="btn-stop")
             yield Button("Browser", id="btn-browser")
             yield Button("Theme",   id="btn-theme",   classes="muted")
 
-        # middle (1fr) — stage + log share remaining height
+        # middle (1fr) — stage on top; the bottom slot holds EITHER the log
+        # pane OR the inline settings panel (toggled by Theme). The stage stays
+        # visible and live-animating while settings are open.
         with Vertical(id="body"):
             yield self._stage
             with Container(id="log-pane"):
                 yield RichLog(
                     highlight=False, markup=False, wrap=False, id="log"
                 )
+            self._settings = SettingsPanel(
+                self.cfg, self._apply_visual_config, self._close_settings
+            )
+            yield self._settings
 
         # rows N-3 .. N-1
         with Horizontal(id="footer-buttons"):
@@ -106,7 +122,7 @@ class LauncherApp(App):
 
         # row N
         yield Static(
-            "  L:launch  R:restart  S:stop  B:browser  D:clear-db  "
+            "  A:chat  L:launch  R:restart  S:stop  B:browser  D:clear-db  "
             "P:reset-py  F:full-reset  T:theme  C:cycle  Space:anim  Q:quit",
             id="footer-bar",
         )
@@ -128,7 +144,16 @@ class LauncherApp(App):
         if self.cfg.is_valid_project():
             self._init_controller()
             self._log(f"[launcher] project: {self.cfg.project_path}")
-            self._log("[launcher] press [L] to launch, [T] for theme, [Q] to quit")
+            # Auto-start the server so the chat can connect immediately.
+            if self.cfg.auto_start_server and self.controller:
+                self._log("[launcher] auto-starting server…")
+                asyncio.create_task(self.controller.start())
+            # Chat is the default view — open it on top of the control view.
+            if self.cfg.chat_default_view:
+                self.action_open_chat()
+                self._log("[launcher] chat opened — Esc returns here")
+            else:
+                self._log("[launcher] press [A] for chat, [L] to launch, [T] theme, [Q] quit")
         else:
             self._log("[launcher] no project configured — press [T] to configure")
 
@@ -232,6 +257,21 @@ class LauncherApp(App):
         webbrowser.open(url)
         self._log(f"[launcher] opened browser → {url}")
 
+    def action_open_chat(self) -> None:
+        if not self._require_project():
+            return
+        # Avoid stacking duplicate chat screens.
+        if isinstance(self.screen, ChatScreen):
+            return
+        # Pause the home stage while chat covers it; resume when chat is popped.
+        self._chat_covering = True
+        self._sync_stage_idle()
+        self.push_screen(ChatScreen(self.cfg, self.controller), self._on_chat_closed)
+
+    def _on_chat_closed(self, _result: object | None = None) -> None:
+        self._chat_covering = False
+        self._sync_stage_idle()
+
     async def action_clear_db(self) -> None:
         if not self._require_project():
             return
@@ -298,10 +338,42 @@ class LauncherApp(App):
         await full_reset(self.cfg.project_dir(), self.controller, self._log)
 
     def action_theme(self) -> None:
-        self.push_screen(
-            SettingsScreen(self.cfg, self._apply_visual_config),
-            lambda _ok: self._apply_visual_config(),
-        )
+        """Toggle the inline settings panel in the bottom (log) slot."""
+        if self._settings is None:
+            return
+        if self._settings.display:
+            self._close_settings()
+        else:
+            self._open_settings()
+
+    def action_close_theme(self) -> None:
+        """Esc closes the settings panel if it's open (otherwise a no-op)."""
+        if self._settings is not None and self._settings.display:
+            self._close_settings()
+
+    def _open_settings(self) -> None:
+        if self._settings is None:
+            return
+        self._settings.display = True
+        try:
+            self.query_one("#log-pane").display = False
+        except Exception:
+            pass
+        self._settings.focus_first()
+
+    def _close_settings(self) -> None:
+        if self._settings is None:
+            return
+        self._settings.display = False
+        try:
+            self.query_one("#log-pane").display = True
+        except Exception:
+            pass
+        # Persist the tuned values once, on close (not on every drag tick).
+        try:
+            self.cfg.save()
+        except Exception:
+            pass
 
     def action_cycle_theme(self) -> None:
         """Cycle through color presets without opening the settings panel."""
@@ -316,6 +388,8 @@ class LauncherApp(App):
         apply_preset_to_config(nxt, self.cfg)
         self.cfg.save()
         self._apply_visual_config()
+        if self._settings is not None and self._settings.display:
+            self._settings.sync_from_config()
         self._log(f"[launcher] theme → {nxt.name}")
 
     def action_cycle_anim(self) -> None:
@@ -326,6 +400,8 @@ class LauncherApp(App):
         self.cfg.animation_style = new
         self.cfg.save()
         self._apply_visual_config()
+        if self._settings is not None and self._settings.display:
+            self._settings.sync_from_config()
         self._log(f"[launcher] animation → {new}")
 
     async def action_request_quit(self) -> None:
@@ -353,6 +429,7 @@ class LauncherApp(App):
     async def _btn(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""
         mapping = {
+            "btn-chat": self.action_open_chat,
             "btn-launch": self.action_launch,
             "btn-restart": self.action_restart,
             "btn-stop": self.action_stop_server,
@@ -375,6 +452,21 @@ class LauncherApp(App):
             return True
         self._log("[launcher] ERROR: no valid project configured. Open settings or relaunch.")
         return False
+
+    # ── auto-idle (pause animation when unfocused / covered) ───────────
+    def on_app_blur(self, event: events.AppBlur) -> None:
+        self._blurred = True
+        self._sync_stage_idle()
+
+    def on_app_focus(self, event: events.AppFocus) -> None:
+        self._blurred = False
+        self._sync_stage_idle()
+
+    def _sync_stage_idle(self) -> None:
+        """Idle the stage when the app is unfocused OR the chat covers it.
+        The stage ignores this while the style is OFF (it stays stopped)."""
+        if self._stage is not None:
+            self._stage.set_idle(self._blurred or self._chat_covering)
 
     def _apply_visual_config(self) -> None:
         palette = build_palette_from_config(self.cfg)

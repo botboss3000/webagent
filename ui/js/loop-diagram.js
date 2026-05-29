@@ -55,9 +55,10 @@ export const LOOP_NODES = [
   // ── CONTEXT  (chat.py — context + prompt assembly) ────────────────────────────
   { id: 'load_context',    label: 'Load Context',     type: 'process',  cx: 396,  cy: 80,  hw: 60, hh: 13 },
   { id: 'memory_search',   label: 'Memory Search',    type: 'process',  cx: 396,  cy: 114, hw: 60, hh: 13 },
-  { id: 'resolve_attach',  label: 'Resolve Attach',   type: 'process',  cx: 396,  cy: 148, hw: 60, hh: 13 },
-  { id: 'build_prompt',    label: 'Build Prompt',     type: 'process',  cx: 396,  cy: 182, hw: 60, hh: 13 },
-  { id: 'build_history',   label: 'Build History',    type: 'process',  cx: 396,  cy: 216, hw: 60, hh: 13 },
+  { id: 'resolve_attach',     label: 'Resolve Attach',         type: 'process',  cx: 396,  cy: 148, hw: 60, hh: 13 },
+  { id: 'attachment_describe',label: 'Attachment Description', type: 'llm',      cx: 396,  cy: 182, hw: 60, hh: 13 },
+  { id: 'build_prompt',       label: 'Build Prompt',           type: 'process',  cx: 396,  cy: 216, hw: 60, hh: 13 },
+  { id: 'build_history',      label: 'Build History',          type: 'process',  cx: 396,  cy: 250, hw: 60, hh: 13 },
 
   // ── LOOP INIT  (once per request, before the while loop) ─────────────────────
   { id: 'load_provider',       label: 'Load Provider',      type: 'process',  cx: 578,  cy: 138, hw: 60, hh: 13 },
@@ -112,9 +113,10 @@ export const LOOP_EDGES = [
 
   // CONTEXT chain
   { from: 'load_context',    to: 'memory_search',   vertical: true                              },
-  { from: 'memory_search',   to: 'resolve_attach',  vertical: true                              },
-  { from: 'resolve_attach',  to: 'build_prompt',    vertical: true                              },
-  { from: 'build_prompt',    to: 'build_history',   vertical: true                              },
+  { from: 'memory_search',     to: 'resolve_attach',      vertical: true                          },
+  { from: 'resolve_attach',    to: 'attachment_describe', vertical: true                          },
+  { from: 'attachment_describe', to: 'build_prompt',      vertical: true                          },
+  { from: 'build_prompt',      to: 'build_history',       vertical: true                          },
 
   // CONTEXT → LOOP INIT
   { from: 'build_history',   to: 'load_provider'                                                },
@@ -180,7 +182,7 @@ const _H_GROUPS = [
     left: 13,   right: 117  },
   { nodeIds: ['slash_cmd','session_setup','save_user_msg'],
     left: 159,  right: 275  },
-  { nodeIds: ['load_context','memory_search','resolve_attach','build_prompt','build_history'],
+  { nodeIds: ['load_context','memory_search','resolve_attach','attachment_describe','build_prompt','build_history'],
     left: 336,  right: 456  },
   { nodeIds: ['load_provider','load_tools','data_src_load','integration_status','assemble_msgs'],
     left: 518,  right: 638  },
@@ -237,9 +239,9 @@ export function buildHorizontalLayout(availableWidth) {
 }
 
 // ── buildVerticalLayout ───────────────────────────────────────────────────────
-// All 34 nodes stacked in a single column, stages as horizontal bands.
-// (data_src_load + data_src_exec added — every node from LOOP INIT onward
-//  shifts down by 34 per new node, stage bands extended accordingly.)
+// All 35 nodes stacked in a single column, stages as horizontal bands.
+// (data_src_load + data_src_exec + attachment_describe added — every node from
+//  the inserted node onward shifts down by 34, stage bands extended accordingly.)
 export function buildVerticalLayout(availableWidth) {
   const w  = Math.max(availableWidth > 0 ? availableWidth : 360, 260);
   const cx = w / 2;
@@ -251,58 +253,59 @@ export function buildVerticalLayout(availableWidth) {
     { id: 'slash_cmd',       label: 'Slash Cmd',        type: 'process',  cx,        cy: 152,  hw: 58, hh: 13 },
     { id: 'session_setup',   label: 'Session Setup',    type: 'process',  cx,        cy: 186,  hw: 58, hh: 13 },
     { id: 'save_user_msg',   label: 'Save User Msg',    type: 'process',  cx,        cy: 220,  hw: 58, hh: 13 },
-    // CONTEXT
+    // CONTEXT  (+34 inserted: attachment_describe)
     { id: 'load_context',    label: 'Load Context',     type: 'process',  cx,        cy: 322,  hw: 60, hh: 13 },
     { id: 'memory_search',   label: 'Memory Search',    type: 'process',  cx,        cy: 356,  hw: 60, hh: 13 },
     { id: 'resolve_attach',  label: 'Resolve Attach',   type: 'process',  cx,        cy: 390,  hw: 60, hh: 13 },
-    { id: 'build_prompt',    label: 'Build Prompt',     type: 'process',  cx,        cy: 424,  hw: 60, hh: 13 },
-    { id: 'build_history',   label: 'Build History',    type: 'process',  cx,        cy: 458,  hw: 60, hh: 13 },
-    // LOOP INIT  (+34 inserted: data_src_load)
-    { id: 'load_provider',      label: 'Load Provider',      type: 'process',  cx,        cy: 594,  hw: 60, hh: 13 },
-    { id: 'load_tools',         label: 'Load Tools',         type: 'process',  cx,        cy: 628,  hw: 60, hh: 13 },
-    { id: 'data_src_load',      label: 'Data Sources',       type: 'process',  cx,        cy: 662,  hw: 60, hh: 13 },
-    { id: 'integration_status', label: 'Integration Status', type: 'process',  cx,        cy: 696,  hw: 66, hh: 13 },
-    { id: 'assemble_msgs',      label: 'Assemble Msgs',      type: 'process',  cx,        cy: 730,  hw: 60, hh: 13 },
-    // INFERENCE  (+34 from LOOP INIT shift)
-    { id: 'interrupt_chk',   label: 'Interrupt Chk',    type: 'decision', cx,        cy: 798,  hw: 58, hh: 13 },
-    { id: 'turn_counter',    label: 'Turn Counter',     type: 'process',  cx,        cy: 832,  hw: 58, hh: 13 },
-    { id: 'build_tool_defs', label: 'Tool Defs',        type: 'process',  cx,        cy: 866,  hw: 58, hh: 13 },
-    { id: 'parallel_mode',   label: 'Parallel Mode',    type: 'process',  cx,        cy: 900,  hw: 58, hh: 13 },
-    { id: 'llm_call',        label: 'LLM Call',         type: 'llm',      cx,        cy: 938,  hw: 55, hh: 20 },
+    { id: 'attachment_describe', label: 'Attachment Description', type: 'llm', cx,    cy: 424,  hw: 60, hh: 13 },
+    { id: 'build_prompt',    label: 'Build Prompt',     type: 'process',  cx,        cy: 458,  hw: 60, hh: 13 },
+    { id: 'build_history',   label: 'Build History',    type: 'process',  cx,        cy: 492,  hw: 60, hh: 13 },
+    // LOOP INIT  (+34 from attachment_describe shift)
+    { id: 'load_provider',      label: 'Load Provider',      type: 'process',  cx,        cy: 628,  hw: 60, hh: 13 },
+    { id: 'load_tools',         label: 'Load Tools',         type: 'process',  cx,        cy: 662,  hw: 60, hh: 13 },
+    { id: 'data_src_load',      label: 'Data Sources',       type: 'process',  cx,        cy: 696,  hw: 60, hh: 13 },
+    { id: 'integration_status', label: 'Integration Status', type: 'process',  cx,        cy: 730,  hw: 66, hh: 13 },
+    { id: 'assemble_msgs',      label: 'Assemble Msgs',      type: 'process',  cx,        cy: 764,  hw: 60, hh: 13 },
+    // INFERENCE
+    { id: 'interrupt_chk',   label: 'Interrupt Chk',    type: 'decision', cx,        cy: 832,  hw: 58, hh: 13 },
+    { id: 'turn_counter',    label: 'Turn Counter',     type: 'process',  cx,        cy: 866,  hw: 58, hh: 13 },
+    { id: 'build_tool_defs', label: 'Tool Defs',        type: 'process',  cx,        cy: 900,  hw: 58, hh: 13 },
+    { id: 'parallel_mode',   label: 'Parallel Mode',    type: 'process',  cx,        cy: 934,  hw: 58, hh: 13 },
+    { id: 'llm_call',        label: 'LLM Call',         type: 'llm',      cx,        cy: 972,  hw: 55, hh: 20 },
     // ROUTING
-    { id: 'db_persist_asst', label: 'Persist Asst',     type: 'process',  cx,        cy: 1040, hw: 60, hh: 13 },
-    { id: 'validate_tools',  label: 'Validate',          type: 'process',  cx,        cy: 1074, hw: 60, hh: 13 },
-    { id: 'destructive_chk', label: 'Destructive Chk',  type: 'guard',    cx,        cy: 1108, hw: 60, hh: 13 },
-    { id: 'guardrails',      label: 'Guardrails',        type: 'guard',    cx,        cy: 1142, hw: 60, hh: 13 },
-    { id: 'post_val_chk',    label: 'Post-Val Chk',     type: 'process',  cx,        cy: 1176, hw: 60, hh: 13 },
-    // EXECUTION  (+34 inserted: data_src_exec)
-    { id: 'execute_tools',   label: 'Execute Tools',    type: 'process',  cx,        cy: 1244, hw: 62, hh: 16 },
-    { id: 'data_src_exec',   label: 'Data Src Query',   type: 'process',  cx,        cy: 1294, hw: 62, hh: 13 },
-    { id: 'db_persist_tool', label: 'Persist Tool',     type: 'process',  cx,        cy: 1328, hw: 62, hh: 13 },
-    { id: 'delegation_chk',  label: 'Delegation Chk',   type: 'process',  cx,        cy: 1362, hw: 62, hh: 13 },
-    { id: 'skill_track',     label: 'Skill Track',      type: 'process',  cx,        cy: 1396, hw: 62, hh: 13 },
-    // CONTINUE?  (+68 total from both insertions)
-    { id: 'check_continue',  label: 'Continue?',        type: 'decision', cx,        cy: 1464, hw: 58, hh: 18 },
+    { id: 'db_persist_asst', label: 'Persist Asst',     type: 'process',  cx,        cy: 1074, hw: 60, hh: 13 },
+    { id: 'validate_tools',  label: 'Validate',          type: 'process',  cx,        cy: 1108, hw: 60, hh: 13 },
+    { id: 'destructive_chk', label: 'Destructive Chk',  type: 'guard',    cx,        cy: 1142, hw: 60, hh: 13 },
+    { id: 'guardrails',      label: 'Guardrails',        type: 'guard',    cx,        cy: 1176, hw: 60, hh: 13 },
+    { id: 'post_val_chk',    label: 'Post-Val Chk',     type: 'process',  cx,        cy: 1210, hw: 60, hh: 13 },
+    // EXECUTION
+    { id: 'execute_tools',   label: 'Execute Tools',    type: 'process',  cx,        cy: 1278, hw: 62, hh: 16 },
+    { id: 'data_src_exec',   label: 'Data Src Query',   type: 'process',  cx,        cy: 1328, hw: 62, hh: 13 },
+    { id: 'db_persist_tool', label: 'Persist Tool',     type: 'process',  cx,        cy: 1362, hw: 62, hh: 13 },
+    { id: 'delegation_chk',  label: 'Delegation Chk',   type: 'process',  cx,        cy: 1396, hw: 62, hh: 13 },
+    { id: 'skill_track',     label: 'Skill Track',      type: 'process',  cx,        cy: 1430, hw: 62, hh: 13 },
+    // CONTINUE?
+    { id: 'check_continue',  label: 'Continue?',        type: 'decision', cx,        cy: 1498, hw: 58, hh: 18 },
     // OUTPUT
-    { id: 'final_response',  label: 'Final Response',   type: 'output',   cx,        cy: 1532, hw: 62, hh: 14 },
-    { id: 'db_persist_final',label: 'Persist Final',    type: 'process',  cx,        cy: 1574, hw: 62, hh: 13 },
-    { id: 'memory_save',     label: 'Memory Save',      type: 'process',  cx,        cy: 1608, hw: 62, hh: 13 },
-    { id: 'fire_optimizer',  label: 'Fire Optimizer',   type: 'process',  cx,        cy: 1642, hw: 62, hh: 13 },
+    { id: 'final_response',  label: 'Final Response',   type: 'output',   cx,        cy: 1566, hw: 62, hh: 14 },
+    { id: 'db_persist_final',label: 'Persist Final',    type: 'process',  cx,        cy: 1608, hw: 62, hh: 13 },
+    { id: 'memory_save',     label: 'Memory Save',      type: 'process',  cx,        cy: 1642, hw: 62, hh: 13 },
+    { id: 'fire_optimizer',  label: 'Fire Optimizer',   type: 'process',  cx,        cy: 1676, hw: 62, hh: 13 },
   ];
 
   const stages = [
     { label: 'INPUT',     y1: 20,   y2: 78,   color: '#7dcfff' },
     { label: 'PRE-LOOP',  y1: 92,   y2: 280,  color: '#f7768e' },
-    { label: 'CONTEXT',   y1: 294,  y2: 552,  color: '#c0caf5' },
-    { label: 'LOOP INIT', y1: 566,  y2: 756,  color: '#2ac3de' },
-    { label: 'INFERENCE', y1: 770,  y2: 1006, color: '#bb9af7' },
-    { label: 'ROUTING',   y1: 1020, y2: 1202, color: '#e0af68' },
-    { label: 'EXECUTION', y1: 1216, y2: 1422, color: '#a9b1d6' },
-    { label: 'CONTINUE?', y1: 1436, y2: 1496, color: '#e0af68' },
-    { label: 'OUTPUT',    y1: 1510, y2: 1670, color: '#9ece6a' },
+    { label: 'CONTEXT',   y1: 294,  y2: 586,  color: '#c0caf5' },
+    { label: 'LOOP INIT', y1: 600,  y2: 790,  color: '#2ac3de' },
+    { label: 'INFERENCE', y1: 804,  y2: 1040, color: '#bb9af7' },
+    { label: 'ROUTING',   y1: 1054, y2: 1236, color: '#e0af68' },
+    { label: 'EXECUTION', y1: 1250, y2: 1456, color: '#a9b1d6' },
+    { label: 'CONTINUE?', y1: 1470, y2: 1530, color: '#e0af68' },
+    { label: 'OUTPUT',    y1: 1544, y2: 1704, color: '#9ece6a' },
   ];
 
-  return { nodes, stages, canvasW: w, canvasH: 1682, mode: 'vertical' };
+  return { nodes, stages, canvasW: w, canvasH: 1716, mode: 'vertical' };
 }
 
 // ── Edge path computation ─────────────────────────────────────────────────────

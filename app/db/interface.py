@@ -476,6 +476,16 @@ class StorageBackend(ABC):
         """Delete an attachment record by id."""
         ...
 
+    @abstractmethod
+    async def update_attachment_metadata(self, attachment_id: str, patch: dict) -> bool:
+        """Merge ``patch`` into an attachment's metadata JSON. Returns True if updated."""
+        ...
+
+    @abstractmethod
+    async def update_interaction_content(self, interaction_id: str, content: str) -> bool:
+        """Replace an interaction row's ``content``. Returns True if updated."""
+        ...
+
     # ---- Interrupt Handling ----
 
     @abstractmethod

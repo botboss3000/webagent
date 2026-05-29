@@ -45,6 +45,7 @@
     "skip_gate",
     "memory_search",
     "resolve_attach",
+    "attachment_describe",
     "build_prompt",
     "build_history",
     "load_provider",
