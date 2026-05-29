@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 import uuid
 from typing import List, Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Request
@@ -24,6 +25,7 @@ from app.agent.loop import run_agent_loop_buffered, stream_agent_events
 from app.agent.loop_executor import LoopConfig
 from app.agent.session_history import build_openai_history_from_session
 from app.agent.run_buffer import get_registry as get_run_buffer_registry
+from app.agent.run_manager import get_run_manager
 from app.optimizer.runner import run_optimizer_async
 from app.agent import trigger_index
 from app.billing.enforcement import check_access as billing_check_access
@@ -232,11 +234,15 @@ async def _handle_optimize_command(
 
 @router.post("/interrupt")
 async def interrupt_chat(request: InterruptRequest):
-    """Request an interruption for an ongoing chat session."""
+    """Request a graceful interruption for an ongoing chat session.
+
+    Interrupt is the ONLY thing (besides finishing or a server restart) that
+    stops a supervised run. Sets the DB flag the agent loop polls; the loop
+    finalizes its partial answer as 'interrupted' and flips run-state."""
     try:
         db = get_db()
-        await db.set_interrupt(request.session_id)
-        return {"status": "ok", "message": "Interrupt requested."}
+        was_running = await get_run_manager().interrupt(request.session_id, db)
+        return {"status": "ok", "message": "Interrupt requested.", "was_running": was_running}
     except Exception as e:
         logger.error(f"Error setting interrupt: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -670,14 +676,25 @@ async def chat(request: ChatRequest, fastapi_request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/stream")
-async def chat_stream(request: ChatRequest, fastapi_request: Request):
-    """
-    Process a chat message using Server-Sent Events (SSE).
+async def _prepare_send(request: ChatRequest, fastapi_request: Request) -> Dict[str, Any]:
+    """Synchronous prep shared by /send and /stream.
+
+    Does everything that must happen *before* we hand the turn to the Run
+    Manager: auth, agent resolution + access/billing gating, session + participant
+    setup, persisting the user message, and emitting the user_message event so it
+    shows on every device instantly. Returns a dict the background turn executor
+    needs, or ``{"slash_result": "..."}`` when the message was a slash command.
+
+    NOTE: the RunBuffer + run-state are started inside the turn coroutine (not
+    here), so that when a new message INTERRUPTS an active run, the prior run's
+    finalize and the new run's begin can't race on the single session_runs row.
+    A new message never refuses — it interrupts the current run (see
+    RunManager.start_or_replace).
     """
     from app.auth.identity import assert_caller_is
     request.user_id = await assert_caller_is(fastapi_request, request.user_id)
     db = get_db()
+    channel = "web_portal"
 
     # ── Temp DB resolution for optimizer/closer sessions ──
     _temp_db_path = None
@@ -697,24 +714,20 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             db = _OptBackend(db_path=_temp_db_path)
             logger.info("Using temp DB for %s session: %s", request.session_id[:12], _temp_db_path)
 
-    # ── Handle slash commands (streaming) ──
+    # ── Handle slash commands ──
     _slash_match = _match_slash_command(request.message or "")
     if _slash_match:
         _slash_key, _slash_arg, _slash_tid = _slash_match
         if _slash_tid == "opt_planner":
             result = await _handle_optimize_command(
-                request.user_id, request.session_id,
-                request.message, "web_portal", db,
+                request.user_id, request.session_id, request.message, channel, db,
             )
         else:
             result = await _handle_generic_slash_command(
                 _slash_tid, _slash_key, _slash_arg,
-                request.user_id, request.session_id, "web_portal", db,
+                request.user_id, request.session_id, channel, db,
             )
-        async def _slash_events():
-            yield f"data: {json.dumps({'type': 'stream', 'level': 'agent', 'content': result})}\n\n"
-            yield f"data: {json.dumps({'type': 'response', 'level': 'agent', 'content': result})}\n\n"
-        return StreamingResponse(_slash_events(), media_type="text/event-stream")
+        return {"slash_result": result}
 
     # Ensure the session exists before inserting interactions
     _session_title = (request.message or "").strip()[:60] or None
@@ -743,8 +756,6 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         finally:
             conn.close()
 
-        # Resolve agent in main local.db so it is accessible for UI edits,
-        # then bind the session in temp DB if one is active.
         _agent_db = get_db() if _temp_db_path else db
         agent = await _agent_db.get_or_resolve_session_agent(
             session_id=request.session_id,
@@ -777,9 +788,8 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             if agent:
                 admin_users = agent.get("admin_users") or []
                 if isinstance(admin_users, str):
-                    import json as _json
                     try:
-                        admin_users = _json.loads(admin_users)
+                        admin_users = json.loads(admin_users)
                     except Exception:
                         admin_users = []
                 if request.user_id not in admin_users:
@@ -792,11 +802,11 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                 detail="No agent assigned. Create an agent before chatting.",
             )
 
-    # ── Agent access policy enforcement ──
+    # ── Access policy + billing enforcement ──
     await _enforce_agent_access_policy(db, agent, request.user_id)
     await _enforce_billing_access(db, agent, request.user_id)
 
-    # -- Bind session to agent --
+    # ── Bind session to agent ──
     existing_agent_id = await db.get_session_agent_id(request.session_id)
     if existing_agent_id is None:
         await db.bind_session_to_agent(request.session_id, agent["id"])
@@ -806,33 +816,71 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             f"but resolved agent is {agent['id'][:8]}. Cannot respond."
         )
 
-    # ── Participants enforcement ──
+    # ── Participants ──
     if not await db.is_session_participant(request.session_id, request.user_id, 'user'):
         await db.add_session_participant(request.session_id, request.user_id, 'user')
     if not await db.is_session_participant(request.session_id, agent["id"], 'agent'):
         await db.add_session_participant(request.session_id, agent["id"], 'agent')
 
-    # Save user message and get its ID for parent linking
+    # ── Persist the user message ──
     user_interaction_id = await db.insert_interaction(
         request.user_id, request.session_id, role="user", content=request.message,
-        channel="web_portal",
-        metadata=json.dumps({"source": "web_portal_chat_sse"}),
+        channel=channel,
+        metadata=json.dumps({"source": "web_portal_chat"}),
         input_data=json.dumps(request.model_dump(), default=str),
         sender_id=request.user_id,
         receiver_id=agent["id"],
     )
 
-    # ── Start a run buffer for this turn ──
-    # All events emitted via _emit_to_visualizers from this point on are
-    # stamped + appended to the buffer, enabling WS replay on reconnect.
+    # ── Emit the user message so all subscribed devices render it instantly ──
+    # (The RunBuffer + run-state for the new turn are started inside the turn
+    # coroutine. If an old run is still active, its buffer stamps this event;
+    # seq stays monotonic across the interrupt.)
+    await _emit_to_visualizers(request.session_id, {
+        "type": "user_message", "level": "user",
+        "content": request.message, "id": user_interaction_id,
+    }, user_id=request.user_id)
+
+    return {
+        "db": db,
+        "agent": agent,
+        "user_interaction_id": user_interaction_id,
+        "channel": channel,
+    }
+
+
+async def _run_turn_background(
+    db, request: ChatRequest, agent: Dict[str, Any],
+    user_interaction_id: str, channel: str = "web_portal",
+    replaced: bool = False,
+) -> None:
+    """Execute one agent turn to completion, fully decoupled from any client
+    connection. Owned by the Run Manager — survives the sender leaving, closing
+    the browser, switching sessions/devices. Every event is emitted via
+    ``_emit_to_visualizers`` (→ RunBuffer stamp + per-user WS broadcast), and the
+    agent loop streams its answer into the DB. On finish, run-state is flipped to
+    its terminal status and the RunBuffer retention countdown begins.
+
+    ``replaced`` is True when this turn is replacing a run the user just
+    interrupted by sending a new message; the agent is told so it can read the
+    new message as a course-correction / stop / addition relative to its
+    interrupted partial answer."""
+    session_id = request.session_id
+    user_id = request.user_id
+    final_status = "complete"
+    _last_seq_persist = 0.0
+
+    # Start the RunBuffer + durable run-state for THIS turn. Done here (not in
+    # _prepare_send) so a replaced run's begin happens strictly after the prior
+    # run's finalize — no race on the single session_runs row.
     _run_buffer = await get_run_buffer_registry().start_turn(
-        session_id=request.session_id,
-        user_id=request.user_id,
-        turn_id=user_interaction_id,
-        db=db,
+        session_id=session_id, user_id=user_id, turn_id=user_interaction_id, db=db,
     )
-    # Backfill session_seq on the user row we already inserted by taking
-    # the first slot from the buffer counter. Cheap UPDATE.
+    try:
+        await db.run_state_begin(session_id, user_id, agent.get("id"), user_interaction_id)
+    except Exception as _rse:
+        logger.debug("run_state_begin failed: %s", _rse)
+    # Backfill seq on the already-saved user row from the buffer's first slot.
     try:
         _user_ss, _user_ts = _run_buffer.next_seq()
         _conn = db._get_conn()
@@ -847,60 +895,88 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
     except Exception as _seqerr:
         logger.debug("Failed to backfill seq on user row: %s", _seqerr)
 
-    async def event_generator():
-        nonlocal agent
-        # Re-fetch to include context_documents (for non-optimizer agents that
-        # went through get_agent_for_user rather than get_or_resolve_session_agent).
-        # For optimizer agents, get_or_resolve_session_agent already includes them.
-        if not agent.get("context_documents"):
-            _fetched = await db.fetch_agent_by_id_with_context(agent["id"], CONTEXT_SECTION_TYPES, user_id=request.user_id)
-            if _fetched is not None:
-                agent = _fetched
+    async def event_callback(event: Dict[str, Any]):
+        nonlocal final_status, _last_seq_persist
+        await _emit_to_visualizers(session_id, event, user_id=user_id)
+        et = event.get("type")
+        if et == "interrupted":
+            final_status = "interrupted"
+        elif et == "error":
+            final_status = "error"
+        # Throttled advance of the durable latest_session_seq (drives WS resume
+        # for cold devices). The RunBuffer holds the real events; this is just a
+        # cheap pointer so a fresh device knows where the live stream is up to.
+        ss = event.get("session_seq")
+        if ss is not None:
+            now = time.monotonic()
+            if now - _last_seq_persist > 1.0:
+                _last_seq_persist = now
+                try:
+                    await db.run_state_update_seq(session_id, int(ss))
+                except Exception:
+                    pass
 
-        # Build loop config for pre-loop gating
+    try:
+        # Re-fetch agent with context documents if missing.
+        nonlocal_agent = agent
+        if not nonlocal_agent.get("context_documents"):
+            _fetched = await db.fetch_agent_by_id_with_context(
+                nonlocal_agent["id"], CONTEXT_SECTION_TYPES, user_id=user_id)
+            if _fetched is not None:
+                nonlocal_agent = _fetched
+        agent = nonlocal_agent
+
         loop_config = LoopConfig.from_agent(agent)
 
-        yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'agent_assigned', 'agent_id': agent['id'], 'max_turn_count': agent.get('max_turn_count', 10)})}\n\n"
+        await event_callback({
+            "type": "pipeline", "level": "pipeline", "step": "agent_assigned",
+            "agent_id": agent["id"], "max_turn_count": agent.get("max_turn_count", 10),
+        })
 
         if not agent.get("context_documents") and loop_config.is_enabled("copy_defaults"):
             copied = await db.copy_defaults_to_agent(agent["id"], template_id='default')
             if copied > 0:
-                agent = await db.fetch_agent_by_id_with_context(agent["id"], CONTEXT_SECTION_TYPES, user_id=request.user_id)
+                agent = await db.fetch_agent_by_id_with_context(
+                    agent["id"], CONTEXT_SECTION_TYPES, user_id=user_id)
 
         context_docs = agent.get("context_documents", [])
-
         doc_types = list(set(
             (d.get("context_type") or d.get("doc_type") or "")
             for d in context_docs if d.get("context_type") or d.get("doc_type")
         ))
-        yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'load_context', 'count': len(context_docs), 'types': doc_types})}\n\n"
+        await event_callback({
+            "type": "pipeline", "level": "pipeline", "step": "load_context",
+            "count": len(context_docs), "types": doc_types,
+        })
 
         # ── PHASE 1: Brain-first lookup ──
         if not loop_config.is_enabled("memory_search") or _should_skip_memory(request.message):
             _skip_reason = "node_disabled" if not loop_config.is_enabled("memory_search") else "greeting_or_cmd"
-            yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_search_skip', 'reason': _skip_reason})}\n\n"
-            brain_results = []
+            await event_callback({"type": "pipeline", "level": "pipeline",
+                                  "step": "memory_search_skip", "reason": _skip_reason})
             brain_context = None
             parent_id = await db.insert_interaction(
-                request.user_id, request.session_id, role="tool",
+                user_id, session_id, role="tool",
                 content=json.dumps({"skipped": True, "reason": _skip_reason}),
-                parent_id=user_interaction_id,
-                tool_name="memory_search",
-                channel="web_portal",
+                parent_id=user_interaction_id, tool_name="memory_search", channel=channel,
                 metadata=json.dumps({"brain": True, "skipped": True, "reason": _skip_reason}),
                 input_data=json.dumps({"query": request.message, "skipped": True}),
-                sender_id=agent["id"],
-                receiver_id=agent["id"],
+                sender_id=agent["id"], receiver_id=agent["id"],
             )
-            yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_search_end', 'results_count': 0, 'results': [], 'skipped': True})}\n\n"
+            await event_callback({"type": "pipeline", "level": "pipeline",
+                                  "step": "memory_search_end", "results_count": 0,
+                                  "results": [], "skipped": True})
         else:
-            yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_search_start', 'query': request.message, 'limit': 5})}\n\n"
-
+            await event_callback({"type": "pipeline", "level": "pipeline",
+                                  "step": "memory_search_start", "query": request.message, "limit": 5})
             brain_results = await db.memory_search(request.user_id, request.message, limit=5)
             brain_context = None
-
-            yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_search_end', 'results_count': len(brain_results), 'results': [{'slug': r['slug'], 'title': r.get('title', r['slug']), 'score': round(r.get('rank', 0), 2)} for r in (brain_results or [])]})}\n\n"
-
+            await event_callback({
+                "type": "pipeline", "level": "pipeline", "step": "memory_search_end",
+                "results_count": len(brain_results),
+                "results": [{"slug": r["slug"], "title": r.get("title", r["slug"]),
+                             "score": round(r.get("rank", 0), 2)} for r in (brain_results or [])],
+            })
             if brain_results:
                 lines = []
                 for r in brain_results:
@@ -913,35 +989,27 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                         lines.append(ct)
                     lines.append("")
                 brain_context = "\n".join(lines)
-
             search_content = json.dumps({
                 "query": request.message,
                 "results": [
-                    {"slug": r["slug"], "title": r.get("title",""), "score": round(r.get("rank", 0), 2), "snippet": r.get("compiled_truth", "")[:150]}
+                    {"slug": r["slug"], "title": r.get("title", ""), "score": round(r.get("rank", 0), 2),
+                     "snippet": r.get("compiled_truth", "")[:150]}
                     for r in (brain_results or [])
                 ],
                 "count": len(brain_results or []),
             }, indent=2)
             parent_id = await db.insert_interaction(
-                request.user_id, request.session_id, role="tool",
-                content=search_content,
-                parent_id=user_interaction_id,
-                tool_name="memory_search",
-                channel="web_portal",
-                metadata=json.dumps({
-                    "count": len(brain_results or []),
-                    "brain": True,
-                    "has_results": bool(brain_results),
-                }),
-                input_data=json.dumps({"query": request.message}),
-                output_data=search_content,
-                sender_id=agent["id"],
-                receiver_id=agent["id"],
+                user_id, session_id, role="tool", content=search_content,
+                parent_id=user_interaction_id, tool_name="memory_search", channel=channel,
+                metadata=json.dumps({"count": len(brain_results or []), "brain": True,
+                                     "has_results": bool(brain_results)}),
+                input_data=json.dumps({"query": request.message}), output_data=search_content,
+                sender_id=agent["id"], receiver_id=agent["id"],
             )
+            await event_callback({"type": "tool_result", "level": "agent", "tool": "memory_search",
+                                  "result": search_content[:2000], "duration_ms": 0, "error": False})
 
-            yield f"data: {json.dumps({'type': 'tool_result', 'level': 'agent', 'tool': 'memory_search', 'result': search_content[:2000], 'duration_ms': 0, 'error': False})}\n\n"
-
-        # ── Resolve attachment references (SSE) ──
+        # ── Resolve attachments + vision fallback ──
         attachment_context = None
         attachment_docs: List[Dict[str, Any]] = []
         if request.attachment_ids:
@@ -951,151 +1019,227 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
                     attachment_docs.append(att)
             if attachment_docs:
                 attachment_context = format_attachments_for_prompt(attachment_docs)
-                yield f"data: {json.dumps({'type': 'attachment', 'level': 'agent', 'attachments': [{'id': a['id'], 'original_name': a['original_name'], 'mime_type': a['mime_type'], 'size_bytes': a['size_bytes'], 'storage_path': a.get('storage_path', '')} for a in attachment_docs]})}\n\n"
+                await event_callback({
+                    "type": "attachment", "level": "agent",
+                    "attachments": [
+                        {"id": a["id"], "original_name": a["original_name"],
+                         "mime_type": a["mime_type"], "size_bytes": a["size_bytes"],
+                         "storage_path": a.get("storage_path", "")}
+                        for a in attachment_docs
+                    ],
+                })
         _desc_out = {}
         async for _dev in _maybe_describe_images(
             db, request.user_id, request.message, user_interaction_id,
             loop_config, attachment_docs, _desc_out,
         ):
-            yield f"data: {json.dumps(_dev)}\n\n"
+            await event_callback(_dev)
         user_message_content = await build_user_message_content(
             _desc_out.get("message_text", request.message),
             _desc_out.get("inline_docs", attachment_docs),
         )
 
-        _agent_id_for_prompt_sse = agent.get("id") if agent else None
+        _agent_id_for_prompt = agent.get("id") if agent else None
         system_prompt = await build_system_prompt(
-            context_docs, brain_context, request.user_id,
-            agent_id=_agent_id_for_prompt_sse,
-        )
+            context_docs, brain_context, request.user_id, agent_id=_agent_id_for_prompt)
         if attachment_context:
             system_prompt = system_prompt + "\n\n" + attachment_context
 
         from app.tools.loader import load_tools
-        tools = await load_tools(request.user_id,
-                                 agent_id=_agent_id_for_prompt_sse or "",
+        tools = await load_tools(request.user_id, agent_id=_agent_id_for_prompt or "",
                                  agent_template_id=agent.get("template_id") if agent else None)
+        await event_callback({
+            "type": "pipeline", "level": "pipeline", "step": "build_prompt", "sections": ["SYSTEM"],
+            "brain_injected": bool(brain_context), "tool_count_in_prompt": len(tools),
+            "system_prompt": system_prompt[:8000],
+        })
 
-        yield f"data: {json.dumps({'type': 'pipeline', 'level': 'pipeline', 'step': 'build_prompt', 'sections': ['SYSTEM'], 'brain_injected': bool(brain_context), 'tool_count_in_prompt': len(tools), 'system_prompt': system_prompt[:8000]})}\n\n"
+        try:
+            _ds_attached = await db.agent_data_source_list(_agent_id_for_prompt, enabled_only=True) if _agent_id_for_prompt else []
+        except Exception:
+            _ds_attached = []
+        await event_callback({
+            "type": "pipeline", "level": "pipeline", "step": "data_src_loaded",
+            "attached_count": len(_ds_attached),
+            "sources": [{"name": a.get("name"), "type": a.get("type"), "tool_alias": a.get("tool_alias")}
+                        for a in _ds_attached],
+        })
 
-        exclude_ids = {user_interaction_id} if user_interaction_id else set()
-        # All optimizer/closer context is pre-injected as real interaction rows
-        # in the session's temp DB by handoff_to_closer, so the standard history
-        # builder works for all session types.
         history = await build_openai_history_from_session(
             db, request.user_id, request.session_id,
-            exclude_interaction_ids=exclude_ids,
+            exclude_interaction_ids={user_interaction_id} if user_interaction_id else set(),
         )
 
-        q = asyncio.Queue()
+        # If this turn replaced one the user interrupted, tell the agent so it
+        # reads the new message as a course-correction / stop / addition relative
+        # to the partial answer it had started. The agent decides what to do.
+        if replaced:
+            history.append({
+                "role": "system",
+                "content": (
+                    "The user sent a new message while you were still responding, so your "
+                    "previous answer was interrupted (you can see your partial reply above). "
+                    "Read their new message carefully and respond to it: they may be telling "
+                    "you to STOP (acknowledge briefly and stop), steering you in a different "
+                    "direction (adjust accordingly), or adding information (incorporate it). "
+                    "Do not simply repeat your interrupted answer."
+                ),
+            })
 
-        async def run_agent_task():
-            assistant_reply = ""
-            TIMEOUT_SEC = 300  # 5 min total timeout for the agent loop
-            # Resolve allowed_tools from agent config (may be list or JSON string)
-            _raw_at = agent.get("allowed_tools", [])
-            if isinstance(_raw_at, str):
-                import json as _json2
-                try:
-                    _raw_at = _json2.loads(_raw_at)
-                except Exception:
-                    _raw_at = []
+        _raw_at = agent.get("allowed_tools", [])
+        if isinstance(_raw_at, str):
             try:
-                async def _run():
-                    nonlocal assistant_reply
-                    async for event in stream_agent_events(
-                        user_id=request.user_id,
-                        session_id=request.session_id,
-                        user_message=user_message_content,
-                        system_prompt=system_prompt,
-                        agent_id=agent["id"],
-                        history=history,
-                        parent_interaction_id=parent_id,
-                        max_turns=agent.get("max_turn_count", 10),
-                        channel="web_portal",
-                        db=db,
-                        agent_template_id=agent.get("template_id"),
-                        allowed_tools=_raw_at or None,
-                    ):
-                        # Stamp + buffer + broadcast to WS listeners FIRST so the
-                        # RunBuffer is populated even if the SSE client (this
-                        # request) disconnects mid-stream. Without this, events
-                        # would only stamp/buffer via the SSE outer-loop call to
-                        # _emit_to_visualizers, which stops being invoked once
-                        # the client closes the response stream.
-                        await _emit_to_visualizers(
-                            request.session_id, event, user_id=request.user_id,
-                        )
-                        await q.put(event)
+                _raw_at = json.loads(_raw_at)
+            except Exception:
+                _raw_at = []
 
-                        if event["type"] == "response":
-                            assistant_reply = event["content"]
-                        elif event["type"] == "error" and not assistant_reply:
-                            assistant_reply = f"I encountered an error: {event['message']}"
-                        elif event["type"] == "interrupted" and not assistant_reply:
-                            assistant_reply = f"I was interrupted: {event['message']}"
+        assistant_reply = ""
+        async for event in stream_agent_events(
+            user_id=request.user_id, session_id=request.session_id,
+            user_message=user_message_content, system_prompt=system_prompt,
+            agent_id=agent["id"], history=history, parent_interaction_id=parent_id,
+            max_turns=agent.get("max_turn_count", 10), channel=channel, db=db,
+            agent_template_id=agent.get("template_id"), allowed_tools=_raw_at or None,
+        ):
+            await event_callback(event)
+            if event["type"] == "response":
+                assistant_reply = event["content"]
+            elif event["type"] == "error" and not assistant_reply:
+                assistant_reply = f"I encountered an error: {event['message']}"
+            elif event["type"] == "interrupted" and not assistant_reply:
+                assistant_reply = f"I was interrupted: {event['message']}"
 
-                # Wrap the agent loop with a timeout
-                await asyncio.wait_for(_run(), timeout=TIMEOUT_SEC)
-
-                # Skip memory save if agent disabled it via allowed_tools or loop_logic
-                if 'memory_save' not in set(_raw_at or []) and loop_config.is_enabled("memory_save"):
-                    asyncio.create_task(_save_chat_to_memory(
-                        db, request.user_id, request.session_id,
-                        request.message, assistant_reply, agent["id"], parent_id,
-                    ))
-                    await q.put({'type': 'pipeline', 'level': 'pipeline', 'step': 'memory_save_start', 'slug': f'chat/{request.session_id[:8]}'})
-            except asyncio.TimeoutError:
-                logger.warning("SSE agent task timed out for session %s", request.session_id)
-                await q.put({
-                    "type": "error", "level": "agent",
-                    "message": f"The request timed out after {TIMEOUT_SEC} seconds. Please try again or simplify your request.",
-                })
-            except Exception as _task_err:
-                import traceback as _tb
-                logger.error("run_agent_task error: %s\n%s", _task_err, _tb.format_exc())
-                await q.put({
-                    "type": "error", "level": "agent",
-                    "message": str(_task_err),
-                })
-            finally:
-                await q.put(None)  # Signal end of stream
-        
-        # Start agent loop in the background!
-        asyncio.create_task(run_agent_task())
-
-        # Stream from the queue — also broadcast to session + user listeners
+        # ── Background memory save ──
+        if 'memory_save' not in set(_raw_at or []) and loop_config.is_enabled("memory_save"):
+            asyncio.create_task(_save_chat_to_memory(
+                db, request.user_id, request.session_id,
+                request.message, assistant_reply, agent["id"], parent_id,
+            ))
+            await event_callback({"type": "pipeline", "level": "pipeline",
+                                  "step": "memory_save_start", "slug": f"chat/{request.session_id[:8]}"})
+    except Exception as e:
+        final_status = "error"
+        logger.error("Background turn failed for session %s: %s", session_id, e, exc_info=True)
         try:
-            while True:
-                try:
-                    event = await asyncio.wait_for(q.get(), timeout=20)
-                except asyncio.TimeoutError:
-                    yield ": ping\n\n"
-                    continue
-                if event is None:
-                    break
-                # Note: _emit_to_visualizers is already called inside
-                # run_agent_task BEFORE q.put(event), so the event we yield
-                # here already carries session_seq/turn_id/turn_seq and has
-                # been broadcast to WS listeners + appended to RunBuffer.
-                # Doing it here too would double-stamp seq numbers.
-                yield f"data: {json.dumps(event)}\n\n"
-        finally:
-            # End the run buffer for this turn — starts the retention countdown.
-            try:
-                await get_run_buffer_registry().end_turn(request.session_id)
-            except Exception as _eb:
-                logger.debug("end_turn failed for session %s: %s", request.session_id, _eb)
+            await _emit_to_visualizers(session_id, {
+                "type": "error", "level": "agent", "message": str(e),
+            }, user_id=user_id)
+        except Exception:
+            pass
+    finally:
+        try:
+            await db.run_state_finish(session_id, status=final_status)
+        except Exception as _rsf:
+            logger.debug("run_state_finish failed for %s: %s", session_id, _rsf)
+        try:
+            await get_run_buffer_registry().end_turn(session_id)
+        except Exception as _eb:
+            logger.debug("end_turn failed for session %s: %s", session_id, _eb)
+
+
+async def _sse_tail_run(session_id: str):
+    """SSE fallback: tail the RunBuffer for a session and yield events as they
+    appear, then stop when the run completes. Fully decoupled from the run — if
+    this client disconnects, the supervised run keeps going. The WebSocket
+    subscriber is the primary live path; this exists so the old streaming
+    endpoint keeps working."""
+    reg = get_run_buffer_registry()
+    rm = get_run_manager()
+    last = 0
+    idle = 0.0
+    while True:
+        buf = reg.get(session_id)
+        if buf is not None:
+            missed = buf.replay_after(last)
+            for ev in missed:
+                last = ev.get("session_seq", last)
+                yield f"data: {json.dumps(ev)}\n\n"
+            if buf.completed_at is not None and not buf.replay_after(last):
+                break
+        else:
+            if not rm.is_running(session_id):
+                break
+        if not rm.is_running(session_id):
+            # run ended; drain any final buffered events then stop
+            buf = reg.get(session_id)
+            if buf is None or not buf.replay_after(last):
+                break
+        await asyncio.sleep(0.08)
+        idle += 0.08
+        if idle >= 20:
+            idle = 0.0
+            yield ": ping\n\n"
+
+
+@router.post("/send")
+async def chat_send(request: ChatRequest, fastapi_request: Request):
+    """Fire-and-forget send. Saves the user message, starts the agent turn as a
+    supervised background run, and returns immediately. All output (including for
+    the sending device) is rendered from the DB + the per-user WebSocket — see
+    /api/v1/agent/ws and /api/v1/db/session-messages. Leaving, closing the
+    browser, switching sessions/devices does NOT interrupt the run.
+
+    A new message sent while the agent is still working **interrupts** the
+    current run and starts a fresh one that includes the interrupted partial +
+    the new message; the agent then decides whether to stop, steer, or continue.
+    """
+    prep = await _prepare_send(request, fastapi_request)
+    if "slash_result" in prep:
+        return {"status": "ok", "session_id": request.session_id, "reply": prep["slash_result"]}
+
+    status = await get_run_manager().start_or_replace(
+        session_id=request.session_id,
+        user_id=request.user_id,
+        turn_id=prep["user_interaction_id"],
+        db=prep["db"],
+        run_factory=lambda replaced: _run_turn_background(
+            prep["db"], request, prep["agent"], prep["user_interaction_id"],
+            prep["channel"], replaced=replaced),
+    )
+    return {
+        "status": status,  # "running" or "replacing"
+        "session_id": request.session_id,
+        "turn_id": prep["user_interaction_id"],
+    }
+
+
+@router.post("/stream")
+async def chat_stream(request: ChatRequest, fastapi_request: Request):
+    """
+    SSE fallback for sending a message. Behaves like /send (saves the message and
+    starts a supervised, connection-independent run) but also tails the run's
+    events back over Server-Sent Events for this client. A disconnect here never
+    interrupts the run — it keeps going server-side and is viewable from any
+    device via the DB + WebSocket. Prefer /send + the WebSocket for new clients.
+    """
+    prep = await _prepare_send(request, fastapi_request)
+    if "slash_result" in prep:
+        result = prep["slash_result"]
+        async def _slash_events():
+            yield f"data: {json.dumps({'type': 'stream', 'level': 'agent', 'content': result})}\n\n"
+            yield f"data: {json.dumps({'type': 'response', 'level': 'agent', 'content': result})}\n\n"
+        return StreamingResponse(_slash_events(), media_type="text/event-stream")
+
+    await get_run_manager().start_or_replace(
+        session_id=request.session_id,
+        user_id=request.user_id,
+        turn_id=prep["user_interaction_id"],
+        db=prep["db"],
+        run_factory=lambda replaced: _run_turn_background(
+            prep["db"], request, prep["agent"], prep["user_interaction_id"],
+            prep["channel"], replaced=replaced),
+    )
 
     async def safe_event_generator():
         try:
-            async for chunk in event_generator():
+            async for chunk in _sse_tail_run(request.session_id):
                 yield chunk
         except Exception as e:
-            logger.error("event_generator unhandled error: %s", e, exc_info=True)
+            logger.error("SSE tail unhandled error: %s", e, exc_info=True)
             yield f"data: {json.dumps({'type': 'error', 'level': 'agent', 'message': str(e)})}\n\n"
 
     return StreamingResponse(safe_event_generator(), media_type="text/event-stream")
+
 
 
 async def _save_chat_to_memory(

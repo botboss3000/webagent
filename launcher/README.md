@@ -9,10 +9,28 @@ Polished TUI that controls the webagent server. Bundles into a single
   `http://localhost:8080` for readiness, optionally opens the browser
 - **Restart** — graceful CTRL-BREAK then re-launch
 - **Stop** — graceful shutdown, falls back to kill, cleans port 8080
+- **Auto-restart (watchdog)** — if the server exits **unexpectedly** (crash /
+  disconnect, i.e. anything that wasn't a Stop / Restart / reset you asked
+  for), the launcher relaunches it on its own. Rapid crashes back off
+  exponentially (1s → 2s → 4s …, capped at 30s) and the watchdog gives up
+  after 5 rapid crashes so a genuinely broken build doesn't spin forever — fix
+  the error in the log and press Launch to re-arm it. A run that stays up ≥30s
+  is treated as healthy and forgives earlier crashes. On by default; toggle via
+  `auto_restart_server` in `launcher.json`.
 - **Clear DB** — backs up and removes `app/db/local.db*` + `visuals/users/`
 - **Reset Python** — wipes `.venv` and re-runs `uv sync`
 - **Full Reset** — DB clear + Python reset
 - **Browser** — opens the saved URL (default `/index.html`)
+- **Chat** (`A`) — full keyboard-driven chat against the local server: live
+  token streaming, expandable tool-call blocks, agent/session pickers. A
+  **static ascii banner** sits at the top of the transcript (agent · model ·
+  session · date) and scrolls up with the conversation — no background
+  animation in chat. A little ascii **guy walks on the input "pill"** while the
+  loop works (strolls while streaming, works during a tool, cheers on the
+  reply, trips on an error). Above the input a **session HUD** shows total
+  tokens, running cost, and a **context-window gauge** (used / max, green →
+  amber → red, with a "context full" nudge). `Ctrl+F` opens a checkbox
+  **filter** to show/hide interaction types (memory, loop steps, tool calls).
 - **Theme** — inline settings panel that opens **in the log area** so the
   animation above stays visible and updates **live** as you change it. Pick a
   color preset (phosphor / amber / cyan / sunset / vaporwave / neon tide /
@@ -64,8 +82,11 @@ to the webagent project folder.
 
 ## Keyboard
 
+**Home / control screen**
+
 | Key | Action |
 |-----|--------|
+| `A` | Open chat |
 | `L` | Launch server |
 | `R` | Restart server |
 | `S` | Stop server |
@@ -74,7 +95,26 @@ to the webagent project folder.
 | `P` | Reset Python (with confirm) |
 | `F` | Full reset (with confirm) |
 | `T` | Toggle inline theme & animation panel (in the log area) |
-| `Esc` | Close the theme panel (when open) |
 | `C` | Cycle to next color preset |
 | `Space` | Cycle animation style (incl. `Off`) |
-| `Q` / `Ctrl+C` | Quit |
+| `Ctrl+Q` | Jump to chat (toggles with home) |
+| `Esc` | Close the theme panel if open, otherwise quit |
+| `Q` | Quit |
+
+**Chat screen** — all command keys are `Ctrl`-prefixed so they never collide
+with typing. Each binds the shifted symbol *and* the plain key, so it fires
+whether your terminal reports `Ctrl+!` or `Ctrl+1`.
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+~` / `` Ctrl+` `` | Home |
+| `Ctrl+Q` | Go back to last screen (reliable fallback) |
+| `Ctrl+!` / `Ctrl+1` | Agent picker |
+| `Ctrl+@` / `Ctrl+2` | Session picker |
+| `Ctrl+#` / `Ctrl+3` | New session |
+| `Ctrl+$` / `Ctrl+4` | New agent |
+| `Ctrl+F` | Filter interactions (show/hide memory, loop steps, tools) |
+| `Ctrl+C` / `Ctrl+V` / `Ctrl+Z` | Copy / paste / undo (editor) |
+| `Enter` | Send · `Ctrl+J` newline |
+| `Up` / `Down` | Recall previous / next sent message (single-line input) |
+| `Esc` | Stop a running turn, then exit to home |

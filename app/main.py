@@ -452,6 +452,19 @@ async def startup():
     except Exception as _ti_err:
         logger.warning("Failed to build trigger index on startup: %s", _ti_err)
 
+    # ── Clean recovery: reset agent runs the previous process left mid-flight ──
+    # A server restart is the one thing that ends an in-flight run; on boot we
+    # flip any 'running' session_runs and 'streaming' assistant rows to
+    # 'interrupted' so no device hangs waiting on an answer that will never
+    # finish. See app/agent/run_manager.py and app/db/local.py.
+    try:
+        from app.db import get_db as _get_db_orphan
+        _n_orphan = await _get_db_orphan().cleanup_orphaned_runs()
+        if _n_orphan:
+            logger.info("Reset %d orphaned agent run(s) left by previous process", _n_orphan)
+    except Exception as _orphan_err:
+        logger.warning("Orphaned-run cleanup failed: %s", _orphan_err)
+
     try:
         from app.communications.manager import get_plugin_manager
         pm = get_plugin_manager()

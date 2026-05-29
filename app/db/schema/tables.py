@@ -72,6 +72,7 @@ TABLES: List[Table] = [
         Column("agent_id", "TEXT"),
         Column("participants", "TEXT", default="'[]'"),
         Column("pinned", "INTEGER", nullable=False, default="0"),
+        Column("sort_order", "INTEGER"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
@@ -96,7 +97,29 @@ TABLES: List[Table] = [
         Column("session_seq", "INTEGER"),
         Column("turn_id", "TEXT"),
         Column("turn_seq", "INTEGER"),
+        # Message lifecycle (added 2026-05-29). Legacy + finished rows are
+        # 'complete'; an assistant answer is 'streaming' while being generated,
+        # then 'complete' / 'interrupted' / 'error'. Makes the partial answer
+        # durable (survives RunBuffer eviction and server restarts).
+        Column("status", "TEXT", nullable=False, default="'complete'"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ]),
+
+    # Per-session durable run state — the in-flight (or recently finished) agent
+    # turn. Lets a cold/second device (even after a server restart) discover an
+    # active run from the DB and where the live stream is up to, independent of
+    # the in-memory RunBuffer. See app/agent/run_manager.py.
+    Table("session_runs", [
+        Column("session_id", "TEXT", nullable=False, primary_key=True, references="sessions(id)"),
+        Column("user_id", "TEXT", nullable=False),
+        Column("agent_id", "TEXT"),
+        Column("turn_id", "TEXT"),
+        Column("assistant_interaction_id", "TEXT"),
+        Column("status", "TEXT", nullable=False, default="'running'"),
+        Column("latest_session_seq", "INTEGER", nullable=False, default="0"),
+        Column("error", "TEXT"),
+        Column("started_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
 
     Table("session_summaries", [
@@ -149,6 +172,7 @@ TABLES: List[Table] = [
         Column("member_users", "TEXT", nullable=False, default="'[]'"),
         Column("authorized_users", "TEXT", nullable=False, default="'[]'"),
         Column("user_mode", "TEXT", nullable=False, default="'anonymous'"),
+        Column("sort_order", "INTEGER"),
     ]),
 
     Table("agent_prompts", [

@@ -203,10 +203,14 @@ function _restoreDraft() {
   } catch (_) { /* non-fatal */ }
 }
 
-function addChatBubble(role, text, extraClass, imageUrl, turnId) {
+function addChatBubble(role, text, extraClass, imageUrl, turnId, msgId) {
   const bubble = document.createElement('div');
   bubble.className = 'chat-bubble ' + role + (extraClass ? ' ' + extraClass : '');
   if (turnId) bubble.setAttribute('data-turn-id', turnId);
+  // Stable per-interaction id — used to dedup the same message arriving from
+  // multiple sources (local render + WS broadcast + DB reload) so a message
+  // never appears twice. Critical for live multi-device viewing.
+  if (msgId) bubble.setAttribute('data-msg-id', msgId);
   // Show 'You' label for user, omit for agent (already prefixed with agent name in content)
   if (role === 'user') {
     const label = document.createElement('span');
@@ -457,8 +461,7 @@ async function sendMessage() {
     window.__chatPollLastAt = new Date().toISOString();
   }
 
-  addChatBubble('user', text);
-  addChatBubble('agent', '\u2026', 'streaming');
+  const _userBubble = addChatBubble('user', text);
   app.isProcessing = true;
 
   // Build payload
@@ -471,209 +474,59 @@ async function sendMessage() {
   const payload = addAttachmentsToMessage(base);
   if (app.clearPendingAttachments) app.clearPendingAttachments();
 
-  // Reset any previous SSE reader
-  if (app._sseAbortController) {
-    app._sseAbortController.abort();
-  }
-  app._sseAbortController = new AbortController();
-
-  // Signal to WS handler that SSE is the active display source
-  window.__sseActive = true;
-
-  // Diagnostics for "Request failed: …" / "Error in input stream" investigations.
-  const _sseDiag = {
-    startedAt: performance.now(),
-    bytes: 0,
-    eventCount: 0,
-    lastEventType: null,
-    lastEventAt: null,
-    headersReceivedAt: null,
-  };
-
-  // Whether we observed a terminal event (response / error / interrupted).
-  // If the reader closes without one, we force-unlock the UI in the
-  // post-loop guard — otherwise the chat input stays disabled forever
-  // and looks like a "disconnect". See the SSE-stuck-state bug.
-  let _sseTerminalSeen = false;
-
-  // Idle watchdog: if no bytes arrive for SSE_IDLE_MS we abort the fetch
-  // so the user gets a real error instead of an indefinite `…`. Reset on
-  // each chunk; cleared in `finally`.
-  const SSE_IDLE_MS = 60000;
-  let _sseIdleTimer = null;
-  const _armIdleTimer = () => {
-    if (_sseIdleTimer) clearTimeout(_sseIdleTimer);
-    _sseIdleTimer = setTimeout(() => {
-      _sseIdleTimer = null;
-      if (app._sseAbortController) {
-        try { app._sseAbortController.abort('idle-timeout'); } catch (_) {}
-      }
-    }, SSE_IDLE_MS);
-  };
-
+  // Fire-and-forget: persist the message + start the run server-side, then
+  // return. ALL output (including for THIS device) arrives via the per-user
+  // WebSocket and the DB — the run survives leaving, closing the browser, or
+  // switching sessions/devices. We never hold a connection open for the answer.
   try {
-    // POST to SSE streaming endpoint — read the response stream.
-    // This is the primary source of chat bubble updates.
-    // WS is a secondary/backup and will skip if __sseActive is true.
-    const resp = await fetch(apiPath('/api/v1/chat/stream'), {
+    const resp = await fetch(apiPath('/api/v1/chat/send'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(payload),
-      signal: app._sseAbortController.signal,
     });
-    _sseDiag.headersReceivedAt = performance.now();
 
     if (!resp.ok) {
-      updateLastBubble('Server error: ' + resp.status, 'error');
-      _sseTerminalSeen = true;
+      addChatBubble('agent', 'Server error: ' + resp.status, 'error');
       app.isProcessing = false;
       app.chatSend.disabled = false;
-      window.__sseActive = false;
       return;
     }
 
-    // Read SSE stream for chat bubble updates
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    _armIdleTimer();
+    const data = await resp.json().catch(() => ({}));
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) _sseDiag.bytes += value.byteLength;
-      _armIdleTimer();
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        let event;
-        try {
-          event = JSON.parse(line.slice(6));
-        } catch {
-          continue;
-        }
-        _sseDiag.eventCount += 1;
-        _sseDiag.lastEventType = event.type;
-        _sseDiag.lastEventAt = performance.now();
-
-        // Track highest session_seq the client has seen for this session.
-        // Used by agentWs.js on reconnect to ask the server for replay
-        // of only-newer events.
-        const _sid = event.session_id || app.currentSessionId;
-        if (_sid && typeof event.session_seq === 'number') {
-          if (!app.lastSessionSeq) app.lastSessionSeq = {};
-          const prev = app.lastSessionSeq[_sid] || 0;
-          if (event.session_seq > prev) {
-            app.lastSessionSeq[_sid] = event.session_seq;
-            _persistLastSessionSeq();
-          }
-        }
-
-        // Update bubble from SSE events
-        if (event.type === 'stream') {
-          if (app.agentBuffer === undefined) app.agentBuffer = '';
-          app.agentBuffer += event.content;
-          updateLastBubble(app.agentBuffer, 'streaming');
-        } else if (event.type === 'response') {
-          app.agentBuffer = '';
-          updateLastBubble(event.content);
-          _sseTerminalSeen = true;
-          app.isProcessing = false;
-          app.chatSend.disabled = false;
-          if (typeof app.populateSessionSelect === 'function') {
-            app.populateSessionSelect(app.currentUserId);
-          }
-        } else if (event.type === 'error') {
-          updateLastBubble('Error: ' + event.message, 'error');
-          app.agentBuffer = '';
-          _sseTerminalSeen = true;
-          app.isProcessing = false;
-          app.chatSend.disabled = false;
-        } else if (event.type === 'interrupted') {
-          // Without this branch the bubble sits on `…` forever — `interrupted`
-          // events are terminal but were previously dropped by this switch.
-          const msg = event.message ? '(interrupted: ' + event.message + ')' : '(interrupted)';
-          updateLastBubble(app.agentBuffer ? app.agentBuffer + '\n\n' + msg : msg, 'interrupted');
-          app.agentBuffer = '';
-          _sseTerminalSeen = true;
-          app.isProcessing = false;
-          app.chatSend.disabled = false;
-        }
-        // tool_call / tool_result / pipeline / db handled by WS -> debug panels
-      }
-    }
-
-    // Reader closed cleanly but server never sent a terminal event.
-    // Force-unlock the UI so the user can keep typing.
-    if (!_sseTerminalSeen && app.isProcessing) {
-      console.warn('[chat/stream] reader closed without terminal event', {
-        bytes: _sseDiag.bytes, events: _sseDiag.eventCount,
-        lastEventType: _sseDiag.lastEventType,
-      });
-      const stalled = app.agentBuffer
-        ? app.agentBuffer + '\n\n(stream ended unexpectedly)'
-        : '(stream ended unexpectedly — please retry)';
-      updateLastBubble(stalled, 'error');
-      app.agentBuffer = '';
+    // Slash command handled synchronously — render its reply directly.
+    if (data.status === 'ok' && data.reply) {
+      addChatBubble('agent', data.reply);
       app.isProcessing = false;
       app.chatSend.disabled = false;
+      if (typeof app.populateSessionSelect === 'function') {
+        app.populateSessionSelect(app.currentUserId);
+      }
+      return;
     }
+
+    // status is 'running' (fresh) or 'replacing' (interrupted a prior run to
+    // start this one). Either way the run is going server-side.
+
+    // Tag our local user bubble with its interaction id so the user_message
+    // broadcast we just triggered dedups against it (other devices, which have
+    // no such bubble, will render it live).
+    if (data.turn_id && _userBubble) {
+      _userBubble.setAttribute('data-msg-id', data.turn_id);
+    }
+    if (typeof app.populateSessionSelect === 'function') {
+      app.populateSessionSelect(app.currentUserId);
+    }
+    // No placeholder here: the agent's bubble(s) are created by the first WS
+    // `stream` event, keyed by per-step assistant id, so EVERY step shows as its
+    // own bubble. The input stays usable — sending again interrupts this run and
+    // starts a new one. If the WS is down, the visibility/focus refresh + WS
+    // reconnect-replay catch up from the DB.
   } catch (e) {
-    if (e.name === 'AbortError') {
-      // Two ways we land here:
-      //   1. The idle watchdog fired (no bytes for SSE_IDLE_MS) — surface
-      //      a clear error so the user isn't stuck staring at `…`.
-      //   2. abortChatStream() / a new sendMessage aborted — silent.
-      const idleAbort = e.message === 'idle-timeout' || (e.reason === 'idle-timeout');
-      if (idleAbort && app.isProcessing) {
-        const stalled = app.agentBuffer
-          ? app.agentBuffer + '\n\n(no response for ' + Math.round(SSE_IDLE_MS / 1000) + 's — please retry)'
-          : '(no response for ' + Math.round(SSE_IDLE_MS / 1000) + 's — please retry)';
-        updateLastBubble(stalled, 'error');
-        app.agentBuffer = '';
-        app.isProcessing = false;
-        app.chatSend.disabled = false;
-      }
-      window.__sseActive = false;
-      return;
-    }
-    const now = performance.now();
-    const diag = {
-      errorName: e && e.name,
-      errorMessage: e && e.message,
-      msSinceStart: Math.round(now - _sseDiag.startedAt),
-      msSinceHeaders: _sseDiag.headersReceivedAt
-        ? Math.round(now - _sseDiag.headersReceivedAt) : null,
-      msSinceLastEvent: _sseDiag.lastEventAt
-        ? Math.round(now - _sseDiag.lastEventAt) : null,
-      bytesReceived: _sseDiag.bytes,
-      eventCount: _sseDiag.eventCount,
-      lastEventType: _sseDiag.lastEventType,
-      online: navigator.onLine,
-      visibility: document.visibilityState,
-    };
-    console.warn('[chat/stream] failed', diag, e);
-    if (app.isProcessing) {
-      updateLastBubble(
-        'Request failed: ' + e.message
-          + ' (after ' + diag.msSinceStart + 'ms, '
-          + diag.eventCount + ' events, last='
-          + (diag.lastEventType || 'none') + ')',
-        'error',
-      );
-      app.isProcessing = false;
-      app.chatSend.disabled = false;
-    }
-  } finally {
-    if (_sseIdleTimer) {
-      clearTimeout(_sseIdleTimer);
-      _sseIdleTimer = null;
-    }
-    window.__sseActive = false;
+    console.warn('[chat/send] failed', e);
+    addChatBubble('agent', 'Request failed: ' + ((e && e.message) || e), 'error');
+    app.isProcessing = false;
+    app.chatSend.disabled = false;
   }
 }
 
@@ -826,12 +679,81 @@ function ensureStreamingBubbleForActiveTurn(turnId) {
   app.isProcessing = true;
 }
 
+/**
+ * Finalize an INTERMEDIATE agent step (an assistant message that precedes tool
+ * calls). Keeps its bubble with the text and drops the streaming spinner, but
+ * does NOT unlock the input — the turn continues with more steps. Empty steps
+ * (tool-call-only, no text) render nothing.
+ */
+function finalizeAgentStep(content, asstId) {
+  const text = (content || '').trim();
+  let bubble = _findAgentBubbleForTurn(asstId);
+  if (!text) {
+    if (bubble) bubble.remove();
+    if (asstId) _wsTurnBuffers.delete(asstId);
+    return;
+  }
+  if (!bubble) {
+    bubble = addChatBubble('agent', text, undefined, undefined, asstId);
+  } else {
+    _setBubbleText(bubble, text);
+  }
+  if (asstId) _wsTurnBuffers.delete(asstId);
+}
+
+/**
+ * Mark an agent bubble interrupted, keeping whatever partial text it has. If we
+ * know the step's id, target that bubble; otherwise fall back to the last
+ * still-streaming agent bubble. Unlocks the input (a follow-up message may have
+ * already started a replacement run, which will re-engage on its own).
+ */
+function markAgentInterrupted(asstId) {
+  let bubble = asstId ? _findAgentBubbleForTurn(asstId) : null;
+  if (!bubble && app.chatMessages) {
+    const streaming = app.chatMessages.querySelectorAll('.chat-bubble.agent.streaming');
+    bubble = streaming[streaming.length - 1] || null;
+  }
+  if (bubble) {
+    const cur = _getBubbleText(bubble);
+    _setBubbleText(bubble, cur ? cur + '\n\n(interrupted)' : '(interrupted)', 'interrupted');
+  }
+  if (asstId) _wsTurnBuffers.delete(asstId);
+  app.agentBuffer = '';
+  app.isProcessing = false;
+  if (app.chatSend) app.chatSend.disabled = !((app.chatInput && app.chatInput.value.trim()));
+}
+
+/**
+ * Seed a streaming bubble from the DB partial when (re)loading a session that
+ * has a run in progress. Renders whatever text the server has persisted so far
+ * (cold-device / second-device view) AND primes `_wsTurnBuffers` so that the
+ * subsequent WS replay — which only resends chunks NEWER than the resume floor —
+ * appends onto this partial instead of replacing it. The final `response`
+ * event later overwrites the bubble with the complete text, self-healing any
+ * small gap between the persisted partial and the live stream.
+ */
+function seedStreamingBubble(turnId, content) {
+  if (!turnId) return;
+  let bubble = _findAgentBubbleForTurn(turnId);
+  const text = content || '…';
+  if (!bubble) {
+    bubble = addChatBubble('agent', text, 'streaming', undefined, turnId);
+  } else {
+    _setBubbleText(bubble, text, 'streaming');
+  }
+  _wsTurnBuffers.set(turnId, content || '');
+  app.isProcessing = true;
+}
+
 export function initChat() {
   app.addChatBubble = addChatBubble;
   app.updateLastBubble = updateLastBubble;
   app.appendStreamToActiveBubble = appendStreamToActiveBubble;
   app.finalizeAgentResponse = finalizeAgentResponse;
   app.ensureStreamingBubbleForActiveTurn = ensureStreamingBubbleForActiveTurn;
+  app.seedStreamingBubble = seedStreamingBubble;
+  app.finalizeAgentStep = finalizeAgentStep;
+  app.markAgentInterrupted = markAgentInterrupted;
   app.autoResizeChatInput = () => _autoResizePill(app.chatInput);
 
   app.chatSend.addEventListener('click', sendMessage);

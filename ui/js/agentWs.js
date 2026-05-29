@@ -185,32 +185,55 @@ export function connectAgent() {
         break;
 
       case 'interrupted':
-        // `interrupted` is terminal. We deliberately do NOT gate on
-        // `__sseActive` — if the SSE path was driving this turn it has
-        // either already finalized or it just bailed (the server only
-        // emits one terminal per turn). Skipping here used to leave the
-        // chat input locked because the SSE reader didn't handle
-        // `interrupted` either. Now both paths converge on this state.
+        // Terminal for the step it names. Marks that step's bubble interrupted
+        // (keeping its partial text). A new message may have already started a
+        // replacement run, which re-engages on its own.
         if (eventSessionId && eventSessionId !== app.currentSessionId) {
           if (event.replayed) _stashReplay(eventSessionId, event);
           break;
         }
-        app.updateLastBubble('(interrupted)', 'interrupted');
-        app.agentBuffer = '';
-        app.isProcessing = false;
-        if (app.chatSend) app.chatSend.disabled = false;
-        break;
-
-      case 'user_message':
-        // Event-triggered runs inject a synthetic user message describing
-        // the event. Render it as a chat bubble so the user sees WHAT
-        // triggered the assistant reply that's about to stream in.
-        if (eventSessionId && eventSessionId !== app.currentSessionId) break;
-        if (window.__sseActive) break;
-        if (event.source === 'event_trigger' && typeof app.addChatBubble === 'function') {
-          app.addChatBubble('user', event.content || '', 'event-trigger');
+        if (typeof app.markAgentInterrupted === 'function') {
+          try { app.markAgentInterrupted(event.asst_id); } catch(_) {}
+        } else {
+          app.updateLastBubble('(interrupted)', 'interrupted');
+          app.isProcessing = false;
+          if (app.chatSend) app.chatSend.disabled = false;
         }
         break;
+
+      case 'user_message': {
+        // Every user message (typed by this user, sent from another device, or
+        // injected by an event-triggered run) is broadcast here so ALL devices
+        // viewing the session render it live — the same way agent messages do.
+        if (eventSessionId && eventSessionId !== app.currentSessionId) {
+          if (event.replayed) _stashReplay(eventSessionId, event);
+          break;
+        }
+        if (!app.chatMessages) break;
+        const mid = event.id || event.interaction_id || '';
+        const cont = event.content || '';
+        // Already shown (by interaction id)? Dedup.
+        if (mid && app.chatMessages.querySelector(
+              `.chat-bubble.user[data-msg-id="${CSS.escape(String(mid))}"]`)) break;
+        // Adopt the sender's own optimistic bubble (rendered locally before the
+        // id was known) so we don't double it. Match by text on an untagged
+        // user bubble; tag it with the id instead of adding a new one.
+        if (mid) {
+          const candidates = app.chatMessages.querySelectorAll('.chat-bubble.user:not([data-msg-id])');
+          for (let i = candidates.length - 1; i >= 0; i--) {
+            const b = candidates[i];
+            const t = b.textContent.replace(/^You/, '').trim();
+            if (t === cont.trim()) { b.setAttribute('data-msg-id', String(mid)); break; }
+          }
+          if (app.chatMessages.querySelector(
+                `.chat-bubble.user[data-msg-id="${CSS.escape(String(mid))}"]`)) break;
+        }
+        if (typeof app.addChatBubble === 'function') {
+          const cls = event.source === 'event_trigger' ? 'event-trigger' : undefined;
+          app.addChatBubble('user', cont, cls, undefined, undefined, mid || undefined);
+        }
+        break;
+      }
 
       case 'stream':
         // Live (or replayed) assistant text for the current session, but
@@ -225,7 +248,21 @@ export function connectAgent() {
         }
         if (window.__sseActive) break;
         if (typeof app.appendStreamToActiveBubble === 'function') {
-          try { app.appendStreamToActiveBubble(event.content || '', event.turn_id); } catch(_) {}
+          // Key the bubble by the per-step assistant id so each step renders as
+          // its own bubble; fall back to turn_id for legacy events.
+          try { app.appendStreamToActiveBubble(event.content || '', event.asst_id || event.turn_id); } catch(_) {}
+        }
+        break;
+
+      case 'agent_step_end':
+        // An intermediate assistant step (text before tool calls) finished —
+        // finalize its own bubble so the user sees every step, not just the last.
+        if (eventSessionId && eventSessionId !== app.currentSessionId) {
+          if (event.replayed) _stashReplay(eventSessionId, event);
+          break;
+        }
+        if (typeof app.finalizeAgentStep === 'function') {
+          try { app.finalizeAgentStep(event.content || '', event.asst_id || event.turn_id); } catch(_) {}
         }
         break;
 
@@ -239,7 +276,7 @@ export function connectAgent() {
         }
         if (window.__sseActive) break;
         if (typeof app.finalizeAgentResponse === 'function') {
-          try { app.finalizeAgentResponse(event.content || '', event.turn_id, !!event.replayed); } catch(_) {}
+          try { app.finalizeAgentResponse(event.content || '', event.asst_id || event.turn_id, !!event.replayed); } catch(_) {}
         } else if (typeof app.addChatBubble === 'function') {
           app.addChatBubble('agent', event.content || '');
         }

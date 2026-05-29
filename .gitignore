@@ -101,7 +101,7 @@ visuals/
 # Scratch build dirs stay under launcher/. None of these are committed.
 /webagent.exe
 launcher/*.exe
-launcher/snapshot*.svg
+launcher/*snapshot*.svg
 launcher/assets/webagent.ico
 launcher/assets/webagent_256.png
 launcher/dist/

@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     metadata TEXT,
     agent_id TEXT,
     participants TEXT DEFAULT '[]',
+    sort_order INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -91,11 +92,33 @@ CREATE TABLE IF NOT EXISTS interactions (
     session_seq INTEGER,
     turn_id TEXT,
     turn_seq INTEGER,
+    status TEXT NOT NULL DEFAULT 'complete',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_interactions_session ON interactions(session_id);
 CREATE INDEX IF NOT EXISTS idx_interactions_created ON interactions(created_at);
+
+-- Per-session run state — the durable record of an in-flight (or recently
+-- finished) agent turn. One row per session (upserted). Lets a cold device
+-- (fresh load, even after a server restart) learn from the DB alone that a
+-- run is in progress and where the live stream is up to, without depending on
+-- the in-memory RunBuffer. Orphan cleanup on boot flips stale 'running' rows
+-- to 'interrupted'. See app/agent/run_manager.py.
+CREATE TABLE IF NOT EXISTS session_runs (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id),
+    user_id TEXT NOT NULL,
+    agent_id TEXT,
+    turn_id TEXT,
+    assistant_interaction_id TEXT,
+    status TEXT NOT NULL DEFAULT 'running',
+    latest_session_seq INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_runs_user_status ON session_runs(user_id, status);
 -- idx_interactions_session_seq and idx_interactions_turn are created by the
 -- ALTER TABLE migration block after the columns are guaranteed to exist.
 -- They are not declared here because on an existing DB the SCHEMA_SQL runs
@@ -153,7 +176,8 @@ CREATE TABLE IF NOT EXISTS agents (
     turn_count INTEGER NOT NULL DEFAULT 0,
     admin_users TEXT NOT NULL DEFAULT '[]',
     member_users TEXT NOT NULL DEFAULT '[]',
-    user_mode TEXT NOT NULL DEFAULT 'anonymous'
+    user_mode TEXT NOT NULL DEFAULT 'anonymous',
+    sort_order INTEGER
 );
 
 -- ============================================================
@@ -1148,6 +1172,43 @@ class LocalBackend(StorageBackend):
             if added:
                 logger.info("Added interactions.session_seq / turn_id / turn_seq columns + indexes")
 
+            # ── Migration: add status column to interactions (streaming persistence) ──
+            # Existing rows are all finished, so they default to 'complete'.
+            # New assistant rows are written 'streaming' then flipped to
+            # 'complete' / 'interrupted' / 'error' by the loop. See migration
+            # 023_run_persistence.sql for the Supabase equivalent.
+            cursor = conn.execute("PRAGMA table_info(interactions)")
+            cols_status = {row[1] for row in cursor.fetchall()}
+            if "status" not in cols_status:
+                conn.execute(
+                    "ALTER TABLE interactions ADD COLUMN status TEXT NOT NULL DEFAULT 'complete'"
+                )
+                conn.commit()
+                logger.info("Added interactions.status column")
+
+            # ── Migration: ensure session_runs table exists (run-state tracking) ──
+            # SCHEMA_SQL already creates it for fresh DBs; this covers DBs created
+            # before the table was introduced. Idempotent.
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS session_runs (
+                    session_id TEXT PRIMARY KEY REFERENCES sessions(id),
+                    user_id TEXT NOT NULL,
+                    agent_id TEXT,
+                    turn_id TEXT,
+                    assistant_interaction_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    latest_session_seq INTEGER NOT NULL DEFAULT 0,
+                    error TEXT,
+                    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )"""
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_session_runs_user_status "
+                "ON session_runs(user_id, status)"
+            )
+            conn.commit()
+
             # ── Migration: add metadata column to sessions (for optimizer tracking) ──
             cursor = conn.execute("PRAGMA table_info(sessions)")
             sess_cols = {row[1] for row in cursor.fetchall()}
@@ -1163,6 +1224,22 @@ class LocalBackend(StorageBackend):
                 conn.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
                 conn.commit()
                 logger.info("Added sessions.pinned column")
+
+            # ── Migration: add sort_order column to sessions (manual row order) ──
+            cursor = conn.execute("PRAGMA table_info(sessions)")
+            sess_cols_so = {row[1] for row in cursor.fetchall()}
+            if "sort_order" not in sess_cols_so:
+                conn.execute("ALTER TABLE sessions ADD COLUMN sort_order INTEGER")
+                conn.commit()
+                logger.info("Added sessions.sort_order column")
+
+            # ── Migration: add sort_order column to agents (manual row order) ──
+            cursor = conn.execute("PRAGMA table_info(agents)")
+            agent_cols_so = {row[1] for row in cursor.fetchall()}
+            if "sort_order" not in agent_cols_so:
+                conn.execute("ALTER TABLE agents ADD COLUMN sort_order INTEGER")
+                conn.commit()
+                logger.info("Added agents.sort_order column")
 
             # ── Migration: add fire_token / external_job_id / external_provider to agent_automations ──
             try:
@@ -2046,6 +2123,7 @@ class LocalBackend(StorageBackend):
         session_seq: Optional[int] = None,
         turn_id: Optional[str] = None,
         turn_seq: Optional[int] = None,
+        status: str = "complete",
     ) -> str:
         await self.assert_session_owned(user_id, session_id)
         # Optimizer/Closer sessions get source='optimizer' for all interactions
@@ -2056,8 +2134,8 @@ class LocalBackend(StorageBackend):
             try:
                 interaction_id = _uuid()
                 conn.execute(
-                    "INSERT INTO interactions (id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, source, from_id, to_id, session_seq, turn_id, turn_seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (interaction_id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input_data, output_data, source or 'user', sender_id, receiver_id, session_seq, turn_id, turn_seq),
+                    "INSERT INTO interactions (id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, source, from_id, to_id, session_seq, turn_id, turn_seq, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (interaction_id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input_data, output_data, source or 'user', sender_id, receiver_id, session_seq, turn_id, turn_seq, status),
                 )
                 conn.commit()
                 logger.debug("Inserted interaction %s", interaction_id)
@@ -4151,6 +4229,175 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
+    async def update_interaction(
+        self,
+        interaction_id: str,
+        *,
+        content: Optional[str] = None,
+        status: Optional[str] = None,
+        output_data: Optional[str] = None,
+        metadata: Optional[str] = None,
+    ) -> bool:
+        """Patch selected fields of an interaction row in one statement.
+
+        Used by the streaming-answer persistence path: the assistant row is
+        inserted up front as status='streaming', its `content` is updated as
+        tokens arrive, and it is finalized with status='complete' (plus the
+        tool_calls payload in `output`) when the step ends. None fields are
+        left untouched."""
+        sets: List[str] = []
+        vals: List[Any] = []
+        if content is not None:
+            sets.append("content = ?")
+            vals.append(content)
+        if status is not None:
+            sets.append("status = ?")
+            vals.append(status)
+        if output_data is not None:
+            sets.append("output = ?")
+            vals.append(output_data)
+        if metadata is not None:
+            sets.append("metadata = ?")
+            vals.append(metadata)
+        if not sets:
+            return False
+        vals.append(interaction_id)
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    f"UPDATE interactions SET {', '.join(sets)} WHERE id = ?",
+                    tuple(vals),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Run state — durable per-session record of an in-flight agent turn.
+    # The in-memory RunBuffer (app/agent/run_buffer.py) is a low-latency replay
+    # cache in front of THIS; these rows are the source of truth that survives
+    # buffer eviction and lets a cold device discover an active run from the DB.
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def run_state_begin(
+        self, session_id: str, user_id: str, agent_id: Optional[str], turn_id: Optional[str]
+    ) -> None:
+        """Mark a session as having a run in progress (upsert, status='running')."""
+        now = _now_iso()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """INSERT INTO session_runs
+                         (session_id, user_id, agent_id, turn_id, assistant_interaction_id,
+                          status, latest_session_seq, error, started_at, updated_at)
+                       VALUES (?, ?, ?, ?, NULL, 'running', 0, NULL, ?, ?)
+                       ON CONFLICT(session_id) DO UPDATE SET
+                         user_id=excluded.user_id,
+                         agent_id=excluded.agent_id,
+                         turn_id=excluded.turn_id,
+                         assistant_interaction_id=NULL,
+                         status='running',
+                         latest_session_seq=0,
+                         error=NULL,
+                         started_at=excluded.started_at,
+                         updated_at=excluded.updated_at""",
+                    (session_id, user_id, agent_id, turn_id, now, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def run_state_set_assistant(self, session_id: str, assistant_interaction_id: str) -> None:
+        """Record which assistant interaction row is the in-progress answer."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE session_runs SET assistant_interaction_id=?, updated_at=? WHERE session_id=?",
+                    (assistant_interaction_id, _now_iso(), session_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def run_state_update_seq(self, session_id: str, latest_session_seq: int) -> None:
+        """Advance the highest session_seq emitted so far (drives WS resume)."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE session_runs SET latest_session_seq=?, updated_at=? "
+                    "WHERE session_id=? AND latest_session_seq < ?",
+                    (latest_session_seq, _now_iso(), session_id, latest_session_seq),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def run_state_finish(
+        self, session_id: str, status: str = "complete", error: Optional[str] = None
+    ) -> None:
+        """Mark the run finished ('complete' | 'interrupted' | 'error')."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE session_runs SET status=?, error=?, updated_at=? WHERE session_id=?",
+                    (status, error, _now_iso(), session_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def run_state_get(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Return the run-state row for a session, or None."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM session_runs WHERE session_id=?", (session_id,)
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def run_state_list_active(self, user_id: str) -> List[Dict[str, Any]]:
+        """All sessions for a user with a currently-running turn."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM session_runs WHERE user_id=? AND status='running'",
+                (user_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def cleanup_orphaned_runs(self) -> int:
+        """On boot, flip runs the previous process left mid-flight to a clean
+        terminal state so no device hangs forever. Any session_runs row still
+        'running' becomes 'interrupted', and any assistant interaction still
+        'streaming' becomes 'interrupted'. Returns the number of runs reset."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "UPDATE session_runs SET status='interrupted', "
+                    "error='Server restarted while this run was in progress.', "
+                    "updated_at=? WHERE status='running'",
+                    (_now_iso(),),
+                )
+                n = cur.rowcount or 0
+                conn.execute(
+                    "UPDATE interactions SET status='interrupted' WHERE status='streaming'"
+                )
+                conn.commit()
+                return n
+            finally:
+                conn.close()
+
     async def check_interrupt(self, session_id: str) -> bool:
         conn = self._get_conn()
         try:
@@ -4708,7 +4955,7 @@ class LocalBackend(StorageBackend):
                            SELECT 1 FROM json_each(member_users)
                            WHERE value = ?
                          )
-                   ORDER BY created_at ASC""",
+                   ORDER BY (sort_order IS NULL), sort_order ASC, created_at ASC""",
                 (user_id, user_id),
             ).fetchall()
             for row in rows:
@@ -4918,6 +5165,7 @@ class LocalBackend(StorageBackend):
             "allowed_tools", "custom_tool_ids",
             "trigger_type", "trigger_key", "loop_logic",
             "safety_policy", "user_mode", "metadata",
+            "sort_order",
         }
         safe = {}
         for k, v in updates.items():
@@ -4964,6 +5212,35 @@ class LocalBackend(StorageBackend):
         if result:
             result["source"] = "custom"
         return result
+
+    async def reorder_agents(self, user_id: str, ordered_ids: List[str]) -> int:
+        """
+        Persist the manual display order for a user's agents.
+
+        Assigns sort_order = position (0-based) to each agent in ``ordered_ids``,
+        but only for agents the caller administers (present in admin_users).
+        Returns the number of rows updated. Agents not listed keep their
+        existing sort_order — they sort after the ordered set via the
+        NULLS-LAST clause in list_agents_for_user.
+        """
+        if not ordered_ids:
+            return 0
+        now = _now_iso()
+        updated = 0
+        conn = self._get_conn()
+        try:
+            for position, agent_id in enumerate(ordered_ids):
+                cursor = conn.execute(
+                    """UPDATE agents SET sort_order = ?, updated_at = ?
+                       WHERE id = ?
+                         AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)""",
+                    (position, now, agent_id, user_id),
+                )
+                updated += cursor.rowcount
+            conn.commit()
+        finally:
+            conn.close()
+        return updated
 
     # ---- Agent Connections ----
 

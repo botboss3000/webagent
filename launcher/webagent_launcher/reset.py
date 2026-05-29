@@ -78,6 +78,9 @@ async def clear_database(
     """Stop server → backup-or-delete DB files → restart server."""
     log("[reset] Clearing database...")
 
+    # Drop any queued auto-restart so the watchdog can't relaunch the server
+    # mid-wipe (e.g. if it had just crashed before the user hit Clear DB).
+    controller.cancel_auto_restart()
     was_running = controller.state.status == "running"
     if controller.state.status in ("running", "starting"):
         await controller.stop()
@@ -111,6 +114,9 @@ async def reset_venv(
     """Stop server → delete .venv → run uv sync → restart server."""
     log("[reset] Wiping Python environment...")
 
+    # Drop any queued auto-restart so the watchdog can't relaunch against a
+    # half-deleted .venv while we rebuild it.
+    controller.cancel_auto_restart()
     was_running = controller.state.status == "running"
     if controller.state.status in ("running", "starting"):
         await controller.stop()
