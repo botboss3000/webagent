@@ -60,7 +60,9 @@ class CheckRow(Horizontal):
         body = f"{self.check.label} — {self.check.detail}" if self.check.detail else self.check.label
         yield Label(body, classes="-body")
         if self.check.fix_action:
-            yield Button("Fix", id=f"fix:{self.check.fix_action}", classes="-fix")
+            # Sanitize: replace colons with underscores to satisfy Textual ID rules
+            clean_id = f"fix_{self.check.fix_action.replace(':', '_')}"
+            yield Button("Fix", id=clean_id, classes="-fix")
 
 
 class LauncherApp(App):
@@ -210,8 +212,8 @@ class LauncherApp(App):
             await self.action_doctor()
         elif bid == "btn-fix-all":
             await self.action_fix_all()
-        elif bid.startswith("fix:"):
-            action = bid[len("fix:"):]
+        elif bid.startswith("fix_"):
+            action = bid[len("fix_"):]
             self.run_worker(self._run_fix(action), exclusive=True, name="fix")
 
     # ── doctor ─────────────────────────────────────────────────────────
