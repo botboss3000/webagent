@@ -88,3 +88,6 @@ launcher/*.exe
 launcher/snapshot*.svg
 launcher/assets/webagent.ico
 launcher/assets/webagent_256.png
+
+# launcher_android runtime bridge file (Browser button host↔proot)
+launcher_android/.browser-bridge

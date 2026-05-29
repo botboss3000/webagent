@@ -143,7 +143,7 @@ class AnimatedStage(Widget):
         h = max(2, size.height)
         t = (time.monotonic() - self._t0) * self._speed
 
-        # Compute logo placement (centered)
+        # Compute logo placement (centered in the stage area)
         if self._show_logo and h > _LOGO_H:
             logo_h = _LOGO_H
             logo_top = max(0, (h - logo_h) // 2)
