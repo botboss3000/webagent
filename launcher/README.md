@@ -11,9 +11,24 @@ Polished TUI that controls the webagent server. Bundles into a single
   self-contained `uv` toolchain (which installs its own private Python),
   `uv sync` every dependency, and download the **Playwright Chromium** browser
   (~150 MB, into `%LOCALAPPDATA%\ms-playwright`) that the `browser_action` tool
-  drives. The end user needs **nothing** pre-installed — just the `.exe`.
-  Progress streams live in an install log. The first-run screen also still lets
-  you point at a webagent folder you already have. (The Chromium download is
+  drives. The end user needs **nothing** pre-installed — just the `.exe`. The
+  whole thing happens **inline in the launcher window** — the animated logo
+  stays on screen the entire time, no pop-up modal. The install panel is a
+  **destination field** (pre-filled with `C:\webagent`, editable) with the
+  **Download & Install** button on the same row, so it's never clipped. Until a
+  project exists, the normal controls are hidden and the footer becomes
+  installer tabs — **Install** (this panel), **Manual Install** (copy-paste
+  steps to do it by hand), **Health Check** (a full environment report: git & uv
+  versions, system Python, internet to GitHub & PyPI, plus the install's own
+  state at the target — code, `.venv` + Python version, whether the
+  dependencies and Chromium are present, the local DB, writable destination,
+  free disk; re-runs each time you open the tab) — alongside **Theme** and
+  **Quit**.
+  Progress streams live in the same panel; once the install starts it **cannot
+  be cancelled**, and the panel clears itself the moment it finishes (the
+  launcher restores the normal buttons and drops into normal operation).
+  Pointing the destination at a folder that's already a webagent checkout simply
+  adopts and re-syncs it instead of downloading. (The Chromium download is
   best-effort: if it fails the server still runs and you can retry via Update —
   only the browser tool needs it.)
 - **Launch** — starts `run.py` in the configured project folder, polls
@@ -45,7 +60,30 @@ Polished TUI that controls the webagent server. Bundles into a single
   browser (fast when it's already present). Your local data (DB, users,
   generated pages) is kept — it isn't in the public repo. The server is stopped
   during the update and restarted afterwards.
-- **Browser** — opens the saved URL (default `/index.html`)
+- **Browser** — opens the saved URL (default `/index.html`) in your normal browser
+- **App Window** (`W`) — open the webagent app in a **chromeless Chromium
+  window** (app mode — no tabs or address bar, like a native desktop app)
+  instead of a browser tab. It's launched with a remote-debugging port, so the
+  agent's `browser_action` tool **attaches to and drives the very window you're
+  watching** (when the agent's **Browser Control** ability is on). Close the
+  window and the agent silently reverts to its invisible headless browser. Uses
+  the Playwright Chromium the installer downloaded (falls back to a system
+  Chrome, then Edge). Local / Windows only — it needs a real screen, so it
+  doesn't apply to the remote server. One window at a time; pressing `W` again
+  while it's open is a no-op. The port can be overridden with
+  `WEBAGENT_BROWSER_CDP_PORT` (default `9222`) — the launcher passes it through
+  to the server so the two always agree.
+- **Location** — re-point this exe at a different folder. The status bar shows
+  the current **target**; clicking Location opens the installer panel pre-filled
+  with it, with a live status line and an adaptive button — **Use this folder**
+  when the path is already a webAgent install (adopt + ready), or **Download &
+  Install** when it's new. **Cancel** leaves the current target untouched.
+  Committing a new target stops any server bound to the old one and switches. A
+  **Current Folder** button (shown only once the exe has a target) drops that
+  saved target back into the box and re-saves it as the location in one click —
+  no re-typing, no re-download; if the saved folder has gone missing it installs
+  there instead. Re-confirming the folder that's already active leaves a healthy
+  server running rather than bouncing it.
 - **Chat** (`A`) — full keyboard-driven chat against the local server: live
   token streaming, expandable tool-call blocks, agent/session pickers. The
   header carries a **server dot** that tracks the connection in real time —
@@ -72,10 +110,23 @@ Polished TUI that controls the webagent server. Bundles into a single
   or the chat screen covers it, and resumes when you return. Lower the FPS
   slider (or pick `Off`) if the idle animation is still too busy for you.
 
-Configuration lives at `%APPDATA%\webagent\launcher.json`; tools the launcher
-downloads itself (like `uv`) are cached under `%APPDATA%\webagent\tools`. The
-.exe can sit anywhere — on first run choose **Download & Install** to set
-everything up from scratch, or point it at a webagent folder you already have.
+**Each `.exe` is a pointer to one install — stored per-exe (no shared file).**
+A `webagent.exe` is a static controller that points at one install folder; it
+can **install**, **update**, or **run** that folder. The target (and prefs) live
+in the **Windows registry** under `HKEY_CURRENT_USER\Software\webagent\Instances`,
+keyed by **the exe's own path** — so you can keep several copies of the exe in
+different folders, each pointed at a **different repo**, with no shared
+`launcher.json` to collide. (In dev / non-Windows, a plain
+`%APPDATA%\webagent\launcher.json` is used instead.)
+
+On first run an exe has no saved target, so it shows the installer with the box
+defaulting to `C:\webagent` (a live line warns if the chosen folder is empty,
+already a webAgent install, or already holds other files). After it's pointed
+somewhere, that exe runs/updates that folder. To re-point or start fresh, delete
+the install folder (its saved target becomes invalid → installer shows again) or
+clear the exe's entry under that registry key. Tools the launcher downloads
+itself (like `uv`) are cached under `%APPDATA%\webagent\tools` (shared — it's a
+tool, not per-target state).
 
 ## Develop
 
@@ -91,6 +142,9 @@ animation styles (including `Off`) without opening the panel.
 
 ## Build the .exe
 
+Requires **Node.js** (to run the pi-ai model-extraction script) and the
+`@earendil-works/pi-ai` npm package (the global `pi` install provides it).
+
 ```powershell
 cd launcher
 uv sync --extra build
@@ -98,13 +152,29 @@ uv run python scripts/build_exe.py
 # → webagent.exe   (single portable file at the PROJECT ROOT)
 ```
 
-The build script regenerates the Lucide-bot icon, runs PyInstaller in
-onefile mode, moves the result to **`webagent.exe` at the project root**
-(the repo's top folder, parent of `launcher/`), and removes the
-`launcher/build` and `launcher/dist` scratch folders so the only artifact
-left is the .exe. Drop it anywhere — first launch offers **Download & Install**
-(fetch the repo + uv + Python + all dependencies) or lets you point at a
-webagent folder you already have.
+The build script runs three steps:
+1. **Generate `model_windows.py`** — extracts context-window sizes for every
+   known model from `@earendil-works/pi-ai`'s auto-generated model registry
+   via `launcher/scripts/build_model_windows.mjs`. The TUI uses this to draw
+   the context-window gauge (used / max, green → amber → red).
+2. **Regenerate the Lucide-bot icon** via `generate_icon.py`.
+3. **Run PyInstaller** in onefile mode, moves the result to **`webagent.exe`**
+   at the project root (the repo's top folder, parent of `launcher/`), and
+   removes `launcher/build` and `launcher/dist`.
+
+Re-generate model windows manually (e.g. after pi-ai updates):
+
+```powershell
+node launcher/scripts/build_model_windows.mjs
+```
+
+This produces `launcher/webagent_launcher/model_windows.py` (~969 models).
+It is checked in — only re-run when pi-ai publishes new model entries.
+The script skips gracefully if `@earendil-works/pi-ai` isn't installed.
+
+Drop the .exe anywhere — first launch offers **Download & Install**
+(fetch the repo + uv + Python + all dependencies) or point it at an
+existing webagent folder.
 
 > **Standalone window + emoji:** the .exe opens in its own console window. On
 > Windows 10 that legacy console can't draw colour emoji, so the chat uses
@@ -122,7 +192,8 @@ webagent folder you already have.
 | `L` | Launch server |
 | `R` | Restart server |
 | `S` | Stop server |
-| `B` | Open browser |
+| `B` | Open browser (your default browser) |
+| `W` | Open the webagent app in a chromeless, agent-controllable Chromium window |
 | `D` | Clear DB (with confirm) |
 | `P` | Reset Python (with confirm) |
 | `F` | Full reset (with confirm) |

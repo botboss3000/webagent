@@ -1,9 +1,8 @@
-"""Modal/secondary screens: first-run setup, install progress, settings, confirm."""
+"""Inline first-run setup + install panel, settings panel, and modal dialogs."""
 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -20,212 +19,314 @@ from .ascii_anim import ANIM_STYLES, ANIM_LABELS
 from .widgets import Slider
 
 
-# ── first-run setup ────────────────────────────────────────────────────
-@dataclass
-class SetupResult:
-    """What the user chose on the first-run screen.
+# ── first-run setup + install (INLINE, in the log slot) ──────────────────
+_MANUAL_INSTALL_TEXT = (
+    "Prefer to install it yourself? Do this in a terminal:\n"
+    "\n"
+    "1. Get the code (pick one):\n"
+    "     git clone https://github.com/botboss3000/webagent.git C:\\webagent\n"
+    "   or download the ZIP from github.com/botboss3000/webagent and unzip it.\n"
+    "\n"
+    "2. Install uv (Astral's Python manager), in PowerShell:\n"
+    "     irm https://astral.sh/uv/install.ps1 | iex\n"
+    "\n"
+    "3. Install the dependencies:\n"
+    "     cd C:\\webagent\n"
+    "     uv sync\n"
+    "\n"
+    "4. Install the browser the agent's browser tool uses:\n"
+    "     uv run playwright install chromium\n"
+    "\n"
+    "5. Start the server:\n"
+    "     uv run python run.py\n"
+    "   then open http://localhost:8080 in your browser.\n"
+    "\n"
+    "To use THIS launcher with that folder afterwards: open the Install tab,\n"
+    "type the folder path, and press Download & Install — it detects the\n"
+    "existing checkout and just finishes setup (no re-download)."
+)
 
-    action == "install"  → download + install fresh into ``path`` (app pushes
-                            InstallScreen next).
-    action == "existing" → ``path`` is an already-present project; cfg is saved.
+
+def install_status_msg(raw: str) -> str:
+    """Live status line for the destination box (markup string).
+
+    Reflects what's at the typed path: nothing entered, already a webAgent
+    install (will update), a brand-new path, an empty folder, or a folder that
+    already holds other files (the one real warning).
+    """
+    raw = (raw or "").strip().strip('"')
+    if not raw:
+        return "[#ffb000]Enter a destination — e.g. C:\\webagent[/]"
+    p = Path(raw).expanduser()
+    if (p / "run.py").exists() and (p / "app").is_dir():
+        return "[#5dff4d]webAgent is already here — Install updates it in place.[/]"
+    if not p.exists():
+        return "[#8a8aa8]New location — a fresh install is created here.[/]"
+    try:
+        empty = not any(p.iterdir())
+    except OSError:
+        empty = False
+    if empty:
+        return "[#5dff4d]Empty folder — ready for a fresh install.[/]"
+    return "[#ffb000]This folder already has other files in it.[/]"
+
+
+class SetupPanel(Vertical):
+    """First-run setup, install, manual instructions, and a Doctor — mounted
+    INLINE where the log pane sits, so the animated WEBAGENT logo above stays
+    visible the whole time. No modal.
+
+    Four sub-views swap inside the panel (the app's footer tabs pick between the
+    first three; the install flow shows the fourth):
+      • form     — a destination field + a single Download & Install button.
+      • manual   — copy-paste steps to install by hand.
+      • doctor   — environment diagnostics (git / uv / internet / disk / …).
+      • progress — a live install log. **No Cancel** — once started it runs to
+                   completion. On success the app hides the panel (it "clears");
+                   on failure the user can Retry or change the location.
+
+    The app shows/hides the panel and learns the outcome via ``on_done(ok)``.
     """
 
-    action: str
-    path: str
-
-
-class SetupScreen(ModalScreen[Optional["SetupResult"]]):
-    """First run: install webAgent fresh (download everything) OR point the
-    launcher at a webagent folder that already exists on the machine."""
-
-    BINDINGS = [
-        Binding("escape", "cancel", "Cancel", priority=True, show=True),
-    ]
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    def __init__(self, cfg: LauncherConfig) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        cfg: LauncherConfig,
+        on_done: Callable[[bool], None],
+        on_cancel: Optional[Callable[[], None]] = None,
+    ) -> None:
+        super().__init__(id="setup-panel-inline")
         self.cfg = cfg
-        self.mode = "install"  # "install" | "existing"
+        self._on_done = on_done
+        self._on_cancel = on_cancel
+        self._task: Optional[asyncio.Task] = None
+        self._doc_task: Optional[asyncio.Task] = None
+        self._target = ""
+        self._installing = False
+        self._repoint = False  # True when changing an existing target (Cancel allowed)
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="setup-panel"):
-            yield Label("[b]webagent — first-run setup[/b]", classes="label")
-            with Horizontal(id="setup-modes"):
-                yield Button("Download & Install", id="mode-install")
-                yield Button("Use existing folder", id="mode-existing")
-            yield Label("", id="setup-help", classes="help")
-            yield Input(value=str(default_install_dir()), id="path-input")
-            yield Label("", id="setup-error", classes="label")
-            with Horizontal(id="setup-actions"):
-                yield Button("Install", variant="primary", id="setup-go")
-                yield Button("Cancel", variant="default", id="setup-cancel")
+        # ── install form: destination on the left, button on the right ──
+        with Vertical(id="setup-form"):
+            yield Static("[b]Install webAgent[/b]", id="setup-heading")
+            yield Static("", id="setup-help")
+            yield Static("Install location", id="setup-dest-label")
+            with Horizontal(id="setup-form-row"):
+                yield Input(value=str(default_install_dir()), id="path-input")
+                yield Button("Download & Install", variant="primary", id="setup-go")
+                yield Button("Current Folder", id="setup-current")
+                yield Button("Cancel", id="setup-cancel")
+            yield Static("", id="setup-error")
+        # ── manual install instructions ──
+        with VerticalScroll(id="setup-manual"):
+            yield Static("[b]Manual install[/b] — do it yourself", classes="setup-subhead")
+            yield Static(_MANUAL_INSTALL_TEXT, id="setup-manual-text")
+        # ── health check / diagnostics (re-runs each time the tab is opened) ──
+        with Vertical(id="setup-doctor"):
+            yield Static("[b]Health Check[/b] — environment report", classes="setup-subhead")
+            yield RichLog(highlight=False, markup=False, wrap=True, id="setup-doctor-log")
+        # ── live install progress (no Cancel) ──
+        with Vertical(id="setup-progress"):
+            yield Static("[b]Installing webAgent…[/b]", id="setup-progress-title")
+            yield RichLog(highlight=False, markup=False, wrap=True, id="setup-log")
+            with Horizontal(id="setup-progress-actions"):
+                yield Button("Retry", variant="primary", id="setup-retry", disabled=True)
+                yield Button("Change location", id="setup-back", disabled=True)
 
-    def on_mount(self) -> None:
-        self._apply_mode()
+    # ── sub-view switching ──────────────────────────────────────────────
+    _SUBVIEWS = ("form", "manual", "doctor", "progress")
 
-    # ── mode toggle ────────────────────────────────────────────────────
-    def _apply_mode(self) -> None:
-        help_lbl = self.query_one("#setup-help", Label)
+    def _show_subview(self, name: str) -> None:
+        for sv in self._SUBVIEWS:
+            try:
+                self.query_one(f"#setup-{sv}").display = (sv == name)
+            except Exception:
+                pass
+
+    def start(self, repoint: bool = False) -> None:
+        """Enter the install form. ``repoint`` = changing an existing target
+        (Cancel is offered). Pre-fill the box with THIS exe's current target (its
+        saved address), or suggest C:\\webagent if it has never been pointed."""
+        self._repoint = repoint
+        try:
+            self.query_one("#path-input", Input).value = (
+                self.cfg.project_path or str(default_install_dir())
+            )
+            self.query_one("#setup-cancel", Button).display = repoint
+            # "Current Folder" — a one-click shortcut to this exe's saved target.
+            # Only meaningful once it HAS a target; hidden on a never-pointed exe.
+            self.query_one("#setup-current", Button).display = bool(
+                (self.cfg.project_path or "").strip()
+            )
+        except Exception:
+            pass
+        self.show_install()
+
+    def show_install(self) -> None:
+        """The Install tab: the form normally, or the live log if mid-install."""
+        if self._installing:
+            self._show_subview("progress")
+            return
+        self._show_subview("form")
+        self.query_one("#setup-help", Static).update(
+            "This webAgent points at the folder below. Download & Install creates "
+            "(or updates) it there, along with Python and everything it needs. "
+            "Point it anywhere you like — each .exe remembers its own target."
+        )
         inp = self.query_one("#path-input", Input)
-        go = self.query_one("#setup-go", Button)
-        mi = self.query_one("#mode-install", Button)
-        me = self.query_one("#mode-existing", Button)
-        self.query_one("#setup-error", Label).update("")
-        if self.mode == "install":
-            help_lbl.update(
-                "Downloads webAgent and every dependency into a new folder. "
-                "Nothing needs to be installed beforehand — this can take a few "
-                "minutes and a few hundred MB the first time."
-            )
+        if not inp.value:
             inp.value = str(default_install_dir())
-            go.label = "Install here"
-            mi.add_class("active")
-            me.remove_class("active")
+        self._update_status()
+        try:
+            inp.focus()
+        except Exception:
+            pass
+
+    @on(Input.Changed, "#path-input")
+    def _path_changed(self) -> None:
+        self._update_status()
+
+    def _update_status(self) -> None:
+        """Live line under the box + adaptive primary-button label."""
+        try:
+            st = self.query_one("#setup-error", Static)
+            raw = self.query_one("#path-input", Input).value.strip().strip('"')
+        except Exception:
+            return
+        st.update(install_status_msg(raw))
+        # Already an install → 'Use this folder' (adopt + ready); else download.
+        try:
+            p = Path(raw).expanduser() if raw else None
+            is_inst = bool(p and (p / "run.py").exists() and (p / "app").is_dir())
+            self.query_one("#setup-go", Button).label = "Use this folder" if is_inst else "Download & Install"
+        except Exception:
+            pass
+
+    @on(Button.Pressed, "#setup-cancel")
+    def _cancel(self) -> None:
+        if self._on_cancel is not None:
+            self._on_cancel()
+
+    @on(Button.Pressed, "#setup-current")
+    def _use_current(self) -> None:
+        """One-click: drop THIS exe's saved target into the box and keep it as
+        the app's location — no typing, no re-download. If that folder is still a
+        real install we just adopt it and hand back to the app (which leaves a
+        healthy same-folder server running instead of bouncing it); if it has
+        gone missing, fall back to a normal install there."""
+        cur = (self.cfg.project_path or "").strip().strip('"')
+        if not cur:
+            return
+        self.query_one("#path-input", Input).value = cur  # show it in the box
+        self._update_status()
+        p = Path(cur).expanduser()
+        if (p / "run.py").exists() and (p / "app").is_dir():
+            self.cfg.project_path = str(p)
+            self.cfg.save()
+            self._on_done(True)  # save as the app's location + switch to it
         else:
-            help_lbl.update(
-                "Point the launcher at a webAgent folder you already have "
-                "(it must contain run.py and an app/ folder)."
-            )
-            inp.value = self.cfg.project_path or str(Path.cwd())
-            go.label = "Use this folder"
-            me.add_class("active")
-            mi.remove_class("active")
+            self._begin_install(str(p))  # not set up anymore → install it
 
-    @on(Button.Pressed, "#mode-install")
-    def _pick_install(self) -> None:
-        self.mode = "install"
-        self._apply_mode()
+    def show_manual(self) -> None:
+        self._show_subview("manual")
 
-    @on(Button.Pressed, "#mode-existing")
-    def _pick_existing(self) -> None:
-        self.mode = "existing"
-        self._apply_mode()
+    def show_doctor(self) -> None:
+        self._show_subview("doctor")
+        if self._doc_task is None or self._doc_task.done():
+            self._doc_task = asyncio.create_task(self._run_doctor())
 
-    # ── confirm ────────────────────────────────────────────────────────
+    # ── doctor ──────────────────────────────────────────────────────────
+    def _doc_log(self, line: str) -> None:
+        try:
+            self.query_one("#setup-doctor-log", RichLog).write(line)
+        except Exception:
+            pass
+
+    async def _run_doctor(self) -> None:
+        from . import bootstrap
+
+        try:
+            self.query_one("#setup-doctor-log", RichLog).clear()
+        except Exception:
+            pass
+        raw = self.query_one("#path-input", Input).value.strip().strip('"')
+        target = Path(raw).expanduser() if raw else default_install_dir()
+        try:
+            await bootstrap.run_diagnostics(target, self._doc_log)
+        except Exception as e:
+            self._doc_log(f"diagnostics error: {e}")
+
+    # ── confirm (form) ──────────────────────────────────────────────────
     @on(Button.Pressed, "#setup-go")
     def _go(self) -> None:
         path = self.query_one("#path-input", Input).value.strip().strip('"')
-        err = self.query_one("#setup-error", Label)
+        err = self.query_one("#setup-error", Static)
         if not path:
-            err.update("[red]Enter a folder path.[/red]")
+            err.update("[red]Enter a destination folder.[/red]")
             return
         p = Path(path).expanduser()
-
-        if self.mode == "existing":
-            if not p.is_dir():
-                err.update(f"[red]Not a directory:[/red] {path}")
-                return
-            if not (p / "run.py").exists():
-                err.update(f"[red]No run.py found in[/red] {path}")
-                return
-            if not (p / "app").is_dir():
-                err.update(f"[red]No app/ folder in[/red] {path}")
-                return
-            self.cfg.project_path = str(p)
-            self.cfg.save()
-            self.dismiss(SetupResult("existing", str(p)))
-            return
-
-        # install mode — make sure we can reach the target and it isn't a
-        # non-empty unrelated folder.
+        # Only sanity check: the location must be reachable so we can create it.
+        # An existing webAgent folder is adopted/re-synced; a brand-new path is
+        # created. (No "must be empty" rule.)
         anc = p
         while not anc.exists() and anc.parent != anc:
             anc = anc.parent
         if not anc.exists():
-            err.update(f"[red]Cannot reach[/red] {path}")
+            err.update(f"[red]That location isn't reachable:[/red] {path}")
             return
-        already_project = (p / "run.py").exists()
-        if p.exists() and any(p.iterdir()) and not already_project:
-            err.update(f"[red]Folder isn't empty — pick a new folder:[/red] {path}")
-            return
-        self.dismiss(SetupResult("install", str(p)))
+        self._begin_install(str(p))
 
-    @on(Button.Pressed, "#setup-cancel")
-    def _cancel(self) -> None:
-        self.dismiss(None)
-
-
-# ── install progress ────────────────────────────────────────────────────
-class InstallScreen(ModalScreen[bool]):
-    """Runs the download + dependency install with a live progress log.
-
-    dismiss(True)  → installed OK, project_path saved; app proceeds to launch.
-    dismiss(False) → user cancelled after a failure.
-    """
-
-    # Esc is swallowed while work is in flight; the action buttons (Continue /
-    # Retry / Cancel) are the only way out and only light up when work stops.
-    BINDINGS = [Binding("escape", "noop", show=False)]
-
-    def action_noop(self) -> None:
-        pass
-
-    def __init__(self, cfg: LauncherConfig, target: str) -> None:
-        super().__init__()
-        self.cfg = cfg
-        self.target = target
-        self._task: Optional[asyncio.Task] = None
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="install-panel"):
-            yield Label("[b]Installing webAgent…[/b]", id="install-title", classes="label")
-            yield RichLog(highlight=False, markup=False, wrap=True, id="install-log")
-            with Horizontal(id="install-actions"):
-                yield Button("Continue ▶", variant="primary", id="install-continue", disabled=True)
-                yield Button("Retry", variant="default", id="install-retry", disabled=True)
-                yield Button("Cancel", variant="default", id="install-cancel", disabled=True)
-
-    def on_mount(self) -> None:
-        self._start()
-
-    def _start(self) -> None:
-        self.query_one("#install-title", Label).update("[b]Installing webAgent…[/b]")
-        for bid in ("install-continue", "install-retry", "install-cancel"):
+    # ── install (no cancel) ─────────────────────────────────────────────
+    def _begin_install(self, target: str) -> None:
+        self._target = target
+        self._installing = True
+        self._show_subview("progress")
+        self.query_one("#setup-progress-title", Static).update(
+            "[b]Installing webAgent…[/b]  (this can take a few minutes — keep this window open)"
+        )
+        for bid in ("setup-retry", "setup-back"):
             self.query_one(f"#{bid}", Button).disabled = True
-        self._task = asyncio.create_task(self._run())
+        try:
+            self.query_one("#setup-log", RichLog).clear()
+        except Exception:
+            pass
+        self._task = asyncio.create_task(self._run_install(target))
 
     def _log(self, line: str) -> None:
         try:
-            self.query_one("#install-log", RichLog).write(line)
+            self.query_one("#setup-log", RichLog).write(line)
         except Exception:
             pass
 
-    async def _run(self) -> None:
+    async def _run_install(self, target: str) -> None:
         from . import bootstrap
 
         try:
-            ok = await bootstrap.install(Path(self.target), self._log)
+            ok = await bootstrap.install(Path(target), self._log)
         except Exception as e:  # never let an install crash take down the app
             self._log(f"[install] unexpected error: {e}")
             ok = False
 
-        title = self.query_one("#install-title", Label)
+        self._installing = False
         if ok:
-            self.cfg.project_path = str(Path(self.target).expanduser())
+            self.cfg.project_path = str(Path(target).expanduser())
             self.cfg.save()
-            title.update("[b]✔ Install complete[/b] — press Continue to launch")
-            btn = self.query_one("#install-continue", Button)
-            btn.disabled = False
-            btn.focus()
+            self._log("[install] done — launching…")
+            self._on_done(True)  # app hides this panel (it "clears")
         else:
-            title.update("[b]✘ Install failed[/b] — review the log, then Retry or Cancel")
-            self.query_one("#install-retry", Button).disabled = False
-            self.query_one("#install-cancel", Button).disabled = False
+            self.query_one("#setup-progress-title", Static).update(
+                "[b]Install failed[/b] — Retry, or change the location"
+            )
+            self.query_one("#setup-retry", Button).disabled = False
+            self.query_one("#setup-back", Button).disabled = False
 
-    @on(Button.Pressed, "#install-continue")
-    def _continue(self) -> None:
-        self.dismiss(True)
-
-    @on(Button.Pressed, "#install-retry")
+    @on(Button.Pressed, "#setup-retry")
     def _retry(self) -> None:
-        self._start()
+        if self._target:
+            self._begin_install(self._target)
 
-    @on(Button.Pressed, "#install-cancel")
-    def _cancel(self) -> None:
-        self.dismiss(False)
+    @on(Button.Pressed, "#setup-back")
+    def _back(self) -> None:
+        self.show_install()
 
 
 # ── inline settings panel ───────────────────────────────────────────────

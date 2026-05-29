@@ -584,6 +584,19 @@
            #agent-builder-bar-row, #autoagent-prompt-row. Style rules live in
            ui/css/app1.css under the "Chat-pill" block. -->
       <div id="chat-input-row" class="chat-pill">
+        <!-- Activity ("thinking") indicator — floats just above the pill while
+             the agent works; the bar ticks through each interaction, and is
+             clickable to expand the panel listing every tool call this turn,
+             each independently expandable. Driven by ui/js/chat-activity.js.
+             Absolutely positioned, so it never affects the pill's grid layout. -->
+        <div id="chat-activity" class="chat-activity">
+          <div id="chat-activity-panel" class="chat-activity-panel" role="region" aria-label="Tool calls this turn" hidden></div>
+          <button type="button" id="chat-activity-bar" class="chat-activity-bar" aria-expanded="false" aria-controls="chat-activity-panel" title="Show tool calls from this turn">
+            <span class="chat-activity-dot" aria-hidden="true"></span>
+            <span class="chat-activity-text" aria-live="polite" aria-atomic="true"></span>
+            <span class="chat-activity-chevron" aria-hidden="true">›</span>
+          </button>
+        </div>
         <button id="chat-attach-btn" class="chat-pill-attach" title="Attach files (or paste / drop onto the chat pill)"><i data-lucide="plus" style="width:18px;height:18px;"></i></button>
         <textarea id="chat-input" class="chat-pill-input" rows="1" placeholder="Chat with the agent" autocomplete="off"></textarea>
         <button id="chat-voice-btn" class="chat-pill-voice" title="Record voice"><i data-lucide="mic" style="width:18px;height:18px;"></i></button>

@@ -3,6 +3,7 @@
 import { app, bindDom } from './state.js';
 import { initStorageUi } from './storage.js';
 import { initChat } from './chat.js';
+import { initChatActivity } from './chat-activity.js';
 import { initReconnect } from './reconnect.js';
 import { ensureAttachmentsInit } from './attachments.js';
 import { connectAgent } from './agentWs.js';
@@ -187,6 +188,7 @@ _anonReady.then(() => {
 
   _safeInit('initStorageUi',        initStorageUi);
   _safeInit('initChat',             initChat);
+  _safeInit('initChatActivity',     initChatActivity);
   _safeInit('ensureAttachmentsInit', ensureAttachmentsInit);
   _safeInit('initReconnect',        initReconnect);
   _safeInit('registerSessionApi',   registerSessionApi);

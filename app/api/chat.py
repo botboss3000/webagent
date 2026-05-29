@@ -1430,6 +1430,13 @@ async def _emit_to_visualizers(session_id: str, event: Dict[str, Any], user_id: 
     so reconnecting clients can replay events newer than their last seen seq.
     """
     import json
+    # Tag the event with its originating session so per-USER WebSocket
+    # subscribers (which receive events for ALL of the user's sessions) can
+    # route it to the right session and NOT render it into whatever session
+    # happens to be active. Without this, live events arrive untagged and the
+    # frontend's session filter fails open. Set before stamp_event so the copy
+    # stored in the RunBuffer (used for replay) carries it too.
+    event["session_id"] = session_id
     # Stamp via the in-memory run buffer (if a turn is active for this session).
     # This mutates `event` to add session_seq / turn_id / turn_seq / emit_time.
     try:

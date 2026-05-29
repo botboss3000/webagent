@@ -77,17 +77,9 @@ _FILTER_CATS: list[tuple[str, str, bool]] = [
     ("memory", "Memory search", False),
 ]
 
-# Best-effort context-window sizes by model-name substring (lower-cased). Used
-# only to draw the context gauge's "/ max"; unknown models show the live size
-# alone. Order matters — first substring hit wins.
-_CTX_MAX: list[tuple[str, int]] = [
-    ("o1", 200000), ("o3", 200000), ("gpt-4.1", 1000000), ("gpt-4o", 128000),
-    ("gpt-4", 128000), ("gpt-3.5", 16385), ("claude", 200000),
-    ("gemini-1.5", 1000000), ("gemini", 1000000), ("deepseek", 128000),
-    ("llama-3", 128000), ("llama", 128000), ("qwen", 32768),
-    ("mistral", 32768), ("mixtral", 32768), ("command-r", 128000),
-    ("grok", 131072),
-]
+# Context-window sizes from @earendil-works/pi-ai (969 models).
+# Auto-generated via: node launcher/scripts/build_model_windows.mjs
+from .model_windows import MODEL_CONTEXT_WINDOWS, MODEL_CONTEXT_BY_ID
 
 
 def _parse_agent_ref(ref: str) -> tuple[str, str, str]:
@@ -145,9 +137,17 @@ def _fmt_tokens(n: Any) -> str:
 
 
 def _context_max(model: str) -> Optional[int]:
-    """Known context-window size for a model name, or None if unrecognised."""
+    """Known context-window size for a model name, or None if unrecognised.
+
+    Checks exact model ID first (via MODEL_CONTEXT_BY_ID), then falls back to
+    longest-substring matching (MODEL_CONTEXT_WINDOWS, sorted longest-first).
+    """
     m = (model or "").lower()
-    for sub, mx in _CTX_MAX:
+    # Exact ID check first
+    if m in MODEL_CONTEXT_BY_ID:
+        return MODEL_CONTEXT_BY_ID[m]
+    # Substring match (longest entries first = most specific match)
+    for sub, mx in MODEL_CONTEXT_WINDOWS:
         if sub in m:
             return mx
     return None

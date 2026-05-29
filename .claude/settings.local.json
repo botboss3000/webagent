@@ -27,7 +27,8 @@
       "Bash(git push *)",
       "Bash(sqlite3 *)",
       "Bash(.venv/bin/python *)",
-      "Read(//proc/5078/**)"
+      "Read(//proc/5078/**)",
+      "Bash(Sort-Object Name)"
     ]
   }
 }
