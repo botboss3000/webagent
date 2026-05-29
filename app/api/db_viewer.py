@@ -384,6 +384,12 @@ class SessionPatchRequest(BaseModel):
     pinned: Optional[bool] = None
 
 
+class SessionReorderRequest(BaseModel):
+    """Body for POST /sessions/reorder — persist manual drag order."""
+    user_id: str
+    order: list[str]  # session ids, top-to-bottom (index 0 = top of the list)
+
+
 @router.patch("/sessions/{session_id}")
 async def patch_session(
     session_id: str,
@@ -427,6 +433,44 @@ async def patch_session(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/sessions/reorder")
+async def reorder_sessions(
+    req: SessionReorderRequest,
+    db: str = Query("local.db", description="Database filename"),
+):
+    """Persist the manual drag order of the requesting user's sessions.
+
+    Each id in ``order`` gets sort_order = its index (0 = top). Writes are
+    scoped to sessions owned by ``user_id`` so a user can't reorder another
+    user's rows. Sessions not listed keep their existing sort_order and fall
+    after the ordered set (NULLS LAST) in list_sessions.
+    """
+    if not req.order:
+        return {"success": True, "updated": 0}
+    db_path = _get_db_path(db)
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+        # Auto-add the column on older DBs (mirrors the pinned guard above).
+        cur.execute("PRAGMA table_info(sessions)")
+        cols = {row[1] for row in cur.fetchall()}
+        if "sort_order" not in cols:
+            cur.execute("ALTER TABLE sessions ADD COLUMN sort_order INTEGER")
+        updated = 0
+        for position, sid in enumerate(req.order):
+            cur.execute(
+                "UPDATE sessions SET sort_order = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ? AND user_id = ?",
+                (position, sid, req.user_id),
+            )
+            updated += cur.rowcount
+        conn.commit()
+        conn.close()
+        return {"success": True, "updated": updated}
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/sessions")
 async def list_sessions(
     request: Request,
@@ -462,10 +506,11 @@ async def list_sessions(
 
         sessions = []
         try:
-            # Detect if pinned column exists (older DBs may not have it yet)
+            # Detect optional columns (older DBs may not have them yet)
             cur.execute("PRAGMA table_info(sessions)")
             sess_cols = {row[1] for row in cur.fetchall()}
             has_pinned = "pinned" in sess_cols
+            has_sort_order = "sort_order" in sess_cols
 
             select_cols = 's.id, s.title, s.created_at, s.user_id, s.participants, s.agent_id'
             if has_pinned:
@@ -477,7 +522,16 @@ async def list_sessions(
                 where_clause = 's.agent_id = ?'
                 params.append(agent_id)
 
-            order_clause = 's.pinned DESC, s.created_at DESC' if has_pinned else 's.created_at DESC'
+            # Manual drag order (sort_order, NULLS LAST) takes precedence within
+            # each pinned/unpinned group; un-ordered rows fall back to newest-first.
+            order_parts = []
+            if has_pinned:
+                order_parts.append('s.pinned DESC')
+            if has_sort_order:
+                order_parts.append('(s.sort_order IS NULL)')
+                order_parts.append('s.sort_order ASC')
+            order_parts.append('s.created_at DESC')
+            order_clause = ', '.join(order_parts)
             sql = (
                 f'SELECT {select_cols} '
                 f'FROM sessions s LEFT JOIN agents a ON s.agent_id = a.id '
@@ -567,8 +621,16 @@ async def get_session_messages(
         messages = []
         # Try interactions table first (has richer data)
         try:
+            # `status` may not exist on very old DBs — probe and fall back.
+            _has_status = False
+            try:
+                _icols = {r[1] for r in cur.execute("PRAGMA table_info(interactions)").fetchall()}
+                _has_status = "status" in _icols
+            except sqlite3.OperationalError:
+                _has_status = False
+            _status_col = "status" if _has_status else "'complete' AS status"
             cur.execute(
-                'SELECT id, session_id, role, content, tool_name, created_at '
+                f'SELECT id, session_id, role, content, tool_name, created_at, {_status_col}, session_seq '
                 'FROM interactions WHERE session_id = ? ORDER BY created_at ASC',
                 (session_id,)
             )
@@ -579,6 +641,8 @@ async def get_session_messages(
                     "role": row[2],
                     "content": row[3],
                     "created_at": row[5],
+                    "status": row[6],
+                    "session_seq": row[7],
                 })
         except sqlite3.OperationalError:
             pass
@@ -602,8 +666,31 @@ async def get_session_messages(
             except sqlite3.OperationalError:
                 pass
 
+        # ── Durable run-state: is a turn in progress for this session? ──
+        # Lets a cold/second device know to show the live indicator and where to
+        # resume the WebSocket stream from, even after a server restart.
+        run_info = None
+        try:
+            cur.execute(
+                "SELECT status, turn_id, assistant_interaction_id, latest_session_seq, updated_at "
+                "FROM session_runs WHERE session_id = ?",
+                (session_id,)
+            )
+            r = cur.fetchone()
+            if r:
+                run_info = {
+                    "status": r[0],
+                    "active": r[0] == "running",
+                    "turn_id": r[1],
+                    "assistant_interaction_id": r[2],
+                    "latest_session_seq": r[3],
+                    "updated_at": r[4],
+                }
+        except sqlite3.OperationalError:
+            pass  # session_runs table not present (legacy/temp DB)
+
         conn.close()
-        return {"messages": messages, "session_id": session_id, "db": db}
+        return {"messages": messages, "session_id": session_id, "db": db, "run": run_info}
     except sqlite3.Error as e:
         raise HTTPException(status_code=500, detail=str(e))
 

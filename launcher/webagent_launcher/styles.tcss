@@ -329,13 +329,8 @@ ChatScreen { background: #0a0a14; scrollbar-size: 0 0; }
     padding: 0 2;
 }
 
-/* middle region: holds EITHER the welcome animation OR the transcript */
+/* middle region: holds the scrolling transcript (banner pinned at its top) */
 #chat-body {
-    width: 100%;
-    height: 1fr;
-}
-
-#chat-welcome {
     width: 100%;
     height: 1fr;
 }
@@ -345,28 +340,49 @@ ChatScreen { background: #0a0a14; scrollbar-size: 0 0; }
     height: 1fr;
     background: #0a0a14;
     padding: 0 1;
-    overflow-y: scroll;
+    overflow-y: auto;
+    /* Thumb is phosphor green; the TRACK matches the panel background so there
+     * is no navy "line" down the edge when the thumb is short or absent. The
+     * gutter is reserved (stable) so the bar lives inside the panel, not over
+     * the text, and stays grab-/click-able. */
+    scrollbar-gutter: stable;
     scrollbar-size-vertical: 1;
-    scrollbar-color: #39ff14 #14143a;
-    scrollbar-color-hover: #5dff4d #14143a;
-    scrollbar-color-active: #5dff4d #14143a;
-    scrollbar-background: #14143a;
-    scrollbar-background-hover: #14143a;
-    scrollbar-background-active: #14143a;
+    scrollbar-color: #39ff14 #0a0a14;
+    scrollbar-color-hover: #5dff4d #0a0a14;
+    scrollbar-color-active: #5dff4d #0a0a14;
+    scrollbar-background: #0a0a14;
+    scrollbar-background-hover: #0a0a14;
+    scrollbar-background-active: #0a0a14;
 }
 
-/* thin animated "thinking" strip, mounted above the input while streaming */
-#chat-thinking {
+/* static ascii banner pinned at the top of the transcript (scrolls with it) */
+.chat-banner {
     width: 100%;
-    height: 3;
-    border-top: solid #2a2a44;
+    padding: 0 1;
+    margin: 0 0 1 0;
 }
 
-/* multi-line editor: Enter sends, Shift+Enter newline; grows to 3 lines */
+/* session HUD: total tokens - cost - context gauge (above the input) */
+#chat-hud {
+    height: 1;
+    width: 100%;
+    background: #0d0d1f;
+    color: #8a8aa8;
+    padding: 0 2;
+}
+
+/* the little guy walks here, on top of the input "pill" */
+#chat-walker {
+    height: 1;
+    width: 100%;
+    padding: 0 2;
+}
+
+/* multi-line editor: Enter sends, Ctrl+J newline; grows to 5 lines */
 #chat-input {
     width: 100%;
     height: 3;
-    max-height: 5;
+    max-height: 7;
     border: round #2a2a55;
     background: #0d0d1f;
     color: #e6e6f0;
@@ -383,6 +399,16 @@ ChatScreen { background: #0a0a14; scrollbar-size: 0 0; }
     color: #8a8aa8;
     padding: 0 2;
 }
+
+/* filter modal: reuse the picker panel; size the checkbox list like the lists */
+#filter-list {
+    height: auto;
+    max-height: 16;
+    background: #08081a;
+    border: round #2a2a44;
+    padding: 0 1;
+}
+#filter-list > .selection-list--option { padding: 0 1; }
 
 /* messages */
 .msg-user {

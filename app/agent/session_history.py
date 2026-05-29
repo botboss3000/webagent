@@ -111,11 +111,21 @@ def interactions_to_openai_messages(
                 })
                 i += 1
                 # Consume following tool rows, pairing by tool_call_id
+                answered: Set[str] = set()
                 while i < n and filtered[i].role == "tool":
                     tr = filtered[i]
                     if tr.tool_call_id:
                         out.append({"role": "tool", "content": tr.content, "tool_call_id": tr.tool_call_id})
+                        answered.add(tr.tool_call_id)
                     i += 1
+                # Self-repair: if the turn was interrupted mid-tool-execution, some
+                # tool_calls may have no result row. OpenAI-style APIs reject an
+                # assistant message whose tool_calls aren't ALL answered, so emit a
+                # synthetic placeholder for any unanswered id.
+                for _tc in tool_calls_from_output:
+                    _tid = _tc.get("id")
+                    if _tid and _tid not in answered:
+                        out.append({"role": "tool", "content": "[interrupted — no result]", "tool_call_id": _tid})
                 continue
 
             # LEGACY: parse tool calls from the [Tool calls: ...] marker in content

@@ -145,7 +145,7 @@ body {
     radial-gradient(60% 50% at 100% 100%, rgba(187,154,247,0.05), transparent 60%),
     var(--bg-0);
   color: var(--fg-1);
-  padding: 14px 14px 8px;
+  padding: 10px 10px 8px;
   gap: 5px;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -648,7 +648,7 @@ body.light-mode #agents-list-header { border-bottom-color: rgba(180,140,90,0.12)
 
 /* ── Responsive — stack at narrow viewport ───────────────────── */
 @media (max-width: 800px) {
-#stage { gap: 10px; }
+#stage { gap: 6px; }
 #chat-panel { border-left: none; }
-body { padding: 10px; gap: 10px; }
+body { padding: 6px; gap: 6px; }
 }

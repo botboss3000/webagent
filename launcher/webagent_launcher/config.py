@@ -53,6 +53,7 @@ class LauncherConfig:
     chat_username: str = "admin"          # local server login (default admin)
     chat_password: str = "admin"
     auto_start_server: bool = True        # start the server when the app opens
+    auto_restart_server: bool = True      # watchdog: relaunch the server if it exits unexpectedly
     chat_default_view: bool = True        # open the chat screen on launch
     default_agent_ref: str = "admin-agent"  # "template:<id>" | "agent:<id>" | bare admin template id
     last_agent_ref: str = ""              # remembered last agent selection

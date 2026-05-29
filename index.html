@@ -192,7 +192,9 @@
     box-shadow:
       0 1px 0 color-mix(in oklab, currentColor 6%, transparent) inset,
       0 20px 60px -30px rgba(0,0,0,0.6) !important;
-    margin: 6px 1px 6px 6px !important;
+    /* top/bottom 0 so the card aligns with the chat pane (header top / input
+       pill bottom); left trimmed for a tighter gutter; right 1px to the handle. */
+    margin: 0 1px 6px 2px !important;
     overflow: hidden !important;
     position: relative;
   }
@@ -204,9 +206,9 @@
   /* Tighter on small screens — the outer margin ate too much width, squashing
      content. Pull panels closer to the screen edge and trim chat padding. */
   @media (max-width: 800px) {
-    #main-panel { margin: 4px !important; }
-    #chat-messages-inner { padding-left: 12px; padding-right: 12px; }
-    #chat-input-area { padding-left: 8px; padding-right: 8px; }
+    #main-panel { margin: 2px !important; }
+    #chat-messages-inner { padding-left: 8px; padding-right: 8px; }
+    #chat-input-area { padding-left: 6px; padding-right: 6px; }
   }
 
   /* —— Dynamic cursor-follow spotlight — applied via JS to .spot elements —— */

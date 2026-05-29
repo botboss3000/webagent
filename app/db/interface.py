@@ -69,8 +69,13 @@ class StorageBackend(ABC):
         session_seq: Optional[int] = None,
         turn_id: Optional[str] = None,
         turn_seq: Optional[int] = None,
+        status: str = "complete",
     ) -> str:
-        """Insert an interaction row. Returns the interaction id."""
+        """Insert an interaction row. Returns the interaction id.
+
+        ``status`` is the message lifecycle marker — 'complete' for finished
+        rows, 'streaming' for an assistant answer still being generated (later
+        flipped to 'complete' / 'interrupted' / 'error')."""
         ...
 
     async def insert_interactions_batch(self, rows: List[Dict[str, Any]]) -> List[str]:
@@ -485,6 +490,58 @@ class StorageBackend(ABC):
     async def update_interaction_content(self, interaction_id: str, content: str) -> bool:
         """Replace an interaction row's ``content``. Returns True if updated."""
         ...
+
+    # ---- Streaming-answer persistence + run state ----
+    # These are NON-abstract with safe defaults so backends that haven't
+    # implemented durable run tracking (e.g. Supabase) keep working — they
+    # simply fall back to the in-memory RunBuffer for live replay, exactly as
+    # before. LocalBackend overrides all of them with real implementations.
+
+    async def update_interaction(
+        self,
+        interaction_id: str,
+        *,
+        content: Optional[str] = None,
+        status: Optional[str] = None,
+        output_data: Optional[str] = None,
+        metadata: Optional[str] = None,
+    ) -> bool:
+        """Patch selected interaction fields. Default: fall back to content-only."""
+        if content is not None:
+            return await self.update_interaction_content(interaction_id, content)
+        return False
+
+    async def run_state_begin(
+        self, session_id: str, user_id: str, agent_id: Optional[str], turn_id: Optional[str]
+    ) -> None:
+        """Mark a session as having a run in progress. Default: no-op."""
+        return None
+
+    async def run_state_set_assistant(self, session_id: str, assistant_interaction_id: str) -> None:
+        """Record the in-progress assistant row id. Default: no-op."""
+        return None
+
+    async def run_state_update_seq(self, session_id: str, latest_session_seq: int) -> None:
+        """Advance the highest emitted session_seq. Default: no-op."""
+        return None
+
+    async def run_state_finish(
+        self, session_id: str, status: str = "complete", error: Optional[str] = None
+    ) -> None:
+        """Mark the run finished. Default: no-op."""
+        return None
+
+    async def run_state_get(self, session_id: str):
+        """Return the run-state row for a session, or None. Default: None."""
+        return None
+
+    async def run_state_list_active(self, user_id: str):
+        """Sessions for a user with a running turn. Default: empty list."""
+        return []
+
+    async def cleanup_orphaned_runs(self) -> int:
+        """Reset runs left mid-flight by a prior process. Default: 0."""
+        return 0
 
     # ---- Interrupt Handling ----
 

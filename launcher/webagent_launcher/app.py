@@ -38,8 +38,14 @@ class LauncherApp(App):
     CSS_PATH = "styles.tcss"
 
     BINDINGS = [
-        Binding("ctrl+c", "request_quit", "Quit"),
+        # Ctrl+C is intentionally NOT bound to quit — it must stay free for the
+        # chat editor's copy. Esc is the exit key; Q is a convenience alias.
         Binding("q", "request_quit", "Quit"),
+        Binding("escape", "home_escape", "Exit", show=False),
+        # Ctrl+Q = "go back to last" — a single priority toggle that flips
+        # between home and chat from EITHER screen. Priority + a plain control
+        # code make it the reliable fallback in any terminal.
+        Binding("ctrl+q", "go_back_last", "Chat", show=False, priority=True),
         Binding("a", "open_chat", "Chat"),
         Binding("l", "launch", "Launch"),
         Binding("r", "restart", "Restart"),
@@ -51,7 +57,6 @@ class LauncherApp(App):
         Binding("t", "theme", "Theme"),
         Binding("c", "cycle_theme", "Cycle theme"),
         Binding("space", "cycle_anim", "Cycle anim"),
-        Binding("escape", "close_theme", "Close theme", show=False),
     ]
 
     def __init__(self) -> None:
@@ -123,7 +128,7 @@ class LauncherApp(App):
         # row N
         yield Static(
             "  A:chat  L:launch  R:restart  S:stop  B:browser  D:clear-db  "
-            "P:reset-py  F:full-reset  T:theme  C:cycle  Space:anim  Q:quit",
+            "P:reset-py  F:full-reset  T:theme  C:cycle  Space:anim  Esc/Q:quit",
             id="footer-bar",
         )
 
@@ -144,6 +149,10 @@ class LauncherApp(App):
         if self.cfg.is_valid_project():
             self._init_controller()
             self._log(f"[launcher] project: {self.cfg.project_path}")
+            self._log(
+                "[launcher] auto-restart: "
+                + ("ON (server relaunches if it disconnects)" if self.cfg.auto_restart_server else "OFF")
+            )
             # Auto-start the server so the chat can connect immediately.
             if self.cfg.auto_start_server and self.controller:
                 self._log("[launcher] auto-starting server…")
@@ -165,6 +174,7 @@ class LauncherApp(App):
             project_dir=pdir,
             on_state_change=self._on_state_change,
             on_log_line=self._on_log_line,
+            auto_restart=self.cfg.auto_restart_server,
         )
 
     # ── status / log plumbing ─────────────────────────────────────────
@@ -346,10 +356,19 @@ class LauncherApp(App):
         else:
             self._open_settings()
 
-    def action_close_theme(self) -> None:
-        """Esc closes the settings panel if it's open (otherwise a no-op)."""
+    async def action_home_escape(self) -> None:
+        """Esc on the home screen: close the settings panel if open, else quit."""
         if self._settings is not None and self._settings.display:
             self._close_settings()
+            return
+        await self.action_request_quit()
+
+    def action_go_back_last(self) -> None:
+        """Ctrl+Q toggles between home and chat from either screen."""
+        if isinstance(self.screen, ChatScreen):
+            self.pop_screen()
+        else:
+            self.action_open_chat()
 
     def _open_settings(self) -> None:
         if self._settings is None:

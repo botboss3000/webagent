@@ -4,23 +4,33 @@ Mirrors the webapp's right-side web chat inside the TUI:
   * Agent + Session pickers (keyboard-invoked list overlays).
   * Live token-by-token streaming.
   * Tool calls rendered as expandable blocks (name + args + result).
-  * Agent loop steps shown as dim status lines.
+  * Agent loop steps shown as dim status lines (filterable; hidden by default).
   * A multi-line editor input with full Windows-style editing.
-  * A welcome animation on an empty session + a "thinking" animation while
-    the agent is working.
-  * Per-response stats (model · tokens · time · cost) from loop metadata.
+  * A STATIC ascii banner pinned to the top of the transcript (scrolls up with
+    the conversation) instead of a background animation.
+  * A little ascii guy who walks on the input "pill" while the loop is working.
+  * A session HUD above the input: total tokens, running cost, context gauge.
 
 No on-screen buttons — everything is a keyboard shortcut, shown in the hint
-bar. Talks to the SAME local server the launcher starts (HTTP + SSE); it is
-the only thing that can run the agent loop and read local.db.
+bar. Talks to the SAME local server the launcher starts (HTTP + SSE).
+
+Command keys are all Ctrl-prefixed so they never collide with typing:
+  Ctrl+~ / Ctrl+`  home          Ctrl+Q  go back to last screen
+  Ctrl+! / Ctrl+1  agent picker  Ctrl+@ / Ctrl+2  session picker
+  Ctrl+# / Ctrl+3  new session   Ctrl+$ / Ctrl+4  new agent
+  Ctrl+F           filter        Esc              exit
+  Ctrl+C/V/Z       copy/paste/undo (editor)
 
 Glyphs are ASCII-only (no emoji) so they render in any Windows console font.
 """
 
 from __future__ import annotations
 
+import colorsys
 import json
+import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -31,14 +41,17 @@ from textual.binding import Binding
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Collapsible, Input, Label, ListItem, ListView, Static, TextArea
+from textual.widget import Widget
+from textual.widgets import (
+    Collapsible, Input, Label, ListItem, ListView, SelectionList, Static, TextArea,
+)
+from textual.widgets.selection_list import Selection
 
 from .api_client import WebAgentClient, WebAgentError
 from .config import LauncherConfig
-from .glyphs import G
-from .palette import build_palette_from_config
+from .glyphs import EMOJI, G
 from .server import ServerController
-from .stage import AnimatedStage
+from .stage import _LOGO_LINES
 
 # Palette (terminal-only; the dark/light rule applies to the web ui/, not here)
 GREEN = "#39ff14"
@@ -53,6 +66,28 @@ _ADMIN_TEMPLATES = {
     "admin-agent": "Admin coding agent (shell - files)",
     "integration-admin-agent": "Integration admin",
 }
+
+# ── interaction filter categories (Ctrl+F) ──────────────────────────────
+# (key, label, default_visible). Memory + loop chatter default to hidden so the
+# transcript stays clean; the live HUD line shows progress instead. Tool blocks
+# stay visible. User + assistant messages are always shown (not filterable).
+_FILTER_CATS: list[tuple[str, str, bool]] = [
+    ("tools",  "Tool calls & results", True),
+    ("loop",   "Loop steps (turn / llm / context)", False),
+    ("memory", "Memory search", False),
+]
+
+# Best-effort context-window sizes by model-name substring (lower-cased). Used
+# only to draw the context gauge's "/ max"; unknown models show the live size
+# alone. Order matters — first substring hit wins.
+_CTX_MAX: list[tuple[str, int]] = [
+    ("o1", 200000), ("o3", 200000), ("gpt-4.1", 1000000), ("gpt-4o", 128000),
+    ("gpt-4", 128000), ("gpt-3.5", 16385), ("claude", 200000),
+    ("gemini-1.5", 1000000), ("gemini", 1000000), ("deepseek", 128000),
+    ("llama-3", 128000), ("llama", 128000), ("qwen", 32768),
+    ("mistral", 32768), ("mixtral", 32768), ("command-r", 128000),
+    ("grok", 131072),
+]
 
 
 def _parse_agent_ref(ref: str) -> tuple[str, str, str]:
@@ -109,6 +144,23 @@ def _fmt_tokens(n: Any) -> str:
     return str(n)
 
 
+def _context_max(model: str) -> Optional[int]:
+    """Known context-window size for a model name, or None if unrecognised."""
+    m = (model or "").lower()
+    for sub, mx in _CTX_MAX:
+        if sub in m:
+            return mx
+    return None
+
+
+def _agent_color(name: str) -> str:
+    """Stable accent colour derived from the agent name (per-agent tint)."""
+    name = (name or "agent").strip().lower()
+    h = (sum(ord(c) * (i + 1) for i, c in enumerate(name)) % 360) / 360.0
+    r, g, b = colorsys.hsv_to_rgb(h, 0.55, 1.0)
+    return "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
+
+
 class ChatInput(TextArea):
     """Multi-line message editor.
 
@@ -116,9 +168,11 @@ class ChatInput(TextArea):
     paste, Ctrl+Z/Y undo/redo, Ctrl+arrows word-skip, Home/End, mouse
     selection. We override:
       * Enter            -> send (posts Submitted)
-      * Shift/Ctrl+Enter -> newline (terminal permitting; Ctrl+J always works)
+      * Ctrl+Enter / Ctrl+J -> newline (Shift+Enter is unreliable across
+                              terminals — most send a plain Enter — so it is no
+                              longer advertised; Ctrl+J always inserts a line.)
       * Ctrl+A           -> select all (Windows convention, not line-start)
-      * Ctrl+Up / Down   -> document start / end
+      * Up / Down (single-line) -> recall previous / next sent message
       * Paste of an image path -> ImagesDropped (drag-to-attach)
     """
 
@@ -150,6 +204,18 @@ class ChatInput(TextArea):
         def control(self) -> "ChatInput":
             return self.input
 
+    class HistoryNav(Message):
+        """Up/Down on a single-line input → recall sent messages."""
+
+        def __init__(self, widget: "ChatInput", delta: int) -> None:
+            self.input = widget
+            self.delta = delta
+            super().__init__()
+
+        @property
+        def control(self) -> "ChatInput":
+            return self.input
+
     async def _on_key(self, event: events.Key) -> None:
         # NOTE: base TextArea._on_key is async — we MUST await super().
         key = event.key
@@ -158,10 +224,19 @@ class ChatInput(TextArea):
             event.prevent_default()
             self.post_message(self.Submitted(self, self.text))
             return
-        if key in ("shift+enter", "ctrl+enter", "ctrl+j"):
+        if key in ("ctrl+enter", "ctrl+j", "shift+enter"):
+            # Insert a newline. shift+enter only reaches us on terminals that
+            # distinguish it; where it doesn't, it arrives as plain Enter above.
             event.stop()
             event.prevent_default()
             self.insert("\n")
+            return
+        if key in ("up", "down") and "\n" not in self.text:
+            # Single-line: there is nowhere to move the cursor vertically, so
+            # repurpose Up/Down as shell-style history recall.
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.HistoryNav(self, -1 if key == "up" else 1))
             return
         await super()._on_key(event)
 
@@ -187,6 +262,87 @@ class ChatInput(TextArea):
             self.move_cursor(self.document.end)
         except Exception:
             pass
+
+
+class WalkerBar(Widget):
+    """A one-row strip above the input where a tiny ascii guy reacts to the loop.
+
+    States:  idle (blank) · walk (streaming) · work (tool running) ·
+             cheer (reply done) · trip (error).  The walker only animates while
+    a turn is active, so it costs nothing at rest.
+    """
+
+    DEFAULT_CSS = """
+    WalkerBar { height: 1; width: 100%; }
+    """
+
+    def __init__(self, id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._state = "idle"
+        self._pos = 0
+        self._frame = 0
+        self._timer = None
+
+    def on_mount(self) -> None:
+        # ~8 fps, paused until a turn starts.
+        self._timer = self.set_interval(0.12, self._tick, pause=True)
+
+    def set_state(self, state: str) -> None:
+        if state == self._state:
+            return
+        self._state = state
+        self._frame = 0
+        # Keep _pos continuous so resuming "walk" after a tool doesn't teleport
+        # the guy back to the left edge.
+        if self._timer is not None:
+            if state == "idle":
+                self._timer.pause()
+            else:
+                self._timer.resume()
+        self.refresh()
+
+    def _tick(self) -> None:
+        self._frame += 1
+        if self._state == "walk":
+            self._pos += 1
+        self.refresh()
+
+    def render(self) -> Text:
+        w = max(6, self.size.width)
+        if self._state == "idle":
+            return Text(" " * w)
+
+        emoji = EMOJI
+        if self._state == "walk":
+            sprite = "🚶" if emoji else ("o/" if self._frame % 2 == 0 else "o\\")
+            color = GREEN
+            span = max(1, w - 3)
+            pos = self._pos % span
+        elif self._state == "work":
+            spin = "|/-\\"[self._frame % 4]
+            sprite = ("🔧" if emoji else "o" + spin)
+            color = AMBER
+            span = max(1, w - 3)
+            pos = self._pos % span
+        elif self._state == "cheer":
+            sprite = "🙌" if emoji else "\\o/"
+            color = GREEN
+            span = max(1, w - 3)
+            pos = self._pos % span
+        else:  # trip
+            sprite = "💥" if emoji else "x_"
+            color = RED
+            span = max(1, w - 3)
+            pos = self._pos % span
+
+        line = Text(no_wrap=True, overflow="crop")
+        if pos:
+            line.append(" " * pos)
+        line.append(sprite, style=f"bold {color}")
+        tail = w - pos - len(sprite)
+        if tail > 0:
+            line.append(" " * tail)
+        return line
 
 
 class ListPicker(ModalScreen[Optional[str]]):
@@ -217,6 +373,35 @@ class ListPicker(ModalScreen[Optional[str]]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class FilterModal(ModalScreen[Optional[set[str]]]):
+    """Scrollable checkbox list (like the pickers) to show/hide interaction
+    categories. Returns the set of enabled category keys, or None if cancelled."""
+
+    BINDINGS = [Binding("escape", "done", "Apply")]
+
+    def __init__(self, categories: list[tuple[str, str]], enabled: set[str]) -> None:
+        super().__init__()
+        self._categories = categories
+        self._enabled = enabled
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="picker-panel"):
+            yield Static("Show / hide interactions  -  Space toggles  -  Esc applies",
+                         id="picker-title")
+            yield SelectionList(
+                *[Selection(label, key, key in self._enabled)
+                  for key, label in self._categories],
+                id="filter-list",
+            )
+
+    def on_mount(self) -> None:
+        self.query_one("#filter-list", SelectionList).focus()
+
+    def action_done(self) -> None:
+        sel = set(self.query_one("#filter-list", SelectionList).selected)
+        self.dismiss(sel)
 
 
 class CredentialsModal(ModalScreen[Optional[tuple[str, str]]]):
@@ -252,11 +437,22 @@ class ChatScreen(Screen):
     """The chat surface. Pushed over the launcher's home/control view."""
 
     BINDINGS = [
-        Binding("escape", "back", "Home", priority=True),
-        Binding("f2", "pick_agent", "Agent", priority=True),
-        Binding("f3", "pick_session", "Session", priority=True),
-        Binding("ctrl+n", "new_session", "New session", priority=True),
-        Binding("ctrl+g", "new_agent", "New agent", priority=True),
+        Binding("escape", "back", "Exit", priority=True),
+        # Navigation. Each binds the shifted symbol AND the plain key so it
+        # fires whether the terminal reports e.g. "ctrl+!" or "ctrl+1".
+        Binding("ctrl+tilde,ctrl+shift+tilde,ctrl+shift+grave_accent,ctrl+grave_accent",
+                "go_home", "Home", priority=True),
+        # Ctrl+Q ("go back to last") is handled at the app level so it toggles
+        # home/chat from either screen — see LauncherApp.action_go_back_last.
+        Binding("ctrl+exclamation_mark,ctrl+shift+1,ctrl+1",
+                "pick_agent", "Agent", priority=True),
+        Binding("ctrl+at,ctrl+shift+2,ctrl+2",
+                "pick_session", "Session", priority=True),
+        Binding("ctrl+number_sign,ctrl+shift+3,ctrl+3",
+                "new_session", "New session", priority=True),
+        Binding("ctrl+dollar_sign,ctrl+shift+4,ctrl+4",
+                "new_agent", "New agent", priority=True),
+        Binding("ctrl+f", "filter", "Filter", priority=True),
         # Swallow the home screen's single-letter server shortcuts so they can't
         # fire while chat is open and focus is off the input. When the input IS
         # focused, the printable key is consumed for typing before reaching here.
@@ -289,85 +485,85 @@ class ChatScreen(Screen):
         self._cur_assistant: Optional[Static] = None
         self._cur_text = ""
         self._pending_tools: list[dict[str, Any]] = []
-        self._welcome: Optional[AnimatedStage] = None
-        self._thinking: Optional[AnimatedStage] = None
+        self._banner: Optional[Static] = None
+        self._walker: Optional[WalkerBar] = None
         self._pending_attachments: list[dict[str, Any]] = []
-        # per-turn stat accumulators
+        # message history recall (Up/Down on a single-line input)
+        self._history: list[str] = []
+        self._hist_idx: Optional[int] = None
+        # interaction filter
+        self._filter: dict[str, bool] = {k: d for k, _, d in _FILTER_CATS}
+        self._cat_widgets: dict[str, list[Widget]] = {k: [] for k, _, _ in _FILTER_CATS}
+        # per-turn / live state
         self._t_model = ""
-        self._t_in = 0
-        self._t_out = 0
-        self._t_ms = 0
-        self._t_cost = 0.0
-        self._t_has_cost = False
+        self._turn = 0
+        self._max_turns = 0
+        self._activity = ""
+        self._proc_start = 0.0
+        # session-total accumulators
+        self._s_in = 0
+        self._s_out = 0
+        self._s_cost = 0.0
+        self._s_has_cost = False
+        self._ctx_tokens = 0
+        self._ctx_max: Optional[int] = None
 
     # ── layout ─────────────────────────────────────────────────────────
     def compose(self) -> ComposeResult:
         yield Static("connecting...", id="chat-status")
         with Container(id="chat-body"):
             yield VerticalScroll(id="chat-log")
+        yield Static("", id="chat-hud")
+        yield WalkerBar(id="chat-walker")
         yield ChatInput(id="chat-input", soft_wrap=True, tab_behavior="focus")
         yield Static(self._hints_idle(), id="chat-hints")
 
     def on_mount(self) -> None:
+        self._walker = self.query_one("#chat-walker", WalkerBar)
+        self._mount_banner()
         self.query_one("#chat-input", ChatInput).focus()
-        self.set_interval(2.0, self._refresh_status)
-        self._show_welcome()
+        # One timer drives both the server-dot refresh and the live HUD clock.
+        self.set_interval(1.0, self._tick)
+        self._update_hud()
         if self._autostart:
             self.run_worker(self._init(), group="init", exclusive=True)
 
-    # ── welcome / thinking animations ──────────────────────────────────
-    def _new_stage(self, *, show_logo: bool, fps: int) -> AnimatedStage:
-        return AnimatedStage(
-            palette=build_palette_from_config(self.cfg),
-            char_ramp=self.cfg.char_ramp,
-            fps=fps,
-            style=self.cfg.animation_style if self.cfg.animation_style != "off" else "plasma",
-            speed=self.cfg.theme_speed,
-            intensity=self.cfg.animation_intensity,
-            show_logo=show_logo,
-        )
+    # ── static banner (top of transcript, scrolls with content) ─────────
+    def _build_banner_text(self) -> Text:
+        accent = self._agent_color()
+        t = Text(no_wrap=True, overflow="crop")
+        for line in _LOGO_LINES:
+            t.append(line + "\n", style=f"bold {accent}")
+        t.append("\n")
+        t.append(self.agent_name or "agent", style=f"bold {CYAN}")
+        t.append("  -  ", style=DIM)
+        t.append(self._t_model or "model: (pending)", style=DIM)
+        if self.session_title:
+            t.append("  -  ", style=DIM)
+            t.append(self.session_title, style=DIM)
+        t.append("  -  ", style=DIM)
+        t.append(datetime.now().strftime("%Y-%m-%d"), style=DIM)
+        return t
 
-    def _show_welcome(self) -> None:
-        """Logo animation shown on an empty session; removed once chatting."""
+    def _agent_color(self) -> str:
+        return _agent_color(self.agent_name)
+
+    def _mount_banner(self) -> None:
+        """(Re)create the static banner as the first child of the transcript."""
         try:
-            body = self.query_one("#chat-body", Container)
-            self.query_one("#chat-log", VerticalScroll).display = False
+            log = self._log()
         except Exception:
             return
-        if self._welcome is None:
-            self._welcome = self._new_stage(show_logo=True, fps=self.cfg.fps)
-            self._welcome.id = "chat-welcome"
-            body.mount(self._welcome)
+        self._banner = Static(self._build_banner_text(), classes="chat-banner")
+        log.mount(self._banner)
 
-    def _hide_welcome(self) -> None:
-        if self._welcome is not None:
-            try:
-                self._welcome.remove()
-            except Exception:
-                pass
-            self._welcome = None
+    def _update_banner(self) -> None:
+        if self._banner is None:
+            return
         try:
-            self.query_one("#chat-log", VerticalScroll).display = True
+            self._banner.update(self._build_banner_text())
         except Exception:
             pass
-
-    def _start_thinking(self) -> None:
-        if self._thinking is not None:
-            return
-        try:
-            self._thinking = self._new_stage(show_logo=False, fps=min(self.cfg.fps, 20))
-            self._thinking.id = "chat-thinking"
-            self.mount(self._thinking, before="#chat-input")
-        except Exception:
-            self._thinking = None
-
-    def _stop_thinking(self) -> None:
-        if self._thinking is not None:
-            try:
-                self._thinking.remove()
-            except Exception:
-                pass
-            self._thinking = None
 
     # ── init / connect ─────────────────────────────────────────────────
     async def _init(self) -> None:
@@ -421,19 +617,11 @@ class ChatScreen(Screen):
     def _refresh_status(self) -> None:
         dot, color = self._server_dot()
         t = Text()
-        t.append(self.agent_name or "agent", style=f"bold {GREEN}")
+        t.append(self.agent_name or "agent", style=f"bold {self._agent_color()}")
         t.append("  -  ", style=DIM)
         t.append(self.session_title or "new session", style=CYAN)
         t.append("  -  ", style=DIM)
         t.append(dot, style=color)
-        if self.is_processing:
-            t.append("  -  ", style=DIM)
-            t.append(f"{G.THINKING} thinking...", style=AMBER)
-            if self._t_in or self._t_out:
-                t.append(
-                    f"  {_fmt_tokens(self._t_in)} in / {_fmt_tokens(self._t_out)} out",
-                    style=DIM,
-                )
         try:
             self.query_one("#chat-status", Static).update(t)
         except Exception:
@@ -445,12 +633,81 @@ class ChatScreen(Screen):
         except Exception:
             pass
 
+    def _tick(self) -> None:
+        """1 Hz: refresh the server dot and (while working) the HUD clock."""
+        self._refresh_status()
+        if self.is_processing:
+            self._update_hud()
+
+    def _ctx_gauge(self) -> Text:
+        """Context-window usage bar; colour shifts green -> amber -> red."""
+        g = Text()
+        used = self._ctx_tokens
+        if used <= 0:
+            g.append("ctx --", style=DIM)
+            return g
+        mx = self._ctx_max
+        if not mx:
+            g.append(f"ctx {_fmt_tokens(used)}", style=DIM)
+            return g
+        frac = max(0.0, min(1.0, used / mx))
+        cells = 12
+        filled = int(round(frac * cells))
+        if frac >= 0.85:
+            col = RED
+        elif frac >= 0.6:
+            col = AMBER
+        else:
+            col = GREEN
+        g.append("ctx ", style=DIM)
+        g.append("[", style=DIM)
+        g.append("#" * filled, style=col)
+        g.append("." * (cells - filled), style=DIM)
+        g.append("] ", style=DIM)
+        g.append(f"{_fmt_tokens(used)}/{_fmt_tokens(mx)} ", style=DIM)
+        g.append(f"{int(frac * 100)}%", style=col)
+        if frac >= 0.85:
+            g.append("  full - Ctrl+# for new", style=RED)
+        return g
+
+    def _update_hud(self) -> None:
+        """Session HUD shown directly above the input. Session totals + context
+        gauge come FIRST so they always stay visible; the live activity trails
+        at the end where it can safely truncate on a narrow terminal."""
+        t = Text(no_wrap=True, overflow="crop")
+        # session totals (must stay visible)
+        t.append("session ", style=DIM)
+        t.append(
+            f"{_fmt_tokens(self._s_in)} in / {_fmt_tokens(self._s_out)} out",
+            style=f"bold {GREEN}",
+        )
+        if self._s_has_cost:
+            t.append(f" - ${self._s_cost:.4f}", style=DIM)
+        t.append("  |  ", style=DIM)
+        t.append_text(self._ctx_gauge())
+        # live activity (safe to crop on the right; the walker carries the
+        # "it's moving" signal, so no spinner glyph is needed here)
+        if self.is_processing:
+            t.append("  |  ", style=DIM)
+            if self._activity:
+                t.append(self._activity, style=AMBER)
+            if self._turn:
+                t.append(f" - turn {self._turn}", style=DIM)
+                if self._max_turns:
+                    t.append(f"/{self._max_turns}", style=DIM)
+            if self._proc_start:
+                t.append(f" - {time.monotonic() - self._proc_start:.1f}s", style=DIM)
+        try:
+            self.query_one("#chat-hud", Static).update(t)
+        except Exception:
+            pass
+
     def _hints_idle(self) -> str:
         att = ""
         if self._pending_attachments:
             att = f"{G.IMAGE} {len(self._pending_attachments)}  -  "
-        return (att + "Enter send  -  Shift+Enter newline  -  F2 agent  -  "
-                "F3 session  -  Ctrl+N new  -  Ctrl+G new-agent  -  Esc home")
+        return (att + "Ctrl+! agent  -  Ctrl+@ session  -  Ctrl+# new  -  "
+                "Ctrl+F filter  -  Ctrl+J newline  -  Ctrl+~ home  -  Esc exit")
 
     def _set_hints(self, text: str) -> None:
         try:
@@ -463,13 +720,18 @@ class ChatScreen(Screen):
         return self.query_one("#chat-log", VerticalScroll)
 
     def _mount(self, widget) -> None:
-        # Real content arriving → ensure the transcript (not welcome) is shown.
-        self._hide_welcome()
         try:
             self._log().mount(widget)
             self._log().scroll_end(animate=False)
         except Exception:
             pass
+
+    def _mount_cat(self, widget, cat: str) -> None:
+        """Mount a categorised (filterable) widget, honouring current filter."""
+        widget.add_class(f"cat-{cat}")
+        widget.display = self._filter.get(cat, True)
+        self._cat_widgets.setdefault(cat, []).append(widget)
+        self._mount(widget)
 
     def _clear_log(self) -> None:
         try:
@@ -479,6 +741,10 @@ class ChatScreen(Screen):
         self._cur_assistant = None
         self._cur_text = ""
         self._pending_tools.clear()
+        for cat in self._cat_widgets:
+            self._cat_widgets[cat] = []
+        # The static banner always sits at the top of a fresh transcript.
+        self._mount_banner()
 
     def _info(self, msg: str) -> None:
         self._mount(Static(Text(f"{G.BULLET} " + msg, style=DIM), classes="msg-pipe"))
@@ -487,7 +753,13 @@ class ChatScreen(Screen):
         t = Text()
         t.append(f"{G.USER}\n", style=f"bold {CYAN}")
         t.append(content)
-        self._mount(Static(t, classes="msg-user"))
+        w = Static(t, classes="msg-user")
+        self._mount(w)
+        # per-agent tint on the left bar
+        try:
+            w.styles.border_left = ("thick", self._agent_color())
+        except Exception:
+            pass
 
     def _append_assistant(self, delta: str) -> None:
         if self._cur_assistant is None:
@@ -511,7 +783,7 @@ class ChatScreen(Screen):
             target.update(text)
         self._cur_assistant = None
         self._cur_text = ""
-        self._mount_stats()
+        self._update_hud()
         self._log().scroll_end(animate=False)
 
     def _finalize_error(self, msg: str, style: str = RED) -> None:
@@ -524,21 +796,6 @@ class ChatScreen(Screen):
         target.add_class("msg-error")
         self._cur_assistant = None
         self._cur_text = ""
-
-    def _mount_stats(self) -> None:
-        """Dim one-line summary built from this turn's loop metadata."""
-        parts: list[str] = []
-        if self._t_model:
-            parts.append(self._t_model)
-        if self._t_in or self._t_out:
-            parts.append(f"{_fmt_tokens(self._t_in)} in / {_fmt_tokens(self._t_out)} out")
-        if self._t_ms:
-            parts.append(f"{self._t_ms / 1000:.1f}s")
-        if self._t_has_cost and self._t_cost:
-            parts.append(f"${self._t_cost:.4f}")
-        if not parts:
-            return
-        self._mount(Static(Text("  " + "  -  ".join(parts), style=DIM), classes="msg-stats"))
 
     # ── tool blocks ────────────────────────────────────────────────────
     def _fmt_args(self, args: Any) -> str:
@@ -571,7 +828,7 @@ class ChatScreen(Screen):
         col = Collapsible(body, title=f"{G.TOOL} {tool}( {self._preview(args)} )", collapsed=True)
         col.add_class("tool-block")
         self._pending_tools.append({"tool": tool, "body": body, "col": col, "args": args_text})
-        self._mount(col)
+        self._mount_cat(col, "tools")
 
     def _fill_tool_result(self, tool: str, result: Any, duration_ms: Any, error: Any) -> None:
         entry = None
@@ -597,27 +854,27 @@ class ChatScreen(Screen):
     # ── pipeline (loop) lines + stat capture ────────────────────────────
     def _capture_stats(self, ev: dict[str, Any]) -> None:
         m = ev.get("model")
-        if m:
+        if m and m != self._t_model:
             self._t_model = m
-        for k in ("input_tokens", "output_tokens"):
-            v = ev.get(k)
-            if isinstance(v, (int, float)):
-                if k == "input_tokens":
-                    self._t_in += int(v)
-                else:
-                    self._t_out += int(v)
-        dur = ev.get("duration_ms")
-        if isinstance(dur, (int, float)):
-            self._t_ms += int(dur)
+            self._ctx_max = _context_max(m)
+            self._update_banner()  # surface the model in the banner identity line
+        in_v = ev.get("input_tokens")
+        if isinstance(in_v, (int, float)):
+            self._s_in += int(in_v)
+            self._ctx_tokens = int(in_v)  # latest call = current context size
+        out_v = ev.get("output_tokens")
+        if isinstance(out_v, (int, float)):
+            self._s_out += int(out_v)
         for ck in ("cost", "total_cost", "amount"):
             cv = ev.get(ck)
             if isinstance(cv, (int, float)) and cv:
-                self._t_cost += float(cv)
-                self._t_has_cost = True
+                self._s_cost += float(cv)
+                self._s_has_cost = True
                 break
 
     def _add_pipe(self, ev: dict[str, Any]) -> None:
         step = ev.get("step", "")
+        cat = "loop"
         if step == "agent_assigned":
             self.resolved_agent_id = ev.get("agent_id", "") or self.resolved_agent_id
             text = "agent ready"
@@ -625,11 +882,16 @@ class ChatScreen(Screen):
             text = f"context loaded ({ev.get('count', 0)})"
         elif step == "memory_search_start":
             text = "searching memory..."
+            cat = "memory"
         elif step == "memory_search_end":
             text = f"memory: {ev.get('results_count', 0)} result(s)"
+            cat = "memory"
         elif step == "memory_search_skip":
             text = "memory search skipped"
+            cat = "memory"
         elif step == "turn_start":
+            self._turn = ev.get("turn", 0) or self._turn
+            self._max_turns = ev.get("max_turns", 0) or self._max_turns
             text = f"turn {ev.get('turn', '?')}/{ev.get('max_turns', '?')}"
         elif step == "llm_call_start":
             text = f"llm call - {ev.get('model', '')}"
@@ -637,7 +899,12 @@ class ChatScreen(Screen):
             return  # captured for stats; no visible line
         else:
             return
-        self._mount(Static(Text(f"{G.BULLET} " + text, style=DIM), classes="msg-pipe"))
+        # live activity (the "collapsed" one-line view, shown in the HUD)
+        self._activity = text
+        # detailed line in the transcript (filterable; hidden by default)
+        self._mount_cat(
+            Static(Text(f"{G.BULLET} " + text, style=DIM), classes="msg-pipe"), cat
+        )
 
     # ── sending ────────────────────────────────────────────────────────
     @on(ChatInput.Submitted, "#chat-input")
@@ -650,6 +917,9 @@ class ChatScreen(Screen):
             return
         if self.is_processing:
             return
+        if text:
+            self._history.append(text)
+        self._hist_idx = None
         self.query_one("#chat-input", ChatInput).text = ""
         self._autosize_input()
         self._send_worker = self.run_worker(self._send(text), group="turn", exclusive=True)
@@ -659,6 +929,18 @@ class ChatScreen(Screen):
         if self.client is None:
             return
         self.run_worker(self._attach_images(event.paths), group="attach", exclusive=False)
+
+    @on(ChatInput.HistoryNav, "#chat-input")
+    def _on_history_nav(self, event: ChatInput.HistoryNav) -> None:
+        if not self._history:
+            return
+        if self._hist_idx is None:
+            self._hist_idx = len(self._history)
+        self._hist_idx = max(0, min(len(self._history), self._hist_idx + event.delta))
+        ta = self.query_one("#chat-input", ChatInput)
+        ta.text = "" if self._hist_idx >= len(self._history) else self._history[self._hist_idx]
+        ta.move_cursor(ta.document.end)
+        self._autosize_input()
 
     async def _attach_images(self, paths: list[str]) -> None:
         for p in paths:
@@ -679,25 +961,27 @@ class ChatScreen(Screen):
         try:
             ta = self.query_one("#chat-input", ChatInput)
             lines = ta.text.count("\n") + 1
-            ta.styles.height = max(1, min(3, lines)) + 2  # + round border
+            ta.styles.height = max(1, min(5, lines)) + 2  # + round border
         except Exception:
             pass
 
     async def _send(self, text: str) -> None:
         self.is_processing = True
-        self._t_model = ""
-        self._t_in = self._t_out = self._t_ms = 0
-        self._t_cost = 0.0
-        self._t_has_cost = False
+        self._turn = 0
+        self._max_turns = 0
+        self._activity = "thinking..."
+        self._proc_start = time.monotonic()
+        if self._walker is not None:
+            self._walker.set_state("walk")
         att_ids = [a["id"] for a in self._pending_attachments if a.get("id")]
         self._pending_attachments = []
-        self._set_hints("thinking...   Esc to stop")
-        self._start_thinking()
+        self._set_hints("working...   Esc to stop")
         shown = text if text else "(image)"
         if att_ids:
             shown = (text + "\n" if text else "") + f"[{len(att_ids)} image attached]"
         self._add_user(shown)
         self._refresh_status()
+        self._update_hud()
         kwargs: dict[str, Any] = {}
         if self.agent_kind == "agent":
             kwargs["agent_id"] = self.agent_value
@@ -711,14 +995,18 @@ class ChatScreen(Screen):
                 self._handle_event(ev)
         except WebAgentError as e:
             self._finalize_error(f"{G.WARN} {e}")
+            self._walker_pose("trip")
         except Exception as e:  # noqa: BLE001
             self._finalize_error(f"{G.WARN} stream error: {e}")
+            self._walker_pose("trip")
         finally:
             self.is_processing = False
+            self._activity = ""
             self._pending_tools.clear()
-            self._stop_thinking()
+            self._walker_rest_soon()
             self._set_hints(self._hints_idle())
             self._refresh_status()
+            self._update_hud()
             self.cfg.last_session_id = self.session_id
             self.cfg.last_agent_ref = (
                 f"agent:{self.agent_value}" if self.agent_kind == "agent"
@@ -726,35 +1014,62 @@ class ChatScreen(Screen):
             )
             self.cfg.save()
 
+    def _walker_pose(self, pose: str) -> None:
+        if self._walker is not None:
+            self._walker.set_state(pose)
+
+    def _walker_rest_soon(self) -> None:
+        """Let the final pose (cheer/trip) linger briefly, then go idle."""
+        def _rest() -> None:
+            if self._walker is not None and not self.is_processing:
+                self._walker.set_state("idle")
+        try:
+            self.set_timer(0.9, _rest)
+        except Exception:
+            _rest()
+
     def _handle_event(self, ev: dict[str, Any]) -> None:
         t = ev.get("type")
         if t in ("pipeline", "billing"):
             self._capture_stats(ev)
         if t == "stream":
             self._append_assistant(ev.get("content", "") or "")
+            self._walker_pose("walk")
         elif t == "tool_call":
             self._add_tool_call(ev.get("tool", "tool"), ev.get("args"))
+            self._activity = f"running {ev.get('tool', 'tool')}..."
+            self._walker_pose("work")
+            self._update_hud()
         elif t == "tool_result":
             self._fill_tool_result(
                 ev.get("tool", "tool"), ev.get("result", ""),
                 ev.get("duration_ms"), ev.get("error"),
             )
+            self._walker_pose("walk")
         elif t == "pipeline":
             self._add_pipe(ev)
-            self._refresh_status()
+            self._update_hud()
         elif t == "response":
             self._finalize_assistant(ev.get("content", "") or "")
+            self._walker_pose("cheer")
         elif t == "error":
             self._finalize_error(f"{G.WARN} {ev.get('message', 'error')}")
+            self._walker_pose("trip")
         elif t == "interrupted":
             msg = ev.get("message") or ""
             self._finalize_error(f"(interrupted{': ' + msg if msg else ''})", style=AMBER)
 
     # ── actions ────────────────────────────────────────────────────────
     def action_back(self) -> None:
+        # First Esc stops a running turn; a second Esc leaves to Home.
         if self.is_processing:
             self.action_stop()
             return
+        self.app.pop_screen()
+
+    def action_go_home(self) -> None:
+        if self.is_processing:
+            self.action_stop()
         self.app.pop_screen()
 
     def action_stop(self) -> None:
@@ -768,9 +1083,11 @@ class ChatScreen(Screen):
         if self.client is not None:
             self.run_worker(self.client.interrupt(self.session_id))
         self.is_processing = False
-        self._stop_thinking()
+        self._activity = ""
+        self._walker_pose("idle")
         self._set_hints(self._hints_idle())
         self._refresh_status()
+        self._update_hud()
         self._info("(stopped)")
 
     def action_new_session(self) -> None:
@@ -791,7 +1108,32 @@ class ChatScreen(Screen):
         if self.ready:
             self.run_worker(self._open_template_picker(), group="ui", exclusive=True)
 
+    def action_filter(self) -> None:
+        self.run_worker(self._open_filter(), group="ui", exclusive=True)
+
     # ── pickers (workers) ──────────────────────────────────────────────
+    async def _open_filter(self) -> None:
+        cats = [(k, label) for k, label, _ in _FILTER_CATS]
+        enabled = {k for k, v in self._filter.items() if v}
+        chosen = await self.app.push_screen_wait(FilterModal(cats, enabled))
+        if chosen is None:
+            return
+        self._apply_filter(chosen)
+
+    def _apply_filter(self, enabled: set[str]) -> None:
+        for k, _, _ in _FILTER_CATS:
+            on = k in enabled
+            self._filter[k] = on
+            for w in self._cat_widgets.get(k, []):
+                try:
+                    w.display = on
+                except Exception:
+                    pass
+        try:
+            self._log().scroll_end(animate=False)
+        except Exception:
+            pass
+
     async def _open_agent_picker(self) -> None:
         customs = await self.client.list_custom_agents()
         items: list[tuple[str, str]] = [
@@ -847,8 +1189,10 @@ class ChatScreen(Screen):
         title = next((s.get("title") for s in sessions if s["id"] == choice), "") or ""
         self.session_id = choice
         self.session_title = title
+        self._reset_session_stats()
         await self._load_history(choice)
         self._refresh_status()
+        self._update_hud()
 
     # ── agent / session state ──────────────────────────────────────────
     def _set_agent(self, ref: str) -> None:
@@ -860,6 +1204,15 @@ class ChatScreen(Screen):
         self.cfg.last_agent_ref = ref
         self.cfg.save()
         self._refresh_status()
+        self._update_banner()
+
+    def _reset_session_stats(self) -> None:
+        self._s_in = self._s_out = 0
+        self._s_cost = 0.0
+        self._s_has_cost = False
+        self._ctx_tokens = 0
+        self._turn = 0
+        self._max_turns = 0
 
     def _new_session(self, announce: bool = True) -> None:
         if self.is_processing:
@@ -867,11 +1220,13 @@ class ChatScreen(Screen):
         self.session_id = str(uuid.uuid4())
         self.session_title = ""
         self._pending_attachments = []
+        self._reset_session_stats()
         self.cfg.last_session_id = ""
         self.cfg.save()
         self._clear_log()
-        self._show_welcome()
+        self._update_banner()
         self._refresh_status()
+        self._update_hud()
         self._set_hints(self._hints_idle())
         try:
             self.query_one("#chat-input", ChatInput).focus()
@@ -881,10 +1236,6 @@ class ChatScreen(Screen):
     async def _load_history(self, session_id: str) -> None:
         rows = await self.client.load_history(session_id)
         self._clear_log()
-        if not rows:
-            self._show_welcome()
-            return
-        self._hide_welcome()
         for row in rows:
             role = row.get("role")
             content = row.get("content") or ""
@@ -898,6 +1249,7 @@ class ChatScreen(Screen):
                 name = row.get("tool_name") or "tool"
                 out = row.get("output") or content
                 self._mount_history_tool(name, out)
+        self._update_banner()
         self._log().scroll_end(animate=False)
 
     @staticmethod
@@ -920,9 +1272,10 @@ class ChatScreen(Screen):
             text = text[:4000] + "\n... (truncated)"
         col = Collapsible(Static(text, classes="tool-body"), title=f"{G.TOOL} {name}", collapsed=True)
         col.add_class("tool-block")
-        self._mount(col)
+        self._mount_cat(col, "tools")
 
     # ── cleanup ────────────────────────────────────────────────────────
     def on_unmount(self) -> None:
         # The client is cached on the App and reused; don't close it here.
-        self._stop_thinking()
+        if self._walker is not None:
+            self._walker.set_state("idle")

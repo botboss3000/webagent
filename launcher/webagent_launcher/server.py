@@ -27,6 +27,18 @@ WEBAGENT_HOST = "127.0.0.1"
 HEALTH_URL = f"http://{WEBAGENT_HOST}:{WEBAGENT_PORT}/"
 MAX_LOG_LINES = 500
 
+# ── Auto-restart watchdog tuning ───────────────────────────────────────────
+# When the server exits without us asking (crash / disconnect), relaunch it.
+# A run that stays up at least this long is "stable" and forgives prior crashes
+# so an occasional crash always gets restarted at full speed.
+AUTO_RESTART_STABLE_SEC = 30.0
+# Consecutive *rapid* crashes before we stop trying (avoid a tight crash loop
+# on a genuinely broken build/config).
+AUTO_RESTART_MAX_TRIES = 5
+# Exponential backoff between rapid retries: 1s, 2s, 4s, 8s, 16s … capped.
+AUTO_RESTART_BASE_DELAY = 1.0
+AUTO_RESTART_MAX_DELAY = 30.0
+
 # Windows-specific subprocess flags
 if sys.platform == "win32":
     _CREATE_NEW_PROCESS_GROUP = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -69,13 +81,24 @@ class ServerController:
         project_dir: Path,
         on_state_change: Optional[Callable[[ServerState], None]] = None,
         on_log_line: Optional[Callable[[str], None]] = None,
+        auto_restart: bool = True,
     ) -> None:
         self.project_dir = project_dir
         self.state = ServerState()
+        self.auto_restart = auto_restart
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._reader_task: Optional[asyncio.Task] = None
         self._on_state_change = on_state_change or (lambda _s: None)
         self._on_log_line = on_log_line or (lambda _l: None)
+        # Watchdog bookkeeping.
+        #   _intentional_stop → set while WE asked the process to exit (stop /
+        #     restart / reset); the reader uses it instead of reading mutable
+        #     status, which races with stop()'s own "stopped" write.
+        #   _restart_failures → consecutive rapid crashes (drives backoff).
+        #   _auto_restart_task → the pending relaunch timer, if any.
+        self._intentional_stop = False
+        self._restart_failures = 0
+        self._auto_restart_task: Optional[asyncio.Task] = None
 
     # ── state notification helper ──────────────────────────────────────
     def _emit(self) -> None:
@@ -141,10 +164,18 @@ class ServerController:
         return False
 
     # ── start / stop ──────────────────────────────────────────────────
-    async def start(self) -> None:
+    async def start(self, *, _auto: bool = False) -> None:
         if self.state.status in ("starting", "running"):
             self._append_log("[launcher] server already running")
             return
+
+        # Any start supersedes a queued auto-restart. A *manual* start (user
+        # pressed Launch / Restart, or a reset finished) is also a clean slate
+        # for the crash counter so the watchdog is armed at full strength again.
+        self._cancel_auto_restart()
+        self._intentional_stop = False
+        if not _auto:
+            self._restart_failures = 0
 
         if not (self.project_dir / "run.py").exists():
             self.state.status = "error"
@@ -232,7 +263,14 @@ class ServerController:
             if self._proc:
                 rc = await self._proc.wait()
                 self._append_log(f"[launcher] server exited with code {rc}")
-                if self.state.status == "stopping":
+                # Decide intentional-vs-crash from our own flag, not from
+                # state.status: stop() may have already flipped status to
+                # "stopped" by the time we get here (both coroutines wake on
+                # the same process exit), which would otherwise look like a
+                # crash and trigger a bogus restart.
+                intentional = self._intentional_stop
+                ran_seconds = self.state.uptime_seconds
+                if intentional:
                     self.state.status = "stopped"
                 elif rc != 0:
                     self.state.status = "error"
@@ -242,6 +280,9 @@ class ServerController:
                 self.state.pid = None
                 self.state.started_at = None
                 self._emit()
+                # Crash / unexpected disconnect → relaunch (with backoff).
+                if not intentional and self.auto_restart:
+                    self._schedule_auto_restart(ran_seconds)
 
     async def _await_ready(self) -> None:
         if await self.wait_until_ready(timeout=45.0):
@@ -257,6 +298,11 @@ class ServerController:
                 self._emit()
 
     async def stop(self, timeout: float = 8.0) -> None:
+        # We're asking the server to exit — disarm the watchdog so the reader
+        # doesn't read this as a crash, and drop any queued relaunch.
+        self._intentional_stop = True
+        self._cancel_auto_restart()
+
         if self._proc is None or self._proc.returncode is not None:
             self.state.status = "stopped"
             self._emit()
@@ -300,3 +346,60 @@ class ServerController:
         await self.stop()
         await asyncio.sleep(0.5)
         await self.start()
+
+    # ── auto-restart watchdog ──────────────────────────────────────────
+    def cancel_auto_restart(self) -> None:
+        """Public hook: drop any queued relaunch (e.g. before a DB/venv reset
+        so the watchdog can't race a destructive wipe)."""
+        self._cancel_auto_restart()
+
+    def _cancel_auto_restart(self) -> None:
+        # Null the handle *before* cancelling so a relaunch coroutine that
+        # cancels via start() can't end up cancelling itself.
+        task = self._auto_restart_task
+        self._auto_restart_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _schedule_auto_restart(self, ran_seconds: float) -> None:
+        """Queue a relaunch after an unexpected exit, with backoff + a cap so a
+        permanently-broken server doesn't spin in a tight crash loop."""
+        # A run that lasted past the stability window means the server was
+        # healthy and just died — forgive earlier rapid crashes.
+        if ran_seconds >= AUTO_RESTART_STABLE_SEC:
+            self._restart_failures = 0
+        self._restart_failures += 1
+
+        if self._restart_failures > AUTO_RESTART_MAX_TRIES:
+            self._append_log(
+                f"[launcher] auto-restart gave up after {AUTO_RESTART_MAX_TRIES} "
+                "rapid crashes — fix the error above, then press Launch"
+            )
+            self.state.status = "error"
+            self.state.last_error = f"crash loop ({AUTO_RESTART_MAX_TRIES} rapid exits)"
+            self._emit()
+            return
+
+        delay = min(
+            AUTO_RESTART_MAX_DELAY,
+            AUTO_RESTART_BASE_DELAY * (2 ** (self._restart_failures - 1)),
+        )
+        self._append_log(
+            f"[launcher] server disconnected — auto-restart in {delay:.0f}s "
+            f"(attempt {self._restart_failures}/{AUTO_RESTART_MAX_TRIES})"
+        )
+        self._cancel_auto_restart()  # never stack two timers
+        self._auto_restart_task = asyncio.create_task(self._auto_restart_after(delay))
+
+    async def _auto_restart_after(self, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        # Clear our own handle first so start()'s cancel-pending is a no-op for
+        # this (now-running) task.
+        self._auto_restart_task = None
+        # Bail if the user / a reset already moved the server in the meantime.
+        if self.state.status in ("starting", "running", "stopping"):
+            return
+        await self.start(_auto=True)

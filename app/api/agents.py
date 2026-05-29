@@ -41,6 +41,11 @@ class CreateAgentRequest(BaseModel):
     template_id: Optional[str] = "default"
 
 
+class ReorderAgentsRequest(BaseModel):
+    user_id: str
+    order: List[str]  # agent ids, top-to-bottom (index 0 = top of the list)
+
+
 class SlotPayload(BaseModel):
     slot_name: str
     order_index: int = 0
@@ -286,6 +291,21 @@ async def list_agents(user_id: str = Query(...)):
     # not system template entries.
     user_agents = [a for a in all_agents if a.get("source") == "custom"]
     return {"agents": [_safe_agent(a) for a in user_agents]}
+
+
+@router.post("/agents/reorder")
+async def reorder_agents(req: ReorderAgentsRequest):
+    """
+    Persist the manual order of a user's custom agents (drag-to-reorder in the
+    chat-header agent dropdown). Each id in ``order`` gets sort_order = its
+    index; only agents the caller administers are touched. The same order is
+    consumed by the Agents page so the two views stay in sync.
+    """
+    db = get_db()
+    if not hasattr(db, "reorder_agents"):
+        raise HTTPException(status_code=501, detail="Reordering is not supported by the active storage backend.")
+    updated = await db.reorder_agents(req.user_id, req.order)
+    return {"success": True, "updated": updated}
 
 
 @router.post("/agents")

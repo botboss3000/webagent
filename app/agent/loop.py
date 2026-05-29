@@ -935,6 +935,19 @@ async def stream_agent_events(
         stall_strikes = 0
         stall_stop_msg = None     # when set, break out of the loop and finalize
         input_tokens = output_tokens = llm_cost = None   # pre-init for finalize
+        # ── Streaming-answer persistence ──
+        # The assistant row for the current step is created in the DB as soon as
+        # the first token arrives (status='streaming') and updated as more text
+        # streams in, so the partial answer is durable: any device can render it
+        # from a plain DB read, and it survives RunBuffer eviction / restart.
+        # Reset to None at the start of each step (each LLM call).
+        streaming_asst_id = None
+        collected_content = ""       # pre-init so except handlers are safe
+        _last_stream_persist = 0.0   # monotonic ts of last throttled DB write
+        try:
+            _STREAM_PERSIST_INTERVAL = float(os.environ.get("AGENT_STREAM_PERSIST_INTERVAL", "0.6"))
+        except (ValueError, TypeError):
+            _STREAM_PERSIST_INTERVAL = 0.6
         try:
             _MAX_IDENTICAL_CALLS = max(2, int(os.environ.get("AGENT_MAX_IDENTICAL_TOOL_CALLS", "3")))
         except (ValueError, TypeError):
@@ -1051,6 +1064,47 @@ async def stream_agent_events(
             def _build_input() -> str:
                 return json.dumps(messages)
 
+            async def _persist_stream_progress(force: bool = False) -> None:
+                """Create the in-progress assistant row on first token, then
+                throttle-update its content as the answer streams. Makes the
+                partial answer durable in the DB. ``force`` bypasses the throttle
+                (used at step finalize)."""
+                nonlocal streaming_asst_id, _last_stream_persist
+                # Mid-stream interrupt: lets the Stop button halt a long single
+                # completion, not just at turn boundaries. Throttled to the
+                # persist cadence so it costs ~one extra flag read per interval.
+                if loop_config.is_enabled("interrupt_chk") and not force:
+                    now_i = time.monotonic()
+                    if streaming_asst_id is None or (now_i - _last_stream_persist) >= _STREAM_PERSIST_INTERVAL:
+                        await _check_interrupt(session_id, interrupt_event)
+                if streaming_asst_id is None:
+                    try:
+                        streaming_asst_id = await db.insert_interaction(
+                            user_id, session_id, role="assistant",
+                            content=collected_content,
+                            parent_id=parent_interaction_id,
+                            channel=channel,
+                            metadata=_build_meta("assistant", input_tokens, output_tokens, llm_cost),
+                            sender_id=agent_id, receiver_id=user_id,
+                            status="streaming",
+                        )
+                        try:
+                            await db.run_state_set_assistant(session_id, streaming_asst_id)
+                        except Exception:
+                            pass
+                    except Exception as _se:
+                        logger.debug("stream persist (create) failed: %s", _se)
+                    _last_stream_persist = time.monotonic()
+                    return
+                now = time.monotonic()
+                if not force and (now - _last_stream_persist) < _STREAM_PERSIST_INTERVAL:
+                    return
+                _last_stream_persist = now
+                try:
+                    await db.update_interaction(streaming_asst_id, content=collected_content)
+                except Exception as _se:
+                    logger.debug("stream persist (update) failed: %s", _se)
+
             if loop_config.is_enabled("interrupt_chk"):
                 await _check_interrupt(session_id, interrupt_event)
 
@@ -1131,6 +1185,8 @@ async def stream_agent_events(
 
             collected_content = ""
             collected_tool_calls: Dict[int, Any] = {}
+            streaming_asst_id = None   # new in-progress assistant row per step
+            _last_stream_persist = 0.0
             input_tokens = None
             output_tokens = None
             llm_cost = None
@@ -1178,11 +1234,13 @@ async def stream_agent_events(
                     ):
                         if _pe["type"] == "stream":
                             collected_content += _pe["content"]
+                            await _persist_stream_progress()
+                            _pe = dict(_pe)  # shallow copy to avoid mutating original
                             # Prefix only the first stream chunk of the turn
                             if first_stream_chunk_state[0]:
-                                _pe = dict(_pe)  # shallow copy to avoid mutating original
                                 _pe["content"] = prefix_content(_pe["content"])
                                 first_stream_chunk_state[0] = False
+                            _pe["asst_id"] = streaming_asst_id
                             yield _pe
                         elif _pe["type"] == "pipeline":
                             if _pe["step"] == "parallel_winner":
@@ -1248,12 +1306,15 @@ async def stream_agent_events(
 
                     if delta.content:
                         collected_content += delta.content
-                        # Prefix only the first stream chunk of the turn
+                        # Persist FIRST so the per-step assistant row exists and
+                        # streaming_asst_id is set, then tag the stream event with
+                        # it so the UI can render each step as its own bubble.
+                        await _persist_stream_progress()
                         stream_content = delta.content
                         if first_stream_chunk_state[0]:
                             stream_content = prefix_content(stream_content)
                             first_stream_chunk_state[0] = False
-                        yield {"type": "stream", "level": "agent", "content": stream_content}
+                        yield {"type": "stream", "level": "agent", "content": stream_content, "asst_id": streaming_asst_id}
 
                     if delta.tool_calls:
                         for tc in delta.tool_calls:
@@ -1329,20 +1390,36 @@ async def stream_agent_events(
                 inp = _build_input()
                 outp = json.dumps({"role": "assistant", "content": collected_content, "tool_calls": full_tool_calls})
                 db_start = time.time()
-                asst_id = await db.insert_interaction(
-                    user_id, session_id, role="assistant", content=assistant_content,
-                    parent_id=parent_interaction_id,
-                    channel=channel,
-                    metadata=meta_asst,
-                    input_data=inp,
-                    output_data=outp,
-                    sender_id=agent_id,
-                    receiver_id=user_id,
-                )
+                if streaming_asst_id is not None:
+                    # Finalize the in-progress row created while streaming.
+                    await db.update_interaction(
+                        streaming_asst_id, content=assistant_content,
+                        status="complete", output_data=outp, metadata=meta_asst,
+                    )
+                    asst_id = streaming_asst_id
+                else:
+                    asst_id = await db.insert_interaction(
+                        user_id, session_id, role="assistant", content=assistant_content,
+                        parent_id=parent_interaction_id,
+                        channel=channel,
+                        metadata=meta_asst,
+                        input_data=inp,
+                        output_data=outp,
+                        sender_id=agent_id,
+                        receiver_id=user_id,
+                    )
                 db_dur = int((time.time() - db_start) * 1000)
+                # This step's assistant message is finalized; clear the handle so
+                # an interrupt during tool execution doesn't re-finalize it.
+                streaming_asst_id = None
                 yield {"type": "db", "level": "db",
                        "op": "insert_interaction", "role": "assistant",
                        "tool_name": None, "id": asst_id, "ms": db_dur}
+                # Finalize THIS step's bubble in the UI (it's an intermediate
+                # assistant message that precedes tool calls — shown as its own
+                # bubble so the user sees every step, not just the final answer).
+                yield {"type": "agent_step_end", "level": "agent",
+                       "asst_id": asst_id, "content": assistant_content}
 
                 # ── Pipeline: validation start ──
                 yield {"type": "pipeline", "level": "pipeline",
@@ -1742,22 +1819,31 @@ async def stream_agent_events(
             inp = _build_input()
             outp = json.dumps({"role": "assistant", "content": collected_content})
             db_start = time.time()
-            inter_id = await db.insert_interaction(
-                user_id, session_id, role="assistant", content=collected_content,
-                parent_id=parent_interaction_id,
-                channel=channel,
-                metadata=meta_final,
-                input_data=inp,
-                output_data=outp,
-                sender_id=agent_id,
-                receiver_id=user_id,
-            )
+            if streaming_asst_id is not None:
+                # Finalize the in-progress row created while streaming.
+                await db.update_interaction(
+                    streaming_asst_id, content=collected_content,
+                    status="complete", output_data=outp, metadata=meta_final,
+                )
+                inter_id = streaming_asst_id
+            else:
+                inter_id = await db.insert_interaction(
+                    user_id, session_id, role="assistant", content=collected_content,
+                    parent_id=parent_interaction_id,
+                    channel=channel,
+                    metadata=meta_final,
+                    input_data=inp,
+                    output_data=outp,
+                    sender_id=agent_id,
+                    receiver_id=user_id,
+                )
             db_dur = int((time.time() - db_start) * 1000)
             yield {"type": "db", "level": "db",
                    "op": "insert_interaction", "role": "assistant",
                    "tool_name": None, "id": inter_id, "ms": db_dur}
 
-            yield {"type": "response", "level": "agent", "content": prefix_content(collected_content)}
+            yield {"type": "response", "level": "agent",
+                   "content": prefix_content(collected_content), "asst_id": inter_id}
             if loop_config.is_enabled("fire_optimizer"):
                 _fire_optimizer(user_id, session_id, channel, agent_template_id)
             return
@@ -1783,7 +1869,8 @@ async def stream_agent_events(
             yield {"type": "db", "level": "db",
                    "op": "insert_interaction", "role": "assistant",
                    "tool_name": None, "id": inter_id, "ms": db_dur}
-            yield {"type": "response", "level": "agent", "content": prefix_content(stall_stop_msg)}
+            yield {"type": "response", "level": "agent",
+                   "content": prefix_content(stall_stop_msg), "asst_id": inter_id}
             if loop_config.is_enabled("fire_optimizer"):
                 _fire_optimizer(user_id, session_id, channel, agent_template_id)
             return
@@ -1801,13 +1888,29 @@ async def stream_agent_events(
             _fire_optimizer(user_id, session_id, channel, agent_template_id)
     except asyncio.CancelledError as e:
         logger.info(f"Agent loop for session {session_id} cancelled: {e}")
-        yield {"type": "interrupted", "level": "agent", "message": str(e)}
+        # Finalize any in-progress streaming answer so it isn't stranded as
+        # 'streaming' forever — the partial text is kept, marked 'interrupted'.
+        if streaming_asst_id is not None:
+            try:
+                await db.update_interaction(
+                    streaming_asst_id, content=collected_content, status="interrupted",
+                )
+            except Exception:
+                pass
+        yield {"type": "interrupted", "level": "agent", "message": str(e), "asst_id": streaming_asst_id}
         if loop_config.is_enabled("fire_optimizer"):
             _fire_optimizer(user_id, session_id, channel, agent_template_id)
         return
     except Exception as e:
         logger.error(f"Agent loop error: {e}", exc_info=True)
-        yield {"type": "error", "level": "agent", "message": f"Unexpected error in agent loop: {e}"}
+        if streaming_asst_id is not None:
+            try:
+                await db.update_interaction(
+                    streaming_asst_id, content=collected_content, status="error",
+                )
+            except Exception:
+                pass
+        yield {"type": "error", "level": "agent", "message": f"Unexpected error in agent loop: {e}", "asst_id": streaming_asst_id}
         if loop_config.is_enabled("fire_optimizer"):
             _fire_optimizer(user_id, session_id, channel, agent_template_id)
         return

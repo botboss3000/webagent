@@ -15,6 +15,7 @@ import { NODE_PANEL_INFO } from './loop-node-data.js';
 import { LOOP_W, LOOP_H, LOOP_NODES, TOGGLEABLE_NODES, renderLoopDiagram } from './loop-diagram.js';
 import { icon } from './icons.js';
 import { wireChatPillUploads } from './attachments.js';
+import { sortAgentsForDisplay } from './ordering.js';
 // ── PRESENTATION-MODE START ── (delete the next 2 lines + the canEdit override below to remove)
 import { isPresentationMode } from './left-login.js';
 import { applyPresentationGate } from './presentation-mode.js';
@@ -180,6 +181,16 @@ export async function initAgents() {
   _restoreViewState();
 }
 
+// Re-sync this page after the chat-header dropdown changes agent order or pins.
+// Re-fetches so a drag-reorder (which updates the synced sort_order) is picked
+// up, then re-renders. No-op when the grid isn't mounted.
+app.refreshAgentsOrder = async function refreshAgentsOrder() {
+  if (!app.currentUserId) return;
+  if (!document.getElementById('agents-grid')) return;
+  await _loadAgents();
+  _renderList();
+};
+
 // Expand a specific agent's card and scroll it into view. Called from the
 // chat-header agent dropdown's "Config" action. Retries until grid is rendered
 // (initAgents may still be loading when the user clicks Config from chat).
@@ -291,7 +302,11 @@ function _renderList() {
     return;
   }
 
-  for (const agent of _agents) {
+  // Match the chat-header agent dropdown exactly: the server returns agents in
+  // the synced sort_order; sortAgentsForDisplay then floats pinned agents to
+  // the top. Reordering happens in the dropdown — this page just follows.
+  const ordered = sortAgentsForDisplay(_agents, app.currentUserId);
+  for (const agent of ordered) {
     const isExpanded = _expandedAgents.has(agent.id);
 
     const badgeType  = agent.access_level === 'admin_only' ? 'admin'

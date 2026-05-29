@@ -226,7 +226,15 @@ _anonReady.then(() => {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     const agentOk = app.agentWs && app.agentWs.readyState === WebSocket.OPEN;
-    if (!agentOk) connectAgent();
+    if (!agentOk) {
+      connectAgent();
+      // Dead-WS fallback: pull the current session straight from the DB so an
+      // in-progress (or just-finished) answer shows even before the socket is
+      // back. The DB is the source of truth; live events are an accelerant.
+      if (typeof app.reloadCurrentSession === 'function') {
+        try { app.reloadCurrentSession(); } catch (_) {}
+      }
+    }
   }
 });
 

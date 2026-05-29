@@ -171,6 +171,7 @@ class SupabaseBackend(StorageBackend):
         session_seq: Optional[int] = None,
         turn_id: Optional[str] = None,
         turn_seq: Optional[int] = None,
+        status: str = "complete",
     ) -> str:
         try:
             await self.assert_session_owned(user_id, session_id)
@@ -191,6 +192,7 @@ class SupabaseBackend(StorageBackend):
                 "session_seq": session_seq,
                 "turn_id": turn_id,
                 "turn_seq": turn_seq,
+                "status": status,
             }
             response = self._client.table("interactions").insert(data).execute()
             if response.data and len(response.data) > 0:
@@ -2058,10 +2060,11 @@ class SupabaseClient:
         session_seq: Optional[int] = None,
         turn_id: Optional[str] = None,
         turn_seq: Optional[int] = None,
+        status: str = "complete",
     ) -> str:
         return await SupabaseClient._get_backend().insert_interaction(
             user_id, session_id, role, content, parent_id, tool_name, tool_call_id, channel, source, metadata, input_data, output_data, sender_id, receiver_id,
-            session_seq=session_seq, turn_id=turn_id, turn_seq=turn_seq,
+            session_seq=session_seq, turn_id=turn_id, turn_seq=turn_seq, status=status,
         )
 
     @staticmethod

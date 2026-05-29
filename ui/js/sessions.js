@@ -18,6 +18,14 @@ import {
 } from './accounts.js';
 import { showLeftOverlay, authHeaders } from './left-login.js';
 import { randomUUID } from './uuid.js';
+import {
+  getPinnedAgents,
+  toggleAgentPin as _toggleAgentPinStore,
+  sortAgentsForDisplay,
+  persistAgentOrder,
+  persistSessionOrder,
+  makeRowsReorderable,
+} from './ordering.js';
 
 export function generateUUID() {
   return randomUUID();
@@ -25,8 +33,10 @@ export function generateUUID() {
 
 /**
  * Interrupt the backend agent loop for a session (best-effort, fire-and-forget).
- * This tells the server to cancel any in-flight LLM stream for the given session,
- * so the agent stops processing when the user navigates away.
+ * Tells the server to gracefully stop an in-flight run. NOTE: this is now only
+ * used when the session is being DELETED — leaving / switching / closing no
+ * longer interrupts a run (it keeps going server-side and is viewable from any
+ * device). Interrupt remains available via the explicit Stop button.
  */
 function interruptSession(sessionId) {
   if (!sessionId) return;
@@ -42,41 +52,16 @@ function interruptSession(sessionId) {
 // Cache of last-fetched agents (templates + customs, in display order)
 let _agentsCache = [];
 
-function _pinnedAgentsKey() {
-  return `pinnedAgents:${app.currentUserId || 'anon'}`;
-}
-
-function _getPinnedAgents() {
-  try {
-    const raw = localStorage.getItem(_pinnedAgentsKey());
-    return raw ? new Set(JSON.parse(raw)) : new Set();
-  } catch (_) { return new Set(); }
-}
-
-function _setPinnedAgents(set) {
-  try {
-    localStorage.setItem(_pinnedAgentsKey(), JSON.stringify(Array.from(set)));
-  } catch (_) {}
-}
-
 function _toggleAgentPin(agentId) {
-  const pinned = _getPinnedAgents();
-  if (pinned.has(agentId)) pinned.delete(agentId);
-  else pinned.add(agentId);
-  _setPinnedAgents(pinned);
-  // Refresh agents cache (pinned flag) and re-render
-  const pinnedNow = _getPinnedAgents();
+  const pinnedNow = _toggleAgentPinStore(app.currentUserId, agentId);
+  // Refresh agents cache (pinned flag) and re-render. sortAgentsForDisplay
+  // floats pinned to the top while preserving the synced server order.
   _agentsCache = _agentsCache.map(a => ({ ...a, pinned: pinnedNow.has(a.id) }));
-  _agentsCache.sort(_agentSortFn);
+  _agentsCache = sortAgentsForDisplay(_agentsCache, app.currentUserId);
   _renderAgentRows();
   _setAgentTriggerLabel();
-}
-
-function _agentSortFn(a, b) {
-  if (!!b.pinned - !!a.pinned !== 0) return (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
-  // Within pinned/unpinned groups: templates first, then customs; keep server order
-  if (a.type !== b.type) return a.type === 'template' ? -1 : 1;
-  return 0;
+  // Keep the Agents page in sync (pinned floats to the top there too).
+  if (typeof app.refreshAgentsOrder === 'function') app.refreshAgentsOrder();
 }
 
 function _setAgentTriggerLabel() {
@@ -115,12 +100,30 @@ function _renderAgentRows() {
     row.dataset.type = a.type;
     const label = a.name || a.id.slice(0, 12);
     row.innerHTML = `
+      <span class="row-drag-handle" data-drag-handle title="Drag to reorder">${icon('grip-vertical', { size: '13px' })}</span>
       <span class="agent-row-pin-icon">${icon('pin', { size: '12px' })}</span>
       <span class="agent-row-title" title="${a.id}">${_truncate(label, 28).replace(/</g, '&lt;')}</span>
       <button class="agent-row-kebab" title="Agent actions" data-id="${a.id}">${icon('more-vertical', { size: '14px' })}</button>
     `;
     menu.appendChild(row);
   }
+}
+
+/**
+ * Apply a drag-to-reorder result for the agent dropdown: reorder the cache to
+ * the dropped sequence, re-float pinned agents to the top so storage matches
+ * display, persist the synced order, then keep the Agents page in sync.
+ */
+function _applyAgentReorder(orderedIds) {
+  const byId = new Map(_agentsCache.map(a => [a.id, a]));
+  const next = orderedIds.map(id => byId.get(id)).filter(Boolean);
+  // Defensive: keep any row the DOM didn't report so nothing is dropped.
+  for (const a of _agentsCache) if (!orderedIds.includes(a.id)) next.push(a);
+  _agentsCache = sortAgentsForDisplay(next, app.currentUserId);
+  _renderAgentRows();
+  _setAgentTriggerLabel();
+  persistAgentOrder(app.currentUserId, _agentsCache.map(a => a.id));
+  if (typeof app.refreshAgentsOrder === 'function') app.refreshAgentsOrder();
 }
 
 export async function populateAgentSelect(userId) {
@@ -131,11 +134,12 @@ export async function populateAgentSelect(userId) {
     const agentsData = agentsRes.ok ? await agentsRes.json() : { agents: [] };
 
     const saved = localStorage.getItem('selectedAgentId');
-    const pinned = _getPinnedAgents();
+    const pinned = getPinnedAgents(userId);
 
     // Only the user's actual custom agents appear in the chat-header dropdown.
     // System templates are creation seeds, not chat targets — they're surfaced
-    // in the "New agent" modal's template picker (see agents.js).
+    // in the "New agent" modal's template picker (see agents.js). The server
+    // returns them in synced sort_order; sortAgentsForDisplay then floats pins.
     const customs = agentsData.agents || [];
 
     _agentsCache = customs.map(a => ({
@@ -144,7 +148,7 @@ export async function populateAgentSelect(userId) {
       type: 'custom',
       pinned: pinned.has(a.id),
     }));
-    _agentsCache.sort(_agentSortFn);
+    _agentsCache = sortAgentsForDisplay(_agentsCache, userId);
 
     // Pre-select order:
     //   1. __agentId  — viewing a public agent URL
@@ -335,12 +339,30 @@ function _renderSessionRows() {
     row.dataset.id = s.id;
     const label = s.title || 'New Session';
     row.innerHTML = `
+      <span class="row-drag-handle" data-drag-handle title="Drag to reorder">${icon('grip-vertical', { size: '13px' })}</span>
       <span class="session-row-pin-icon">${icon('pin', { size: '12px' })}</span>
       <span class="session-row-title" title="${s.id}">${_truncate(label, 28).replace(/</g, '&lt;')}</span>
       <button class="session-row-kebab" title="Session actions" data-id="${s.id}">${icon('more-vertical', { size: '14px' })}</button>
     `;
     menu.appendChild(row);
   }
+}
+
+/**
+ * Apply a drag-to-reorder result for the session dropdown: reorder the cache to
+ * the dropped sequence, re-float pinned sessions to the top (the server orders
+ * pinned-first too), persist the synced order, and re-render.
+ */
+function _applySessionReorder(orderedIds) {
+  const byId = new Map(_sessionsCache.map(s => [s.id, s]));
+  const next = orderedIds.map(id => byId.get(id)).filter(Boolean);
+  for (const s of _sessionsCache) if (!orderedIds.includes(s.id)) next.push(s);
+  // Stable sort → pinned first, manual order preserved within each group.
+  next.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
+  _sessionsCache = next;
+  _renderSessionRows();
+  _setTriggerLabel();
+  persistSessionOrder(app.currentUserId, _sessionsCache.map(s => s.id));
 }
 
 export async function populateSessionSelect(userId) {
@@ -410,16 +432,62 @@ export async function loadSessionChat(sessionId) {
       );
       return;
     }
+    // Durable run-state: is a turn in progress for this session right now?
+    const run = data.run || null;
+    let seededStreaming = false;
+
+    // Each assistant row (including intermediate steps that precede tool calls)
+    // is its own bubble, keyed by its interaction id so the user sees EVERY
+    // agent response in a turn, not just the final one. Empty rows (tool-call-
+    // only steps) render nothing.
     for (const msg of data.messages) {
       if (msg.role === 'user') {
-        app.addChatBubble('user', msg.content);
+        app.addChatBubble('user', msg.content, undefined, undefined, undefined, msg.id);
       } else if (msg.role === 'assistant') {
         let text = msg.content || '';
         const toolCallIdx = text.indexOf('\n\n[Tool calls: ');
         if (toolCallIdx !== -1) text = text.slice(0, toolCallIdx);
-        app.addChatBubble('agent', text);
+        const hasText = !!text.trim();
+        if (msg.status === 'streaming') {
+          // In-progress step — render the persisted partial as a live bubble the
+          // WebSocket will continue updating (keyed by THIS row's id == asst_id).
+          if (typeof app.seedStreamingBubble === 'function') {
+            app.seedStreamingBubble(msg.id, text);
+          } else {
+            app.addChatBubble('agent', text || '…', 'streaming', undefined, msg.id);
+          }
+          seededStreaming = true;
+        } else if (!hasText) {
+          continue; // empty tool-call-only step — nothing to show
+        } else if (msg.status === 'interrupted') {
+          app.addChatBubble('agent', text + '\n\n(interrupted)', 'interrupted', undefined, msg.id);
+        } else if (msg.status === 'error') {
+          app.addChatBubble('agent', text, 'error', undefined, msg.id);
+        } else {
+          app.addChatBubble('agent', text, undefined, undefined, msg.id);
+        }
       }
     }
+
+    // If a run is active, lock display state + set the WS resume floor so
+    // replayed chunks only bring text newer than the partial we just rendered.
+    // The existing resume paths (switchToSession + WS onopen handshake) replay.
+    if (run && run.active) {
+      app.isProcessing = true;
+      if (!seededStreaming && run.assistant_interaction_id
+          && typeof app.ensureStreamingBubbleForActiveTurn === 'function') {
+        app.ensureStreamingBubbleForActiveTurn(run.assistant_interaction_id);
+      }
+      if (!app.lastSessionSeq) app.lastSessionSeq = {};
+      const floor = typeof run.latest_session_seq === 'number' ? run.latest_session_seq : 0;
+      app.lastSessionSeq[sessionId] = Math.max(app.lastSessionSeq[sessionId] || 0, floor);
+    } else {
+      app.isProcessing = false;
+    }
+    // Input availability follows text presence, not run state — sending a
+    // follow-up while the agent works is allowed (it interrupts + replaces).
+    if (app.chatSend) app.chatSend.disabled = !((app.chatInput && app.chatInput.value.trim()));
+
     app.chatMessages.scrollTop = app.chatMessages.scrollHeight;
   } catch (e) {
     console.warn('Failed to load session messages:', e);
@@ -431,6 +499,11 @@ export function registerSessionApi() {
   app.populateUserSelect = populateUserSelect;
   app.populateSessionSelect = populateSessionSelect;
   app.populateAgentSelect = populateAgentSelect;
+  app.loadSessionChat = loadSessionChat;
+  // Dead-WS fallback: re-render the current session straight from the DB.
+  app.reloadCurrentSession = () => {
+    if (app.currentSessionId) loadSessionChat(app.currentSessionId);
+  };
 }
 
 export function initSessions() {
@@ -608,16 +681,16 @@ export function initSessions() {
     closeActionsPopup();
   }
 
-  function switchToSession(sid) {
+  async function switchToSession(sid) {
     if (!sid || sid === app.currentSessionId) { closeMenu(); return; }
-    // Interrupt the backend agent loop for the session we're leaving so it
-    // stops processing immediately instead of running to completion silently.
-    interruptSession(app.currentSessionId);
-    // Tear down the LOCAL SSE fetch.
+    // Leaving a session does NOT stop its run — it keeps going server-side and
+    // we can view it again later from any device. Only tear down LOCAL UI state.
     abortChatStream();
     app.currentSessionId = sid;
     localStorage.setItem('terminalSessionId', app.currentSessionId);
-    loadSessionChat(sid);
+    // Await so the in-progress partial is rendered + the resume floor is set
+    // BEFORE we ask the WS to replay only-newer events below.
+    await loadSessionChat(sid);
     loopSessionChanged();
     loopVisualSessionChanged();
     autoAgentSessionChanged();
@@ -631,14 +704,15 @@ export function initSessions() {
     try {
       const pending = consumeReplayedEventsFor(sid);
       for (const ev of pending) {
+        const key = ev.asst_id || ev.turn_id;
         if (ev.type === 'stream' && typeof app.appendStreamToActiveBubble === 'function') {
-          app.appendStreamToActiveBubble(ev.content || '', ev.turn_id);
+          app.appendStreamToActiveBubble(ev.content || '', key);
+        } else if (ev.type === 'agent_step_end' && typeof app.finalizeAgentStep === 'function') {
+          app.finalizeAgentStep(ev.content || '', key);
         } else if (ev.type === 'response' && typeof app.finalizeAgentResponse === 'function') {
-          app.finalizeAgentResponse(ev.content || '', ev.turn_id, true);
-        } else if (ev.type === 'interrupted' && typeof app.updateLastBubble === 'function') {
-          app.updateLastBubble('(interrupted)', 'interrupted');
-          app.isProcessing = false;
-          if (app.chatSend) app.chatSend.disabled = false;
+          app.finalizeAgentResponse(ev.content || '', key, true);
+        } else if (ev.type === 'interrupted' && typeof app.markAgentInterrupted === 'function') {
+          app.markAgentInterrupted(ev.asst_id);
         }
       }
     } catch (_pendErr) { /* never let drain break navigation */ }
@@ -800,6 +874,12 @@ export function initSessions() {
       const row = e.target.closest('.session-row');
       if (row) switchToSession(row.dataset.id);
     });
+    // Drag the grip handle to reorder; persists per-account.
+    makeRowsReorderable(menu, {
+      rowSelector: '.session-row',
+      handleSelector: '.row-drag-handle',
+      onReorder: _applySessionReorder,
+    });
   }
 
   // Outside click closes menu + popups
@@ -817,9 +897,8 @@ export function initSessions() {
     sessionNewBtn.addEventListener('pointerdown', (ev) => {
       ev.preventDefault();
       closeMenu();
-      // Interrupt the backend agent loop for the current session before creating
-      // a new one, so the old agent stops processing immediately.
-      interruptSession(app.currentSessionId);
+      // Starting a new session leaves the current one running in the background —
+      // do NOT interrupt it. Only reset local UI state.
       abortChatStream();
       app.currentSessionId = generateUUID();
       localStorage.setItem('terminalSessionId', app.currentSessionId);
@@ -860,9 +939,8 @@ export function initSessions() {
 
   function switchToAgent(aid) {
     if (!aid || aid === app.currentAgentId) { closeAgentMenu(); return; }
-    // Interrupt the backend agent loop for the current session before switching
-    // to a different agent (which starts a brand-new session).
-    interruptSession(app.currentSessionId);
+    // Switching agent starts a fresh session but leaves the current session's
+    // run going in the background — do NOT interrupt it. Reset local UI only.
     abortChatStream();
     app.currentAgentId = aid;
     localStorage.setItem('selectedAgentId', aid);
@@ -960,6 +1038,13 @@ export function initSessions() {
       // Row body click → switch agent
       const row = e.target.closest('.agent-row-item');
       if (row) switchToAgent(row.dataset.id);
+    });
+    // Drag the grip handle to reorder; persists per-account and is mirrored on
+    // the Agents page.
+    makeRowsReorderable(agentMenu, {
+      rowSelector: '.agent-row-item',
+      handleSelector: '.row-drag-handle',
+      onReorder: _applyAgentReorder,
     });
   }
 
