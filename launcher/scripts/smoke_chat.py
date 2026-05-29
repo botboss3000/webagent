@@ -18,7 +18,13 @@ from pathlib import Path
 from textual.app import App, ComposeResult
 from textual.widgets import Collapsible, Static
 
-from webagent_launcher.chat_screen import ChatScreen, _parse_agent_ref
+from webagent_launcher.chat_screen import (
+    ChatInput,
+    ChatScreen,
+    _extract_image_paths,
+    _fmt_tokens,
+    _parse_agent_ref,
+)
 from webagent_launcher.config import LauncherConfig
 
 _STYLES = Path(__file__).resolve().parents[1] / "webagent_launcher" / "styles.tcss"
@@ -41,8 +47,19 @@ def _check_parse() -> None:
     print("parse_agent_ref OK")
 
 
+def _check_helpers() -> None:
+    assert _fmt_tokens(950) == "950"
+    assert _fmt_tokens(1234) == "1.2k"
+    assert _fmt_tokens(None) == "0"
+    # non-existent paths must not be treated as images
+    assert _extract_image_paths("just some text") == []
+    assert _extract_image_paths(r"C:\nope\missing.png") == []
+    print("helpers OK")
+
+
 async def main() -> int:
     _check_parse()
+    _check_helpers()
 
     cfg = LauncherConfig()
     cfg.auto_start_server = False
@@ -55,9 +72,21 @@ async def main() -> int:
         app.push_screen(screen)
         await pilot.pause(0.2)
 
-        for sel in ("#chat-status", "#chat-log", "#chat-input", "#chat-hints"):
+        for sel in ("#chat-status", "#chat-body", "#chat-log", "#chat-input", "#chat-hints"):
             assert screen.query(sel), f"missing {sel}"
-        print("compose OK")
+        assert isinstance(screen.query_one("#chat-input"), ChatInput), "input not ChatInput"
+        # Welcome animation present on an empty session.
+        assert screen.query("#chat-welcome"), "welcome animation missing on empty session"
+        print("compose OK (welcome present)")
+
+        # multi-line autosize: 3 newlines → height caps at 3 lines + border
+        ta = screen.query_one("#chat-input", ChatInput)
+        ta.text = "a\nb\nc\nd"
+        screen._autosize_input()
+        await pilot.pause(0.05)
+        assert int(ta.styles.height.value) == 5, f"autosize height {ta.styles.height}"
+        ta.text = ""
+        print("input autosize OK")
 
         # Drive the event router as if a turn is streaming (no server needed).
         screen.ready = True
@@ -76,9 +105,11 @@ async def main() -> int:
             screen._handle_event(ev)
         await pilot.pause(0.3)
 
+        assert not screen.query("#chat-welcome"), "welcome should vanish once chatting"
         log = screen.query_one("#chat-log")
         kids = [type(c).__name__ for c in log.children]
         print("chat-log children:", kids)
+        assert screen.query(".msg-stats"), "stats line not rendered after response"
 
         tool_blocks = screen.query(Collapsible)
         assert len(tool_blocks) >= 1, "tool block not rendered"
