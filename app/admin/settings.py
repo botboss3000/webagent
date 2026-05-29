@@ -282,9 +282,11 @@ async def load_llm_capabilities_for_user(user_id: str) -> dict:
 
     Shape:
       {
-        "default": {model, provider, base_url, api_key, text_capable, image_capable},
+        "default": {model, provider, base_url, api_key, text_capable,
+                    image_capable, image_out_capable, use_for_image_out},
         "racers":  [{model, provider, base_url, api_key, enabled,
-                     text_capable, image_capable, use_for_image}, ...],
+                     text_capable, image_capable, use_for_image,
+                     image_out_capable, use_for_image_out}, ...],
         "parallel_mode": bool,
       }
     """
@@ -313,6 +315,8 @@ async def load_llm_capabilities_for_user(user_id: str) -> dict:
         "api_key": cfg.get("api_key", ""),
         "text_capable": bool(cfg.get("text_capable", True)),
         "image_capable": bool(cfg.get("image_capable", False)),
+        "image_out_capable": bool(cfg.get("image_out_capable", False)),
+        "use_for_image_out": bool(cfg.get("use_for_image_out", False)),
     }
     racers = []
     for p in (cfg.get("multi_providers") or []):
@@ -325,6 +329,8 @@ async def load_llm_capabilities_for_user(user_id: str) -> dict:
             "text_capable": bool(p.get("text_capable", True)),
             "image_capable": bool(p.get("image_capable", False)),
             "use_for_image": bool(p.get("use_for_image", False)),
+            "image_out_capable": bool(p.get("image_out_capable", False)),
+            "use_for_image_out": bool(p.get("use_for_image_out", False)),
         })
     return {
         "default": default,
@@ -361,6 +367,43 @@ def pick_describer(caps: dict) -> Optional[dict]:
         if r.get("image_capable") and r.get("use_for_image") and r.get("model") and r.get("api_key"):
             return {"model": r["model"], "provider": r.get("provider", ""),
                     "base_url": r.get("base_url", ""), "api_key": r.get("api_key", "")}
+    return None
+
+
+def _infer_api_shape(base_url: str, provider: str = "") -> str:
+    """Infer the image-generation API style from a model's base URL.
+
+    Mirrors IMAGE_PROVIDER_PRESETS in app/tools/image_generation.py:
+      api.stability.ai                    → stability
+      generativelanguage.googleapis.com   → gemini
+      everything else                     → openai-compatible /images/generations
+    """
+    b = (base_url or "").lower()
+    if "stability.ai" in b:
+        return "stability"
+    if "generativelanguage.google" in b:
+        return "gemini"
+    return "openai"
+
+
+def pick_image_generator(caps: dict) -> Optional[dict]:
+    """Choose the model that powers the ``generate_image`` tool.
+
+    Prefer the default model when it is flagged ``use_for_image_out`` (and
+    capable), else the first saved row flagged ``use_for_image_out``. A row need
+    NOT be enabled for text — a user may save an image-only model used solely for
+    generation. Returns {model, provider, base_url, api_key, api_shape} or None.
+    """
+    def _ok(e: dict) -> bool:
+        return bool(e.get("use_for_image_out") and e.get("image_out_capable")
+                    and e.get("model") and e.get("api_key"))
+
+    candidates = [caps.get("default") or {}] + list(caps.get("racers") or [])
+    for e in candidates:
+        if _ok(e):
+            return {"model": e["model"], "provider": e.get("provider", ""),
+                    "base_url": e.get("base_url", ""), "api_key": e.get("api_key", ""),
+                    "api_shape": _infer_api_shape(e.get("base_url", ""), e.get("provider", ""))}
     return None
 
 
@@ -402,6 +445,8 @@ class ProviderConfig(BaseModel):
     # Media-capability of the default model (detected on save, user-overridable).
     text_capable: bool = True
     image_capable: bool = False
+    image_out_capable: bool = False   # can generate images
+    use_for_image_out: bool = False   # this model is the image generator
 
 
 class MultiProviderEntry(BaseModel):
@@ -411,10 +456,12 @@ class MultiProviderEntry(BaseModel):
     model: str = ""
     enabled: bool = True          # "use for text" — joins the response race
     rating: int = 0
-    # Media-capability (detected on save, user-overridable) + image routing role.
+    # Media-capability (detected on save, user-overridable) + image routing roles.
     text_capable: bool = True
     image_capable: bool = False
     use_for_image: bool = False   # eligible to describe images for text-only models
+    image_out_capable: bool = False  # can generate images
+    use_for_image_out: bool = False  # the image generator for the generate_image tool
 
 
 class MultiProvidersRequest(BaseModel):
@@ -551,6 +598,12 @@ async def set_provider(
         "providers": merged_providers,
         "text_capable": config.text_capable,
         "image_capable": config.image_capable,
+        "image_out_capable": config.image_out_capable,
+        "use_for_image_out": config.use_for_image_out,
+        # Preserve the saved racer list / parallel flag — saving the default
+        # model must not wipe the Models grid (auth_element_set fully replaces).
+        "parallel_mode": existing.get("parallel_mode", False),
+        "multi_providers": existing.get("multi_providers", []),
     }
 
     # Save to DB (auth_elements table) — primary storage
@@ -567,6 +620,11 @@ async def set_provider(
                 "providers": merged_providers,
                 "text_capable": config.text_capable,
                 "image_capable": config.image_capable,
+                "image_out_capable": config.image_out_capable,
+                "use_for_image_out": config.use_for_image_out,
+                # Preserve racers/parallel flag (full-replace write).
+                "parallel_mode": existing.get("parallel_mode", False),
+                "multi_providers": existing.get("multi_providers", []),
             },
             secret_ref=current_key,
             label="default",
@@ -738,6 +796,8 @@ async def set_multi_providers(
             # preserve the default model's detected capabilities across edits
             "text_capable": merged.get("text_capable", True),
             "image_capable": merged.get("image_capable", False),
+            "image_out_capable": merged.get("image_out_capable", False),
+            "use_for_image_out": merged.get("use_for_image_out", False),
         }
         await db.auth_element_set(
             user_id=user_id,
@@ -763,25 +823,55 @@ async def set_multi_providers(
     }
 
 
+# Model-id substrings that imply image GENERATION. Dedicated image hosts
+# (OpenAI images, Stability, Gemini/Imagen, FLUX/SDXL on Together, Fireworks,
+# DeepInfra) don't advertise modalities on /models, so we fall back to the id.
+_IMAGE_OUT_NAME_HINTS = (
+    "dall-e", "dalle", "gpt-image", "flux", "sdxl", "stable-diffusion",
+    "stable-image", "sd3", "imagen", "playground", "diffus",
+)
+
+
+def _name_suggests_image_out(model_id: str) -> bool:
+    mid = (model_id or "").lower()
+    return any(h in mid for h in _IMAGE_OUT_NAME_HINTS)
+
+
 def _detect_model_modalities(m: dict) -> tuple:
-    """Best-effort detection of a model's INPUT media types from a provider's
-    /models entry. Returns (text_capable, image_capable, modality_known).
+    """Best-effort detection of a model's media capabilities from a provider's
+    /models entry. Returns
+    ``(text_capable, image_capable, image_out_capable, modality_known)``.
+
+      image_capable      = accepts image INPUT (vision).
+      image_out_capable  = can GENERATE images — from the provider's
+        ``output_modalities`` when present, plus a model-id name heuristic
+        (dedicated image hosts don't report modalities on /models).
+      modality_known     = the provider reported structured INPUT modality info.
 
     Handles OpenRouter's ``architecture.input_modalities`` list and the legacy
-    ``modality`` string (e.g. "text+image->text"); falls back to
-    (text-only, unknown) when the provider reports nothing. Text input is
-    assumed for every chat model — image capability is the meaningful signal.
+    ``modality`` string (e.g. "text+image->text"); text input is assumed for
+    every chat model — image in/out are the meaningful signals.
     """
     arch = m.get("architecture") or {}
+
+    # Image OUTPUT — structured output_modalities, else id name heuristic.
+    out_mods = arch.get("output_modalities") or m.get("output_modalities")
+    img_out = False
+    if isinstance(out_mods, list) and out_mods:
+        img_out = "image" in [str(x).lower() for x in out_mods]
+    if not img_out:
+        img_out = _name_suggests_image_out(m.get("id", ""))
+
+    # Image INPUT (vision).
     mods = arch.get("input_modalities") or m.get("input_modalities")
     if isinstance(mods, list) and mods:
         low = [str(x).lower() for x in mods]
-        return (True, "image" in low, True)
+        return (True, "image" in low, img_out, True)
     modality = arch.get("modality") or m.get("modality")
     if isinstance(modality, str) and modality:
         inp = modality.split("->")[0].lower()
-        return (True, ("image" in inp or "vision" in inp), True)
-    return (True, False, False)
+        return (True, ("image" in inp or "vision" in inp), img_out, True)
+    return (True, False, img_out, False)
 
 
 @router.get("/models")
@@ -835,12 +925,13 @@ async def get_models(
             data = resp.json()
             models = []
             for m in data.get("data", []):
-                tcap, icap, known = _detect_model_modalities(m)
+                tcap, icap, iocap, known = _detect_model_modalities(m)
                 models.append({
                     "id": m["id"],
                     "name": m.get("name", m["id"]),
                     "text_capable": tcap,
                     "image_capable": icap,
+                    "image_out_capable": iocap,
                     "modality_known": known,
                 })
             models.sort(key=lambda x: x["id"])
@@ -851,163 +942,6 @@ async def get_models(
     except Exception as e:
         logger.warning(f"Failed to fetch models from {models_url}: %s", e)
         return {"error": str(e), "models": []}
-
-
-# ── Image-generation provider config ─────────────────────────────────────
-#
-# Mirrors the LLM provider flow above but stored under service="image_gen".
-# Read order (own → admin_default → none) matches load_image_provider_for_user
-# in app/tools/image_generation.py so the tool sees the same config the UI
-# saved.
-
-class ImageProviderConfig(BaseModel):
-    provider: str
-    base_url: str = ""
-    api_key: str
-    model: str = ""
-    api_shape: str = ""  # openai | stability | gemini — auto-filled from preset
-
-
-@router.get("/image-providers")
-async def get_image_providers():
-    """Return known image-gen provider presets."""
-    from app.tools.image_generation import IMAGE_PROVIDER_PRESETS
-    return IMAGE_PROVIDER_PRESETS
-
-
-@router.get("/image-provider", response_model=ImageProviderConfig)
-async def get_image_provider(
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None),
-):
-    """Get the image-gen provider config for the requesting user (falls back
-    to admin_default so anonymous users still see what the admin set up)."""
-    user_id = _resolve_user_id(authorization or "", token or "")
-    cfg: dict = {}
-    try:
-        from app.db import get_db
-        db = get_db()
-        for uid in (user_id, "admin_default"):
-            elem = await db.auth_element_get(uid, "image_gen", "default")
-            if elem:
-                c = elem.get("config", {})
-                if isinstance(c, str):
-                    c = json.loads(c)
-                c["api_key"] = elem.get("secret_ref", "")
-                cfg = c
-                break
-    except Exception as e:
-        logger.debug("get_image_provider failed: %s", e)
-
-    return ImageProviderConfig(
-        provider=cfg.get("provider", ""),
-        base_url=cfg.get("base_url", ""),
-        api_key=cfg.get("api_key", ""),
-        model=cfg.get("model", ""),
-        api_shape=cfg.get("api_shape", ""),
-    )
-
-
-@router.post("/image-provider", response_model=dict)
-async def set_image_provider(
-    config: ImageProviderConfig,
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None),
-):
-    """Save the image-gen provider config for the requesting user."""
-    from app.db import get_db
-    from app.tools.image_generation import IMAGE_PROVIDER_PRESETS
-
-    user_id = _resolve_user_id(authorization or "", token or "")
-    preset = IMAGE_PROVIDER_PRESETS.get(config.provider, {})
-    base_url = config.base_url or preset.get("base_url", "")
-    api_shape = config.api_shape or preset.get("api_shape", "openai")
-
-    db = get_db()
-    await db.auth_element_set(
-        user_id=user_id,
-        service="image_gen",
-        config={
-            "provider": config.provider,
-            "base_url": base_url,
-            "model": config.model,
-            "api_shape": api_shape,
-        },
-        secret_ref=config.api_key,
-        label="default",
-    )
-    logger.info("Image-gen provider config saved for user %s: %s", user_id[:12], config.provider)
-    return {"status": "ok", "provider": config.provider}
-
-
-@router.post("/image-provider/clear", response_model=dict)
-async def clear_image_provider(
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None),
-):
-    """Clear the image-gen provider config for the requesting user."""
-    from app.db import get_db
-    user_id = _resolve_user_id(authorization or "", token or "")
-    db = get_db()
-    deleted = await db.auth_element_delete(user_id, "image_gen", "default")
-    return {"status": "ok", "deleted": deleted}
-
-
-@router.get("/image-models")
-async def get_image_models(
-    provider: str = "",
-    api_key: str = Query("", alias="api_key"),
-    base_url: str = Query("", alias="base_url"),
-):
-    """Return a model list for the image provider.
-
-    For OpenAI-compatible image hosts, this hits `<base_url>/models` and
-    filters down to ids that look image-capable (best effort).
-    For Stability and Gemini, returns the preset's suggested_models since
-    those providers don't expose a generic `/models` listing for images.
-    """
-    from app.tools.image_generation import IMAGE_PROVIDER_PRESETS
-    preset = IMAGE_PROVIDER_PRESETS.get(provider, {})
-    shape = preset.get("api_shape", "openai")
-    suggested = preset.get("suggested_models", [])
-
-    if shape in ("stability", "gemini"):
-        return {"error": None, "models": [{"id": m, "name": m} for m in suggested]}
-
-    used_base = (base_url or preset.get("base_url", "")).rstrip("/")
-    if not used_base:
-        return {"error": "No base_url provided", "models": []}
-    if not api_key:
-        # Still useful to show suggested_models so the user can save a config
-        # before testing the API key.
-        return {"error": None, "models": [{"id": m, "name": m} for m in suggested]}
-
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                used_base + "/models",
-                headers={"Authorization": f"Bearer {api_key}"},
-            )
-            if resp.status_code == 401:
-                return {"error": "Invalid API key", "models": []}
-            resp.raise_for_status()
-            data = resp.json() or {}
-            rows = data.get("data") or []
-            keywords = ("image", "dall-e", "dalle", "flux", "sdxl", "stable", "playground", "imagen", "diffus")
-            models = []
-            for m in rows:
-                mid = (m.get("id") or "").lower()
-                if any(k in mid for k in keywords):
-                    models.append({"id": m["id"], "name": m.get("name", m["id"])})
-            # If filter caught nothing, fall back to the suggested list so the
-            # UI never strands the user without a model option.
-            if not models:
-                models = [{"id": x, "name": x} for x in suggested]
-            models.sort(key=lambda x: x["id"])
-            return {"error": None, "models": models}
-    except Exception as e:
-        logger.warning("Failed to fetch image models: %s", e)
-        return {"error": str(e), "models": [{"id": m, "name": m} for m in suggested]}
 
 
 @router.get("/metadata", response_model=MetadataSetting)

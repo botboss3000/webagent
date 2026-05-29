@@ -1295,16 +1295,72 @@ live/scheduled) */
 .ac-details-body ol { padding-left: 18px; margin: 6px 0; }
 .ac-details-body p { margin: 6px 0; }
 
-/* Parallel provider row */
+/* ── Saved Models table (Text / Image-in / Image-out) ── */
+/* Header and rows share one column template so the angled labels line up
+   over their checkbox columns. The header padding (11px) matches the row's
+   10px padding + 1px border so the content boxes are the same width. */
+.ac-prov-head,
 .ac-provider-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px 34px 34px 22px;
   align-items: center;
-  gap: 8px;
-  background: var(--bg-base, #0d0d1a);
-  border: 1px solid var(--border, #2a2a4a);
+  column-gap: 4px;
+}
+
+/* 45°-angled column header above the first row */
+.ac-prov-head {
+  align-items: end;
+  min-height: 40px;
+  margin-bottom: 4px;
+  padding: 0 11px;
+  overflow: visible;
+}
+.ac-prov-th {
+  display: inline-block;
+  justify-self: center;
+  align-self: end;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--fg-3);
+  white-space: nowrap;
+  transform: rotate(-45deg);
+  transform-origin: bottom center;
+  pointer-events: none;
+}
+
+.ac-provider-row {
+  background: var(--bg-0);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 8px 10px;
+  margin-bottom: 6px;
 }
+.ac-provider-row:last-child { margin-bottom: 0; }
+
+.ac-prov-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ac-cap-dot {
+  color: var(--fg-4);
+  opacity: 0.5;
+  font-size: 15px;
+  line-height: 1;
+}
+.ac-prov-del {
+  justify-self: center;
+  background: none;
+  border: none;
+  color: var(--fg-4);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0;
+}
+.ac-prov-del:hover { color: var(--danger); }
 
 /* ── Light mode overrides ── */
 body.light-mode #app-config-header { background: #fff7f0; }

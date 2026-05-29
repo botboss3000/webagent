@@ -1,8 +1,11 @@
 """
 Image generation tool — multi-provider, configured by the admin/user.
 
-Provider config is stored in `auth_elements` under service="image_gen", with
-the same per-user fallback pattern as LLM config (own → admin_default → none).
+Which model generates images comes from the unified Models list: the saved
+model ticked for image output (App Config → Models → Image-out), resolved by
+``pick_image_generator`` in app/admin/settings.py. A standalone
+``auth_elements`` row under service="image_gen" is still honored as a legacy
+fallback for setups created before image generation was folded into Models.
 
 Default dispatch hits an OpenAI-compatible `/images/generations` endpoint —
 that covers OpenAI (DALL·E, gpt-image-1), Together AI, DeepInfra, Fireworks,
@@ -80,8 +83,30 @@ def _user_visuals_dir(user_id: str) -> Path:
 
 
 async def load_image_provider_for_user(user_id: str) -> Optional[dict]:
-    """Return the image-gen provider config for this user, or admin_default,
-    or None if neither has one set."""
+    """Return the image-generation config for this user.
+
+    Source order:
+      1. The unified Models list — the saved model the user ticked for image
+         output (own config, then admin_default, resolved inside
+         load_llm_capabilities_for_user), via ``pick_image_generator``.
+      2. Legacy fallback — a standalone service="image_gen" auth element, if one
+         still exists from before image generation was folded into Models.
+    Returns {provider, base_url, api_key, model, api_shape} or None.
+    """
+    # 1) Unified Models list (preferred)
+    try:
+        from app.admin.settings import (
+            load_llm_capabilities_for_user,
+            pick_image_generator,
+        )
+        caps = await load_llm_capabilities_for_user(user_id)
+        picked = pick_image_generator(caps)
+        if picked:
+            return picked
+    except Exception as e:
+        logger.debug("unified image-generator lookup failed: %s", e)
+
+    # 2) Legacy standalone image_gen config (graceful migration)
     from app.db import get_db
     db = get_db()
     for uid in (user_id, "admin_default"):
@@ -125,8 +150,9 @@ async def generate_image(
             "status": "error",
             "code": "image_gen_not_configured",
             "message": (
-                "No image generation provider is configured. Ask the admin to set one up under "
-                "App Config → Default LLM → Image Generation (provider, model, API key)."
+                "No image generation model is configured. Ask the admin to open "
+                "App Config → Models, save a model that can create images, and tick "
+                "its Image-out box."
             ),
         })
 
