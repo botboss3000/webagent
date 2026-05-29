@@ -58,6 +58,12 @@ app/db/local.db-shm
 app/db/local.db.preprompt-bak
 local.db
 
+# Per-user runtime "closer" DBs (created by the running app)
+app/db/closer_*.db
+app/db/closer_*.db-journal
+app/db/closer_*.db-wal
+app/db/closer_*.db-shm
+
 # Runtime auth + config (per-machine, contains hashes/tokens)
 app/auth/users.json
 app/auth/users.json.bak
@@ -76,3 +82,9 @@ visuals/users/
 uploads/*
 !uploads/.gitkeep
 visuals/
+
+# Launcher build output (single .exe at launcher/webagent.exe + scratch dirs)
+launcher/*.exe
+launcher/snapshot*.svg
+launcher/assets/webagent.ico
+launcher/assets/webagent_256.png

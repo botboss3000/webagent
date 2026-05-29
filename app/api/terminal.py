@@ -282,6 +282,10 @@ class TerminalSession:
         self.user_id: str = user_id
         self.created_at: float = time.time()
         self.attached_count: int = 0
+        # Friendly label supplied by the client (?name=... on WS open, or a
+        # JSON {"type":"set_name"} control). Used by the "Your sessions"
+        # sidebar so other devices see something better than a raw UUID.
+        self.name: str = ""
         # When attached_count drops to 0 this is set to time.time(); reset to
         # None while at least one WS is attached. Initialised to creation
         # time so a session that's never been attached still has an idle
@@ -620,8 +624,10 @@ async def delete_terminal_session(session_id: str, request: Request):
 
 @router.get("/api/v1/terminal/sessions")
 async def list_terminal_sessions(request: Request) -> List[Dict[str, Any]]:
-    """Snapshot of every live PTY session. Admin-only. Useful for debugging
-    leaks and seeing what shells are attached to which browsers."""
+    """Snapshot of live PTY sessions. Each admin caller sees only their own
+    sessions — the sidebar uses this to surface sessions started on other
+    devices so the user can re-attach to them. Returns name, attach state,
+    and idle time per session."""
     uid = await assert_caller_is(request, None)
     if not await _is_admin(uid):
         raise HTTPException(status_code=403, detail="Admin required")
@@ -629,12 +635,17 @@ async def list_terminal_sessions(request: Request) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     async with _sessions_lock:
         for sid, s in _sessions.items():
+            # Only surface sessions owned by the caller. The earlier all-users
+            # behaviour was useful for debugging but leaked other admins' tabs.
+            if s.user_id and s.user_id != uid:
+                continue
             idle_secs = None
             if s.attached_count == 0 and s.last_detach_time is not None:
                 idle_secs = int(now - s.last_detach_time)
             out.append({
                 "session_id": sid,
                 "user_id": s.user_id,
+                "name": s.name or "",
                 "alive": s.is_alive,
                 "attached_clients": s.attached_count,
                 "idle_secs": idle_secs,
@@ -799,6 +810,12 @@ async def terminal_websocket(websocket: WebSocket):
         heartbeat_task.cancel()
         return
 
+    # Friendly label optionally supplied by the client on every connect. Stored
+    # on the session so the list endpoint can return it to other devices.
+    name_param = (websocket.query_params.get("name") or "").strip()
+    if name_param:
+        session.name = name_param[:80]
+
     session.mark_attached()
 
     # ── Replay scrollback ──
@@ -867,6 +884,9 @@ async def terminal_websocket(websocket: WebSocket):
                             session.resize(ctrl["rows"], ctrl["cols"])
                         elif ctrl.get("type") == "input":
                             session.write_input(ctrl["data"].encode("utf-8"))
+                        elif ctrl.get("type") == "set_name":
+                            new_name = str(ctrl.get("name") or "").strip()[:80]
+                            session.name = new_name
                         # Other JSON control types (e.g. "pong") only matter
                         # for liveness, which we already updated above.
                     except (json.JSONDecodeError, TypeError):

@@ -1,0 +1,120 @@
+/* Mobile-first TUI styles — designed for Termux on phones in portrait */
+
+Screen {
+    background: #0d0d1a;
+    color: #e0e0e8;
+}
+
+#header {
+    height: 3;
+    background: #1a1a2e;
+    border-bottom: solid #3a3a5a;
+    padding: 0 1;
+    layout: horizontal;
+    align: left middle;
+}
+
+#title {
+    width: 1fr;
+    content-align: left middle;
+    color: #e0e0e8;
+    text-style: bold;
+}
+
+#status-badge {
+    width: auto;
+    padding: 0 1;
+    content-align: right middle;
+}
+
+#status-badge.-running { color: #38d97a; text-style: bold; }
+#status-badge.-starting { color: #f0c14b; text-style: bold; }
+#status-badge.-stopping { color: #f0c14b; text-style: bold; }
+#status-badge.-stopped { color: #777788; }
+#status-badge.-error { color: #ee5566; text-style: bold; }
+
+#button-row {
+    height: auto;
+    padding: 1;
+    layout: grid;
+    grid-size: 2 2;
+    grid-gutter: 1 1;
+    background: #14141f;
+}
+
+#button-row Button {
+    width: 100%;
+    height: 3;
+}
+
+Button.-primary {
+    background: #5566ee;
+    color: #ffffff;
+}
+Button.-danger {
+    background: #aa3344;
+    color: #ffffff;
+}
+
+TabbedContent {
+    height: 1fr;
+}
+
+#doctor-list {
+    height: 1fr;
+    padding: 0 1;
+    overflow-y: auto;
+}
+
+.check-row {
+    layout: horizontal;
+    height: auto;
+    padding: 0 0;
+    border-bottom: solid #22223a;
+}
+
+.check-row Label.-sev {
+    width: 4;
+    content-align: center middle;
+}
+.check-row Label.-sev.-ok    { color: #38d97a; text-style: bold; }
+.check-row Label.-sev.-warn  { color: #f0c14b; text-style: bold; }
+.check-row Label.-sev.-fail  { color: #ee5566; text-style: bold; }
+.check-row Label.-sev.-unknown { color: #777788; }
+
+.check-row Label.-body {
+    width: 1fr;
+    padding: 0 1;
+}
+
+.check-row Button {
+    width: 9;
+    height: 1;
+    margin: 0;
+    padding: 0;
+    background: #2a2a44;
+}
+
+#doctor-toolbar {
+    height: 3;
+    padding: 0 1;
+    layout: horizontal;
+    background: #14141f;
+    border-top: solid #22223a;
+}
+
+#doctor-toolbar Button { margin-right: 1; height: 3; }
+
+#log {
+    height: 1fr;
+    background: #0a0a14;
+    color: #c8c8d8;
+    padding: 0 1;
+}
+
+#footer-hint {
+    height: 1;
+    background: #1a1a2e;
+    color: #777788;
+    content-align: center middle;
+}

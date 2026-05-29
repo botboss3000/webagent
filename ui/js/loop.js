@@ -142,6 +142,14 @@ function renderEvent(event) {
   const visible = LEVEL_VISIBILITY[currentLevel].has(level);
   if (!visible) return;
 
+  // Sample scroll position BEFORE mutating the list. If the user has
+  // scrolled up to read older events, leave them parked there; we only
+  // follow new content when they're already at (or within a hair of)
+  // the bottom.
+  const stickThreshold = 40;
+  const wasAtBottom =
+    list.scrollHeight - list.scrollTop - list.clientHeight <= stickThreshold;
+
   // Clear hint on first real event
   const hint = list.querySelector('.loop-hint');
   if (hint && event.type !== 'ping') hint.remove();
@@ -173,8 +181,7 @@ function renderEvent(event) {
       break;
   }
 
-  // Auto-scroll
-  if (autoScroll) {
+  if (autoScroll && wasAtBottom) {
     list.scrollTop = list.scrollHeight;
   }
 }
