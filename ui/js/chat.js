@@ -28,18 +28,48 @@ function _updateInputRowState() {
   row.classList.toggle('has-text', hasText);
 }
 
-// CHAT-PILL-SYNC: auto-grow any .chat-pill-input textarea up to 6 lines, then
-// scroll. Min-height (34px) and max-height (124px) live in ui/css/app1.css.
-// The single line of an empty pill therefore matches the height of the round
-// send/mic icon buttons, keeping the pill compact.
+// CHAT-PILL-SYNC: auto-grow any .chat-pill-input textarea between the CSS
+// min-height (2 rows = 52px) and max-height (6 rows = 124px). Both live in
+// ui/css/app1.css; we read them from getComputedStyle here so a single
+// design-tweak in CSS is enough — no JS constant to update in lockstep.
 function _autoResizePill(el) {
   if (!el || el.tagName !== 'TEXTAREA') return;
-  // Reset so shrinking works — scrollHeight only ever grows.
+  // Reset to 'auto' so scrollHeight reflects the *current* content height
+  // rather than the previously-set inline height (scrollHeight never shrinks
+  // past the assigned height otherwise).
   el.style.height = 'auto';
-  const maxH = parseFloat(getComputedStyle(el).maxHeight) || 124;
-  const next = Math.min(el.scrollHeight, maxH);
+  const cs = getComputedStyle(el);
+  const minH = parseFloat(cs.minHeight) || 0;
+  const maxH = parseFloat(cs.maxHeight) || 124;
+  const next = Math.max(minH, Math.min(el.scrollHeight, maxH));
   el.style.height = next + 'px';
+  // overflowY is still toggled even though the native scrollbar is hidden in
+  // CSS — keyboard/wheel scrolling needs overflow:auto to function past the
+  // 6-row cap.
   el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden';
+  _updateScrollIndicator(el);
+}
+
+// Drive the tiny vertical scroll-position dot on the left edge of every
+// chat pill. The dot lives in CSS as .chat-pill::before and reads two
+// custom properties from the pill itself:
+//   --scroll-pct        — 0..1, where in the overflow the textarea is
+//   --indicator-opacity — 0 when content fits, 1 when it overflows
+// Both are set here off the textarea's scrollTop/scrollHeight; CSS does
+// the actual positioning + fade.
+function _updateScrollIndicator(el) {
+  if (!el) return;
+  const pill = el.closest('.chat-pill');
+  if (!pill) return;
+  const overflow = el.scrollHeight - el.clientHeight;
+  if (overflow <= 1) {
+    pill.style.setProperty('--indicator-opacity', '0');
+    pill.style.setProperty('--scroll-pct', '0');
+    return;
+  }
+  const pct = Math.max(0, Math.min(1, el.scrollTop / overflow));
+  pill.style.setProperty('--scroll-pct', pct.toFixed(4));
+  pill.style.setProperty('--indicator-opacity', '1');
 }
 
 // Delegated input listener resizes every chat-pill textarea (web chat, agents
@@ -50,6 +80,16 @@ document.addEventListener('input', (e) => {
   const t = e.target;
   if (t && t.classList && t.classList.contains('chat-pill-input')) {
     _autoResizePill(t);
+  }
+}, true);
+
+// Scroll events don't bubble, so the delegated listener has to use capture.
+// Update the indicator dot whenever any pill textarea is scrolled (wheel,
+// keyboard, drag, programmatic).
+document.addEventListener('scroll', (e) => {
+  const t = e.target;
+  if (t && t.classList && t.classList.contains('chat-pill-input')) {
+    _updateScrollIndicator(t);
   }
 }, true);
 
@@ -845,9 +885,17 @@ export function initChat() {
   // Tracks the textarea as it grows with multi-line input.
   const inputArea = document.getElementById('chat-input-area');
   const messagesInner = document.getElementById('chat-messages-inner');
+  const messagesEl = document.getElementById('chat-messages');
   if (inputArea && messagesInner && typeof ResizeObserver !== 'undefined') {
     const syncPad = () => {
-      messagesInner.style.paddingBottom = inputArea.offsetHeight + 'px';
+      const h = inputArea.offsetHeight;
+      // Publish the input-area height so the bottom fade mask (index.html)
+      // covers exactly the input zone.
+      if (messagesEl) messagesEl.style.setProperty('--chat-input-h', h + 'px');
+      // Reserve that height PLUS the mask's 24px fade ramp, so the newest
+      // message rests right at the opaque edge of the fade — fully visible,
+      // never tucked under the pill or clipped mid-fade.
+      messagesInner.style.paddingBottom = (h + 24) + 'px';
     };
     new ResizeObserver(syncPad).observe(inputArea);
     syncPad();

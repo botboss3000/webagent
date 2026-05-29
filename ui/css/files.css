@@ -1709,10 +1709,73 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 .fg-ahead, .fg-behind { font-size: 11px; color: var(--files-text-muted); margin-left: 4px; }
 .fg-sync-clean { font-size: 11px; color: var(--files-text-faint); margin-left: auto; font-style: italic; }
 .fg-remote-row {
-  margin-top: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 10px;
   color: var(--files-text-faint);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* GitHub remote URL + status dot + token input + save button packed
+   into a single row directly under the branch picker. The remote URL
+   takes available space and can shrink to ellipsis; the token input
+   keeps its width so the row stays usable even in a narrow sidebar. */
+.fg-remote-token-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.fg-remote-token-row .fg-remote-row {
+  flex: 1 1 0;
+  min-width: 30px;
+}
+/* Higher-specificity override: .fg-input sets min-width:0 later in the
+   file, which would otherwise let the inline token input collapse to
+   nothing when the remote URL is long. */
+input.fg-token-input-inline {
+  flex: 0 0 110px;
+  min-width: 110px;
+  padding: 2px 6px;
+  font-size: 11px;
+}
+.fg-token-save-inline {
+  padding: 2px 8px;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.fg-token-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--files-text-faint);
+  flex-shrink: 0;
+}
+.fg-token-status-dot.ok { background: var(--success, #10b981); }
+.fg-token-help-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: transparent;
+  border: 1px solid var(--files-border-strong);
+  color: var(--files-text-faint);
+  font-size: 10px;
+  font-weight: 600;
+  text-decoration: none;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.fg-token-help-link:hover {
+  background: var(--files-btn-hover);
+  color: var(--files-text);
+  border-color: var(--files-text-faint);
+}
+.fg-token-result-inline {
+  margin: 4px 0 0;
+  font-size: 10px;
 }
 
 /* Branch picker / merge picker menu (shared styles) */
@@ -2103,6 +2166,53 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 }
 .fg-main-empty-title { font-weight: 600; color: var(--files-text); margin-bottom: 6px; }
 .fg-main-empty-text { font-size: 11px; }
+
+/* Compact overview strip pinned at the top of the Commit page (and
+   anywhere we want a one-line summary of branch / remote / working
+   tree). Replaces the previously page-sized Overview card layout for
+   that role — Overview tab still uses .fg-main-overview below. */
+.fg-strip-overview {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 10px;
+  margin: -14px -16px 12px;
+  background: var(--files-bg-sidebar);
+  border-bottom: 1px solid var(--files-border);
+  font-size: 11px;
+  color: var(--files-text-muted);
+  flex-wrap: wrap;
+}
+.fg-strip-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.fg-strip-cell .lucide-icon {
+  width: 12px;
+  height: 12px;
+  color: var(--files-text-muted);
+  flex-shrink: 0;
+}
+.fg-strip-val {
+  color: var(--files-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fg-strip-remote {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.fg-strip-remote .fg-strip-val {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--files-text-faint);
+}
+.fg-strip-sync { margin-left: 4px; }
+.fg-strip-tree.dirty { color: var(--warning, #f59e0b); }
+.fg-strip-tree.clean { color: var(--files-text-faint); }
 
 .fg-main-overview {
   display: flex;

@@ -1,11 +1,6 @@
 <template data-slot="#files-sidebar">
   <!-- GitHub panel (source control) -->
           <div class="files-sidebar-panel" id="files-panel-git" data-view="git" hidden>
-            <div class="files-sidebar-header">
-              <div class="files-sidebar-actions">
-                <button class="files-icon-btn" id="fg-refresh" title="Restart server &amp; reload page"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
-              </div>
-            </div>
             <div id="fg-body" class="fg-body">
               <div class="fg-loading">Loading…</div>
             </div>
@@ -19,13 +14,12 @@
         <main class="files-main" id="files-git-main" data-view="git" hidden>
           <div class="fg-main-header">
             <div class="fg-main-mode-pills" id="fg-main-mode-pills" role="tablist" aria-label="Source control view">
-              <button type="button" class="fg-main-mode-pill active" data-mode="overview" role="tab" aria-selected="true">Overview</button>
-              <button type="button" class="fg-main-mode-pill" data-mode="commit" role="tab" aria-selected="false" disabled>Commit</button>
+              <button type="button" class="fg-main-mode-pill active" data-mode="commit" role="tab" aria-selected="true">Commit</button>
               <button type="button" class="fg-main-mode-pill" data-mode="diff" role="tab" aria-selected="false" disabled>Diff</button>
               <button type="button" class="fg-main-mode-pill" data-mode="compare" role="tab" aria-selected="false" disabled>Compare</button>
             </div>
           </div>
-          <div id="fg-main-body" class="fg-main-body" data-mode="overview">
+          <div id="fg-main-body" class="fg-main-body" data-mode="commit">
             <div class="fg-main-loading">Loading…</div>
           </div>
         </main>

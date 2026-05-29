@@ -268,19 +268,45 @@ body {
    When tweaking, change here and every pill in the app updates. */
 
 .chat-pill {
-    display: flex;
-    gap: 4px;
-    /* flex-end keeps the icon buttons pinned to the bottom so the send/mic
-       circle stays at the bottom-right of the pill no matter how tall the
-       textarea grows. The textarea itself stretches via flex sizing so its
-       caret + first line always sit at the TOP of the pill. */
-    align-items: flex-end;
+    /* Grid layout: text fills the left column and spans every row; the
+       right column stacks send (or mic) on TOP and attach immediately
+       BELOW it, both anchored at the bottom of the pill via the 1fr
+       spacer row above them. Position: relative is for the ::before
+       scroll-position indicator that sits on the left edge. */
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-rows: 1fr auto auto;
+    column-gap: 6px;
+    row-gap: 0;
+    align-items: stretch;
+    position: relative;
     width: 100%;
     background: #0d0d1a;
     border: 1px solid #2a2a4a;
     border-radius: 18px;
-    padding: 4px;
+    /* Extra left padding so the caret/text sits visually inside the pill
+       and leaves room for the scroll-position indicator on the left. */
+    padding: 4px 4px 4px 14px;
     transition: border-color 0.15s;
+  }
+/* Vertical position indicator — a 2x6px dot on the left edge that slides
+   between the top and bottom padding to show the user's scroll position
+   within an overflowed textarea. JS (chat.js _updateScrollIndicator)
+   writes --scroll-pct (0..1) and --indicator-opacity (0 when content
+   fits, 1 when it overflows) onto the pill element. */
+.chat-pill::before {
+    content: "";
+    position: absolute;
+    left: 4px;
+    /* Track runs between top and bottom padding minus the dot's height. */
+    top: calc(6px + (100% - 12px - 6px) * var(--scroll-pct, 0));
+    width: 2px;
+    height: 6px;
+    border-radius: 1px;
+    background: #7dcfff;
+    opacity: var(--indicator-opacity, 0);
+    transition: opacity 0.15s;
+    pointer-events: none;
   }
 .chat-pill:focus-within { border-color: #7dcfff; }
 .chat-pill.drag-over {
@@ -291,21 +317,24 @@ body {
   }
 
 .chat-pill-input {
-    flex: 1;
+    /* Span all grid rows so the textarea fills the full pill height
+       while the attach/send icons stack in the right column. */
+    grid-column: 1;
+    grid-row: 1 / -1;
     min-width: 0;
     background: transparent;
     border: none;
     border-radius: 0;
-    padding: 8px 6px;
+    padding: 8px 6px 8px 0;
     color: #c0caf5;
     font-size: 13px;
     /* Explicit line-height so the JS auto-resize and the min/max heights
-       below all line up. 1 line of content = 18px; pill min row height
-       (18 + 8 + 8 padding = 34px) matches the icon-button height. */
+       below all line up. 1 line of content = 18px. */
     line-height: 18px;
-    /* CHAT-PILL-SYNC: matches the chat-pill icon button height (34px) so a
-       single-line pill is no taller than the send/mic circles. */
-    min-height: 34px;
+    /* Default pill is a 2-row textarea: 18*2 content + 8+8 padding = 52px.
+       The two stacked 26px buttons in the right column come to the same
+       52px so the pill is exactly 2 rows tall when empty. */
+    min-height: 52px;
     /* 6 visible content lines: 18px * 6 = 108px, plus 8px+8px vertical
        padding = 124px. JS toggles overflow-y to 'auto' when content
        exceeds this. */
@@ -317,7 +346,12 @@ body {
     -webkit-appearance: none;
             appearance: none;
     box-shadow: none;
+    /* Hide the native scrollbar entirely. When content overflows past the
+       6-line cap the textarea is still scrollable via wheel/keyboard, but
+       no visual bar takes space from the text column. */
+    scrollbar-width: none;
   }
+.chat-pill-input::-webkit-scrollbar { width: 0; height: 0; display: none; }
 .chat-pill-input:focus { border: none; outline: none; box-shadow: none; }
 .chat-pill-input::placeholder { color: #3b4261; }
 
@@ -328,55 +362,67 @@ body {
 .chat-pill.no-voice .chat-pill-voice { display: none !important; }
 .chat-pill.no-voice .chat-pill-send  { display: inline-flex; }
 
+/* Unified icon-button styling: attach, voice, AND send share the same
+   transparent-circle look; only the icon glyph differentiates them. */
 .chat-pill-attach,
-.chat-pill-voice {
+.chat-pill-voice,
+.chat-pill-send {
     background: none;
     border: none;
     color: #565f89;
     cursor: pointer;
-    width: 34px;
-    height: 34px;
+    width: 26px;
+    height: 26px;
     padding: 0;
     border-radius: 50%;
     transition: 0.15s;
-    align-self: flex-end;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
   }
+/* Send (or mic) is the TOP of the right-side button stack; attach (+) sits
+   immediately BELOW. Both rows are auto-sized and the 1fr spacer row above
+   them pushes the whole stack to the bottom of the pill — so when the pill
+   grows the buttons stay anchored at the bottom-right rather than spreading
+   to the top/bottom corners. */
+.chat-pill-voice,
+.chat-pill-send {
+    grid-column: 2;
+    grid-row: 2;
+    align-self: end;
+    justify-self: end;
+  }
+.chat-pill-attach {
+    grid-column: 2;
+    grid-row: 3;
+    align-self: end;
+    justify-self: end;
+  }
 .chat-pill-attach:hover,
-.chat-pill-voice:hover {
+.chat-pill-voice:hover,
+.chat-pill-send:hover {
     color: #7dcfff;
     background: #7dcfff15;
   }
 .chat-pill-attach i,
-.chat-pill-voice i { pointer-events: none; }
+.chat-pill-voice i,
+.chat-pill-send i { pointer-events: none; }
+/* Shrink the inline-styled icons so 18px lucide glyphs fit comfortably in
+   the new 26px button. Inline width/height on <i> uses !important here to
+   beat the inline style attribute set in the HTML markup. */
+.chat-pill-attach i,
+.chat-pill-voice i,
+.chat-pill-send i {
+    width: 16px !important;
+    height: 16px !important;
+  }
+.chat-pill-send:disabled { opacity: 0.4; cursor: default; }
 .chat-pill-voice.recording {
     color: #f7768e;
     background: #f7768e15;
     animation: pulse 1s infinite;
   }
-
-.chat-pill-send {
-    background: #7dcfff;
-    border: none;
-    border-radius: 50%;
-    width: 34px;
-    height: 34px;
-    padding: 0;
-    color: #0d0d1a;
-    cursor: pointer;
-    transition: 0.15s;
-    align-self: flex-end;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-  }
-.chat-pill-send:hover { background: #89ddff; }
-.chat-pill-send:disabled { opacity: 0.4; cursor: default; }
-.chat-pill-send i { pointer-events: none; }
 
 .chat-expand-btn {
     position: absolute;
@@ -917,6 +963,7 @@ body.light-mode .chat-pill {
     border-color: #ffcfa1;
   }
 body.light-mode .chat-pill:focus-within { border-color: #ff8c42; }
+body.light-mode .chat-pill::before { background: #ff8c42; }
 body.light-mode .chat-pill-input {
     background: transparent;
     border: none;
@@ -924,17 +971,17 @@ body.light-mode .chat-pill-input {
   }
 body.light-mode .chat-pill-input::placeholder { color: #cca08a; }
 body.light-mode .chat-pill-attach,
-body.light-mode .chat-pill-voice { color: #c08858; }
+body.light-mode .chat-pill-voice,
+body.light-mode .chat-pill-send {
+    background: none;
+    color: #c08858;
+  }
 body.light-mode .chat-pill-attach:hover,
-body.light-mode .chat-pill-voice:hover {
+body.light-mode .chat-pill-voice:hover,
+body.light-mode .chat-pill-send:hover {
     color: #ff8c42;
     background: #ff8c4215;
   }
-body.light-mode .chat-pill-send {
-    background: #ff8c42;
-    color: #ffffff;
-  }
-body.light-mode .chat-pill-send:hover { background: #ff7a2a; }
 body.light-mode .chat-pill-send:disabled { opacity: 0.4; }
 body.light-mode .chat-expand-btn {
     background: #fff6f0;
