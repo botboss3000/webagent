@@ -101,11 +101,22 @@ proot-distro login "${DISTRO}" --bind "${PROJECT_DIR_HOST}:${WEBAGENT_DIR}" -- /
     # Textual lives in a tiny launcher-only venv to stay isolated from the
     # webagent project venv (which doctor/fixes will manage separately).
     LAUNCHER_VENV='${WEBAGENT_DIR}/launcher_android/.venv'
-    if [ ! -x \"\$LAUNCHER_VENV/bin/python\" ]; then
-        echo '[launcher] creating launcher venv at \$LAUNCHER_VENV...'
-        python3 -m venv \"\$LAUNCHER_VENV\"
+    # (a) Create venv if missing. A partial/broken venv is wiped and remade.
+    if [ ! -x \"\$LAUNCHER_VENV/bin/python\" ] || ! \"\$LAUNCHER_VENV/bin/python\" -c 'import sys' >/dev/null 2>&1; then
+        echo '[launcher] creating launcher venv at '\"\$LAUNCHER_VENV\"'...'
+        rm -rf \"\$LAUNCHER_VENV\"
+        if ! python3 -m venv \"\$LAUNCHER_VENV\"; then
+            echo '[launcher] python3-venv may be missing — installing...'
+            apt-get update -qq && apt-get install -y python3-venv
+            python3 -m venv \"\$LAUNCHER_VENV\"
+        fi
         \"\$LAUNCHER_VENV/bin/pip\" install --quiet --upgrade pip
-        \"\$LAUNCHER_VENV/bin/pip\" install --quiet textual
+    fi
+    # (b) Install textual independently — a previous run may have created
+    #     the venv but failed on the pip install.
+    if ! \"\$LAUNCHER_VENV/bin/python\" -c 'import textual' >/dev/null 2>&1; then
+        echo '[launcher] installing textual into launcher venv...'
+        \"\$LAUNCHER_VENV/bin/pip\" install textual
     fi
     export WEBAGENT_PROJECT_DIR='${WEBAGENT_DIR}'
     export WEBAGENT_BROWSER_BRIDGE='${BRIDGE_PROOT}'
