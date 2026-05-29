@@ -894,6 +894,34 @@ body.light-mode .th-funnel {
   height: 14px;
   flex-shrink: 0;
 }
+.ac-tab-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 14px;
+  padding: 0 4px;
+  margin-left: 4px;
+  border-radius: 7px;
+  background: #2a2a4a;
+  color: #a9b1d6;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  vertical-align: middle;
+}
+.ac-tab.active .ac-tab-count-badge {
+  background: #3b4261;
+  color: #c0caf5;
+}
+body.light-mode .ac-tab-count-badge {
+  background: #f0e6d6;
+  color: #6b5a4e;
+}
+body.light-mode .ac-tab.active .ac-tab-count-badge {
+  background: #ffdec4;
+  color: #3d2c2e;
+}
 .ac-tabs-chev {
   display: none;
   position: absolute;

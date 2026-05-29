@@ -194,3 +194,16 @@ async def scheduler_status():
         return await get_scheduler().get_status()
     except Exception as e:
         return {"provider": "unknown", "running": False, "error": str(e)}
+
+
+@router.get("/automations/count")
+async def automation_count():
+    """Return the total number of automation rules across all agents."""
+    from app.db import get_db
+    db = get_db()
+    try:
+        rows = await db.list_automations()
+        return {"count": len(rows)}
+    except Exception as e:
+        logger.warning("Failed to count automations: %s", e)
+        return {"count": 0}

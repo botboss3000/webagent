@@ -205,6 +205,45 @@ body.light-mode .agent-card-tabs .agents-detail-tab        { color: #b09580; }
 body.light-mode .agent-card-tabs .agents-detail-tab:hover  { color: #3d2c2e; }
 body.light-mode .agent-card-tabs .agents-detail-tab.active { color: #ff8c42; border-bottom-color: #ff8c42; }
 
+/* ── Tab count badges ── */
+.tab-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 5px;
+  margin-left: 5px;
+  border-radius: 8px;
+  background: #2a2a4a;
+  color: #a9b1d6;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  vertical-align: middle;
+}
+.tab-count-badge-pending {
+  background: #1a1b26;
+  color: #565f89;
+  font-style: italic;
+}
+.agent-card-tabs .agents-detail-tab.active .tab-count-badge {
+  background: #3b4261;
+  color: #c0caf5;
+}
+body.light-mode .tab-count-badge {
+  background: #f0e6d6;
+  color: #6b5a4e;
+}
+body.light-mode .tab-count-badge-pending {
+  background: #f5efe6;
+  color: #b09580;
+}
+body.light-mode .agent-card-tabs .agents-detail-tab.active .tab-count-badge {
+  background: #ffdec4;
+  color: #3d2c2e;
+}
+
 /* ── Badges ── */
 .agent-badge {
   font-size: 10px;
