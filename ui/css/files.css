@@ -547,8 +547,8 @@ body.light-mode {
   display: flex;
   flex-direction: row;
   align-items: center;
-  gap: 6px;
-  padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+  gap: 3px;
+  padding: 3px 6px calc(3px + env(safe-area-inset-bottom));
   background: var(--files-bg-sidebar);
   border-top: 1px solid var(--files-border);
   overflow-x: auto;
@@ -565,15 +565,15 @@ body.light-mode {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 38px;
-  height: 36px;
-  padding: 0 10px;
-  border-radius: 6px;
+  min-width: 28px;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 5px;
   background: var(--files-bg);
   border: 1px solid var(--files-border);
   color: var(--files-text-strong);
   font-family: "Fira Code", Menlo, Monaco, monospace;
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
   user-select: none;
@@ -582,7 +582,7 @@ body.light-mode {
 }
 .ftk-chip:hover { background: var(--files-bg-tab-hover); }
 .ftk-chip:active { transform: translateY(1px); }
-.ftk-chip .lucide-icon { width: 18px; height: 18px; }
+.ftk-chip .lucide-icon { width: 14px; height: 14px; }
 .ftk-chip-mod { background: var(--files-bg-tab-hover); }
 /* Armed (one-shot): pulsing outline using the accent indicator. */
 .ftk-chip[data-armed="1"] {
@@ -1541,6 +1541,35 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
   min-width: 300%;
   flex: 1;
 }
+
+/* Scroll-to-bottom FAB — appears when the user has scrolled up in the
+   terminal buffer; click returns to the live tail. Positioned inside the
+   terminal pane (position:relative) so it stays within the content area. */
+.files-term-scroll-bot {
+  position: absolute;
+  bottom: 10px;
+  right: 14px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(26, 26, 46, 0.9);
+  border: 1px solid #3a3a5c;
+  color: #c0caf5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 10;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.files-term-scroll-bot.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.files-term-scroll-bot:hover { background: rgba(42, 42, 74, 0.95); }
+.files-term-scroll-bot .lucide-icon { width: 14px; height: 14px; }
 
 /* Mobile long-press context menu (Copy / Paste / Select all / Clear).
    Floats above the terminal, positioned near the touch point. */

@@ -4,11 +4,7 @@
        panel itself doesn't host any terminal — clicking a row opens
        a new terminal tab in the main pane. -->
           <div class="files-sidebar-panel" id="files-panel-terminal" data-view="terminal" hidden>
-            <div class="files-sidebar-header">
-              <div class="files-sidebar-actions">
-                <button class="files-icon-btn" id="ft-refresh" title="Restart server &amp; reload page"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
-              </div>
-            </div>
+
             <div id="ft-body" class="ft-body">
               <div class="ft-section ft-section-action">
                 <button type="button" id="ft-new-terminal" class="ft-new-btn" title="Open a new blank terminal tab">
@@ -58,9 +54,7 @@
             <button id="files-term-tabs-prev" class="files-tabs-chev" title="Scroll tabs left"><i data-lucide="chevron-left" class="lucide-icon"></i></button>
             <div id="files-term-tabs" class="files-tabs" role="tablist"></div>
             <button id="files-term-tabs-next" class="files-tabs-chev" title="Scroll tabs right"><i data-lucide="chevron-right" class="lucide-icon"></i></button>
-            <div class="files-term-keypad-wrap">
-              <button id="files-term-keypad-btn" class="files-term-keypad-btn" title="Show/hide the shortcut bar" aria-pressed="false"><i data-lucide="keyboard" class="lucide-icon"></i></button>
-            </div>
+
           </div>
           <div id="files-term-content" class="files-content">
             <div class="files-welcome">
@@ -73,33 +67,18 @@
                horizontally-scrollable row of chips; modifier chips (Ctrl,
                tmux) light up while armed and lock when long-pressed. The
                keypad button in the tab bar toggles visibility. -->
-          <div id="files-term-keybar" class="files-term-keybar" hidden>
-            <button class="ftk-chip ftk-chip-mod" data-key="esc"        title="Esc">Esc</button>
-            <button class="ftk-chip ftk-chip-mod" data-key="tab"        title="Tab">Tab</button>
+          <div id="files-term-keybar" class="files-term-keybar">
             <button class="ftk-chip ftk-chip-mod" data-key="ctrl"       title="Ctrl (tap = one-shot, long-press = lock)" data-mod="ctrl">Ctrl</button>
-            <button class="ftk-chip ftk-chip-mod" data-key="tmux"       title="tmux prefix (Ctrl+B) (tap = one-shot, long-press = lock)" data-mod="tmux">tmux</button>
+            <button class="ftk-chip"              data-key="ctrl-c"      title="Copy selection">^C</button>
+            <button class="ftk-chip" data-key="left"        title="Left arrow"  aria-label="Left"><i data-lucide="arrow-left"       class="lucide-icon"></i></button>
+            <button class="ftk-chip" data-key="right"       title="Right arrow" aria-label="Right"><i data-lucide="arrow-right"      class="lucide-icon"></i></button>
+            <button class="ftk-chip" data-key="up"          title="Up arrow"    aria-label="Up"><i data-lucide="arrow-up"         class="lucide-icon"></i></button>
+            <button class="ftk-chip" data-key="down"        title="Down arrow"  aria-label="Down"><i data-lucide="arrow-down"       class="lucide-icon"></i></button>
+            <button class="ftk-chip" data-key="shift-enter" title="New line"    aria-label="New line"><i data-lucide="corner-down-left" class="lucide-icon"></i></button>
             <span class="ftk-sep"></span>
-            <button class="ftk-chip" data-key="up"          title="Up arrow"   aria-label="Up"><i data-lucide="arrow-up" class="lucide-icon"></i></button>
-            <button class="ftk-chip" data-key="down"        title="Down arrow" aria-label="Down"><i data-lucide="arrow-down" class="lucide-icon"></i></button>
-            <button class="ftk-chip" data-key="left"        title="Left arrow" aria-label="Left"><i data-lucide="arrow-left" class="lucide-icon"></i></button>
-            <button class="ftk-chip" data-key="right"       title="Right arrow" aria-label="Right"><i data-lucide="arrow-right" class="lucide-icon"></i></button>
-            <button class="ftk-chip" data-key="shift-enter" title="Shift+Enter (insert newline)" aria-label="Shift+Enter"><i data-lucide="corner-down-left" class="lucide-icon"></i></button>
-            <span class="ftk-sep"></span>
-            <button class="ftk-chip" data-key="ctrl-c"  title="Ctrl+C — interrupt">^C</button>
-            <button class="ftk-chip" data-key="ctrl-d"  title="Ctrl+D — EOF / exit">^D</button>
-            <button class="ftk-chip" data-key="ctrl-l"  title="Ctrl+L — clear screen">^L</button>
-            <button class="ftk-chip" data-key="ctrl-r"  title="Ctrl+R — reverse history search">^R</button>
-            <button class="ftk-chip" data-key="ctrl-z"  title="Ctrl+Z — suspend">^Z</button>
-            <span class="ftk-sep"></span>
-            <button class="ftk-chip" data-key="lit-pipe"  title="|">|</button>
-            <button class="ftk-chip" data-key="lit-tilde" title="~">~</button>
-            <button class="ftk-chip" data-key="lit-fwd"   title="/">/</button>
-            <button class="ftk-chip" data-key="lit-bk"    title="\">\</button>
-            <button class="ftk-chip" data-key="lit-tick"  title="`">`</button>
-            <span class="ftk-sep"></span>
-            <button class="ftk-chip" data-key="copy"  title="Copy selection (or viewport)" aria-label="Copy"><i data-lucide="copy" class="lucide-icon"></i></button>
-            <button class="ftk-chip" data-key="paste" title="Paste from clipboard" aria-label="Paste"><i data-lucide="clipboard" class="lucide-icon"></i></button>
-            <button class="ftk-chip ftk-chip-mic" data-key="mic" title="Dictate (Web Speech)" aria-label="Microphone"><i data-lucide="mic" class="lucide-icon"></i></button>
+            <button class="ftk-chip"              data-key="copy"        title="Copy selection" aria-label="Copy"><i data-lucide="copy"      class="lucide-icon"></i></button>
+            <button class="ftk-chip"              data-key="paste"       title="Paste from clipboard" aria-label="Paste"><i data-lucide="clipboard" class="lucide-icon"></i></button>
+            <button class="ftk-chip ftk-chip-mic" data-key="mic"         title="Dictate (Web Speech)" aria-label="Microphone"><i data-lucide="mic" class="lucide-icon"></i></button>
           </div>
         </main>
 </template>
