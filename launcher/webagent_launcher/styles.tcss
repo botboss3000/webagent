@@ -1,26 +1,17 @@
 /* webagent launcher — Textual CSS
  *
- * Stacked layout:
+ * Tight stacked layout:
  *
- *   ┌────────────────────────────────────────────────────────────┐
- *   │ status bar  status: ...  pid: ...  uptime: ...  url: ...   │
- *   ├────────────────────────────────────────────────────────────┤
- *   │ ╭ Launch ╮ ╭ Restart ╮ ╭ Stop ╮ ╭ Browser ╮ ╭ Theme ╮     │  header buttons
- *   │ ╰────────╯ ╰─────────╯ ╰──────╯ ╰─────────╯ ╰───────╯     │
- *   ├────────────────────────────────────────────────────────────┤
- *   │                                                            │
- *   │              animated plasma + WEBAGENT logo               │  top half
- *   │                                                            │
- *   ├────────────────────────────────────────────────────────────┤
- *   │  log line 1                                                │
- *   │  log line 2                                                │  bottom half
- *   │  ...                                                       │
- *   ├────────────────────────────────────────────────────────────┤
- *   │ ╭ Clear DB ╮ ╭ Reset Py ╮ ╭ Full Reset ╮ ╭ Quit ╮         │  footer buttons
- *   │ ╰──────────╯ ╰──────────╯ ╰────────────╯ ╰──────╯         │
- *   ├────────────────────────────────────────────────────────────┤
- *   │ footer hints                                               │
- *   └────────────────────────────────────────────────────────────┘
+ *   row  0   status: ... pid: ... uptime: ... url: ...      (status strip)
+ *   row 1-3  [Launch] [Restart] [Stop] [Browser] [Theme]    (header buttons)
+ *   rows ⬇   animation + WEBAGENT logo                       (1fr)
+ *            log pane                                        (1fr)
+ *   row N-3  [Clear DB] [Reset Py] [Full Reset] [Quit]      (footer buttons)
+ *   row N-1  L:launch R:restart ... Q:quit                  (hint strip)
+ *
+ * Buttons are outline-only: rounded line border in the accent color,
+ * matching text color, no fill. No padding around the button bars so
+ * each header/footer block is just 3 rows tall.
  */
 
 Screen {
@@ -28,14 +19,13 @@ Screen {
     color: #e6e6f0;
 }
 
-/* ───────────────────── top status bar ─────────────────────────── */
+/* ───────────────────── top status bar (visible) ───────────────── */
 
 #status-bar {
-    dock: top;
     height: 1;
     width: 100%;
-    background: #0d0d1f;
-    color: #b0b0c0;
+    background: #14143a;
+    color: #d0d0e8;
     padding: 0 2;
     layout: horizontal;
 }
@@ -49,6 +39,7 @@ Screen {
 #status-dot {
     width: 6;
     color: #888;
+    text-style: bold;
 }
 #status-dot.running  { color: #39ff14; }
 #status-dot.starting { color: #ffb000; }
@@ -56,107 +47,104 @@ Screen {
 #status-dot.error    { color: #ff3344; }
 #status-dot.stopped  { color: #888;    }
 
-/* ───────────────────── header button row ──────────────────────── */
+/* ───────────────────── header button row (compact, outline-only) ─ */
 
 #header-buttons {
-    dock: top;
-    height: 5;
+    height: 3;
     width: 100%;
-    background: #0d0d1f;
-    border-bottom: solid #2a2a44;
-    padding: 1 2;
+    background: #0a0a14;
+    padding: 0 1;
     layout: horizontal;
-    align: center middle;
 }
 
 #header-buttons Button {
     width: 1fr;
     height: 3;
     margin: 0 1;
-    border: round #2a2a44;
-    background: #14143a;
+    border: round #2a2a55;
+    background: #0a0a14;        /* match parent — looks like outline only */
     color: #d8d8f0;
     text-style: bold;
     content-align: center middle;
 }
 #header-buttons Button:hover {
-    background: #2a2a55;
     border: round #5dff4d;
-    color: #ffffff;
+    color: #5dff4d;
+    background: #0a0a14;
 }
 #header-buttons Button:focus {
     border: round #5dff4d;
+    color: #5dff4d;
 }
+
 #header-buttons Button.primary {
-    background: #1d3d1d;
-    color: #c8ffc8;
     border: round #39ff14;
+    color: #39ff14;
+    background: #0a0a14;
 }
 #header-buttons Button.primary:hover {
-    background: #2d5d2d;
-    border: round #5dff4d;
-}
-#header-buttons Button.muted {
-    background: #14143a;
-    color: #b0b0d0;
-    border: round #2a2a44;
+    border: round #aaffaa;
+    color: #aaffaa;
 }
 
-/* ───────────────────── footer hint strip ──────────────────────── */
+#header-buttons Button.muted {
+    border: round #5a5a8a;
+    color: #b0b0d0;
+    background: #0a0a14;
+}
+#header-buttons Button.muted:hover {
+    border: round #aaaaff;
+    color: #aaaaff;
+}
+
+/* ───────────────────── footer hint strip (visible) ────────────── */
 
 #footer-bar {
-    dock: bottom;
     height: 1;
     width: 100%;
-    background: #0d0d1f;
-    color: #8a8aa2;
+    background: #14143a;
+    color: #a0a0bc;
     padding: 0 2;
 }
 
 /* ───────────────────── footer button row ──────────────────────── */
 
 #footer-buttons {
-    dock: bottom;
-    height: 5;
+    height: 3;
     width: 100%;
-    background: #0d0d1f;
-    border-top: solid #2a2a44;
-    padding: 1 2;
+    background: #0a0a14;
+    padding: 0 1;
     layout: horizontal;
-    align: center middle;
 }
 
 #footer-buttons Button {
     width: 1fr;
     height: 3;
     margin: 0 1;
-    border: round #2a2a44;
-    background: #14143a;
-    color: #d8d8f0;
+    border: round #ff5577;
+    background: #0a0a14;
+    color: #ff8aa0;
     text-style: bold;
     content-align: center middle;
 }
 #footer-buttons Button:hover {
-    background: #2a2a55;
-    border: round #ff8899;
-    color: #ffffff;
+    border: round #ffaabb;
+    color: #ffccd5;
+    background: #0a0a14;
 }
 #footer-buttons Button:focus {
-    border: round #ff8899;
+    border: round #ffaabb;
+    color: #ffaabb;
 }
-#footer-buttons Button.danger {
-    background: #3d1d1d;
-    color: #ffc8c8;
-    border: round #ff5577;
-}
-#footer-buttons Button.danger:hover {
-    background: #5d2d2d;
-    border: round #ff8899;
-}
+
 #footer-buttons Button.muted {
-    background: #14143a;
+    border: round #5a5a8a;
     color: #b0b0d0;
-    border: round #2a2a44;
+    background: #0a0a14;
+}
+#footer-buttons Button.muted:hover {
+    border: round #aaaaff;
+    color: #aaaaff;
 }
 
 /* ───────────────────── middle body: stage + log ───────────────── */
@@ -171,17 +159,16 @@ Screen {
 #stage-widget {
     width: 100%;
     height: 1fr;
-    min-height: 10;
+    min-height: 8;
     background: #08081a;
 }
 
 #log-pane {
     width: 100%;
     height: 1fr;
-    min-height: 6;
+    min-height: 5;
     background: #0a0a14;
     border-top: solid #2a2a44;
-    border-bottom: solid #2a2a44;
     padding: 0 1;
     margin: 0;
 }
@@ -216,7 +203,6 @@ SettingsScreen { align: center middle; }
 }
 
 #settings-header {
-    dock: top;
     height: 3;
     width: 100%;
     background: #14143a;
@@ -237,13 +223,13 @@ SettingsScreen { align: center middle; }
     height: 3;
     margin: 0;
     border: round #39ff14;
-    background: #1d3d1d;
-    color: #c8ffc8;
+    background: #0a0a14;
+    color: #39ff14;
     text-style: bold;
 }
 #settings-header Button:hover {
-    background: #2d5d2d;
-    border: round #5dff4d;
+    border: round #aaffaa;
+    color: #aaffaa;
 }
 
 #settings-body {
@@ -287,8 +273,8 @@ SetupScreen { align: center middle; }
 }
 #setup-panel Button {
     border: round #39ff14;
-    background: #1d3d1d;
-    color: #c8ffc8;
+    background: #0a0a14;
+    color: #39ff14;
 }
 
 /* ───────────────────── confirm modal ──────────────────────────── */
@@ -312,10 +298,10 @@ ConfirmModal { align: center middle; }
 #confirm-panel Button {
     margin: 1 1 0 1;
     border: round #ff5577;
-    background: #3d1d1d;
-    color: #ffc8c8;
+    background: #1a0a1a;
+    color: #ff8aa0;
 }
 #confirm-panel Button:hover {
-    background: #5d2d2d;
-    border: round #ff8899;
+    border: round #ffaabb;
+    color: #ffccd5;
 }

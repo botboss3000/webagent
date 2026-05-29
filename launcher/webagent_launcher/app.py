@@ -60,36 +60,6 @@ class LauncherApp(App):
     # ── compose ────────────────────────────────────────────────────────
     def compose(self) -> ComposeResult:
         palette = build_palette_from_config(self.cfg)
-
-        # ── top: status bar + header button row ──────────────────────
-        with Horizontal(id="status-bar"):
-            yield Static("[OFF]", id="status-dot")
-            yield Static("status: stopped", id="status-text")
-            yield Static("pid: -", id="pid-text")
-            yield Static("uptime: -", id="uptime-text")
-            yield Static("url: " + HEALTH_URL, id="url-text")
-
-        with Horizontal(id="header-buttons"):
-            yield Button("Launch",  id="btn-launch",  classes="primary")
-            yield Button("Restart", id="btn-restart")
-            yield Button("Stop",    id="btn-stop")
-            yield Button("Browser", id="btn-browser")
-            yield Button("Theme",   id="btn-theme",   classes="muted")
-
-        # ── bottom: footer button row + key-hint strip ───────────────
-        # Yielded BEFORE the body so they dock first; body fills the gap.
-        yield Static(
-            "  L:launch  R:restart  S:stop  B:browser  D:clear-db  "
-            "P:reset-py  F:full-reset  T:theme  C:cycle  Space:anim  Q:quit",
-            id="footer-bar",
-        )
-        with Horizontal(id="footer-buttons"):
-            yield Button("Clear DB",   id="btn-cleardb",   classes="danger")
-            yield Button("Reset Py",   id="btn-resetpy",   classes="danger")
-            yield Button("Full Reset", id="btn-fullreset", classes="danger")
-            yield Button("Quit",       id="btn-quit",      classes="muted")
-
-        # ── middle: animation (top half) + log (bottom half) ─────────
         self._stage = AnimatedStage(
             palette=palette,
             char_ramp=self.cfg.char_ramp,
@@ -100,12 +70,46 @@ class LauncherApp(App):
         )
         self._stage.id = "stage-widget"
 
+        # Plain vertical stack — Textual lays each child in order top→bottom.
+        # No dock needed; #body has height: 1fr so it absorbs all slack.
+
+        # row 0
+        with Horizontal(id="status-bar"):
+            yield Static("[OFF]", id="status-dot")
+            yield Static("status: stopped", id="status-text")
+            yield Static("pid: -", id="pid-text")
+            yield Static("uptime: -", id="uptime-text")
+            yield Static("url: " + HEALTH_URL, id="url-text")
+
+        # rows 1-3
+        with Horizontal(id="header-buttons"):
+            yield Button("Launch",  id="btn-launch",  classes="primary")
+            yield Button("Restart", id="btn-restart")
+            yield Button("Stop",    id="btn-stop")
+            yield Button("Browser", id="btn-browser")
+            yield Button("Theme",   id="btn-theme",   classes="muted")
+
+        # middle (1fr) — stage + log share remaining height
         with Vertical(id="body"):
             yield self._stage
             with Container(id="log-pane"):
                 yield RichLog(
                     highlight=False, markup=False, wrap=False, id="log"
                 )
+
+        # rows N-3 .. N-1
+        with Horizontal(id="footer-buttons"):
+            yield Button("Clear DB",   id="btn-cleardb",   classes="danger")
+            yield Button("Reset Py",   id="btn-resetpy",   classes="danger")
+            yield Button("Full Reset", id="btn-fullreset", classes="danger")
+            yield Button("Quit",       id="btn-quit",      classes="muted")
+
+        # row N
+        yield Static(
+            "  L:launch  R:restart  S:stop  B:browser  D:clear-db  "
+            "P:reset-py  F:full-reset  T:theme  C:cycle  Space:anim  Q:quit",
+            id="footer-bar",
+        )
 
     # ── lifecycle ─────────────────────────────────────────────────────
     def on_mount(self) -> None:
