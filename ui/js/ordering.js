@@ -106,6 +106,94 @@ export async function persistSessionOrder(userId, orderedIds) {
 
 const _DRAG_THRESHOLD = 4;   // px the pointer must travel before a drag "arms"
 const _EDGE = 28;            // px from a scroll edge that triggers auto-scroll
+const _LONG_PRESS_MS = 500;  // press-and-hold duration before a long-press fires
+const _LONG_PRESS_MOVE = 8;  // px of movement that cancels a pending long-press
+
+/**
+ * Block the click the browser synthesises after a pointer sequence (a drag drop,
+ * a handle tap, or a long-press) so it doesn't also fall through to the row's
+ * own click handler (which would select / switch). Capture phase + stopPropagation
+ * so it pre-empts the bubble-phase row handler bound on the same container.
+ * Self-removes after one click or 350ms, whichever comes first.
+ */
+function _suppressNextClick(container) {
+  const handler = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    container.removeEventListener('click', handler, true);
+  };
+  container.addEventListener('click', handler, true);
+  setTimeout(() => container.removeEventListener('click', handler, true), 350);
+}
+
+/**
+ * Press-and-hold detection on a row, delegated from the container so it survives
+ * innerHTML rebuilds. Used for "long-press the row to rename". A press that moves
+ * past a small threshold (a scroll/drag) or releases early (a tap → select) is
+ * not a long-press. On a genuine hold the trailing click is suppressed so the row
+ * isn't also selected.
+ *
+ * @param {HTMLElement} container
+ * @param {Object} opts
+ * @param {string} opts.rowSelector       CSS selector for each row.
+ * @param {string} [opts.ignoreSelector]  Presses starting on a match here are
+ *        ignored (e.g. the drag handle and the action buttons, which have their
+ *        own gestures).
+ * @param {(rowId: string, rowEl: HTMLElement) => void} opts.onLongPress
+ * @param {number} [opts.longPressMs]
+ */
+export function attachRowLongPress(container, opts) {
+  if (!container || container.__longPressBound) return;
+  container.__longPressBound = true;
+
+  const {
+    rowSelector,
+    ignoreSelector,
+    onLongPress,
+    longPressMs = _LONG_PRESS_MS,
+  } = opts || {};
+
+  let timer = null;
+  let row = null;
+  let startX = 0;
+  let startY = 0;
+
+  function cancel() {
+    if (timer) { clearTimeout(timer); timer = null; }
+    row = null;
+  }
+
+  container.addEventListener('pointerdown', (e) => {
+    // Left button / touch / pen only — ignore right- and middle-clicks.
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (ignoreSelector && e.target.closest(ignoreSelector)) return;
+    const r = e.target.closest(rowSelector);
+    if (!r || !container.contains(r)) return;
+    row = r;
+    startX = e.clientX;
+    startY = e.clientY;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      const target = row;
+      row = null;
+      if (!target) return;
+      _suppressNextClick(container);
+      if (typeof onLongPress === 'function') onLongPress(target.dataset.id, target);
+    }, longPressMs);
+  });
+
+  container.addEventListener('pointermove', (e) => {
+    if (!row) return;
+    if (Math.abs(e.clientX - startX) > _LONG_PRESS_MOVE ||
+        Math.abs(e.clientY - startY) > _LONG_PRESS_MOVE) {
+      cancel();
+    }
+  }, { passive: true });
+
+  container.addEventListener('pointerup', cancel);
+  container.addEventListener('pointercancel', cancel);
+}
 
 /**
  * @param {HTMLElement} container  The scrollable menu element (rows live inside).
@@ -114,16 +202,27 @@ const _EDGE = 28;            // px from a scroll edge that triggers auto-scroll
  * @param {string} opts.handleSelector  CSS selector for the drag grip inside a row.
  * @param {(orderedIds: string[]) => void} opts.onReorder  Called on drop with the
  *        new top-to-bottom list of row `data-id` values.
+ * @param {(rowId: string) => void} [opts.onHandleLongPress]  Called when the grip
+ *        is pressed and held still (no drag). Used for "long-press to pin".
+ * @param {number} [opts.longPressMs]
  */
 export function makeRowsReorderable(container, opts) {
   if (!container || container.__reorderBound) return;
   container.__reorderBound = true;
 
-  const { rowSelector, handleSelector, onReorder } = opts;
+  const {
+    rowSelector,
+    handleSelector,
+    onReorder,
+    onHandleLongPress,
+    longPressMs = _LONG_PRESS_MS,
+  } = opts;
   let dragRow = null;     // the row being dragged
   let armed = false;      // true once movement passes the threshold
   let startY = 0;
   let scrollRAF = null;
+  let lpTimer = null;     // long-press (pin) timer
+  let lpFired = false;    // true once a long-press has pinned this press
 
   function rowIdList() {
     return Array.from(container.querySelectorAll(rowSelector))
@@ -163,6 +262,7 @@ export function makeRowsReorderable(container, opts) {
     if (!armed) {
       if (Math.abs(clientY - startY) < _DRAG_THRESHOLD) return;
       armed = true;
+      if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } // it's a drag, not a hold
       dragRow.classList.add('dragging');
     }
     e.preventDefault();          // stop touch-scrolling / text selection
@@ -170,34 +270,27 @@ export function makeRowsReorderable(container, opts) {
     autoScroll(clientY);
   }
 
-  function suppressNextClick() {
-    // Block the click the browser synthesises after the pointer sequence so a
-    // handle tap / drop doesn't also select the row. Self-removes.
-    const handler = (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      container.removeEventListener('click', handler, true);
-    };
-    container.addEventListener('click', handler, true);
-    setTimeout(() => container.removeEventListener('click', handler, true), 350);
-  }
-
   function endDrag() {
     document.removeEventListener('pointermove', onMove);
     document.removeEventListener('pointerup', onEnd);
     document.removeEventListener('pointercancel', onEnd);
+    if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
     if (scrollRAF) cancelAnimationFrame(scrollRAF);
     if (dragRow) dragRow.classList.remove('dragging');
   }
 
   function onEnd() {
     const wasArmed = armed;
+    const wasLongPress = lpFired;
     const row = dragRow;
     endDrag();
     dragRow = null;
     armed = false;
-    // Always suppress the trailing click (tap on handle, or drop on a row).
-    suppressNextClick();
+    lpFired = false;
+    // The long-press already pinned + suppressed its own click — nothing else.
+    if (wasLongPress) return;
+    // Otherwise suppress the trailing click (tap on handle, or drop on a row).
+    _suppressNextClick(container);
     if (wasArmed && row && typeof onReorder === 'function') {
       onReorder(rowIdList());
     }
@@ -212,7 +305,22 @@ export function makeRowsReorderable(container, opts) {
     e.stopPropagation();
     dragRow = row;
     armed = false;
+    lpFired = false;
     startY = e.clientY;
+    // Press-and-hold the grip (without dragging) → pin. Cancelled the moment a
+    // drag arms (see onMove) or the press ends (endDrag).
+    if (typeof onHandleLongPress === 'function') {
+      if (lpTimer) clearTimeout(lpTimer);
+      lpTimer = setTimeout(() => {
+        lpTimer = null;
+        if (armed || !dragRow) return;
+        lpFired = true;
+        const id = dragRow.dataset.id;
+        dragRow = null;               // stop a later move from starting a drag
+        _suppressNextClick(container);
+        onHandleLongPress(id);
+      }, longPressMs);
+    }
     document.addEventListener('pointermove', onMove, { passive: false });
     document.addEventListener('pointerup', onEnd);
     document.addEventListener('pointercancel', onEnd);

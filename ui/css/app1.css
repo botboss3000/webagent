@@ -472,20 +472,42 @@ body {
     margin: 0;
     padding: 3px 9px;
     border-radius: 11px;
-    background: color-mix(in oklab, var(--bg-elev) 85%, transparent);
-    border: 1px solid var(--accent-line);
-    -webkit-backdrop-filter: blur(6px);
-            backdrop-filter: blur(6px);
-    color: var(--fg-2);
+    /* Same faded glass as the chat pill (see index.html "#chat-panel .chat-pill"):
+       a 7% tint of the foreground over transparent, a 12% neutral hairline, and
+       the same blur+saturate — so the bubble reads as the same surface as the
+       pill instead of a separate accent-bordered chip. We use currentColor (the
+       pill's mechanism) and force `color: inherit` below so the bubble takes the
+       pill's foreground — the tint is then computed from the identical base in
+       every theme. (The ticking note keeps its muted colour via
+       .chat-activity-text below.) */
+    background: color-mix(in oklab, currentColor 7%, transparent);
+    border: 1px solid color-mix(in oklab, currentColor 12%, transparent);
+    -webkit-backdrop-filter: blur(12px) saturate(140%);
+            backdrop-filter: blur(12px) saturate(140%);
+    /* <button> carries a UA `color` (buttontext) that does NOT inherit; force it
+       to inherit so currentColor (the glass tint above) equals the pill's fg. */
+    color: inherit;
     font: inherit;
     text-align: left;
     cursor: default;
-    transition: background 0.15s ease, border-color 0.15s ease;
+    transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
   }
 .chat-activity-bar.has-tools { cursor: pointer; }
 .chat-activity-bar.has-tools:hover {
-    background: color-mix(in oklab, var(--bg-elev-2) 90%, transparent);
-    border-color: var(--accent);
+    background: color-mix(in oklab, currentColor 11%, transparent);
+    border-color: color-mix(in oklab, var(--accent) 45%, transparent);
+  }
+/* While the agent is thinking, the bubble glows in lockstep with the chat pill —
+   same accent, same 1.8s rhythm — so the chip and the pill read as one breathing
+   surface, not two separate controls. The pill animates box-shadow only (its
+   bg/border are locked by the glass override); we do the same here, scaled down
+   for the smaller chip. */
+.chat-pill.thinking .chat-activity-bar {
+    animation: chatBubbleGlow 1.8s ease-in-out infinite;
+  }
+@keyframes chatBubbleGlow {
+    0%, 100% { box-shadow: 0 0 0 1px var(--accent-soft), 0 0 7px -2px var(--accent-mid); }
+    50%      { box-shadow: 0 0 0 1px var(--accent-mid),  0 0 13px 0   var(--accent-line); }
   }
 .chat-activity-dot {
     width: 6px;
@@ -509,6 +531,7 @@ body {
     font-size: 11px;
     line-height: 1.35;
     letter-spacing: 0.01em;
+    color: var(--fg-2);   /* muted note — the bar itself inherits fg for its glass */
   }
 .chat-activity-chevron {
     flex: 0 0 auto;
@@ -648,6 +671,10 @@ body {
     .chat-pill.thinking {
       animation: none;
       box-shadow: 0 0 0 1px var(--accent-mid), 0 0 16px -2px var(--accent-mid);
+    }
+    .chat-pill.thinking .chat-activity-bar {
+      animation: none;
+      box-shadow: 0 0 0 1px var(--accent-mid), 0 0 10px -2px var(--accent-mid);
     }
     .chat-activity-dot, .ca-status-running { animation: none; }
   }
@@ -1528,11 +1555,14 @@ body.light-mode .xterm-viewport {
     font-family: inherit;
     font-size: 11px;
   }
-/* Icons inside the trigger and kebab must not swallow clicks (lucide SVG quirk). */
+/* Icons inside the trigger and row buttons must not swallow clicks (lucide SVG quirk). */
   .session-dropdown-trigger > *,
 .agent-dropdown-trigger > *,
 .session-row-kebab > *,
-.agent-row-kebab > * {
+.agent-row-kebab > *,
+.session-row-delete > *,
+.agent-row-delete > *,
+.agent-row-config > * {
     pointer-events: none;
   }
 .session-dropdown-trigger #session-dropdown-label,
@@ -1684,6 +1714,25 @@ body.light-mode .session-row-title-input {
 .agent-row-kebab:hover { background: rgba(255,255,255,0.06); color: #c0caf5; }
 body.light-mode .session-row-kebab:hover,
 body.light-mode .agent-row-kebab:hover { background: rgba(0,0,0,0.05); color: #5c4a4a; }
+/* Per-row action buttons (delete on every row; config on agent rows). Share the
+   muted kebab look; delete brightens to the danger hue on hover. */
+.session-row-delete,
+.agent-row-delete,
+.agent-row-config {
+    background: none;
+    border: none;
+    color: #565f89;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+.agent-row-config:hover { background: rgba(255,255,255,0.06); color: #c0caf5; }
+body.light-mode .agent-row-config:hover { background: rgba(0,0,0,0.05); color: #5c4a4a; }
+.session-row-delete:hover,
+.agent-row-delete:hover { background: rgba(247, 118, 142, 0.12); color: #f7768e; }
 .session-row-actions,
 .agent-row-actions {
     position: fixed;

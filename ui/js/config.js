@@ -36,3 +36,7 @@ export function termWsUrl() {
 export function agentWsUrl() {
   return `${proto()}//${location.host}${apiPath('/api/v1/agent/ws')}`;
 }
+
+export function browserWsUrl() {
+  return `${proto()}//${location.host}${apiPath('/api/v1/browser/ws')}`;
+}

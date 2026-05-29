@@ -41,6 +41,7 @@ class NoCacheMiddleware(BaseHTTPMiddleware):
 from app.api.chat import router as chat_router
 from app.api.terminal import router as terminal_router
 from app.api.agent import router as agent_router
+from app.api.browser_stream import router as browser_stream_router
 from app.api.uploads import router as uploads_router
 from app.api.db_viewer import router as db_viewer_router
 from app.admin.review import router as admin_router
@@ -213,6 +214,7 @@ async def _canonical_host_redirect(request, call_next):
 app.include_router(chat_router)
 app.include_router(terminal_router)
 app.include_router(agent_router)
+app.include_router(browser_stream_router)
 app.include_router(uploads_router)
 app.include_router(db_viewer_router)
 app.include_router(admin_router)
