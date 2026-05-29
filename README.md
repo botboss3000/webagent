@@ -63,6 +63,7 @@ A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional *
   - **Mobile gestures.** Two-finger pinch on the terminal pane scales the font (shared across all open terminals via `setTerminalFontSize`). Horizontal swipe on the tab strip switches between open terminal tabs. `visualViewport.resize` refits the active terminal whenever the soft keyboard opens/closes so the prompt isn't hidden.
   - **Mic dictation.** The keybar's mic chip uses the Web Speech API (`SpeechRecognition` / `webkitSpeechRecognition`) and pastes recognised text into the active PTY without a trailing newline so the user can review before submitting.
   - **Cross-device session resume.** The terminal launcher sidebar's **Your sessions** section calls `GET /api/v1/terminal/sessions` and shows live PTYs the caller owns. Each row carries the friendly name supplied by the originating client (`?name=` on WS open, or `{"type":"set_name"}` for live updates). Clicking a row opens a tab against that session_id; the WS handler reattaches to the running shell and replays the scrollback ring buffer.
+- **Progressive Web App (PWA)** — webAgent is installable on desktop and mobile via the browser's **Add to Home Screen** prompt. A **Web App Manifest** (`ui/manifest.json`) declares the app name, icons, display mode (`standalone`), and theme colour. A **Service Worker** (`sw.js`) precaches the app shell (HTML, CSS, JS, icons) for instant loading, uses stale-while-revalidate for CDN assets, and network-first fallback-to-cache for navigation. The theme-color meta tag syncs with the user's light/dark theme choice. App icons (192×192 and 512×512, with maskable variants) live in `ui/icons/`.
 - **Web UI** — Main page at **`/`** (also reachable at **`/index.html`**): chat, DB viewer, Admin Tools (file editor + multi-tab terminal), stream/loop, agents.
 - **Minimal tester** — **`GET /test`** serves **`ui/test_interface.html`** (same origin as the API).
 
@@ -124,7 +125,7 @@ Events are routed on the frontend:
 
 | Module | Role |
 |--------|------|
-| **`main.py`** | FastAPI app: routers, CORS, no-cache for `/`, `/ui/`, and `/index.html`, **`StaticFiles`** for `/ui/` and `/screenshots`, **`GET /`** serves the main UI (`index.html`), **`GET /index.html`** (alias for legacy bookmarks), **`GET /test`**, **`GET /privacy`** (serves `ui/privacy.html`), **`GET /tos`** (serves `ui/tos.html`), **`GET /health`**, favicon from `ui/favicon.svg`, **`POST /api/v1/restart`**, shutdown (browser + terminal). |
+| **`main.py`** | FastAPI app: routers, CORS, no-cache for `/`, `/ui/`, and `/index.html`, **`StaticFiles`** for `/ui/` and `/screenshots`, **`GET /`** serves the main UI (`index.html`), **`GET /index.html`** (alias for legacy bookmarks), **`GET /test`**, **`GET /privacy`** (serves `ui/privacy.html`), **`GET /tos`** (serves `ui/tos.html`), **`GET /health`**, **`GET /favicon.ico`** + **`GET /favicon.svg`**, **`GET /sw.js`** (PWA service worker at root scope), **`GET /ui/manifest.json`** (PWA manifest with correct `application/manifest+json` MIME type), **`POST /api/v1/restart`**, shutdown (browser + terminal). |
 | **`api/chat.py`** | **`POST /api/v1/chat/send`** (fire-and-forget; primary), **`POST /api/v1/chat/stream`** (SSE fallback that tails the run), **`POST /api/v1/chat`** (buffered, inline), **`POST /api/v1/chat/interrupt`** (graceful stop via the Run Manager). `_prepare_send()` does the synchronous prep (auth, agent + access/billing gating, user-message persist, RunBuffer + `session_runs` start, user_message broadcast); `_run_turn_background()` is the connection-independent turn executor (memory search → prompt build → attachment/vision fallback → history → agent loop → emit/persist → run-state finalize) handed to the Run Manager via `RunManager.start_or_replace` (a new message interrupts any active run and replaces it); `_sse_tail_run()` backs the SSE fallback. Also: **listener registries** — `register_user_listener()` / `register_visualizer_listener()` for per-user and per-session WebSocket broadcasting. |
 | **`api/agent.py`** | **`WebSocket /api/v1/agent/ws`** — **receive-only per-user subscriber**. Client sends `{"mode": "user_subscriber", "user_id": "..."}` to register. Server streams all agent events (user_message, stream, response, tool_call, tool_result, pipeline, db) for all of that user's sessions. No message processing — all sends go through HTTP POST. |
 | **`api/uploads.py`** | **`POST /api/v1/upload`** — multipart file upload (images, audio, video, PDF, text). **`GET /api/v1/upload/{id}`** — metadata lookup. **`DELETE /api/v1/upload/{id}`** — delete. File bytes stored via `app/db/attachments/`. |
@@ -188,7 +189,11 @@ webAgent/
 │       └── attachments/    # File storage abstraction (store_file / read_file / delete_file)
 ├── docs/                   # Operator docs: events-setup.md (Pub/Sub, Graph, Dropbox, Shopify)
 ├── tests/                  # e.g. test_session_history.py (unittest)
+├── sw.js                   # PWA service worker (must be at root scope for coverage)
 ├── ui/                     # Static UI + test_interface.html
+│   ├── manifest.json       # PWA web app manifest
+│   ├── icons/              # PWA app icons (192×192, 512×512, maskable variants)
+│   └── generate_icons.py   # Script to re-generate PWA icons
 ├── uploads/                # User-uploaded files (images, voice, docs; mounted at /uploads)
 ├── scripts/
 │   ├── start_webAgent.sh            # Unix: cd to repo root, background uvicorn (default :8080, PORT= overrides)

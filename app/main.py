@@ -120,6 +120,23 @@ async def favicon():
     return FileResponse(str(_APP_DIR.parent / "ui" / "favicon.svg"), media_type="image/svg+xml")
 
 
+# ── PWA: service worker + manifest (correct MIME types) ──
+@app.get("/sw.js", include_in_schema=False)
+async def service_worker():
+    sw_path = _APP_DIR.parent / "sw.js"
+    if not sw_path.is_file():
+        return HTMLResponse("", status_code=404)
+    return FileResponse(str(sw_path), media_type="text/javascript")
+
+
+@app.get("/ui/manifest.json", include_in_schema=False)
+async def pwa_manifest():
+    m_path = _APP_DIR.parent / "ui" / "manifest.json"
+    if not m_path.is_file():
+        return HTMLResponse("", status_code=404)
+    return FileResponse(str(m_path), media_type="application/manifest+json")
+
+
 # CORS middleware (adjust origins as needed)
 app.add_middleware(
     CORSMiddleware,

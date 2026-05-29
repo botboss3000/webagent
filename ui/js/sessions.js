@@ -512,7 +512,8 @@ export function initSessions() {
   // ── Theme system ──
   const STORAGE_KEY = 'webagent_theme';
 
-  /** Set theme on <body>: 'light', 'dark', or 'system' (follow OS). */
+  /** Set theme on <body>: 'light', 'dark', or 'system' (follow OS).
+   *  Also updates the PWA theme-color meta tag to match. */
   function applyTheme(theme) {
     const body = document.body;
     if (theme === 'light') {
@@ -524,6 +525,10 @@ export function initSessions() {
       const prefersLight = window.matchMedia('(prefers-color-scheme: light)').matches;
       body.classList.toggle('light-mode', prefersLight);
     }
+    // Sync PWA theme-color with current background
+    const isLight = body.classList.contains('light-mode');
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = isLight ? '#faf5ee' : '#0d0d1a';
   }
 
   /** Highlight the matching theme button. */
