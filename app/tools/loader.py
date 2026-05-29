@@ -641,12 +641,25 @@ class ToolLoader:
 
         async def _list_tools_wrapper():
             result = json.loads(await _core_list_tools(user_id=user_id))
+            seen_names = {t.get("name") for t in result.get("tools", [])}
+            # Add optimizer-only tools
             for name, desc in BUILTIN_TOOLS.items():
-                if name not in [t.get("name") for t in result.get("tools", [])]:
+                if name not in seen_names:
                     if "tools" not in result:
                         result["tools"] = []
                     result["tools"].append({"name": name, "description": desc})
-                    result["count"] = len(result["tools"])
+                    seen_names.add(name)
+            # Add all registered built-in tools (no DB tool_id = injected by _inject_builtin_tools)
+            for name, tinfo in tools.items():
+                if name in seen_names or tinfo.tool_id:
+                    continue
+                desc = (tinfo.handler.__doc__ or "").strip()[:300]
+                if not desc:
+                    desc = BUILTIN_TOOL_METADATA.get(name, {}).get("stages", [])[0:1][0] if BUILTIN_TOOL_METADATA.get(name, {}).get("stages") else ""
+                result.setdefault("tools", []).append({"name": name, "description": desc})
+                seen_names.add(name)
+            if "tools" in result:
+                result["count"] = len(result["tools"])
             return json.dumps(result)
 
         tools["list_tools"] = ToolInfo(
@@ -662,11 +675,24 @@ class ToolLoader:
         async def _search_tools_wrapper(query: str):
             result = json.loads(await _core_search_tools(query=query, user_id=user_id))
             matches = result.get("tools", [])
+            seen_names = {t.get("name") for t in matches}
             q = query.lower()
+            # Search optimizer-only tools
             for name, desc in BUILTIN_TOOLS.items():
                 if q in name.lower() or q in desc.lower():
-                    if name not in [t.get("name") for t in matches]:
+                    if name not in seen_names:
                         matches.append({"name": name, "description": desc})
+                        seen_names.add(name)
+            # Search all registered built-in tools
+            for name, tinfo in tools.items():
+                if name in seen_names or tinfo.tool_id:
+                    continue
+                desc = (tinfo.handler.__doc__ or "").strip()[:300]
+                if not desc:
+                    continue
+                if q in name.lower() or q in desc.lower():
+                    matches.append({"name": name, "description": desc})
+                    seen_names.add(name)
             result["tools"] = matches
             result["count"] = len(matches)
             return json.dumps(result)
@@ -684,8 +710,15 @@ class ToolLoader:
         )
 
         async def _get_tool_definition_wrapper(tool_name: str):
+            # Check optimizer-only tools first
             if tool_name in BUILTIN_TOOLS:
-                return json.dumps({"status": "ok", "name": tool_name, "description": BUILTIN_TOOLS[tool_name]})
+                return json.dumps({"status": "ok", "tool": {"name": tool_name, "description": BUILTIN_TOOLS[tool_name], "parameters": {"type": "object", "properties": {}, "required": []}}})
+            # Check all registered built-in tools
+            if tool_name in tools and not tools[tool_name].tool_id:
+                tinfo = tools[tool_name]
+                desc = (tinfo.handler.__doc__ or "").strip()[:500]
+                return json.dumps({"status": "ok", "tool": {"name": tool_name, "description": desc, "parameters": tinfo.parameters}})
+            # Fall through to DB tools table
             return await _core_get_tool_definition(tool_name=tool_name, user_id=user_id)
 
         tools["get_tool_definition"] = ToolInfo(

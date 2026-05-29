@@ -395,7 +395,8 @@ async def session_search(
                 matches = []
                 for r in data:
                     content = r.get("content", "") or ""
-                    if q in content.lower():
+                    tool_name = r.get("tool_name", "") or ""
+                    if q in content.lower() or q in tool_name.lower():
                         matches.append({
                             "id": r.get("id"),
                             "session_id": r.get("session_id"),
@@ -417,9 +418,9 @@ async def session_search(
             """SELECT i.id, i.session_id, i.role, i.content, i.tool_name, i.created_at
                FROM interactions i
                JOIN sessions s ON i.session_id = s.id
-               WHERE s.user_id = ? AND LOWER(i.content) LIKE ?
+               WHERE s.user_id = ? AND (LOWER(i.content) LIKE ? OR LOWER(COALESCE(i.tool_name, '')) LIKE ?)
                ORDER BY i.created_at DESC LIMIT ?""",
-            (user_id, f"%{q}%", limit)
+            (user_id, f"%{q}%", f"%{q}%", limit)
         ).fetchall()
         conn.close()
         matches = []
