@@ -4,6 +4,7 @@ import { app } from './state.js';
 import { loopSessionChanged } from './loop.js';
 import { loopVisualSessionChanged } from './loop-logic.js';
 import { autoAgentSessionChanged } from './autoagent.js';
+import { chatActivitySessionChanged } from './chat-activity.js';
 import { abortChatStream } from './chat.js';
 import { consumeReplayedEventsFor } from './agentWs.js';
 import { apiPath } from './config.js';
@@ -694,6 +695,7 @@ export function initSessions() {
     loopSessionChanged();
     loopVisualSessionChanged();
     autoAgentSessionChanged();
+    chatActivitySessionChanged();
     _renderSessionRows();
     _setTriggerLabel();
     closeMenu();
@@ -908,6 +910,7 @@ export function initSessions() {
       loopSessionChanged();
       loopVisualSessionChanged();
       autoAgentSessionChanged();
+      chatActivitySessionChanged();
     });
   }
 
@@ -953,6 +956,7 @@ export function initSessions() {
     loopSessionChanged();
     loopVisualSessionChanged();
     autoAgentSessionChanged();
+    chatActivitySessionChanged();
     _renderAgentRows();
     _setAgentTriggerLabel();
     closeAgentMenu();

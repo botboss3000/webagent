@@ -84,6 +84,19 @@ def main() -> int:
         )
         return 3
 
+    # Generate model_windows.py from @earendil-works/pi-ai (npm package)
+    # so the TUI ships with up-to-date context-window sizes for every model.
+    build_models_script = ROOT / "scripts" / "build_model_windows.mjs"
+    if build_models_script.exists():
+        print(f"[build] generating model_windows.py from pi-ai...")
+        rc = subprocess.call(["node", str(build_models_script)], cwd=str(ROOT))
+        if rc != 0:
+            print(f"[build] model generation failed ({rc}); continuing",
+                  file=sys.stderr)
+    else:
+        print(f"[build] model generator not found: {build_models_script}; "
+              f"using existing model_windows.py (if any)", file=sys.stderr)
+
     # Regenerate the icon — guarantees a fresh clone produces a complete .exe.
     if ICON_SCRIPT.exists():
         print(f"[build] regenerating icon -> {ICON.name}")

@@ -38,6 +38,9 @@ body
 │       │   └── #chat-messages-inner
 │       └── #chat-input-area
 │           └── #chat-input-row    (the chat pill)
+│               └── #chat-activity (floating activity indicator, above pill)
+│                   ├── #chat-activity-panel (expandable tool-call list)
+│                   └── #chat-activity-bar   (clickable ticking note chip)
 │
 └── modals (siblings of #stage, position: fixed)
     ├── #chat-expand-modal         (full-screen compose)

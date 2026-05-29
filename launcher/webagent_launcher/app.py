@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import webbrowser
 from pathlib import Path
 
@@ -10,13 +11,14 @@ from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical  # noqa: F401
-from textual.widgets import Button, Footer, Label, RichLog, Static
+from textual.widgets import Button, Footer, Input, Label, RichLog, Static, TextArea
 
+from . import app_window, clipboard
 from .chat_screen import ChatScreen
 from .config import LauncherConfig
 from .palette import build_palette_from_config
 from .reset import clear_database, full_reset, reset_venv
-from .screens import ConfirmModal, InstallScreen, SettingsPanel, SetupResult, SetupScreen
+from .screens import ConfirmModal, SettingsPanel, SetupPanel
 from .server import HEALTH_URL, ServerController, ServerState
 from .stage import AnimatedStage
 
@@ -46,11 +48,16 @@ class LauncherApp(App):
         # between home and chat from EITHER screen. Priority + a plain control
         # code make it the reliable fallback in any terminal.
         Binding("ctrl+q", "go_back_last", "Chat", show=False, priority=True),
+        # Ctrl+V = paste from the REAL OS clipboard into the focused field.
+        # priority=True so it preempts Input/TextArea's own ctrl+v (which only
+        # pastes Textual's empty in-app clipboard); fires on every screen.
+        Binding("ctrl+v", "os_paste", "Paste", show=False, priority=True),
         Binding("a", "open_chat", "Chat"),
         Binding("l", "launch", "Launch"),
         Binding("r", "restart", "Restart"),
         Binding("s", "stop_server", "Stop"),
         Binding("b", "open_browser", "Browser"),
+        Binding("w", "open_app_window", "App Win"),
         Binding("d", "clear_db", "Clear DB"),
         Binding("p", "reset_python", "Reset Py"),
         Binding("f", "full_reset", "Full reset"),
@@ -67,6 +74,8 @@ class LauncherApp(App):
         self._chat_screen: ChatScreen | None = None  # set while chat is open
         self._stage: AnimatedStage | None = None
         self._settings: SettingsPanel | None = None
+        self._setup: SetupPanel | None = None  # inline first-run/install panel
+        self._in_setup = False  # True while the installer panel owns the UI
         # Idle = pause the animation. Two independent reasons compose via OR:
         #   _blurred       → terminal/app lost focus
         #   _chat_covering → the chat screen is pushed over the home stage
@@ -95,7 +104,7 @@ class LauncherApp(App):
             yield Static("status: stopped", id="status-text")
             yield Static("pid: -", id="pid-text")
             yield Static("uptime: -", id="uptime-text")
-            yield Static("url: " + HEALTH_URL, id="url-text")
+            yield Static("target: -", id="target-text")
 
         # rows 1-3
         with Horizontal(id="header-buttons"):
@@ -104,11 +113,13 @@ class LauncherApp(App):
             yield Button("Restart", id="btn-restart")
             yield Button("Stop",    id="btn-stop")
             yield Button("Browser", id="btn-browser")
+            yield Button("App Win", id="btn-appwindow")
             yield Button("Theme",   id="btn-theme",   classes="muted")
 
-        # middle (1fr) — stage on top; the bottom slot holds EITHER the log
-        # pane OR the inline settings panel (toggled by Theme). The stage stays
-        # visible and live-animating while settings are open.
+        # middle (1fr) — stage on top; the bottom slot holds ONE of: the log
+        # pane, the inline settings panel (Theme), or the inline first-run setup
+        # /install panel. The stage (logo) stays visible above all three, so the
+        # logo is on screen during install too.
         with Vertical(id="body"):
             yield self._stage
             with Container(id="log-pane"):
@@ -119,9 +130,12 @@ class LauncherApp(App):
                 self.cfg, self._apply_visual_config, self._close_settings
             )
             yield self._settings
+            self._setup = SetupPanel(self.cfg, self._on_setup_done, self._on_setup_cancel)
+            yield self._setup
 
         # rows N-3 .. N-1
         with Horizontal(id="footer-buttons"):
+            yield Button("Location",   id="btn-location",  classes="muted")
             yield Button("Update",     id="btn-update",    classes="muted")
             yield Button("Clear DB",   id="btn-cleardb",   classes="danger")
             yield Button("Reset Py",   id="btn-resetpy",   classes="danger")
@@ -130,8 +144,8 @@ class LauncherApp(App):
 
         # row N
         yield Static(
-            "  A:chat  L:launch  R:restart  S:stop  B:browser  U:update  "
-            "D:clear-db  P:reset-py  F:full-reset  T:theme  C:cycle  Esc/Q:quit",
+            "  A:chat  L:launch  R:restart  S:stop  B:browser  W:app-win  "
+            "U:update  D:clear-db  P:reset-py  F:full-reset  T:theme  C:cycle  Esc/Q:quit",
             id="footer-bar",
         )
 
@@ -143,33 +157,151 @@ class LauncherApp(App):
         # Heartbeat for uptime display
         self.set_interval(1.0, self._refresh_uptime)
         if not self.cfg.is_valid_project():
-            # Push setup non-blocking; finalize via callback
-            self.push_screen(SetupScreen(self.cfg), self._after_setup_choice)
+            # First run: show the inline setup/install panel in the log slot so
+            # the logo stays visible (no modal). Defer one tick so the panel's
+            # own children are mounted before we drive it.
+            self.call_after_refresh(self._open_setup)
         else:
             self._after_setup(True)
 
-    def _after_setup_choice(self, result: "SetupResult | None") -> None:
-        """First-run chooser result: install fresh (→ InstallScreen) or use an
-        existing folder (already saved by the setup screen)."""
-        if result is None:
-            self._log("[launcher] setup cancelled — press [T]/relaunch to configure")
+    def on_unmount(self) -> None:
+        # Don't leave an orphaned app window pointing at a dead server.
+        try:
+            app_window.close_window()
+        except Exception:
+            pass
+
+    # ── inline first-run setup / install ───────────────────────────────
+    def _show_bottom(self, which: str) -> None:
+        """The bottom 1fr slot shows exactly one of: 'log' | 'settings' | 'setup'.
+        (The stage/logo above stays visible regardless.)"""
+        try:
+            self.query_one("#log-pane").display = (which == "log")
+        except Exception:
+            pass
+        if self._settings is not None:
+            self._settings.display = (which == "settings")
+        if self._setup is not None:
+            self._setup.display = (which == "setup")
+
+    def _apply_button_mode(self) -> None:
+        """While the installer panel owns the UI, hide everything but Theme +
+        Quit and turn the footer into installer tabs (Install / Manual Install /
+        Health Check). Otherwise restore the normal controls. Driven by
+        ``_in_setup`` (not is_valid_project) so a mid-install detection flip
+        can't desync labels from behaviour."""
+        ready = not self._in_setup
+        for bid in ("btn-chat", "btn-launch", "btn-restart", "btn-stop", "btn-browser", "btn-appwindow", "btn-location"):
+            try:
+                self.query_one(f"#{bid}", Button).styles.visibility = "visible" if ready else "hidden"
+            except Exception:
+                pass
+        labels = (
+            {"btn-update": "Update", "btn-cleardb": "Clear DB", "btn-resetpy": "Reset Py"}
+            if ready else
+            {"btn-update": "Install", "btn-cleardb": "Manual Install", "btn-resetpy": "Health Check"}
+        )
+        for bid, label in labels.items():
+            try:
+                self.query_one(f"#{bid}", Button).label = label
+            except Exception:
+                pass
+        try:
+            self.query_one("#btn-fullreset", Button).styles.visibility = "visible" if ready else "hidden"
+        except Exception:
+            pass
+
+    def _open_setup(self, repoint: bool = False) -> None:
+        """Show the inline installer in the bottom slot and switch into installer
+        mode. ``repoint`` = changing an existing target (the panel offers Cancel);
+        otherwise it's the forced first-run setup."""
+        if self._setup is None:
             return
-        if result.action == "install":
-            self.push_screen(InstallScreen(self.cfg, result.path), self._after_install)
-        else:  # "existing" — cfg.project_path already saved
-            self._after_setup(True)
+        self._in_setup = True
+        self._apply_button_mode()
+        self._show_bottom("setup")
+        self._setup.start(repoint=repoint)
 
-    def _after_install(self, ok: bool | None) -> None:
-        if ok and self.cfg.is_valid_project():
-            self._log("[launcher] install complete")
-            self._after_setup(True)
+    def action_change_target(self) -> None:
+        """Re-point this exe at a different folder. Opens the installer panel
+        pre-filled with the current target; Cancel leaves it unchanged."""
+        self._open_setup(repoint=True)
+
+    def _show_setup_view(self, view: str) -> None:
+        """Footer installer tabs (pre-install): 'install' | 'manual' | 'doctor'."""
+        if self._setup is None:
+            return
+        self._show_bottom("setup")
+        if view == "manual":
+            self._setup.show_manual()
+        elif view == "doctor":
+            self._setup.show_doctor()
         else:
-            self._log("[launcher] install did not complete — press [U] to retry, or relaunch")
+            self._setup.show_install()
+
+    def _on_setup_done(self, ok: bool) -> None:
+        """Called by the inline panel when install/adopt finishes. Reveal the log
+        (the panel 'clears'), restore normal buttons, switch to the new target."""
+        self._in_setup = False
+        self._show_bottom("log")
+        if ok and self.cfg.is_valid_project():
+            # Stop any server pointed at the OLD target, then bind the new one.
+            asyncio.create_task(self._commit_target_switch())
+        else:
+            self._apply_button_mode()
+            self._log("[launcher] setup incomplete — relaunch to configure")
+
+    async def _commit_target_switch(self) -> None:
+        old = self.controller
+        new_dir = self.cfg.project_dir()
+        # Re-confirming the SAME folder (e.g. via "Current Folder") must not
+        # bounce a healthy server: just restore the normal UI and keep it up.
+        if old is not None and new_dir is not None and self._same_dir(old.project_dir, new_dir):
+            self._apply_button_mode()
+            self._update_target_display()
+            self._log(f"[launcher] location confirmed: {new_dir}")
+            return
+        if old is not None:
+            try:
+                await old.stop()
+            except Exception:
+                pass
+        self._after_setup(True)  # init controller for the new target (+ auto-start)
+
+    @staticmethod
+    def _same_dir(a: Path, b: Path) -> bool:
+        """True when two paths point at the same folder (case-insensitive on
+        Windows, tolerant of trailing separators)."""
+        try:
+            na = os.path.normcase(os.path.normpath(str(Path(a).expanduser())))
+            nb = os.path.normcase(os.path.normpath(str(Path(b).expanduser())))
+            return na == nb
+        except Exception:
+            return False
+
+    def _on_setup_cancel(self) -> None:
+        """Re-point cancelled — leave the current target (and any running server)
+        untouched and return to normal operation."""
+        self._in_setup = False
+        self._show_bottom("log")
+        self._apply_button_mode()
+        self._log("[launcher] location unchanged")
+
+    def _update_target_display(self) -> None:
+        try:
+            pdir = self.cfg.project_dir()
+            self.query_one("#target-text", Static).update(
+                f"target: {pdir if pdir else '(none — set one in Install)'}"
+            )
+        except Exception:
+            pass
 
     def _after_setup(self, ok: bool | None) -> None:
+        self._apply_button_mode()
+        self._update_target_display()
         if self.cfg.is_valid_project():
             self._init_controller()
-            self._log(f"[launcher] project: {self.cfg.project_path}")
+            self._log(f"[launcher] project: {self.cfg.project_dir()}")
             self._log(
                 "[launcher] auto-restart: "
                 + ("ON (relaunch on crash)" if self.cfg.auto_restart_server else "OFF")
@@ -299,6 +431,20 @@ class LauncherApp(App):
         webbrowser.open(url)
         self._log(f"[launcher] opened browser → {url}")
 
+    def action_open_app_window(self) -> None:
+        """Open the webagent app in a chromeless, agent-controllable Chromium
+        window (app mode). Unlike Browser (which opens your default browser),
+        this window is launched with a remote-debugging port so the agent's
+        browser tool can attach and drive the very window you're watching.
+        Local / Windows only."""
+        if not self._require_project():
+            return
+        url = self.cfg.last_browser_url or HEALTH_URL
+        if self.controller and self.controller.state.status != "running":
+            self._log("[launcher] note: server isn't running yet — press L so the app loads")
+        if not app_window.open_window(url, self._log):
+            self._log("[launcher] app window unavailable — run Update to fetch Chromium")
+
     def action_open_chat(self) -> None:
         if not self._require_project():
             return
@@ -419,7 +565,8 @@ class LauncherApp(App):
             await self.controller.start()
 
     def action_theme(self) -> None:
-        """Toggle the inline settings panel in the bottom (log) slot."""
+        """Toggle the inline settings panel in the bottom slot. Works during
+        first-run too — closing it returns to the installer panel."""
         if self._settings is None:
             return
         if self._settings.display:
@@ -441,24 +588,49 @@ class LauncherApp(App):
         else:
             self.action_open_chat()
 
+    async def action_os_paste(self) -> None:
+        """Ctrl+V → paste from the real OS clipboard into the focused field.
+
+        Textual's own Ctrl+V only pastes its in-app clipboard (empty unless you
+        copied inside the launcher), so without this you can't paste a path
+        copied from Explorer into the install box. We read the actual OS
+        clipboard and hand the text to the focused Input/TextArea through its
+        normal Paste handler — so the install field keeps its first-line-only
+        behaviour and the chat editor keeps its image-drop + undo handling,
+        exactly as a terminal bracketed paste already does."""
+        widget = self.focused
+        if not isinstance(widget, (Input, TextArea)):
+            return
+        try:
+            text = await asyncio.to_thread(clipboard.read_text)
+        except Exception:
+            text = ""
+        if text:
+            widget.post_message(events.Paste(text))
+
+    def copy_to_clipboard(self, text: str) -> None:
+        """Mirror in-app copies (Ctrl+C in a field) to the real OS clipboard.
+
+        Textual's base method only sets the in-app clipboard and emits OSC-52,
+        which the Windows console ignores — so a copy wouldn't reach Explorer.
+        Writing the OS clipboard too keeps copy ↔ paste consistent."""
+        super().copy_to_clipboard(text)
+        try:
+            clipboard.write_text(text)
+        except Exception:
+            pass
+
     def _open_settings(self) -> None:
         if self._settings is None:
             return
-        self._settings.display = True
-        try:
-            self.query_one("#log-pane").display = False
-        except Exception:
-            pass
+        self._show_bottom("settings")
         self._settings.focus_first()
 
     def _close_settings(self) -> None:
         if self._settings is None:
             return
-        self._settings.display = False
-        try:
-            self.query_one("#log-pane").display = True
-        except Exception:
-            pass
+        # Return to the installer panel during first run, else the log.
+        self._show_bottom("setup" if self._in_setup else "log")
         # Persist the tuned values once, on close (not on every drag tick).
         try:
             self.cfg.save()
@@ -518,12 +690,31 @@ class LauncherApp(App):
     @on(Button.Pressed)
     async def _btn(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""
+        if self._in_setup:
+            # Installer mode: the footer is repurposed into tabs. Only these IDs
+            # do anything (buttons inside the setup panel handle their own
+            # presses); everything else is hidden/irrelevant here.
+            pre = {
+                "btn-update": lambda: self._show_setup_view("install"),
+                "btn-cleardb": lambda: self._show_setup_view("manual"),
+                "btn-resetpy": lambda: self._show_setup_view("doctor"),
+                "btn-theme": self.action_theme,
+                "btn-quit": self.action_request_quit,
+            }
+            fn = pre.get(bid)
+            if fn:
+                result = fn()
+                if asyncio.iscoroutine(result):
+                    await result
+            return
         mapping = {
             "btn-chat": self.action_open_chat,
             "btn-launch": self.action_launch,
             "btn-restart": self.action_restart,
             "btn-stop": self.action_stop_server,
             "btn-browser": self.action_open_browser,
+            "btn-appwindow": self.action_open_app_window,
+            "btn-location": self.action_change_target,
             "btn-update": self.action_update,
             "btn-cleardb": self.action_clear_db,
             "btn-resetpy": self.action_reset_python,

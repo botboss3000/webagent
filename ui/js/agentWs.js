@@ -148,18 +148,28 @@ export function connectAgent() {
       }
     }
 
-    // Forward to tool log panel
+    // The Loop / Flow debug panels and the chat-pill "thinking" glow reflect the
+    // session you're VIEWING, so only feed them events for the active session.
+    // Events now carry session_id; untagged ones pass through defensively.
+    const _forCurrent = !_sid || _sid === app.currentSessionId;
+
+    // Forward to tool log panel (global — intentionally shows all tool activity)
     try { logTool(event); } catch(e) { /* not mounted */ }
 
     // Forward to stream/loop/flow debug panels (handles ALL event types)
-    if (app._loopHandler) {
+    if (_forCurrent && app._loopHandler) {
       try { app._loopHandler(event); } catch(e) { /* ignore */ }
     }
-    if (app._loopVisualHandler) {
+    if (_forCurrent && app._loopVisualHandler) {
       try { app._loopVisualHandler(event); } catch(e) { /* ignore */ }
     }
+    // AutoAgent/Pages has its own per-visualizer-session logic — leave unguarded.
     if (app._autoAgentHandler) {
       try { app._autoAgentHandler(event); } catch(e) { /* ignore */ }
+    }
+    // Drive the chat pill "thinking" glow + activity-note ticker (current session).
+    if (_forCurrent && app._chatActivityHandler) {
+      try { app._chatActivityHandler(event); } catch(e) { /* ignore */ }
     }
 
     // ── Chat bubble display is handled by SSE in chat.js ──
@@ -310,6 +320,9 @@ export function connectAgent() {
       app.isProcessing = false;
       if (app.chatSend) app.chatSend.disabled = false;
     }
+    // Drop the thinking glow — a live turn (if any) keeps running server-side
+    // and re-lights via replay on reconnect.
+    if (app.chatActivityStop) { try { app.chatActivityStop(); } catch (_) {} }
     scheduleAgentReconnect();
   };
 

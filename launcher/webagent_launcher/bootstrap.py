@@ -386,6 +386,195 @@ async def install(target: Path, log: Log) -> bool:
     return True
 
 
+async def _check_url(url: str) -> tuple[bool, str]:
+    try:
+        timeout = httpx.Timeout(8.0, connect=5.0)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            r = await client.head(url)
+        return True, f"reachable ({url} → HTTP {r.status_code})"
+    except (httpx.HTTPError, OSError) as e:
+        return False, f"cannot reach {url}: {e}"
+
+
+def _nearest_existing(p: Path) -> Path:
+    while not p.exists() and p.parent != p:
+        p = p.parent
+    return p
+
+
+def _check_writable(target: Path) -> tuple[bool, str]:
+    """Can we create the install folder and write inside it?
+
+    Tests the REAL operation — create ``target`` (if missing) and write a probe
+    file inside it — not whether a file can be made in ``C:\\`` root. Standard
+    users can create a *folder* under ``C:\\`` and write inside it even though
+    they can't create files directly in the root, so the naive ancestor test
+    gives a false failure for ``C:\\webagent``.
+    """
+    target = Path(target)
+    created: list[Path] = []  # folders we make here, deepest first, to undo after
+    p = target
+    while not p.exists() and p.parent != p:
+        created.append(p)
+        p = p.parent
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        probe = target / ".webagent_write_test"
+        probe.write_text("x", encoding="utf-8")
+        probe.unlink()
+        return True, f"can create and write {target}"
+    except OSError as e:
+        return False, f"cannot write to {target}: {e}"
+    finally:
+        for d in created:  # remove only the folders we created, and only if empty
+            try:
+                if d.is_dir() and not any(d.iterdir()):
+                    d.rmdir()
+            except OSError:
+                pass
+
+
+def _check_disk(target: Path) -> tuple[bool, str]:
+    try:
+        usage = shutil.disk_usage(str(_nearest_existing(target)))
+        free_gb = usage.free / (1024 ** 3)
+        return free_gb >= 2.0, f"{free_gb:.1f} GB free (need ~2 GB)"
+    except OSError as e:
+        return False, str(e)
+
+
+async def _capture(cmd: list[str]) -> tuple[int, str]:
+    """Run a short command; return (exit_code, first line of merged output)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            creationflags=_creationflags(),
+        )
+        out, _ = await proc.communicate()
+    except (OSError, FileNotFoundError) as e:
+        return -1, str(e)
+    lines = out.decode("utf-8", errors="replace").strip().splitlines()
+    return (proc.returncode if proc.returncode is not None else -1), (lines[0] if lines else "")
+
+
+def _playwright_browsers() -> list[str]:
+    """Chromium revisions present in Playwright's per-user cache, if any."""
+    base = os.environ.get("LOCALAPPDATA") if sys.platform == "win32" else None
+    cache = Path(base) / "ms-playwright" if base else (Path.home() / ".cache" / "ms-playwright")
+    if not cache.is_dir():
+        return []
+    try:
+        return sorted(c.name for c in cache.iterdir()
+                      if c.is_dir() and c.name.startswith("chromium"))
+    except OSError:
+        return []
+
+
+def _mark(status: str) -> str:
+    """Fixed-width status tag so the report columns line up."""
+    return f"[{status:<9}]"
+
+
+async def run_diagnostics(target: Path, log: Log) -> None:
+    """A full environment report for the Doctor view — what IS and ISN'T present.
+
+    Pure inspection: tool versions, internet, and the state of the install at
+    ``target`` (code, Python env, dependencies, browser, database). Changes
+    nothing.
+    """
+    import platform as _pl
+
+    target = Path(target).expanduser()
+    log("webAgent Health Check — environment report")
+    log("=" * 46)
+    log(f"OS: {_pl.system()} {_pl.release()} ({_pl.machine()})")
+    log("")
+
+    # ── Tools on this PC ────────────────────────────────────────────────
+    log("Tools on this PC")
+    git = find_git()
+    if git:
+        _, ver = await _capture([git, "--version"])
+        log(f"  {_mark('installed')} git        — {ver or git}")
+    else:
+        log(f"  {_mark('missing')} git        — not found (a ZIP download is used instead; fine)")
+
+    uv = shutil.which("uv") or (str(_uv_binary_path()) if _uv_binary_path().exists() else None)
+    if uv:
+        _, ver = await _capture([uv, "--version"])
+        log(f"  {_mark('installed')} uv         — {ver or uv}")
+    else:
+        log(f"  {_mark('missing')} uv         — not found (downloaded automatically on install)")
+
+    syspy = shutil.which("python") or shutil.which("py")
+    if syspy:
+        _, ver = await _capture([syspy, "--version"])
+        log(f"  {_mark('info')} Python     — {ver or syspy} (system; optional — uv installs its own)")
+    else:
+        log(f"  {_mark('info')} Python     — none on PATH (optional — uv installs its own)")
+    log("")
+
+    # ── Internet ────────────────────────────────────────────────────────
+    log("Internet")
+    ok_gh, _ = await _check_url("https://github.com")
+    log(f"  {_mark('online' if ok_gh else 'OFFLINE')} GitHub     — the source code")
+    ok_pypi, _ = await _check_url("https://pypi.org")
+    log(f"  {_mark('online' if ok_pypi else 'OFFLINE')} PyPI       — the Python packages")
+    log("")
+
+    # ── This install (at the target folder) ─────────────────────────────
+    log(f"Install at {target}")
+    if looks_like_project(target):
+        log(f"  {_mark('present')} webAgent code")
+        if is_git_checkout(target) and git:
+            _, branch = await _capture([git, "-C", str(target), "rev-parse", "--abbrev-ref", "HEAD"])
+            log(f"  {_mark('present')} git checkout — branch {branch or '?'} (Update uses git pull)")
+        else:
+            log(f"  {_mark('note')} not a git checkout (Update re-downloads the ZIP)")
+        vpy = _venv_python(target)
+        if vpy:
+            _, ver = await _capture([str(vpy), "--version"])
+            log(f"  {_mark('present')} Python env — .venv ({ver or 'built'})")
+            _, dep = await _capture([
+                str(vpy), "-c",
+                "import importlib.util as u;"
+                "m=['fastapi','uvicorn','openai','playwright','supabase'];"
+                "x=[n for n in m if u.find_spec(n) is None];"
+                "print('OK' if not x else 'MISSING:'+','.join(x))",
+            ])
+            if dep == "OK":
+                log(f"  {_mark('present')} dependencies — fastapi, uvicorn, openai, playwright, supabase")
+            else:
+                log(f"  {_mark('MISSING')} dependencies — {dep} (run Reset Py / Update)")
+        else:
+            log(f"  {_mark('MISSING')} Python env — .venv not built (run the install)")
+        db = target / "app" / "db" / "local.db"
+        log(f"  {_mark('present' if db.exists() else 'not yet')} local database — app/db/local.db")
+    elif target.exists():
+        log(f"  {_mark('not yet')} webAgent code — folder exists but nothing installed here")
+    else:
+        log(f"  {_mark('not yet')} webAgent code — folder will be created on install")
+
+    browsers = _playwright_browsers()
+    if browsers:
+        log(f"  {_mark('present')} browser    — Chromium ({', '.join(browsers)})")
+    else:
+        log(f"  {_mark('not yet')} browser    — Chromium installed during setup (~150 MB)")
+
+    ok_w, detail_w = _check_writable(target)
+    log(f"  {_mark('ok' if ok_w else 'FAIL')} writable   — {detail_w}")
+    ok_d, detail_d = _check_disk(target)
+    log(f"  {_mark('ok' if ok_d else 'low')} free space — {detail_d}")
+    log("")
+
+    if ok_gh and ok_w:
+        log("Ready to install. Open the Install tab and press Download & Install.")
+    else:
+        log("Resolve the OFFLINE/FAIL line(s) above, then try the install.")
+
+
 async def update(project_dir: Path, log: Log) -> bool:
     """Pull the latest code (git pull or fresh ZIP over the top) + re-sync deps.
 

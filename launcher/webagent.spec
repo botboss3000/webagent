@@ -24,6 +24,7 @@ binaries = textual_binaries
 hidden_imports = textual_hidden + [
     "webagent_launcher",
     "webagent_launcher.app",
+    "webagent_launcher.app_window",
     "webagent_launcher.ascii_anim",
     "webagent_launcher.stage",
     "webagent_launcher.config",
@@ -35,6 +36,9 @@ hidden_imports = textual_hidden + [
     "webagent_launcher.server",
     "webagent_launcher.chat_screen",
     "webagent_launcher.api_client",
+    "webagent_launcher.model_windows",
+    "webagent_launcher.model_windows.MODEL_CONTEXT_WINDOWS",
+    "webagent_launcher.model_windows.MODEL_CONTEXT_BY_ID",
     # Networking + process control
     "httpx",
     "psutil",

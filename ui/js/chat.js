@@ -463,6 +463,8 @@ async function sendMessage() {
 
   const _userBubble = addChatBubble('user', text);
   app.isProcessing = true;
+  // Light the pill immediately — WebSocket events refine the note from here.
+  if (app.chatActivityStart) app.chatActivityStart('Sending…');
 
   // Build payload
   const base = {
@@ -489,6 +491,7 @@ async function sendMessage() {
       addChatBubble('agent', 'Server error: ' + resp.status, 'error');
       app.isProcessing = false;
       app.chatSend.disabled = false;
+      if (app.chatActivityStop) app.chatActivityStop();
       return;
     }
 
@@ -499,6 +502,7 @@ async function sendMessage() {
       addChatBubble('agent', data.reply);
       app.isProcessing = false;
       app.chatSend.disabled = false;
+      if (app.chatActivityStop) app.chatActivityStop();
       if (typeof app.populateSessionSelect === 'function') {
         app.populateSessionSelect(app.currentUserId);
       }
@@ -527,6 +531,7 @@ async function sendMessage() {
     addChatBubble('agent', 'Request failed: ' + ((e && e.message) || e), 'error');
     app.isProcessing = false;
     app.chatSend.disabled = false;
+    if (app.chatActivityStop) app.chatActivityStop();
   }
 }
 
