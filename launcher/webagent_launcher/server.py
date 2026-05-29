@@ -39,6 +39,15 @@ AUTO_RESTART_MAX_TRIES = 5
 AUTO_RESTART_BASE_DELAY = 1.0
 AUTO_RESTART_MAX_DELAY = 30.0
 
+# ── Health-check (hung-server) tuning ──────────────────────────────────────
+# While the server is "running" we poll HEALTH_URL. A process that is alive but
+# wedged (event loop blocked) never trips the process-exit watchdog, so this
+# catches it. Require several *consecutive* misses so a momentary blip under
+# load can't cause a needless restart.
+HEALTH_POLL_INTERVAL = 10.0   # seconds between probes while running
+HEALTH_PROBE_TIMEOUT = 5.0    # per-probe HTTP timeout (a hung server won't answer)
+HEALTH_FAIL_THRESHOLD = 3     # consecutive misses ⇒ treat as hung (~30s window)
+
 # Windows-specific subprocess flags
 if sys.platform == "win32":
     _CREATE_NEW_PROCESS_GROUP = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -82,10 +91,12 @@ class ServerController:
         on_state_change: Optional[Callable[[ServerState], None]] = None,
         on_log_line: Optional[Callable[[str], None]] = None,
         auto_restart: bool = True,
+        health_check: bool = True,
     ) -> None:
         self.project_dir = project_dir
         self.state = ServerState()
         self.auto_restart = auto_restart
+        self.health_check = health_check
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._reader_task: Optional[asyncio.Task] = None
         self._on_state_change = on_state_change or (lambda _s: None)
@@ -94,11 +105,13 @@ class ServerController:
         #   _intentional_stop → set while WE asked the process to exit (stop /
         #     restart / reset); the reader uses it instead of reading mutable
         #     status, which races with stop()'s own "stopped" write.
-        #   _restart_failures → consecutive rapid crashes (drives backoff).
+        #   _restart_failures → consecutive rapid crashes / hangs (drives backoff).
         #   _auto_restart_task → the pending relaunch timer, if any.
+        #   _health_task → the long-lived health-poll loop (created on first start).
         self._intentional_stop = False
         self._restart_failures = 0
         self._auto_restart_task: Optional[asyncio.Task] = None
+        self._health_task: Optional[asyncio.Task] = None
 
     # ── state notification helper ──────────────────────────────────────
     def _emit(self) -> None:
@@ -224,6 +237,7 @@ class ServerController:
         self.state.pid = self._proc.pid
         self._reader_task = asyncio.create_task(self._read_output())
         asyncio.create_task(self._await_ready())
+        self._ensure_health_monitor()
         self._emit()
 
     def _resolve_command(self) -> list[str]:
@@ -361,29 +375,41 @@ class ServerController:
         if task is not None and not task.done():
             task.cancel()
 
-    def _schedule_auto_restart(self, ran_seconds: float) -> None:
-        """Queue a relaunch after an unexpected exit, with backoff + a cap so a
-        permanently-broken server doesn't spin in a tight crash loop."""
+    def _register_failure(self, ran_seconds: float) -> Optional[float]:
+        """Bump the crash/hang counter and return the backoff delay before the
+        next relaunch — or None if we've hit the give-up cap.
+
+        Shared by both failure paths (process exit + unresponsive) so they share
+        one backoff schedule and one crash-loop ceiling."""
         # A run that lasted past the stability window means the server was
-        # healthy and just died — forgive earlier rapid crashes.
+        # healthy and just died — forgive earlier rapid failures.
         if ran_seconds >= AUTO_RESTART_STABLE_SEC:
             self._restart_failures = 0
         self._restart_failures += 1
-
         if self._restart_failures > AUTO_RESTART_MAX_TRIES:
-            self._append_log(
-                f"[launcher] auto-restart gave up after {AUTO_RESTART_MAX_TRIES} "
-                "rapid crashes — fix the error above, then press Launch"
-            )
-            self.state.status = "error"
-            self.state.last_error = f"crash loop ({AUTO_RESTART_MAX_TRIES} rapid exits)"
-            self._emit()
-            return
-
-        delay = min(
+            return None
+        return min(
             AUTO_RESTART_MAX_DELAY,
             AUTO_RESTART_BASE_DELAY * (2 ** (self._restart_failures - 1)),
         )
+
+    def _giveup(self, reason: str) -> None:
+        """Stop trying to relaunch and surface an error for the user to fix."""
+        self._append_log(
+            f"[launcher] auto-restart gave up after {AUTO_RESTART_MAX_TRIES} "
+            f"{reason} — fix the error above, then press Launch"
+        )
+        self.state.status = "error"
+        self.state.last_error = f"auto-restart aborted ({reason})"
+        self._emit()
+
+    def _schedule_auto_restart(self, ran_seconds: float) -> None:
+        """Queue a relaunch after an unexpected *exit*, with backoff + a cap so a
+        permanently-broken server doesn't spin in a tight crash loop."""
+        delay = self._register_failure(ran_seconds)
+        if delay is None:
+            self._giveup("rapid crashes")
+            return
         self._append_log(
             f"[launcher] server disconnected — auto-restart in {delay:.0f}s "
             f"(attempt {self._restart_failures}/{AUTO_RESTART_MAX_TRIES})"
@@ -402,4 +428,91 @@ class ServerController:
         # Bail if the user / a reset already moved the server in the meantime.
         if self.state.status in ("starting", "running", "stopping"):
             return
+        await self.start(_auto=True)
+
+    # ── health check (hung-server) watchdog ────────────────────────────
+    def _ensure_health_monitor(self) -> None:
+        """Spawn the long-lived health-poll loop once (it persists across
+        start/stop cycles and simply idles while the server isn't running)."""
+        if self._health_task is None or self._health_task.done():
+            self._health_task = asyncio.create_task(self._health_monitor())
+
+    async def _probe_health(self) -> bool:
+        """One HTTP probe of the server root. False on any error/timeout —
+        which is exactly what a wedged (alive-but-unresponsive) server gives."""
+        try:
+            async with httpx.AsyncClient(timeout=HEALTH_PROBE_TIMEOUT) as client:
+                r = await client.get(HEALTH_URL)
+                return r.status_code < 500
+        except (httpx.HTTPError, OSError):
+            return False
+
+    async def _health_monitor(self) -> None:
+        """While the server is 'running', poll it. HEALTH_FAIL_THRESHOLD misses
+        in a row ⇒ the process is alive but hung ⇒ force a restart. Idle (no
+        probes) in every other state so it never fights start/stop/restart."""
+        consecutive = 0
+        while True:
+            try:
+                await asyncio.sleep(HEALTH_POLL_INTERVAL)
+            except asyncio.CancelledError:
+                return
+            try:
+                if not self.health_check or self.state.status != "running":
+                    consecutive = 0
+                    continue
+                if await self._probe_health():
+                    consecutive = 0
+                    continue
+                consecutive += 1
+                self._append_log(
+                    f"[launcher] health check missed "
+                    f"({consecutive}/{HEALTH_FAIL_THRESHOLD})"
+                )
+                if consecutive >= HEALTH_FAIL_THRESHOLD:
+                    consecutive = 0
+                    await self._restart_unresponsive()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                # Never let a transient error kill the monitor; try again next tick.
+                consecutive = 0
+
+    async def _restart_unresponsive(self) -> None:
+        """Bring a hung-but-alive server down and relaunch it, counting the
+        cycle against the same crash-loop guard as a real crash."""
+        # If the process actually exited, the process-exit watchdog owns the
+        # restart — don't double-act. Also bail if we're no longer 'running'.
+        if self._proc is None or self._proc.returncode is not None:
+            return
+        if self.state.status != "running":
+            return
+
+        window = HEALTH_POLL_INTERVAL * HEALTH_FAIL_THRESHOLD
+        self._append_log(
+            f"[launcher] server unresponsive (~{window:.0f}s without a health "
+            "reply) — restarting"
+        )
+        delay = self._register_failure(self.state.uptime_seconds)
+
+        # stop() sets _intentional_stop so the reader won't ALSO schedule an
+        # exit-restart, and force-kills if the hung process ignores CTRL-BREAK.
+        await self.stop()
+
+        if delay is None:
+            # Over the cap. Let the reader's finally finish (it sets "stopped"),
+            # then deterministically mark "error" so the UI shows the failure.
+            # CancelledError (app teardown) is a BaseException — let it bubble to
+            # the monitor's handler; only swallow ordinary errors here.
+            if self._reader_task is not None:
+                try:
+                    await self._reader_task
+                except Exception:
+                    pass
+            self._giveup("unresponsive/crash cycles")
+            return
+
+        if delay:
+            await asyncio.sleep(delay)
+        # _auto=True keeps the failure counter (don't reset on a watchdog relaunch).
         await self.start(_auto=True)

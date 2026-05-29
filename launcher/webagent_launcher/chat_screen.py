@@ -606,13 +606,28 @@ class ChatScreen(Screen):
         self.query_one("#chat-input", ChatInput).focus()
 
     # ── status / hints ─────────────────────────────────────────────────
+    def notify_server_state(self) -> None:
+        """Hook the launcher calls the instant the server's state changes, so the
+        dot flips immediately rather than waiting for the next 1 Hz poll."""
+        self._refresh_status()
+
     def _server_dot(self) -> tuple[str, str]:
-        st = self.controller.state.status if self.controller else "running"
+        # Prefer our injected controller; fall back to the app's live one so a
+        # missing reference can't pin the dot on a permanent "live".
+        ctrl = self.controller
+        if ctrl is None:
+            try:
+                ctrl = getattr(self.app, "controller", None)
+            except Exception:
+                ctrl = None
+        st = ctrl.state.status if ctrl else "running"
         if st == "running":
             return f"{G.DOT_LIVE} live", GREEN
-        if st in ("starting", "stopping"):
-            return f"{G.DOT_WARN} {st}", AMBER
-        return f"{G.DOT_DEAD} {st}", RED
+        if st == "starting":
+            return f"{G.DOT_WARN} reconnecting", AMBER
+        if st == "stopping":
+            return f"{G.DOT_WARN} stopping", AMBER
+        return f"{G.DOT_DEAD} disconnected", RED
 
     def _refresh_status(self) -> None:
         dot, color = self._server_dot()

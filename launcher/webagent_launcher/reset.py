@@ -130,12 +130,16 @@ async def reset_venv(
             log(f"[reset] FAIL to remove .venv: {e}")
             return False
 
-    # Run uv sync
+    # Run uv sync — prefer uv on PATH, else use (or download) the launcher's own.
     from shutil import which
     uv = which("uv")
     if not uv:
-        log("[reset] ERROR: uv not found on PATH. Install from https://docs.astral.sh/uv/")
-        return False
+        from .bootstrap import ensure_uv
+        uv_path = await ensure_uv(log)
+        if not uv_path:
+            log("[reset] ERROR: could not obtain the uv toolchain.")
+            return False
+        uv = str(uv_path)
 
     log(f"[reset] $ {uv} sync")
     proc = await asyncio.create_subprocess_exec(
