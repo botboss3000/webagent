@@ -5,6 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webAgent</title>
 <link rel="icon" href="./ui/favicon.svg" type="image/svg+xml">
+<!-- PWA: manifest + service worker -->
+<link rel="manifest" href="./ui/manifest.json">
+<meta name="theme-color" content="#0d0d1a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="webAgent">
+<link rel="apple-touch-icon" href="./ui/icons/icon-512x512.png">
 <!-- Fonts: Inter (sans) + JetBrains Mono (mono) -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1083,6 +1090,16 @@
     import('./ui/js/attachments.js'),
     import('./ui/js/data-sources.js'),
   ]);
+
+  // ── Register service worker for PWA support ──
+  if ('serviceWorker' in navigator) {
+    try {
+      const reg = await navigator.serviceWorker.register('/sw.js');
+      console.log('[PWA] Service worker registered:', reg.scope);
+    } catch (err) {
+      console.warn('[PWA] Service worker registration failed:', err);
+    }
+  }
 </script>
 <!-- ── Lucide icons + horizontal tab strip with carousel ───────── -->
 <script>
