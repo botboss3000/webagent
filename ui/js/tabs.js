@@ -100,6 +100,11 @@ export function initTabs() {
       stopAgents();
       stopAdminTools();
       startWeb();
+    } else if (tabValue === 'terminal') {
+      stopAutoAgent();
+      stopAgents();
+      stopAdminTools();
+      stopWeb();
     }
 
     // Re-render tutorial hint badges for the newly active tab. Defer a tick

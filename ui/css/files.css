@@ -1928,6 +1928,14 @@ input.fg-token-input-inline {
 .fg-sync { display: flex; flex-wrap: wrap; gap: 6px; position: relative; }
 .fg-sync .fg-result { width: 100%; }
 
+/* Refresh button — icon-only, spins while re-fetching status + commit graph */
+.fg-refresh-btn { padding: 4px 6px; }
+.fg-refresh-btn.is-spinning { opacity: 0.6; pointer-events: none; }
+.fg-refresh-btn.is-spinning .lucide-icon {
+  animation: files-icon-spin 0.9s linear infinite;
+  transform-origin: 50% 50%;
+}
+
 /* Token */
 .fg-token { padding: 0; }
 .fg-token > summary {

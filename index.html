@@ -443,6 +443,7 @@
     <option value="autoagent">Pages</option>
     <option value="agents">Agents</option>
     <option value="web">Web</option>
+    <option value="terminal">Terminal</option>
     <option value="account">Manage Account</option>
   </select>
 
@@ -467,6 +468,9 @@
       </button>
       <button type="button" class="main-tab" data-value="web" role="tab">
         <i data-lucide="globe" class="lucide-icon"></i>Web
+      </button>
+      <button type="button" class="main-tab" data-value="terminal" role="tab">
+        <i data-lucide="terminal" class="lucide-icon"></i>Terminal
       </button>
     </div>
     <button type="button" id="main-tabs-chev-right" class="main-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
@@ -554,6 +558,9 @@
     <div id="tab-autoagent" class="tab-content"></div>
     <div id="tab-agents" class="tab-content"></div>
     <div id="tab-web" class="tab-content"></div>
+    <div id="tab-terminal" class="tab-content">
+      <iframe src="/web-terminal/" class="terminal-frame" title="Terminal" loading="lazy"></iframe>
+    </div>
     <div id="tab-account" class="tab-content"></div>
     <div id="tab-admin-tools" class="tab-content"></div>
 

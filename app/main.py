@@ -32,7 +32,7 @@ class NoCacheMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
         p = request.url.path
-        if p.startswith("/ui/") or p == "/index.html" or p == "/":
+        if p.startswith("/ui/") or p.startswith("/web-terminal") or p == "/index.html" or p == "/":
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
@@ -323,6 +323,15 @@ except Exception as e:
 
 _UI_DIR = _APP_DIR.parent / "ui"
 app.mount("/ui", StaticFiles(directory=str(_UI_DIR)), name="ui")
+
+# Self-contained "web-terminal" page (app/web-terminal/), embedded as the
+# Terminal tab via an <iframe>. html=True so /web-terminal/ serves index.html.
+_WEB_TERMINAL_DIR = _APP_DIR / "web-terminal"
+try:
+    app.mount("/web-terminal", StaticFiles(directory=str(_WEB_TERMINAL_DIR), html=True), name="web-terminal")
+    logger.info("Web terminal mounted at /web-terminal")
+except Exception as e:
+    logger.warning("Could not mount /web-terminal: %s", e)
 
 _ROOT_INDEX_HTML = _APP_DIR.parent / "index.html"
 

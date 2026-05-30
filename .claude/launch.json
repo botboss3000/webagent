@@ -6,6 +6,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["run.py"],
       "port": 8080
+    },
+    {
+      "name": "web-terminal",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "7654", "--directory", "app/web-terminal"],
+      "port": 7654
     }
   ]
 }

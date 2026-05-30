@@ -492,6 +492,12 @@ async function _deleteTurn(bubble, btn) {
     if (!resp.ok || !data || !Array.isArray(data.deleted_ids)) {
       console.warn('Delete turn failed:', resp.status, data);
       _resetBubbleDeleteBtn(btn);
+      // Don't fail silently — the click registered but the server rejected it.
+      if (resp.status === 404 || resp.status === 405) {
+        alert('Couldn’t delete this turn: the server doesn’t have this feature yet. Restart the app server and try again.');
+      } else {
+        alert('Couldn’t delete this turn (server responded ' + resp.status + ').');
+      }
       return;
     }
     // Remove every bubble of the turn. Bubbles carry the deleted id in either
@@ -510,6 +516,7 @@ async function _deleteTurn(bubble, btn) {
   } catch (e) {
     console.warn('Delete turn error:', e);
     _resetBubbleDeleteBtn(btn);
+    alert('Couldn’t delete this turn — no response from the server. Is the app server running?');
   }
 }
 
