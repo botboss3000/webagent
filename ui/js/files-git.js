@@ -232,6 +232,7 @@ function renderSyncSection(s) {
       <button class="fg-btn" id="fg-pull-btn" title="Pull current branch"><i data-lucide="arrow-up" class="lucide-icon"></i> Pull</button>
       <button class="fg-btn" id="fg-push-btn" title="Push current branch"><i data-lucide="arrow-down" class="lucide-icon"></i> Push</button>
       <button class="fg-btn" id="fg-merge-btn" title="Merge another branch into the current branch"><i data-lucide="git-merge" class="lucide-icon"></i> Merge…</button>
+      <button class="fg-btn fg-refresh-btn" id="fg-refresh-btn" title="Refresh source control — re-check recent changes and reload the commit graph" aria-label="Refresh source control"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
       <div id="fg-sync-result" class="fg-result" hidden></div>
       <div class="fg-merge-menu" id="fg-merge-menu" hidden role="listbox" aria-label="Pick branch to merge in">
         <div class="fg-branch-menu-loading">Loading branches…</div>
@@ -436,6 +437,15 @@ function wireEvents(rootEl, s, g) {
   if (mergeBtn) mergeBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     toggleMergeMenu(rootEl);
+  });
+  const refreshBtn = body.querySelector('#fg-refresh-btn');
+  if (refreshBtn) refreshBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    // Re-fetch git status (recent changes) + commit graph and repaint only
+    // this sidebar. The spinner clears automatically when refreshGit() repaints
+    // the panel with a fresh button.
+    refreshBtn.classList.add('is-spinning');
+    refreshGit(rootEl);
   });
   const branchTrig = body.querySelector('#fg-branch-picker-trigger');
   if (branchTrig) branchTrig.addEventListener('click', (e) => {

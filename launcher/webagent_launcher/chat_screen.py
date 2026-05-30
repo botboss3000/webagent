@@ -15,11 +15,12 @@ No on-screen buttons — everything is a keyboard shortcut, shown in the hint
 bar. Talks to the SAME local server the launcher starts (HTTP + SSE).
 
 Command keys are all Ctrl-prefixed so they never collide with typing:
-  Ctrl+~ / Ctrl+`  home          Ctrl+Q  go back to last screen
-  Ctrl+W           agent picker  Ctrl+S  session picker
-  Ctrl+N           new session   Ctrl+$ / Ctrl+4  new agent
-  Ctrl+F           filter        Esc              exit
+  Ctrl+A           admin panel   Ctrl+W  agent picker
+  Ctrl+S           session       Ctrl+N  new session
+  Ctrl+4           new agent     Ctrl+T  theme menu
+  Ctrl+L           toggle anim   Ctrl+F  filter
   Ctrl+C/V/Z       copy/paste/undo (editor)
+  Esc              exit
 
 Glyphs are ASCII-only (no emoji) so they render in any Windows console font.
 """
@@ -34,6 +35,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from rich.markup import escape
 from rich.text import Text
 from textual import events, on
 from textual.events import Click
@@ -968,6 +970,7 @@ class ChatScreen(Screen):
             ("^W agent", "pick_agent"),
             ("^S session", "pick_session"),
             ("^N new", "new_session"),
+            ("^4 agent", "new_agent"),
             ("^T theme", "theme_menu"),
             ("^L anim", "toggle_anim"),
             ("^F filter", "filter"),
@@ -1048,7 +1051,7 @@ class ChatScreen(Screen):
     def _append_assistant(self, delta: str) -> None:
         if self._cur_assistant is None:
             self._cur_text = ""
-            self._cur_assistant = Static("", classes="msg-agent")
+            self._cur_assistant = Static("", classes="msg-agent", markup=False)
             self._mount(self._cur_assistant)
         self._cur_text += delta
         self._cur_assistant.update(self._cur_text)
@@ -1058,7 +1061,7 @@ class ChatScreen(Screen):
         text = content or self._cur_text or ""
         target = self._cur_assistant
         if target is None:
-            target = Static("", classes="msg-agent")
+            target = Static("", classes="msg-agent", markup=False)
             self._mount(target)
         try:
             from rich.markdown import Markdown
@@ -1073,7 +1076,7 @@ class ChatScreen(Screen):
     def _finalize_error(self, msg: str, style: str = RED) -> None:
         target = self._cur_assistant
         if target is None:
-            target = Static("", classes="msg-agent")
+            target = Static("", classes="msg-agent", markup=False)
             self._mount(target)
         body = self._cur_text + ("\n\n" if self._cur_text else "")
         target.update(Text(body) + Text(msg, style=style))
@@ -1108,8 +1111,8 @@ class ChatScreen(Screen):
         self._cur_assistant = None
         self._cur_text = ""
         args_text = self._fmt_args(args)
-        body = Static(args_text, classes="tool-body")
-        col = Collapsible(body, title=f"{G.TOOL} {tool}( {self._preview(args)} )", collapsed=True)
+        body = Static(args_text, classes="tool-body", markup=False)
+        col = Collapsible(body, title=f"{G.TOOL} {tool}( {escape(self._preview(args))} )", collapsed=True)
         col.add_class("tool-block")
         self._pending_tools.append({"tool": tool, "body": body, "col": col, "args": args_text})
         self._mount_cat(col, "tools")
@@ -1538,7 +1541,7 @@ class ChatScreen(Screen):
         return text[:idx] if idx != -1 else text
 
     def _mount_agent_final(self, content: str) -> None:
-        w = Static("", classes="msg-agent")
+        w = Static("", classes="msg-agent", markup=False)
         self._mount(w)
         try:
             from rich.markdown import Markdown
@@ -1550,7 +1553,7 @@ class ChatScreen(Screen):
         text = out if isinstance(out, str) else self._fmt_args(out)
         if len(text) > 4000:
             text = text[:4000] + "\n... (truncated)"
-        col = Collapsible(Static(text, classes="tool-body"), title=f"{G.TOOL} {name}", collapsed=True)
+        col = Collapsible(Static(text, classes="tool-body", markup=False), title=f"{G.TOOL} {escape(name)}", collapsed=True)
         col.add_class("tool-block")
         self._mount_cat(col, "tools")
 

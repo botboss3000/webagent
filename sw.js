@@ -13,7 +13,7 @@
  * Bump CACHE on each release so the activate handler drops the prior cache.
  */
 
-const CACHE = "webagent-v2";
+const CACHE = "webagent-v3";
 const STATIC_PATTERN = /\.(css|js|json|svg|png|ico|woff2?)$/;
 const CDN_PATTERN = /^(https?:)?\/\/(fonts\.googleapis|cdn\.jsdelivr|unpkg)\./;
 const API_PATTERN = /^\/api\//;
@@ -68,6 +68,11 @@ self.addEventListener("fetch", (e) => {
 
   // API calls — network-only
   if (API_PATTERN.test(url.pathname)) return;
+
+  // web-terminal — a self-contained app embedded as the Terminal tab. Never
+  // SW-cache it, so a deploy is never a version stale (its .js/.jsx are served
+  // no-store anyway). Without this, .js assets hit staleWhileRevalidate below.
+  if (url.pathname.startsWith("/web-terminal")) return;
 
   // CDN assets — stale-while-revalidate
   if (CDN_PATTERN.test(url.hostname)) {
