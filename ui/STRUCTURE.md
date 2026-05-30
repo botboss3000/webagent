@@ -15,7 +15,7 @@ body
 │   ├── #main-tabs-wrap            (chevron-scroll carousel)
 │   │   ├── #main-tabs-chev-left
 │   │   ├── #main-tabs             (role="tablist")
-│   │   │   └── .main-tab          (Pages / Agent Manager / Admin Tools)
+│   │   │   └── .main-tab          (Pages / Agent Manager / Web / Admin Tools)
 │   │   └── #main-tabs-chev-right
 │   └── #status-right              (right side: chat toggle, user menu)
 │       ├── #chat-toggle-btn
@@ -27,6 +27,7 @@ body
 │   ├── #main-panel                ← left pane (tab content)
 │   │   ├── #tab-autoagent         (Pages — current default)
 │   │   ├── #tab-agents            (Agent Manager)
+│   │   ├── #tab-web               (Web — in-app AI-augmented browser; partial: ui/web.html)
 │   │   ├── #tab-account           (Account, opened from user menu)
 │   │   └── #tab-admin-tools       (Admin Tools — admins only)
 │   │

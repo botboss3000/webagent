@@ -65,8 +65,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if path.startswith("/docs") or path.startswith("/openapi"):
             return await call_next(request)
 
-        # Allow WebSocket endpoints (auth done via first message)
-        if path.startswith("/api/v1/agent/ws") or path.startswith("/api/v1/terminal/ws"):
+        # Allow WebSocket endpoints (auth done via first message / query token)
+        if (path.startswith("/api/v1/agent/ws")
+                or path.startswith("/api/v1/terminal/ws")
+                or path.startswith("/api/v1/browser/ws")):
             return await call_next(request)
 
         # Check for Authorization header

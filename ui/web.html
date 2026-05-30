@@ -1,0 +1,22 @@
+<!-- Web: in-app, AI-augmented browser.
+     Loaded by ui/js/partial-loader.js into #tab-web · logic: ui/js/web.js ·
+     styles: ui/css/web.css · streamed from app/api/browser_stream.py.
+     The page shares the agent's per-session browser, so whatever the agent
+     does shows here live and the user can take over at any time. -->
+<div class="web-page">
+  <div class="web-toolbar">
+    <button class="web-btn" data-act="back" title="Back" aria-label="Back">&#8249;</button>
+    <button class="web-btn" data-act="forward" title="Forward" aria-label="Forward">&#8250;</button>
+    <button class="web-btn" data-act="reload" title="Reload" aria-label="Reload">&#8635;</button>
+    <input class="web-url" type="text" spellcheck="false" autocomplete="off" placeholder="Enter a URL or search&hellip;" />
+    <button class="web-btn web-go" data-act="go">Go</button>
+    <span class="web-status">
+      <span class="web-dot" aria-hidden="true"></span>
+      <span class="web-status-text">idle</span>
+    </span>
+  </div>
+  <div class="web-stage" tabindex="0">
+    <img class="web-frame" alt="" draggable="false" />
+    <div class="web-empty">This is a shared browser. Type a URL above to start &mdash; the agent can see and act on this same page, and you can take over any time.</div>
+  </div>
+</div>

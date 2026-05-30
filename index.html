@@ -57,6 +57,7 @@
 <link rel="stylesheet" href="./ui/css/autoagent.css">
 <link rel="stylesheet" href="./ui/css/agents.css">
 <link rel="stylesheet" href="./ui/css/files.css">
+<link rel="stylesheet" href="./ui/css/web.css">
 <link rel="stylesheet" href="./ui/css/tutorial.css">
 <!-- Design system tokens + visual overrides (loaded last to take effect) -->
 <link rel="stylesheet" href="./ui/css/design-system.css">
@@ -121,6 +122,14 @@
     border-radius: 0 !important;
     box-shadow: none !important;
   }
+  /* Make chat bubbles opaque so the stargaze background doesn't show through.
+     The bubbles themselves get solid backgrounds; the panel stays transparent
+     so the stage background (and its fade-to-input mask) still works. */
+  .chat-bubble { background: var(--chat-bubble-bg, inherit) !important; }
+  body:not(.light-mode) .chat-bubble.user { --chat-bubble-bg: #1a1b2e; }
+  body:not(.light-mode) .chat-bubble.agent { --chat-bubble-bg: #16162a; }
+  body.light-mode .chat-bubble.user { --chat-bubble-bg: #ffedd5; }
+  body.light-mode .chat-bubble.agent { --chat-bubble-bg: #ffffff; }
   #chat-header {
     border-bottom: 1px solid color-mix(in oklab, currentColor 8%, transparent) !important;
   }
@@ -430,6 +439,7 @@
     <option value="admin-tools">Admin Tools</option>
     <option value="autoagent">Pages</option>
     <option value="agents">Agents</option>
+    <option value="web">Web</option>
     <option value="account">Manage Account</option>
   </select>
 
@@ -451,6 +461,9 @@
       </button>
       <button type="button" class="main-tab" data-value="agents" role="tab">
         <i data-lucide="bot" class="lucide-icon"></i>Agents
+      </button>
+      <button type="button" class="main-tab" data-value="web" role="tab">
+        <i data-lucide="globe" class="lucide-icon"></i>Web
       </button>
     </div>
     <button type="button" id="main-tabs-chev-right" class="main-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
@@ -537,6 +550,7 @@
     <!-- Tab content -->
     <div id="tab-autoagent" class="tab-content"></div>
     <div id="tab-agents" class="tab-content"></div>
+    <div id="tab-web" class="tab-content"></div>
     <div id="tab-account" class="tab-content"></div>
     <div id="tab-admin-tools" class="tab-content"></div>
 
@@ -552,7 +566,9 @@
         <span id="agent-label">Agent:
           <div id="agent-dropdown" class="agent-dropdown">
             <button id="agent-dropdown-trigger" type="button" class="status-select agent-dropdown-trigger">
+              <span id="agent-dropdown-status" class="agent-dropdown-status"></span>
               <span id="agent-dropdown-label">—</span>
+              <button id="agent-delete-header" title="Delete agent" class="header-delete-btn" data-state="trash"><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>
               <i data-lucide="chevron-down" style="width:12px;height:12px;flex-shrink:0;"></i>
             </button>
             <div id="agent-dropdown-menu" class="agent-dropdown-menu" hidden></div>
@@ -562,7 +578,9 @@
         <span id="session-label">Session:
           <div id="session-dropdown" class="session-dropdown">
             <button id="session-dropdown-trigger" type="button" class="status-select session-dropdown-trigger">
+              <span id="session-dropdown-status" class="session-dropdown-status"></span>
               <span id="session-dropdown-label">—</span>
+              <button id="session-delete-header" title="Delete session" class="header-delete-btn" data-state="trash"><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>
               <i data-lucide="chevron-down" style="width:12px;height:12px;flex-shrink:0;"></i>
             </button>
             <div id="session-dropdown-menu" class="session-dropdown-menu" hidden></div>

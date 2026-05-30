@@ -2147,6 +2147,99 @@
                 <div class="ac-hint">Mobile only. "Always" forces the chat-first boot then animates to the saved view. "Remember" skips the animation and goes straight to whichever panel you had open last.</div>
               </div>
             </div>
+
+            <!-- ── Remote Access (reach this server from a phone / other device) ── -->
+            <details class="ac-card" id="ac-ra-card" open style="margin-top:14px;">
+              <summary class="ac-card-label">
+                <i data-lucide="radio-tower" class="lucide-icon" style="width:14px;height:14px;color:var(--accent);"></i>
+                Remote Access
+                <span id="ac-ra-active-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+              </summary>
+
+              <div class="ac-hint" style="margin-top:8px;">
+                Reach this server from your phone or another device. The same-network address always works on your Wi-Fi; pick a method below to reach it from anywhere.
+              </div>
+
+              <div id="ac-ra-env-banner" class="ac-info-banner" hidden style="margin-top:10px;border-left-color:var(--warning);color:var(--warning);font-size:11px;">
+                Config is env-locked (WEBAGENT_CONFIG_SOURCE=env). Settings can be viewed but not changed here.
+              </div>
+
+              <div class="ac-info-banner" style="margin-top:10px;border-left-color:var(--danger);color:var(--danger);font-size:11px;line-height:1.5;">
+                <strong>Security:</strong> exposing this machine also exposes its admin shell/file tools. Keep sign-in on and admin tools admin-only. Prefer Tailscale (private) when you don't need a public link.
+              </div>
+
+              <!-- Same network -->
+              <div style="margin-top:14px;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-elev);">
+                <div class="ac-label" style="display:flex;align-items:center;gap:6px;margin:0;">
+                  <i data-lucide="wifi" class="lucide-icon" style="width:14px;height:14px;color:var(--success);"></i>
+                  Same network (Wi-Fi)
+                </div>
+                <div class="ac-hint" style="margin-top:4px;">On a device on the same Wi-Fi, open this address. No setup needed. (Plain http — secure-context features like Google sign-in need a tunnel.)</div>
+                <div style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;">
+                  <code id="ac-ra-sn-url" style="font-size:13px;padding:4px 8px;background:var(--bg-0);border:1px solid var(--border);border-radius:6px;color:var(--fg-1);">&mdash;</code>
+                  <button id="ac-ra-sn-copy" class="ac-btn" type="button">Copy</button>
+                </div>
+                <div id="ac-ra-sn-qr" class="ac-ra-qr" style="margin-top:10px;display:none;"></div>
+                <div id="ac-ra-sn-others" class="ac-hint" style="margin-top:8px;font-size:11px;"></div>
+              </div>
+
+              <!-- Remote method -->
+              <label class="ac-label" style="margin-top:14px;">Remote method (reach it from anywhere)</label>
+              <select id="ac-ra-method" class="ac-input">
+                <option value="same_network">Same network only (no remote tunnel)</option>
+                <option value="ngrok">ngrok &mdash; app-managed tunnel</option>
+                <option value="cloudflare">Cloudflare &mdash; named tunnel on your domain</option>
+                <option value="tailscale">Tailscale &mdash; private mesh</option>
+                <option value="manual">Port-forward &mdash; manual</option>
+              </select>
+              <div id="ac-ra-blurb" class="ac-hint" style="margin-top:6px;line-height:1.5;"></div>
+              <div id="ac-ra-fields" style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
+
+              <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;align-items:center;">
+                <button id="ac-ra-start" class="ac-btn ac-btn-primary" type="button">Start</button>
+                <button id="ac-ra-stop" class="ac-btn" type="button">Stop</button>
+                <button id="ac-ra-test" class="ac-btn" type="button">Test</button>
+                <button id="ac-ra-save-cfg" class="ac-btn" type="button">Save Settings</button>
+                <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;">
+                  <input type="checkbox" id="ac-ra-autostart"> Start on boot
+                </label>
+                <span id="ac-ra-status" class="ac-hint" style="margin-left:6px;"></span>
+              </div>
+              <div id="ac-ra-public-row" class="ac-hint" style="margin-top:8px;font-size:12px;"></div>
+
+              <!-- Phone bookmark / signpost -->
+              <div style="margin-top:14px;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-elev);">
+                <div class="ac-label" style="display:flex;align-items:center;gap:6px;margin:0;">
+                  <i data-lucide="smartphone" class="lucide-icon" style="width:14px;height:14px;color:var(--accent);"></i>
+                  Phone bookmark (auto-reconnect)
+                </div>
+                <div class="ac-hint" style="margin-top:4px;">Save this one link on your phone. It always forwards to this PC's current address through the signpost &mdash; even when the address changes.</div>
+                <div style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;">
+                  <code id="ac-ra-phone-url" style="font-size:12px;padding:4px 8px;background:var(--bg-0);border:1px solid var(--border);border-radius:6px;color:var(--fg-1);word-break:break-all;max-width:100%;">&mdash;</code>
+                  <button id="ac-ra-phone-copy" class="ac-btn" type="button">Copy</button>
+                  <button id="ac-ra-regen" class="ac-btn" type="button">New key</button>
+                </div>
+                <div id="ac-ra-phone-qr" class="ac-ra-qr" style="margin-top:10px;display:none;"></div>
+
+                <details style="margin-top:10px;">
+                  <summary style="cursor:pointer;font-size:11px;color:var(--muted);">Signpost settings</summary>
+                  <label class="ac-label" style="margin-top:8px;">Signpost server (always-on)</label>
+                  <input id="ac-ra-sp-server" class="ac-input" placeholder="https://webagent.live">
+                  <label class="ac-label" style="margin-top:8px;">Role</label>
+                  <select id="ac-ra-sp-role" class="ac-input">
+                    <option value="client">Client &mdash; this PC reports its address</option>
+                    <option value="server">Server &mdash; host the directory for others</option>
+                    <option value="both">Both</option>
+                  </select>
+                  <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;margin-top:8px;">
+                    <input type="checkbox" id="ac-ra-sp-enabled"> Signpost enabled
+                  </label>
+                  <div style="margin-top:8px;">
+                    <button id="ac-ra-sp-save" class="ac-btn" type="button">Save Signpost</button>
+                  </div>
+                </details>
+              </div>
+            </details>
           </section>
 
         </div><!-- /app-config-content -->

@@ -519,6 +519,8 @@ ChatScreen { background: #0a0a14; scrollbar-size: 0 0; }
     background: #0a0a14;
     padding: 0 1;
     overflow-y: auto;
+    /* Hidden initially; shown once loading finishes */
+    display: none;
     /* Thumb is phosphor green; the TRACK matches the panel background so there
      * is no navy "line" down the edge when the thumb is short or absent. The
      * gutter is reserved (stable) so the bar lives inside the panel, not over
@@ -587,6 +589,28 @@ ChatScreen { background: #0a0a14; scrollbar-size: 0 0; }
     padding: 0 1;
 }
 #filter-list > .selection-list--option { padding: 0 1; }
+
+/* loading log — shown during init, hidden once ready */
+#chat-loading-log {
+    width: 100%;
+    height: 1fr;
+    background: #0a0a14;
+    padding: 0 1;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    scrollbar-size-vertical: 1;
+    scrollbar-color: #ffb000 #0a0a14;
+    scrollbar-color-hover: #ffcc44 #0a0a14;
+    scrollbar-color-active: #ffcc44 #0a0a14;
+    scrollbar-background: #0a0a14;
+    scrollbar-background-hover: #0a0a14;
+    scrollbar-background-active: #0a0a14;
+}
+.loading-line {
+    width: 100%;
+    color: #8a8aa8;
+    padding: 0 1;
+}
 
 /* messages */
 .msg-user {
