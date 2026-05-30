@@ -151,16 +151,33 @@ async def generic_webhook_handler(webhook_id: str, request: Request):
         if len(history) > 20:
             history = history[-20:]
 
-        # 9. Run agent loop
-        reply = await run_agent_loop_buffered(
-            user_id=user_id,
-            session_id=session_id,
-            user_message=user_message,
-            system_prompt=system_prompt,
-            history=history,
-            max_turns=agent.get("max_turn_count", 10),
-            channel="webhook",
+        # 9. Run agent loop — supervised + recorded so a restart/freeze mid-run is
+        #    detected and re-ignited by the self-healing layer instead of lost.
+        from app.agent.runner import run_supervised_turn, RunOutcome
+        _wh_agent_id = agent.get("id")
+        _relaunch_ctx = {
+            "origin": "webhook", "session_id": session_id, "user_id": user_id,
+            "agent_id": _wh_agent_id, "channel": "webhook", "timeout_seconds": 600,
+        }
+
+        async def _build_webhook_turn(replaced: bool) -> RunOutcome:
+            _reply = await run_agent_loop_buffered(
+                user_id=user_id,
+                session_id=session_id,
+                user_message=user_message,
+                system_prompt=system_prompt,
+                history=history,
+                max_turns=agent.get("max_turn_count", 10),
+                channel="webhook",
+            )
+            return RunOutcome(status="complete", stop_cause="complete", reply=_reply)
+
+        _outcome = await run_supervised_turn(
+            session_id=session_id, user_id=user_id, agent_id=_wh_agent_id,
+            origin="webhook", channel="webhook", relaunch_ctx=_relaunch_ctx,
+            build_turn=_build_webhook_turn, await_result=True, result_timeout=620,
         )
+        reply = (_outcome.reply if _outcome else "") or ""
 
         duration_ms = int((time.time() - start) * 1000)
 

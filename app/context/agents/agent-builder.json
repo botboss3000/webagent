@@ -1,6 +1,7 @@
 {
   "id": "agent-builder",
-  "version": 3,
+  "version": 4,
+  "abilities": ["agent_orchestration", "codebase_admin", "web_access", "browser_control"],
   "name": "Agent Builder",
   "description": "Helps users create and configure agents via the REST API.",
   "icon": "🛠️",

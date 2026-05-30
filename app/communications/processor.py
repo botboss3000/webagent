@@ -276,7 +276,7 @@ async def _run_agent_loop(
         db = get_db()
         session_id = user_id
 
-        await db.insert_interaction(
+        _turn_uid = await db.insert_interaction(
             user_id, session_id, role="user", content=message_text,
             channel=channel,
             metadata=json.dumps({"source": f"{channel}/message"}),
@@ -352,16 +352,37 @@ async def _run_agent_loop(
             db, user_id, session_id, exclude_interaction_ids=None,
         )
 
-        reply = await run_agent_loop_buffered(
-            user_id=user_id,
-            session_id=session_id,
-            user_message=message_text,
-            system_prompt=system_prompt,
-            agent_id=agent.get("id", ""),
-            history=history,
-            max_turns=agent.get("max_turn_count", 10),
-            channel=channel,
+        # Run supervised + recorded so an inbound run survives a restart/freeze.
+        # No delivery block in the relaunch recipe: on resume the agent re-sends
+        # via its own send_{channel}_message tool (per the channel overlay above),
+        # which avoids a double-send.
+        from app.agent.runner import run_supervised_turn, RunOutcome
+        _inbound_agent_id = agent.get("id", "")
+        _relaunch_ctx = {
+            "origin": "inbound", "session_id": session_id, "user_id": user_id,
+            "agent_id": _inbound_agent_id, "channel": channel, "timeout_seconds": 600,
+        }
+
+        async def _build_inbound_turn(replaced: bool) -> RunOutcome:
+            _reply = await run_agent_loop_buffered(
+                user_id=user_id,
+                session_id=session_id,
+                user_message=message_text,
+                system_prompt=system_prompt,
+                agent_id=_inbound_agent_id,
+                history=history,
+                max_turns=agent.get("max_turn_count", 10),
+                channel=channel,
+            )
+            return RunOutcome(status="complete", stop_cause="complete", reply=_reply)
+
+        _outcome = await run_supervised_turn(
+            session_id=session_id, user_id=user_id, agent_id=_inbound_agent_id,
+            origin="inbound", channel=channel, turn_id=_turn_uid,
+            relaunch_ctx=_relaunch_ctx, build_turn=_build_inbound_turn,
+            await_result=True, result_timeout=620,
         )
+        reply = (_outcome.reply if _outcome else "") or ""
 
         return reply
     except Exception as e:

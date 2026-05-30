@@ -737,11 +737,19 @@ async def get_session_messages(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _session_access_ok(cur, session_id: str, request: Request):
+def _session_access_ok(cur, session_id: str, request: Request, user_id: Optional[str] = None):
     """Return True if the requester owns / participates in the session, False if
     they clearly don't, or None when there's no session row to check against
     (legacy / temp DB) — in which case the caller should fall through, exactly
-    like get_session_messages does. Mirrors that endpoint's auth logic."""
+    like get_session_messages does. Mirrors that endpoint's auth logic.
+
+    ``user_id`` is the active client identity (``app.currentUserId``) passed as a
+    query param. It's accepted as a fallback identity when there's no matching
+    JWT — exactly like get_user_sessions does — so unauthenticated local UUID
+    users (and sessions created from the TUI / launcher under ``admin_default``)
+    can manage their own rows. The session row's owner / participant list is
+    still the gate: a claimed ``user_id`` only authorizes when it actually
+    matches the session, so it can't widen access to other users' sessions."""
     _token = ""
     _auth_header = request.headers.get("Authorization", "")
     if _auth_header.startswith("Bearer "):
@@ -751,7 +759,7 @@ def _session_access_ok(cur, session_id: str, request: Request):
     _payload = decode_token(_token) if _token else None
     requesting_user_id = _payload.get("user_id") if _payload else None
     requesting_username = _payload.get("sub") if _payload else None
-    requester_identities = {v for v in (requesting_user_id, requesting_username) if v}
+    requester_identities = {v for v in (requesting_user_id, requesting_username, user_id) if v}
     try:
         cur.execute(
             "SELECT user_id, participants FROM sessions WHERE id = ?",
@@ -779,6 +787,7 @@ async def delete_turn(
     request: Request,
     session_id: str = Query(..., description="Session ID"),
     interaction_id: str = Query(..., description="Any interaction id within the turn to delete"),
+    user_id: Optional[str] = Query(None, description="Active client identity — fallback when no JWT (local users)"),
     db: str = Query("local.db", description="Database filename"),
 ):
     """Delete one whole conversation turn from `interactions`.
@@ -801,7 +810,7 @@ async def delete_turn(
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
-        access = _session_access_ok(cur, session_id, request)
+        access = _session_access_ok(cur, session_id, request, user_id)
         if access is False:
             conn.close()
             raise HTTPException(status_code=403, detail="Not a participant in this session")

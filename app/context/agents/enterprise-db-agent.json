@@ -1,6 +1,7 @@
 {
   "id": "enterprise-db-agent",
-  "version": 1,
+  "version": 2,
+  "abilities": [],
   "name": "Data Analyst",
   "description": "Read-only database queries and data reports.",
   "icon": "📊",

@@ -10,12 +10,13 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, Input, Label, ListItem, ListView, RichLog, Select, Static
 
 from .config import LauncherConfig, default_install_dir
 from .palette import PRESETS, Preset, apply_preset_to_config, build_palette_from_config
 from .ascii_anim import ANIM_STYLES, ANIM_LABELS
+from .stage import AnimatedStage
 from .widgets import Slider
 
 
@@ -508,3 +509,97 @@ class ConfirmModal(ModalScreen[bool]):
     @on(Button.Pressed, "#no")
     def _no(self) -> None:
         self.dismiss(False)
+
+
+# ── full-screen first-run installer / re-point ──────────────────────────
+class InstallScreen(Screen):
+    """Full-screen wrapper around :class:`SetupPanel`.
+
+    Replaces the old trick of repurposing the home footer buttons as installer
+    tabs. The animated logo stays on top (so it's visible all through the
+    install, exactly as before), the SetupPanel body fills the middle, and a
+    footer row carries the installer tabs (Install / Manual Install / Health
+    Check) plus Theme + Quit.
+
+    The launcher pushes this screen when there's no valid project (first run) or
+    when re-pointing at a new folder. It hands the outcome back through the
+    ``on_done(ok)`` / ``on_cancel()`` callbacks — the SAME callables the old
+    inline flow used — so the app's commit-target logic is unchanged. The
+    SetupPanel internals and ``bootstrap`` are deliberately left untouched.
+    """
+
+    BINDINGS = [Binding("escape", "esc", "Cancel", show=True)]
+
+    def __init__(
+        self,
+        cfg: LauncherConfig,
+        on_done: Callable[[bool], None],
+        on_cancel: Optional[Callable[[], None]] = None,
+        repoint: bool = False,
+    ) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self._on_done_cb = on_done
+        self._on_cancel_cb = on_cancel
+        self._repoint = repoint
+        # SetupPanel keeps its own callbacks; we forward them to the app.
+        self._panel = SetupPanel(cfg, self._panel_done, self._panel_cancel)
+
+    def compose(self) -> ComposeResult:
+        stage = AnimatedStage(
+            palette=build_palette_from_config(self.cfg),
+            char_ramp=self.cfg.char_ramp,
+            fps=self.cfg.fps,
+            style=self.cfg.animation_style,
+            speed=self.cfg.theme_speed,
+            intensity=self.cfg.animation_intensity,
+        )
+        stage.id = "install-stage"
+        with Vertical(id="install-root"):
+            yield stage
+            yield self._panel
+            with Horizontal(id="install-tabs"):
+                yield Button("Install", id="inst-install", classes="primary")
+                yield Button("Manual Install", id="inst-manual", classes="muted")
+                yield Button("Health Check", id="inst-doctor", classes="muted")
+                yield Button("Theme", id="inst-theme", classes="muted")
+                yield Button("Quit", id="inst-quit", classes="muted")
+
+    def on_mount(self) -> None:
+        # The panel is display:none by default (it used to share the home slot);
+        # it always shows inside this dedicated screen.
+        self._panel.display = True
+        self._panel.start(repoint=self._repoint)
+
+    @on(Button.Pressed)
+    def _tabs(self, event: Button.Pressed) -> None:
+        # Only the footer-tab buttons are handled here; the SetupPanel's own
+        # buttons (#setup-go, #setup-cancel, …) are handled inside the panel and
+        # simply bubble through this (no-op) for non-tab ids.
+        bid = event.button.id or ""
+        if bid == "inst-install":
+            self._panel.show_install()
+        elif bid == "inst-manual":
+            self._panel.show_manual()
+        elif bid == "inst-doctor":
+            self._panel.show_doctor()
+        elif bid == "inst-theme":
+            self.app.action_cycle_theme()
+        elif bid == "inst-quit":
+            self.app.run_worker(self.app.action_request_quit())
+
+    def _panel_done(self, ok: bool) -> None:
+        if self._on_done_cb is not None:
+            self._on_done_cb(ok)
+
+    def _panel_cancel(self) -> None:
+        if self._on_cancel_cb is not None:
+            self._on_cancel_cb()
+
+    def action_esc(self) -> None:
+        # Esc cancels a re-point (returns to chat); on first-run there's nothing
+        # to return to, so it quits the launcher.
+        if self._repoint and self._on_cancel_cb is not None:
+            self._on_cancel_cb()
+        else:
+            self.app.run_worker(self.app.action_request_quit())

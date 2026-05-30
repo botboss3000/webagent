@@ -960,6 +960,24 @@ async def stream_agent_events(
             _MAX_WALL_SECONDS = float(os.environ.get("AGENT_MAX_WALL_SECONDS", "300"))
         except (ValueError, TypeError):
             _MAX_WALL_SECONDS = 300.0
+        # Liveness heartbeat cadence — how often the loop proves it is alive by
+        # advancing session_runs.heartbeat_at. The watchdog's "frozen" threshold
+        # must be several multiples of this. Best-effort + throttled.
+        try:
+            _HEARTBEAT_INTERVAL = float(os.environ.get("AGENT_RUN_HEARTBEAT_INTERVAL", "5"))
+        except (ValueError, TypeError):
+            _HEARTBEAT_INTERVAL = 5.0
+        _last_heartbeat = 0.0
+
+        async def _beat() -> None:
+            nonlocal _last_heartbeat
+            _hb_now = time.monotonic()
+            if (_hb_now - _last_heartbeat) >= _HEARTBEAT_INTERVAL:
+                _last_heartbeat = _hb_now
+                try:
+                    await db.run_state_heartbeat(session_id)
+                except Exception:
+                    pass
 
         while turn_count < max_turns:
             # Wall-clock safety cap — finish gracefully instead of timing out.
@@ -978,6 +996,9 @@ async def stream_agent_events(
                 break
             if loop_config.is_enabled("interrupt_chk"):
                 await _check_interrupt(session_id, interrupt_event)
+
+            # Prove liveness between turns (covers long tool executions).
+            await _beat()
 
             turn_count += 1
             if agent_id:
@@ -1104,6 +1125,8 @@ async def stream_agent_events(
                     await db.update_interaction(streaming_asst_id, content=collected_content)
                 except Exception as _se:
                     logger.debug("stream persist (update) failed: %s", _se)
+                # Keep the liveness heartbeat fresh during a long single-turn stream.
+                await _beat()
 
             if loop_config.is_enabled("interrupt_chk"):
                 await _check_interrupt(session_id, interrupt_event)

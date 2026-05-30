@@ -1,6 +1,7 @@
 {
   "id": "integration-admin-agent",
-  "version": 1,
+  "version": 2,
+  "abilities": ["agent_orchestration", "codebase_admin", "web_access", "browser_control"],
   "name": "Integration Admin",
   "description": "Creates and modifies third-party integration modules (app/integrations/*_tools.py) and OAuth credentials. Admin-only.",
   "icon": "🧩",

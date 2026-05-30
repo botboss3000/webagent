@@ -211,6 +211,19 @@ export function connectAgent() {
         }
         break;
 
+      case 'resumed':
+        // The self-healing layer re-ignited a run that had stopped involuntarily
+        // (server restart / frozen / zombie). Clear any stale "interrupted" or
+        // "Connection lost" state and re-engage the thinking indicator — the
+        // resumed turn streams in as a fresh bubble right after this.
+        if (eventSessionId && eventSessionId !== app.currentSessionId) {
+          if (event.replayed) _stashReplay(eventSessionId, event);
+          break;
+        }
+        app.isProcessing = true;
+        if (app.chatSend) app.chatSend.disabled = true;
+        break;
+
       case 'user_message': {
         // Every user message (typed by this user, sent from another device, or
         // injected by an event-triggered run) is broadcast here so ALL devices

@@ -132,6 +132,10 @@ async def _ensure_session(db, user_id: str, session_id: str, title: str = None) 
 class InterruptRequest(BaseModel):
     session_id: str
 
+
+class ResumeRequest(BaseModel):
+    session_id: str
+
 def _match_slash_command(message: str):
     """Match message against all slash_command triggers from the trigger index.
 
@@ -246,6 +250,50 @@ async def interrupt_chat(request: InterruptRequest):
     except Exception as e:
         logger.error(f"Error setting interrupt: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/resume")
+async def resume_chat(request: ResumeRequest):
+    """Manually re-ignite a stopped run (the one-click path for a run held as
+    'needs_manual_resume' by the auto-resume opt-out, or any interrupted/failed
+    turn the user wants to continue). Backend-driven — works even with no live
+    WebSocket. The resumed turn streams into the chat via the normal event path."""
+    try:
+        from app.agent.runner import manual_resume
+        ok = await manual_resume(request.session_id)
+        return {"status": "ok" if ok else "noop",
+                "resumed": ok,
+                "message": "Resuming." if ok else "Nothing to resume (already running or not resumable)."}
+    except Exception as e:
+        logger.error("Error resuming run %s: %s", request.session_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/self-heal/status")
+async def self_heal_status():
+    """Observability: the liveness watchdog's status + counters, plus the list of
+    runs currently awaiting a manual one-click resume."""
+    try:
+        from app.agent.watchdog import get_watchdog
+        wd = await get_watchdog().get_status()
+    except Exception as e:
+        wd = {"error": str(e)}
+    manual: List[Dict[str, Any]] = []
+    try:
+        db = get_db()
+        conn = db._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT session_id, user_id, origin, resume_attempts, error, updated_at "
+                "FROM session_runs WHERE stop_cause='needs_manual_resume' "
+                "ORDER BY updated_at DESC LIMIT 100"
+            ).fetchall()
+            manual = [dict(r) for r in rows]
+        finally:
+            conn.close()
+    except Exception:
+        manual = []
+    return {"watchdog": wd, "awaiting_manual_resume": manual}
 
 
 
@@ -877,7 +925,17 @@ async def _run_turn_background(
         session_id=session_id, user_id=user_id, turn_id=user_interaction_id, db=db,
     )
     try:
-        await db.run_state_begin(session_id, user_id, agent.get("id"), user_interaction_id)
+        # origin='web' + a relaunch recipe so the self-healing layer can re-ignite
+        # this turn headlessly (boot recovery / watchdog) if it dies involuntarily.
+        _web_relaunch_ctx = json.dumps({
+            "origin": "web", "session_id": session_id, "user_id": user_id,
+            "agent_id": agent.get("id"), "channel": channel,
+            "turn_id": user_interaction_id,
+        })
+        await db.run_state_begin(
+            session_id, user_id, agent.get("id"), user_interaction_id,
+            origin="web", relaunch_ctx=_web_relaunch_ctx,
+        )
     except Exception as _rse:
         logger.debug("run_state_begin failed: %s", _rse)
     # Backfill seq on the already-saved user row from the buffer's first slot.
@@ -1117,6 +1175,12 @@ async def _run_turn_background(
             ))
             await event_callback({"type": "pipeline", "level": "pipeline",
                                   "step": "memory_save_start", "slug": f"chat/{request.session_id[:8]}"})
+    except asyncio.CancelledError:
+        # Hard-cancelled (replace grace timeout, or watchdog frozen-cancel). Mark
+        # interrupted so it isn't wrongly recorded 'complete'; the stop_cause was
+        # already tagged by whoever requested the stop (replaced / frozen).
+        final_status = "interrupted"
+        raise
     except Exception as e:
         final_status = "error"
         logger.error("Background turn failed for session %s: %s", session_id, e, exc_info=True)
@@ -1127,14 +1191,113 @@ async def _run_turn_background(
         except Exception:
             pass
     finally:
+        # Derive the machine cause from the terminal status. A voluntary cause
+        # (user_stop / replaced) already on the row is preserved by run_state_finish.
+        _web_cause = ("complete" if final_status == "complete"
+                      else "crash" if final_status == "error" else None)
         try:
-            await db.run_state_finish(session_id, status=final_status)
+            await db.run_state_finish(session_id, status=final_status, stop_cause=_web_cause)
         except Exception as _rsf:
             logger.debug("run_state_finish failed for %s: %s", session_id, _rsf)
         try:
             await get_run_buffer_registry().end_turn(session_id)
         except Exception as _eb:
             logger.debug("end_turn failed for session %s: %s", session_id, _eb)
+
+
+async def _resume_web_turn(rc: Dict[str, Any], replaced: bool):
+    """Self-healing resume builder for the 'web' origin. Re-ignites an
+    involuntarily-stopped interactive turn from durable history, emitting through
+    the SAME RunBuffer + WebSocket path a live turn uses, so an attached chat sees
+    the continuation stream in. Run-state begin/finish are owned by the runner;
+    this only executes the turn and returns the outcome."""
+    from app.agent.runner import RunOutcome, RESUME_NUDGE
+    db = get_db()
+    session_id = rc.get("session_id")
+    user_id = rc.get("user_id")
+    # Use the session's CURRENT agent — a mid-session delegation may have rebound it.
+    agent_id = await db.get_session_agent_id(session_id) or rc.get("agent_id")
+    agent = None
+    if agent_id:
+        agent = await db.fetch_agent_by_id_with_context(
+            agent_id, CONTEXT_SECTION_TYPES, user_id=user_id)
+        if agent is None:
+            agent = await db.get_agent_by_id(agent_id)
+    if not agent:
+        return RunOutcome(status="error", stop_cause="failed",
+                          error="agent not found for web resume")
+
+    final_status = "complete"
+    reply = ""
+    _run_buffer = await get_run_buffer_registry().start_turn(
+        session_id=session_id, user_id=user_id, turn_id=rc.get("turn_id"), db=db,
+    )
+
+    async def event_callback(event: Dict[str, Any]):
+        nonlocal final_status
+        await _emit_to_visualizers(session_id, event, user_id=user_id)
+        et = event.get("type")
+        if et == "interrupted":
+            final_status = "interrupted"
+        elif et == "error":
+            final_status = "error"
+        ss = event.get("session_seq")
+        if ss is not None:
+            try:
+                await db.run_state_update_seq(session_id, int(ss))
+            except Exception:
+                pass
+
+    try:
+        loop_config = LoopConfig.from_agent(agent)
+        context_docs = agent.get("context_documents", [])
+        system_prompt = await build_system_prompt(
+            context_docs, None, user_id, agent_id=agent_id)
+        history = await build_openai_history_from_session(db, user_id, session_id)
+        _raw_at = agent.get("allowed_tools", [])
+        if isinstance(_raw_at, str):
+            try:
+                _raw_at = json.loads(_raw_at)
+            except Exception:
+                _raw_at = []
+        await event_callback({
+            "type": "resumed", "level": "agent",
+            "reason": rc.get("resume_reason", "server_restart"),
+        })
+        async for event in stream_agent_events(
+            user_id=user_id, session_id=session_id, user_message=RESUME_NUDGE,
+            system_prompt=system_prompt, agent_id=agent_id, history=history,
+            max_turns=agent.get("max_turn_count", 10), channel=rc.get("channel"), db=db,
+            agent_template_id=agent.get("template_id"), allowed_tools=_raw_at or None,
+        ):
+            await event_callback(event)
+            if event["type"] == "response":
+                reply = event["content"]
+    except asyncio.CancelledError:
+        final_status = "interrupted"
+        raise
+    except Exception as e:
+        final_status = "error"
+        logger.error("web resume failed for session %s: %s", session_id, e, exc_info=True)
+    finally:
+        try:
+            await get_run_buffer_registry().end_turn(session_id)
+        except Exception:
+            pass
+
+    from app.agent.runner import RunOutcome as _RO
+    cause = ("complete" if final_status == "complete"
+             else "crash" if final_status == "error" else None)
+    return _RO(status=final_status, stop_cause=cause, reply=reply)
+
+
+# Register the web-origin resume builder so the self-healing layer (boot recovery
+# + liveness watchdog) can re-ignite interactive turns with UI streaming intact.
+try:
+    from app.agent.runner import register_resume_builder as _rrb
+    _rrb("web", _resume_web_turn)
+except Exception as _rrb_err:  # pragma: no cover
+    logger.debug("Could not register web resume builder: %s", _rrb_err)
 
 
 async def _sse_tail_run(session_id: str):

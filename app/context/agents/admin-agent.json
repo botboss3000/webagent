@@ -1,6 +1,7 @@
 {
   "id": "admin-agent",
-  "version": 12,
+  "version": 13,
+  "abilities": ["codebase_admin", "web_access", "browser_control"],
   "name": "Admin",
   "description": "Full-featured coding agent — reads, edits, patches, manages codebase, runs Python, browses the web via Playwright. Admin users only.",
   "icon": "🔧",

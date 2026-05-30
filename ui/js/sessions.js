@@ -455,6 +455,7 @@ export async function populateSessionSelect(userId) {
     }
     _renderSessionRows();
     _setTriggerLabel();
+    _setAgentTriggerLabel();  // refresh agent status icon based on session states
   } catch (e) {
     console.warn('Failed to load sessions:', e);
   }

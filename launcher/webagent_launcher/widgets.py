@@ -167,14 +167,22 @@ class Slider(Widget, can_focus=True):
         handle_pos = int(round(frac * (track_w - 1)))
 
         focused = self.has_focus
-        c_handle = "#ffffff" if focused else _C_HANDLE
-        c_filled = _C_FILLED
-        c_track = _C_DIM if focused else _C_TRACK
+        # Colors follow the active theme (Rich Text can't read $css variables).
+        try:
+            from .theme_colors import chrome_colors
+            tc = chrome_colors(self.app)
+        except Exception:
+            tc = {}
+        c_filled = tc.get("primary", _C_FILLED)
+        c_handle = "#ffffff" if focused else tc.get("accent", _C_HANDLE)
+        c_track = tc.get("dim", _C_DIM) if focused else _C_TRACK
+        c_label = tc.get("secondary", _C_LABEL)
+        c_value = tc.get("fg", _C_VALUE)
 
         text = Text(no_wrap=True, overflow="crop")
         text.append(
             self._label.ljust(_LABEL_W)[:_LABEL_W] + " ",
-            style=Style(color=_C_LABEL, bold=focused),
+            style=Style(color=c_label, bold=focused),
         )
         for i in range(track_w):
             if i == handle_pos:
@@ -185,6 +193,6 @@ class Slider(Widget, can_focus=True):
                 text.append(_TRACK, style=Style(color=c_track))
         text.append(
             " " + self._format(self.value).rjust(_VALUE_W)[:_VALUE_W],
-            style=Style(color=_C_VALUE, bold=focused),
+            style=Style(color=c_value, bold=focused),
         )
         return text

@@ -1,14 +1,19 @@
-/* webAgent Service Worker — v1
+/* webAgent Service Worker — v2
  *
  * Strategy:
- *   - App shell (HTML, CSS, JS, icons): cache on install, serve from cache
+ *   - App shell (HTML, CSS, JS, icons): precache on install
  *   - API calls (/api/*): network-only (never cache stale data)
  *   - CDN assets: stale-while-revalidate
- *   - All other static assets: cache-first
+ *   - Static assets (JS/CSS/etc.): stale-while-revalidate — serve cached for an
+ *     instant load, but always revalidate in the background so a code change
+ *     shows up on the next reload (cache-first never revalidated, which left
+ *     stale JS pinned until the cache name changed — a dev-workflow trap).
  *   - Navigation: network-first, fall back to cached index.html
+ *
+ * Bump CACHE on each release so the activate handler drops the prior cache.
  */
 
-const CACHE = "webagent-v1";
+const CACHE = "webagent-v2";
 const STATIC_PATTERN = /\.(css|js|json|svg|png|ico|woff2?)$/;
 const CDN_PATTERN = /^(https?:)?\/\/(fonts\.googleapis|cdn\.jsdelivr|unpkg)\./;
 const API_PATTERN = /^\/api\//;
@@ -70,9 +75,9 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // Static assets — cache-first
+  // Static assets — stale-while-revalidate (fast load + picks up code changes)
   if (STATIC_PATTERN.test(url.pathname)) {
-    e.respondWith(cacheFirst(request));
+    e.respondWith(staleWhileRevalidate(request));
     return;
   }
 

@@ -1,293 +1,66 @@
-/* webagent launcher — Textual CSS
+/* webagent launcher — Textual CSS (single-screen chat redesign)
  *
- * Tight stacked layout:
- *
- *   row  0   status: ... pid: ... uptime: ... url: ...      (status strip)
- *   row 1-3  [Chat] [Launch] [Restart] [Stop] [Browser] [App Win] [Theme]  (header buttons)
- *   rows ⬇   animation + WEBAGENT logo                       (1fr)
- *            log pane  OR  inline settings panel (toggled)   (1fr)
- *   row N-3  [Clear DB] [Reset Py] [Full Reset] [Quit]      (footer buttons)
- *   row N-1  L:launch R:restart ... Q:quit                  (hint strip)
- *
- * Buttons are outline-only: rounded line border in the accent color,
- * matching text color, no fill. No padding around the button bars so
- * each header/footer block is just 3 rows tall.
+ * The launcher is now ONE screen: the chat. Server controls live in an
+ * overlay admin panel; the animation is a hidden banner; a first-run installer
+ * is its own screen. EVERY color here is a THEME VARIABLE (no literal hex) so
+ * the whole UI re-skins live across all 23 themes and stays legible in light
+ * AND dark themes (CLAUDE.md rule). Custom variables ($dim, $tool, $bar-bg,
+ * $bar-fg, $bar-accent, $border-dim, $sel) come from each theme + the app's
+ * get_theme_variable_defaults() fallbacks.
  */
 
 Screen {
-    background: #0a0a14;
-    color: #e6e6f0;
+    background: $background;
+    color: $foreground;
 }
 
-/* ───────────────────── top status bar (visible) ───────────────── */
+/* ═══════════════════ first-run installer / re-point ═══════════════════ */
 
-#status-bar {
-    height: 1;
+#install-root {
     width: 100%;
-    background: #14143a;
-    color: #d0d0e8;
-    padding: 0 2;
-    layout: horizontal;
-}
-
-#status-bar > Static {
-    height: 1;
-    content-align: left middle;
-    width: 1fr;
-}
-
-#status-dot {
-    width: 6;
-    color: #888;
-    text-style: bold;
-}
-#status-dot.running  { color: #39ff14; }
-#status-dot.starting { color: #ffb000; }
-#status-dot.stopping { color: #ffb000; }
-#status-dot.error    { color: #ff3344; }
-#status-dot.stopped  { color: #888;    }
-
-/* ───────────────────── header button row (compact, outline-only) ─ */
-
-#header-buttons {
-    height: 3;
-    width: 100%;
-    background: #0a0a14;
-    padding: 0 1;
-    /* Grid, not horizontal: the columns are sized deterministically from the
-     * spec, so the row lays out identically on the very first frame. With
-     * `layout: horizontal` + `width: 1fr` buttons, the first paint could
-     * mis-distribute (one button — Chat — ballooning to full width, the rest
-     * shoved off-screen) until a resize forced a re-layout. Keep grid-size ==
-     * the number of Button children in compose() (currently 7). */
-    layout: grid;
-    grid-size: 7;
-    grid-columns: 1fr;
-    grid-gutter: 0;
-}
-
-#header-buttons Button {
-    width: 1fr;
-    height: 3;
-    margin: 0 1;
-    border: round #2a2a55;
-    background: #0a0a14;        /* match parent — looks like outline only */
-    color: #d8d8f0;
-    text-style: bold;
-    content-align: center middle;
-}
-#header-buttons Button:hover {
-    border: round #5dff4d;
-    color: #5dff4d;
-    background: #0a0a14;
-}
-#header-buttons Button:focus {
-    border: round #5dff4d;
-    color: #5dff4d;
-}
-
-#header-buttons Button.primary {
-    border: round #39ff14;
-    color: #39ff14;
-    background: #0a0a14;
-}
-#header-buttons Button.primary:hover {
-    border: round #aaffaa;
-    color: #aaffaa;
-}
-
-#header-buttons Button.muted {
-    border: round #5a5a8a;
-    color: #b0b0d0;
-    background: #0a0a14;
-}
-#header-buttons Button.muted:hover {
-    border: round #aaaaff;
-    color: #aaaaff;
-}
-
-/* ───────────────────── footer hint strip (visible) ────────────── */
-
-#footer-bar {
-    height: 1;
-    width: 100%;
-    background: #14143a;
-    color: #a0a0bc;
-    padding: 0 2;
-}
-
-/* ───────────────────── footer button row ──────────────────────── */
-
-#footer-buttons {
-    height: 3;
-    width: 100%;
-    background: #0a0a14;
-    padding: 0 1;
-    /* Same fixed-column grid as #header-buttons (see the note there) so the row
-     * never balloons one button on first paint. Keep grid-size == the number of
-     * Button children in compose() (currently 6). */
-    layout: grid;
-    grid-size: 6;
-    grid-columns: 1fr;
-    grid-gutter: 0;
-}
-
-#footer-buttons Button {
-    width: 1fr;
-    height: 3;
-    margin: 0 1;
-    border: round #ff5577;
-    background: #0a0a14;
-    color: #ff8aa0;
-    text-style: bold;
-    content-align: center middle;
-}
-#footer-buttons Button:hover {
-    border: round #ffaabb;
-    color: #ffccd5;
-    background: #0a0a14;
-}
-#footer-buttons Button:focus {
-    border: round #ffaabb;
-    color: #ffaabb;
-}
-
-#footer-buttons Button.muted {
-    border: round #5a5a8a;
-    color: #b0b0d0;
-    background: #0a0a14;
-}
-#footer-buttons Button.muted:hover {
-    border: round #aaaaff;
-    color: #aaaaff;
-}
-
-/* ───────────────────── middle body: stage + log ───────────────── */
-
-#body {
+    height: 100%;
     layout: vertical;
-    width: 100%;
-    height: 1fr;
-    padding: 0;
+    background: $background;
 }
 
-#stage-widget {
+#install-stage {
     width: 100%;
     height: 1fr;
     min-height: 8;
-    background: #08081a;
+    background: $surface;
 }
 
-#log-pane {
-    width: 100%;
-    height: 1fr;
-    min-height: 5;
-    background: #0a0a14;
-    border-top: solid #2a2a44;
-    padding: 0 1;
-    margin: 0;
-}
-
-#log-pane > RichLog {
-    background: transparent;
-    height: 100%;
-    width: 100%;
-    overflow-y: scroll;
-    scrollbar-size-vertical: 1;
-    scrollbar-color: #39ff14 #14143a;
-    scrollbar-color-hover: #5dff4d #14143a;
-    scrollbar-color-active: #5dff4d #14143a;
-    scrollbar-background: #14143a;
-    scrollbar-background-hover: #14143a;
-    scrollbar-background-active: #14143a;
-}
-
-/* ──────────── inline settings panel (occupies the bottom log slot) ── */
-
-/* Hidden by default; the app sets display=True to swap it in for the log
- * pane when Theme is toggled. Shares the bottom 1fr slot, so the stage
- * above stays full-size and live-animating while settings are open. */
-#settings-panel {
-    display: none;
-    width: 100%;
-    height: 1fr;
-    min-height: 5;
-    background: #0d0d1f;
-    border-top: solid #39ff14;
-    padding: 0;
-    layout: vertical;
-}
-
-#settings-header {
+#install-tabs {
     height: 3;
     width: 100%;
-    background: #14143a;
-    border-bottom: solid #2a2a44;
-    padding: 0 2;
+    background: $bar-bg;
+    padding: 0 1;
     layout: horizontal;
 }
-
-#settings-title {
+#install-tabs Button {
     width: 1fr;
-    height: 100%;
-    content-align: left middle;
-    color: #aaffaa;
-}
-
-#settings-header Button {
-    width: 18;
     height: 3;
-    margin: 0;
-    border: round #39ff14;
-    background: #0a0a14;
-    color: #39ff14;
+    margin: 0 1;
+    border: round $border-dim;
+    background: $background;
+    color: $foreground;
     text-style: bold;
+    content-align: center middle;
 }
-#settings-header Button:hover {
-    border: round #aaffaa;
-    color: #aaffaa;
-}
+#install-tabs Button.primary { border: round $primary; color: $primary; }
+#install-tabs Button.primary:hover { border: round $primary-lighten-2; color: $primary-lighten-2; }
+#install-tabs Button.muted { border: round $dim; color: $text-muted; }
+#install-tabs Button:hover { border: round $accent; color: $accent; }
+#install-tabs Button:focus { border: round $accent; color: $accent; }
 
-#settings-body {
-    width: 100%;
-    height: 1fr;
-    padding: 0 2;
-    scrollbar-color: #39ff14 #14143a;
-}
-
-#settings-body .label {
-    color: #aaaaff;
-    text-style: bold;
-    margin-top: 1;
-}
-
-#preset-list {
-    height: 6;
-    border: round #2a2a44;
-    background: #08081a;
-}
-
-/* the three animation sliders (Speed / Intensity / FPS) */
-#settings-body Slider {
-    height: 1;
-    width: 100%;
-}
-#settings-body Slider:focus {
-    background: #14143a;
-}
-
-/* ─────────────── first-run setup / install (INLINE in the log slot) ──────
- * Shares the bottom 1fr slot with the log pane + settings panel, so the
- * WEBAGENT stage above stays visible the whole time — including during
- * install. display:none by default; the app flips it on for first run. */
-
+/* the SetupPanel body fills the middle of the install screen (always shown
+ * there, so no display:none). */
 #setup-panel-inline {
-    display: none;
     width: 100%;
     height: 1fr;
     min-height: 5;
-    background: #0d0d1f;
-    border-top: solid #39ff14;
+    background: $panel;
+    border-top: solid $primary;
     padding: 0 1;
     layout: vertical;
 }
@@ -299,392 +72,226 @@ Screen {
     layout: vertical;
     overflow-y: auto;
 }
-
-#setup-heading {
-    width: 100%;
-    height: 1;
-    color: #aaffaa;
-    text-style: bold;
-    margin: 0 0 1 0;
-}
-#setup-help {
-    width: 100%;
-    height: auto;
-    color: #8a8aa8;
-    margin-bottom: 1;
-}
-#setup-error {
-    width: 100%;
-    height: auto;
-    color: #ff8aa0;
-    margin-bottom: 1;
-}
-
-/* destination row: label, then [ path input (grows) ][ Install button ] */
-#setup-dest-label {
-    width: 100%;
-    height: 1;
-    color: #aaaaff;
-    text-style: bold;
-}
-#setup-form-row {
-    width: 100%;
-    height: 3;
-    margin-bottom: 1;
-}
+#setup-heading { width: 100%; height: 1; color: $primary-lighten-2; text-style: bold; margin: 0 0 1 0; }
+#setup-help { width: 100%; height: auto; color: $dim; margin-bottom: 1; }
+#setup-error { width: 100%; height: auto; color: $text-error; margin-bottom: 1; }
+#setup-dest-label { width: 100%; height: 1; color: $accent; text-style: bold; }
+#setup-form-row { width: 100%; height: 3; margin-bottom: 1; }
 #setup-form-row #path-input {
-    width: 1fr;
-    height: 3;
-    margin: 0;
-    border: round #2a2a55;
-    background: #0a0a14;
+    width: 1fr; height: 3; margin: 0; border: round $border-dim; background: $surface;
 }
-#setup-form-row #path-input:focus { border: round #39ff14; }
+#setup-form-row #path-input:focus { border: round $primary; }
 #setup-go {
-    width: auto;
-    height: 3;
-    margin-left: 1;
-    padding: 0 2;
-    border: round #39ff14;
-    background: #0a0a14;
-    color: #39ff14;
-    text-style: bold;
+    width: auto; height: 3; margin-left: 1; padding: 0 2;
+    border: round $primary; background: $background; color: $primary; text-style: bold;
 }
-#setup-go:hover { border: round #aaffaa; color: #aaffaa; }
-
-/* Current Folder — adopt THIS exe's saved target without re-typing it.
- * Shown from code only once a target exists. Cyan reads as a positive
- * shortcut, distinct from the green primary and the grey Cancel. */
+#setup-go:hover { border: round $primary-lighten-2; color: $primary-lighten-2; }
 #setup-current {
-    display: none;
-    width: auto;
-    height: 3;
-    margin-left: 1;
-    padding: 0 2;
-    border: round #5dd6ff;
-    background: #0a0a14;
-    color: #5dd6ff;
-    text-style: bold;
+    display: none; width: auto; height: 3; margin-left: 1; padding: 0 2;
+    border: round $secondary; background: $background; color: $secondary; text-style: bold;
 }
-#setup-current:hover { border: round #aef0ff; color: #aef0ff; }
-
-/* Cancel — only shown when re-pointing an existing target (not first run) */
+#setup-current:hover { border: round $secondary-lighten-2; color: $secondary-lighten-2; }
 #setup-cancel {
-    display: none;
-    width: auto;
-    height: 3;
-    margin-left: 1;
-    padding: 0 2;
-    border: round #5a5a8a;
-    background: #0a0a14;
-    color: #b0b0d0;
-    text-style: bold;
+    display: none; width: auto; height: 3; margin-left: 1; padding: 0 2;
+    border: round $dim; background: $background; color: $text-muted; text-style: bold;
 }
-#setup-cancel:hover { border: round #aaaaff; color: #aaaaff; }
+#setup-cancel:hover { border: round $accent; color: $accent; }
 
-/* shared sub-view heading (manual + doctor) */
-.setup-subhead {
-    width: 100%;
-    height: 1;
-    color: #aaffaa;
-    text-style: bold;
-    margin: 0 0 1 0;
-}
+.setup-subhead { width: 100%; height: 1; color: $primary-lighten-2; text-style: bold; margin: 0 0 1 0; }
 
-/* manual install instructions — scrolls if the window is short */
 #setup-manual {
-    display: none;
-    width: 100%;
-    height: 1fr;
-    padding: 0 1;
-    scrollbar-size-vertical: 1;
-    scrollbar-color: #39ff14 #14143a;
+    display: none; width: 100%; height: 1fr; padding: 0 1;
+    scrollbar-size-vertical: 1; scrollbar-color: $primary $bar-bg;
 }
-#setup-manual-text {
-    width: 100%;
-    height: auto;
-    color: #c8c8e0;
-}
+#setup-manual-text { width: 100%; height: auto; color: $foreground; }
 
-/* doctor — diagnostics output + a re-run button */
-#setup-doctor {
-    display: none;
-    width: 100%;
-    height: 1fr;
-    padding: 0 1;
-    layout: vertical;
-}
+#setup-doctor { display: none; width: 100%; height: 1fr; padding: 0 1; layout: vertical; }
 #setup-doctor-log {
-    width: 100%;
-    height: 1fr;
-    background: #08081a;
-    border: round #2a2a44;
-    padding: 0 1;
-    scrollbar-size-vertical: 1;
-    scrollbar-color: #39ff14 #14143a;
+    width: 100%; height: 1fr; background: $surface; border: round $border-dim; padding: 0 1;
+    scrollbar-size-vertical: 1; scrollbar-color: $primary $bar-bg;
 }
 
-/* install progress (no Cancel) — fills the panel; the log scrolls */
-#setup-progress {
-    display: none;
-    width: 100%;
-    height: 1fr;
-    padding: 0 1;
-    layout: vertical;
-}
-#setup-progress-title {
-    width: 100%;
-    height: auto;
-    color: #aaffaa;
-    text-style: bold;
-    margin-bottom: 1;
-}
+#setup-progress { display: none; width: 100%; height: 1fr; padding: 0 1; layout: vertical; }
+#setup-progress-title { width: 100%; height: auto; color: $primary-lighten-2; text-style: bold; margin-bottom: 1; }
 #setup-log {
-    width: 100%;
-    height: 1fr;
-    background: #08081a;
-    border: round #2a2a44;
-    padding: 0 1;
-    scrollbar-size-vertical: 1;
-    scrollbar-color: #39ff14 #14143a;
+    width: 100%; height: 1fr; background: $surface; border: round $border-dim; padding: 0 1;
+    scrollbar-size-vertical: 1; scrollbar-color: $primary $bar-bg;
 }
-#setup-progress-actions {
-    height: 3;
-    width: 100%;
-    margin-top: 1;
-}
+#setup-progress-actions { height: 3; width: 100%; margin-top: 1; }
 #setup-progress-actions Button {
-    width: 1fr;
-    height: 3;
-    margin: 0 1 0 0;
-    border: round #39ff14;
-    background: #0a0a14;
-    color: #39ff14;
-    text-style: bold;
+    width: 1fr; height: 3; margin: 0 1 0 0;
+    border: round $primary; background: $background; color: $primary; text-style: bold;
 }
-#setup-progress-actions Button:hover { border: round #aaffaa; color: #aaffaa; }
-#setup-progress-actions Button:disabled { border: round #2a2a55; color: #55557a; }
+#setup-progress-actions Button:hover { border: round $primary-lighten-2; color: $primary-lighten-2; }
+#setup-progress-actions Button:disabled { border: round $border-dim; color: $dim; }
 
-/* ───────────────────── confirm modal ──────────────────────────── */
+/* ═══════════════════ confirm modal ═══════════════════ */
 
 ConfirmModal { align: center middle; }
-
 #confirm-panel {
-    width: 58;
-    height: auto;
-    background: #1a0a1a;
-    border: round #ff5577;
-    padding: 1 2;
+    width: 58; height: auto; background: $panel; border: round $error; padding: 1 2;
 }
-
-#confirm-panel .label {
-    color: #ffaaaa;
-    text-style: bold;
-    margin-bottom: 1;
-}
-
+#confirm-panel .label { color: $text-error; text-style: bold; margin-bottom: 1; }
 #confirm-panel Button {
-    margin: 1 1 0 1;
-    border: round #ff5577;
-    background: #1a0a1a;
-    color: #ff8aa0;
+    margin: 1 1 0 1; border: round $error; background: $panel; color: $text-error;
 }
-#confirm-panel Button:hover {
-    border: round #ffaabb;
-    color: #ffccd5;
-}
+#confirm-panel Button:hover { border: round $error-lighten-2; color: $error-lighten-2; }
 
-/* ───────────────────── chat screen ────────────────────────────── */
+/* ═══════════════════ chat screen (the single base view) ═══════════════════ */
 
-/* No Screen-level scrollbar (kills the blue line down the right edge). */
-ChatScreen { background: #0a0a14; scrollbar-size: 0 0; }
+/* Two layers: the chat (base) and slide-in panels (overlay) that draw on top
+ * WITHOUT reflowing the transcript. */
+ChatScreen { background: $background; scrollbar-size: 0 0; layers: base overlay; }
 
 #chat-status {
-    height: 1;
-    width: 100%;
-    background: #14143a;
-    color: #d0d0e8;
-    padding: 0 2;
+    height: 1; width: 100%; background: $bar-bg; color: $bar-fg; padding: 0 2;
 }
 
-/* middle region: holds the scrolling transcript (banner pinned at its top) */
-#chat-body {
+#chat-body { width: 100%; height: 1fr; layout: vertical; }
+
+/* hidden-by-default animation banner (folded in from the old home screen) */
+#chat-anim-banner {
     width: 100%;
-    height: 1fr;
+    height: 11;
+    min-height: 6;
+    background: $surface;
+    display: none;
 }
 
 #chat-log {
-    width: 100%;
-    height: 1fr;
-    background: #0a0a14;
-    padding: 0 1;
-    overflow-y: auto;
-    /* Hidden initially; shown once loading finishes */
-    display: none;
-    /* Thumb is phosphor green; the TRACK matches the panel background so there
-     * is no navy "line" down the edge when the thumb is short or absent. The
-     * gutter is reserved (stable) so the bar lives inside the panel, not over
-     * the text, and stays grab-/click-able. */
+    width: 100%; height: 1fr; background: $background; padding: 0 1; overflow-y: auto;
+    display: none;  /* shown once loading finishes */
     scrollbar-gutter: stable;
     scrollbar-size-vertical: 1;
-    scrollbar-color: #39ff14 #0a0a14;
-    scrollbar-color-hover: #5dff4d #0a0a14;
-    scrollbar-color-active: #5dff4d #0a0a14;
-    scrollbar-background: #0a0a14;
-    scrollbar-background-hover: #0a0a14;
-    scrollbar-background-active: #0a0a14;
+    scrollbar-color: $primary $background;
+    scrollbar-color-hover: $primary-lighten-2 $background;
+    scrollbar-color-active: $primary-lighten-2 $background;
+    scrollbar-background: $background;
+    scrollbar-background-hover: $background;
+    scrollbar-background-active: $background;
 }
 
-/* static ascii banner pinned at the top of the transcript (scrolls with it) */
-.chat-banner {
-    width: 100%;
-    padding: 0 1;
-    margin: 0 0 1 0;
-}
+.chat-banner { width: 100%; padding: 0 1; margin: 0 0 1 0; }
 
-/* session HUD: total tokens - cost - context gauge (above the input) */
 #chat-hud {
-    height: 1;
-    width: 100%;
-    background: #0d0d1f;
-    color: #8a8aa8;
-    padding: 0 2;
+    height: 1; width: 100%; background: $panel; color: $dim; padding: 0 2;
 }
 
-/* the little guy walks here, on top of the input "pill" */
-#chat-walker {
-    height: 1;
-    width: 100%;
-    padding: 0 2;
-}
+#chat-walker { height: 1; width: 100%; padding: 0 2; }
 
-/* multi-line editor: Enter sends, Ctrl+J newline; grows to 5 lines */
 #chat-input {
-    width: 100%;
-    height: 3;
-    max-height: 7;
-    border: round #2a2a55;
-    background: #0d0d1f;
-    color: #e6e6f0;
+    width: 100%; height: 3; max-height: 7;
+    border: round $border-dim; background: $panel; color: $foreground;
     scrollbar-size: 0 0;
 }
-#chat-input:focus { border: round #39ff14; }
-#chat-input .text-area--cursor { background: #39ff14; color: #0a0a14; }
-#chat-input .text-area--selection { background: #1d4d2a; }
+#chat-input:focus { border: round $primary; }
+#chat-input .text-area--cursor { background: $primary; color: $background; }
+#chat-input .text-area--selection { background: $sel; }
 
-#chat-hints {
-    height: 1;
-    width: 100%;
-    background: #14143a;
-    color: #8a8aa8;
-    padding: 0 2;
-}
-
-/* filter modal: reuse the picker panel; size the checkbox list like the lists */
-#filter-list {
-    height: auto;
-    max-height: 16;
-    background: #08081a;
-    border: round #2a2a44;
-    padding: 0 1;
-}
-#filter-list > .selection-list--option { padding: 0 1; }
+#chat-hints { height: 1; width: 100%; background: $bar-bg; color: $bar-fg; padding: 0 2; }
+#chat-hints .hint-btn { margin: 0 1 0 0; color: $bar-accent; }
+#chat-hints .hint-btn:hover { color: $bar-fg; text-style: bold; }
 
 /* loading log — shown during init, hidden once ready */
 #chat-loading-log {
-    width: 100%;
-    height: 1fr;
-    background: #0a0a14;
-    padding: 0 1;
-    overflow-y: auto;
-    scrollbar-gutter: stable;
-    scrollbar-size-vertical: 1;
-    scrollbar-color: #ffb000 #0a0a14;
-    scrollbar-color-hover: #ffcc44 #0a0a14;
-    scrollbar-color-active: #ffcc44 #0a0a14;
-    scrollbar-background: #0a0a14;
-    scrollbar-background-hover: #0a0a14;
-    scrollbar-background-active: #0a0a14;
+    width: 100%; height: 1fr; background: $background; padding: 0 1; overflow-y: auto;
+    scrollbar-gutter: stable; scrollbar-size-vertical: 1;
+    scrollbar-color: $tool $background;
+    scrollbar-color-hover: $tool $background;
+    scrollbar-color-active: $tool $background;
+    scrollbar-background: $background;
 }
-.loading-line {
-    width: 100%;
-    color: #8a8aa8;
-    padding: 0 1;
-}
+.loading-line { width: 100%; color: $dim; padding: 0 1; }
 
 /* messages */
 .msg-user {
-    width: 100%;
-    background: #0d1f1a;
-    color: #d8f5e0;
-    border-left: thick #5dd6ff;
-    padding: 0 1;
-    margin: 1 0 0 0;
+    width: 100%; background: $sel; color: $foreground;
+    border-left: thick $secondary; padding: 0 1; margin: 1 0 0 0;
 }
-.msg-agent {
-    width: 100%;
-    color: #e6e6f0;
-    padding: 0 1;
-    margin: 1 0 0 0;
-}
-.msg-error { color: #ff8aa0; }
-.msg-pipe {
-    width: 100%;
-    color: #6a6a8a;
-    padding: 0 1;
-}
-/* per-response stats line: model - tokens - time - cost */
-.msg-stats {
-    width: 100%;
-    color: #5a5a7a;
-    padding: 0 1;
-}
+.msg-agent { width: 100%; color: $foreground; padding: 0 1; margin: 1 0 0 0; }
+.msg-error { color: $text-error; }
+.msg-pipe { width: 100%; color: $dim; padding: 0 1; }
+.msg-stats { width: 100%; color: $dim; padding: 0 1; }
 
 /* tool-call blocks */
-.tool-block {
-    width: 100%;
-    background: #0d0d1f;
-    border: round #3a3a18;
-    margin: 1 0 0 0;
-}
-.tool-block CollapsibleTitle { color: #ffb000; }
-.tool-body { color: #c8c8e0; padding: 0 1; }
+.tool-block { width: 100%; background: $panel; border: round $border-dim; margin: 1 0 0 0; }
+.tool-block CollapsibleTitle { color: $tool; }
+.tool-body { color: $foreground; padding: 0 1; }
 
-/* keyboard pickers — CLI-style scrolling selector docked to the bottom */
+/* ═══════════════════ admin panel (overlay, server control) ═══════════════════ */
+
+#admin-panel {
+    layer: overlay;
+    dock: right;
+    width: 60;
+    max-width: 90%;
+    height: 100%;
+    display: none;
+    background: $panel;
+    border-left: solid $primary;
+    padding: 0 1;
+    layout: vertical;
+}
+#admin-title {
+    width: 100%; height: 1; background: $bar-bg; color: $bar-fg;
+    text-style: bold; content-align: center middle;
+}
+#admin-status { height: 1; width: 100%; layout: horizontal; margin-top: 1; }
+#admin-status2 { height: 1; width: 100%; layout: horizontal; }
+#admin-status > Static, #admin-status2 > Static { height: 1; width: 1fr; color: $dim; }
+#admin-panel #status-dot { width: 6; color: $dim; text-style: bold; }
+#admin-panel #status-dot.running  { color: $success; }
+#admin-panel #status-dot.starting { color: $tool; }
+#admin-panel #status-dot.stopping { color: $tool; }
+#admin-panel #status-dot.error    { color: $error; }
+#admin-panel #status-dot.stopped  { color: $dim; }
+
+#admin-buttons { width: 100%; height: auto; layout: vertical; margin: 1 0; }
+.admin-btn-row { width: 100%; height: 3; layout: horizontal; }
+.admin-btn-row Button {
+    width: 1fr; height: 3; margin: 0 1;
+    border: round $border-dim; background: $background; color: $foreground;
+    text-style: bold; content-align: center middle;
+}
+.admin-btn-row Button:hover { border: round $primary-lighten-2; color: $primary-lighten-2; }
+.admin-btn-row Button:focus { border: round $primary; color: $primary; }
+.admin-btn-row Button.primary { border: round $primary; color: $primary; }
+.admin-btn-row Button.primary:hover { border: round $primary-lighten-2; color: $primary-lighten-2; }
+.admin-btn-row Button.muted { border: round $dim; color: $text-muted; }
+.admin-btn-row Button.muted:hover { border: round $accent; color: $accent; }
+.admin-btn-row Button.danger { border: round $error; color: $text-error; }
+.admin-btn-row Button.danger:hover { border: round $error-lighten-2; color: $error-lighten-2; }
+
+#admin-log-title { width: 100%; height: 1; color: $accent; text-style: bold; margin-top: 1; }
+#admin-panel #log {
+    width: 100%; height: 1fr; min-height: 5; background: $surface;
+    border: round $border-dim; padding: 0 1;
+    overflow-y: scroll; scrollbar-size-vertical: 1;
+    scrollbar-color: $tool $surface;
+    scrollbar-background: $surface;
+}
+
+/* ═══════════════════ keyboard pickers (theme / agent / session) ═══════════════════ */
+
 ListPicker { align: center bottom; }
 #picker-panel {
-    width: 96%;
-    max-width: 120;
-    height: auto;
-    max-height: 60%;
-    background: #0d0d1f;
-    border: round #39ff14;
-    padding: 1 1;
-    margin: 0 0 1 0;
+    width: 96%; max-width: 120; height: auto; max-height: 60%;
+    background: $panel; border: round $primary; padding: 1 1; margin: 0 0 1 0;
 }
-#picker-title {
-    color: #aaffaa;
-    text-style: bold;
-    padding: 0 1 1 1;
-}
-#picker-list {
-    height: auto;
-    max-height: 18;
-    background: #08081a;
-    border: round #2a2a44;
-}
+#picker-title { color: $primary-lighten-2; text-style: bold; padding: 0 1 1 1; }
+#picker-list { height: auto; max-height: 18; background: $surface; border: round $border-dim; }
 #picker-list > ListItem { padding: 0 1; }
-#picker-list > ListItem.--highlight { background: #16331a; color: #d8f5e0; }
+#picker-list > ListItem.--highlight { background: $sel; color: $foreground; }
+
+/* filter modal reuses the picker panel */
+#filter-list {
+    height: auto; max-height: 16; background: $surface; border: round $border-dim; padding: 0 1;
+}
+#filter-list > .selection-list--option { padding: 0 1; }
 
 /* credentials modal */
 CredentialsModal { align: center middle; }
-#creds-panel {
-    width: 54;
-    height: auto;
-    background: #0d0d1f;
-    border: round #39ff14;
-    padding: 1 2;
-}
-#creds-panel .label { color: #aaffaa; text-style: bold; margin-bottom: 1; }
-#creds-panel .dim { color: #8a8aa8; margin-top: 1; }
+#creds-panel { width: 54; height: auto; background: $panel; border: round $primary; padding: 1 2; }
+#creds-panel .label { color: $primary-lighten-2; text-style: bold; margin-bottom: 1; }
+#creds-panel .dim { color: $dim; margin-top: 1; }
 #creds-panel Input { margin-bottom: 1; }

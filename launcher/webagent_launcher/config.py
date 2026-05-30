@@ -138,10 +138,17 @@ class LauncherConfig:
     auto_start_server: bool = True        # start the server when the app opens
     auto_restart_server: bool = True      # watchdog: relaunch the server if it exits unexpectedly
     health_check_restart: bool = True     # watchdog: relaunch if it stops answering health probes (hung)
-    chat_default_view: bool = True        # open the chat screen on launch
+    chat_default_view: bool = True        # vestigial: chat is now always the base screen
     default_agent_ref: str = "admin-agent"  # "template:<id>" | "agent:<id>" | bare admin template id
     last_agent_ref: str = ""              # remembered last agent selection
     last_session_id: str = ""             # remembered last session
+
+    # ── single-screen chat UI (reference redesign) ─────────────────────
+    theme_name: str = "lime"              # active Textual theme (chrome re-skin); one of THEME_ORDER
+    anim_banner_visible: bool = False     # the ASCII animation banner is hidden by default
+    crew: list[str] = field(default_factory=lambda: ["robot", "cat"])  # active crew sprite ids
+    notes: str = ""                       # notes-sidebar scratchpad text
+    todos: list[dict] = field(default_factory=list)  # [{text, done}] from the notes sidebar
 
     # ── persistence: registry per-exe (frozen) OR a file (dev) ─────────
     @classmethod

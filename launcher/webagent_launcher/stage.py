@@ -41,7 +41,7 @@ class AnimatedStage(Widget):
     AnimatedStage {
         width: 100%;
         height: 100%;
-        background: #08081a;
+        background: $surface;
     }
     """
 
