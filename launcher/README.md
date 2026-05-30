@@ -137,14 +137,21 @@ uv sync
 uv run python -m webagent_launcher
 ```
 
+**One-click:** double-click **`launcher.bat`** at the repo root — it `cd`s into
+`launcher/`, ensures `uv` is installed, and runs the launcher from source (no
+`.exe` build needed, so it always reflects the latest launcher code).
+
 Press `T` to toggle the inline theme/animation panel (it swaps into the log
 area; `Esc` or `T` again closes it). `C` cycles palettes and `Space` cycles
 animation styles (including `Off`) without opening the panel.
 
 ## Build the .exe
 
-Requires **Node.js** (to run the pi-ai model-extraction script) and the
-`@earendil-works/pi-ai` npm package (the global `pi` install provides it).
+**One-click:** double-click **`build-exe.bat`** at the repo root — it ensures
+`uv`, runs `uv sync --extra build`, then builds `webagent.exe` to the repo root.
+(Close any running launcher first — a live `webagent.exe` locks the output file.)
+
+Or by hand:
 
 ```powershell
 cd launcher
@@ -152,6 +159,11 @@ uv sync --extra build
 uv run python scripts/build_exe.py
 # → webagent.exe   (single portable file at the PROJECT ROOT)
 ```
+
+**Node.js is optional.** It's only used to *refresh* the model context-window
+list (`model_windows.py`) from the `@earendil-works/pi-ai` npm package. Without
+Node (or the package), the build prints a warning and reuses the checked-in
+`model_windows.py`, so the `.exe` still builds fine.
 
 The build script runs three steps:
 1. **Generate `model_windows.py`** — extracts context-window sizes for every
