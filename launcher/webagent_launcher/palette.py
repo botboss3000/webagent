@@ -237,3 +237,18 @@ def apply_preset_to_config(preset: Preset, cfg) -> None:
         cfg.theme_color_b = preset.color_b
     if preset.color_c:
         cfg.theme_color_c = preset.color_c
+
+
+def palette_from_theme(app) -> PaletteFn:
+    """Build an animation palette from the app's ACTIVE Textual theme.
+
+    Maps the theme's primary -> secondary into a gradient so the ASCII banner
+    agrees with the chrome. For light themes we keep the saturated theme hues
+    (never the light background) so the art stays legible on a light surface.
+    """
+    from .theme_colors import chrome_colors  # local import: theme_colors is dep-free
+
+    c = chrome_colors(app)
+    a = hex_to_rgb(c["primary"])
+    b = hex_to_rgb(c["secondary"])
+    return two_color_gradient(a, b, 90.0)

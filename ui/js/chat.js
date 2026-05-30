@@ -151,6 +151,68 @@ function linkifyText(text) {
   return frag;
 }
 
+// ── Markdown rendering for agent messages ──────────────────────────
+// Agent replies are written in Markdown (headings, tables, lists, fenced
+// code, bold, …). We render them to HTML with `marked`, then SANITIZE the
+// result with DOMPurify before inserting it: agent output can echo back
+// untrusted text pulled in from the web, email, or tool results, so
+// injecting raw HTML would be a genuine XSS vector. If either library is
+// unavailable we fall back to plain linkified text — never unsanitized
+// HTML. User messages are left literal (linkifyText) on purpose.
+function _markdownReady() {
+  return !!(window.marked && typeof window.marked.parse === 'function'
+         && window.DOMPurify && typeof window.DOMPurify.sanitize === 'function');
+}
+
+function _highlightCodeBlocks(root) {
+  try {
+    if (window.Prism && typeof window.Prism.highlightAllUnder === 'function') {
+      window.Prism.highlightAllUnder(root);
+    }
+  } catch (_) { /* syntax highlighting is best-effort */ }
+}
+
+// Build a `<div class="md-body">` of rendered + sanitized markdown, or
+// return null when the libraries are missing / there's nothing to render
+// (the caller then falls back to linkifyText). Pass highlight=false while a
+// message is still streaming so we don't re-tokenize partial code fences on
+// every chunk — finalize re-renders with highlighting on.
+function _renderMarkdownBody(text, highlight) {
+  if (!text || !text.trim() || !_markdownReady()) return null;
+  let html;
+  try {
+    html = window.marked.parse(text, { gfm: true, breaks: true });
+  } catch (_) { return null; }
+  const body = document.createElement('div');
+  body.className = 'md-body';
+  body.innerHTML = window.DOMPurify.sanitize(html, { FORBID_ATTR: ['style'] });
+  // Open links in a new tab and defuse reverse-tabnabbing.
+  body.querySelectorAll('a[href]').forEach((a) => {
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+  });
+  if (highlight !== false) _highlightCodeBlocks(body);
+  return body;
+}
+
+// Fill an agent bubble's content: rendered markdown when possible, else
+// plain linkified text. Tags the bubble `.md` and stashes the raw markdown
+// source on it (so Copy yields the verbatim source, not flattened text).
+// Returns true when markdown was rendered.
+function _fillAgentBubble(bubble, text, highlight) {
+  const body = _renderMarkdownBody(text, highlight);
+  if (body) {
+    bubble.appendChild(body);
+    bubble.classList.add('md');
+    bubble.__mdSource = text;
+    return true;
+  }
+  bubble.appendChild(linkifyText(text || ''));
+  bubble.classList.remove('md');
+  bubble.__mdSource = null;
+  return false;
+}
+
 // ── session_seq persistence ──
 // Live in localStorage so a hard refresh mid-stream still tells the server
 // what we've already seen, and the WS replay can pick up from there instead
@@ -218,7 +280,11 @@ function addChatBubble(role, text, extraClass, imageUrl, turnId, msgId) {
     label.textContent = 'You';
     bubble.appendChild(label);
   }
-  bubble.appendChild(linkifyText(text));
+  if (role === 'agent' && extraClass !== 'error') {
+    _fillAgentBubble(bubble, text, extraClass !== 'streaming');
+  } else {
+    bubble.appendChild(linkifyText(text));
+  }
   if (imageUrl) {
     const img = document.createElement('img');
     img.src = imageUrl;
@@ -258,6 +324,17 @@ function _getBubbleText(bubble) {
   const clone = bubble.cloneNode(true);
   clone.querySelectorAll('.label, .bubble-actions, .stop-btn').forEach(el => el.remove());
   return clone.textContent.trim();
+}
+
+// Text to put on the clipboard when Copy is pressed. For markdown-rendered
+// agent bubbles, prefer the raw markdown source (tables, code fences, etc.
+// stay intact) over the flattened visible text. Read-aloud still uses the
+// flattened _getBubbleText so it doesn't speak the markdown punctuation.
+function _getBubbleCopyText(bubble) {
+  if (bubble && typeof bubble.__mdSource === 'string' && bubble.__mdSource.trim()) {
+    return bubble.__mdSource;
+  }
+  return _getBubbleText(bubble);
 }
 
 function _setActionIcon(btn, iconName) {
@@ -307,7 +384,7 @@ function _speakBubble(btn, bubble) {
 }
 
 async function _copyBubble(btn, bubble) {
-  const text = _getBubbleText(bubble);
+  const text = _getBubbleCopyText(bubble);
   if (!text) return;
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -400,8 +477,15 @@ async function _deleteTurn(bubble, btn) {
   const anchor = _bubbleAnchorId(bubble);
   if (!anchor) { _resetBubbleDeleteBtn(btn); return; }   // not persisted yet — no-op
   const sid = app.currentSessionId;
+  // Pass the active client identity so the backend can authorize tokenless local
+  // users (and TUI/launcher-created sessions) by user_id, the same way the
+  // session list does — without it, those deletes 403 and the button silently
+  // resets. The session's owner/participant list is still the real gate.
+  const uid = app.currentUserId || '';
   const url = apiPath('/api/v1/db/turn?session_id=' + encodeURIComponent(sid)
-    + '&interaction_id=' + encodeURIComponent(anchor) + '&db=local.db');
+    + '&interaction_id=' + encodeURIComponent(anchor)
+    + (uid ? '&user_id=' + encodeURIComponent(uid) : '')
+    + '&db=local.db');
   try {
     const resp = await fetch(url, { method: 'DELETE', headers: { ...authHeaders() } });
     const data = await resp.json().catch(() => null);
@@ -523,7 +607,7 @@ function updateLastBubble(text, extraClass, imageUrl) {
   const last = bubbles[bubbles.length - 1];
   if (!last) return;
   while (last.firstChild) last.removeChild(last.firstChild);
-  last.appendChild(linkifyText(text));
+  const isMd = _fillAgentBubble(last, text, extraClass !== 'streaming');
   if (imageUrl) {
     const img = document.createElement('img');
     img.src = imageUrl;
@@ -551,6 +635,7 @@ function updateLastBubble(text, extraClass, imageUrl) {
   }
   if (extraClass) last.className = 'chat-bubble agent ' + extraClass;
   else last.classList.remove('streaming');
+  if (isMd) last.classList.add('md');
   app.chatMessages.scrollTop = app.chatMessages.scrollHeight;
   _addBubbleActions(last);
 }
@@ -698,7 +783,7 @@ function _setBubbleText(bubble, text, extraClass) {
   if (!bubble) return;
   // Keep the data-turn-id while clearing children.
   while (bubble.firstChild) bubble.removeChild(bubble.firstChild);
-  bubble.appendChild(linkifyText(text));
+  const isMd = _fillAgentBubble(bubble, text, extraClass !== 'streaming');
   if (extraClass === 'streaming') {
     const stopBtn = document.createElement('button');
     stopBtn.className = 'stop-btn';
@@ -712,6 +797,8 @@ function _setBubbleText(bubble, text, extraClass) {
   } else {
     bubble.className = 'chat-bubble agent';
   }
+  // className was reassigned above (wiping .md); restore it when markdown rendered.
+  if (isMd) bubble.classList.add('md');
   if (app.chatMessages) app.chatMessages.scrollTop = app.chatMessages.scrollHeight;
   _addBubbleActions(bubble);
 }

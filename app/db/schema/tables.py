@@ -120,6 +120,16 @@ TABLES: List[Table] = [
         Column("error", "TEXT"),
         Column("started_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        # Self-healing / auto-resume bookkeeping (see migrations/025_run_self_healing.sql).
+        Column("stop_cause", "TEXT"),
+        Column("origin", "TEXT"),
+        Column("resume_attempts", "INTEGER", nullable=False, default="0"),
+        Column("max_resume_attempts", "INTEGER"),
+        Column("heartbeat_at", "TIMESTAMP"),
+        Column("next_resume_at", "TIMESTAMP"),
+        Column("owner_token", "TEXT"),
+        Column("lease_expires_at", "TIMESTAMP"),
+        Column("relaunch_ctx", "TEXT"),
     ]),
 
     Table("session_summaries", [
@@ -144,6 +154,7 @@ TABLES: List[Table] = [
         Column("trigger_type", "TEXT", nullable=False, default="'user_input'"),
         Column("trigger_key", "TEXT"),
         Column("loop_logic", "TEXT", nullable=False, default="'[]'"),
+        Column("abilities", "TEXT"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),

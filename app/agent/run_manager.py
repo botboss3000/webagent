@@ -161,9 +161,17 @@ class RunManager:
 
     async def _interrupt_and_wait(self, session_id: str, db) -> None:
         """Interrupt the active run and wait for it to fully stop (its finally
-        runs run_state_finish + end_turn). Graceful first, then hard-cancel."""
+        runs run_state_finish + end_turn). Graceful first, then hard-cancel.
+
+        Tags the run 'replaced' so the self-healing layer never auto-resumes it:
+        a newer user message has superseded it, and the replacement turn already
+        carries the interrupted context forward."""
         handle = self._runs.get(session_id)
         task = handle.task if handle else None
+        try:
+            await db.run_state_set_cause(session_id, "replaced")
+        except Exception as e:
+            logger.debug("interrupt: set_cause(replaced) failed for %s: %s", session_id[:12], e)
         try:
             await db.set_interrupt(session_id)
         except Exception as e:
@@ -194,16 +202,40 @@ class RunManager:
         if h and h.task is task:
             self._runs.pop(session_id, None)
 
-    async def interrupt(self, session_id: str, db) -> bool:
+    async def interrupt(self, session_id: str, db, cause: str = "user_stop") -> bool:
         """Request a graceful stop. Sets the DB interrupt flag the loop polls;
         the turn finalizes its partial answer and run-state as 'interrupted'.
-        Returns True if a run was live to interrupt."""
+        Returns True if a run was live to interrupt.
+
+        ``cause`` records intent so the self-healing layer treats it correctly.
+        The default 'user_stop' (the Stop button) is NEVER auto-resumed."""
         was_running = self.is_running(session_id)
+        try:
+            await db.run_state_set_cause(session_id, cause)
+        except Exception as e:
+            logger.debug("interrupt: set_cause(%s) failed for %s: %s", cause, session_id[:12], e)
         try:
             await db.set_interrupt(session_id)
         except Exception as e:
             logger.warning("interrupt: set_interrupt failed for %s: %s", session_id[:12], e)
         return was_running
+
+    async def cancel(self, session_id: str) -> bool:
+        """Hard-cancel the live task for a session and wait for it to unwind.
+        Used by the liveness watchdog on a FROZEN run (stuck inside an await the
+        cooperative interrupt poll can't reach). Returns True if a task was
+        cancelled. The caller is expected to have already tagged stop_cause so the
+        run is reclassified for resume."""
+        handle = self._runs.get(session_id)
+        task = handle.task if handle else None
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
+            return True
+        return False
 
 
 # ── Module-level singleton ──

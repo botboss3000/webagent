@@ -16,8 +16,8 @@ bar. Talks to the SAME local server the launcher starts (HTTP + SSE).
 
 Command keys are all Ctrl-prefixed so they never collide with typing:
   Ctrl+~ / Ctrl+`  home          Ctrl+Q  go back to last screen
-  Ctrl+! / Ctrl+1  agent picker  Ctrl+@ / Ctrl+2  session picker
-  Ctrl+# / Ctrl+3  new session   Ctrl+$ / Ctrl+4  new agent
+  Ctrl+W           agent picker  Ctrl+S  session picker
+  Ctrl+N           new session   Ctrl+$ / Ctrl+4  new agent
   Ctrl+F           filter        Esc              exit
   Ctrl+C/V/Z       copy/paste/undo (editor)
 
@@ -36,9 +36,10 @@ from typing import Any, Optional
 
 from rich.text import Text
 from textual import events, on
+from textual.events import Click
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Vertical, VerticalScroll
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen, Screen
 from textual.widget import Widget
@@ -47,18 +48,36 @@ from textual.widgets import (
 )
 from textual.widgets.selection_list import Selection
 
+from .admin_panel import AdminPanel
 from .api_client import WebAgentClient, WebAgentError
 from .config import LauncherConfig
 from .glyphs import EMOJI, G
+from .palette import build_palette_from_config, palette_from_theme
 from .server import ServerController
-from .stage import _LOGO_LINES
+from .stage import AnimatedStage, _LOGO_LINES
+from .theme_colors import chrome_colors
+from .themes import THEME_LABELS, THEME_ORDER
 
-# Palette (terminal-only; the dark/light rule applies to the web ui/, not here)
-GREEN = "#39ff14"
-DIM = "#6a6a8a"
-RED = "#ff5577"
-CYAN = "#5dd6ff"
-AMBER = "#ffb000"
+# Rich-Text chrome colors. Rich Text can't read $css variables, so these mirror
+# the ACTIVE theme and are refreshed live by _apply_theme_colors() on mount and
+# on every theme change. The defaults below are the "lime" theme (first frame).
+GREEN = "#b6f135"   # primary / phosphor
+DIM = "#56657a"     # dim
+RED = "#ff5f56"     # error
+CYAN = "#46d4ff"    # secondary
+AMBER = "#ff9d2f"   # tool / warning
+
+
+def _apply_theme_colors(app) -> None:
+    """Refresh the module-level Rich-Text chrome colors from the active theme.
+
+    The launcher is a single app instance with one active theme at a time, so
+    module-level colors are a safe, low-churn way to keep every Rich-drawn
+    element (banner/HUD/walker/status/messages) in sync with the theme.
+    """
+    global GREEN, DIM, RED, CYAN, AMBER
+    c = chrome_colors(app)
+    GREEN, CYAN, AMBER, RED, DIM = c["primary"], c["secondary"], c["tool"], c["error"], c["dim"]
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
@@ -168,9 +187,9 @@ class ChatInput(TextArea):
     paste, Ctrl+Z/Y undo/redo, Ctrl+arrows word-skip, Home/End, mouse
     selection. We override:
       * Enter            -> send (posts Submitted)
-      * Ctrl+Enter / Ctrl+J -> newline (Shift+Enter is unreliable across
+      * Ctrl+Enter -> newline (Shift+Enter is unreliable across
                               terminals — most send a plain Enter — so it is no
-                              longer advertised; Ctrl+J always inserts a line.)
+                              longer advertised.)
       * Ctrl+A           -> select all (Windows convention, not line-start)
       * Up / Down (single-line) -> recall previous / next sent message
       * Paste of an image path -> ImagesDropped (drag-to-attach)
@@ -224,7 +243,7 @@ class ChatInput(TextArea):
             event.prevent_default()
             self.post_message(self.Submitted(self, self.text))
             return
-        if key in ("ctrl+enter", "ctrl+j", "shift+enter"):
+        if key in ("ctrl+enter", "shift+enter"):
             # Insert a newline. shift+enter only reaches us on terminals that
             # distinguish it; where it doesn't, it arrives as plain Enter above.
             event.stop()
@@ -438,26 +457,17 @@ class ChatScreen(Screen):
 
     BINDINGS = [
         Binding("escape", "back", "Exit", priority=True),
-        # Navigation. Each binds the shifted symbol AND the plain key so it
-        # fires whether the terminal reports e.g. "ctrl+!" or "ctrl+1".
-        Binding("ctrl+tilde,ctrl+shift+tilde,ctrl+shift+grave_accent,ctrl+grave_accent",
-                "go_home", "Home", priority=True),
-        # Ctrl+Q ("go back to last") is handled at the app level so it toggles
-        # home/chat from either screen — see LauncherApp.action_go_back_last.
-        Binding("ctrl+exclamation_mark,ctrl+shift+1,ctrl+1",
-                "pick_agent", "Agent", priority=True),
-        Binding("ctrl+at,ctrl+shift+2,ctrl+2",
-                "pick_session", "Session", priority=True),
-        Binding("ctrl+number_sign,ctrl+shift+3,ctrl+3",
-                "new_session", "New session", priority=True),
+        # Server control + look (Ctrl-prefixed so they never collide with typing).
+        Binding("ctrl+a", "toggle_admin", "Admin", priority=True),
+        Binding("ctrl+t", "theme_menu", "Theme", priority=True),
+        Binding("ctrl+l", "toggle_anim", "Anim", priority=True),
+        # Navigation / chat.
+        Binding("ctrl+w", "pick_agent", "Agent", priority=True),
+        Binding("ctrl+s", "pick_session", "Session", priority=True),
+        Binding("ctrl+n", "new_session", "New session", priority=True),
         Binding("ctrl+dollar_sign,ctrl+shift+4,ctrl+4",
                 "new_agent", "New agent", priority=True),
         Binding("ctrl+f", "filter", "Filter", priority=True),
-        # Swallow the home screen's single-letter server shortcuts so they can't
-        # fire while chat is open and focus is off the input. When the input IS
-        # focused, the printable key is consumed for typing before reaching here.
-        *[Binding(k, "noop", show=False) for k in
-          ("q", "l", "r", "b", "d", "p", "f", "t", "c", "space")],
     ]
 
     def __init__(
@@ -487,6 +497,9 @@ class ChatScreen(Screen):
         self._pending_tools: list[dict[str, Any]] = []
         self._banner: Optional[Static] = None
         self._walker: Optional[WalkerBar] = None
+        self._anim_stage: Optional[AnimatedStage] = None  # hidden decorative banner
+        self._anim_visible = False
+        self._admin_panel: Optional[AdminPanel] = None     # server-control overlay
         self._pending_attachments: list[dict[str, Any]] = []
         # message history recall (Up/Down on a single-line input)
         self._history: list[str] = []
@@ -514,22 +527,57 @@ class ChatScreen(Screen):
 
     # ── layout ─────────────────────────────────────────────────────────
     def compose(self) -> ComposeResult:
+        # Decorative ASCII animation banner — folded in from the old home screen,
+        # HIDDEN BY DEFAULT. Built idle so its frame timer never starts while
+        # hidden (0% CPU); toggled with Ctrl+L.
+        self._anim_visible = bool(self.cfg.anim_banner_visible)
+        self._anim_stage = AnimatedStage(
+            palette=build_palette_from_config(self.cfg),
+            char_ramp=self.cfg.char_ramp,
+            fps=self.cfg.fps,
+            style=self.cfg.animation_style,
+            speed=self.cfg.theme_speed,
+            intensity=self.cfg.animation_intensity,
+            show_logo=True,
+        )
+        self._anim_stage.id = "chat-anim-banner"
+        self._anim_stage.set_idle(not self._anim_visible)
+        self._anim_stage.display = self._anim_visible
+
         yield Static("", id="chat-status")
         with Container(id="chat-body"):
+            yield self._anim_stage
             yield VerticalScroll(id="chat-log")
             yield VerticalScroll(id="chat-loading-log", classes="loading-log")
         yield Static("", id="chat-hud")
         yield WalkerBar(id="chat-walker")
         yield ChatInput(id="chat-input", soft_wrap=True, tab_behavior="focus")
-        yield Static(self._hints_idle(), id="chat-hints")
+        yield Horizontal(id="chat-hints")
+        # Server-control surface — overlay panel, hidden until toggled (Ctrl+A).
+        self._admin_panel = AdminPanel()
+        yield self._admin_panel
 
     def on_mount(self) -> None:
         self._walker = self.query_one("#chat-walker", WalkerBar)
+        # Sync Rich-Text chrome colors to the active theme and keep them live.
+        _apply_theme_colors(self.app)
+        try:
+            self.app.theme_changed_signal.subscribe(self, self._on_theme_changed)
+        except Exception:
+            pass
+        self._retint_anim()
         self._mount_banner()
         self.query_one("#chat-input", ChatInput).focus()
+        self._set_hints(self._hints_idle())
         # One timer drives both the server-dot refresh and the live HUD clock.
         self.set_interval(1.0, self._tick)
         self._update_hud()
+        # Seed the admin panel with the current server status + target.
+        self.notify_server_state()
+        try:
+            self.update_admin_target(self.cfg.project_dir())
+        except Exception:
+            pass
         # Start the loading spinner (8 fps) while init runs
         self._loading_timer = self.set_interval(0.125, self._tick_loading)
         self._append_loading("connecting to server...")
@@ -540,9 +588,12 @@ class ChatScreen(Screen):
     def _build_banner_text(self) -> Text:
         accent = self._agent_color()
         t = Text(no_wrap=True, overflow="crop")
-        for line in _LOGO_LINES:
-            t.append(line + "\n", style=f"bold {accent}")
-        t.append("\n")
+        # The big block logo prints here only when the animated banner is hidden
+        # (when it's shown, the animation carries the logo, so we'd double up).
+        if not self._anim_visible:
+            for line in _LOGO_LINES:
+                t.append(line + "\n", style=f"bold {accent}")
+            t.append("\n")
         t.append(self.agent_name or "agent", style=f"bold {CYAN}")
         t.append("  -  ", style=DIM)
         t.append(self._t_model or "model: (pending)", style=DIM)
@@ -632,10 +683,110 @@ class ChatScreen(Screen):
         self.query_one("#chat-input", ChatInput).focus()
 
     # ── status / hints ─────────────────────────────────────────────────
-    def notify_server_state(self) -> None:
+    def notify_server_state(self, state: Any = None) -> None:
         """Hook the launcher calls the instant the server's state changes, so the
-        dot flips immediately rather than waiting for the next 1 Hz poll."""
+        dot flips immediately rather than waiting for the next 1 Hz poll. Also
+        refreshes the admin panel's status block + Launch label."""
         self._refresh_status()
+        admin = self._admin_panel
+        if admin is not None:
+            if state is None:
+                ctrl = self.controller or getattr(self.app, "controller", None)
+                state = ctrl.state if ctrl else None
+            if state is not None:
+                admin.set_state(state)
+
+    # ── admin panel plumbing (driven by the app's status helpers) ───────
+    def update_admin_uptime(self, state: Any) -> None:
+        if self._admin_panel is not None:
+            self._admin_panel.set_uptime(state)
+
+    def update_admin_target(self, pdir: Any) -> None:
+        if self._admin_panel is not None:
+            self._admin_panel.set_target(pdir)
+
+    def write_admin_log(self, line: str) -> None:
+        if self._admin_panel is not None:
+            self._admin_panel.write_log(line)
+
+    # ── theme + animation banner ────────────────────────────────────────
+    def _on_theme_changed(self, _theme: Any = None) -> None:
+        """Repaint Rich-Text chrome when the app theme changes (live re-skin)."""
+        _apply_theme_colors(self.app)
+        self._retint_anim()
+        self._update_banner()
+        self._refresh_status()
+        self._update_hud()
+
+    def _retint_anim(self) -> None:
+        if self._anim_stage is not None:
+            try:
+                self._anim_stage.set_palette(palette_from_theme(self.app))
+            except Exception:
+                pass
+
+    def set_app_idle(self, idle: bool) -> None:
+        """Pause the animation banner when the app loses focus; resume on focus.
+        Stays idle whenever the banner is hidden (so it never burns CPU)."""
+        if self._anim_stage is not None:
+            self._anim_stage.set_idle(idle or not self._anim_visible)
+
+    def set_anim_style(self, style: str) -> None:
+        """Switch the animation banner's style (driven by the app's cycle-anim)."""
+        if self._anim_stage is not None:
+            self._anim_stage.set_style(style)
+
+    def action_toggle_admin(self) -> None:
+        admin = self._admin_panel
+        if admin is None:
+            return
+        showing = not admin.display
+        admin.display = showing
+        if showing:
+            self.notify_server_state()
+            try:
+                admin.query_one("#btn-launch").focus()
+            except Exception:
+                pass
+        else:
+            try:
+                self.query_one("#chat-input", ChatInput).focus()
+            except Exception:
+                pass
+
+    def action_toggle_anim(self) -> None:
+        stage = self._anim_stage
+        if stage is None:
+            return
+        self._anim_visible = not self._anim_visible
+        stage.display = self._anim_visible
+        stage.set_idle(not self._anim_visible)  # stops the frame timer when hidden
+        if self._anim_visible:
+            self._retint_anim()
+        self.cfg.anim_banner_visible = self._anim_visible
+        try:
+            self.cfg.save()
+        except Exception:
+            pass
+        self._update_banner()  # logo prints in the static banner only when hidden
+
+    def action_theme_menu(self) -> None:
+        self.run_worker(self._open_theme_menu(), group="ui", exclusive=True)
+
+    async def _open_theme_menu(self) -> None:
+        items = [(tid, THEME_LABELS.get(tid, tid)) for tid in THEME_ORDER]
+        choice = await self.app.push_screen_wait(ListPicker("Theme", items))
+        if not choice:
+            return
+        try:
+            self.app.theme = choice  # live re-skin; fires theme_changed_signal
+        except Exception:
+            return
+        self.cfg.theme_name = choice
+        try:
+            self.cfg.save()
+        except Exception:
+            pass
 
     def _server_dot(self) -> tuple[str, str]:
         # Prefer our injected controller; fall back to the app's live one so a
@@ -773,7 +924,7 @@ class ChatScreen(Screen):
         g.append(f"{_fmt_tokens(used)}/{_fmt_tokens(mx)} ", style=DIM)
         g.append(f"{int(frac * 100)}%", style=col)
         if frac >= 0.85:
-            g.append("  full - Ctrl+# for new", style=RED)
+            g.append("  full - Ctrl+N for new", style=RED)
         return g
 
     def _update_hud(self) -> None:
@@ -808,18 +959,45 @@ class ChatScreen(Screen):
         except Exception:
             pass
 
-    def _hints_idle(self) -> str:
-        att = ""
+    def _hints_idle(self) -> list[tuple[str, str | None]]:
+        items: list[tuple[str, str | None]] = []
         if self._pending_attachments:
-            att = f"{G.IMAGE} {len(self._pending_attachments)}  -  "
-        return (att + "Ctrl+! agent  -  Ctrl+@ session  -  Ctrl+# new  -  "
-                "Ctrl+F filter  -  Ctrl+J newline  -  Ctrl+~ home  -  Esc exit")
+            items.append((f"{G.IMAGE} {len(self._pending_attachments)}", None))
+        items += [
+            ("^A admin", "toggle_admin"),
+            ("^W agent", "pick_agent"),
+            ("^S session", "pick_session"),
+            ("^N new", "new_session"),
+            ("^T theme", "theme_menu"),
+            ("^L anim", "toggle_anim"),
+            ("^F filter", "filter"),
+            ("Esc exit", "back"),
+        ]
+        return items
 
-    def _set_hints(self, text: str) -> None:
+    def _set_hints(self, content: str | list[tuple[str, str | None]]) -> None:
+        """Set hints bar. Pass a str for plain text or a list of
+        (label, action_or_None) for clickable pills."""
         try:
-            self.query_one("#chat-hints", Static).update(text)
+            bar = self.query_one("#chat-hints", Horizontal)
+            bar.remove_children()
+            if isinstance(content, str):
+                bar.mount(Static(content))
+            else:
+                for label, action in content:
+                    btn = Static(label, classes="hint-btn")
+                    btn._hint_action = action  # type: ignore[attr-defined]
+                    bar.mount(btn)
         except Exception:
             pass
+
+    @on(Click, ".hint-btn")
+    def _on_hint_click(self, event: Click) -> None:
+        action = getattr(event.widget, "_hint_action", None)
+        if action:
+            handler = getattr(self, f"action_{action}", None)
+            if handler:
+                handler()
 
     # ── log helpers ────────────────────────────────────────────────────
     def _log(self) -> VerticalScroll:
@@ -1167,16 +1345,15 @@ class ChatScreen(Screen):
 
     # ── actions ────────────────────────────────────────────────────────
     def action_back(self) -> None:
-        # First Esc stops a running turn; a second Esc leaves to Home.
+        # Esc unwinds, in order: close the admin panel -> stop a running turn ->
+        # quit the launcher (chat is now the base screen, so there's no "home").
+        if self._admin_panel is not None and self._admin_panel.display:
+            self.action_toggle_admin()
+            return
         if self.is_processing:
             self.action_stop()
             return
-        self.app.pop_screen()
-
-    def action_go_home(self) -> None:
-        if self.is_processing:
-            self.action_stop()
-        self.app.pop_screen()
+        self.app.run_worker(self.app.action_request_quit())
 
     def action_stop(self) -> None:
         if not self.is_processing:
@@ -1198,9 +1375,6 @@ class ChatScreen(Screen):
 
     def action_new_session(self) -> None:
         self._new_session()
-
-    def action_noop(self) -> None:
-        pass
 
     def action_pick_agent(self) -> None:
         if self.ready:

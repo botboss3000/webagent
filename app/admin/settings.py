@@ -483,6 +483,20 @@ class AppSettings(BaseModel):
     # WS-replay on reconnect. 0 = drop immediately. Default 60s gives a
     # smooth refresh-after-completion UX without holding RAM long.
     stream_buffer_retention_seconds: int = 60
+    # ── Self-healing / auto-resume (app/agent/runner.py + app/agent/watchdog.py) ──
+    # The liveness watchdog re-ignites runs that stopped involuntarily (server
+    # restart, vanished task, frozen await) from durable history, fully backend-
+    # driven (no user WebSocket). These tune detection + retry behavior.
+    run_watchdog_enabled: bool = True              # master on/off for the watchdog
+    run_watchdog_poll_seconds: int = 30            # how often the watchdog sweeps active runs
+    # live task + no liveness heartbeat for this long ⇒ frozen. The loop beats at
+    # each turn boundary and during token streams, so a healthy run beats often;
+    # keep this ABOVE the loop's wall-clock cap (AGENT_MAX_WALL_SECONDS, 300s) so a
+    # single legitimately-long turn is never mistaken for a hang.
+    run_frozen_threshold_seconds: int = 360
+    run_zombie_grace_seconds: int = 45             # row 'running' + no live task this long ⇒ zombie
+    run_max_resume_attempts: int = 3               # per-run resume budget before giving up (failed)
+    run_resume_backoff_seconds: int = 30           # base for exponential resume backoff
     # User feedback → GitHub issues via the webAgent relay. Cloners can flip
     # `feedback_enabled` off to hide the form, or point `feedback_relay_url`
     # at their own relay deployment.
@@ -501,6 +515,21 @@ def get_access_mode() -> str:
     if mode not in VALID_ACCESS_MODES:
         mode = "public_anonymous"
     return mode
+
+
+def get_self_heal_config() -> dict:
+    """Read the self-healing / auto-resume tunables from app-settings.json
+    (sync — used by the watchdog each tick and by the runner for defaults).
+    Falls back to the AppSettings defaults for any missing/invalid value."""
+    s = AppSettings(**_load_app_settings())
+    return {
+        "watchdog_enabled": bool(s.run_watchdog_enabled),
+        "poll_seconds": max(5, int(s.run_watchdog_poll_seconds)),
+        "frozen_threshold_seconds": max(15, int(s.run_frozen_threshold_seconds)),
+        "zombie_grace_seconds": max(10, int(s.run_zombie_grace_seconds)),
+        "max_resume_attempts": max(0, int(s.run_max_resume_attempts)),
+        "backoff_seconds": max(1, int(s.run_resume_backoff_seconds)),
+    }
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────

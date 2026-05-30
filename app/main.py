@@ -129,7 +129,13 @@ async def service_worker():
     sw_path = _APP_DIR.parent / "sw.js"
     if not sw_path.is_file():
         return HTMLResponse("", status_code=404)
-    return FileResponse(str(sw_path), media_type="text/javascript")
+    # Never let the browser serve a stale service-worker script from HTTP cache —
+    # a new sw.js (e.g. a cache-version bump) must be discovered on next load.
+    return FileResponse(
+        str(sw_path),
+        media_type="text/javascript",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 @app.get("/ui/manifest.json", include_in_schema=False)
@@ -357,6 +363,12 @@ async def shutdown():
         await stop_event_runtime()
     except Exception:
         pass
+    # Stop the liveness watchdog.
+    try:
+        from app.agent.watchdog import stop_watchdog
+        await stop_watchdog()
+    except Exception:
+        pass
     # Stop Remote Access (watcher + any managed tunnel).
     try:
         from app.remote_access import stop_remote_access
@@ -483,18 +495,19 @@ async def startup():
     except Exception as _ti_err:
         logger.warning("Failed to build trigger index on startup: %s", _ti_err)
 
-    # ── Clean recovery: reset agent runs the previous process left mid-flight ──
-    # A server restart is the one thing that ends an in-flight run; on boot we
-    # flip any 'running' session_runs and 'streaming' assistant rows to
-    # 'interrupted' so no device hangs waiting on an answer that will never
-    # finish. See app/agent/run_manager.py and app/db/local.py.
+    # ── Self-healing recovery (step 1 of 2): mark mid-flight runs as resumable ──
+    # A server restart is the one thing that ends an in-flight run. On boot we
+    # flip any 'running' session_runs to 'interrupted' WITH stop_cause=
+    # 'server_restart' (and streaming assistant rows to 'interrupted'). That tags
+    # them as resume candidates; the actual re-ignition happens in step 2 below,
+    # after the scheduler/event runtimes are up. See app/agent/runner.py.
     try:
         from app.db import get_db as _get_db_orphan
-        _n_orphan = await _get_db_orphan().cleanup_orphaned_runs()
+        _n_orphan = await _get_db_orphan().mark_orphans_for_resume()
         if _n_orphan:
-            logger.info("Reset %d orphaned agent run(s) left by previous process", _n_orphan)
+            logger.info("Marked %d orphaned agent run(s) for resume (left by previous process)", _n_orphan)
     except Exception as _orphan_err:
-        logger.warning("Orphaned-run cleanup failed: %s", _orphan_err)
+        logger.warning("Orphaned-run marking failed: %s", _orphan_err)
 
     try:
         from app.communications.manager import get_plugin_manager
@@ -544,6 +557,27 @@ async def startup():
         await start_event_runtime()
     except Exception as _evt_err:
         logger.warning("Failed to start event runtime: %s", _evt_err)
+
+    # ── Self-healing recovery (step 2 of 2): re-ignite resumable orphans ──
+    # Runs AFTER scheduler/events are up (a resumed turn may use their machinery).
+    # Fully backend-driven — no user WebSocket required — so background, sub-agent
+    # and delegated runs are recovered too. Only involuntary stops with a
+    # resumable cause and remaining retry budget are relaunched; user-stopped,
+    # replaced, throwaway, and opted-out runs are skipped. See app/agent/runner.py.
+    try:
+        from app.agent.runner import resume_orphans_at_boot
+        _n_resumed = await resume_orphans_at_boot()
+        if _n_resumed:
+            logger.info("Self-healing: re-ignited %d orphaned run(s) at boot", _n_resumed)
+    except Exception as _resume_err:
+        logger.warning("Boot resume failed: %s", _resume_err)
+
+    # ── Start the liveness watchdog (heals frozen/zombie runs while alive) ──
+    try:
+        from app.agent.watchdog import start_watchdog
+        await start_watchdog()
+    except Exception as _wd_err:
+        logger.warning("Failed to start run watchdog: %s", _wd_err)
 
     # ── Start Remote Access (auto-start managed tunnel if configured) ──
     try:

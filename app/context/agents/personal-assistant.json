@@ -1,6 +1,7 @@
 {
   "id": "personal-assistant",
-  "version": 1,
+  "version": 2,
+  "abilities": [],
   "name": "Personal Assistant",
   "description": "Helps manage email, calendar, tasks, and research.",
   "icon": "📋",

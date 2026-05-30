@@ -13,7 +13,7 @@ import re
 import sqlite3
 import struct
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -30,6 +30,19 @@ DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "loca
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# Fixed-width (always microseconds) UTC ISO timestamps. Used by the self-healing
+# run-state logic where next_resume_at / heartbeat_at / lease_expires_at are
+# compared lexicographically in SQL — both sides MUST come from these helpers so
+# the string order matches chronological order (a bare isoformat() omits the
+# fractional part when microseconds are 0, which would break the comparison).
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
+def _iso_in(seconds: float) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec="microseconds")
 
 
 def _uuid() -> str:
@@ -115,14 +128,30 @@ CREATE TABLE IF NOT EXISTS session_runs (
     latest_session_seq INTEGER NOT NULL DEFAULT 0,
     error TEXT,
     started_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    -- Self-healing / auto-resume bookkeeping (see app/agent/runner.py + watchdog.py).
+    -- stop_cause is the machine taxonomy of WHY a run ended (error holds the human reason):
+    --   complete | user_stop | replaced | server_restart | zombie | frozen | crash | failed | needs_manual_resume
+    stop_cause TEXT,
+    -- origin is the launch source; drives resume eligibility + how to relaunch headlessly:
+    --   web | automation | event | inbound | webhook | sandbox | optimizer
+    origin TEXT,
+    resume_attempts INTEGER NOT NULL DEFAULT 0,
+    max_resume_attempts INTEGER,
+    heartbeat_at TEXT,        -- last time the live loop proved it is alive (distinct from updated_at)
+    next_resume_at TEXT,      -- backoff gate: do not resume before this
+    owner_token TEXT,         -- lease token of the task/process that owns this run (multi-process safety)
+    lease_expires_at TEXT,    -- when the lease goes stale and another worker may claim
+    relaunch_ctx TEXT         -- JSON recipe to rebuild a turn with no new user message
 );
 
 CREATE INDEX IF NOT EXISTS idx_session_runs_user_status ON session_runs(user_id, status);
--- idx_interactions_session_seq and idx_interactions_turn are created by the
--- ALTER TABLE migration block after the columns are guaranteed to exist.
--- They are not declared here because on an existing DB the SCHEMA_SQL runs
--- BEFORE the ALTER TABLE migrations, so the columns wouldn't exist yet.
+-- idx_session_runs_status_heartbeat, idx_interactions_session_seq and
+-- idx_interactions_turn are created by the ALTER TABLE migration block after the
+-- columns are guaranteed to exist. They are NOT declared here: on an existing DB
+-- the SCHEMA_SQL runs BEFORE the ALTER TABLE migrations, so a migration-added
+-- column (e.g. session_runs.heartbeat_at) wouldn't exist yet and the CREATE
+-- INDEX would abort the whole init with "no such column".
 
 CREATE TABLE IF NOT EXISTS session_summaries (
     id TEXT PRIMARY KEY,
@@ -177,7 +206,10 @@ CREATE TABLE IF NOT EXISTS agents (
     admin_users TEXT NOT NULL DEFAULT '[]',
     member_users TEXT NOT NULL DEFAULT '[]',
     user_mode TEXT NOT NULL DEFAULT 'anonymous',
-    sort_order INTEGER
+    sort_order INTEGER,
+    -- Self-healing opt-out: 0 = never auto-resume this agent's runs (they wait
+    -- for a one-click manual resume instead). Default 1 = auto-resume eligible.
+    auto_resume INTEGER NOT NULL DEFAULT 1
 );
 
 -- ============================================================
@@ -1200,7 +1232,16 @@ class LocalBackend(StorageBackend):
                     latest_session_seq INTEGER NOT NULL DEFAULT 0,
                     error TEXT,
                     started_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    stop_cause TEXT,
+                    origin TEXT,
+                    resume_attempts INTEGER NOT NULL DEFAULT 0,
+                    max_resume_attempts INTEGER,
+                    heartbeat_at TEXT,
+                    next_resume_at TEXT,
+                    owner_token TEXT,
+                    lease_expires_at TEXT,
+                    relaunch_ctx TEXT
                 )"""
             )
             conn.execute(
@@ -1208,6 +1249,35 @@ class LocalBackend(StorageBackend):
                 "ON session_runs(user_id, status)"
             )
             conn.commit()
+
+            # ── Migration: self-healing/auto-resume columns on session_runs ──
+            # For DBs created before these columns existed. Each ADD COLUMN is
+            # guarded so re-runs are no-ops (SQLite has no ADD COLUMN IF NOT EXISTS).
+            cursor = conn.execute("PRAGMA table_info(session_runs)")
+            _sr_cols = {row[1] for row in cursor.fetchall()}
+            _sr_adds = [
+                ("stop_cause", "ALTER TABLE session_runs ADD COLUMN stop_cause TEXT"),
+                ("origin", "ALTER TABLE session_runs ADD COLUMN origin TEXT"),
+                ("resume_attempts", "ALTER TABLE session_runs ADD COLUMN resume_attempts INTEGER NOT NULL DEFAULT 0"),
+                ("max_resume_attempts", "ALTER TABLE session_runs ADD COLUMN max_resume_attempts INTEGER"),
+                ("heartbeat_at", "ALTER TABLE session_runs ADD COLUMN heartbeat_at TEXT"),
+                ("next_resume_at", "ALTER TABLE session_runs ADD COLUMN next_resume_at TEXT"),
+                ("owner_token", "ALTER TABLE session_runs ADD COLUMN owner_token TEXT"),
+                ("lease_expires_at", "ALTER TABLE session_runs ADD COLUMN lease_expires_at TEXT"),
+                ("relaunch_ctx", "ALTER TABLE session_runs ADD COLUMN relaunch_ctx TEXT"),
+            ]
+            _sr_added = []
+            for _col, _sql in _sr_adds:
+                if _col not in _sr_cols:
+                    conn.execute(_sql)
+                    _sr_added.append(_col)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_session_runs_status_heartbeat "
+                "ON session_runs(status, heartbeat_at)"
+            )
+            conn.commit()
+            if _sr_added:
+                logger.info("Added session_runs self-healing columns: %s", ", ".join(_sr_added))
 
             # ── Migration: add metadata column to sessions (for optimizer tracking) ──
             cursor = conn.execute("PRAGMA table_info(sessions)")
@@ -1240,6 +1310,14 @@ class LocalBackend(StorageBackend):
                 conn.execute("ALTER TABLE agents ADD COLUMN sort_order INTEGER")
                 conn.commit()
                 logger.info("Added agents.sort_order column")
+
+            # ── Migration: add auto_resume opt-out column to agents ──
+            cursor = conn.execute("PRAGMA table_info(agents)")
+            agent_cols_ar = {row[1] for row in cursor.fetchall()}
+            if "auto_resume" not in agent_cols_ar:
+                conn.execute("ALTER TABLE agents ADD COLUMN auto_resume INTEGER NOT NULL DEFAULT 1")
+                conn.commit()
+                logger.info("Added agents.auto_resume column")
 
             # ── Migration: add fire_token / external_job_id / external_provider to agent_automations ──
             try:
@@ -4290,18 +4368,29 @@ class LocalBackend(StorageBackend):
     # ──────────────────────────────────────────────────────────────────────
 
     async def run_state_begin(
-        self, session_id: str, user_id: str, agent_id: Optional[str], turn_id: Optional[str]
+        self, session_id: str, user_id: str, agent_id: Optional[str], turn_id: Optional[str],
+        origin: Optional[str] = None, relaunch_ctx: Optional[str] = None,
+        max_resume_attempts: Optional[int] = None,
     ) -> None:
-        """Mark a session as having a run in progress (upsert, status='running')."""
-        now = _now_iso()
+        """Mark a session as having a FRESH run in progress (upsert, status='running').
+
+        This is for a new logical turn — it resets the self-healing bookkeeping
+        (stop_cause cleared, resume_attempts=0, backoff/lease cleared, heartbeat
+        stamped now) and records ``origin`` + ``relaunch_ctx`` so the run can be
+        rebuilt headlessly later. Resumes do NOT call this (that would zero the
+        retry budget); they use ``run_state_claim_for_resume``."""
+        now = _iso_now()
         async with self._write_lock:
             conn = self._get_conn()
             try:
                 conn.execute(
                     """INSERT INTO session_runs
                          (session_id, user_id, agent_id, turn_id, assistant_interaction_id,
-                          status, latest_session_seq, error, started_at, updated_at)
-                       VALUES (?, ?, ?, ?, NULL, 'running', 0, NULL, ?, ?)
+                          status, latest_session_seq, error, started_at, updated_at,
+                          stop_cause, origin, resume_attempts, max_resume_attempts,
+                          heartbeat_at, next_resume_at, owner_token, lease_expires_at, relaunch_ctx)
+                       VALUES (?, ?, ?, ?, NULL, 'running', 0, NULL, ?, ?,
+                               NULL, ?, 0, ?, ?, NULL, NULL, NULL, ?)
                        ON CONFLICT(session_id) DO UPDATE SET
                          user_id=excluded.user_id,
                          agent_id=excluded.agent_id,
@@ -4311,8 +4400,18 @@ class LocalBackend(StorageBackend):
                          latest_session_seq=0,
                          error=NULL,
                          started_at=excluded.started_at,
-                         updated_at=excluded.updated_at""",
-                    (session_id, user_id, agent_id, turn_id, now, now),
+                         updated_at=excluded.updated_at,
+                         stop_cause=NULL,
+                         origin=excluded.origin,
+                         resume_attempts=0,
+                         max_resume_attempts=excluded.max_resume_attempts,
+                         heartbeat_at=excluded.heartbeat_at,
+                         next_resume_at=NULL,
+                         owner_token=NULL,
+                         lease_expires_at=NULL,
+                         relaunch_ctx=excluded.relaunch_ctx""",
+                    (session_id, user_id, agent_id, turn_id, now, now,
+                     origin, max_resume_attempts, now, relaunch_ctx),
                 )
                 conn.commit()
             finally:
@@ -4346,15 +4445,34 @@ class LocalBackend(StorageBackend):
                 conn.close()
 
     async def run_state_finish(
-        self, session_id: str, status: str = "complete", error: Optional[str] = None
+        self, session_id: str, status: str = "complete", error: Optional[str] = None,
+        stop_cause: Optional[str] = None,
     ) -> None:
-        """Mark the run finished ('complete' | 'interrupted' | 'error')."""
+        """Mark the run finished ('complete' | 'interrupted' | 'error').
+
+        ``stop_cause`` records WHY (machine taxonomy). A voluntary cause already
+        set by the user-Stop / replace paths (user_stop, replaced,
+        needs_manual_resume) is NEVER overwritten here — the loop's generic
+        terminal status must not erase the recorded intent. Passing
+        ``stop_cause=None`` leaves the existing cause untouched. The lease is
+        always released on finish."""
         async with self._write_lock:
             conn = self._get_conn()
             try:
                 conn.execute(
-                    "UPDATE session_runs SET status=?, error=?, updated_at=? WHERE session_id=?",
-                    (status, error, _now_iso(), session_id),
+                    """UPDATE session_runs SET
+                         status=?,
+                         error=?,
+                         stop_cause=CASE
+                           WHEN stop_cause IN ('user_stop','replaced','needs_manual_resume')
+                             THEN stop_cause
+                           ELSE COALESCE(?, stop_cause)
+                         END,
+                         owner_token=NULL,
+                         lease_expires_at=NULL,
+                         updated_at=?
+                       WHERE session_id=?""",
+                    (status, error, stop_cause, _iso_now(), session_id),
                 )
                 conn.commit()
             finally:
@@ -4396,6 +4514,200 @@ class LocalBackend(StorageBackend):
                     "error='Server restarted while this run was in progress.', "
                     "updated_at=? WHERE status='running'",
                     (_now_iso(),),
+                )
+                n = cur.rowcount or 0
+                conn.execute(
+                    "UPDATE interactions SET status='interrupted' WHERE status='streaming'"
+                )
+                conn.commit()
+                return n
+            finally:
+                conn.close()
+
+    # ── Self-healing / auto-resume helpers ────────────────────────────────
+    # Resumable causes: an involuntary stop we should re-ignite. user_stop /
+    # replaced / failed / needs_manual_resume / complete are NEVER in this set.
+    _RESUMABLE_CAUSES = ("server_restart", "zombie", "frozen", "crash")
+
+    async def run_state_session_tool_names(self, session_id: str) -> List[str]:
+        """Distinct tool names invoked anywhere in this session. Used by the
+        resume opt-out: if a run touched a tool flagged non-auto-resumable, the
+        run is held for one-click manual resume instead of auto-resumed."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT tool_name FROM interactions "
+                "WHERE session_id=? AND role='tool' AND tool_name IS NOT NULL",
+                (session_id,),
+            ).fetchall()
+            return [r["tool_name"] for r in rows if r["tool_name"]]
+        finally:
+            conn.close()
+
+    async def run_state_set_cause(self, session_id: str, stop_cause: str) -> None:
+        """Tag WHY a run is stopping, while it is still live, so the loop's
+        terminal finish does not have to guess intent. Used by the user-Stop
+        and replace paths to record 'user_stop' / 'replaced' (never resumed)."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE session_runs SET stop_cause=?, updated_at=? WHERE session_id=?",
+                    (stop_cause, _iso_now(), session_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def run_state_heartbeat(
+        self, session_id: str, owner_token: Optional[str] = None, lease_seconds: float = 120.0
+    ) -> None:
+        """Best-effort liveness ping from the running loop. Advances heartbeat_at
+        and refreshes the lease. Only touches rows that are still 'running'.
+        If owner_token is given, also (re)claims ownership for this task."""
+        now = _iso_now()
+        lease_exp = _iso_in(lease_seconds)
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                if owner_token is not None:
+                    conn.execute(
+                        "UPDATE session_runs SET heartbeat_at=?, lease_expires_at=?, "
+                        "owner_token=?, updated_at=? WHERE session_id=? AND status='running'",
+                        (now, lease_exp, owner_token, now, session_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE session_runs SET heartbeat_at=?, lease_expires_at=?, "
+                        "updated_at=? WHERE session_id=? AND status='running'",
+                        (now, lease_exp, now, session_id),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def run_state_list_active_all(self) -> List[Dict[str, Any]]:
+        """Every session with a currently-'running' turn, across all users.
+        The liveness watchdog scans these to find frozen / zombie runs."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM session_runs WHERE status='running'"
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def run_state_list_resumable(self, now_iso: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Runs eligible for auto-resume: stopped with a resumable cause, past
+        their backoff gate, and not a throwaway/sandbox/optimizer session.
+        Eligibility is also re-checked by the runner before each resume."""
+        now = now_iso or _iso_now()
+        placeholders = ",".join("?" for _ in self._RESUMABLE_CAUSES)
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                f"""SELECT * FROM session_runs
+                     WHERE status NOT IN ('running','complete')
+                       AND stop_cause IN ({placeholders})
+                       AND (next_resume_at IS NULL OR next_resume_at <= ?)
+                       AND COALESCE(origin,'') NOT IN ('sandbox','optimizer')
+                       AND session_id NOT LIKE 'test-%'
+                       AND session_id NOT LIKE 'trial-%'
+                     ORDER BY started_at ASC""",
+                (*self._RESUMABLE_CAUSES, now),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def run_state_claim_for_resume(
+        self, session_id: str, owner_token: str, lease_seconds: float,
+        backoff_seconds: float, effective_max: int,
+    ) -> bool:
+        """Atomically claim a stopped run for resume. Succeeds (returns True) only
+        if it is not already running, the lease is free or stale, and the retry
+        budget is not exhausted. On success: flips to 'running', increments
+        resume_attempts, clears stop_cause, stamps heartbeat, takes the lease, and
+        sets next_resume_at to the NEXT backoff gate. The rowcount guard makes
+        this safe even across processes."""
+        now = _iso_now()
+        lease_exp = _iso_in(lease_seconds)
+        next_resume = _iso_in(backoff_seconds)
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    """UPDATE session_runs SET
+                         status='running',
+                         resume_attempts = resume_attempts + 1,
+                         stop_cause = NULL,
+                         heartbeat_at = ?,
+                         owner_token = ?,
+                         lease_expires_at = ?,
+                         next_resume_at = ?,
+                         updated_at = ?
+                       WHERE session_id = ?
+                         AND status != 'running'
+                         AND (owner_token IS NULL OR lease_expires_at < ?)
+                         AND resume_attempts < ?""",
+                    (now, owner_token, lease_exp, next_resume, now,
+                     session_id, now, effective_max),
+                )
+                conn.commit()
+                return (cur.rowcount or 0) > 0
+            finally:
+                conn.close()
+
+    async def run_state_mark_failed(self, session_id: str, error: Optional[str] = None) -> None:
+        """Terminal: retry budget exhausted (or unrecoverable). status='error',
+        stop_cause='failed' so it is never auto-resumed again."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE session_runs SET status='error', stop_cause='failed', "
+                    "error=COALESCE(?, error), owner_token=NULL, lease_expires_at=NULL, "
+                    "updated_at=? WHERE session_id=?",
+                    (error, _iso_now(), session_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def run_state_mark_manual(self, session_id: str, error: Optional[str] = None) -> None:
+        """Mark a run as awaiting a human one-click resume (the opt-out path):
+        status='interrupted', stop_cause='needs_manual_resume' (never auto)."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE session_runs SET status='interrupted', "
+                    "stop_cause='needs_manual_resume', error=COALESCE(?, error), "
+                    "owner_token=NULL, lease_expires_at=NULL, updated_at=? WHERE session_id=?",
+                    (error, _iso_now(), session_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def mark_orphans_for_resume(self) -> int:
+        """Boot recovery (supersedes cleanup_orphaned_runs). Any run the previous
+        process left 'running' is flipped to 'interrupted' with
+        stop_cause='server_restart' so it is a resume candidate (the actual
+        eligibility — origin / throwaway / budget — is enforced by
+        run_state_list_resumable and the runner). Streaming assistant rows are
+        flipped to 'interrupted' as before. Returns the number of runs reset."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "UPDATE session_runs SET status='interrupted', "
+                    "stop_cause='server_restart', "
+                    "error='Server restarted while this run was in progress.', "
+                    "owner_token=NULL, lease_expires_at=NULL, updated_at=? "
+                    "WHERE status='running'",
+                    (_iso_now(),),
                 )
                 n = cur.rowcount or 0
                 conn.execute(

@@ -248,21 +248,43 @@ async def execute_event_subscription(
             except Exception as e:
                 logger.debug("Event-run broadcast failed: %s", e)
 
-        reply = await run_agent_loop_buffered(
-            user_id=user_id,
-            session_id=session_id,
-            user_message=user_message,
-            system_prompt=system_prompt,
-            agent_id=agent_id,
-            history=None,
-            channel="event",
-            timeout_seconds=600,
-            db=db,
-            agent_template_id=agent.get("template_id"),
-            allowed_tools=raw_allowed or None,
-            max_turns=agent.get("max_turn_count", 10),
-            event_callback=_event_loop_callback,
+        # Run supervised + recorded so a restart/freeze is detected and re-ignited
+        # by the self-healing layer instead of silently lost.
+        from app.agent.runner import run_supervised_turn, RunOutcome
+        _relaunch_ctx = {
+            "origin": "event", "session_id": session_id, "user_id": user_id,
+            "agent_id": agent_id, "channel": "event", "timeout_seconds": 600,
+            "delivery": {
+                "channel": preferred_channel,
+                "recipient": sub.get("channel_recipient"),
+                "silent": bool(sub.get("silent")),
+            },
+        }
+
+        async def _build_event_turn(replaced: bool) -> RunOutcome:
+            _reply = await run_agent_loop_buffered(
+                user_id=user_id,
+                session_id=session_id,
+                user_message=user_message,
+                system_prompt=system_prompt,
+                agent_id=agent_id,
+                history=None,
+                channel="event",
+                timeout_seconds=600,
+                db=db,
+                agent_template_id=agent.get("template_id"),
+                allowed_tools=raw_allowed or None,
+                max_turns=agent.get("max_turn_count", 10),
+                event_callback=_event_loop_callback,
+            )
+            return RunOutcome(status="complete", stop_cause="complete", reply=_reply)
+
+        _outcome = await run_supervised_turn(
+            session_id=session_id, user_id=user_id, agent_id=agent_id,
+            origin="event", channel="event", relaunch_ctx=_relaunch_ctx,
+            build_turn=_build_event_turn, await_result=True, result_timeout=620,
         )
+        reply = (_outcome.reply if _outcome else "") or ""
 
         # The agent itself drives delivery via tool calls (per design: no
         # implicit channel send). If the user gave a preferred channel AND

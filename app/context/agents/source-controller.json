@@ -1,6 +1,7 @@
 {
   "id": "source-controller",
-  "version": 1,
+  "version": 2,
+  "abilities": ["codebase_admin"],
   "name": "Source Controller",
   "description": "Source-control specialist: reviews the working-tree changes, writes a clear commit note, runs safety checks, then commits and pushes to the remote. Git only — never edits files. Admin-only.",
   "icon": "🔀",

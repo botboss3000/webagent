@@ -512,9 +512,11 @@ class StorageBackend(ABC):
         return False
 
     async def run_state_begin(
-        self, session_id: str, user_id: str, agent_id: Optional[str], turn_id: Optional[str]
+        self, session_id: str, user_id: str, agent_id: Optional[str], turn_id: Optional[str],
+        origin: Optional[str] = None, relaunch_ctx: Optional[str] = None,
+        max_resume_attempts: Optional[int] = None,
     ) -> None:
-        """Mark a session as having a run in progress. Default: no-op."""
+        """Mark a session as having a fresh run in progress. Default: no-op."""
         return None
 
     async def run_state_set_assistant(self, session_id: str, assistant_interaction_id: str) -> None:
@@ -526,7 +528,8 @@ class StorageBackend(ABC):
         return None
 
     async def run_state_finish(
-        self, session_id: str, status: str = "complete", error: Optional[str] = None
+        self, session_id: str, status: str = "complete", error: Optional[str] = None,
+        stop_cause: Optional[str] = None,
     ) -> None:
         """Mark the run finished. Default: no-op."""
         return None
@@ -541,6 +544,49 @@ class StorageBackend(ABC):
 
     async def cleanup_orphaned_runs(self) -> int:
         """Reset runs left mid-flight by a prior process. Default: 0."""
+        return 0
+
+    # ── Self-healing / auto-resume (default no-ops; implemented by LocalBackend) ──
+
+    async def run_state_set_cause(self, session_id: str, stop_cause: str) -> None:
+        """Tag why a live run is stopping (user_stop / replaced). Default: no-op."""
+        return None
+
+    async def run_state_session_tool_names(self, session_id: str):
+        """Distinct tool names used in a session (resume opt-out). Default: []."""
+        return []
+
+    async def run_state_heartbeat(
+        self, session_id: str, owner_token: Optional[str] = None, lease_seconds: float = 120.0
+    ) -> None:
+        """Liveness ping + lease refresh from the running loop. Default: no-op."""
+        return None
+
+    async def run_state_list_active_all(self):
+        """Every session with a 'running' turn (all users). Default: empty list."""
+        return []
+
+    async def run_state_list_resumable(self, now_iso: Optional[str] = None):
+        """Runs eligible for auto-resume. Default: empty list."""
+        return []
+
+    async def run_state_claim_for_resume(
+        self, session_id: str, owner_token: str, lease_seconds: float,
+        backoff_seconds: float, effective_max: int,
+    ) -> bool:
+        """Atomically claim a stopped run for resume. Default: False (no claim)."""
+        return False
+
+    async def run_state_mark_failed(self, session_id: str, error: Optional[str] = None) -> None:
+        """Terminal: retry budget exhausted. Default: no-op."""
+        return None
+
+    async def run_state_mark_manual(self, session_id: str, error: Optional[str] = None) -> None:
+        """Mark a run as awaiting a human one-click resume. Default: no-op."""
+        return None
+
+    async def mark_orphans_for_resume(self) -> int:
+        """Boot recovery that leaves orphans resumable. Default: 0."""
         return 0
 
     # ---- Interrupt Handling ----

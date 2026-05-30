@@ -1,6 +1,7 @@
 {
   "id": "opt_closer",
-  "version": 1,
+  "version": 2,
+  "abilities": [],
   "name": "Optimizer Closer",
   "description": "Pipeline agent — evaluates trial results and closes out the optimization.",
   "icon": "🔒",

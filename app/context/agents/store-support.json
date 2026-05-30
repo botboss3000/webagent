@@ -1,6 +1,7 @@
 {
   "id": "store-support",
-  "version": 1,
+  "version": 2,
+  "abilities": [],
   "name": "Store Support",
   "description": "Customer service agent for an online store.",
   "icon": "🛒",

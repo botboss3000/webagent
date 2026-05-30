@@ -144,9 +144,11 @@ async def execute_automation(automation: Dict[str, Any]) -> Dict[str, Any]:
             context_docs, brain_context=None, user_id=user_id, agent_id=agent_id,
         )
 
-        # Persist the synthetic user message so the session has a starting turn.
+        # Persist the synthetic user message so the session has a starting turn
+        # (also the turn boundary the self-healing resume reconstructs from).
+        _turn_uid = None
         try:
-            await db.insert_interaction(
+            _turn_uid = await db.insert_interaction(
                 user_id, session_id, role="user", content=prompt_text,
                 channel="automation",
                 metadata=json.dumps({"source": "automation", "automation_id": automation_id}),
@@ -162,20 +164,39 @@ async def execute_automation(automation: Dict[str, Any]) -> Dict[str, Any]:
             except Exception:
                 raw_allowed = []
 
-        reply = await run_agent_loop_buffered(
-            user_id=user_id,
-            session_id=session_id,
-            user_message=prompt_text,
-            system_prompt=system_prompt,
-            agent_id=agent_id,
-            history=None,
-            channel="automation",
-            timeout_seconds=600,
-            db=db,
-            agent_template_id=agent.get("template_id"),
-            allowed_tools=raw_allowed or None,
-            max_turns=agent.get("max_turn_count", 10),
+        # Run supervised + recorded so a restart/freeze is detected and re-ignited
+        # by the self-healing layer (boot recovery / watchdog) instead of lost.
+        from app.agent.runner import run_supervised_turn, RunOutcome
+        _relaunch_ctx = {
+            "origin": "automation", "session_id": session_id, "user_id": user_id,
+            "agent_id": agent_id, "channel": "automation", "timeout_seconds": 600,
+            "delivery": {"channel": channel, "recipient": recipient, "silent": silent},
+        }
+
+        async def _build_automation_turn(replaced: bool) -> RunOutcome:
+            _reply = await run_agent_loop_buffered(
+                user_id=user_id,
+                session_id=session_id,
+                user_message=prompt_text,
+                system_prompt=system_prompt,
+                agent_id=agent_id,
+                history=None,
+                channel="automation",
+                timeout_seconds=600,
+                db=db,
+                agent_template_id=agent.get("template_id"),
+                allowed_tools=raw_allowed or None,
+                max_turns=agent.get("max_turn_count", 10),
+            )
+            return RunOutcome(status="complete", stop_cause="complete", reply=_reply)
+
+        _outcome = await run_supervised_turn(
+            session_id=session_id, user_id=user_id, agent_id=agent_id,
+            origin="automation", channel="automation", turn_id=_turn_uid,
+            relaunch_ctx=_relaunch_ctx, build_turn=_build_automation_turn,
+            await_result=True, result_timeout=620,
         )
+        reply = (_outcome.reply if _outcome else "") or ""
 
         delivery_err = None
         if not silent and channel and channel != "webchat":
