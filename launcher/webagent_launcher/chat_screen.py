@@ -507,12 +507,17 @@ class ChatScreen(Screen):
         self._s_has_cost = False
         self._ctx_tokens = 0
         self._ctx_max: Optional[int] = None
+        # loading spinner state
+        self._loading_frame = 0
+        self._loading_timer: Optional[Any] = None
+        self._loading_log: list[str] = []
 
     # ── layout ─────────────────────────────────────────────────────────
     def compose(self) -> ComposeResult:
-        yield Static("connecting...", id="chat-status")
+        yield Static("", id="chat-status")
         with Container(id="chat-body"):
             yield VerticalScroll(id="chat-log")
+            yield VerticalScroll(id="chat-loading-log", classes="loading-log")
         yield Static("", id="chat-hud")
         yield WalkerBar(id="chat-walker")
         yield ChatInput(id="chat-input", soft_wrap=True, tab_behavior="focus")
@@ -525,6 +530,9 @@ class ChatScreen(Screen):
         # One timer drives both the server-dot refresh and the live HUD clock.
         self.set_interval(1.0, self._tick)
         self._update_hud()
+        # Start the loading spinner (8 fps) while init runs
+        self._loading_timer = self.set_interval(0.125, self._tick_loading)
+        self._append_loading("connecting to server...")
         if self._autostart:
             self.run_worker(self._init(), group="init", exclusive=True)
 
@@ -567,30 +575,43 @@ class ChatScreen(Screen):
 
     # ── init / connect ─────────────────────────────────────────────────
     async def _init(self) -> None:
-        self._status("starting server...")
+        self._append_loading("waiting for server...")
         ok = await ServerController.wait_until_ready(timeout=60.0)
         if not ok:
+            self._append_loading("server not ready - press Esc, start it, then reopen chat")
             self._status("server not ready - press Esc, start it, then reopen chat")
+            self._stop_spinner()
             return
+
+        self._append_loading("server ready")
 
         cached = getattr(self.app, "_chat_client", None)
         if isinstance(cached, WebAgentClient) and cached.token:
             self.client = cached
+            self._append_loading("using cached client")
         else:
             self.client = WebAgentClient()
+            self._append_loading("logging in...")
             try:
                 await self.client.login(self.cfg.chat_username, self.cfg.chat_password)
+                self._append_loading("login successful")
             except WebAgentError:
+                self._append_loading("credentials needed")
                 creds = await self.app.push_screen_wait(
                     CredentialsModal(self.cfg.chat_username)
                 )
                 if not creds:
+                    self._append_loading("login cancelled")
                     self._status("login cancelled - press Esc")
+                    self._stop_spinner()
                     return
                 try:
                     await self.client.login(creds[0], creds[1])
+                    self._append_loading("login successful")
                 except WebAgentError as e:
+                    self._append_loading(f"login failed: {e}")
                     self._status(f"login failed: {e}")
+                    self._stop_spinner()
                     return
                 self.cfg.chat_username, self.cfg.chat_password = creds
                 self.cfg.save()
@@ -599,9 +620,14 @@ class ChatScreen(Screen):
         self.ready = True
         if self.cfg.last_session_id:
             self.session_id = self.cfg.last_session_id
+            self._append_loading("loading session history...")
             await self._load_history(self.session_id)
+            self._append_loading("session loaded")
         else:
+            self._append_loading("creating new session...")
             self._new_session(announce=False)
+            self._append_loading("session ready")
+        self._stop_loading()
         self._refresh_status()
         self.query_one("#chat-input", ChatInput).focus()
 
@@ -645,6 +671,71 @@ class ChatScreen(Screen):
     def _status(self, msg: str) -> None:
         try:
             self.query_one("#chat-status", Static).update(Text(msg, style=AMBER))
+        except Exception:
+            pass
+
+    def _tick_loading(self) -> None:
+        """8 fps spinner in the status bar while the chat initialises."""
+        spin = "|/-\\"[self._loading_frame % 4]
+        self._loading_frame += 1
+        try:
+            w = self.query_one("#chat-status", Static)
+            t = Text()
+            t.append(f" {spin} ", style=f"bold {AMBER}")
+            if self._loading_log:
+                t.append(self._loading_log[-1], style=DIM)
+            w.update(t)
+        except Exception:
+            pass
+
+    def _append_loading(self, msg: str) -> None:
+        """Append a timestamped line to the loading log in the chat area."""
+        self._loading_log.append(msg)
+        try:
+            from datetime import datetime
+            ts = datetime.now().strftime("%H:%M:%S")
+            t = Text(f"[{ts}] {msg}", style=DIM)
+            log = self.query_one("#chat-loading-log", VerticalScroll)
+            log.mount(Static(t, classes="loading-line"))
+            log.scroll_end(animate=False)
+        except Exception:
+            pass
+
+    def _stop_spinner(self) -> None:
+        """Stop the spinner animation but keep the loading log visible."""
+        if self._loading_timer is not None:
+            try:
+                self._loading_timer.stop()
+            except Exception:
+                pass
+            self._loading_timer = None
+        # Show a static indicator instead of the spinner
+        try:
+            w = self.query_one("#chat-status", Static)
+            t = Text()
+            t.append(" ! ", style=f"bold {RED}")
+            if self._loading_log:
+                t.append(self._loading_log[-1], style=DIM)
+            w.update(t)
+        except Exception:
+            pass
+
+    def _stop_loading(self) -> None:
+        """Stop the spinner and hide the loading log, revealing the chat log."""
+        self._stop_spinner()
+        try:
+            ll = self.query_one("#chat-loading-log", VerticalScroll)
+            ll.display = False
+        except Exception:
+            pass
+        try:
+            cl = self.query_one("#chat-log", VerticalScroll)
+            cl.display = True
+        except Exception:
+            pass
+        # Clear the status bar for _refresh_status to fill
+        try:
+            self.query_one("#chat-status", Static).update(Text(""))
         except Exception:
             pass
 

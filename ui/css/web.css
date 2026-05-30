@@ -1,0 +1,106 @@
+/* Web page — in-app, AI-augmented browser.
+   Markup: ui/web.html · logic: ui/js/web.js.
+   Theme-driven (design-system variables only) so it works in dark + light.
+   #tab-web is a .tab-content, which is `display:flex; flex-direction:column`
+   when active, so .web-page just grows to fill it. */
+
+.web-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--bg-0);
+}
+
+.web-toolbar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
+  flex: 0 0 auto;
+}
+
+.web-btn {
+  height: 32px;
+  min-width: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  color: var(--fg-1);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.web-btn:hover { background: var(--bg-elev-2); }
+.web-btn:active { transform: translateY(1px); }
+
+.web-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  color: var(--fg-1);
+  outline: none;
+  font-size: 13px;
+}
+.web-url:focus { border-color: var(--accent); }
+
+.web-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-3);
+  white-space: nowrap;
+  padding-left: 4px;
+}
+.web-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warning);
+  flex: 0 0 auto;
+}
+.web-dot.live { background: var(--success); }
+.web-dot.down { background: var(--danger); }
+
+.web-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--bg-2);
+  outline: none;
+}
+.web-frame {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.web-frame.has-frame { display: block; }
+
+.web-empty {
+  position: absolute;
+  max-width: 440px;
+  text-align: center;
+  color: var(--fg-3);
+  font-size: 14px;
+  line-height: 1.55;
+  padding: 24px;
+  pointer-events: none;
+}

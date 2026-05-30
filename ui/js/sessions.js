@@ -74,6 +74,25 @@ function _setAgentTriggerLabel() {
   const title = (found && found.name) || (window.__agentName) || aid || 'No agent';
   labelEl.textContent = _truncate(title, 20);
   labelEl.title = (found && found.name) || title || '';
+  // Status icon: check if any session for this agent is running or has unread
+  const statusEl = document.getElementById('agent-dropdown-status');
+  if (statusEl) {
+    const hasRunning = _sessionsCache.some(s => s.run_status === 'running');
+    const hasUnread = _sessionsCache.some(s => s.has_unread);
+    if (hasRunning) {
+      statusEl.innerHTML = icon('loader-2', { size: '12px' });
+      statusEl.className = 'agent-dropdown-status session-status-running';
+      statusEl.title = 'Agent is thinking…';
+    } else if (hasUnread) {
+      statusEl.innerHTML = icon('check-circle', { size: '12px' });
+      statusEl.className = 'agent-dropdown-status session-status-unread';
+      statusEl.title = 'New response ready';
+    } else {
+      statusEl.innerHTML = '';
+      statusEl.className = 'agent-dropdown-status';
+      statusEl.title = '';
+    }
+  }
 }
 
 function _renderAgentRows() {
@@ -326,6 +345,23 @@ function _setTriggerLabel() {
   const title = (found && found.title) || 'New Session';
   labelEl.textContent = _truncate(title, 20);
   labelEl.title = (found && found.id) || sid || '';
+  // Status icon in the trigger button
+  const statusEl = document.getElementById('session-dropdown-status');
+  if (statusEl) {
+    if (found && found.run_status === 'running') {
+      statusEl.innerHTML = icon('loader-2', { size: '12px' });
+      statusEl.className = 'session-dropdown-status session-status-running';
+      statusEl.title = 'Agent is thinking…';
+    } else if (found && found.has_unread) {
+      statusEl.innerHTML = icon('check-circle', { size: '12px' });
+      statusEl.className = 'session-dropdown-status session-status-unread';
+      statusEl.title = 'New response ready';
+    } else {
+      statusEl.innerHTML = '';
+      statusEl.className = 'session-dropdown-status';
+      statusEl.title = '';
+    }
+  }
 }
 
 function _renderSessionRows() {
@@ -356,7 +392,7 @@ function _renderSessionRows() {
       <span class="session-row-pin-icon">${icon('pin', { size: '12px' })}</span>
       ${statusHtml}
       <span class="session-row-title" title="Hold to rename">${_truncate(label, 28).replace(/</g, '&lt;')}</span>
-      <button class="session-row-delete" title="Delete session" data-id="${s.id}">${icon('trash-2', { size: '14px' })}</button>
+      <button class="session-row-delete" title="Delete session" data-id="${s.id}" data-state="trash">${icon('trash-2', { size: '14px' })}</button>
     `;
     menu.appendChild(row);
   }
@@ -690,12 +726,14 @@ export function initSessions() {
     closeAgentMenu();
     menu.hidden = false;
     dropdown.classList.add('open');
+    _resetAllDeleteButtons();
   }
 
   function closeMenu() {
     if (!menu) return;
     menu.hidden = true;
     dropdown.classList.remove('open');
+    _resetAllDeleteButtons();
   }
 
   async function switchToSession(sid) {
@@ -750,11 +788,39 @@ export function initSessions() {
     } catch (_e) { /* socket may not be ready — replay on next reconnect */ }
   }
 
-  function confirmDeleteSession(sid) {
-    const sess = _sessionsCache.find(s => s.id === sid);
-    const title = (sess && sess.title) || 'this session';
-    if (!window.confirm(`Delete "${title}"? This cannot be undone.`)) return;
-    deleteSession(sid);
+  /**
+   * Two-click delete: first click shows ⚠️ (warning), second click deletes.
+   * Any other interaction (clicking elsewhere, opening menu) resets all buttons.
+   */
+  function handleDeleteClick(btn, sid) {
+    const state = btn.dataset.state;
+    if (state === 'trash') {
+      // First click: switch to warning state
+      btn.dataset.state = 'warning';
+      btn.classList.add('warning');
+      btn.title = 'Click again to confirm delete';
+      btn.innerHTML = icon('alert-triangle', { size: '14px' });
+      // Reset all other delete buttons back to trash
+      document.querySelectorAll('.session-row-delete[data-state="warning"]').forEach(other => {
+        if (other !== btn) _resetDeleteBtn(other);
+      });
+    } else if (state === 'warning') {
+      // Second click: delete
+      btn.dataset.state = 'deleting';
+      deleteSession(sid);
+    }
+  }
+
+  function _resetDeleteBtn(btn) {
+    btn.dataset.state = 'trash';
+    btn.classList.remove('warning');
+    btn.title = 'Delete session';
+    btn.innerHTML = icon('trash-2', { size: '14px' });
+  }
+
+  // Reset all delete buttons to trash state (e.g. when menu opens/closes)
+  function _resetAllDeleteButtons() {
+    document.querySelectorAll('.session-row-delete').forEach(_resetDeleteBtn);
   }
 
   async function patchSession(sid, body) {
@@ -836,6 +902,8 @@ export function initSessions() {
 
   if (sessionTrigger) {
     sessionTrigger.addEventListener('click', (e) => {
+      // Don't toggle dropdown when clicking the delete button inside the trigger
+      if (e.target.closest('.header-delete-btn')) return;
       e.stopPropagation();
       if (menu.hidden) openMenu(); else closeMenu();
     });
@@ -844,12 +912,12 @@ export function initSessions() {
   if (menu) {
     menu.addEventListener('click', (e) => {
       e.stopPropagation();
-      // Delete button (right side of the row)
+      // Delete button (right side of the row) — two-click confirm: trash → ⚠️ → delete
       const delBtn = e.target.closest('.session-row-delete');
       if (delBtn) {
         const row = delBtn.closest('.session-row');
         const sid = row && row.dataset.id;
-        if (sid) confirmDeleteSession(sid);
+        if (sid) handleDeleteClick(delBtn, sid);
         return;
       }
       // Row body click → switch session (ignore clicks inside rename input)
@@ -899,6 +967,64 @@ export function initSessions() {
       loopVisualSessionChanged();
       autoAgentSessionChanged();
       chatActivitySessionChanged();
+    });
+  }
+
+  // Header delete button — two-click confirm (same pattern as dropdown rows)
+  const sessionDelHeader = document.getElementById('session-delete-header');
+  if (sessionDelHeader) {
+    sessionDelHeader.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const sid = app.currentSessionId;
+      if (!sid) return;
+      const state = sessionDelHeader.dataset.state;
+      if (state === 'trash') {
+        sessionDelHeader.dataset.state = 'warning';
+        sessionDelHeader.title = 'Click again to confirm delete';
+        sessionDelHeader.innerHTML = icon('alert-triangle', { size: '14px' });
+        sessionDelHeader.style.color = '#ff5577';
+        setTimeout(() => {
+          sessionDelHeader.dataset.state = 'trash';
+          sessionDelHeader.title = 'Delete session';
+          sessionDelHeader.innerHTML = icon('trash-2', { size: '14px' });
+          sessionDelHeader.style.color = '';
+        }, 3000);
+      } else if (state === 'warning') {
+        deleteSession(sid);
+        sessionDelHeader.dataset.state = 'trash';
+        sessionDelHeader.title = 'Delete session';
+        sessionDelHeader.innerHTML = icon('trash-2', { size: '14px' });
+        sessionDelHeader.style.color = '';
+      }
+    });
+  }
+
+  // Header delete button for agent — two-click confirm
+  const agentDelHeader = document.getElementById('agent-delete-header');
+  if (agentDelHeader) {
+    agentDelHeader.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const aid = app.currentAgentId;
+      if (!aid) return;
+      const state = agentDelHeader.dataset.state;
+      if (state === 'trash') {
+        agentDelHeader.dataset.state = 'warning';
+        agentDelHeader.title = 'Click again to confirm delete';
+        agentDelHeader.innerHTML = icon('alert-triangle', { size: '14px' });
+        agentDelHeader.style.color = '#ff5577';
+        setTimeout(() => {
+          agentDelHeader.dataset.state = 'trash';
+          agentDelHeader.title = 'Delete agent';
+          agentDelHeader.innerHTML = icon('trash-2', { size: '14px' });
+          agentDelHeader.style.color = '';
+        }, 3000);
+      } else if (state === 'warning') {
+        confirmDeleteAgent(aid);
+        agentDelHeader.dataset.state = 'trash';
+        agentDelHeader.title = 'Delete agent';
+        agentDelHeader.innerHTML = icon('trash-2', { size: '14px' });
+        agentDelHeader.style.color = '';
+      }
     });
   }
 
@@ -1036,6 +1162,8 @@ export function initSessions() {
 
   if (agentTrigger) {
     agentTrigger.addEventListener('click', (e) => {
+      // Don't toggle dropdown when clicking the delete button inside the trigger
+      if (e.target.closest('.header-delete-btn')) return;
       e.stopPropagation();
       if (agentMenu.hidden) openAgentMenu(); else closeAgentMenu();
     });

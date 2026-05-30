@@ -78,6 +78,7 @@ function _showSection(section) {
   localStorage.setItem(_SECTION_KEY, section);
   _setNavActive(section);
   if (section === 'monetization') _renderPlatformBillingPanel();
+  if (section === 'app-settings' && typeof window.__refreshRemoteAccess === 'function') window.__refreshRemoteAccess();
 }
 
 function _renderPlatformBillingPanel() {

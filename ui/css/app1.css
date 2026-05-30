@@ -228,6 +228,13 @@ body {
 }
 .bubble-action-btn.copied { color: #9ece6a; }
 .bubble-action-btn[data-speaking="true"] { color: #7dcfff; }
+/* Per-turn delete button — danger-tinted on hover, filled when armed (⚠️). */
+.bubble-action-btn.bubble-delete-btn:hover { color: var(--danger); }
+.bubble-action-btn.bubble-delete-btn.warning {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: var(--danger-mid);
+}
 
 .chat-bubble.error {
     background: #f7768e15;
@@ -326,16 +333,16 @@ body {
     background: transparent;
     border: none;
     border-radius: 0;
-    padding: 8px 6px 8px 0;
+    padding: 12px 6px 12px 0;
     color: #c0caf5;
     font-size: 13px;
     /* Explicit line-height so the JS auto-resize and the min/max heights
        below all line up. 1 line of content = 18px. */
     line-height: 18px;
-    /* Default pill is a 2-row textarea: 18*2 content + 8+8 padding = 52px.
+    /* Default pill is a 2-row textarea: 18*2 content + 12+12 padding = 60px.
        The two stacked 26px buttons in the right column come to the same
-       52px so the pill is exactly 2 rows tall when empty. */
-    min-height: 52px;
+       60px so the pill is exactly 2 rows tall when empty. */
+    min-height: 60px;
     /* 6 visible content lines: 18px * 6 = 108px, plus 8px+8px vertical
        padding = 124px. JS toggles overflow-y to 'auto' when content
        exceeds this. */
@@ -381,6 +388,7 @@ body {
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
+    margin-right: 5px;
   }
 /* Send (or mic) is the TOP of the right-side button stack; attach (+) sits
    immediately BELOW. Both rows are auto-sized and the 1fr spacer row above
@@ -1535,6 +1543,47 @@ body.light-mode .xterm-viewport {
   }
 .header-plus-btn:hover { color: #7dcfff; }
 
+/* Header delete button — sits inside the trigger button, before the chevron */
+.header-delete-btn {
+    background: none;
+    border: none;
+    color: #565f89;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+    vertical-align: middle;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+.header-delete-btn:hover { color: #f7768e; }
+
+/* Status icon inside the trigger buttons */
+.session-dropdown-status,
+.agent-dropdown-status {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 14px;
+    height: 14px;
+    margin-right: 2px;
+  }
+.session-dropdown-status.session-status-running,
+.agent-dropdown-status.session-status-running {
+    color: #7dcfff;
+    animation: session-status-spin 1s linear infinite;
+  }
+.session-dropdown-status.session-status-unread,
+.agent-dropdown-status.session-status-unread {
+    color: #9ece6a;
+  }
+body.light-mode .session-dropdown-status.session-status-running,
+body.light-mode .agent-dropdown-status.session-status-running { color: #0db9d7; }
+body.light-mode .session-dropdown-status.session-status-unread,
+body.light-mode .agent-dropdown-status.session-status-unread { color: #73a64a; }
+
 /* ── Session / Agent dropdown (custom) ───────────────────────── */
   .session-dropdown,
 .agent-dropdown {
@@ -1733,6 +1782,8 @@ body.light-mode .agent-row-kebab:hover { background: rgba(0,0,0,0.05); color: #5
 body.light-mode .agent-row-config:hover { background: rgba(0,0,0,0.05); color: #5c4a4a; }
 .session-row-delete:hover,
 .agent-row-delete:hover { background: rgba(247, 118, 142, 0.12); color: #f7768e; }
+.session-row-delete.warning { color: #e5a83e; }
+.session-row-delete.warning:hover { background: rgba(229, 168, 62, 0.15); color: #f0c050; }
 .session-row-actions,
 .agent-row-actions {
     position: fixed;

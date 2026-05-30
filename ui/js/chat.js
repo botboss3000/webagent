@@ -335,14 +335,141 @@ async function _copyBubble(btn, bubble) {
   }
 }
 
+// ── Per-turn delete (two-click confirm, mirrors the session-dropdown UX) ──
+// Clicking the trash button on ANY bubble deletes the WHOLE turn that bubble
+// belongs to — the user message plus every agent step, tool call and memory
+// write that descended from it — which strips that turn from the history the
+// agent rebuilds each turn (i.e. prunes its context). First click arms the
+// button (trash → ⚠️); a second click commits. The turn is resolved server-side
+// from the bubble's interaction id by walking the parent chain to the root, so
+// the frontend only needs any one id from the turn.
+function _renderActionIcons(container) {
+  if (container && window.lucide && typeof window.lucide.createIcons === 'function') {
+    try {
+      window.lucide.createIcons({
+        nodes: Array.from(container.querySelectorAll('[data-lucide]:not(.lucide)')),
+      });
+    } catch (_) {}
+  }
+}
+
+// Either id is a real interaction row id the backend can resolve to a turn:
+// data-msg-id on DB-reloaded bubbles + live user bubbles; data-turn-id on live
+// agent step/response bubbles (it holds the assistant row's id).
+function _bubbleAnchorId(bubble) {
+  return bubble && (bubble.getAttribute('data-msg-id') || bubble.getAttribute('data-turn-id'));
+}
+
+// Lucide replaces the <i data-lucide> placeholder with an <svg>, so the shared
+// _setActionIcon (which looks for an <i>) can't re-swap an already-rendered
+// button. Reset innerHTML to a fresh placeholder and re-render instead.
+function _setDeleteIcon(btn, name) {
+  btn.innerHTML = '<i data-lucide="' + name + '" style="width:14px;height:14px;"></i>';
+  _renderActionIcons(btn);
+}
+
+function _resetBubbleDeleteBtn(btn) {
+  if (!btn) return;
+  btn.dataset.state = 'trash';
+  btn.classList.remove('warning');
+  btn.title = 'Delete this turn';
+  _setDeleteIcon(btn, 'trash-2');
+}
+
+function _resetAllBubbleDeleteBtns(except) {
+  document.querySelectorAll('.bubble-delete-btn[data-state="warning"]').forEach((b) => {
+    if (b !== except) _resetBubbleDeleteBtn(b);
+  });
+}
+
+function _handleBubbleDeleteClick(btn, bubble) {
+  if (btn.dataset.state === 'warning') {
+    btn.dataset.state = 'deleting';
+    _deleteTurn(bubble, btn);
+    return;
+  }
+  // First click: arm this button, disarm any other pending one.
+  _resetAllBubbleDeleteBtns(btn);
+  btn.dataset.state = 'warning';
+  btn.classList.add('warning');
+  btn.title = 'Click again to delete this message and its whole turn';
+  _setDeleteIcon(btn, 'alert-triangle');
+}
+
+async function _deleteTurn(bubble, btn) {
+  const anchor = _bubbleAnchorId(bubble);
+  if (!anchor) { _resetBubbleDeleteBtn(btn); return; }   // not persisted yet — no-op
+  const sid = app.currentSessionId;
+  const url = apiPath('/api/v1/db/turn?session_id=' + encodeURIComponent(sid)
+    + '&interaction_id=' + encodeURIComponent(anchor) + '&db=local.db');
+  try {
+    const resp = await fetch(url, { method: 'DELETE', headers: { ...authHeaders() } });
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok || !data || !Array.isArray(data.deleted_ids)) {
+      console.warn('Delete turn failed:', resp.status, data);
+      _resetBubbleDeleteBtn(btn);
+      return;
+    }
+    // Remove every bubble of the turn. Bubbles carry the deleted id in either
+    // data-msg-id (reloaded / user) or data-turn-id (live agent steps).
+    const ids = new Set(data.deleted_ids.map(String));
+    app.chatMessages.querySelectorAll('.chat-bubble').forEach((b) => {
+      const mid = b.getAttribute('data-msg-id');
+      const tid = b.getAttribute('data-turn-id');
+      if ((mid && ids.has(String(mid))) || (tid && ids.has(String(tid)))) b.remove();
+    });
+    // Defensive: the clicked bubble itself, in case it lacked a matching id.
+    if (bubble && bubble.isConnected) bubble.remove();
+    if (typeof app.populateSessionSelect === 'function') {
+      try { app.populateSessionSelect(app.currentUserId); } catch (_) {}
+    }
+  } catch (e) {
+    console.warn('Delete turn error:', e);
+    _resetBubbleDeleteBtn(btn);
+  }
+}
+
+function _makeBubbleDeleteBtn(bubble) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'bubble-action-btn bubble-delete-btn';
+  btn.dataset.state = 'trash';
+  btn.title = 'Delete this turn';
+  btn.innerHTML = '<i data-lucide="trash-2" style="width:14px;height:14px;"></i>';
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    _handleBubbleDeleteClick(btn, bubble);
+  });
+  return btn;
+}
+
+// Clicking anywhere that isn't an armed delete button disarms them all, so a
+// half-confirmed delete never lingers (same intent as the session dropdown
+// resetting its buttons when the menu opens/closes).
+document.addEventListener('click', (e) => {
+  if (!e.target.closest || !e.target.closest('.bubble-delete-btn')) {
+    _resetAllBubbleDeleteBtns(null);
+  }
+}, true);
+
 function _addBubbleActions(bubble) {
   if (!bubble) return;
   // Don't render actions while the bubble is still streaming.
   if (bubble.classList.contains('streaming')) return;
   const txt = _getBubbleText(bubble);
   if (!txt || txt === '\u2026') return;
-  // Avoid double-adding.
-  if (bubble.querySelector(':scope > .bubble-actions')) return;
+  const anchor = _bubbleAnchorId(bubble);
+  // Idempotent: if the row already exists, just backfill the delete button once
+  // an anchor id is available (a freshly-sent user bubble gets its id only after
+  // the turn persists). System placeholders never get one \u2014 no id to delete.
+  const existingActions = bubble.querySelector(':scope > .bubble-actions');
+  if (existingActions) {
+    if (anchor && !existingActions.querySelector('.bubble-delete-btn')) {
+      existingActions.appendChild(_makeBubbleDeleteBtn(bubble));
+      _renderActionIcons(existingActions);
+    }
+    return;
+  }
 
   const actions = document.createElement('div');
   actions.className = 'bubble-actions';
@@ -369,14 +496,12 @@ function _addBubbleActions(bubble) {
   });
   actions.appendChild(copyBtn);
 
+  // Delete (per-turn). Only when we have an id to anchor the turn on, so it
+  // never appears on transient system placeholders.
+  if (anchor) actions.appendChild(_makeBubbleDeleteBtn(bubble));
+
   bubble.appendChild(actions);
-  if (window.lucide && typeof window.lucide.createIcons === 'function') {
-    try {
-      window.lucide.createIcons({
-        nodes: Array.from(actions.querySelectorAll('[data-lucide]:not(.lucide)')),
-      });
-    } catch (_) {}
-  }
+  _renderActionIcons(actions);
 }
 
 async function sendStopMessage() {
@@ -517,6 +642,8 @@ async function sendMessage() {
     // no such bubble, will render it live).
     if (data.turn_id && _userBubble) {
       _userBubble.setAttribute('data-msg-id', data.turn_id);
+      // Now that the bubble has a real id, backfill its delete button.
+      _addBubbleActions(_userBubble);
     }
     if (typeof app.populateSessionSelect === 'function') {
       app.populateSessionSelect(app.currentUserId);

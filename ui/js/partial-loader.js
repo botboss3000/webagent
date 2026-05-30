@@ -14,6 +14,7 @@
 const TOP_LEVEL = [
   { url: './ui/pages.html', mount: '#tab-autoagent' },
   { url: './ui/agents.html', mount: '#tab-agents' },
+  { url: './ui/web.html', mount: '#tab-web' },
   { url: './ui/admin-tools.html', mount: '#tab-admin-tools' },
 ];
 

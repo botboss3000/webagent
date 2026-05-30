@@ -80,6 +80,10 @@ app/auth/users.json.bak
 app/db_mode.json
 app/pages_mode.json
 app/attachments_store_config.json
+# Remote Access (per-machine config + the signpost directory written at runtime)
+remote_access.json
+remote_access.json.bak
+remote_access_pointers.json
 
 # FUSE / SSHFS temp leftovers
 app/db/.fuse_hidden*

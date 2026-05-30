@@ -27,3 +27,5 @@ aiomysql>=0.2.0
 sqlglot>=23.0.0
 # Cron parsing for per-agent automation scheduler
 croniter>=2.0.0
+# QR codes for the Remote Access card (optional; the card degrades to text without it)
+qrcode>=7.4.2

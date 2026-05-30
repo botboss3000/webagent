@@ -737,6 +737,134 @@ async def get_session_messages(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _session_access_ok(cur, session_id: str, request: Request):
+    """Return True if the requester owns / participates in the session, False if
+    they clearly don't, or None when there's no session row to check against
+    (legacy / temp DB) — in which case the caller should fall through, exactly
+    like get_session_messages does. Mirrors that endpoint's auth logic."""
+    _token = ""
+    _auth_header = request.headers.get("Authorization", "")
+    if _auth_header.startswith("Bearer "):
+        _token = _auth_header[7:]
+    if not _token:
+        _token = request.query_params.get("token", "")
+    _payload = decode_token(_token) if _token else None
+    requesting_user_id = _payload.get("user_id") if _payload else None
+    requesting_username = _payload.get("sub") if _payload else None
+    requester_identities = {v for v in (requesting_user_id, requesting_username) if v}
+    try:
+        cur.execute(
+            "SELECT user_id, participants FROM sessions WHERE id = ?",
+            (session_id,),
+        )
+        session_row = cur.fetchone()
+    except sqlite3.OperationalError:
+        return None  # no sessions table — fall through
+    if not session_row:
+        return None  # unknown / anonymous session — fall through
+    owner_id = session_row[0]
+    participants_raw = session_row[1] or "[]"
+    try:
+        participants = json.loads(participants_raw)
+    except (json.JSONDecodeError, TypeError):
+        participants = []
+    participant_ids = {p.get("id") for p in participants if isinstance(p, dict)}
+    return bool(requester_identities) and bool(
+        requester_identities & ({owner_id} | participant_ids)
+    )
+
+
+@router.delete("/turn")
+async def delete_turn(
+    request: Request,
+    session_id: str = Query(..., description="Session ID"),
+    interaction_id: str = Query(..., description="Any interaction id within the turn to delete"),
+    db: str = Query("local.db", description="Database filename"),
+):
+    """Delete one whole conversation turn from `interactions`.
+
+    A "turn" is the **parent-chain closure rooted at the user message** that
+    started it: the user row (``parent_id IS NULL``) plus every assistant step,
+    tool call and memory write that descended from it. This is robust against
+    the fact that turns interleave in wall-clock time — a background memory_save
+    or an interrupting user message can land another turn's row in the middle —
+    so a naive "delete everything between two user messages" would corrupt
+    neighbouring turns. Walking the parent tree keeps the cut surgical.
+
+    ``interaction_id`` may be any row in the turn (the clicked bubble's id); the
+    server walks up to the root itself. Removing the rows strips that turn from
+    the history the agent rebuilds each turn — i.e. it prunes the context."""
+    resolved_db = _resolve_session_db(session_id, db)
+    db_path = _get_db_path(resolved_db)
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        access = _session_access_ok(cur, session_id, request)
+        if access is False:
+            conn.close()
+            raise HTTPException(status_code=403, detail="Not a participant in this session")
+
+        rows = cur.execute(
+            "SELECT id, parent_id, turn_id FROM interactions WHERE session_id = ?",
+            (session_id,),
+        ).fetchall()
+        by_id = {r["id"]: r for r in rows}
+        children: dict = {}
+        for r in rows:
+            children.setdefault(r["parent_id"], []).append(r["id"])
+
+        # ── Resolve the turn root: walk parent_id up to the user message. ──
+        # User rows have parent_id = NULL; every other row in the turn descends
+        # from one. A visited set guards against any accidental cycle.
+        cur_id = interaction_id
+        visited = set()
+        while (cur_id in by_id and by_id[cur_id]["parent_id"]
+               and by_id[cur_id]["parent_id"] in by_id and cur_id not in visited):
+            visited.add(cur_id)
+            cur_id = by_id[cur_id]["parent_id"]
+        root = cur_id
+
+        # ── Collect the whole descendant tree from the root (BFS/DFS). ──
+        to_delete = set()
+        stack = [root]
+        while stack:
+            n = stack.pop()
+            if n in to_delete:
+                continue
+            to_delete.add(n)
+            stack.extend(children.get(n, []))
+
+        # Belt-and-suspenders: also any row explicitly tagged with this turn_id
+        # (future-proofs the day assistant/tool rows start carrying turn_id).
+        for r in rows:
+            if r["turn_id"] and r["turn_id"] == root:
+                to_delete.add(r["id"])
+
+        # Only ever delete ids that are real rows in THIS session, so a stale or
+        # foreign interaction_id can never widen the blast radius.
+        to_delete = {i for i in to_delete if i in by_id}
+        if not to_delete:
+            conn.close()
+            return {"deleted_ids": [], "count": 0, "turn_root": root, "session_id": session_id}
+
+        cur.executemany(
+            "DELETE FROM interactions WHERE id = ?",
+            [(i,) for i in to_delete],
+        )
+        conn.commit()
+        conn.close()
+        return {
+            "deleted_ids": list(to_delete),
+            "count": len(to_delete),
+            "turn_root": root,
+            "session_id": session_id,
+        }
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/session-stats")
 async def session_stats(
     user_id: str = Query(..., description="User ID"),

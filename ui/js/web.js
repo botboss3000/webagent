@@ -1,11 +1,13 @@
 'use strict';
 
 // ── Web page: an in-app, AI-augmented browser ──────────────────────────────
-// Streams the server-side Playwright page (the SAME page the agent's
-// `browser_action` tool drives, keyed by user+session) into a live view, and
-// forwards the user's mouse/keyboard/navigation back to it. Whatever the agent
-// does shows up here live, and the user can take over at any time — they share
-// one browser. Backend: app/api/browser_stream.py.
+// Markup lives in ui/web.html (injected into #tab-web by ui/js/partial-loader.js);
+// styles in ui/css/web.css. This module wires the page to the live stream from
+// app/api/browser_stream.py: it paints the server-side Playwright page (the SAME
+// page the agent's `browser_action` tool drives, keyed by user+session) and
+// forwards the user's mouse / keyboard / navigation back to it. Whatever the
+// agent does shows here live, and the user can take over any time — one shared
+// browser.
 
 import { app } from './state.js';
 import { browserWsUrl } from './config.js';
@@ -22,50 +24,10 @@ let connectedSession = null;
 let reconnectTimer = null;
 let els = null;
 
-function injectStyleOnce() {
-  if (document.getElementById('web-page-style')) return;
-  const s = document.createElement('style');
-  s.id = 'web-page-style';
-  // Theme-driven: only design-system variables, so it works in dark + light.
-  s.textContent = `
-.web-page{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--bg-0);}
-.web-toolbar{display:flex;gap:6px;align-items:center;padding:8px;border-bottom:1px solid var(--border);background:var(--bg-1);flex:0 0 auto;}
-.web-btn{height:32px;min-width:32px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-elev);color:var(--fg-1);cursor:pointer;font-size:15px;line-height:1;display:inline-flex;align-items:center;justify-content:center;}
-.web-btn:hover{background:var(--bg-elev-2);}
-.web-btn:active{transform:translateY(1px);}
-.web-url{flex:1 1 auto;min-width:0;height:32px;padding:0 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-elev);color:var(--fg-1);outline:none;font-size:13px;}
-.web-url:focus{border-color:var(--accent);}
-.web-status{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-3);white-space:nowrap;padding-left:4px;}
-.web-dot{width:8px;height:8px;border-radius:50%;background:var(--warning);flex:0 0 auto;}
-.web-dot.live{background:var(--success);}
-.web-dot.down{background:var(--danger);}
-.web-stage{position:relative;flex:1 1 auto;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden;background:var(--bg-2);outline:none;cursor:default;}
-.web-frame{max-width:100%;max-height:100%;object-fit:contain;display:none;user-select:none;-webkit-user-drag:none;}
-.web-frame.has-frame{display:block;}
-.web-empty{position:absolute;max-width:440px;text-align:center;color:var(--fg-3);font-size:14px;line-height:1.55;padding:24px;pointer-events:none;}
-`;
-  document.head.appendChild(s);
-}
-
-function build() {
+function mount() {
   const root = document.getElementById('tab-web');
-  if (!root) return null;
-  root.innerHTML = `
-    <div class="web-page">
-      <div class="web-toolbar">
-        <button class="web-btn" data-act="back" title="Back" aria-label="Back">&#8249;</button>
-        <button class="web-btn" data-act="forward" title="Forward" aria-label="Forward">&#8250;</button>
-        <button class="web-btn" data-act="reload" title="Reload" aria-label="Reload">&#8635;</button>
-        <input class="web-url" type="text" spellcheck="false" autocomplete="off" placeholder="Enter a URL or search&hellip;" />
-        <button class="web-btn" data-act="go">Go</button>
-        <span class="web-status"><span class="web-dot"></span><span class="web-status-text">idle</span></span>
-      </div>
-      <div class="web-stage" tabindex="0">
-        <img class="web-frame" alt="" draggable="false" />
-        <div class="web-empty">This is a shared browser. Type a URL above to start &mdash; the agent can see and act on this same page, and you can take over any time.</div>
-      </div>
-    </div>`;
-  return {
+  if (!root) return false;
+  els = {
     root,
     url: root.querySelector('.web-url'),
     frame: root.querySelector('.web-frame'),
@@ -74,6 +36,9 @@ function build() {
     dot: root.querySelector('.web-dot'),
     statusText: root.querySelector('.web-status-text'),
   };
+  if (!els.stage || !els.frame) { els = null; return false; }
+  wireInput();
+  return true;
 }
 
 function setStatus(state, text) {
@@ -194,7 +159,7 @@ function connect() {
     setStatus('down', 'connection failed');
     return;
   }
-  ws.onopen = () => setStatus('idle', 'connected');
+  ws.onopen = () => setStatus('idle', 'starting browser…');
   ws.onmessage = (ev) => {
     let m; try { m = JSON.parse(ev.data); } catch (_) { return; }
     if (m.type === 'frame') {
@@ -230,11 +195,8 @@ function disconnect() {
 
 export function startWeb() {
   active = true;
-  injectStyleOnce();
   if (!mounted) {
-    els = build();
-    if (!els) { active = false; return; }
-    wireInput();
+    if (!mount()) { active = false; return; }
     mounted = true;
   }
   // (Re)connect if there's no live socket or the active chat session changed,
