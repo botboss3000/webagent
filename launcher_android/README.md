@@ -67,6 +67,25 @@ automatically. You'll typically see:
 Once Doctor is green (or only yellow), press **L** to launch. The Logs
 tab streams `run.py`'s stdout/stderr live.
 
+## Home-screen shortcut (Termux:Widget)
+
+For a one-tap launch from the Android home screen, use `start_agent.sh`. It is
+a self-contained variant of `start.sh` that also **prompts for an LLM API key**
+on first run (writing it to `.env`) and **self-installs `textual`** inside the
+proot before starting the TUI. Install it into the
+[Termux:Widget](https://f-droid.org/en/packages/com.termux.widget/) shortcuts
+directory:
+
+```bash
+cp ~/webagent/launcher_android/start_agent.sh ~/.shortcuts/start_agent.sh
+chmod +x ~/.shortcuts/start_agent.sh
+```
+
+Then add the Termux:Widget to your home screen and tap **start_agent**.
+`PROJECT_ROOT` is hard-coded to `~/webagent` because the file runs from
+`~/.shortcuts/`, outside the repo, so it can't resolve the project path
+relative to itself.
+
 ## Keyboard
 
 | Key | Action |
@@ -84,6 +103,7 @@ tab streams `run.py`'s stdout/stderr live.
 ```
 launcher_android/
 ├── start.sh                # Termux entry point — handles proot-distro
+├── start_agent.sh          # Home-screen shortcut: API-key prompt + textual self-install; copy into ~/.shortcuts/
 ├── pyproject.toml          # `textual` only
 ├── requirements.txt        # ditto, for pip fans
 ├── launcher_android/
