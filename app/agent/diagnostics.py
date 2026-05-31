@@ -382,6 +382,118 @@ class DiagnosticRecorder:
         out.sort(key=lambda r: r.get("ts") or "", reverse=True)
         return out[:limit]
 
+    # ── Clear / purge ──────────────────────────────────────────────────────
+
+    async def clear(
+        self,
+        *,
+        older_than_minutes: Optional[float] = None,
+        levels: Optional[Iterable[str]] = None,
+        categories: Optional[Iterable[str]] = None,
+        search: Optional[str] = None,
+        clear_files: bool = False,
+    ) -> Dict[str, Any]:
+        """Purge diagnostics. With NO scope it clears everything; otherwise it
+        clears only records matching the scope (older-than / levels / categories
+        / search). Purges the RAM ring and the durable DB table; when
+        ``clear_files`` is set on a *full* clear it also truncates the
+        ``logs/*.log`` text files. Returns a small summary."""
+        older_secs = older_than_minutes * 60.0 if older_than_minutes else None
+        lvlset = {str(x).lower() for x in levels} if levels else None
+        catset = {str(x).lower() for x in categories} if categories else None
+        needle = search.lower() if search else None
+        cutoff_iso = _iso_minus(older_secs) if older_secs else None
+        is_full = older_secs is None and not lvlset and not catset and not needle
+
+        # 1. RAM ring — keep records the clear does NOT target.
+        kept: Deque[Dict[str, Any]] = collections.deque(maxlen=self._ring.maxlen)
+        removed = 0
+        for rec in list(self._ring):
+            if self._targets_clear(rec, cutoff_iso, lvlset, catset, needle):
+                removed += 1
+            else:
+                kept.append(rec)
+        self._ring = kept
+
+        # 2. Durable DB table.
+        db_deleted = 0
+        db = self._db()
+        if db is not None and hasattr(db, "clear_diagnostics"):
+            try:
+                db_deleted = await db.clear_diagnostics(
+                    older_than_seconds=older_secs,
+                    levels=list(lvlset) if lvlset else None,
+                    categories=list(catset) if catset else None,
+                    search=search,
+                )
+            except Exception as e:
+                logger.debug("clear_diagnostics failed: %s", e)
+
+        # 3. Text files — only on a full clear (partial line-rewrite of an
+        #    open, rotating file is fragile, especially on Windows).
+        files_cleared: List[str] = []
+        if clear_files and is_full:
+            files_cleared = self._clear_files()
+
+        return {"ring_removed": removed, "db_deleted": db_deleted,
+                "files_cleared": files_cleared, "scope": "all" if is_full else "filtered"}
+
+    @staticmethod
+    def _targets_clear(rec, cutoff_iso, lvlset, catset, needle) -> bool:
+        """True if this record matches every supplied clear criterion (no
+        criteria → matches everything → full clear)."""
+        if cutoff_iso is not None and (rec.get("ts") or "") >= cutoff_iso:
+            return False  # newer than the cutoff → keep
+        if lvlset and (rec.get("level") or "").lower() not in lvlset:
+            return False
+        if catset and (rec.get("category") or "").lower() not in catset:
+            return False
+        if needle:
+            hay = " ".join(str(rec.get(k) or "") for k in ("message", "source", "category"))
+            det = rec.get("detail")
+            if det:
+                hay += " " + (det if isinstance(det, str) else json.dumps(det, default=str))
+            if needle not in hay.lower():
+                return False
+        return True
+
+    def _clear_files(self) -> List[str]:
+        """Truncate the currently-open per-source files (in place, keeping the
+        handle) and delete any rotated backups. Returns cleared file names."""
+        cleared: List[str] = []
+        open_paths = set()
+        for lg in self._file_loggers.values():
+            if not lg:
+                continue
+            for h in getattr(lg, "handlers", []):
+                if not isinstance(h, RotatingFileHandler):
+                    continue
+                try:
+                    h.acquire()
+                    try:
+                        if h.stream:
+                            h.stream.seek(0)
+                            h.stream.truncate()
+                        open_paths.add(os.path.abspath(h.baseFilename))
+                        cleared.append(os.path.basename(h.baseFilename))
+                    finally:
+                        h.release()
+                except Exception:
+                    pass
+        try:
+            import glob
+            for p in glob.glob(os.path.join(self.log_dir, "*.log*")):
+                if os.path.abspath(p) in open_paths:
+                    continue
+                try:
+                    os.remove(p)
+                    cleared.append(os.path.basename(p))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return cleared
+
     @staticmethod
     def _normalize(r: Dict[str, Any]) -> Dict[str, Any]:
         r = dict(r)
