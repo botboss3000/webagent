@@ -230,7 +230,7 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
     Each JSON file must contain an object with agent template fields:
       - id (str, required)
       - system_prompt (str)
-      - max_turn_count (int, default 10)
+      - max_turn_count (int, default 0)
       - model (str or null)
       - provider (str or null)
       - temperature (float, default 0.0)
@@ -326,7 +326,7 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
             "description": data.get("description", ""),
             "icon": data.get("icon", ""),
             "system_prompt": data.get("system_prompt", ""),
-            "max_turn_count": data.get("max_turn_count", 10),
+            "max_turn_count": data.get("max_turn_count", 0),
             "max_wall_seconds": data.get("max_wall_seconds"),
             "model": data.get("model"),
             "provider": data.get("provider"),

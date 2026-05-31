@@ -725,7 +725,7 @@ async def stream_agent_events(
     history: Optional[List[Dict[str, Any]]] = None,
     parent_interaction_id: Optional[str] = None,
     interrupt_event: Optional[asyncio.Event] = None,
-    max_turns: int = 10,
+    max_turns: int = 0,
     channel: Optional[str] = None,
     db: Optional[Any] = None,
     agent_template_id: Optional[str] = None,
@@ -903,6 +903,8 @@ async def stream_agent_events(
     original_max_turns = max_turns  # the configured block size; used to rearm at each ceiling
     last_extension_at = 0           # ceiling turn at which we last extended (0 = not yet)
     empty_retry_used = False        # safety net: one retry per session for an empty LLM reply
+    _tool_name_streak = 0        # consecutive same-tool-name calls (diff args)
+    _last_tool_streak_name = ""  # which tool the streak is counting
 
     try:
         # Build loop config — drives per-node enable/disable at runtime.
@@ -985,7 +987,7 @@ async def stream_agent_events(
                 except Exception:
                     pass
 
-        while turn_count < max_turns:
+        while max_turns == 0 or turn_count < max_turns:
             # Wall-clock safety cap — finish gracefully instead of timing out.
             # (>0 guard: 0/negative disables it and can't trip on turn 1.)
             if _MAX_WALL_SECONDS > 0 and (time.time() - _loop_start_ts) > _MAX_WALL_SECONDS:
@@ -1020,7 +1022,7 @@ async def stream_agent_events(
             # Ask for permission to continue when the agent reaches the configured turn ceiling.
             # Rearms automatically after each granted extension (last_extension_at tracks the
             # ceiling at which we last extended, so asking fires again at each new ceiling).
-            if loop_config.is_enabled("permission_chk") and turn_count == max_turns and last_extension_at != max_turns:
+            if max_turns > 0 and loop_config.is_enabled("permission_chk") and turn_count == max_turns and last_extension_at != max_turns:
                 fr = get_prompt_fragments()
                 permission_message = (fr.get("turn_permission_request") or "").strip()
                 if permission_message:
@@ -1028,7 +1030,7 @@ async def stream_agent_events(
 
             # Check if user has granted permission (looks at their most recent message).
             # Only active at the current ceiling, before we have already extended at that ceiling.
-            if loop_config.is_enabled("permission_chk") and turn_count >= max_turns and last_extension_at < max_turns:
+            if max_turns > 0 and loop_config.is_enabled("permission_chk") and turn_count >= max_turns and last_extension_at < max_turns:
                 last_user_msg = next((msg for msg in reversed(messages) if msg.get("role") == "user"), None)
                 if last_user_msg:
                     user_content = last_user_msg.get("content", "").lower()
@@ -1264,6 +1266,9 @@ async def stream_agent_events(
                         if _pe["type"] == "stream":
                             collected_content += _pe["content"]
                             await _persist_stream_progress()
+                            # Only yield non-empty content — same as single-provider path
+                            if not _pe["content"].strip():
+                                continue
                             _pe = dict(_pe)  # shallow copy to avoid mutating original
                             # Prefix only the first stream chunk of the turn
                             if first_stream_chunk_state[0]:
@@ -1343,7 +1348,10 @@ async def stream_agent_events(
                         if first_stream_chunk_state[0]:
                             stream_content = prefix_content(stream_content)
                             first_stream_chunk_state[0] = False
-                        yield {"type": "stream", "level": "agent", "content": stream_content, "asst_id": streaming_asst_id}
+                        # Only yield non-empty content — empty/whitespace chunks
+                        # waste a bubble and inflate turn counts.
+                        if stream_content.strip():
+                            yield {"type": "stream", "level": "agent", "content": stream_content, "asst_id": streaming_asst_id}
 
                     if delta.tool_calls:
                         for tc in delta.tool_calls:
@@ -1401,6 +1409,11 @@ async def stream_agent_events(
                 # and ends the loop after one productive turn.
                 from app.agent.session_history import strip_think_blocks
                 replay_content = strip_think_blocks(collected_content) or None
+                # When the LLM returns tool calls with empty/whitespace content,
+                # set content to None so session_history skips it on replay and
+                # the empty bubble is never rendered in the UI.
+                if replay_content is not None and not replay_content.strip():
+                    replay_content = None
                 messages.append({
                     "role": "assistant",
                     "content": replay_content,
@@ -1408,7 +1421,7 @@ async def stream_agent_events(
                 })
 
                 # Persist intermediate assistant message — clean content, no tool-call echo
-                assistant_content = collected_content or ""
+                assistant_content = (collected_content or "").strip()
                 # Tool calls are stored in the `output` field (line 1247 below),
                 # NOT embedded in the content string. The legacy `\n\n[Tool calls: ...]`
                 # suffix was removed because it contaminated message history: the LLM
@@ -1447,8 +1460,10 @@ async def stream_agent_events(
                 # Finalize THIS step's bubble in the UI (it's an intermediate
                 # assistant message that precedes tool calls — shown as its own
                 # bubble so the user sees every step, not just the final answer).
-                yield {"type": "agent_step_end", "level": "agent",
-                       "asst_id": asst_id, "content": assistant_content}
+                # Skip if content is empty — no bubble to render.
+                if assistant_content.strip():
+                    yield {"type": "agent_step_end", "level": "agent",
+                           "asst_id": asst_id, "content": assistant_content}
 
                 # ── Pipeline: validation start ──
                 yield {"type": "pipeline", "level": "pipeline",
@@ -1520,15 +1535,38 @@ async def stream_agent_events(
                         # strike, and move on without executing.
                         _sig = f"{tool_name}|{tc.function.arguments or ''}"
                         _tool_call_counts[_sig] += 1
-                        if _tool_call_counts[_sig] >= _MAX_IDENTICAL_CALLS:
+
+                        # ── Stall guard: same-tool-name streak (different args) ──
+                        # Catches e.g. 19 consecutive run_python or 12 consecutive
+                        # read_source with different paths. The agent is thrashing.
+                        if tool_name == _last_tool_streak_name:
+                            _tool_name_streak += 1
+                        else:
+                            _tool_name_streak = 1
+                            _last_tool_streak_name = tool_name
+
+                        _hit_identical = _tool_call_counts[_sig] >= _MAX_IDENTICAL_CALLS
+                        _hit_streak = _tool_name_streak >= _MAX_IDENTICAL_CALLS
+
+                        if _hit_identical or _hit_streak:
                             stall_strikes += 1
-                            _loop_warn = (
-                                f"Loop guard: you have called `{tool_name}` with identical "
-                                f"arguments {_tool_call_counts[_sig]} times. That is not making "
-                                f"progress, so I did not run it again. Do NOT repeat the same "
-                                f"call — take a different approach, use a different tool, or "
-                                f"stop and give the user your best answer or a clarifying question."
-                            )
+                            if _hit_identical:
+                                _loop_warn = (
+                                    f"Loop guard: you have called `{tool_name}` with identical "
+                                    f"arguments {_tool_call_counts[_sig]} times. That is not making "
+                                    f"progress, so I did not run it again. Do NOT repeat the same "
+                                    f"call — take a different approach, use a different tool, or "
+                                    f"stop and give the user your best answer or a clarifying question."
+                                )
+                            else:
+                                _loop_warn = (
+                                    f"Loop guard: you have called `{tool_name}` for "
+                                    f"{_tool_name_streak} consecutive turns with different arguments. "
+                                    f"That is not making progress, so I did not run it again. "
+                                    f"Do NOT call this tool again — take a different approach, use "
+                                    f"a different tool, or stop and give the user your best answer "
+                                    f"or a clarifying question."
+                                )
                             yield {"type": "pipeline", "level": "pipeline",
                                    "step": "stall_guard_loop", "tool": tool_name,
                                    "count": _tool_call_counts[_sig], "strikes": stall_strikes}
@@ -1953,7 +1991,7 @@ async def run_agent_loop_buffered(
     agent_id: str,
     history=None,
     parent_interaction_id=None,
-    max_turns: int = 10,
+    max_turns: int = 0,
     event_callback=None,
     channel=None,
     timeout_seconds=None,

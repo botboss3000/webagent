@@ -274,7 +274,7 @@ async def execute_event_subscription(
                 db=db,
                 agent_template_id=agent.get("template_id"),
                 allowed_tools=raw_allowed or None,
-                max_turns=agent.get("max_turn_count", 10),
+                max_turns=agent.get("max_turn_count", 0),
                 event_callback=_event_loop_callback,
             )
             return RunOutcome(status="complete", stop_cause="complete", reply=_reply)

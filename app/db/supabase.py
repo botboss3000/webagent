@@ -1146,7 +1146,7 @@ class SupabaseBackend(StorageBackend):
             return {
                 "id": "default",
                 "system_prompt": "",
-                "max_turn_count": 10,
+                "max_turn_count": 0,
                 "model": None,
                 "provider": None,
                 "temperature": 0.0,

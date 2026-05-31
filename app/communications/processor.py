@@ -371,7 +371,7 @@ async def _run_agent_loop(
                 system_prompt=system_prompt,
                 agent_id=_inbound_agent_id,
                 history=history,
-                max_turns=agent.get("max_turn_count", 10),
+                max_turns=agent.get("max_turn_count", 0),
                 channel=channel,
             )
             return RunOutcome(status="complete", stop_cause="complete", reply=_reply)

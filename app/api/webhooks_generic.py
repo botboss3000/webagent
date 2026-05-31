@@ -167,7 +167,7 @@ async def generic_webhook_handler(webhook_id: str, request: Request):
                 user_message=user_message,
                 system_prompt=system_prompt,
                 history=history,
-                max_turns=agent.get("max_turn_count", 10),
+                max_turns=agent.get("max_turn_count", 0),
                 channel="webhook",
             )
             return RunOutcome(status="complete", stop_cause="complete", reply=_reply)

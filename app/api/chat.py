@@ -681,7 +681,7 @@ async def chat(request: ChatRequest, fastapi_request: Request):
             history=history,
             parent_interaction_id=parent_id,
             event_callback=event_callback,
-            max_turns=agent.get("max_turn_count", 10),
+            max_turns=agent.get("max_turn_count", 0),
             channel="web_portal",
             timeout_seconds=300,
             db=db,
@@ -988,7 +988,7 @@ async def _run_turn_background(
 
         await event_callback({
             "type": "pipeline", "level": "pipeline", "step": "agent_assigned",
-            "agent_id": agent["id"], "max_turn_count": agent.get("max_turn_count", 10),
+            "agent_id": agent["id"], "max_turn_count": agent.get("max_turn_count", 0),
         })
 
         if not agent.get("context_documents") and loop_config.is_enabled("copy_defaults"):
@@ -1156,7 +1156,7 @@ async def _run_turn_background(
             user_id=request.user_id, session_id=request.session_id,
             user_message=user_message_content, system_prompt=system_prompt,
             agent_id=agent["id"], history=history, parent_interaction_id=parent_id,
-            max_turns=agent.get("max_turn_count", 10), channel=channel, db=db,
+            max_turns=agent.get("max_turn_count", 0), channel=channel, db=db,
             agent_template_id=agent.get("template_id"), allowed_tools=_raw_at or None,
         ):
             await event_callback(event)
@@ -1267,7 +1267,7 @@ async def _resume_web_turn(rc: Dict[str, Any], replaced: bool):
         async for event in stream_agent_events(
             user_id=user_id, session_id=session_id, user_message=RESUME_NUDGE,
             system_prompt=system_prompt, agent_id=agent_id, history=history,
-            max_turns=agent.get("max_turn_count", 10), channel=rc.get("channel"), db=db,
+            max_turns=agent.get("max_turn_count", 0), channel=rc.get("channel"), db=db,
             agent_template_id=agent.get("template_id"), allowed_tools=_raw_at or None,
         ):
             await event_callback(event)

@@ -546,7 +546,7 @@ async def _generic_background_resume(rc: Dict[str, Any], replaced: bool) -> RunO
         user_id=user_id, session_id=sid, user_message=RESUME_NUDGE,
         system_prompt=system_prompt, agent_id=agent_id, history=history,
         channel=rc.get("channel"), db=db, agent_template_id=agent.get("template_id"),
-        allowed_tools=raw_allowed or None, max_turns=agent.get("max_turn_count", 10),
+        allowed_tools=raw_allowed or None, max_turns=agent.get("max_turn_count", 0),
         timeout_seconds=rc.get("timeout_seconds") or 600,
     )
 
