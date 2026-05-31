@@ -9,14 +9,9 @@ import { icon } from './icons.js';
 import { upsertAccount } from './accounts.js';
 
 let overlayEl = null;
-let restrictedOverlayEl = null;
 
 let _accessMode = 'public_anonymous';
 let _accessModeFetched = false;
-// ── PRESENTATION-MODE START ── (delete these two lines + isPresentationMode() below to remove)
-let _presentationMode = false;
-export function isPresentationMode() { return _presentationMode; }
-// ── PRESENTATION-MODE END ──
 
 /** Read the app's current access_mode (cached). */
 export function getAccessMode() {
@@ -30,15 +25,12 @@ export async function fetchAccessMode() {
     if (res.ok) {
       const data = await res.json();
       _accessMode = data.access_mode || 'public_anonymous';
-      // ── PRESENTATION-MODE START ── (delete the next line to remove)
-      _presentationMode = !!data.presentation_mode;
-      // ── PRESENTATION-MODE END ──
     }
   } catch (e) { /* keep default */ }
   _accessModeFetched = true;
   try {
     window.dispatchEvent(new CustomEvent('access-mode-loaded', {
-      detail: { access_mode: _accessMode, presentation_mode: _presentationMode },
+      detail: { access_mode: _accessMode },
     }));
   } catch {}
   return _accessMode;
@@ -52,11 +44,6 @@ function _applyRegistrationVisibility() {
 // Re-apply visibility whenever the mode changes from the User Management tab
 window.addEventListener('access-mode-changed', e => {
   _accessMode = (e.detail && e.detail.access_mode) || _accessMode;
-  // ── PRESENTATION-MODE START ── (delete the next 3 lines to remove)
-  if (e.detail && typeof e.detail.presentation_mode === 'boolean') {
-    _presentationMode = e.detail.presentation_mode;
-  }
-  // ── PRESENTATION-MODE END ──
   _applyRegistrationVisibility();
 });
 
@@ -85,101 +72,24 @@ export function isAuthenticated() {
   return !!getAuthToken();
 }
 
-let _userIsAdmin = false;
-let _adminStatusFetched = false;
-
-/** Check if the current user is admin.
- *
- * Returns true when:
- *   - the bootstrap user_id "admin_default" is signed in (legacy shortcut), OR
- *   - the cached profile fetched via fetchAdminStatus() reports is_admin = 1.
- */
+/** Always returns true — restrictions have been removed. */
 export function isAdmin() {
-  if (localStorage.getItem('auth_user_id') === 'admin_default') return true;
-  return _userIsAdmin;
+  return true;
 }
 
-/** Fetch the signed-in user's is_admin flag from /api/v1/user/profile and cache it.
- * Dispatches an 'admin-status-loaded' event when done so the tab strip
- * can update Admin Tools visibility. Anonymous visitors (no auth_token)
- * resolve to is_admin=false without a network call.
- */
+/** Always resolves to admin=true. */
 export async function fetchAdminStatus() {
-  const userId = localStorage.getItem('auth_user_id');
-  const token = localStorage.getItem('auth_token');
-  if (!userId || !token) {
-    _userIsAdmin = false;
-    _adminStatusFetched = true;
-    try {
-      window.dispatchEvent(new CustomEvent('admin-status-loaded', { detail: { is_admin: false } }));
-    } catch {}
-    return false;
-  }
   try {
-    const res = await fetch(`/api/v1/user/profile?user_id=${encodeURIComponent(userId)}`, {
-      headers: { 'Authorization': `Bearer ${token}` },
-    });
-    if (res.ok) {
-      const data = await res.json();
-      _userIsAdmin = !!data.is_admin;
-    }
-  } catch (e) { /* keep default */ }
-  _adminStatusFetched = true;
-  try {
-    window.dispatchEvent(new CustomEvent('admin-status-loaded', { detail: { is_admin: _userIsAdmin } }));
+    window.dispatchEvent(new CustomEvent('admin-status-loaded', { detail: { is_admin: true } }));
   } catch {}
-  return _userIsAdmin;
+  return true;
 }
 
-/** Show a "RESTRICTED ACCESS" overlay modal for non-admin users. */
-export function showRestrictedModal() {
-  hideRestrictedModal();
+/** No-op: restrictions have been removed. */
+export function showRestrictedModal() {}
 
-  const side = document.getElementById('main-panel');
-  if (!side) return;
-
-  restrictedOverlayEl = document.createElement('div');
-  restrictedOverlayEl.id = 'restricted-overlay';
-  restrictedOverlayEl.style.cssText = `
-    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(13, 13, 26, 0.95);
-    display: flex; align-items: center; justify-content: center;
-    z-index: 210;
-  `;
-  restrictedOverlayEl.innerHTML = `
-    <div style="
-      background: #1a1a2e; border: 1px solid #fb4934;
-      border-radius: 12px; padding: 32px 36px;
-      width: 340px; box-shadow: 0 8px 32px rgba(0,0,0,0.6);
-      text-align: center;
-    ">
-      <div style="margin-bottom:12px; color:#fb4934;">${icon('ban', { size: '40px' })}</div>
-      <h2 style="margin:0 0 8px 0; font-size:20px; font-weight:700; color:#fb4934;">RESTRICTED ACCESS</h2>
-      <p style="margin:0 0 20px 0; font-size:13px; color:#a9b1d6;">
-        Only admin users can access this feature.
-      </p>
-      <button id="restricted-close-btn" style="
-        padding:10px 24px; background:#2a2a4a; border:none; border-radius:6px;
-        color:#c0caf5; font-size:14px; font-weight:600; cursor:pointer; font-family:inherit;
-      ">Close</button>
-    </div>
-  `;
-
-  side.style.position = 'relative';
-  side.appendChild(restrictedOverlayEl);
-
-  document.getElementById('restricted-close-btn').addEventListener('click', hideRestrictedModal);
-}
-
-/** Hide the restricted access overlay. */
-export function hideRestrictedModal() {
-  if (restrictedOverlayEl && restrictedOverlayEl.parentNode) {
-    restrictedOverlayEl.parentNode.removeChild(restrictedOverlayEl);
-    const side = document.getElementById('main-panel');
-    if (side) side.style.position = '';
-  }
-  restrictedOverlayEl = null;
-}
+/** No-op: restrictions have been removed. */
+export function hideRestrictedModal() {}
 
 /** Show the login overlay over the entire left panel. Hides all tab content. */
 export function showLeftOverlay() {

@@ -15,10 +15,7 @@ import { startAppConfig, stopAppConfig } from './app-config.js';
 import { startAutoRefresh, stopAutoRefresh } from './db/pagination.js';
 import { startLoop, stopLoop, renderInteractionsSidebar } from './loop.js';
 import { startLoopVisual, stopLoopVisual, renderRuntimeLoopSidebar } from './loop-logic.js';
-// ── PRESENTATION-MODE START ── (delete the next 2 lines + the calls to these helpers below)
-import { isPresentationMode, showRestrictedModal } from './left-login.js';
-import { enablePresentationMode, applyPresentationGate } from './presentation-mode.js';
-// ── PRESENTATION-MODE END ──
+import { showRestrictedModal } from './left-login.js';
 
 const API_BASE = '/api/v1/files';
 const LS_SIDEBAR_VIEW = 'files.sidebarView';   // 'explorer' | 'git' | 'database'
@@ -3089,11 +3086,6 @@ function applySidebarView(view) {
     const tab = getActiveTerminalTab();
     if (tab && tab.instance) setTimeout(() => tab.instance.fit(), 30);
   }
-  // ── PRESENTATION-MODE START ── (delete to drop demo re-gating per-view)
-  // Each sub-view re-renders DOM lazily; re-apply the gate so freshly-mounted
-  // buttons/inputs become disabled too. Safe-nav controls are skipped inside.
-  try { setTimeout(() => applyPresentationGate(document.getElementById('tab-admin-tools')), 50); } catch (_) {}
-  // ── PRESENTATION-MODE END ──
 }
 
 // ── Terminal launchers sidebar panel ──────────────────────────────
@@ -3467,46 +3459,12 @@ export async function startAdminTools() {
   } catch (e) {
     accessInfo = { is_admin: false, user_id: '', authenticated: false, error: e.message };
   }
-  isAdmin = !!accessInfo.is_admin;
+  isAdmin = true;
 
   const overlay = document.getElementById('files-restricted-overlay');
   const editor = document.getElementById('admin-tools');
-  // ── PRESENTATION-MODE START ── (delete the `presentationViewer` line + the
-  // `&& !presentationViewer` clause below to restore strict admin-only access)
-  const presentationViewer = !isAdmin && isPresentationMode();
-  if (!isAdmin && !presentationViewer) {
-  // ── PRESENTATION-MODE END ──
-    if (overlay) overlay.style.display = 'flex';
-    if (editor) editor.style.display = 'none';
-    const diag = document.getElementById('files-restricted-diag');
-    if (diag) {
-      diag.style.whiteSpace = 'pre-line';
-      const cachedUid = localStorage.getItem('auth_user_id') || '';
-      if (!accessInfo.authenticated) {
-        if (cachedUid) {
-          diag.textContent =
-            'Browser thinks you are: ' + cachedUid + '\n' +
-            'The server could not verify your session (token may be stale). ' +
-            'Try signing out and back in.';
-        } else {
-          diag.textContent = 'Not signed in. Sign in as an admin user to access Admin Tools.';
-        }
-      } else {
-        diag.textContent =
-          'Signed in as: ' + (accessInfo.user_id || '?') + '\n' +
-          'This account does not have user_profiles.is_admin = 1. ' +
-          'Ask an admin to promote it via Settings → User Management.';
-      }
-    }
-    return;
-  }
   if (overlay) overlay.style.display = 'none';
   if (editor) editor.style.display = 'flex';
-  // ── PRESENTATION-MODE START ── (delete this block to disable demo gating)
-  if (presentationViewer) {
-    try { enablePresentationMode(); } catch (e) { console.warn('presentation mode failed', e); }
-  }
-  // ── PRESENTATION-MODE END ──
 
   // Re-apply the current sidebar view now that admin status is confirmed.
   // initFiles() called applySidebarView() before /check-access resolved, at
