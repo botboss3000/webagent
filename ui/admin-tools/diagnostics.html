@@ -1,0 +1,57 @@
+<template data-slot="#files-sidebar">
+  <!-- Diagnostics panel: severity / category filter chips, search, time
+       window and a live auto-refresh toggle. diagnostics.js builds the chips
+       and drives the feed in the main area. -->
+  <div class="files-sidebar-panel" id="files-panel-diagnostics" data-view="diagnostics" hidden>
+    <div class="files-sidebar-header">
+      <div class="files-sidebar-actions">
+        <button class="files-icon-btn" id="diag-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
+      </div>
+    </div>
+    <div class="diag-side">
+      <div class="diag-side-section">
+        <input type="search" id="diag-search" class="diag-search" placeholder="Search messages…" autocomplete="off" />
+      </div>
+      <div class="diag-side-section">
+        <div class="diag-side-title">Severity</div>
+        <div class="diag-chips" id="diag-levels"></div>
+      </div>
+      <div class="diag-side-section">
+        <div class="diag-side-title">Category</div>
+        <div class="diag-chips" id="diag-categories"></div>
+      </div>
+      <div class="diag-side-section">
+        <div class="diag-side-title">Window</div>
+        <select id="diag-window" class="diag-select">
+          <option value="15">Last 15 minutes</option>
+          <option value="60" selected>Last hour</option>
+          <option value="360">Last 6 hours</option>
+          <option value="1440">Last 24 hours</option>
+          <option value="">All retained</option>
+        </select>
+      </div>
+      <div class="diag-side-section">
+        <label class="diag-live-toggle"><input type="checkbox" id="diag-live" /> <span>Live (auto-refresh)</span></label>
+      </div>
+    </div>
+  </div>
+</template>
+
+<template data-slot="#admin-tools">
+  <!-- Diagnostics main: a scrollable feed of recorder records (server errors,
+       loop pipeline problems, run outcomes, tool errors). -->
+  <main class="files-main" id="files-diagnostics-main" data-view="diagnostics" hidden>
+    <div id="diag-container">
+      <div id="diag-toolbar">
+        <span class="diag-toolbar-label"><i data-lucide="stethoscope" style="width:13px;height:13px;"></i> Diagnostics</span>
+        <span id="diag-stats" class="diag-stats"></span>
+        <span class="diag-spacer"></span>
+        <span id="diag-live-dot" class="diag-live-dot" hidden title="Live — auto-refreshing"></span>
+        <button id="diag-refresh-main" class="diag-btn" title="Refresh"><i data-lucide="refresh-cw" style="width:13px;height:13px;"></i></button>
+      </div>
+      <div id="diag-feed">
+        <div class="diag-hint">Open the Diagnostics view to load recent records.</div>
+      </div>
+    </div>
+  </main>
+</template>

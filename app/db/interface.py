@@ -562,6 +562,20 @@ class StorageBackend(ABC):
         """Liveness ping + lease refresh from the running loop. Default: no-op."""
         return None
 
+    # ── Diagnostics flight-recorder (default no-ops → RAM-only on this backend) ──
+
+    async def insert_diagnostics_batch(self, rows):
+        """Persist diagnostic records. Default: no-op (recorder keeps RAM ring)."""
+        return 0
+
+    async def query_diagnostics(self, **kwargs):
+        """Query durable diagnostic rows. Default: empty (RAM ring still served)."""
+        return []
+
+    async def prune_diagnostics(self, **kwargs):
+        """Trim the durable diagnostics table. Default: no-op."""
+        return 0
+
     async def run_state_list_active_all(self):
         """Every session with a 'running' turn (all users). Default: empty list."""
         return []

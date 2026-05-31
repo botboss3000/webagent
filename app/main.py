@@ -44,6 +44,7 @@ from app.api.agent import router as agent_router
 from app.api.browser_stream import router as browser_stream_router
 from app.api.uploads import router as uploads_router
 from app.api.db_viewer import router as db_viewer_router
+from app.api.diagnostics import router as diagnostics_router
 from app.admin.review import router as admin_router
 from app.admin.db_mode import router as admin_db_router
 from app.admin.storage import router as admin_storage_router
@@ -100,6 +101,17 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Diagnostic flight-recorder: mirror WARNING+ log records (with tracebacks) into
+# the in-app recorder so an operator / diagnostic agent can read recent failures
+# back via the API + read_diagnostics tool, not just the console. The background
+# writer is started in the startup() hook below (needs the event loop).
+try:
+    from app.agent.diagnostics import install_log_handler as _install_diag_handler
+    _diag_level = getattr(logging, os.environ.get("DIAGNOSTICS_CAPTURE_LEVEL", "WARNING").upper(), logging.WARNING)
+    _install_diag_handler(level=_diag_level)
+except Exception as _diag_err:  # never let diagnostics wiring break boot
+    logger.warning("Diagnostic log handler not installed: %s", _diag_err)
 
 app = FastAPI(
     title="webAgent API",
@@ -225,6 +237,7 @@ app.include_router(agent_router)
 app.include_router(browser_stream_router)
 app.include_router(uploads_router)
 app.include_router(db_viewer_router)
+app.include_router(diagnostics_router)
 app.include_router(admin_router)
 app.include_router(admin_db_router)
 app.include_router(admin_storage_router)
@@ -469,6 +482,15 @@ async def test_interface():
 @app.on_event("startup")
 async def startup():
     """Register communication webhooks or start polling on server start."""
+    # Start the diagnostic flight-recorder's background batch-writer + pruner.
+    try:
+        from app.agent.diagnostics import start_recorder, record_run_lifecycle  # noqa: F401
+        start_recorder()
+        from app.agent.diagnostics import record as _diag_record
+        _diag_record("info", "server", "Server starting up", source="startup")
+    except Exception as _diag_err:
+        logger.warning("Diagnostic recorder failed to start: %s", _diag_err)
+
     # Launch the terminal idle-session GC. Reaps PTYs whose WebSocket has
     # been detached longer than TERMINAL_IDLE_TIMEOUT_HOURS (default 24h).
     try:

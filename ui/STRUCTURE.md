@@ -14,14 +14,15 @@ body
 ├── #main-header                   ← top bar
 │   ├── #main-tabs-wrap            (chevron-scroll carousel)
 │   │   ├── #main-tabs-chev-left
-│   │   ├── #main-tabs             (role="tablist")
-│   │   │   └── .main-tab          (Pages / Agent Manager / Web / Admin Tools)
+│   │   ├── #main-tabs             (role="tablist"; overflow-x:auto → clips children)
+│   │   │   ├── #user-dropdown     (account avatar + menu; first item, left of tabs)
+│   │   │   │   ├── #top-user-id          (trigger)
+│   │   │   │   └── #user-dropdown-menu   (position:fixed — see note below)
+│   │   │   ├── #admin-tools-group        (#header-refresh-btn + Admin Tools tab)
+│   │   │   └── .main-tab          (Pages / Agent Manager / Web / …)
 │   │   └── #main-tabs-chev-right
-│   └── #status-right              (right side: chat toggle, user menu)
-│       ├── #chat-toggle-btn
-│       └── #user-dropdown
-│           ├── #top-user-id       (trigger)
-│           └── #user-dropdown-menu
+│   └── #status-right              (right side)
+│       └── #chat-toggle-btn
 │
 ├── #stage                         ← split container (whole app layout)
 │   ├── #main-panel                ← left pane (tab content)
@@ -48,6 +49,12 @@ body
     ├── #cell-modal                (DB cell viewer)
     └── #feedback-modal            (send feedback)
 ```
+
+## User dropdown lives inside the tab carousel
+
+`#user-dropdown` (the top-left account avatar) is the **first child of `#main-tabs`**, not of `#status-right`. `#main-tabs` is the horizontally-scrolling tab carousel and has `overflow-x: auto`, which makes the browser compute `overflow-y` to `auto` as well — so any `position: absolute` child popover gets **clipped** to the ~30px-tall tab strip and is invisible.
+
+For that reason `#user-dropdown-menu` is `position: fixed` (set in `app1.css` via the `#user-dropdown-menu.user-dropdown-menu` rule) and is anchored under the trigger by `initSessions()` in `ui/js/sessions.js` (`positionUserMenu()`) every time it opens. If you ever revert it to `absolute`, or move the menu without keeping it out of the carousel's clip region, the panel stops appearing on click even though the toggle handler still fires.
 
 ## Names at a glance
 

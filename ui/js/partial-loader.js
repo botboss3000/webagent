@@ -26,6 +26,7 @@ const ADMIN_SUB_PAGES = [
   './ui/admin-tools/source-control.html',
   './ui/admin-tools/interactions.html',
   './ui/admin-tools/runtime.html',
+  './ui/admin-tools/diagnostics.html',
 ];
 
 async function fetchHtml(url) {

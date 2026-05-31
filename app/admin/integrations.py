@@ -1874,6 +1874,13 @@ async def get_admin_configured_providers(user_id: Optional[str] = None) -> set[s
     # per-agent agent_connections row is the only gate.
     configured.add("agent_orchestration")
 
+    # ── diagnostics — pure behavioral toggle, always "configured" ──
+    # Like agent_orchestration, this needs no platform secret: it only controls
+    # whether an agent gets the read_diagnostics tool (read the in-app flight
+    # recorder to diagnose the running app). The per-agent agent_connections row
+    # is the only gate.
+    configured.add("diagnostics")
+
     # Cache per service_key — facebook & instagram share `meta_oauth_config`.
     seen: dict[str, bool] = {}
     for ct, service_key in _CONNECTION_ADMIN_CONFIG_KEY.items():

@@ -1610,6 +1610,14 @@ async def _emit_to_visualizers(session_id: str, event: Dict[str, Any], user_id: 
     except Exception as _be:
         logger.debug("RunBuffer stamp failed for session %s: %s", session_id, _be)
 
+    # Flight-recorder tap: keep interesting loop/tool events (pipeline problems,
+    # tool errors) for post-hoc diagnosis. Cheap + swallows its own errors.
+    try:
+        from app.agent.diagnostics import tap_loop_event
+        tap_loop_event(session_id, event)
+    except Exception:
+        pass
+
     listeners = _visualizer_listeners.get(session_id, [])
     disconnected = []
     for ws in listeners:

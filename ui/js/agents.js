@@ -1607,13 +1607,13 @@ function _renderConfigTab(body, agent, panelEl) {
   const tcGroup = document.createElement('div');
   tcGroup.className = 'agents-field-group';
   tcGroup.style = 'flex:1;min-width:200px;';
-  const tcVal = agent.max_turn_count != null ? agent.max_turn_count : 0;
+  const tcVal = agent.max_turn_count != null ? agent.max_turn_count : 9999;
   tcGroup.innerHTML = `
-    <label class="agents-field-label">Max Turn Count <span style="font-weight:normal;color:var(--fg-muted,#565f89);">(0 = unlimited)</span></label>
-    <span class="agents-field-hint">Limits the number of LLM → tool → LLM cycles per response. Catches logic loops where the agent repeats the same tool calls without resolving. Turn count is about <em>logical repetition</em>.</span>
+    <label class="agents-field-label">Max Turn Count <span style="font-weight:normal;color:var(--fg-3);">(0 = unlimited)</span></label>
+    <span class="agents-field-hint">Caps the LLM → tool → LLM cycles per response — catches loops where the agent repeats tool calls without resolving. 0 = unlimited (a wall-clock safety limit still ends a stuck run gracefully). New agents start at 9999 — effectively unlimited but bounded.</span>
     <input type="number" class="agents-input" data-field="max_turn_count"
       value="${tcVal}" min="0" max="99999"
-      ${!isEditable ? 'readonly' : ''} style="width:100px" placeholder="0 (unlimited)">
+      ${!isEditable ? 'readonly' : ''} style="width:100px" placeholder="9999">
   `;
   limitsRow.appendChild(tcGroup);
 
@@ -2721,6 +2721,7 @@ const _CONN_ICONS = {
   image_generation: 'image',
   visualizer:       'layout-dashboard',
   agent_orchestration: 'workflow',
+  diagnostics:      'stethoscope',
 };
 
 async function _renderConnectionsTab(body, agent) {

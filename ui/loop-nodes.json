@@ -290,11 +290,11 @@
       ]
     },
     "turn_counter": {
-      "desc": "Increments the turn counter and checks against max_turns. If the limit is reached, forces exit to final_response.",
+      "desc": "Increments the turn counter and checks against max_turns. If the limit is reached, forces exit to final_response. 0 means unlimited (no turn ceiling) — the wall-clock cap is the backstop instead.",
       "details": [
-        { "key": "Default",  "val": "max_turns = agent.max_turn_count (typically 10)" },
-        { "key": "On limit", "val": "Exits while loop → final_response" },
-        { "key": "Extended", "val": "+10 turns granted if user approves the permission_chk request" }
+        { "key": "Default",  "val": "max_turns = agent.max_turn_count (0 = unlimited; new agents seed 9999)" },
+        { "key": "On limit", "val": "Exits while loop → final_response (skipped entirely when unlimited)" },
+        { "key": "Extended", "val": "When bounded, +1 block granted if user approves the permission_chk request" }
       ]
     },
     "permission_chk": {

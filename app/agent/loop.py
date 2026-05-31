@@ -33,6 +33,16 @@ from app.billing import pricing as _billing_pricing
 from app.billing import wallet as _billing_wallet
 
 
+# ── Turn-limit & safety-cap defaults ─────────────────────────────────────────
+# The turn limit uses 0 = unlimited. When turns are unlimited, this wall-clock
+# cap is the real backstop so a tool-looping agent can never hang forever — the
+# streaming chat path has no request timeout of its own. Graceful: at the cap
+# the loop finalizes with a message instead of being hard-killed. Overridable
+# globally via the AGENT_MAX_WALL_SECONDS env var and per-agent via the agent's
+# max_wall_seconds field (set an agent's value to 0 to opt out of the cap).
+DEFAULT_MAX_WALL_SECONDS = 600.0
+
+
 def _fire_optimizer(user_id: str, session_id: str, channel: Optional[str] = None,
                     agent_template_id: Optional[str] = None) -> None:
     """Fire-and-forget optimizer task with error trapping.
@@ -355,7 +365,7 @@ async def _race_llm_calls(
                     )
 
         except asyncio.CancelledError:
-            with open("loser_fatal.log", "a") as f: f.write(f"Cancelled {prov_name}\n")
+            logger.debug("[RACE] Provider %s cancelled — saving partial", prov_name)
             # Save partial results on cancellation
             if save_loser_callback and (local_content or local_in_tok is not None):
                 await save_loser_callback(
@@ -365,7 +375,6 @@ async def _race_llm_calls(
                     cancelled=True
                 )
         except Exception as e:
-            with open("loser_fatal.log", "a") as f: f.write(f"Error {prov_name}: {e}\n")
             logger.error(f"[RACE] Provider {prov_name} error: {e}")
             await queue.put(("error", pid, str(e)))
             try:
@@ -737,6 +746,18 @@ async def stream_agent_events(
     agent_template_id is used to gate admin-only tools (e.g. 'admin-agent').
     allowed_tools is the list of Tier-2 tool names DISABLED for this agent.
     """
+    # Normalize the turn ceiling up front: 0 means UNLIMITED. Guard against a
+    # NULL in the DB (which makes agent.get("max_turn_count", 0) return None, not
+    # 0), negatives, or a stray string — any of which would otherwise crash the
+    # "turn_count < max_turns" comparison or silently refuse to run. Anything
+    # that isn't a positive integer collapses to 0 (= unlimited).
+    try:
+        max_turns = int(max_turns)
+        if max_turns < 0:
+            max_turns = 0
+    except (TypeError, ValueError):
+        max_turns = 0
+
     from app.tools.loader import load_tools
     from app.admin.settings import load_provider_for_user
 
@@ -959,9 +980,9 @@ async def stream_agent_events(
         except (ValueError, TypeError):
             _MAX_STALL_STRIKES = 4
         try:
-            _MAX_WALL_SECONDS = float(os.environ.get("AGENT_MAX_WALL_SECONDS", "0"))
+            _MAX_WALL_SECONDS = float(os.environ.get("AGENT_MAX_WALL_SECONDS", str(DEFAULT_MAX_WALL_SECONDS)))
         except (ValueError, TypeError):
-            _MAX_WALL_SECONDS = 0.0
+            _MAX_WALL_SECONDS = DEFAULT_MAX_WALL_SECONDS
         # Per-agent override: if the agent record has max_wall_seconds set, use it
         if _agent_rec and _agent_rec.get("max_wall_seconds") is not None:
             try:
@@ -1149,8 +1170,6 @@ async def stream_agent_events(
             llm_start = time.time()
 
             async def _save_loser(p_name, m_name, l_content, l_tcs, l_in, l_out, l_cost, ms, cancelled=False):
-                with open("loser_trace_db.log", "a") as f:
-                    f.write(f"Triggered _save_loser for {p_name} {m_name}\n")
                 # Build an openai-style tool calls list
                 loser_tcs = []
                 if l_tcs:
@@ -1200,15 +1219,10 @@ async def stream_agent_events(
                         sender_id=agent_id,
                         receiver_id=user_id,
                     )
-                    with open("loser_trace_db.log", "a") as f:
-                        f.write(f"DB insert SUCCESS for {p_name}\n")
                 except Exception as e:
-                    with open("loser_trace_db.log", "a") as f:
-                        f.write(f"DB insert Exception: {e}\n")
                     logger.warning("Failed to save parallel loser response: %s", e)
                 except BaseException as be:
-                    with open("loser_trace_db.log", "a") as f:
-                        f.write(f"DB insert BaseException (Cancelled?): {be}\n")
+                    logger.debug("Parallel loser DB insert interrupted: %s", be)
 
             # ── Check for parallel multi-provider mode ──
             _parallel_mode = os.environ.get("PARALLEL_MODE", "").lower() == "true"

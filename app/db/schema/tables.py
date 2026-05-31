@@ -132,6 +132,25 @@ TABLES: List[Table] = [
         Column("relaunch_ctx", "TEXT"),
     ]),
 
+    # Diagnostic flight-recorder (see app/agent/diagnostics.py). Rolling,
+    # auto-pruned log of server warnings/errors, agent-loop pipeline problems and
+    # run outcomes. session_id/agent_id are free TEXT (NOT foreign keys) so a
+    # record outlives the row it referenced and a delete never cascades it away.
+    Table("diagnostics", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("ts", "TEXT", nullable=False),
+        Column("level", "TEXT", nullable=False),
+        Column("category", "TEXT", nullable=False),
+        Column("source", "TEXT"),
+        Column("message", "TEXT", nullable=False),
+        Column("detail", "TEXT"),
+        Column("session_id", "TEXT"),
+        Column("turn_id", "TEXT"),
+        Column("agent_id", "TEXT"),
+        Column("user_id", "TEXT"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ]),
+
     Table("session_summaries", [
         Column("id", "TEXT", nullable=False, primary_key=True),
         Column("user_id", "TEXT", nullable=False),
@@ -697,6 +716,10 @@ INDEXES: List[Index] = [
     Index("idx_interactions_created", "interactions", "created_at"),
     Index("idx_interactions_session_seq", "interactions", "session_id, session_seq"),
     Index("idx_interactions_turn", "interactions", "turn_id"),
+    Index("idx_diagnostics_ts", "diagnostics", "ts"),
+    Index("idx_diagnostics_level", "diagnostics", "level"),
+    Index("idx_diagnostics_category", "diagnostics", "category"),
+    Index("idx_diagnostics_session", "diagnostics", "session_id"),
     Index("idx_summaries_user", "session_summaries", "user_id"),
     Index("idx_agent_prompts_agent", "agent_prompts", "agent_id"),
     Index("idx_agent_prompts_user", "agent_prompts", "user_id"),
