@@ -1674,6 +1674,29 @@ function _renderConfigTab(body, agent, panelEl) {
   }
   body.appendChild(umGroup);
 
+  // ── Memory (per-agent save + recall switches) ───────────────────────────────
+  // Surfaces, on the Config tab, the same two controls the Agent Loop diagram
+  // exposes (memory_search / memory_save). Both switches drive loop_logic +
+  // allowed_tools, so the Config tab and the loop diagram always agree.
+  if (isEditable) {
+    const mem = _memoryStateFromAgent(agent);
+    const memGroup = document.createElement('div');
+    memGroup.className = 'agents-field-group';
+    memGroup.innerHTML = `
+      <label class="agents-field-label">Memory</label>
+      <span class="agents-field-hint">This agent's long-term memory — a private knowledge store kept per user and shared across that user's agents. When on, the agent automatically pulls relevant past information into its context before replying, and/or files a short note of each exchange afterward. Trivial messages (greetings, "ok") skip recall automatically.</span>
+      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;margin-top:8px;">
+        <input type="checkbox" data-field="memory_recall" ${mem.recall ? 'checked' : ''} style="margin-top:2px;">
+        <span style="font-size:13px;color:var(--fg-2);"><strong>Recall past info</strong> — search memory before answering, and let the agent read or write it on demand.</span>
+      </label>
+      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;margin-top:8px;">
+        <input type="checkbox" data-field="memory_save" ${mem.save ? 'checked' : ''} style="margin-top:2px;">
+        <span style="font-size:13px;color:var(--fg-2);"><strong>Remember conversations</strong> — automatically save a short note of each exchange afterward.</span>
+      </label>
+    `;
+    body.appendChild(memGroup);
+  }
+
   // trigger type
   if (isEditable) {
     const triggerRow = document.createElement('div');
@@ -5261,6 +5284,61 @@ function _interactionsToNodeStates(rows) {
   return s;
 }
 
+// ── Per-agent Memory switches (Config tab) ────────────────────────────────────
+// Memory has two independently-gated halves at runtime, both already honored by
+// the agent loop (app/api/chat.py) and the Agent Loop diagram:
+//   • Recall — auto pre-turn brain search (loop_logic "memory_search") plus the
+//     agent-callable "memory" tool.
+//   • Save   — auto post-turn note, gated by BOTH loop_logic "memory_save" AND
+//     the absence of "memory_save" from allowed_tools.
+// NOTE: allowed_tools is a DISABLED list, not an allow list — a tool name present
+// there is OFF. These helpers read/merge the very same signals the loop diagram
+// uses, so flipping a switch here is identical to flipping it on the diagram.
+function _loopNodeEnabledPersisted(agent, nodeId) {
+  const ll = Array.isArray(agent.loop_logic) ? agent.loop_logic : [];
+  if (!ll.length || typeof ll[0] === 'string') return true;   // legacy flat / empty → all nodes run
+  const found = ll.find(it => it && it.node === nodeId);
+  return found ? found.enabled !== false : true;              // unknown node → enabled
+}
+
+function _memoryStateFromAgent(agent) {
+  const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
+  return {
+    recall: _loopNodeEnabledPersisted(agent, 'memory_search'),
+    save: _loopNodeEnabledPersisted(agent, 'memory_save') && !disabled.has('memory_save'),
+  };
+}
+
+// Encode the two switches into loop_logic (object-array) + allowed_tools, preserving
+// every other node/tool setting. Returns { loop_logic, allowed_tools }.
+function _memoryUpdatesFor(agent, recall, save) {
+  // loop_logic → object array (seed from the full node list when legacy/empty,
+  // exactly as the loop diagram does, so the stored shape stays identical).
+  const ll = Array.isArray(agent.loop_logic) ? agent.loop_logic : [];
+  let objs;
+  if (!ll.length || typeof ll[0] === 'string') {
+    objs = (Array.isArray(LOOP_NODES) && LOOP_NODES.length)
+      ? LOOP_NODES.map(n => ({ node: n.id, enabled: true }))
+      : [{ node: 'memory_search', enabled: true }, { node: 'memory_save', enabled: true }];
+  } else {
+    objs = ll.map(it => ({ ...it }));
+  }
+  const setNode = (nodeId, enabled) => {
+    const f = objs.find(o => o && o.node === nodeId);
+    if (f) f.enabled = enabled; else objs.push({ node: nodeId, enabled });
+  };
+  setNode('memory_search', recall);
+  setNode('memory_save', save);
+
+  // allowed_tools (DISABLED list): the "memory" read/write tool follows Recall;
+  // the "memory_save" auto-save gate follows Save.
+  const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
+  if (recall) disabled.delete('memory'); else disabled.add('memory');
+  if (save) disabled.delete('memory_save'); else disabled.add('memory_save');
+
+  return { loop_logic: objs, allowed_tools: [...disabled] };
+}
+
 // ── Actions ───────────────────────────────────────────────────────────────────
 
 async function _saveChanges(agent, barEl, panelEl) {
@@ -5284,6 +5362,18 @@ async function _saveChanges(agent, barEl, panelEl) {
   const tkVal   = fv('trigger_key');    if (tkVal !== undefined) updates.trigger_key    = tkVal || null;
   const umChecked = panelEl.querySelector('[data-field="user_mode"]:checked');
   if (umChecked) updates.user_mode = umChecked.value;
+
+  // Memory switches → same loop_logic + allowed_tools the Agent Loop diagram uses.
+  const memRecallCb = panelEl.querySelector('[data-field="memory_recall"]');
+  const memSaveCb   = panelEl.querySelector('[data-field="memory_save"]');
+  if (memRecallCb || memSaveCb) {
+    const cur    = _memoryStateFromAgent(agent);
+    const recall = memRecallCb ? memRecallCb.checked : cur.recall;
+    const save   = memSaveCb   ? memSaveCb.checked   : cur.save;
+    const mu = _memoryUpdatesFor(agent, recall, save);
+    updates.loop_logic    = mu.loop_logic;
+    updates.allowed_tools = mu.allowed_tools;
+  }
 
   // Per-agent LLM override
   if (panelEl._llmState) updates.llm_config = { ...panelEl._llmState };
