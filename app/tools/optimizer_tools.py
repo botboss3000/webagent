@@ -711,7 +711,7 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
     _agent_vals_new = (
         str(_uuid_mod.uuid4()),          # id — placeholder, overwritten below
         "opt_closer",
-        template_data.get("max_turn_count", 10),
+        template_data.get("max_turn_count", 0),
         template_data.get("model"),
         template_data.get("provider"),
         template_data.get("temperature", 0.2),

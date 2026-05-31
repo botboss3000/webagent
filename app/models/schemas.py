@@ -183,7 +183,7 @@ class AgentRecord(BaseModel):
     id: str
     user_id: str
     system_prompt: str
-    max_turn_count: int = 10
+    max_turn_count: int = 0
     max_wall_seconds: Optional[float] = None
     model: Optional[str] = None
     provider: Optional[str] = None

@@ -1603,30 +1603,39 @@ function _renderConfigTab(body, agent, panelEl) {
     })();
   }
 
+  // Turn count + wall clock (side-by-side)
+  const limitsRow = document.createElement('div');
+  limitsRow.style = 'display:flex;gap:16px;flex-wrap:wrap;';
+
   // Turn count
   const tcGroup = document.createElement('div');
   tcGroup.className = 'agents-field-group';
+  tcGroup.style = 'flex:1;min-width:200px;';
+  const tcVal = agent.max_turn_count != null ? agent.max_turn_count : 0;
   tcGroup.innerHTML = `
-    <label class="agents-field-label">Max Turn Count</label>
-    <span class="agents-field-hint">Maximum number of tool-calling turns per session.</span>
+    <label class="agents-field-label">Max Turn Count <span style="font-weight:normal;color:var(--fg-muted,#565f89);">(0 = unlimited)</span></label>
+    <span class="agents-field-hint">Limits the number of LLM → tool → LLM cycles per response. Catches logic loops where the agent repeats the same tool calls without resolving. Turn count is about <em>logical repetition</em>.</span>
     <input type="number" class="agents-input" data-field="max_turn_count"
-      value="${agent.max_turn_count || 10}" min="1" max="99999"
-      ${!isEditable ? 'readonly' : ''} style="width:100px">
+      value="${tcVal}" min="0" max="99999"
+      ${!isEditable ? 'readonly' : ''} style="width:100px" placeholder="0 (unlimited)">
   `;
-  body.appendChild(tcGroup);
+  limitsRow.appendChild(tcGroup);
 
   // Wall clock safety cap
   const wcGroup = document.createElement('div');
   wcGroup.className = 'agents-field-group';
+  wcGroup.style = 'flex:1;min-width:200px;';
   const wcVal = agent.max_wall_seconds != null ? agent.max_wall_seconds : '';
   wcGroup.innerHTML = `
-    <label class="agents-field-label">Wall Clock Safety Cap (seconds)</label>
-    <span class="agents-field-hint">Max wall-clock seconds before the loop stops. Default 0 (disabled). Set e.g. 300 for 5 min.</span>
+    <label class="agents-field-label">Wall Clock Safety Cap (seconds) <span style="font-weight:normal;color:var(--fg-muted,#565f89);">(0 = off)</span></label>
+    <span class="agents-field-hint">Limits total real time (in seconds) for one response, across all turns. Catches hanging tool calls, slow models, and long-running operations. Wall clock is about <em>real-world duration</em>. Set e.g. 300 for 5 min.</span>
     <input type="number" class="agents-input" data-field="max_wall_seconds"
       value="${wcVal}" min="0" max="86400" step="1"
-      ${!isEditable ? 'readonly' : ''} style="width:100px" placeholder="0 (disabled)">
+      ${!isEditable ? 'readonly' : ''} style="width:100px" placeholder="0 (off)">
   `;
-  body.appendChild(wcGroup);
+  limitsRow.appendChild(wcGroup);
+
+  body.appendChild(limitsRow);
 
   // User mode (applies across all channels)
   const umGroup = document.createElement('div');
@@ -3936,8 +3945,8 @@ function _lvNodeHint(nd, agent) {
 
     case 'turn_counter':
       return isCustom
-        ? `Max turns: ${agent.max_turn_count || 10} — click to edit turn limit & permission gate`
-        : `Turn counter — exits at max_turns (${agent.max_turn_count || 10})`;
+        ? `Max turns: ${agent.max_turn_count || '∞ (unlimited)'} — click to edit turn limit & permission gate`
+        : `Turn counter — unlimited by default (${agent.max_turn_count || '∞'})`;
 
     case 'build_tool_defs':
       return 'Converts tool metadata into the OpenAI tool_calls schema for the LLM';
@@ -3985,8 +3994,8 @@ function _lvNodeHint(nd, agent) {
 
     case 'check_continue':
       return isCustom
-        ? `Max turns: ${agent.max_turn_count || 10} — click to edit`
-        : `Loops back if tool results exist; stops at max_turns (${agent.max_turn_count || 10})`;
+        ? `Max turns: ${agent.max_turn_count || '∞ (unlimited)'} — click to edit`
+        : `Loops back if tool results exist; stops at max_turns (${agent.max_turn_count || 'unlimited'})`;
 
     case 'final_response':
       return 'Final reply streamed to the user over WebSocket';
@@ -4109,7 +4118,7 @@ function _lvShowReadOnlyPanel(nd, nodeEl, container, agent) {
       list.className = 'lv-tool-panel-list';
       _lvAppendItem(list, { name: 'Name',     type: 'tool', desc: agent.name || agent.id || '—' });
       _lvAppendItem(list, { name: 'Model',    type: 'tool', desc: agent.model || 'claude-3-5-sonnet-20241022' });
-      _lvAppendItem(list, { name: 'Max turns',type: 'tool', desc: String(agent.max_turn_count || 10) });
+      _lvAppendItem(list, { name: 'Max turns',type: 'tool', desc: agent.max_turn_count ? String(agent.max_turn_count) : '∞ (unlimited)' });
       panel.appendChild(list);
       break;
     }
@@ -4268,7 +4277,7 @@ function _lvShowReadOnlyPanel(nd, nodeEl, container, agent) {
       const list = document.createElement('div');
       list.className = 'lv-tool-panel-list';
       _lvAppendItem(list, {
-        name: `Max turns: ${agent.max_turn_count || 10}`,
+        name: `Max turns: ${agent.max_turn_count || '∞ (unlimited)'}`,
         type: 'tool',
         desc: 'Agent stops looping after this many tool-calling turns',
       });
@@ -4983,9 +4992,9 @@ function _lvRenderSessionSetupInfo(body, agent) {
 function _lvRenderContinueEditor(body, agent) {
   const desc = document.createElement('div');
   desc.className = 'lv-edit-desc';
-  desc.textContent = 'Set how many agentic turns the loop can run before forcing a final response.';
+  desc.textContent = 'Set how many agentic turns the loop can run (0 = unlimited) before forcing a final response.';
   body.appendChild(desc);
-  _lvSliderRow(body, 'Max turns', agent.max_turn_count ?? 10, 1, 30, 1, val => {
+  _lvSliderRow(body, 'Max turns', agent.max_turn_count ?? 0, 0, 30, 1, val => {
     _lvSetPending('max_turn_count', parseInt(val, 10));
   });
 
@@ -5271,7 +5280,7 @@ async function _saveChanges(agent, barEl, panelEl) {
   const fv = key => { const el = panelEl.querySelector(`[data-field="${key}"]`); return el ? el.value : undefined; };
   const nameVal = fv('name');        if (nameVal !== undefined) updates.name          = nameVal.trim();
   const descVal = fv('desc');        if (descVal !== undefined) updates.description   = descVal;
-  const tcVal   = fv('max_turn_count'); if (tcVal !== undefined) updates.max_turn_count = parseInt(tcVal, 10) || 10;
+  const tcVal   = fv('max_turn_count'); if (tcVal !== undefined) updates.max_turn_count = parseInt(tcVal, 10) || 0;
   const wcVal   = fv('max_wall_seconds');
   if (wcVal !== undefined && wcVal !== '') {
     const parsed = parseFloat(wcVal);
