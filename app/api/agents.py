@@ -59,6 +59,7 @@ class UpdateAgentRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     max_turn_count: Optional[int] = None
+    max_wall_seconds: Optional[float] = None
     model: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None

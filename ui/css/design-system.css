@@ -578,6 +578,32 @@ body.light-mode *::-webkit-scrollbar-thumb:hover {
   color: var(--accent);
   border-color: rgba(125,207,255,0.30);
 }
+
+/* ── Admin Tools group (reset button + Admin Tools tab) ── */
+.main-tab-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 2px;
+  transition: border-color 0.15s, background 0.15s;
+}
+.main-tab-group.active {
+  border-color: rgba(125,207,255,0.30);
+  background: rgba(125,207,255,0.08);
+}
+.main-tab-group .main-tab {
+  border: none;
+  background: transparent;
+  padding: 4px 10px;
+}
+.main-tab-group .files-icon-btn {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+}
 .main-tabs-chev {
   display: none;
   position: absolute;

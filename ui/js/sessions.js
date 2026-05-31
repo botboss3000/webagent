@@ -29,6 +29,27 @@ import {
   attachRowLongPress,
 } from './ordering.js';
 
+// ── Message cache + infinite-scroll state ────────────────────────────────────
+// Keyed by sessionId. Each entry: { messages: [...], hasMore: bool, loadedAll: bool }
+const _messageCache = new Map();
+const _CACHE_TTL_MS = 60000; // 60 seconds
+const _loadingSessions = new Set();
+let _scrollListener = null; // the active scroll listener (one at a time)
+
+// ── Virtual-scroll state ────────────────────────────────────────────────────
+// WeakMap<msgId, offsetHeight> — measured after first render of each bubble
+const _bubbleHeights = new WeakMap();
+// Set of msgIds currently rendered as placeholders (not real bubbles)
+const _placeholderIds = new Set();
+// The virtual-scroll scroll handler (bound once per session load)
+let _virtualScrollHandler = null;
+// Buffer zone in px above/below viewport
+const _VS_BUFFER = 400;
+// Refs to the real addChatBubble / _createBubble for recycling
+let _origAddChatBubble = null;
+let _origCreateBubble = null;
+let _totalUnpinnedCount = 0; // total unpinned sessions on the server (for "+ N more" row)
+
 export function generateUUID() {
   return randomUUID();
 }
@@ -67,7 +88,17 @@ function _toggleAgentPin(agentId) {
 }
 
 function _setAgentTriggerLabel() {
-  const labelEl = document.getElementById('agent-dropdown-label');
+  let labelEl = document.getElementById('agent-dropdown-label');
+  const trigger = document.getElementById('agent-dropdown-trigger');
+  // If the label was replaced by a rename input, restore the label span
+  if (!labelEl && trigger) {
+    const input = trigger.querySelector('.session-row-title-input');
+    if (input) {
+      labelEl = document.createElement('span');
+      labelEl.id = 'agent-dropdown-label';
+      input.replaceWith(labelEl);
+    }
+  }
   if (!labelEl) return;
   const aid = app.currentAgentId;
   const found = _agentsCache.find(a => a.id === aid);
@@ -338,7 +369,17 @@ function _truncate(s, n) {
 }
 
 function _setTriggerLabel() {
-  const labelEl = document.getElementById('session-dropdown-label');
+  let labelEl = document.getElementById('session-dropdown-label');
+  const trigger = document.getElementById('session-dropdown-trigger');
+  // If the label was replaced by a rename input, restore the label span
+  if (!labelEl && trigger) {
+    const input = trigger.querySelector('.session-row-title-input');
+    if (input) {
+      labelEl = document.createElement('span');
+      labelEl.id = 'session-dropdown-label';
+      input.replaceWith(labelEl);
+    }
+  }
   if (!labelEl) return;
   const sid = app.currentSessionId;
   const found = _sessionsCache.find(s => s.id === sid);
@@ -396,6 +437,16 @@ function _renderSessionRows() {
     `;
     menu.appendChild(row);
   }
+  // Append "+ N more" row if there are unpinned sessions beyond what was returned
+  const unpinnedReturned = _sessionsCache.filter(s => !s.pinned).length;
+  const extra = _totalUnpinnedCount - unpinnedReturned;
+  if (extra > 0) {
+    const moreRow = document.createElement('div');
+    moreRow.className = 'session-row-more';
+    moreRow.textContent = `+ ${extra} more sessions`;
+    moreRow.title = `${extra} additional sessions not shown — increase limit to see them`;
+    menu.appendChild(moreRow);
+  }
 }
 
 /**
@@ -427,7 +478,7 @@ export async function populateSessionSelect(userId) {
   try {
     const token = localStorage.getItem('auth_token');
     const agentId = app.currentAgentId || '';
-    let url = `/api/v1/db/sessions?db=local.db&user_id=${encodeURIComponent(userId)}`;
+    let url = `/api/v1/db/sessions?db=local.db&user_id=${encodeURIComponent(userId)}&limit=20`;
     if (agentId) url += `&agent_id=${encodeURIComponent(agentId)}`;
     if (token) url += `&token=${encodeURIComponent(token)}`;
     const res = await fetch(apiPath(url));
@@ -441,6 +492,8 @@ export async function populateSessionSelect(userId) {
       run_status: s.run_status || null,
       has_unread: !!s.has_unread,
     }));
+    // Store total_count so _renderSessionRows can show the "+ N more" row
+    _totalUnpinnedCount = data.total_count || 0;
     // If current session not yet in DB (fresh session before first msg),
     // synthesize a row so trigger label shows "New Session" and it appears
     if (app.currentSessionId && !_sessionsCache.some(s => s.id === app.currentSessionId)) {
@@ -461,92 +514,558 @@ export async function populateSessionSelect(userId) {
   }
 }
 
+/**
+ * Render an array of message objects into app.chatMessages.
+ * Used by both the initial load and the "load earlier" pagination path.
+ * Returns the number of messages rendered.
+ */
+function _renderMessages(messages, sessionId, run, prepend) {
+  let count = 0;
+  let seededStreaming = false;
+
+  for (const msg of messages) {
+    if (msg.role === 'user') {
+      app.addChatBubble('user', msg.content, undefined, undefined, undefined, msg.id);
+      count++;
+    } else if (msg.role === 'assistant') {
+      let text = msg.content || '';
+      const toolCallIdx = text.indexOf('\n\n[Tool calls: ');
+      if (toolCallIdx !== -1) text = text.slice(0, toolCallIdx);
+      const hasText = !!text.trim();
+      if (msg.status === 'streaming') {
+        if (typeof app.seedStreamingBubble === 'function') {
+          app.seedStreamingBubble(msg.id, text);
+        } else {
+          app.addChatBubble('agent', text || '…', 'streaming', undefined, msg.id);
+        }
+        seededStreaming = true;
+        count++;
+      } else if (!hasText) {
+        continue;
+      } else if (msg.status === 'interrupted') {
+        app.addChatBubble('agent', text + '\n\n(interrupted)', 'interrupted', undefined, msg.id);
+        count++;
+      } else if (msg.status === 'error') {
+        app.addChatBubble('agent', text, 'error', undefined, msg.id);
+        count++;
+      } else {
+        app.addChatBubble('agent', text, undefined, undefined, msg.id);
+        count++;
+      }
+    }
+  }
+
+  // Run-state handling (only on initial load, not pagination)
+  if (run && run.active && !prepend) {
+    app.isProcessing = true;
+    if (!seededStreaming && run.assistant_interaction_id
+        && typeof app.ensureStreamingBubbleForActiveTurn === 'function') {
+      app.ensureStreamingBubbleForActiveTurn(run.assistant_interaction_id);
+    }
+    if (!app.lastSessionSeq) app.lastSessionSeq = {};
+    const floor = typeof run.latest_session_seq === 'number' ? run.latest_session_seq : 0;
+    app.lastSessionSeq[sessionId] = Math.max(app.lastSessionSeq[sessionId] || 0, floor);
+  } else if (!run || !run.active) {
+    if (!prepend) app.isProcessing = false;
+  }
+
+  return count;
+}
+
+/**
+ * Fetch a batch of messages from the server.
+ */
+async function _fetchMessages(sessionId, limit, beforeId) {
+  const token = localStorage.getItem('auth_token');
+  let url = apiPath(`/api/v1/db/session-messages?db=local.db&session_id=${encodeURIComponent(sessionId)}&limit=${limit}${token ? '&token=' + encodeURIComponent(token) : ''}`);
+  if (beforeId) url += `&before_id=${encodeURIComponent(beforeId)}`;
+  const res = await fetch(url);
+  return await res.json();
+}
+
+/**
+ * Prepend a "Load earlier messages" button at the top of chatMessages.
+ */
+function _prependLoadEarlierBtn(sessionId) {
+  const existing = document.getElementById(`load-earlier-${sessionId}`);
+  if (existing) return existing;
+  const btn = document.createElement('div');
+  btn.id = `load-earlier-${sessionId}`;
+  btn.className = 'load-earlier-btn';
+  btn.textContent = '\u2191 Load earlier messages';
+  btn.addEventListener('click', async function onClick() {
+    btn.textContent = 'Loading\u2026';
+    btn.style.pointerEvents = 'none';
+    try {
+      const cache = _messageCache.get(sessionId);
+      const oldestId = cache && cache.messages.length > 0 ? cache.messages[0].id : null;
+      if (!oldestId) { btn.remove(); return; }
+      const data = await _fetchMessages(sessionId, 100, oldestId);
+      if (!data.messages || data.messages.length === 0) {
+        btn.textContent = 'No more messages';
+        setTimeout(() => btn.remove(), 2000);
+        return;
+      }
+      // Prepend to cache
+      cache.messages = [...data.messages, ...cache.messages];
+      cache.hasMore = !!data.has_more;
+      // Capture scrollHeight before inserting so we can adjust scrollTop
+      const container = app.chatMessages;
+      const oldScrollHeight = container ? container.scrollHeight : 0;
+      // Render above existing bubbles — find the load-earlier btn as anchor
+      const anchor = document.getElementById(`load-earlier-${sessionId}`);
+      // We'll insertBefore each new bubble right after the anchor
+      for (const msg of data.messages) {
+        if (msg.role === 'user') {
+          const bubble = _createBubble('user', msg.content, null, null, null, msg.id);
+          if (anchor && anchor.parentNode) {
+            anchor.parentNode.insertBefore(bubble, anchor.nextSibling);
+          }
+        } else if (msg.role === 'assistant') {
+          let text = msg.content || '';
+          const toolCallIdx = text.indexOf('\n\n[Tool calls: ');
+          if (toolCallIdx !== -1) text = text.slice(0, toolCallIdx);
+          const hasText = !!text.trim();
+          if (!hasText && msg.status !== 'streaming') continue;
+          const cls = msg.status === 'streaming' ? 'streaming' :
+                      msg.status === 'interrupted' ? 'interrupted' :
+                      msg.status === 'error' ? 'error' : null;
+          const bubble = _createBubble('agent', text, cls, null, msg.id, null);
+          if (anchor && anchor.parentNode) {
+            anchor.parentNode.insertBefore(bubble, anchor.nextSibling);
+          }
+        }
+      }
+      // Adjust scrollTop so the view doesn't jump
+      if (container) _adjustScrollForPrepend(container, oldScrollHeight);
+      if (!data.has_more) {
+        btn.remove();
+      } else {
+        btn.textContent = '\u2191 Load earlier messages';
+        btn.style.pointerEvents = '';
+      }
+    } catch (e) {
+      console.warn('Failed to load earlier messages:', e);
+      btn.textContent = '\u2191 Load earlier messages';
+      btn.style.pointerEvents = '';
+    }
+  });
+  if (app.chatMessages && app.chatMessages.firstChild) {
+    app.chatMessages.insertBefore(btn, app.chatMessages.firstChild);
+  } else if (app.chatMessages) {
+    app.chatMessages.appendChild(btn);
+  }
+  return btn;
+}
+
+// ── Virtual-scroll helpers ──────────────────────────────────────────────────
+
+/**
+ * Create a placeholder div that preserves the stored height of a bubble.
+ */
+function _makePlaceholder(msgId, height) {
+  const el = document.createElement('div');
+  el.className = 'chat-bubble-placeholder';
+  el.dataset.msgId = msgId;
+  el.style.height = height + 'px';
+  return el;
+}
+
+/**
+ * Measure a real bubble's offsetHeight and store it in _bubbleHeights.
+ * Called after first render of every bubble.
+ */
+function _storeBubbleHeight(bubble) {
+  const msgId = bubble.getAttribute('data-msg-id');
+  if (!msgId) return;
+  const h = bubble.offsetHeight;
+  if (h > 0) _bubbleHeights.set(msgId, h);
+}
+
+/**
+ * Given a msgId, return the stored height or a default fallback.
+ */
+function _getBubbleHeight(msgId) {
+  const h = _bubbleHeights.get(msgId);
+  return h || 80; // fallback for unmeasured bubbles
+}
+
+/**
+ * Recycle pass: scan all children of app.chatMessages (excluding the
+ * load-earlier button) and swap real bubbles ↔ placeholders based on
+ * viewport visibility + _VS_BUFFER.
+ */
+function _recycleVisible() {
+  const container = app.chatMessages;
+  if (!container) return;
+  const rect = container.getBoundingClientRect();
+  const scrollTop = container.scrollTop;
+  const viewTop = scrollTop;
+  const viewBottom = scrollTop + rect.height;
+  const bufferTop = viewTop - _VS_BUFFER;
+  const bufferBottom = viewBottom + _VS_BUFFER;
+
+  // Collect all bubble/placeholder children (skip load-earlier btn)
+  const children = Array.from(container.children).filter(
+    c => c.classList.contains('chat-bubble') || c.classList.contains('chat-bubble-placeholder')
+  );
+
+  for (const el of children) {
+    const msgId = el.getAttribute('data-msg-id');
+    if (!msgId) continue;
+
+    // Approximate position using offsetTop (accurate since container is
+    // position:relative and children are block-level).
+    const elTop = el.offsetTop;
+    const elBottom = elTop + (el.classList.contains('chat-bubble-placeholder')
+      ? parseInt(el.style.height, 10) || _getBubbleHeight(msgId)
+      : el.offsetHeight);
+
+    const isVisible = elBottom > bufferTop && elTop < bufferBottom;
+
+    if (el.classList.contains('chat-bubble-placeholder')) {
+      if (isVisible) {
+        // Recycle: placeholder → real bubble
+        _recyclePlaceholderToBubble(el, msgId);
+      }
+    } else {
+      if (!isVisible) {
+        // Recycle: real bubble → placeholder
+        _recycleBubbleToPlaceholder(el, msgId);
+      }
+    }
+  }
+}
+
+/**
+ * Replace a placeholder element with the real bubble from _messageCache.
+ */
+function _recyclePlaceholderToBubble(placeholder, msgId) {
+  const sessionId = app.currentSessionId;
+  if (!sessionId) return;
+  const cached = _messageCache.get(sessionId);
+  if (!cached) return;
+  const msg = cached.messages.find(m => m.id === msgId);
+  if (!msg) return;
+
+  _placeholderIds.delete(msgId);
+
+  // Build the real bubble using the same logic as _renderMessages
+  const bubble = document.createElement('div');
+  let role = msg.role === 'user' ? 'user' : 'agent';
+  let extraClass = null;
+  if (msg.role === 'assistant') {
+    if (msg.status === 'streaming') extraClass = 'streaming';
+    else if (msg.status === 'interrupted') extraClass = 'interrupted';
+    else if (msg.status === 'error') extraClass = 'error';
+  }
+  bubble.className = 'chat-bubble ' + role + (extraClass ? ' ' + extraClass : '');
+  if (msg.id) bubble.setAttribute('data-msg-id', msg.id);
+
+  if (role === 'user') {
+    const label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = 'You';
+    bubble.appendChild(label);
+    bubble.appendChild(app._linkifyText(msg.content || ''));
+  } else {
+    let text = msg.content || '';
+    const toolCallIdx = text.indexOf('\n\n[Tool calls: ');
+    if (toolCallIdx !== -1) text = text.slice(0, toolCallIdx);
+    if (text.trim()) {
+      // Use the same markdown rendering as addChatBubble
+      const body = app._renderMarkdownBody(text, true);
+      if (body) {
+        bubble.appendChild(body);
+        bubble.classList.add('md');
+        bubble.__mdSource = text;
+      } else {
+        bubble.appendChild(app._linkifyText(text));
+      }
+    }
+    if (extraClass === 'streaming') {
+      const stopBtn = document.createElement('button');
+      stopBtn.className = 'stop-btn';
+      stopBtn.textContent = '\uD83D\uDED1';
+      stopBtn.title = 'Stop generation';
+      stopBtn.addEventListener('click', app._sendStopMessage);
+      bubble.appendChild(stopBtn);
+    }
+
+    // Add bubble actions for finalized messages
+    if (extraClass !== 'streaming' && text && text.trim() && text !== '\u2026') {
+      app._addBubbleActions(bubble);
+    }
+  }
+
+  placeholder.parentNode.replaceChild(bubble, placeholder);
+  _storeBubbleHeight(bubble);
+}
+
+/**
+ * Replace a real bubble element with a placeholder of the same height.
+ */
+function _recycleBubbleToPlaceholder(el, msgId) {
+  _storeBubbleHeight(el);
+  const h = _getBubbleHeight(msgId);
+  _placeholderIds.add(msgId);
+  const placeholder = _makePlaceholder(msgId, h);
+  el.parentNode.replaceChild(placeholder, el);
+}
+
+/**
+ * After prepending older messages (infinite scroll), measure all new bubbles
+ * and adjust scrollTop so the view doesn't jump.
+ */
+function _adjustScrollForPrepend(container, oldScrollHeight) {
+  // After new bubbles are inserted at the top, the content grew upward.
+  // The user's visible position stays the same if we add the delta to scrollTop.
+  const newScrollHeight = container.scrollHeight;
+  const delta = newScrollHeight - oldScrollHeight;
+  container.scrollTop += delta;
+}
+
+/**
+ * Wrap app.addChatBubble so every new bubble has its height stored after render.
+ */
+function _hookAddChatBubble() {
+  if (_origAddChatBubble) return; // already hooked
+  _origAddChatBubble = app.addChatBubble;
+  app.addChatBubble = function(role, text, extraClass, imageUrl, turnId, msgId) {
+    const bubble = _origAddChatBubble.call(app, role, text, extraClass, imageUrl, turnId, msgId);
+    // Defer measurement so layout is computed
+    requestAnimationFrame(() => _storeBubbleHeight(bubble));
+    return bubble;
+  };
+}
+
+/**
+ * Install the virtual-scroll scroll handler on app.chatMessages.
+ * Also measures all existing bubbles and stores their heights.
+ */
+function _installVirtualScroll() {
+  const container = app.chatMessages;
+  if (!container) return;
+
+  // Hook addChatBubble to auto-store heights
+  _hookAddChatBubble();
+
+  // Remove old handler if any
+  if (_virtualScrollHandler) {
+    container.removeEventListener('scroll', _virtualScrollHandler);
+  }
+
+  // Measure all existing real bubbles
+  container.querySelectorAll('.chat-bubble').forEach(b => _storeBubbleHeight(b));
+
+  // Debounced scroll handler
+  let _vsTimer = null;
+  _virtualScrollHandler = () => {
+    if (_vsTimer) cancelAnimationFrame(_vsTimer);
+    _vsTimer = requestAnimationFrame(() => {
+      _recycleVisible();
+      _vsTimer = null;
+    });
+  };
+  container.addEventListener('scroll', _virtualScrollHandler);
+
+  // Run an initial recycle pass
+  _recycleVisible();
+}
+
+/**
+ * Teardown virtual scroll for the current container.
+ */
+function _teardownVirtualScroll() {
+  if (_virtualScrollHandler && app.chatMessages) {
+    app.chatMessages.removeEventListener('scroll', _virtualScrollHandler);
+  }
+  _virtualScrollHandler = null;
+  // Restore original addChatBubble
+  if (_origAddChatBubble) {
+    app.addChatBubble = _origAddChatBubble;
+    _origAddChatBubble = null;
+  }
+  // Restore all placeholders back to real bubbles on teardown
+  if (app.chatMessages) {
+    app.chatMessages.querySelectorAll('.chat-bubble-placeholder').forEach(ph => {
+      const msgId = ph.getAttribute('data-msg-id');
+      if (msgId) {
+        _placeholderIds.delete(msgId);
+        _recyclePlaceholderToBubble(ph, msgId);
+      }
+    });
+  }
+}
+
+/**
+ * Create a chat bubble element without appending it (used for prepend pagination).
+ */
+function _createBubble(role, text, extraClass, imageUrl, turnId, msgId) {
+	  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble ' + role + (extraClass ? ' ' + extraClass : '');
+  if (turnId) bubble.setAttribute('data-turn-id', turnId);
+  if (msgId) bubble.setAttribute('data-msg-id', msgId);
+  if (role === 'user') {
+    const label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = 'You';
+    bubble.appendChild(label);
+  }
+  // Simple text node for prepended messages (no markdown rendering needed for old messages)
+  bubble.appendChild(document.createTextNode(text || ''));
+  // Store height after first render (defer so layout is computed)
+  requestAnimationFrame(() => _storeBubbleHeight(bubble));
+  return bubble;
+}
+
 export async function loadSessionChat(sessionId) {
   try {
-    const token = localStorage.getItem('auth_token');
-    const res = await fetch(
-      apiPath(`/api/v1/db/session-messages?db=local.db&session_id=${encodeURIComponent(sessionId)}${token ? '&token=' + encodeURIComponent(token) : ''}`),
-    );
-    const data = await res.json();
-    app.chatMessages.innerHTML = '';
+    // Check cache first
+    const cached = _messageCache.get(sessionId);
+    const now = Date.now();
+    if (cached && (now - cached.loadedAt) < _CACHE_TTL_MS) {
+      // Cache hit — render from cache
+      if (sessionId !== app._lastLoadedSessionId) {
+        _teardownVirtualScroll();
+        app.chatMessages.innerHTML = '';
+      }
+      app._lastLoadedSessionId = sessionId;
+
+      // Remove any stale load-earlier button
+      const oldBtn = document.getElementById(`load-earlier-${sessionId}`);
+      if (oldBtn) oldBtn.remove();
+
+      for (const msg of cached.messages) {
+        if (msg.role === 'user') {
+          app.addChatBubble('user', msg.content, undefined, undefined, undefined, msg.id);
+        } else if (msg.role === 'assistant') {
+          let text = msg.content || '';
+          const toolCallIdx = text.indexOf('\n\n[Tool calls: ');
+          if (toolCallIdx !== -1) text = text.slice(0, toolCallIdx);
+          const hasText = !!text.trim();
+          if (msg.status === 'streaming') {
+            if (typeof app.seedStreamingBubble === 'function') {
+              app.seedStreamingBubble(msg.id, text);
+            } else {
+              app.addChatBubble('agent', text || '\u2026', 'streaming', undefined, msg.id);
+            }
+          } else if (!hasText) {
+            continue;
+          } else if (msg.status === 'interrupted') {
+            app.addChatBubble('agent', text + '\n\n(interrupted)', 'interrupted', undefined, msg.id);
+          } else if (msg.status === 'error') {
+            app.addChatBubble('agent', text, 'error', undefined, msg.id);
+          } else {
+            app.addChatBubble('agent', text, undefined, undefined, msg.id);
+          }
+        }
+      }
+
+      if (cached.hasMore) {
+        _prependLoadEarlierBtn(sessionId);
+      }
+
+      app.chatMessages.scrollTop = app.chatMessages.scrollHeight;
+      // Install virtual scroll after rendering
+      _installVirtualScroll();
+      return;
+    }
+
+    // Cache miss or stale — fetch from API
+    const data = await _fetchMessages(sessionId, 100);
+
+    // Clear DOM when switching to a new session
+    if (sessionId !== app._lastLoadedSessionId) {
+      _teardownVirtualScroll();
+      app.chatMessages.innerHTML = '';
+    }
+    app._lastLoadedSessionId = sessionId;
 
     if (data.restricted) {
-      // Not a participant — silently switch to a fresh session instead of showing restricted notice
+      // Not a participant — silently switch to a fresh session
       app.currentSessionId = generateUUID();
       localStorage.setItem('terminalSessionId', app.currentSessionId);
+      _teardownVirtualScroll();
       app.chatMessages.innerHTML = '';
       app.addChatBubble('agent', 'New session. Start typing below.');
       if (app.currentUserId) populateSessionSelect(app.currentUserId);
+      _messageCache.delete(sessionId);
       return;
     }
 
-    if (!data.messages || data.messages.length === 0) {
+    // Store in cache
+    const msgs = data.messages || [];
+    _messageCache.set(sessionId, {
+      messages: [...msgs],
+      hasMore: !!data.has_more,
+      loadedAt: Date.now(),
+    });
+
+    if (msgs.length === 0) {
       app.addChatBubble(
         'agent',
-        'Session loaded. No messages yet — start typing below.',
+        'Session loaded. No messages yet \u2014 start typing below.',
       );
       return;
     }
-    // Durable run-state: is a turn in progress for this session right now?
+
+    // Render messages
     const run = data.run || null;
-    let seededStreaming = false;
+    _renderMessages(msgs, sessionId, run, false);
 
-    // Each assistant row (including intermediate steps that precede tool calls)
-    // is its own bubble, keyed by its interaction id so the user sees EVERY
-    // agent response in a turn, not just the final one. Empty rows (tool-call-
-    // only steps) render nothing.
-    for (const msg of data.messages) {
-      if (msg.role === 'user') {
-        app.addChatBubble('user', msg.content, undefined, undefined, undefined, msg.id);
-      } else if (msg.role === 'assistant') {
-        let text = msg.content || '';
-        const toolCallIdx = text.indexOf('\n\n[Tool calls: ');
-        if (toolCallIdx !== -1) text = text.slice(0, toolCallIdx);
-        const hasText = !!text.trim();
-        if (msg.status === 'streaming') {
-          // In-progress step — render the persisted partial as a live bubble the
-          // WebSocket will continue updating (keyed by THIS row's id == asst_id).
-          if (typeof app.seedStreamingBubble === 'function') {
-            app.seedStreamingBubble(msg.id, text);
-          } else {
-            app.addChatBubble('agent', text || '…', 'streaming', undefined, msg.id);
-          }
-          seededStreaming = true;
-        } else if (!hasText) {
-          continue; // empty tool-call-only step — nothing to show
-        } else if (msg.status === 'interrupted') {
-          app.addChatBubble('agent', text + '\n\n(interrupted)', 'interrupted', undefined, msg.id);
-        } else if (msg.status === 'error') {
-          app.addChatBubble('agent', text, 'error', undefined, msg.id);
-        } else {
-          app.addChatBubble('agent', text, undefined, undefined, msg.id);
-        }
-      }
+    // Prepend "Load earlier" button if more exist
+    if (data.has_more) {
+      _prependLoadEarlierBtn(sessionId);
     }
 
-    // If a run is active, lock display state + set the WS resume floor so
-    // replayed chunks only bring text newer than the partial we just rendered.
-    // The existing resume paths (switchToSession + WS onopen handshake) replay.
-    if (run && run.active) {
-      app.isProcessing = true;
-      if (!seededStreaming && run.assistant_interaction_id
-          && typeof app.ensureStreamingBubbleForActiveTurn === 'function') {
-        app.ensureStreamingBubbleForActiveTurn(run.assistant_interaction_id);
-      }
-      if (!app.lastSessionSeq) app.lastSessionSeq = {};
-      const floor = typeof run.latest_session_seq === 'number' ? run.latest_session_seq : 0;
-      app.lastSessionSeq[sessionId] = Math.max(app.lastSessionSeq[sessionId] || 0, floor);
-    } else {
-      app.isProcessing = false;
-    }
-    // Input availability follows text presence, not run state — sending a
-    // follow-up while the agent works is allowed (it interrupts + replaces).
+    // Input availability follows text presence, not run state
     if (app.chatSend) app.chatSend.disabled = !((app.chatInput && app.chatInput.value.trim()));
 
     app.chatMessages.scrollTop = app.chatMessages.scrollHeight;
+    // Install virtual scroll after rendering
+    _installVirtualScroll();
   } catch (e) {
     console.warn('Failed to load session messages:', e);
   }
+}
+
+/**
+ * Append or update a message in the in-memory cache for a session (called from WS paths).
+ * For streaming chunks (_streaming: true), finds the existing entry by id and appends content.
+ * For finalized messages (_finalized: true), replaces the streaming entry's content.
+ * For new messages (no special flags), appends to the end.
+ */
+export function _cacheAppendMessage(sessionId, msg) {
+  const cached = _messageCache.get(sessionId);
+  if (!cached) return;
+
+  if (msg._streaming && msg.id) {
+    // Streaming chunk — find existing entry and append content
+    const existing = cached.messages.find(m => m.id === msg.id && m.role === 'assistant');
+    if (existing) {
+      existing.content = (existing.content || '') + msg.content;
+    } else {
+      cached.messages.push({ role: 'assistant', content: msg.content, id: msg.id, status: 'streaming' });
+    }
+  } else if (msg._finalized && msg.id) {
+    // Finalized response — replace the streaming entry's content
+    const existing = cached.messages.find(m => m.id === msg.id && m.role === 'assistant');
+    if (existing) {
+      existing.content = msg.content;
+      delete existing.status;
+    } else {
+      cached.messages.push({ role: 'assistant', content: msg.content, id: msg.id });
+    }
+  } else {
+    // New message (user or standalone assistant)
+    // Avoid duplicates by checking msg.id
+    if (msg.id && cached.messages.some(m => m.id === msg.id)) return;
+    cached.messages.push(msg);
+  }
+
+  // Refresh the timestamp so the cache doesn't go stale while actively chatting
+  cached.loadedAt = Date.now();
 }
 
 /** Call before first connectAgent() so agent onopen can refresh users. */
@@ -771,6 +1290,10 @@ export function initSessions() {
         } else if (ev.type === 'interrupted' && typeof app.markAgentInterrupted === 'function') {
           app.markAgentInterrupted(ev.asst_id);
         }
+        // Keep cache fresh for replayed events
+        if (ev.type === 'response' && ev.content) {
+          _cacheAppendMessage(sid, { role: 'assistant', content: ev.content, id: ev.asst_id || ev.turn_id });
+        }
       }
     } catch (_pendErr) { /* never let drain break navigation */ }
 
@@ -891,6 +1414,7 @@ export function initSessions() {
         if (sid === app.currentSessionId) {
           app.currentSessionId = generateUUID();
           localStorage.setItem('terminalSessionId', app.currentSessionId);
+          _teardownVirtualScroll();
           app.chatMessages.innerHTML = '';
           app.addChatBubble('agent', 'Session deleted. New session created.');
         }
@@ -901,10 +1425,69 @@ export function initSessions() {
     }
   }
 
+  // ── Header trigger: long-press or double-click to rename session ──
+  function _headerRenameSession() {
+    const labelEl = document.getElementById('session-dropdown-label');
+    if (!labelEl) return;
+    const sid = app.currentSessionId;
+    if (!sid) return;
+    const sess = _sessionsCache.find(s => s.id === sid);
+    const current = (sess && sess.title) || 'New Session';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'session-row-title-input';
+    input.value = current;
+    input.style.width = '140px';
+    labelEl.replaceWith(input);
+    input.focus();
+    input.select();
+    let done = false;
+    const finish = async (commit) => {
+      if (done) return;
+      done = true;
+      const newTitle = input.value.trim();
+      if (commit && newTitle && newTitle !== current) {
+        const ok = await patchSession(sid, { title: newTitle });
+        if (ok && sess) sess.title = newTitle;
+      }
+      _setTriggerLabel();
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    });
+    input.addEventListener('blur', () => finish(true));
+  }
+
   if (sessionTrigger) {
+    let _lpTimer = null, _lpStartX = 0, _lpStartY = 0;
+    sessionTrigger.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('.header-delete-btn, .header-plus-btn, .session-dropdown-status')) return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      _lpStartX = e.clientX; _lpStartY = e.clientY;
+      _lpTimer = setTimeout(() => {
+        _lpTimer = null;
+        e.preventDefault();
+        _headerRenameSession();
+      }, 500);
+    });
+    sessionTrigger.addEventListener('pointermove', (e) => {
+      if (!_lpTimer) return;
+      if (Math.abs(e.clientX - _lpStartX) > 8 || Math.abs(e.clientY - _lpStartY) > 8) {
+        clearTimeout(_lpTimer); _lpTimer = null;
+      }
+    });
+    sessionTrigger.addEventListener('pointerup', () => { if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; } });
+    sessionTrigger.addEventListener('pointercancel', () => { if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; } });
+    sessionTrigger.addEventListener('dblclick', (e) => {
+      if (e.target.closest('.header-delete-btn, .header-plus-btn, .session-dropdown-status')) return;
+      e.stopPropagation();
+      _headerRenameSession();
+    });
     sessionTrigger.addEventListener('click', (e) => {
       // Don't toggle dropdown when clicking the delete button inside the trigger
-      if (e.target.closest('.header-delete-btn')) return;
+      if (e.target.closest('.header-delete-btn, .header-plus-btn')) return;
+      if (e.target.closest('.session-row-title-input')) return;
       e.stopPropagation();
       if (menu.hidden) openMenu(); else closeMenu();
     });
@@ -961,6 +1544,7 @@ export function initSessions() {
       abortChatStream();
       app.currentSessionId = generateUUID();
       localStorage.setItem('terminalSessionId', app.currentSessionId);
+      _teardownVirtualScroll();
       app.chatMessages.innerHTML = '';
       app.addChatBubble('agent', 'New session. Start typing below.');
       populateSessionSelect(app.currentUserId);
@@ -1059,6 +1643,7 @@ export function initSessions() {
     // Sessions are bound to agents — start a fresh session
     app.currentSessionId = generateUUID();
     localStorage.setItem('terminalSessionId', app.currentSessionId);
+    _teardownVirtualScroll();
     app.chatMessages.innerHTML = '';
     app.addChatBubble('agent', 'Switched agent. New session started.');
     populateSessionSelect(app.currentUserId);
@@ -1161,10 +1746,70 @@ export function initSessions() {
     }, 50);
   }
 
+  // ── Header trigger: long-press or double-click to rename ──
+  function _headerRenameAgent() {
+    const labelEl = document.getElementById('agent-dropdown-label');
+    if (!labelEl) return;
+    const aid = app.currentAgentId;
+    if (!aid) return;
+    const agent = _agentsCache.find(a => a.id === aid);
+    const current = (agent && agent.name) || (window.__agentName) || '';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'session-row-title-input';
+    input.value = current;
+    input.style.width = '140px';
+    labelEl.replaceWith(input);
+    input.focus();
+    input.select();
+    let done = false;
+    const finish = async (commit) => {
+      if (done) return;
+      done = true;
+      const newName = input.value.trim();
+      if (commit && newName && newName !== current) {
+        const ok = await patchAgentName(aid, newName);
+        if (ok && agent) agent.name = newName;
+      }
+      _setAgentTriggerLabel();
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    });
+    input.addEventListener('blur', () => finish(true));
+  }
+
   if (agentTrigger) {
+    let _lpTimer = null, _lpStartX = 0, _lpStartY = 0;
+    agentTrigger.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('.header-delete-btn, .header-plus-btn, .agent-dropdown-status')) return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      _lpStartX = e.clientX; _lpStartY = e.clientY;
+      _lpTimer = setTimeout(() => {
+        _lpTimer = null;
+        e.preventDefault();
+        _headerRenameAgent();
+      }, 500);
+    });
+    agentTrigger.addEventListener('pointermove', (e) => {
+      if (!_lpTimer) return;
+      if (Math.abs(e.clientX - _lpStartX) > 8 || Math.abs(e.clientY - _lpStartY) > 8) {
+        clearTimeout(_lpTimer); _lpTimer = null;
+      }
+    });
+    agentTrigger.addEventListener('pointerup', () => { if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; } });
+    agentTrigger.addEventListener('pointercancel', () => { if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; } });
+    agentTrigger.addEventListener('dblclick', (e) => {
+      if (e.target.closest('.header-delete-btn, .header-plus-btn, .agent-dropdown-status')) return;
+      e.stopPropagation();
+      _headerRenameAgent();
+    });
     agentTrigger.addEventListener('click', (e) => {
       // Don't toggle dropdown when clicking the delete button inside the trigger
-      if (e.target.closest('.header-delete-btn')) return;
+      if (e.target.closest('.header-delete-btn, .header-plus-btn')) return;
+      // If the label was replaced by a rename input, don't toggle dropdown
+      if (e.target.closest('.session-row-title-input')) return;
       e.stopPropagation();
       if (agentMenu.hidden) openAgentMenu(); else closeAgentMenu();
     });

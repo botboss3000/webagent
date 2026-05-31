@@ -511,36 +511,4 @@
   .db-pick-action.danger { color: var(--files-danger); }
   .db-pick-action.danger:hover { background: var(--files-danger-hov); }
 
-  /* ── Boot: header spinner ───────────────────────────────────────
-     A small spinning dot in the top-right header area while JS
-     initialises. Placed next to the chat toggle button inside
-     #status-right. Once tabs.js removes .is-booting, the spinner
-     fades out. The main panel and tabs are always accessible — no
-     boot-chat-only collapse. */
-  .boot-spinner {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    border: 2px solid var(--border, #2e2e4a);
-    border-top-color: var(--accent, #7dcfff);
-    margin-right: 6px;
-    opacity: 0;
-    visibility: hidden;
-    transition: opacity 220ms ease-out, visibility 0s linear 220ms;
-    animation: boot-spinner-spin 720ms linear infinite;
-    flex-shrink: 0;
-  }
-  body.is-booting .boot-spinner {
-    opacity: 1;
-    visibility: visible;
-    transition: opacity 120ms ease-in, visibility 0s linear 0s;
-  }
-  @keyframes boot-spinner-spin {
-    to { transform: rotate(360deg); }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .boot-spinner { animation: none; }
-  }
+  /* ── Boot: header spinner (removed) ──────────────────────────────

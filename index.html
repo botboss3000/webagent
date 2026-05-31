@@ -277,6 +277,27 @@
   @media (prefers-reduced-motion: reduce) {
     .stargaze-canvas { display: none; }
   }
+
+  /* —— "Load earlier messages" button in chat —— */
+  .load-earlier-btn {
+    text-align: center;
+    font-size: 12px;
+    color: #8a8fad;
+    cursor: pointer;
+    padding: 6px 12px;
+    margin: 4px 0;
+    border-radius: 6px;
+    user-select: none;
+    transition: background 0.15s, color 0.15s;
+  }
+  .load-earlier-btn:hover {
+    background: rgba(255,255,255,0.06);
+    color: #c5cae3;
+  }
+  body.light-mode .load-earlier-btn:hover {
+    background: rgba(0,0,0,0.04);
+    color: #444;
+  }
 </style>
 </head>
 <body>
@@ -447,19 +468,83 @@
     <option value="account">Manage Account</option>
   </select>
 
-  <!-- Restart server & reload page. Mirrors the refresh button in the
-       terminal launcher sidebar (ui/admin-tools/terminal.html). -->
-  <button id="header-refresh-btn" class="files-icon-btn" title="Restart server &amp; reload page">
-    <i data-lucide="refresh-cw" class="lucide-icon"></i>
-  </button>
-
   <!-- Horizontal tab strip with chevron-scroll carousel -->
   <div id="main-tabs-wrap">
     <button type="button" id="main-tabs-chev-left" class="main-tabs-chev left" aria-label="Scroll tabs left">&#10094;</button>
     <div id="main-tabs" role="tablist">
-      <button type="button" class="main-tab" data-value="admin-tools" role="tab">
-        <i data-lucide="wrench" class="lucide-icon"></i>Admin Tools
-      </button>
+      <!-- User avatar inline, left of the refresh button -->
+      <div class="user-dropdown" id="user-dropdown">
+        <span id="top-user-id" class="user-dropdown-trigger" title="Account">
+          <span id="top-user-avatar-slot"><!-- Default icon shown before JS renders the avatar -->
+            <svg class="user-avatar-default" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;opacity:0.55;">
+              <circle cx="12" cy="8" r="4"></circle>
+              <path d="M4 20c0-4 4-7 8-7s8 3 8 7"></path>
+            </svg>
+          </span>
+        </span>
+        <div id="user-dropdown-menu" class="user-dropdown-menu" style="display:none;">
+          <!-- Current user row + Manage Account button -->
+          <div class="user-dropdown-current-row" id="dropdown-current-row"></div>
+          <button id="btn-manage-account" class="user-dropdown-manage-btn">
+            <i data-lucide="user-cog" class="lucide-icon" style="width:14px;height:14px;"></i>
+            Manage Account
+          </button>
+
+          <div class="user-dropdown-divider"></div>
+
+          <!-- Other signed-in accounts (rendered by JS) -->
+          <div id="dropdown-other-accounts" class="user-dropdown-accounts-list"></div>
+
+          <button id="btn-add-account" class="user-dropdown-action user-dropdown-add-account">
+            <i data-lucide="user-plus" class="lucide-icon" style="width:15px;height:15px;"></i>
+            Add account
+          </button>
+
+          <div class="user-dropdown-divider"></div>
+
+          <div class="theme-toggle-section">
+            <span class="theme-toggle-label">Theme</span>
+            <div class="theme-toggle-group">
+              <button class="theme-option" data-theme="light" title="Light">
+                <i data-lucide="sun" class="lucide-icon" style="width:15px;height:15px;"></i>
+              </button>
+              <button class="theme-option" data-theme="dark" title="Dark">
+                <i data-lucide="moon" class="lucide-icon" style="width:15px;height:15px;"></i>
+              </button>
+              <button class="theme-option" data-theme="system" title="System">
+                <i data-lucide="monitor" class="lucide-icon" style="width:15px;height:15px;"></i>
+              </button>
+            </div>
+          </div>
+
+          <div class="user-dropdown-divider"></div>
+
+          <button id="btn-send-feedback" class="user-dropdown-action" style="display:none;">
+            <i data-lucide="message-circle" class="lucide-icon" style="width:15px;height:15px;"></i>
+            Send feedback
+          </button>
+
+          <button id="btn-signout-header" class="user-dropdown-action">
+            <i data-lucide="log-out" class="lucide-icon" style="width:15px;height:15px;"></i>
+            Sign Out
+          </button>
+
+          <div class="user-dropdown-legal">
+            <a href="/privacy" target="_blank" rel="noopener">Privacy</a>
+            <span aria-hidden="true">·</span>
+            <a href="/tos" target="_blank" rel="noopener">Terms</a>
+          </div>
+        </div>
+      </div>
+      <span class="main-tab-group" id="admin-tools-group">
+        <!-- Restart server & reload page -->
+        <button id="header-refresh-btn" class="files-icon-btn" title="Restart server &amp; reload page">
+          <i data-lucide="refresh-cw" class="lucide-icon"></i>
+        </button>
+        <button type="button" class="main-tab" data-value="admin-tools" role="tab">
+          <i data-lucide="wrench" class="lucide-icon"></i>Admin Tools
+        </button>
+      </span>
       <button type="button" class="main-tab" data-value="autoagent" role="tab">
         <i data-lucide="files" class="lucide-icon"></i>Pages
       </button>
@@ -476,75 +561,12 @@
     <button type="button" id="main-tabs-chev-right" class="main-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
   </div>
 
-  <!-- User menu -->
+  <!-- User menu (right side) -->
   <span id="status-right">
-    <span id="boot-spinner" class="boot-spinner" aria-hidden="true"></span>
     <button id="chat-toggle-btn" class="chat-toggle-btn active" title="Toggle chat panel">
-      <i data-lucide="message-square" class="lucide-icon" style="width:14px;height:14px;"></i>
+      <i data-lucide="message-square" class="lucide-icon" style="width:16px;height:16px;"></i>
+      <span>Chat</span>
     </button>
-    <div class="user-dropdown" id="user-dropdown">
-      <span id="top-user-id" class="user-dropdown-trigger" title="Account">
-        <span id="top-user-avatar-slot"><!-- Default icon shown before JS renders the avatar -->
-          <svg class="user-avatar-default" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;opacity:0.55;">
-            <circle cx="12" cy="8" r="4"></circle>
-            <path d="M4 20c0-4 4-7 8-7s8 3 8 7"></path>
-          </svg>
-        </span>
-      </span>
-      <div id="user-dropdown-menu" class="user-dropdown-menu" style="display:none;">
-        <!-- Current user row + Manage Account button -->
-        <div class="user-dropdown-current-row" id="dropdown-current-row"></div>
-        <button id="btn-manage-account" class="user-dropdown-manage-btn">
-          <i data-lucide="user-cog" class="lucide-icon" style="width:14px;height:14px;"></i>
-          Manage Account
-        </button>
-
-        <div class="user-dropdown-divider"></div>
-
-        <!-- Other signed-in accounts (rendered by JS) -->
-        <div id="dropdown-other-accounts" class="user-dropdown-accounts-list"></div>
-
-        <button id="btn-add-account" class="user-dropdown-action user-dropdown-add-account">
-          <i data-lucide="user-plus" class="lucide-icon" style="width:15px;height:15px;"></i>
-          Add account
-        </button>
-
-        <div class="user-dropdown-divider"></div>
-
-        <div class="theme-toggle-section">
-          <span class="theme-toggle-label">Theme</span>
-          <div class="theme-toggle-group">
-            <button class="theme-option" data-theme="light" title="Light">
-              <i data-lucide="sun" class="lucide-icon" style="width:15px;height:15px;"></i>
-            </button>
-            <button class="theme-option" data-theme="dark" title="Dark">
-              <i data-lucide="moon" class="lucide-icon" style="width:15px;height:15px;"></i>
-            </button>
-            <button class="theme-option" data-theme="system" title="System">
-              <i data-lucide="monitor" class="lucide-icon" style="width:15px;height:15px;"></i>
-            </button>
-          </div>
-        </div>
-
-        <div class="user-dropdown-divider"></div>
-
-        <button id="btn-send-feedback" class="user-dropdown-action" style="display:none;">
-          <i data-lucide="message-circle" class="lucide-icon" style="width:15px;height:15px;"></i>
-          Send feedback
-        </button>
-
-        <button id="btn-signout-header" class="user-dropdown-action">
-          <i data-lucide="log-out" class="lucide-icon" style="width:15px;height:15px;"></i>
-          Sign Out
-        </button>
-
-        <div class="user-dropdown-legal">
-          <a href="/privacy" target="_blank" rel="noopener">Privacy</a>
-          <span aria-hidden="true">·</span>
-          <a href="/tos" target="_blank" rel="noopener">Terms</a>
-        </div>
-      </div>
-    </div>
   </span>
 
 </div>
@@ -609,6 +631,7 @@
     </div>
     <div id="chat-input-area">
       <div id="chat-preview-bar" style="display:none;"></div>
+      <button id="chat-continue-btn" class="chat-continue-btn" title="Send 'continue' to resume the agent" style="display:none;">Continue</button>
       <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #ac-int-admin-chat-input-row,
            #agent-builder-bar-row, #autoagent-prompt-row. Style rules live in
            ui/css/app1.css under the "Chat-pill" block. -->

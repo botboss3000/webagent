@@ -229,6 +229,7 @@ body {
 .bubble-action-btn.copied { color: #9ece6a; }
 .bubble-action-btn[data-speaking="true"] { color: #7dcfff; }
 /* Per-turn delete button — danger-tinted on hover, filled when armed (⚠️). */
+.bubble-action-btn.bubble-collapse-btn:hover { color: #7dcfff; }
 .bubble-action-btn.bubble-delete-btn:hover { color: var(--danger); }
 .bubble-action-btn.bubble-delete-btn.warning {
   color: var(--danger);
@@ -249,12 +250,42 @@ body {
     display: block;
     margin-bottom: 4px;
   }
+/* Collapsed bubble — hides the message body but keeps the action footer visible. */
+.chat-bubble.collapsed {
+  padding-bottom: 0;
+}
+.chat-bubble.collapsed > :not(.bubble-actions):not(.label),
+.chat-bubble.collapsed > .bubble-body,
+.chat-bubble.collapsed > .md-body {
+  display: none;
+}
+.chat-bubble.collapsed > .label {
+  margin-bottom: 0;
+}
+.chat-bubble.collapsed .bubble-actions {
+  opacity: 1;
+  margin-top: 0;
+  border-top: none;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
 .chat-bubble.interrupted {
     border: 1px solid #e0af68;
     color: #e0af68;
     align-self: flex-start;
     font-style: italic;
   }
+
+/* Virtual-scroll placeholder — invisible spacer that preserves scroll height */
+.chat-bubble-placeholder {
+  padding: 10px 14px;
+  margin: 0;
+  border: none;
+  background: transparent;
+  pointer-events: none;
+  flex-shrink: 0;
+}
 
 /* ── Rendered Markdown inside agent bubbles ───────────────────────────────
    Agent replies render as Markdown into a `.md-body` (see ui/js/chat.js
@@ -337,6 +368,42 @@ body {
 .md-body th { background: var(--bg-tint); font-weight: 600; color: var(--fg-1); }
 .md-body tbody tr:nth-child(even) td { background: var(--bg-tint); }
 .md-body img { max-width: 100%; border-radius: 8px; }
+
+/* ── Continue button (above the chat pill) ────────────────────────────────
+   Shown when the agent is waiting for the user to continue (e.g. after a
+   tool result). Clicking it sends a "continue" message. */
+.chat-continue-btn {
+    display: none;
+    align-self: flex-end;
+    background: #7dcfff15;
+    border: 1px solid #7dcfff30;
+    color: #7dcfff;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 14px;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    line-height: 1.4;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+.chat-continue-btn:hover {
+    background: #7dcfff25;
+    border-color: #7dcfff60;
+  }
+.chat-continue-btn:active {
+    background: #7dcfff35;
+  }
+body.light-mode .chat-continue-btn {
+    background: #ff8c4215;
+    border-color: #ff8c4230;
+    color: #ff8c42;
+  }
+body.light-mode .chat-continue-btn:hover {
+    background: #ff8c4225;
+    border-color: #ff8c4260;
+  }
 
 /* ── Chat-pill ─────────────────────────────────────────────────────────────
    CHAT-PILL-SYNC: single source of truth for every chat-style "pill" input
@@ -422,9 +489,9 @@ body {
        below all line up. 1 line of content = 18px. */
     line-height: 18px;
     /* Default pill is a 2-row textarea: 18*2 content + 12+12 padding = 60px.
-       The two stacked 26px buttons in the right column come to the same
-       60px so the pill is exactly 2 rows tall when empty. */
-    min-height: 60px;
+       The 72px voice/send buttons in the right column need more room
+       so the pill is 96px when empty. */
+    min-height: 96px;
     /* 6 visible content lines: 18px * 6 = 108px, plus 8px+8px vertical
        padding = 124px. JS toggles overflow-y to 'auto' when content
        exceeds this. */
@@ -454,15 +521,30 @@ body {
 
 /* Unified icon-button styling: attach, voice, AND send share the same
    transparent-circle look; only the icon glyph differentiates them. */
-.chat-pill-attach,
+.chat-pill-attach {
+    background: none;
+    border: none;
+    color: #565f89;
+    cursor: pointer;
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    border-radius: 50%;
+    transition: 0.15s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-right: 5px;
+  }
 .chat-pill-voice,
 .chat-pill-send {
     background: none;
     border: none;
     color: #565f89;
     cursor: pointer;
-    width: 26px;
-    height: 26px;
+    width: 72px;
+    height: 72px;
     padding: 0;
     border-radius: 50%;
     transition: 0.15s;
@@ -499,14 +581,17 @@ body {
 .chat-pill-attach i,
 .chat-pill-voice i,
 .chat-pill-send i { pointer-events: none; }
-/* Shrink the inline-styled icons so 18px lucide glyphs fit comfortably in
-   the new 26px button. Inline width/height on <i> uses !important here to
-   beat the inline style attribute set in the HTML markup. */
-.chat-pill-attach i,
+/* Icons inside the pill buttons — sized to fit the 48px button comfortably.
+   Inline width/height on <i> uses !important here to beat the inline style
+   attribute set in the HTML markup. */
+.chat-pill-attach i {
+    width: 28px !important;
+    height: 28px !important;
+  }
 .chat-pill-voice i,
 .chat-pill-send i {
-    width: 16px !important;
-    height: 16px !important;
+    width: 40px !important;
+    height: 40px !important;
   }
 .chat-pill-send:disabled { opacity: 0.4; cursor: default; }
 .chat-pill-voice.recording {
@@ -1012,17 +1097,17 @@ body {
   #chat-toggle-btn {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
     background: none;
     border: none;
     cursor: pointer;
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 600;
     font-family: inherit;
     color: #565f89;
-    padding: 4px 6px;
+    padding: 6px 12px;
     margin: 0;
-    border-radius: 6px;
+    border-radius: 8px;
     transition: color 0.15s, background 0.15s;
     user-select: none;
   }
@@ -1066,10 +1151,10 @@ body {
     transform: rotate(180deg);
   }
 .user-dropdown-menu {
-    position: absolute;
-    top: 100%;
-    right: 0;
-    margin-top: 6px;
+	    position: absolute;
+	    top: 100%;
+	    left: 0;
+	    margin-top: 6px;
     background: #1a1a2e;
     border: 1px solid #2a2a4a;
     border-radius: 8px;
