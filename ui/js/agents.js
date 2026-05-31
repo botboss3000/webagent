@@ -16,10 +16,6 @@ import { LOOP_W, LOOP_H, LOOP_NODES, TOGGLEABLE_NODES, renderLoopDiagram } from 
 import { icon } from './icons.js';
 import { wireChatPillUploads } from './attachments.js';
 import { sortAgentsForDisplay } from './ordering.js';
-// ── PRESENTATION-MODE START ── (delete the next 2 lines + the canEdit override below to remove)
-import { isPresentationMode } from './left-login.js';
-import { applyPresentationGate } from './presentation-mode.js';
-// ── PRESENTATION-MODE END ──
 function _triggerKeyPlaceholder(triggerType) {
   const map = {
     slash_command: 'Slash command (e.g. /optimize)',
@@ -2765,8 +2761,7 @@ async function _renderConnectionsTab(body, agent) {
     return;
   }
 
-  // ── PRESENTATION-MODE: drop the second condition below to remove demo gating
-  const canEdit = (userRole === 'admin') && !(isPresentationMode() && !_userIsAdmin);
+  const canEdit = (userRole === 'admin');
 
   body.innerHTML = '';
 
@@ -2864,10 +2859,6 @@ async function _renderConnectionsTab(body, agent) {
 
   // Populate Telegram mode badge and wire Test button
   _loadTelegramCardStatus(body);
-
-  // ── PRESENTATION-MODE START ── (delete to drop demo re-gating after re-render)
-  try { setTimeout(() => applyPresentationGate(body), 30); } catch (_) {}
-  // ── PRESENTATION-MODE END ──
 }
 
 function _showAbilitiesNotice(agent, text) {
