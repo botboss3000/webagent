@@ -1139,32 +1139,59 @@ export function initSessions() {
   });
 
   // ── User dropdown toggle ──
+  // The trigger lives inside #main-tabs, a horizontally-scrolling carousel
+  // whose overflow clips any absolutely-positioned descendant. The menu is
+  // therefore position:fixed (see app1.css) and anchored under the trigger by
+  // JS each time it opens, so it escapes the carousel's clip region.
   const userDropdown = document.getElementById('user-dropdown');
   const dropdownMenu = document.getElementById('user-dropdown-menu');
   const trigger = document.querySelector('.user-dropdown-trigger');
 
+  function positionUserMenu() {
+    if (!trigger || !dropdownMenu) return;
+    const r = trigger.getBoundingClientRect();
+    dropdownMenu.style.marginTop = '0';
+    dropdownMenu.style.top = Math.round(r.bottom + 6) + 'px';
+    // Clamp horizontally so the menu never spills past the viewport edges.
+    const w = dropdownMenu.offsetWidth || 280;
+    let left = r.left;
+    const maxLeft = window.innerWidth - w - 8;
+    if (left > maxLeft) left = maxLeft;
+    if (left < 8) left = 8;
+    dropdownMenu.style.left = Math.round(left) + 'px';
+  }
+
+  function openUserMenu() {
+    dropdownMenu.style.display = 'block';
+    userDropdown.classList.add('open');
+    positionUserMenu();
+  }
+
+  function closeUserMenu() {
+    dropdownMenu.style.display = 'none';
+    userDropdown.classList.remove('open');
+  }
+
   if (trigger && dropdownMenu) {
     trigger.addEventListener('click', (e) => {
       e.stopPropagation();
-      const isOpen = dropdownMenu.style.display === 'block';
-      dropdownMenu.style.display = isOpen ? 'none' : 'block';
-      userDropdown.classList.toggle('open', !isOpen);
+      if (dropdownMenu.style.display === 'block') closeUserMenu();
+      else openUserMenu();
     });
 
     // Close dropdown on outside click
     document.addEventListener('click', (e) => {
-      if (!userDropdown.contains(e.target)) {
-        dropdownMenu.style.display = 'none';
-        userDropdown.classList.remove('open');
-      }
+      if (!userDropdown.contains(e.target)) closeUserMenu();
     });
 
     // Close on Escape
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && dropdownMenu.style.display === 'block') {
-        dropdownMenu.style.display = 'none';
-        userDropdown.classList.remove('open');
-      }
+      if (e.key === 'Escape' && dropdownMenu.style.display === 'block') closeUserMenu();
+    });
+
+    // Re-anchor the fixed menu to the trigger if the viewport changes size.
+    window.addEventListener('resize', () => {
+      if (dropdownMenu.style.display === 'block') positionUserMenu();
     });
   }
 

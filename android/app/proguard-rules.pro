@@ -1,2 +1,0 @@
--keep class com.chaquo.python.** { *; }
--keep class com.webagent.app.** { *; }

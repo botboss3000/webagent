@@ -153,6 +153,31 @@ CREATE INDEX IF NOT EXISTS idx_session_runs_user_status ON session_runs(user_id,
 -- column (e.g. session_runs.heartbeat_at) wouldn't exist yet and the CREATE
 -- INDEX would abort the whole init with "no such column".
 
+-- Diagnostic flight-recorder (see app/agent/diagnostics.py). A rolling,
+-- auto-pruned log of server warnings/errors, agent-loop pipeline problems and
+-- run outcomes, queryable by an operator or a diagnostic AI agent. session_id /
+-- agent_id are free TEXT (NOT foreign keys) so a record outlives the row it
+-- referenced and a delete never cascades diagnostics away.
+CREATE TABLE IF NOT EXISTS diagnostics (
+    id TEXT PRIMARY KEY,
+    ts TEXT NOT NULL,                 -- ISO-8601 UTC capture time
+    level TEXT NOT NULL,              -- debug | info | warning | error | critical
+    category TEXT NOT NULL,           -- server | loop | run | tool | http
+    source TEXT,                      -- logger name / pipeline step / tool name
+    message TEXT NOT NULL,
+    detail TEXT,                      -- JSON blob (traceback, args, tokens, cost…)
+    session_id TEXT,
+    turn_id TEXT,
+    agent_id TEXT,
+    user_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_diagnostics_ts ON diagnostics(ts);
+CREATE INDEX IF NOT EXISTS idx_diagnostics_level ON diagnostics(level);
+CREATE INDEX IF NOT EXISTS idx_diagnostics_category ON diagnostics(category);
+CREATE INDEX IF NOT EXISTS idx_diagnostics_session ON diagnostics(session_id);
+
 CREATE TABLE IF NOT EXISTS session_summaries (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -2313,6 +2338,117 @@ class LocalBackend(StorageBackend):
                 ).fetchone()
                 current = (row[0] if row and row[0] is not None else 0)
                 return int(current) + 1
+            finally:
+                conn.close()
+
+    # ── Diagnostics (flight-recorder durable store) ───────────────────────────
+
+    async def insert_diagnostics_batch(self, rows: List[Dict[str, Any]]) -> int:
+        """Bulk-insert diagnostic records. Idempotent on id (INSERT OR IGNORE).
+
+        ``detail`` is expected to already be a JSON string (the recorder
+        serializes it). Returns the number of rows written."""
+        if not rows:
+            return 0
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                values = [(
+                    r.get("id") or _uuid(),
+                    r.get("ts") or _now_iso(),
+                    (r.get("level") or "info"),
+                    (r.get("category") or "server"),
+                    r.get("source"),
+                    (r.get("message") or ""),
+                    r.get("detail"),
+                    r.get("session_id"),
+                    r.get("turn_id"),
+                    r.get("agent_id"),
+                    r.get("user_id"),
+                ) for r in rows]
+                conn.executemany(
+                    "INSERT OR IGNORE INTO diagnostics "
+                    "(id, ts, level, category, source, message, detail, session_id, turn_id, agent_id, user_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    values,
+                )
+                conn.commit()
+                return len(values)
+            except Exception as e:
+                logger.error("Error in insert_diagnostics_batch: %s", e)
+                return 0
+            finally:
+                conn.close()
+
+    async def query_diagnostics(
+        self,
+        *,
+        levels: Optional[List[str]] = None,
+        categories: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        since: Optional[str] = None,
+        search: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """Query durable diagnostic rows, newest first."""
+        where: List[str] = []
+        params: List[Any] = []
+        if levels:
+            where.append("level IN (%s)" % ",".join("?" * len(levels)))
+            params.extend([str(x).lower() for x in levels])
+        if categories:
+            where.append("category IN (%s)" % ",".join("?" * len(categories)))
+            params.extend([str(x).lower() for x in categories])
+        if session_id:
+            where.append("session_id = ?")
+            params.append(session_id)
+        if agent_id:
+            where.append("agent_id = ?")
+            params.append(agent_id)
+        if since:
+            where.append("ts >= ?")
+            params.append(since)
+        if search:
+            where.append("(message LIKE ? OR source LIKE ? OR detail LIKE ?)")
+            like = f"%{search}%"
+            params.extend([like, like, like])
+        sql = "SELECT * FROM diagnostics"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY ts DESC LIMIT ?"
+        params.append(max(1, min(int(limit or 200), 2000)))
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(sql, params).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def prune_diagnostics(
+        self, *, max_rows: int = 20000, max_age_seconds: Optional[float] = None
+    ) -> int:
+        """Delete diagnostics older than the age cap and beyond the row cap."""
+        deleted = 0
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                if max_age_seconds:
+                    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)).isoformat()
+                    cur = conn.execute("DELETE FROM diagnostics WHERE ts < ?", (cutoff,))
+                    deleted += cur.rowcount or 0
+                if max_rows and max_rows > 0:
+                    cur = conn.execute(
+                        "DELETE FROM diagnostics WHERE id NOT IN "
+                        "(SELECT id FROM diagnostics ORDER BY ts DESC LIMIT ?)",
+                        (int(max_rows),),
+                    )
+                    deleted += cur.rowcount or 0
+                conn.commit()
+                return deleted
+            except Exception as e:
+                logger.error("Error in prune_diagnostics: %s", e)
+                return deleted
             finally:
                 conn.close()
 
@@ -5392,6 +5528,12 @@ class LocalBackend(StorageBackend):
 
         agent_id = str(_uuid_mod.uuid4())
         now = _now_iso()
+        # New agents get a large finite turn ceiling (not 0). At runtime 0 means
+        # "unlimited", but seeding a bounded value keeps the agent safe even on an
+        # older build that mis-reads 0; the wall-clock cap is the real backstop.
+        # Coerce a missing / 0 / non-positive template value up to the default.
+        _tpl_mtc = tpl.get("max_turn_count")
+        _new_max_turns = _tpl_mtc if (isinstance(_tpl_mtc, int) and _tpl_mtc > 0) else 9999
         conn = self._get_conn()
         try:
             conn.execute(
@@ -5408,7 +5550,7 @@ class LocalBackend(StorageBackend):
                    VALUES (?,?,?,?,?,?,?,?,?,?,0,'[]','[]',?,?,?,'{}',?,?,?,?)""",
                 (
                     agent_id, name, description,
-                    tpl.get("max_turn_count", 0),
+                    _new_max_turns,
                     tpl.get("model", ""),
                     tpl.get("provider", ""),
                     tpl.get("temperature", 0.7),

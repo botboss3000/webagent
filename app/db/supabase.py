@@ -1092,7 +1092,9 @@ class SupabaseBackend(StorageBackend):
                 "is_user_default": True,
                 "admin_users": [user_id],
                 "system_prompt": tpl["system_prompt"],
-                "max_turn_count": tpl["max_turn_count"],
+                # New agents get a bounded ceiling, never 0 (= unlimited). Coerce
+                # a missing / 0 template value up to the effectively-unlimited default.
+                "max_turn_count": (tpl.get("max_turn_count") or 9999),
                 "max_wall_seconds": tpl.get("max_wall_seconds"),
                 "model": tpl["model"],
                 "provider": tpl["provider"],

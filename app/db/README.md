@@ -28,3 +28,11 @@ The destructive `DELETE` from the old seeder is GONE. Admin edits in `agent_prom
 - `app/db/local.py`: SCHEMA_SQL extended; migrations 025 (column add) + 026 (one-shot data migration from `agent_prompts` admin-base rows → `agent_prompt_templates`).
 - `migrations/018_agent_prompt_templates.sql`: Supabase counterpart (Postgres DDL + same one-shot copy).
 
+## Diagnostics table
+
+The **`diagnostics`** table backs the diagnostic flight-recorder (`app/agent/diagnostics.py`) — a rolling, auto-pruned log of server warnings/errors (with tracebacks), agent-loop pipeline problems, run outcomes, and tool errors, read back by the Admin Tools → Diagnostics page, the `GET /api/v1/diagnostics` endpoint, and the `read_diagnostics` agent tool.
+
+- Columns: `id, ts, level, category, source, message, detail (JSON), session_id, turn_id, agent_id, user_id, created_at`. `session_id` / `agent_id` are **plain TEXT (not foreign keys)** so a record outlives the row it referenced and a delete never cascades it away.
+- `LocalBackend` methods: `insert_diagnostics_batch` (INSERT OR IGNORE on id), `query_diagnostics` (filtered, newest-first), `prune_diagnostics` (row + age cap). Base-class defaults are no-ops, so a backend that hasn't ported them degrades to **RAM-only** diagnostics (the in-memory ring still serves the live feed).
+- Defined in `app/db/schema/tables.py` (canonical) + `app/db/local.py` `SCHEMA_SQL` (local auto-migrate) + `migrations/026_diagnostics.sql` (Supabase).
+

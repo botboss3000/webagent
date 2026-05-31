@@ -32,6 +32,8 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "generate_image":                {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     # ── DB & context (gated by codebase_admin) ──
     "db_query":                      {"stages": ["execute_tools"],                                "destructive": True,  "agent_types": []},
+    # ── Diagnostics (gated by the diagnostics ability) ──
+    "read_diagnostics":              {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     # ── Memory ──
     "memory":                        {"stages": ["memory_search", "memory_save", "execute_tools"], "destructive": False, "agent_types": []},
     "session_search":                {"stages": ["load_context", "execute_tools"],               "destructive": False, "agent_types": []},
@@ -760,6 +762,37 @@ class ToolLoader:
                 name="maps_geocode",
                 handler=_core_maps_geocode,
                 parameters=_MAPS_PARAMS,
+            )
+
+        # ── Diagnostics ability (read_diagnostics) ──
+        # Pure behavioral toggle (no external credential). Lets the agent read
+        # the in-app flight-recorder — recent server errors/tracebacks, agent-loop
+        # pipeline problems, failed runs — so it can diagnose the running app.
+        if "diagnostics" in enabled_providers:
+            from app.tools.diagnostics_tool import read_diagnostics as _core_read_diagnostics, TOOL_PARAMETERS as _DIAG_PARAMS
+
+            async def _read_diagnostics_wrapper(
+                levels: Optional[str] = None,
+                categories: Optional[str] = None,
+                session_id: Optional[str] = None,
+                search: Optional[str] = None,
+                since_minutes: Optional[float] = None,
+                limit: int = 40,
+            ):
+                return await _core_read_diagnostics(
+                    user_id=user_id,
+                    levels=levels,
+                    categories=categories,
+                    session_id=session_id,
+                    search=search,
+                    since_minutes=since_minutes,
+                    limit=limit,
+                )
+
+            tools["read_diagnostics"] = ToolInfo(
+                name="read_diagnostics",
+                handler=_read_diagnostics_wrapper,
+                parameters=_DIAG_PARAMS,
             )
 
         # ── Browser Control ability (browser_action, http_request) ──

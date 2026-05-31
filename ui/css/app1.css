@@ -2036,8 +2036,13 @@ body.light-mode .user-avatar {
     transform: rotate(180deg);
   }
 
-/* Widen menu to fit large current-user row */
+/* Widen menu to fit large current-user row.
+   position:fixed (not absolute) so the popover escapes the overflow clip of
+   its scrolling ancestor #main-tabs; sessions.js anchors top/left to the
+   trigger on open. ID+class specificity overrides the base .user-dropdown-menu
+   rule's position:absolute. */
   #user-dropdown-menu.user-dropdown-menu {
+    position: fixed;
     min-width: 280px;
     padding: 8px 0 6px;
   }

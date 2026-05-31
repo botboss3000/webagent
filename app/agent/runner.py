@@ -284,6 +284,31 @@ async def _finish_run(db, session_id: str, outcome: RunOutcome) -> None:
     except Exception as e:  # noqa: BLE001
         logger.debug("run_state_finish failed for %s: %s", session_id[:12], e)
 
+    # Flight-recorder: keep every run outcome (durable) for post-hoc diagnosis,
+    # and (opt-in) hand involuntary failures to the diagnostic agent.
+    _row: Optional[Dict[str, Any]] = None
+    try:
+        _row = await db.run_state_get(session_id)
+    except Exception:
+        _row = None
+    try:
+        from app.agent.diagnostics import record_run_lifecycle
+        record_run_lifecycle(
+            "finish", session_id,
+            status=outcome.status, stop_cause=cause, error=outcome.error,
+            agent_id=(_row or {}).get("agent_id"),
+            user_id=(_row or {}).get("user_id"),
+            origin=(_row or {}).get("origin"),
+        )
+    except Exception:
+        pass
+    # Auto-investigate involuntary failures (default OFF — see maybe_auto_investigate).
+    try:
+        from app.agent.diag_investigate import maybe_auto_investigate
+        await maybe_auto_investigate(db, session_id, outcome, _row)
+    except Exception:
+        pass
+
 
 # ── Resume orchestration ──────────────────────────────────────────────────────
 

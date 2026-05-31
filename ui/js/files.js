@@ -15,6 +15,7 @@ import { startAppConfig, stopAppConfig } from './app-config.js';
 import { startAutoRefresh, stopAutoRefresh } from './db/pagination.js';
 import { startLoop, stopLoop, renderInteractionsSidebar } from './loop.js';
 import { startLoopVisual, stopLoopVisual, renderRuntimeLoopSidebar } from './loop-logic.js';
+import { startDiagnostics, stopDiagnostics, renderDiagnosticsSidebar } from './diagnostics.js';
 import { showRestrictedModal } from './left-login.js';
 
 const API_BASE = '/api/v1/files';
@@ -2976,6 +2977,7 @@ const VIEW_TITLE = {
   settings: 'Admin Configuration',
   interactions: 'Interactions',
   'runtime-loop': 'Runtime Loop',
+  diagnostics: 'Diagnostics',
 };
 const VIEW_SWITCH = {
   explorer: 'file manager',
@@ -2985,6 +2987,7 @@ const VIEW_SWITCH = {
   settings: 'admin configuration',
   interactions: 'interactions',
   'runtime-loop': 'runtime loop',
+  diagnostics: 'diagnostics',
 };
 
 // Each sidebar view has a dedicated <main> on the right side. Switching
@@ -2998,6 +3001,7 @@ const VIEW_MAIN_ID = {
   settings:       'files-settings-main',
   interactions:   'files-interactions-main',
   'runtime-loop': 'files-runtime-loop-main',
+  diagnostics:    'files-diagnostics-main',
 };
 
 function applySidebarView(view) {
@@ -3076,6 +3080,12 @@ function applySidebarView(view) {
     try { renderRuntimeLoopSidebar(); } catch (_) {}
   } else {
     try { stopLoopVisual(); } catch (_) {}
+  }
+  if (view === 'diagnostics') {
+    try { startDiagnostics(); } catch (_) {}
+    try { renderDiagnosticsSidebar(); } catch (_) {}
+  } else {
+    try { stopDiagnostics(); } catch (_) {}
   }
   if (view === 'git') {
     try { renderGitMain(); } catch (_) {}
@@ -3496,4 +3506,5 @@ export function stopAdminTools() {
   try { stopAutoRefresh(); } catch (_) {}
   try { stopLoop(); } catch (_) {}
   try { stopLoopVisual(); } catch (_) {}
+  try { stopDiagnostics(); } catch (_) {}
 }
