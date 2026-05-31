@@ -1633,6 +1633,30 @@ function _renderConfigTab(body, agent, panelEl) {
 
   body.appendChild(limitsRow);
 
+  // ── Memory (per-agent save + recall switches) ───────────────────────────────
+  // Sits with the Max Turn Count / Wall Clock limits. Surfaces the same two
+  // controls the Agent Loop diagram exposes (memory_search / memory_save); both
+  // switches drive loop_logic + allowed_tools so the Config tab and the loop
+  // diagram always agree.
+  if (isEditable) {
+    const mem = _memoryStateFromAgent(agent);
+    const memGroup = document.createElement('div');
+    memGroup.className = 'agents-field-group';
+    memGroup.innerHTML = `
+      <label class="agents-field-label">Memory</label>
+      <span class="agents-field-hint">This agent's long-term memory — a private knowledge store kept per user and shared across that user's agents. When on, the agent automatically pulls relevant past information into its context before replying, and/or files a short note of each exchange afterward. Trivial messages (greetings, "ok") skip recall automatically.</span>
+      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;margin-top:8px;">
+        <input type="checkbox" data-field="memory_recall" ${mem.recall ? 'checked' : ''} style="margin-top:2px;">
+        <span style="font-size:13px;color:var(--fg-2);"><strong>Recall past info</strong> — search memory before answering, and let the agent read or write it on demand.</span>
+      </label>
+      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;margin-top:8px;">
+        <input type="checkbox" data-field="memory_save" ${mem.save ? 'checked' : ''} style="margin-top:2px;">
+        <span style="font-size:13px;color:var(--fg-2);"><strong>Remember conversations</strong> — automatically save a short note of each exchange afterward.</span>
+      </label>
+    `;
+    body.appendChild(memGroup);
+  }
+
   // User mode (applies across all channels)
   const umGroup = document.createElement('div');
   umGroup.className = 'agents-field-group';
@@ -1673,29 +1697,6 @@ function _renderConfigTab(body, agent, panelEl) {
     });
   }
   body.appendChild(umGroup);
-
-  // ── Memory (per-agent save + recall switches) ───────────────────────────────
-  // Surfaces, on the Config tab, the same two controls the Agent Loop diagram
-  // exposes (memory_search / memory_save). Both switches drive loop_logic +
-  // allowed_tools, so the Config tab and the loop diagram always agree.
-  if (isEditable) {
-    const mem = _memoryStateFromAgent(agent);
-    const memGroup = document.createElement('div');
-    memGroup.className = 'agents-field-group';
-    memGroup.innerHTML = `
-      <label class="agents-field-label">Memory</label>
-      <span class="agents-field-hint">This agent's long-term memory — a private knowledge store kept per user and shared across that user's agents. When on, the agent automatically pulls relevant past information into its context before replying, and/or files a short note of each exchange afterward. Trivial messages (greetings, "ok") skip recall automatically.</span>
-      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;margin-top:8px;">
-        <input type="checkbox" data-field="memory_recall" ${mem.recall ? 'checked' : ''} style="margin-top:2px;">
-        <span style="font-size:13px;color:var(--fg-2);"><strong>Recall past info</strong> — search memory before answering, and let the agent read or write it on demand.</span>
-      </label>
-      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;margin-top:8px;">
-        <input type="checkbox" data-field="memory_save" ${mem.save ? 'checked' : ''} style="margin-top:2px;">
-        <span style="font-size:13px;color:var(--fg-2);"><strong>Remember conversations</strong> — automatically save a short note of each exchange afterward.</span>
-      </label>
-    `;
-    body.appendChild(memGroup);
-  }
 
   // trigger type
   if (isEditable) {
