@@ -50,13 +50,14 @@ nul
 temp/
 .server.pid
 
-# Local SQLite DB (runtime data, per-machine) — now tracked intentionally
-# app/db/local.db
-# app/db/local.db-journal
-# app/db/local.db-wal
-# app/db/local.db-shm
-# app/db/local.db.preprompt-bak
-# local.db
+# Local SQLite DB — app/db/local.db is intentionally TRACKED and shared (see CLAUDE.md).
+# The base DB stays in git on purpose; its transient sidecars and the stray root
+# copy stay ignored — never commit a live WAL/SHM/journal:
+app/db/local.db-journal
+app/db/local.db-wal
+app/db/local.db-shm
+app/db/local.db.preprompt-bak
+local.db
 
 # Per-user runtime "closer" DBs (created by the running app)
 app/db/closer_*.db

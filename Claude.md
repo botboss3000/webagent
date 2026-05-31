@@ -108,7 +108,7 @@ The app runs on a **Google Cloud Compute Engine VM** (project `webagent-495517`,
 | App server | **uvicorn** running `app.main:app` bound to `127.0.0.1:8080` (loopback only — Caddy is the only public ingress) | systemd unit `/etc/systemd/system/webagent.service` |
 | GCE firewall | `allow-http-https` rule opens tcp 80, 443 to `0.0.0.0/0`. Port 8080 is **not** exposed publicly. | Created from Cloud Shell, not from VM SSH (VM SA lacks compute scope) |
 
-**Repo on VM:** `~/webagent` (user `botboss3000`). Python venv inside. Deploy via `git pull` on `main`. If `app/db/local.db` blocks pull, `git stash push -- app/db/local.db` then pull.
+**Repo on VM:** `~/webagent` (user `botboss3000`). Python venv inside. Deploy via `git pull` on `main`. **`app/db/local.db` is now a tracked, shared file** (committed in the repo on purpose), so the VM must **not** keep a diverging working copy or every pull collides. Keep the VM's DB clean so pulls fast-forward onto the committed `local.db`; if a stale runtime copy ever blocks the pull, discard it first (`git checkout -- app/db/local.db`, or `git stash push -- app/db/local.db`) then pull. (Owner is clearing the VM's old runtime DB so deploys land cleanly.)
 
 **Google OAuth:** redirect URI must match the public HTTPS URL → `https://webagent.live/api/v1/oauth/callback/google`. JS origin `https://webagent.live`. OAuth never works against `http://<vm-ip>:8080`.
 
@@ -116,17 +116,19 @@ The app runs on a **Google Cloud Compute Engine VM** (project `webagent-495517`,
 
 **Status dots in the chat header:** green = WS subscribed (`agentWs.js` got the `subscribed` event); yellow = WS opening or no subscribe reply yet; red = WS closed or `currentUserId` missing. Yellow that never goes green almost always means a JS exception during init prevented `currentUserId` from being set, or the WS handshake never completed — check the browser console first.
 
-## Runtime state files — must stay gitignored
+## Runtime state files — gitignored (one deliberate exception: `app/db/local.db`)
 
-Any file the **running app writes to** is per-machine runtime data and must never be tracked by git. Tracking them causes `error: Your local changes to the following files would be overwritten by merge` on `git pull` on the production VM, blocking deploys.
+Any file the **running app writes to** is per-machine runtime data and, as a rule, must never be tracked by git. Tracking such files causes `error: Your local changes to the following files would be overwritten by merge` on `git pull` on the production VM, blocking deploys.
 
-**Rule:** before introducing a new file the backend writes during normal operation (auth blobs, caches, per-machine config, runtime backups, user-generated artifacts), add it to `.gitignore` in the same commit. If you discover one already tracked, untrack it: `git rm --cached <path>` + add to `.gitignore` + commit.
+**The one deliberate exception — `app/db/local.db` is intentionally TRACKED and shared.** The local SQLite DB carries the seeded context/agents (including the diagnostics schema) we want shipped with the repo, so it lives in git on purpose. This was an explicit, owner-approved decision — **do not generalize from it** to other runtime files. Its **transient sidecars** (`-journal`, `-wal`, `-shm`, `.preprompt-bak`) and the **stray root `local.db`** stay gitignored: never commit a live write-ahead log or shared-memory file. Because the base DB is tracked, the production VM must **not** keep a diverging working copy — see the deploy note under **Production deployment** (clear/reset the VM's runtime DB so `git pull` fast-forwards onto the committed copy).
+
+**Rule (every other runtime file):** before introducing a new file the backend writes during normal operation (auth blobs, caches, per-machine config, runtime backups, user-generated artifacts), add it to `.gitignore` in the same commit. If you discover one already tracked, untrack it: `git rm --cached <path>` + add to `.gitignore` + commit.
 
 **Currently gitignored runtime files (do not re-add to repo):**
 
 | Path | What it is |
 |------|-----------|
-| `app/db/local.db` (+ `-journal`, `-wal`, `-shm`, `.preprompt-bak`) | Local SQLite DB |
+| `app/db/local.db` **sidecars** (`-journal`, `-wal`, `-shm`, `.preprompt-bak`) | Transient SQLite write logs — ignored. The base `app/db/local.db` itself is **tracked** (see exception above). |
 | `local.db` (root) | Stray runtime SQLite |
 | `app/auth/users.json` (+ `.bak`) | Password hashes, remember tokens |
 | `app/db_mode.json` | Per-machine DB target switch |
@@ -138,11 +140,11 @@ Any file the **running app writes to** is per-machine runtime data and must neve
 
 **Checklist when adding a new backend write target:**
 
-1. Is the file written by the app at runtime (not committed by a human)? → must be gitignored.
+1. Is the file written by the app at runtime (not committed by a human)? → must be gitignored. (The `app/db/local.db` exception was a one-off explicit call; new files do not inherit it.)
 2. Does it contain secrets, hashes, tokens, or per-user state? → must be gitignored.
 3. Does the test fixture or seed flow need a default? → ship a `*.example` or `*.template` variant that IS tracked, and have the app copy/derive from it on first boot.
 
-If you skip this and the file gets committed, the VM's edited copy will collide on every `git pull` and someone has to do the backup/restore dance documented above in **Production deployment**.
+If you skip this and a *should-be-ignored* file gets committed, the VM's edited copy will collide on every `git pull` and someone has to do the backup/restore dance documented above in **Production deployment**.
 
 ## Misc Directions
 
