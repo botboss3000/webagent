@@ -124,6 +124,13 @@ app = FastAPI(
 async def _unhandled_exception_handler(request: Request, exc: Exception):
     tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     logger.error("Unhandled exception on %s %s\n%s", request.method, request.url.path, tb)
+    # Also record the 500 in the flight-recorder's http category (the logger.error
+    # above lands in the `server` category via the diagnostics log handler).
+    try:
+        from app.api.http_diag import record_server_error
+        record_server_error(request, exc, tb)
+    except Exception:
+        pass
     return JSONResponse(status_code=500, content={"detail": "Internal server error", "error": str(exc)})
 
 
@@ -230,16 +237,16 @@ async def _canonical_host_redirect(request, call_next):
         return await call_next(request)
 
 
-# HTTP-error capture for the flight-recorder — records every 4xx/5xx response
+# HTTP-error capture for the flight-recorder — records every raised 4xx/5xx
 # (status, method, path, cause, user) into the recorder's `http` category +
-# logs/http.log. Added last so it is the OUTERMOST user middleware and sees the
-# final status of every response (including auth rejections). Pure-ASGI, so it
-# does not buffer or delay the SSE / streaming paths.
+# logs/http.log, via exception handlers that delegate to FastAPI's defaults
+# (so responses are unchanged). 500s are recorded from the global Exception
+# handler above. Reliable + stream-safe (no middleware in the request path).
 try:
     from app.api.http_diag import install_http_diagnostics
     install_http_diagnostics(app)
 except Exception as _httpdiag_err:  # never let diagnostics wiring break boot
-    logger.warning("HTTP diagnostics middleware not installed: %s", _httpdiag_err)
+    logger.warning("HTTP diagnostics handlers not installed: %s", _httpdiag_err)
 
 
 # Include routers
