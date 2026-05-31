@@ -67,6 +67,10 @@ body{font-family:var(--mono);font-size:15px;line-height:1.5;color:var(--fg);
 
 /* ─── messages ─── */
 .transcript{display:flex;flex-direction:column;gap:14px;padding-bottom:8px;min-width:0;}
+.transcript-header{display:flex;align-items:center;justify-content:space-between;padding:6px 4px 2px;border-bottom:1px solid var(--borderDim);margin-bottom:4px;}
+.transcript-title{font-size:13px;font-weight:700;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;}
+.transcript-copy{font:inherit;font-size:11px;background:var(--bg2);border:1px solid var(--borderDim);color:var(--dim);cursor:pointer;padding:1px 8px;border-radius:6px;}
+.transcript-copy:hover{color:var(--primary);border-color:var(--primary);}
 .transcript>div{min-width:0;}
 .tool,.msg{min-width:0;}
 .msg-user{display:flex;gap:10px;}
@@ -74,6 +78,23 @@ body{font-family:var(--mono);font-size:15px;line-height:1.5;color:var(--fg);
 .msg-who{color:var(--secondary);font-weight:700;}
 .msg-text{white-space:pre-wrap;}
 .msg-text.agent{color:var(--fg);}
+.msg-text.agent p{margin:0 0 6px;}
+.msg-text.agent p:last-child{margin-bottom:0;}
+.msg-text.agent pre.md-pre{background:var(--bg2);border:1px solid var(--borderDim);border-radius:8px;padding:10px 14px;overflow-x:auto;margin:6px 0;font-size:14px;line-height:1.4;}
+.msg-text.agent code.md-code{background:var(--bg2);padding:1px 5px;border-radius:4px;font-size:14px;}
+.msg-text.agent a.md-link{color:var(--secondary);text-decoration:underline;}
+.msg-text.agent a.md-link:hover{color:var(--primary);}
+.msg-text.agent h2,.msg-text.agent h3,.msg-text.agent h4{margin:8px 0 4px;color:var(--primary);}
+.msg-text.agent blockquote.md-bq{border-left:3px solid var(--dim);margin:4px 0;padding:2px 10px;color:var(--dim);}
+.msg-text.agent li.md-li{margin:2px 0 2px 18px;}
+.msg-text.agent hr.md-hr{border:none;border-top:1px solid var(--borderDim);margin:8px 0;}
+.md-box{position:relative;}
+.copy-btn{position:absolute;top:4px;right:4px;z-index:2;font:inherit;font-size:12px;background:var(--bg2);border:1px solid var(--borderDim);color:var(--dim);cursor:pointer;padding:0 6px;border-radius:5px;line-height:1.6;}
+.copy-btn:hover{color:var(--primary);border-color:var(--primary);}
+.msg-text.agent strong{color:var(--primary);}
+.msg-text.agent em{color:var(--secondary);}
+.msg-text.agent del{opacity:.5;}
+
 .empty{color:var(--dim);padding:20px 4px;}
 .empty b{color:var(--primary);}
 

@@ -146,6 +146,7 @@ TABLES: List[Table] = [
     Table("agent_templates", [
         Column("id", "TEXT", nullable=False, primary_key=True, default="'default'"),
         Column("max_turn_count", "INTEGER", nullable=False, default="10"),
+        Column("max_wall_seconds", "REAL"),
         Column("model", "TEXT"),
         Column("provider", "TEXT"),
         Column("temperature", "REAL", nullable=False, default="0.0"),
@@ -166,6 +167,7 @@ TABLES: List[Table] = [
         Column("description", "TEXT", nullable=False, default="''"),
         Column("is_user_default", "INTEGER", nullable=False, default="0"),
         Column("max_turn_count", "INTEGER", nullable=False, default="10"),
+        Column("max_wall_seconds", "REAL"),
         Column("model", "TEXT"),
         Column("provider", "TEXT"),
         Column("temperature", "REAL", nullable=False, default="0.0"),

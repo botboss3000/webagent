@@ -68,7 +68,7 @@ class DocumentResponse(BaseModel):
 
 class InteractionRecord(BaseModel):
     """Internal representation of an interactions row
-    
+
     Each interaction is a single atomic unit:
       - user:     the user's message
       - assistant: a complete assistant response (text + any tool calls)
@@ -167,6 +167,7 @@ class AgentTemplate(BaseModel):
     id: str
     system_prompt: str
     max_turn_count: int
+    max_wall_seconds: Optional[float] = None
     model: Optional[str] = None
     provider: Optional[str] = None
     temperature: float = 0.0
@@ -183,6 +184,7 @@ class AgentRecord(BaseModel):
     user_id: str
     system_prompt: str
     max_turn_count: int = 10
+    max_wall_seconds: Optional[float] = None
     model: Optional[str] = None
     provider: Optional[str] = None
     temperature: float = 0.0
@@ -193,6 +195,27 @@ class AgentRecord(BaseModel):
     created_at: datetime
     updated_at: datetime
     turn_count: int = 0
+
+
+class UserRecord(BaseModel):
+    id: str
+    name: str
+    email: str
+    role: str
+    provider: str
+    avatar_url: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SessionRecord(BaseModel):
+    id: str
+    user_id: str
+    agent_id: str
+    summary: Optional[str] = None
+    message_count: int = 0
+    created_at: datetime
+    updated_at: datetime
 
 
 class CreateToolRequest(BaseModel):

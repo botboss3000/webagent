@@ -94,7 +94,13 @@ function App() {
     const el = scrollRef.current;
     if (el) requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
   }, []);
-  useEffect(scrollDown, [items, scrollDown]);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    // Only auto-scroll if user is already at or near the bottom (within 60px)
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    if (nearBottom) scrollDown();
+  }, [items, scrollDown]);
 
   const toggle = (idx) => setItems((xs) => xs.map((x, i) => i === idx ? { ...x, expanded: !x.expanded } : x));
 
@@ -261,6 +267,16 @@ function App() {
           <span className="st-dim">2026-05-29</span>
         </div>
 
+        <div className="transcript-header">
+          <span className="transcript-title">Transcript</span>
+          <button className="transcript-copy" onClick={() => {
+            const text = items.map(it => it.type === "tool" ? "" : it.text).filter(Boolean).join('\n\n');
+            navigator.clipboard.writeText(text).then(() => {
+              const btn = document.querySelector('.transcript-copy');
+              if (btn) { btn.textContent = '✓ copied'; setTimeout(() => { btn.textContent = '⎘ copy all'; }, 1500); }
+            }).catch(() => {});
+          }} title="Copy all agent messages">⎘ copy all</button>
+        </div>
         <div className="transcript">
           {items.map((it, i) => {
             if (it.type === "tool") {
@@ -272,7 +288,7 @@ function App() {
                 </div>
               );
             }
-            return <Msg key={i} item={it} />;
+            return <Msg key={i} idx={i} item={it} />;
           })}
           {items.length === 0 && (
             <div className="empty">new session — type below or hit <b>^N</b>. try “run the tests”, “search the docs”, “make a plan”.</div>

@@ -459,6 +459,7 @@ class SupabaseBackend(StorageBackend):
                 )
                 cfg_data = {
                     "max_turn_count": tpl["max_turn_count"],
+                    "max_wall_seconds": tpl.get("max_wall_seconds"),
                     "model": tpl["model"],
                     "provider": tpl["provider"],
                     "temperature": tpl["temperature"],
@@ -1092,6 +1093,7 @@ class SupabaseBackend(StorageBackend):
                 "admin_users": [user_id],
                 "system_prompt": tpl["system_prompt"],
                 "max_turn_count": tpl["max_turn_count"],
+                "max_wall_seconds": tpl.get("max_wall_seconds"),
                 "model": tpl["model"],
                 "provider": tpl["provider"],
                 "temperature": tpl["temperature"],

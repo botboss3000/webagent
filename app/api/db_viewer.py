@@ -478,6 +478,7 @@ async def list_sessions(
     user_id: str = Query(..., description="User ID"),
     db: str = Query("local.db", description="Database filename"),
     agent_id: Optional[str] = Query(None, description="Filter to sessions bound to this agent"),
+    limit: int = Query(20, ge=1, le=50, description="Max sessions to return"),
 ):
     """List sessions for a user (owner or participant).
 
@@ -485,6 +486,10 @@ async def list_sessions(
     returned. Sessions with a NULL ``agent_id`` (never bound to an agent)
     are filtered out in that case — they appear as orphans that don't
     belong to any specific agent.
+
+    Pinned sessions are always returned first (in sort_order), then the
+    most recent unpinned sessions up to the limit. ``total_count`` reports
+    the total number of unpinned sessions matching the filter.
     """
     # Resolve requester identities from token
     _token = ""
@@ -506,6 +511,7 @@ async def list_sessions(
         cur = conn.cursor()
 
         sessions = []
+        total_count = 0
         try:
             # Detect optional columns (older DBs may not have them yet)
             cur.execute("PRAGMA table_info(sessions)")
@@ -536,13 +542,7 @@ async def list_sessions(
                 order_parts.append('s.sort_order ASC')
             order_parts.append('s.created_at DESC')
             order_clause = ', '.join(order_parts)
-            sql = (
-                f'SELECT {select_cols} '
-                f'FROM sessions s LEFT JOIN agents a ON s.agent_id = a.id '
-                f'WHERE {where_clause} '
-                f'ORDER BY {order_clause}'
-            )
-            cur.execute(sql, params)
+
             # Pre-fetch run statuses for all sessions in one query
             run_statuses = {}
             try:
@@ -552,7 +552,45 @@ async def list_sessions(
                     run_statuses[r[0]] = {"status": r[1], "updated_at": r[2]}
             except sqlite3.OperationalError:
                 pass
-            for row in cur.fetchall():
+
+            # ── Step 1: fetch all pinned sessions (no limit) ──
+            pinned_where = f'({where_clause}) AND s.pinned = 1' if has_pinned else '1=0'
+            pinned_sql = (
+                f'SELECT {select_cols} '
+                f'FROM sessions s LEFT JOIN agents a ON s.agent_id = a.id '
+                f'WHERE {pinned_where} '
+                f'ORDER BY {order_clause}'
+            )
+            cur.execute(pinned_sql, params)
+            pinned_rows = cur.fetchall()
+
+            # ── Step 2: count unpinned sessions ──
+            unpinned_where = f'({where_clause})'
+            if has_pinned:
+                unpinned_where += ' AND (s.pinned IS NULL OR s.pinned = 0)'
+            count_sql = (
+                f'SELECT COUNT(*) FROM sessions s LEFT JOIN agents a ON s.agent_id = a.id '
+                f'WHERE {unpinned_where}'
+            )
+            cur.execute(count_sql, params)
+            total_count = cur.fetchone()[0]
+
+            # ── Step 3: fetch unpinned sessions with limit ──
+            unpinned_limit = max(0, limit - len(pinned_rows))
+            unpinned_sql = (
+                f'SELECT {select_cols} '
+                f'FROM sessions s LEFT JOIN agents a ON s.agent_id = a.id '
+                f'WHERE {unpinned_where} '
+                f'ORDER BY {order_clause} '
+                f'LIMIT ?'
+            )
+            cur.execute(unpinned_sql, params + [unpinned_limit])
+            unpinned_rows = cur.fetchall()
+
+            # ── Step 4: merge — pinned first, then unpinned ──
+            all_rows = list(pinned_rows) + list(unpinned_rows)
+
+            for row in all_rows:
                 owner_id = row[3]
                 participants_raw = row[4] or "[]"
                 try:
@@ -586,7 +624,7 @@ async def list_sessions(
             pass
 
         conn.close()
-        return {"sessions": sessions, "db": db}
+        return {"sessions": sessions, "db": db, "total_count": total_count}
     except sqlite3.Error as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -612,9 +650,15 @@ async def mark_session_read(session_id: str, db: str = Query("local.db", descrip
 async def get_session_messages(
     request: Request,
     session_id: str = Query(..., description="Session ID"),
+    limit: int = Query(20, description="Max messages to return"),
+    before_id: Optional[str] = Query(None, description="If set, return only messages older than this message's created_at (for pagination)"),
     db: str = Query("local.db", description="Database filename"),
 ):
-    """Get all messages for a session, ordered by created_at ASC."""
+    """Get messages for a session, ordered by created_at ASC.
+
+    Supports cursor-based pagination via `before_id` and `limit`.
+    Returns a `has_more` boolean indicating whether older messages exist.
+    """
     # Route to temp DB if session has one
     resolved_db = _resolve_session_db(session_id, db)
     if resolved_db != db:
@@ -661,6 +705,19 @@ async def get_session_messages(
             pass  # No sessions table — fall through to message fetch
 
         messages = []
+        # Resolve before_id to a created_at cutoff if provided
+        before_cutoff = None
+        if before_id:
+            for _tbl in ("interactions", "messages"):
+                try:
+                    cur.execute(f'SELECT created_at FROM "{_tbl}" WHERE id = ?', (before_id,))
+                    _r = cur.fetchone()
+                    if _r:
+                        before_cutoff = _r[0]
+                        break
+                except sqlite3.OperationalError:
+                    pass
+
         # Try interactions table first (has richer data)
         try:
             # `status` may not exist on very old DBs — probe and fall back.
@@ -671,10 +728,15 @@ async def get_session_messages(
             except sqlite3.OperationalError:
                 _has_status = False
             _status_col = "status" if _has_status else "'complete' AS status"
+            _where = "session_id = ?"
+            _params: list = [session_id]
+            if before_cutoff is not None:
+                _where += " AND created_at < ?"
+                _params.append(before_cutoff)
             cur.execute(
                 f'SELECT id, session_id, role, content, tool_name, created_at, {_status_col}, session_seq '
-                'FROM interactions WHERE session_id = ? ORDER BY created_at ASC',
-                (session_id,)
+                f'FROM interactions WHERE {_where} ORDER BY created_at ASC LIMIT ?',
+                (*_params, limit)
             )
             for row in cur.fetchall():
                 messages.append({
@@ -692,10 +754,15 @@ async def get_session_messages(
         if not messages:
             # Fallback to messages table
             try:
+                _where = "session_id = ?"
+                _params = [session_id]
+                if before_cutoff is not None:
+                    _where += " AND created_at < ?"
+                    _params.append(before_cutoff)
                 cur.execute(
-                    'SELECT id, session_id, role, content, created_at '
-                    'FROM messages WHERE session_id = ? ORDER BY created_at ASC',
-                    (session_id,)
+                    f'SELECT id, session_id, role, content, created_at '
+                    f'FROM messages WHERE {_where} ORDER BY created_at ASC LIMIT ?',
+                    (*_params, limit)
                 )
                 for row in cur.fetchall():
                     messages.append({
@@ -707,6 +774,22 @@ async def get_session_messages(
                     })
             except sqlite3.OperationalError:
                 pass
+
+        # Determine has_more: check if any older message exists beyond this batch
+        has_more = False
+        if messages:
+            oldest_ts = messages[0]["created_at"]
+            for _tbl in ("interactions", "messages"):
+                try:
+                    cur.execute(
+                        f'SELECT 1 FROM "{_tbl}" WHERE session_id = ? AND created_at < ? LIMIT 1',
+                        (session_id, oldest_ts)
+                    )
+                    if cur.fetchone():
+                        has_more = True
+                        break
+                except sqlite3.OperationalError:
+                    pass
 
         # ── Durable run-state: is a turn in progress for this session? ──
         # Lets a cold/second device know to show the live indicator and where to
@@ -732,7 +815,7 @@ async def get_session_messages(
             pass  # session_runs table not present (legacy/temp DB)
 
         conn.close()
-        return {"messages": messages, "session_id": session_id, "db": db, "run": run_info}
+        return {"messages": messages, "session_id": session_id, "db": db, "run": run_info, "has_more": has_more}
     except sqlite3.Error as e:
         raise HTTPException(status_code=500, detail=str(e))
 

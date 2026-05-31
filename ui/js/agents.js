@@ -1615,6 +1615,19 @@ function _renderConfigTab(body, agent, panelEl) {
   `;
   body.appendChild(tcGroup);
 
+  // Wall clock safety cap
+  const wcGroup = document.createElement('div');
+  wcGroup.className = 'agents-field-group';
+  const wcVal = agent.max_wall_seconds != null ? agent.max_wall_seconds : '';
+  wcGroup.innerHTML = `
+    <label class="agents-field-label">Wall Clock Safety Cap (seconds)</label>
+    <span class="agents-field-hint">Max wall-clock seconds before the loop stops. Default 0 (disabled). Set e.g. 300 for 5 min.</span>
+    <input type="number" class="agents-input" data-field="max_wall_seconds"
+      value="${wcVal}" min="0" max="86400" step="1"
+      ${!isEditable ? 'readonly' : ''} style="width:100px" placeholder="0 (disabled)">
+  `;
+  body.appendChild(wcGroup);
+
   // User mode (applies across all channels)
   const umGroup = document.createElement('div');
   umGroup.className = 'agents-field-group';
@@ -5259,6 +5272,13 @@ async function _saveChanges(agent, barEl, panelEl) {
   const nameVal = fv('name');        if (nameVal !== undefined) updates.name          = nameVal.trim();
   const descVal = fv('desc');        if (descVal !== undefined) updates.description   = descVal;
   const tcVal   = fv('max_turn_count'); if (tcVal !== undefined) updates.max_turn_count = parseInt(tcVal, 10) || 10;
+  const wcVal   = fv('max_wall_seconds');
+  if (wcVal !== undefined && wcVal !== '') {
+    const parsed = parseFloat(wcVal);
+    updates.max_wall_seconds = isNaN(parsed) ? null : parsed;
+  } else if (wcVal !== undefined) {
+    updates.max_wall_seconds = null;
+  }
   const ttVal   = fv('trigger_type');   if (ttVal !== undefined) updates.trigger_type   = ttVal;
   const tkVal   = fv('trigger_key');    if (tkVal !== undefined) updates.trigger_key    = tkVal || null;
   const umChecked = panelEl.querySelector('[data-field="user_mode"]:checked');

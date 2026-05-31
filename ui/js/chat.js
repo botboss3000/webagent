@@ -4,6 +4,14 @@ import { app } from './state.js';
 import { apiPath } from './config.js';
 import { addAttachmentsToMessage, renderAttachmentElement } from './attachments.js';
 import { getAccessMode, fetchAccessMode, authHeaders } from './left-login.js';
+import { _cacheAppendMessage } from './sessions.js';
+
+/** Scroll to bottom only if the user is already at or near the bottom (within 60px). */
+function _scrollToBottomIfNear(el) {
+  if (!el) return;
+  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  if (nearBottom) el.scrollTop = el.scrollHeight;
+}
 
 /** Returns true when the current visitor may use chat under the active access mode. */
 function _canChat() {
@@ -283,7 +291,10 @@ function addChatBubble(role, text, extraClass, imageUrl, turnId, msgId) {
   if (role === 'agent' && extraClass !== 'error') {
     _fillAgentBubble(bubble, text, extraClass !== 'streaming');
   } else {
-    bubble.appendChild(linkifyText(text));
+    const body = document.createElement('div');
+    body.className = 'bubble-body';
+    body.appendChild(linkifyText(text));
+    bubble.appendChild(body);
   }
   if (imageUrl) {
     const img = document.createElement('img');
@@ -293,7 +304,9 @@ function addChatBubble(role, text, extraClass, imageUrl, turnId, msgId) {
     img.style.borderRadius = '8px';
     img.style.marginTop = '8px';
     img.style.border = '1px solid #444';
-    bubble.appendChild(img);
+    // Attach image to the body container if it exists, otherwise to bubble
+    const target = bubble.querySelector(':scope > .bubble-body, :scope > .md-body') || bubble;
+    target.appendChild(img);
   }
   if (role === 'agent' && window.__streamAttachments && extraClass === 'has-attachments') {
     for (const att of window.__streamAttachments) {
@@ -311,7 +324,7 @@ function addChatBubble(role, text, extraClass, imageUrl, turnId, msgId) {
     bubble.appendChild(stopBtn);
   }
   app.chatMessages.appendChild(bubble);
-  app.chatMessages.scrollTop = app.chatMessages.scrollHeight;
+  _scrollToBottomIfNear(app.chatMessages);
   _addBubbleActions(bubble);
   return bubble;
 }
@@ -543,6 +556,12 @@ document.addEventListener('click', (e) => {
   }
 }, true);
 
+function _toggleBubbleCollapse(btn, bubble) {
+  const isCollapsed = bubble.classList.toggle('collapsed');
+  btn.title = isCollapsed ? 'Expand message' : 'Collapse message';
+  _setActionIcon(btn, isCollapsed ? 'chevron-right' : 'chevron-down');
+}
+
 function _addBubbleActions(bubble) {
   if (!bubble) return;
   // Don't render actions while the bubble is still streaming.
@@ -552,7 +571,7 @@ function _addBubbleActions(bubble) {
   const anchor = _bubbleAnchorId(bubble);
   // Idempotent: if the row already exists, just backfill the delete button once
   // an anchor id is available (a freshly-sent user bubble gets its id only after
-  // the turn persists). System placeholders never get one \u2014 no id to delete.
+  // the turn persists). System placeholders never get one — no id to delete.
   const existingActions = bubble.querySelector(':scope > .bubble-actions');
   if (existingActions) {
     if (anchor && !existingActions.querySelector('.bubble-delete-btn')) {
@@ -564,6 +583,18 @@ function _addBubbleActions(bubble) {
 
   const actions = document.createElement('div');
   actions.className = 'bubble-actions';
+
+  // Collapse / expand button
+  const collapseBtn = document.createElement('button');
+  collapseBtn.type = 'button';
+  collapseBtn.className = 'bubble-action-btn bubble-collapse-btn';
+  collapseBtn.title = 'Collapse message';
+  collapseBtn.innerHTML = '<i data-lucide="chevron-down" style="width:14px;height:14px;"></i>';
+  collapseBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    _toggleBubbleCollapse(collapseBtn, bubble);
+  });
+  actions.appendChild(collapseBtn);
 
   const speakBtn = document.createElement('button');
   speakBtn.type = 'button';
@@ -643,7 +674,7 @@ function updateLastBubble(text, extraClass, imageUrl) {
   if (extraClass) last.className = 'chat-bubble agent ' + extraClass;
   else last.classList.remove('streaming');
   if (isMd) last.classList.add('md');
-  app.chatMessages.scrollTop = app.chatMessages.scrollHeight;
+  _scrollToBottomIfNear(app.chatMessages);
   _addBubbleActions(last);
 }
 
@@ -806,7 +837,7 @@ function _setBubbleText(bubble, text, extraClass) {
   }
   // className was reassigned above (wiping .md); restore it when markdown rendered.
   if (isMd) bubble.classList.add('md');
-  if (app.chatMessages) app.chatMessages.scrollTop = app.chatMessages.scrollHeight;
+  if (app.chatMessages) _scrollToBottomIfNear(app.chatMessages);
   _addBubbleActions(bubble);
 }
 
@@ -845,6 +876,10 @@ function appendStreamToActiveBubble(textChunk, turnId) {
     _setBubbleText(bubble, app.agentBuffer, 'streaming');
   }
   app.isProcessing = true;
+  // Keep cache fresh — update the cached assistant message content
+  if (turnId && app.currentSessionId) {
+    _cacheAppendMessage(app.currentSessionId, { role: 'assistant', content: textChunk, id: turnId, _streaming: true });
+  }
 }
 
 /**
@@ -867,6 +902,10 @@ function finalizeAgentResponse(content, turnId, isReplayed) {
   if (app.chatSend) app.chatSend.disabled = false;
   if (typeof app.populateSessionSelect === 'function') {
     try { app.populateSessionSelect(app.currentUserId); } catch (_) {}
+  }
+  // Keep cache fresh — finalize the cached assistant message
+  if (turnId && app.currentSessionId && content) {
+    _cacheAppendMessage(app.currentSessionId, { role: 'assistant', content, id: turnId, _finalized: true });
   }
 }
 
@@ -960,6 +999,11 @@ export function initChat() {
   app.finalizeAgentStep = finalizeAgentStep;
   app.markAgentInterrupted = markAgentInterrupted;
   app.autoResizeChatInput = () => _autoResizePill(app.chatInput);
+  // Expose for virtual-scroll recycling in sessions.js
+  app._linkifyText = linkifyText;
+  app._renderMarkdownBody = _renderMarkdownBody;
+  app._addBubbleActions = _addBubbleActions;
+  app._sendStopMessage = sendStopMessage;
 
   app.chatSend.addEventListener('click', sendMessage);
   app.chatInput.addEventListener('keydown', (e) => {
@@ -974,6 +1018,31 @@ export function initChat() {
     _updateInputRowState();
     _saveDraft();
   });
+
+  // ── Continue button ──────────────────────────────────────────────
+  // Sends a "continue" message — a shortcut for the common case where
+  // the agent asks the user to continue after a tool result.
+  const continueBtn = document.getElementById('chat-continue-btn');
+  if (continueBtn) {
+    continueBtn.addEventListener('click', () => {
+      if (!_canChat()) { applyChatGate(); return; }
+      if (!app.currentAgentId) return;
+      app.chatInput.value = 'continue';
+      sendMessage();
+    });
+  }
+
+  // Show the continue button when the agent is idle and selected;
+  // hide it while processing or when no agent is active.
+  // Poll every 500ms to stay in sync with isProcessing / currentAgentId
+  // changes from any module (agents.js, sessions.js, autoagent.js).
+  function _updateContinueBtn() {
+    if (!continueBtn) return;
+    const show = !app.isProcessing && !!app.currentAgentId;
+    continueBtn.style.display = show ? 'flex' : 'none';
+  }
+  setInterval(_updateContinueBtn, 500);
+  _updateContinueBtn();
 
   // Apply gating immediately with cached value, then re-apply once mode is loaded
   applyChatGate();

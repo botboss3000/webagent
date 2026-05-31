@@ -62,6 +62,9 @@ window.DEMO = [
     },
   },
   { type: "agent", text: "All 18 tests pass. I noticed `dispatch()` has no coverage — want me to add a case? Here's the diff, your call:" },
+  { type: "agent", text: "Here's a **markdown demo** with some features:\n\n- **Bold** and *italic* text\n- `inline code` and a code block:\n\n```python\ndef hello():\n    print(\"Hello world!\")\n```\n\n> A blockquote for emphasis\n\nAnd a [link to docs](https://example.com)." },
+  { type: "agent", text: "Another sample — here's a **nested** list and a table-like layout:\n\n1. First item with `code`\n2. Second item with **bold**\n3. Third item with *italic*\n\n---\n\nHere's a ~~strikethrough~~ example and a heading:\n\n## Section Title\n\nSome text with a [link back](https://webagent.dev).\n\n> Short quote here." },
+  { type: "agent", text: "A short five-line poem:\n\nThe **code** runs deep, the logs flow wide,\nA *bug* appears, then steps aside.\n`git commit` saves the day,\n`git push` sends it on its way.\nThe build turns **green** — hooray!" },
   {
     type: "tool", tool: "edit_file", status: "pending", expanded: true,
     summary: "src/lib/dispatch.test.ts",

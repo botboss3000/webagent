@@ -220,22 +220,77 @@ function ToolCard({ item, onToggle, onApprove, onReject, theme }) {
   );
 }
 
+/* ─────────────────── Lightweight markdown → HTML ─────────────────── */
+function mdToHtml(src) {
+  if (!src) return "";
+  // Step 1: extract and protect code blocks so inner content isn't processed
+  const blocks = [];
+  let h = src.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const idx = blocks.length;
+    const cls = lang ? ' class="md-lang-' + lang + '"' : '';
+    blocks.push('<pre class="md-pre"><code' + cls + '>' + escHtml(code.trim()) + '</code></pre>');
+    return '\x00BLOCK' + idx + '\x00';
+  });
+  // Step 2: inline markdown
+  h = h
+    .replace(/`([^`]+)`/g, '<code class="md-code">$1</code>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/__(.+?)__/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/_(.+?)_/g, '<em>$1</em>')
+    .replace(/~~(.+?)~~/g, '<del>$1</del>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a class="md-link" href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/^### (.+)$/gm, '<h4 class="md-h">$1</h4>')
+    .replace(/^## (.+)$/gm, '<h3 class="md-h">$1</h3>')
+    .replace(/^# (.+)$/gm, '<h2 class="md-h">$1</h2>')
+    .replace(/^> (.+)$/gm, '<blockquote class="md-bq">$1</blockquote>')
+    .replace(/^[\s]*[-*] (.+)$/gm, '<li class="md-li">$1</li>')
+    .replace(/^[\s]*\d+\. (.+)$/gm, '<li class="md-li">$1</li>')
+    .replace(/^---+/gm, '<hr class="md-hr" />');
+  // Step 3: split into paragraphs on double newlines
+  const parts = h.split(/\n\n+/).filter(Boolean);
+  h = parts.map(function(p) {
+    p = p.replace(/\n/g, '<br />');
+    // Don't wrap block-level elements in <p>
+    if (/^<(pre|h[234]|blockquote|li|hr)/.test(p)) return p;
+    return '<p class="md-p">' + p + '</p>';
+  }).join('\n');
+  // Step 4: restore code blocks
+  h = h.replace(/\x00BLOCK(\d+)\x00/g, function(_, i) { return blocks[+i]; });
+  return h;
+}
+function escHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 /* ───────────────────────── Chat messages ───────────────────────── */
-function Msg({ item }) {
+function Msg({ item, idx }) {
+  const copyMsg = () => {
+    navigator.clipboard.writeText(item.text).then(() => {
+      const btn = document.querySelector(`.copy-btn-${idx}`);
+      if (btn) { btn.textContent = '✓'; setTimeout(() => { btn.textContent = '⎘'; }, 1500); }
+    }).catch(() => {});
+  };
   if (item.type === "user") {
     return (
       <div className="msg msg-user">
         <div className="msg-bar" />
         <div className="msg-body">
           <div className="msg-who">you</div>
-          <div className="msg-text">{item.text}</div>
+          <div className="md-box">
+            <button className={`copy-btn copy-btn-${idx}`} onClick={copyMsg} title="Copy this message">⎘</button>
+            <div className="msg-text">{item.text}</div>
+          </div>
         </div>
       </div>
     );
   }
   return (
     <div className="msg msg-agent">
-      <div className="msg-text agent">{item.text}</div>
+      <div className="md-box">
+        <button className={`copy-btn copy-btn-${idx}`} onClick={copyMsg} title="Copy this message">⎘</button>
+        <div className="msg-text agent" dangerouslySetInnerHTML={{ __html: mdToHtml(item.text) }} />
+      </div>
     </div>
   );
 }

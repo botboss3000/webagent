@@ -15,6 +15,7 @@ import { NODE_PANEL_INFO } from './loop-node-data.js';
 import { LOOP_W, LOOP_H, LOOP_NODES, TOGGLEABLE_NODES, renderLoopDiagram } from './loop-diagram.js';
 import { icon } from './icons.js';
 import { wireChatPillUploads } from './attachments.js';
+import { sortAgentsForDisplay } from './ordering.js';
 // ── PRESENTATION-MODE START ── (delete the next 2 lines + the canEdit override below to remove)
 import { isPresentationMode } from './left-login.js';
 import { applyPresentationGate } from './presentation-mode.js';
@@ -180,6 +181,16 @@ export async function initAgents() {
   _restoreViewState();
 }
 
+// Re-sync this page after the chat-header dropdown changes agent order or pins.
+// Re-fetches so a drag-reorder (which updates the synced sort_order) is picked
+// up, then re-renders. No-op when the grid isn't mounted.
+app.refreshAgentsOrder = async function refreshAgentsOrder() {
+  if (!app.currentUserId) return;
+  if (!document.getElementById('agents-grid')) return;
+  await _loadAgents();
+  _renderList();
+};
+
 // Expand a specific agent's card and scroll it into view. Called from the
 // chat-header agent dropdown's "Config" action. Retries until grid is rendered
 // (initAgents may still be loading when the user clicks Config from chat).
@@ -291,7 +302,11 @@ function _renderList() {
     return;
   }
 
-  for (const agent of _agents) {
+  // Match the chat-header agent dropdown exactly: the server returns agents in
+  // the synced sort_order; sortAgentsForDisplay then floats pinned agents to
+  // the top. Reordering happens in the dropdown — this page just follows.
+  const ordered = sortAgentsForDisplay(_agents, app.currentUserId);
+  for (const agent of ordered) {
     const isExpanded = _expandedAgents.has(agent.id);
 
     const badgeType  = agent.access_level === 'admin_only' ? 'admin'
@@ -378,11 +393,24 @@ function _populateAgentTabBar(tabBar, agent, panel) {
   if (state?.automationEnabled) tabs.push(['automation','Automation']);
   if (_userIsAdmin) tabs.push(['members','Members']);
   tabs.push(['monetization','Monetization']);
+
+  // ── Compute synchronous counts ──
+  const toolCount = _toolsForAgent(agent).length;
+
   for (const [key, label] of tabs) {
     const btn = document.createElement('button');
     btn.className = 'agents-detail-tab' + (activeTab === key ? ' active' : '');
     btn.dataset.tab = key;
-    btn.textContent = label;
+    // Set label with count badge where applicable
+    if (key === 'tools') {
+      btn.innerHTML = `${label} <span class="tab-count-badge">${toolCount}</span>`;
+    } else if (key === 'connections') {
+      btn.innerHTML = `${label} <span class="tab-count-badge tab-count-badge-pending">…</span>`;
+    } else if (key === 'members') {
+      btn.innerHTML = `${label} <span class="tab-count-badge tab-count-badge-pending">…</span>`;
+    } else {
+      btn.textContent = label;
+    }
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const entry = _expandedAgents.get(agent.id);
@@ -398,6 +426,50 @@ function _populateAgentTabBar(tabBar, agent, panel) {
     });
     tabBar.appendChild(btn);
   }
+
+  // ── Async: fetch abilities count ──
+  _fetchAbilitiesCount(agent).then(count => {
+    const connBtn = tabBar.querySelector('.agents-detail-tab[data-tab="connections"]');
+    if (connBtn) {
+      connBtn.innerHTML = `Abilities <span class="tab-count-badge">${count}</span>`;
+    }
+  }).catch(() => {
+    const connBtn = tabBar.querySelector('.agents-detail-tab[data-tab="connections"]');
+    if (connBtn) {
+      connBtn.innerHTML = `Abilities <span class="tab-count-badge">0</span>`;
+    }
+  });
+
+  // ── Async: fetch members count ──
+  _fetchMembersCount(agent).then(count => {
+    const memBtn = tabBar.querySelector('.agents-detail-tab[data-tab="members"]');
+    if (memBtn) {
+      memBtn.innerHTML = `Members <span class="tab-count-badge">${count}</span>`;
+    }
+  }).catch(() => {
+    const memBtn = tabBar.querySelector('.agents-detail-tab[data-tab="members"]');
+    if (memBtn) {
+      memBtn.innerHTML = `Members <span class="tab-count-badge">0</span>`;
+    }
+  });
+}
+
+async function _fetchAbilitiesCount(agent) {
+  const res = await fetch(`/api/v1/agents/${agent.id}/abilities?user_id=${encodeURIComponent(app.currentUserId)}`);
+  if (!res.ok) return 0;
+  const data = await res.json();
+  const abilities = data.abilities || [];
+  // Count non-implicit, enabled abilities
+  return abilities.filter(a => !a.implicit && a.enabled).length;
+}
+
+async function _fetchMembersCount(agent) {
+  const res = await fetch(`/api/v1/agents/${encodeURIComponent(agent.id)}/members?user_id=${encodeURIComponent(app.currentUserId)}`);
+  if (!res.ok) return 0;
+  const data = await res.json();
+  const admins = data.admins || [];
+  const members = data.members || [];
+  return admins.length + members.length;
 }
 
 function _refreshAgentTabBar(agent) {
@@ -1542,6 +1614,19 @@ function _renderConfigTab(body, agent, panelEl) {
       ${!isEditable ? 'readonly' : ''} style="width:100px">
   `;
   body.appendChild(tcGroup);
+
+  // Wall clock safety cap
+  const wcGroup = document.createElement('div');
+  wcGroup.className = 'agents-field-group';
+  const wcVal = agent.max_wall_seconds != null ? agent.max_wall_seconds : '';
+  wcGroup.innerHTML = `
+    <label class="agents-field-label">Wall Clock Safety Cap (seconds)</label>
+    <span class="agents-field-hint">Max wall-clock seconds before the loop stops. Default 300 (5 min). Set 0 to disable.</span>
+    <input type="number" class="agents-input" data-field="max_wall_seconds"
+      value="${wcVal}" min="0" max="86400" step="1"
+      ${!isEditable ? 'readonly' : ''} style="width:100px" placeholder="300">
+  `;
+  body.appendChild(wcGroup);
 
   // User mode (applies across all channels)
   const umGroup = document.createElement('div');
@@ -5187,6 +5272,13 @@ async function _saveChanges(agent, barEl, panelEl) {
   const nameVal = fv('name');        if (nameVal !== undefined) updates.name          = nameVal.trim();
   const descVal = fv('desc');        if (descVal !== undefined) updates.description   = descVal;
   const tcVal   = fv('max_turn_count'); if (tcVal !== undefined) updates.max_turn_count = parseInt(tcVal, 10) || 10;
+  const wcVal   = fv('max_wall_seconds');
+  if (wcVal !== undefined && wcVal !== '') {
+    const parsed = parseFloat(wcVal);
+    updates.max_wall_seconds = isNaN(parsed) ? null : parsed;
+  } else if (wcVal !== undefined) {
+    updates.max_wall_seconds = null;
+  }
   const ttVal   = fv('trigger_type');   if (ttVal !== undefined) updates.trigger_type   = ttVal;
   const tkVal   = fv('trigger_key');    if (tkVal !== undefined) updates.trigger_key    = tkVal || null;
   const umChecked = panelEl.querySelector('[data-field="user_mode"]:checked');

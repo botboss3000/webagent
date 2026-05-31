@@ -327,6 +327,7 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
             "icon": data.get("icon", ""),
             "system_prompt": data.get("system_prompt", ""),
             "max_turn_count": data.get("max_turn_count", 10),
+            "max_wall_seconds": data.get("max_wall_seconds"),
             "model": data.get("model"),
             "provider": data.get("provider"),
             "temperature": data.get("temperature", 0.0),

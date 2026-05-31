@@ -1319,6 +1319,14 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Added agents.auto_resume column")
 
+            # ── Migration: add max_wall_seconds to agents and agent_templates ──
+            for tbl in ("agents", "agent_templates"):
+                tbl_cols = {row[1] for row in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
+                if "max_wall_seconds" not in tbl_cols:
+                    conn.execute(f"ALTER TABLE {tbl} ADD COLUMN max_wall_seconds REAL")
+                    logger.info("Added %s.max_wall_seconds column", tbl)
+            conn.commit()
+
             # ── Migration: add fire_token / external_job_id / external_provider to agent_automations ──
             try:
                 cursor = conn.execute("PRAGMA table_info(agent_automations)")
@@ -2435,17 +2443,18 @@ class LocalBackend(StorageBackend):
             # 1. agent_templates row — config only, always upsert
             conn.execute(
                 """INSERT INTO agent_templates
-                   (id, name, description, icon, max_turn_count, model, provider,
+                   (id, name, description, icon, max_turn_count, max_wall_seconds, model, provider,
                     temperature, max_tokens, metadata,
                     can_be_default, is_system, is_pipeline, access_level,
                     is_admin_agent, discoverable, trigger_type, trigger_key, loop_logic,
                     created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name,
                     description = excluded.description,
                     icon = excluded.icon,
                     max_turn_count = excluded.max_turn_count,
+                    max_wall_seconds = excluded.max_wall_seconds,
                     model = excluded.model,
                     provider = excluded.provider,
                     temperature = excluded.temperature,
@@ -2462,6 +2471,7 @@ class LocalBackend(StorageBackend):
                     updated_at = excluded.updated_at""",
                 (tpl_id, tpl.get("name", tpl_id), tpl.get("description", ""),
                  tpl.get("icon", ""), tpl["max_turn_count"],
+                 tpl.get("max_wall_seconds"),
                  tpl["model"], tpl["provider"], tpl["temperature"],
                  tpl["max_tokens"], tpl["metadata"],
                  tpl.get("can_be_default", 1), tpl.get("is_system", 0),
@@ -3887,6 +3897,7 @@ class LocalBackend(StorageBackend):
                 "id": "default",
                 "system_prompt": "",
                 "max_turn_count": 10,
+                "max_wall_seconds": None,
                 "model": None,
                 "provider": None,
                 "temperature": 0.0,
@@ -3965,6 +3976,7 @@ class LocalBackend(StorageBackend):
                 "template_id": template_id,
                 "name": tpl_data.get("name", ""),
                 "max_turn_count": tpl_data.get("max_turn_count", 10),
+                "max_wall_seconds": tpl_data.get("max_wall_seconds"),
                 "model": tpl_data.get("model"),
                 "provider": tpl_data.get("provider"),
                 "temperature": tpl_data.get("temperature", 0.0),
@@ -4127,13 +4139,14 @@ class LocalBackend(StorageBackend):
                 _owner = user_id
                 conn.execute(
                     """INSERT INTO agents
-                       (id, template_id, name, max_turn_count, model, provider,
+                       (id, template_id, name, max_turn_count, max_wall_seconds, model, provider,
                         temperature, max_tokens, status, metadata, trigger_type, trigger_key, loop_logic,
                         is_admin_agent, admin_users, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (agent_id, template_id,
                      agent.get("name", ""),
                      agent.get("max_turn_count", 10),
+                     agent.get("max_wall_seconds"),
                      agent.get("model"),
                      agent.get("provider"),
                      agent.get("temperature", 0.0),
@@ -5181,19 +5194,20 @@ class LocalBackend(StorageBackend):
                 now = _now_iso()
                 conn.execute(
                     """INSERT INTO agent_templates
-                       (id, name, description, icon, max_turn_count, model, provider,
+                       (id, name, description, icon, max_turn_count, max_wall_seconds, model, provider,
                         temperature, max_tokens, metadata,
                         can_be_default, is_system, is_pipeline, access_level,
                         is_admin_agent, discoverable,
                         trigger_type, trigger_key, loop_logic,
                         created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         template_id,
                         name.strip(),
                         description or "",
                         icon or "",
                         agent.get("max_turn_count") or 10,
+                        agent.get("max_wall_seconds"),
                         agent.get("model"),
                         agent.get("provider"),
                         agent.get("temperature") if agent.get("temperature") is not None else 0.0,
@@ -5480,7 +5494,7 @@ class LocalBackend(StorageBackend):
         Returns the updated agent row dict, or None if not found/not owned.
         """
         ALLOWED = {
-            "name", "description", "max_turn_count",
+            "name", "description", "max_turn_count", "max_wall_seconds",
             "model", "temperature", "max_tokens",
             "allowed_tools", "custom_tool_ids",
             "trigger_type", "trigger_key", "loop_logic",

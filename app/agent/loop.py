@@ -957,9 +957,15 @@ async def stream_agent_events(
         except (ValueError, TypeError):
             _MAX_STALL_STRIKES = 4
         try:
-            _MAX_WALL_SECONDS = float(os.environ.get("AGENT_MAX_WALL_SECONDS", "300"))
+            _MAX_WALL_SECONDS = float(os.environ.get("AGENT_MAX_WALL_SECONDS", "0"))
         except (ValueError, TypeError):
-            _MAX_WALL_SECONDS = 300.0
+            _MAX_WALL_SECONDS = 0.0
+        # Per-agent override: if the agent record has max_wall_seconds set, use it
+        if _agent_rec and _agent_rec.get("max_wall_seconds") is not None:
+            try:
+                _MAX_WALL_SECONDS = float(_agent_rec["max_wall_seconds"])
+            except (ValueError, TypeError):
+                pass
         # Liveness heartbeat cadence — how often the loop proves it is alive by
         # advancing session_runs.heartbeat_at. The watchdog's "frozen" threshold
         # must be several multiples of this. Best-effort + throttled.
