@@ -40,6 +40,7 @@ import os
 import time
 import traceback
 import uuid
+from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta, timezone
 from typing import Any, Deque, Dict, Iterable, List, Optional
 
@@ -54,6 +55,9 @@ LEVELS: Dict[str, int] = {
 DEFAULT_RING_SIZE = 2000          # in-memory records kept for the live feed
 DEFAULT_RETENTION_ROWS = 20000    # max durable rows kept in the DB table
 DEFAULT_RETENTION_HOURS = 72      # max age of durable rows
+DEFAULT_LOG_DIR = "logs"          # per-source text files live here
+DEFAULT_LOG_MAX_BYTES = 5_000_000 # rotate each file at ~5 MB
+DEFAULT_LOG_BACKUPS = 3           # keep this many rotated files per source
 FLUSH_INTERVAL_SECONDS = 3        # batch-writer cadence
 PRUNE_INTERVAL_SECONDS = 120      # how often the writer prunes the DB table
 MAX_MESSAGE_LEN = 4000            # truncate over-long messages
@@ -119,6 +123,14 @@ class DiagnosticRecorder:
         self.retention_rows = int(s.get("diagnostics_retention_rows", DEFAULT_RETENTION_ROWS) or DEFAULT_RETENTION_ROWS)
         self.retention_hours = float(s.get("diagnostics_retention_hours", DEFAULT_RETENTION_HOURS) or DEFAULT_RETENTION_HOURS)
 
+        # Per-source rotating text files (logs/<category>.log). A plain,
+        # tail-able mirror of every captured record, in addition to the DB.
+        self.file_logging: bool = bool(s.get("diagnostics_file_logging", True))
+        self.log_dir: str = s.get("diagnostics_log_dir", DEFAULT_LOG_DIR) or DEFAULT_LOG_DIR
+        self.log_max_bytes: int = int(s.get("diagnostics_log_max_bytes", DEFAULT_LOG_MAX_BYTES) or DEFAULT_LOG_MAX_BYTES)
+        self.log_backups: int = int(s.get("diagnostics_log_backups", DEFAULT_LOG_BACKUPS) or DEFAULT_LOG_BACKUPS)
+        self._file_loggers: Dict[str, Any] = {}  # category → Logger (or False if init failed)
+
         # Ring + pending-write queue are both plain deques. ``deque.append`` /
         # ``popleft`` are atomic under CPython's GIL, so they are safe to touch
         # from the logging handler (any thread) without a lock.
@@ -178,6 +190,7 @@ class DiagnosticRecorder:
             }
             self._ring.append(rec)
             self._counts[lvl] = self._counts.get(lvl, 0) + 1
+            self._write_file(rec)
             if persist is None:
                 persist = LEVELS[lvl] >= LEVELS["warning"] or (category == "run")
             if persist:
@@ -187,6 +200,66 @@ class DiagnosticRecorder:
         except Exception:
             # A recorder must never break its caller.
             return None
+
+    # ── Per-source text files ──────────────────────────────────────────────
+
+    def _write_file(self, rec: Dict[str, Any]) -> None:
+        """Append one line for this record to logs/<category>.log. Never raises."""
+        if not self.file_logging:
+            return
+        try:
+            lg = self._get_file_logger(rec.get("category") or "misc")
+            if lg is None:
+                return
+            lg.log(LEVELS.get(rec.get("level"), 20), self._format_line(rec))
+        except Exception:
+            pass
+
+    def _get_file_logger(self, category: str):
+        """Lazily build a dedicated rotating-file logger per category.
+
+        Each category gets its own ``logs/<category>.log`` (size-rotated, N
+        backups). ``propagate=False`` so these lines never bubble up to the root
+        logger (which would echo them to the console and re-capture them via
+        DiagnosticLogHandler — an infinite loop)."""
+        cat = "".join(c if (c.isalnum() or c == "_") else "_" for c in (category or "misc").lower()) or "misc"
+        cached = self._file_loggers.get(cat)
+        if cached is not None:
+            return cached or None  # False sentinel → init failed before, skip
+        try:
+            os.makedirs(self.log_dir, exist_ok=True)
+            lg = logging.getLogger(f"webagent.diagnostics.file.{cat}")
+            lg.setLevel(logging.DEBUG)
+            lg.propagate = False
+            if not any(isinstance(h, RotatingFileHandler) for h in lg.handlers):
+                h = RotatingFileHandler(
+                    os.path.join(self.log_dir, f"{cat}.log"),
+                    maxBytes=self.log_max_bytes, backupCount=self.log_backups,
+                    encoding="utf-8", delay=True,
+                )
+                h.setFormatter(logging.Formatter("%(message)s"))
+                lg.addHandler(h)
+            self._file_loggers[cat] = lg
+            return lg
+        except Exception as e:
+            logger.debug("diagnostics file logger init failed for %s: %s", cat, e)
+            self._file_loggers[cat] = False
+            return None
+
+    @staticmethod
+    def _format_line(rec: Dict[str, Any]) -> str:
+        """One self-contained line per record. ``detail`` is already a single-line
+        JSON string (newlines in tracebacks are escaped), so the line stays whole."""
+        ids = []
+        for k in ("session_id", "turn_id", "agent_id", "user_id"):
+            v = rec.get(k)
+            if v:
+                ids.append(f"{k[:-3]}={v}")  # session_id → session=...
+        id_part = ("  |  " + " ".join(ids)) if ids else ""
+        detail = rec.get("detail")
+        detail_part = ("  |  " + detail) if detail else ""
+        return (f"{rec.get('ts','')}  {str(rec.get('level','info')).upper():<8} "
+                f"[{rec.get('source') or '-'}] {rec.get('message','')}{id_part}{detail_part}")
 
     # ── Background writer + pruner ─────────────────────────────────────────
 
@@ -353,6 +426,9 @@ class DiagnosticRecorder:
             "pending_writes": len(self._pending),
             "total_by_level": dict(self._counts),
             "ring_by_level": ring_levels,
+            "file_logging": self.file_logging,
+            "log_dir": self.log_dir if self.file_logging else None,
+            "log_files": sorted(self._file_loggers.keys()) if self.file_logging else [],
         }
 
 
