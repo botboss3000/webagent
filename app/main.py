@@ -230,6 +230,18 @@ async def _canonical_host_redirect(request, call_next):
         return await call_next(request)
 
 
+# HTTP-error capture for the flight-recorder — records every 4xx/5xx response
+# (status, method, path, cause, user) into the recorder's `http` category +
+# logs/http.log. Added last so it is the OUTERMOST user middleware and sees the
+# final status of every response (including auth rejections). Pure-ASGI, so it
+# does not buffer or delay the SSE / streaming paths.
+try:
+    from app.api.http_diag import install_http_diagnostics
+    install_http_diagnostics(app)
+except Exception as _httpdiag_err:  # never let diagnostics wiring break boot
+    logger.warning("HTTP diagnostics middleware not installed: %s", _httpdiag_err)
+
+
 # Include routers
 app.include_router(chat_router)
 app.include_router(terminal_router)

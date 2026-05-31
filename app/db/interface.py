@@ -576,6 +576,10 @@ class StorageBackend(ABC):
         """Trim the durable diagnostics table. Default: no-op."""
         return 0
 
+    async def clear_diagnostics(self, **kwargs):
+        """Purge diagnostic rows by scope (or all). Default: no-op."""
+        return 0
+
     async def run_state_list_active_all(self):
         """Every session with a 'running' turn (all users). Default: empty list."""
         return []

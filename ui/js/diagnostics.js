@@ -15,6 +15,7 @@ const LEVELS = [
 ];
 const CATEGORIES = [
   { key: 'server', label: 'Server' },
+  { key: 'http', label: 'HTTP' },
   { key: 'loop', label: 'Loop' },
   { key: 'run', label: 'Runs' },
   { key: 'tool', label: 'Tools' },
@@ -29,6 +30,7 @@ const state = {
   timer: null,
   wiredSidebar: false,
   wiredMain: false,
+  flashUntil: 0,
 };
 
 const POLL_MS = 5000;
@@ -87,7 +89,97 @@ export function renderDiagnosticsSidebar() {
     refresh.dataset.wired = '1';
     refresh.addEventListener('click', () => fetchAndRender());
   }
+  // Clear-logs controls (each is a two-click confirm).
+  const clearAll = _qs('diag-clear-all');
+  if (clearAll && !clearAll.dataset.wired) {
+    clearAll.dataset.wired = '1';
+    clearAll.addEventListener('click', () => _armClear(clearAll, () => {
+      _clearLogs({ clear_files: !!(_qs('diag-clear-files') || {}).checked });
+    }));
+  }
+  const clearAge = _qs('diag-clear-age-btn');
+  if (clearAge && !clearAge.dataset.wired) {
+    clearAge.dataset.wired = '1';
+    clearAge.addEventListener('click', () => _armClear(clearAge, () => {
+      const sel = _qs('diag-clear-age');
+      _clearLogs({ older_than_minutes: sel ? Number(sel.value) : 60 });
+    }));
+  }
+  const clearFilter = _qs('diag-clear-filter');
+  if (clearFilter && !clearFilter.dataset.wired) {
+    clearFilter.dataset.wired = '1';
+    clearFilter.addEventListener('click', () => _armClear(clearFilter, () => {
+      const levels = new Set(state.levels);
+      if (levels.has('error')) levels.add('critical');
+      _clearLogs({
+        levels: levels.size ? [...levels].join(',') : null,
+        categories: state.categories.size ? [...state.categories].join(',') : null,
+        search: state.search || null,
+      });
+    }));
+  }
   state.wiredSidebar = true;
+}
+
+// Two-click confirm: first click arms the button (turns it red, relabels);
+// second click within 3.5s runs the action. Any other armed clear button disarms.
+function _armClear(btn, run) {
+  if (btn.dataset.armed === '1') {
+    btn.dataset.armed = '0';
+    if (btn._disarm) { clearTimeout(btn._disarm); btn._disarm = null; }
+    btn.classList.remove('armed');
+    btn.textContent = btn.dataset.label || btn.textContent;
+    run();
+    return;
+  }
+  document.querySelectorAll('.diag-clear-btn.armed').forEach((b) => {
+    b.dataset.armed = '0'; b.classList.remove('armed');
+    if (b._disarm) { clearTimeout(b._disarm); b._disarm = null; }
+    b.textContent = b.dataset.label || b.textContent;
+  });
+  if (!btn.dataset.label) btn.dataset.label = btn.textContent;
+  btn.dataset.armed = '1';
+  btn.classList.add('armed');
+  btn.textContent = 'Click again to confirm';
+  btn._disarm = setTimeout(() => {
+    btn.dataset.armed = '0'; btn.classList.remove('armed');
+    btn.textContent = btn.dataset.label || btn.textContent;
+  }, 3500);
+}
+
+async function _clearLogs(params) {
+  const p = new URLSearchParams();
+  if (params.older_than_minutes != null) p.set('older_than_minutes', String(params.older_than_minutes));
+  if (params.levels) p.set('levels', params.levels);
+  if (params.categories) p.set('categories', params.categories);
+  if (params.search) p.set('search', params.search);
+  if (params.clear_files) p.set('clear_files', 'true');
+  try {
+    const qs = p.toString();
+    const res = await fetch(apiPath('/api/v1/diagnostics' + (qs ? '?' + qs : '')), {
+      method: 'DELETE', headers: authHeaders(),
+    });
+    if (!res.ok) {
+      let msg = 'HTTP ' + res.status;
+      try { const j = await res.json(); msg = j.detail || msg; } catch (_) {}
+      _flashStatus('Clear failed: ' + msg);
+      return;
+    }
+    const j = await res.json();
+    const n = Math.max(j.db_deleted || 0, j.ring_removed || 0);
+    const filePart = (j.files_cleared && j.files_cleared.length) ? `, ${j.files_cleared.length} file(s) wiped` : '';
+    _flashStatus(`Cleared ${n} record(s)${filePart}`);
+    fetchAndRender();                                  // empty the feed now (stats held by the flash)
+    setTimeout(() => { state.flashUntil = 0; fetchAndRender(); }, 2600);  // then restore the live count
+  } catch (e) {
+    _flashStatus('Clear failed: ' + (e && e.message ? e.message : e));
+  }
+}
+
+function _flashStatus(text) {
+  state.flashUntil = Date.now() + 2500;
+  const el = _qs('diag-stats');
+  if (el) el.textContent = text;
 }
 
 function _wireMain() {
@@ -253,6 +345,8 @@ function _recordRow(r, lvl) {
 function _setStats(s) {
   const el = _qs('diag-stats');
   if (!el) return;
+  // Don't clobber a recent "Cleared N records" flash with the live count.
+  if (state.flashUntil && Date.now() < state.flashUntil) return;
   if (!s) { el.textContent = ''; return; }
   const bits = [s.shown + ' shown'];
   if (s.error) bits.push(s.error + ' error' + (s.error === 1 ? '' : 's'));

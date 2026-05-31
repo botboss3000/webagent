@@ -2452,6 +2452,47 @@ class LocalBackend(StorageBackend):
             finally:
                 conn.close()
 
+    async def clear_diagnostics(
+        self,
+        *,
+        older_than_seconds: Optional[float] = None,
+        levels: Optional[List[str]] = None,
+        categories: Optional[List[str]] = None,
+        search: Optional[str] = None,
+    ) -> int:
+        """Delete diagnostic rows matching the scope. No scope → delete all.
+        Returns the number of rows deleted."""
+        where: List[str] = []
+        params: List[Any] = []
+        if older_than_seconds is not None:
+            cutoff = (datetime.now(timezone.utc) - timedelta(seconds=older_than_seconds)).isoformat()
+            where.append("ts < ?")
+            params.append(cutoff)
+        if levels:
+            where.append("level IN (%s)" % ",".join("?" * len(levels)))
+            params.extend([str(x).lower() for x in levels])
+        if categories:
+            where.append("category IN (%s)" % ",".join("?" * len(categories)))
+            params.extend([str(x).lower() for x in categories])
+        if search:
+            where.append("(message LIKE ? OR source LIKE ? OR detail LIKE ?)")
+            like = f"%{search}%"
+            params.extend([like, like, like])
+        sql = "DELETE FROM diagnostics"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(sql, params)
+                conn.commit()
+                return cur.rowcount or 0
+            except Exception as e:
+                logger.error("Error in clear_diagnostics: %s", e)
+                return 0
+            finally:
+                conn.close()
+
     async def copy_defaults_to_agent(self, agent_id: str, template_id: Optional[str] = None) -> int:
         """
         Copy admin-base prompt slots from the 'default' template into this agent.

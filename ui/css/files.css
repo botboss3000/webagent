@@ -2667,3 +2667,35 @@ input.fg-token-input-inline {
   max-height: 320px;
   overflow: auto;
 }
+
+/* Clear-logs controls (sidebar) */
+.diag-clear-section { border-top: 1px solid var(--border-soft); padding-top: 12px; }
+.diag-clear-row { display: flex; gap: 6px; align-items: center; }
+.diag-clear-row .diag-select { flex: 1 1 auto; }
+.diag-clear-btn {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--fg-2);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.diag-clear-btn:hover { border-color: var(--border-strong); color: var(--fg-1); }
+.diag-clear-wide { width: 100%; margin-top: 6px; }
+.diag-clear-danger { border-color: var(--danger); color: var(--danger); }
+.diag-clear-danger:hover { background: var(--danger-soft); color: var(--danger); }
+.diag-clear-btn.armed {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--bg-0);
+  font-weight: 600;
+}
+.diag-clear-section code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  background: var(--bg-tint);
+  padding: 1px 4px;
+  border-radius: 3px;
+}

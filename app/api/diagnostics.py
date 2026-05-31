@@ -6,10 +6,11 @@ agent-loop pipeline problems and run outcomes into a RAM ring + a durable,
 auto-pruned `diagnostics` table. These endpoints let the Admin Tools
 "Diagnostics" sub-page (and any operator) read recent records back.
 
-    GET  /api/v1/diagnostics         — filtered list of recent records
-    GET  /api/v1/diagnostics/stats   — counts by level + ring/queue sizes
+    GET    /api/v1/diagnostics         — filtered list of recent records
+    GET    /api/v1/diagnostics/stats   — counts by level + ring/queue sizes
+    DELETE /api/v1/diagnostics         — clear records (all, older-than, or by filter)
 
-Both require a global admin (same gate as the DB viewer).
+All require a global admin (same gate as the DB viewer).
 """
 
 import logging
@@ -63,3 +64,27 @@ async def list_diagnostics(
 async def diagnostics_stats(_auth: dict = Depends(require_admin)):
     """Return recorder health: enabled flag, ring/queue sizes, counts by level."""
     return get_recorder().stats()
+
+
+@router.delete("")
+async def clear_diagnostics(
+    older_than_minutes: Optional[float] = Query(None, description="Clear records older than N minutes (omit = all)"),
+    levels: Optional[str] = Query(None, description="Comma list — only clear these severities"),
+    categories: Optional[str] = Query(None, description="Comma list — only clear these categories"),
+    search: Optional[str] = Query(None, description="Only clear records matching this substring"),
+    clear_files: bool = Query(False, description="Also truncate the logs/*.log text files (full clear only)"),
+    _auth: dict = Depends(require_admin),
+):
+    """Clear diagnostics. With no scope, clears everything; otherwise clears only
+    the records matching older_than_minutes / levels / categories / search.
+    Purges the in-memory ring and the durable DB table, and (on a full clear
+    with clear_files) the per-source text files."""
+    rec = get_recorder()
+    result = await rec.clear(
+        older_than_minutes=older_than_minutes,
+        levels=_split_csv(levels),
+        categories=_split_csv(categories),
+        search=search,
+        clear_files=clear_files,
+    )
+    return {"status": "ok", **result}
