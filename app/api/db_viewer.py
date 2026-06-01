@@ -734,7 +734,8 @@ async def get_session_messages(
                 _where += " AND created_at < ?"
                 _params.append(before_cutoff)
             cur.execute(
-                f'SELECT id, session_id, role, content, tool_name, created_at, {_status_col}, session_seq '
+                f'SELECT id, session_id, role, content, tool_name, created_at, {_status_col}, session_seq, '
+                f'output, metadata, parent_id, input '
                 f'FROM interactions WHERE {_where} ORDER BY created_at ASC LIMIT ?',
                 (*_params, limit)
             )
@@ -744,9 +745,14 @@ async def get_session_messages(
                     "session_id": row[1],
                     "role": row[2],
                     "content": row[3],
+                    "tool_name": row[4],
                     "created_at": row[5],
                     "status": row[6],
                     "session_seq": row[7],
+                    "output": row[8],
+                    "metadata": row[9],
+                    "parent_id": row[10],
+                    "input": row[11],
                 })
         except sqlite3.OperationalError:
             pass

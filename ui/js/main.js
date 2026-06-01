@@ -23,10 +23,23 @@ import { initRemoteAccess } from './remote-access.js';
 import { initChatResize } from './chatResize.js';
 import { initTutorial, startTutorial } from './tutorial.js';
 import { fetchAdminStatus, isAdmin, fetchAccessMode } from './left-login.js';
+import { installAuthRefresh, ensureFreshToken, startTokenAutoRefresh } from './auth-refresh.js';
 import './icons.js'; // auto-renders Lucide icons on DOM mutations
 import { randomUUID } from './uuid.js';
 
 bindDom();
+
+// Keep the 24h access token fresh. When it expires while a tab is open (or
+// between visits), authenticated features break two ways: the session-messages
+// participant check sees no identity and returns `{restricted}`, so switching
+// sessions silently bounces you into a new empty one ("I can see the chat but
+// can't choose a different session"); and require_db_auth / _require_auth
+// routes 401. The already-open agent WebSocket keeps live chat working, which
+// is why only a re-login (a fresh token) used to fix it. installAuthRefresh()
+// adds a 401 → recall → retry backstop on window.fetch; startTokenAutoRefresh()
+// keeps the token valid proactively (timer + on focus). See auth-refresh.js.
+installAuthRefresh();
+startTokenAutoRefresh();
 
 // ── Anonymous session ─────────────────────────────────────────────────────
 // If no auth token exists, create an anonymous session so the visitor can
@@ -65,6 +78,18 @@ async function _initAnonSession() {
 
 // Run anon auth, then continue init. For non-anon visitors this resolves immediately.
 const _anonReady = _initAnonSession();
+
+// Before the rest of init (which connects the WebSocket and loads the current
+// session's messages), make sure the access token is valid. Otherwise the very
+// first session load can hit the `{restricted}` participant-check path and
+// bounce the user into a fresh empty session. Race a 3s cap so a slow/hung
+// recall can't stall the whole app boot — the fetch backstop and the
+// keep-fresh timer will catch up if the cap wins. For a still-valid token this
+// resolves immediately (a local exp decode, no network).
+const _bootReady = _anonReady.then(() => Promise.race([
+  ensureFreshToken().catch(() => {}),
+  new Promise((res) => setTimeout(res, 3000)),
+]));
 
 // ── JS error debugging ────────────────────────────────────────────────────
 // Catches unhandled JS errors and module load failures. Shows a visible
@@ -154,9 +179,10 @@ function _applyAdminToolsVisibility() {
 
 window.addEventListener('admin-status-loaded', _applyAdminToolsVisibility);
 
-// Wait for anon session (if needed) before running the rest of init,
-// so auth_token + user_id are available for all downstream modules.
-_anonReady.then(() => {
+// Wait for anon session (if needed) AND a valid access token before running
+// the rest of init, so auth_token + user_id are available — and current — for
+// all downstream modules.
+_bootReady.then(() => {
   // Hide Admin Tools immediately (synchronous check covers admin_default
   // bootstrap); fetchAdminStatus() will re-check against the server profile
   // and dispatch 'admin-status-loaded' to refine the visibility.
@@ -237,3 +263,15 @@ document.addEventListener('visibilitychange', () => {
 setInterval(() => {
   if (!app.agentWs || app.agentWs.readyState > 1) connectAgent();
 }, 10000);
+
+// ── Token was silently refreshed (expired JWT recalled via remember_token) ──
+// The agent WebSocket authenticates with the token only at connect time, so a
+// socket that dropped/failed while the token was stale must reconnect to pick
+// up the fresh one. An already-open socket is left alone (don't disturb a
+// working live-chat stream). See auth-refresh.js.
+window.addEventListener('webagent-token-refreshed', () => {
+  const open = app.agentWs && app.agentWs.readyState === WebSocket.OPEN;
+  if (!open) {
+    try { connectAgent(); } catch (_) {}
+  }
+});

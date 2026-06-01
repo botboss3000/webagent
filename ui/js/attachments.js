@@ -362,6 +362,7 @@ let recognition = null;        // SpeechRecognition instance (kept across toggle
 let isDictating = false;
 let dictationBaseText = '';    // textarea value when dictation started — final results append to this
 let dictationInputEl = null;   // active textarea for the in-progress session
+let dictationLastIndex = 0;    // last resultIndex we processed — guards against re-processing old results when continuous mode auto-restarts
 
 function _ensureRecognition() {
   if (recognition) return recognition;
@@ -392,6 +393,7 @@ function _stopDictation(btn) {
     btn.classList.remove('recording');
   }
   dictationInputEl = null;
+  dictationLastIndex = 0;
 }
 
 function startSpeechDictation(btn) {
@@ -413,16 +415,21 @@ function startSpeechDictation(btn) {
   // in one, so "hello" + dictated "world" doesn't smash into "helloworld".
   dictationBaseText = input.value;
   if (dictationBaseText && !/\s$/.test(dictationBaseText)) dictationBaseText += ' ';
+  dictationLastIndex = 0;
 
   rec.onresult = (event) => {
     if (!dictationInputEl) return;
     let finalText = '';
     let interimText = '';
-    for (let i = event.resultIndex; i < event.results.length; i++) {
+    // Start from where we left off last time — this prevents re-processing
+    // old final results when continuous mode auto-restarts the recognizer.
+    const startIdx = Math.max(event.resultIndex, dictationLastIndex);
+    for (let i = startIdx; i < event.results.length; i++) {
       const r = event.results[i];
       if (r.isFinal) finalText += r[0].transcript;
       else           interimText += r[0].transcript;
     }
+    dictationLastIndex = event.results.length;
     if (finalText) {
       // Commit final phrase into the base so subsequent interim results don't
       // overwrite it. Trim leading whitespace the API sometimes prepends.

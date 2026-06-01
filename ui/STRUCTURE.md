@@ -96,3 +96,5 @@ Container-related keys stored on the client:
 | `lastActiveTab` | Which `#main-tabs` tab to restore on load. |
 | `webagent.chatVisible.<key>` | Per-layout chat panel show/hide. |
 | `webagent.chatDraft.v1` | Unsent text typed into the chat pill (`#chat-input`). Saved on every keystroke, restored on load so a refresh keeps the draft, cleared on send. See `ui/js/chat.js`. |
+| `diag_server_base` | Standalone Diagnostics page (`ui/diagnostics.html`) only — absolute server URL used when the page is opened from disk (`file://`). Ignored when the page is served same-origin. |
+| `diag_token` | Standalone Diagnostics page only — optional admin token override (paste-in). When unset the page falls back to the shared `auth_token`. |

@@ -220,6 +220,23 @@ function _fmtArgs(args) {
   }
 }
 
+function _makeCopyBtn(text, label) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'ca-tool-copy-btn';
+  btn.title = 'Copy ' + label;
+  btn.textContent = 'copy';
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(text).then(() => {
+      btn.textContent = 'copied';
+      btn.classList.add('copied');
+      setTimeout(() => { btn.textContent = 'copy'; btn.classList.remove('copied'); }, 1500);
+    }).catch(() => {});
+  });
+  return btn;
+}
+
 function _buildRow(entry, idx) {
   const row = document.createElement('div');
   row.className = 'ca-tool-row' + (entry.open ? ' open' : '');
@@ -254,6 +271,11 @@ function _buildRow(entry, idx) {
   else meta.textContent = (entry.durationMs != null) ? entry.durationMs + 'ms' : 'done';
   head.appendChild(meta);
 
+  // Copy-all button for the whole tool call
+  const fullText = 'Tool: ' + entry.tool + '\nArguments:\n' + _fmtArgs(entry.args) + '\nResult:\n' + (entry.result || '(empty)');
+  const copyAllBtn = _makeCopyBtn(fullText, 'tool call');
+  head.appendChild(copyAllBtn);
+
   const caret = document.createElement('span');
   caret.className = 'ca-tool-caret';
   caret.setAttribute('aria-hidden', 'true');
@@ -265,14 +287,90 @@ function _buildRow(entry, idx) {
   const body = document.createElement('div');
   body.className = 'ca-tool-body';
 
+  // ── Saved input (full messages sent to LLM) ──
+  if (entry._savedInput) {
+    const inputLbl = document.createElement('div');
+    inputLbl.className = 'ca-tool-label';
+    inputLbl.textContent = 'LLM Input (messages)';
+    body.appendChild(inputLbl);
+    const inputWrap = document.createElement('div');
+    inputWrap.className = 'ca-tool-pre-wrap';
+    const inputPre = document.createElement('pre');
+    inputPre.className = 'ca-tool-pre';
+    let inputText = entry._savedInput;
+    try { inputText = JSON.stringify(JSON.parse(entry._savedInput), null, 2); } catch (_) {}
+    inputPre.textContent = inputText;
+    inputWrap.appendChild(inputPre);
+    inputWrap.appendChild(_makeCopyBtn(inputText, 'LLM input'));
+    body.appendChild(inputWrap);
+  }
+
+  // ── Saved output (full LLM response with tool calls) ──
+  if (entry._savedOutput) {
+    const outputLbl = document.createElement('div');
+    outputLbl.className = 'ca-tool-label';
+    outputLbl.textContent = 'LLM Output';
+    body.appendChild(outputLbl);
+    const outputWrap = document.createElement('div');
+    outputWrap.className = 'ca-tool-pre-wrap';
+    const outputPre = document.createElement('pre');
+    outputPre.className = 'ca-tool-pre';
+    let outputText = entry._savedOutput;
+    try { outputText = JSON.stringify(JSON.parse(entry._savedOutput), null, 2); } catch (_) {}
+    outputPre.textContent = outputText;
+    outputWrap.appendChild(outputPre);
+    outputWrap.appendChild(_makeCopyBtn(outputText, 'LLM output'));
+    body.appendChild(outputWrap);
+  }
+
+  // ── Saved tool output (tool result from DB) ──
+  if (entry._savedToolOutput) {
+    const toolOutLbl = document.createElement('div');
+    toolOutLbl.className = 'ca-tool-label';
+    toolOutLbl.textContent = 'Tool Output (saved)';
+    body.appendChild(toolOutLbl);
+    const toolOutWrap = document.createElement('div');
+    toolOutWrap.className = 'ca-tool-pre-wrap';
+    const toolOutPre = document.createElement('pre');
+    toolOutPre.className = 'ca-tool-pre';
+    let toolOutText = entry._savedToolOutput;
+    try { toolOutText = JSON.stringify(JSON.parse(entry._savedToolOutput), null, 2); } catch (_) {}
+    toolOutPre.textContent = toolOutText;
+    toolOutWrap.appendChild(toolOutPre);
+    toolOutWrap.appendChild(_makeCopyBtn(toolOutText, 'tool output'));
+    body.appendChild(toolOutWrap);
+  }
+
+  // ── Saved tool metadata ──
+  if (entry._savedToolMetadata) {
+    const metaLbl = document.createElement('div');
+    metaLbl.className = 'ca-tool-label';
+    metaLbl.textContent = 'Tool Metadata';
+    body.appendChild(metaLbl);
+    const metaWrap = document.createElement('div');
+    metaWrap.className = 'ca-tool-pre-wrap';
+    const metaPre = document.createElement('pre');
+    metaPre.className = 'ca-tool-pre';
+    let metaText = entry._savedToolMetadata;
+    try { metaText = JSON.stringify(JSON.parse(entry._savedToolMetadata), null, 2); } catch (_) {}
+    metaPre.textContent = metaText;
+    metaWrap.appendChild(metaPre);
+    metaWrap.appendChild(_makeCopyBtn(metaText, 'tool metadata'));
+    body.appendChild(metaWrap);
+  }
+
   const argLbl = document.createElement('div');
   argLbl.className = 'ca-tool-label';
   argLbl.textContent = 'Arguments';
   body.appendChild(argLbl);
+  const argWrap = document.createElement('div');
+  argWrap.className = 'ca-tool-pre-wrap';
   const argPre = document.createElement('pre');
   argPre.className = 'ca-tool-pre';
   argPre.textContent = _fmtArgs(entry.args);
-  body.appendChild(argPre);
+  argWrap.appendChild(argPre);
+  argWrap.appendChild(_makeCopyBtn(_fmtArgs(entry.args), 'arguments'));
+  body.appendChild(argWrap);
 
   const resLbl = document.createElement('div');
   resLbl.className = 'ca-tool-label';
@@ -291,10 +389,14 @@ function _buildRow(entry, idx) {
     img.alt = entry.tool + ' result';
     body.appendChild(img);
   } else {
+    const resWrap = document.createElement('div');
+    resWrap.className = 'ca-tool-pre-wrap';
     const resPre = document.createElement('pre');
     resPre.className = 'ca-tool-pre';
     resPre.textContent = (entry.result && entry.result.length) ? entry.result : '(empty)';
-    body.appendChild(resPre);
+    resWrap.appendChild(resPre);
+    resWrap.appendChild(_makeCopyBtn((entry.result && entry.result.length) ? entry.result : '(empty)', 'result'));
+    body.appendChild(resWrap);
   }
 
   row.appendChild(body);

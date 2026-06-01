@@ -15,11 +15,41 @@ import os
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent       # webagent_tui/
 PKG = ROOT / "webagent_tui"
 NAME = "webagent-tui"
+BUILD_STAMP = PKG / "_build.py"                      # generated; bundled then removed
+
+
+def _read_version() -> str:
+    try:
+        ns: dict = {}
+        for line in (PKG / "__init__.py").read_text(encoding="utf-8").splitlines():
+            if line.strip().startswith("__version__"):
+                exec(line, ns)  # noqa: S102 — trusted local source
+                return str(ns.get("__version__", "0.0.0"))
+    except OSError:
+        pass
+    return "0.0.0"
+
+
+def _write_build_stamp() -> None:
+    """Stamp the git commit + time into the package so the frozen exe knows which
+    build it is (the self-update check reads this to tell if it's behind)."""
+    try:
+        commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=str(ROOT),
+                                capture_output=True, text=True, timeout=10, check=False).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        commit = ""
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    BUILD_STAMP.write_text(
+        f'BUILD_COMMIT = "{commit}"\nBUILD_TIME = "{now}"\nBUILD_VERSION = "{_read_version()}"\n',
+        encoding="utf-8",
+    )
+    print(f"[build] stamped commit={commit or '(unknown)'} time={now}")
 
 
 def main() -> int:
@@ -29,6 +59,8 @@ def main() -> int:
         sys.stderr.write("PyInstaller missing — install the 'build' extra:\n")
         sys.stderr.write("  uv sync --extra build   (or: pip install pyinstaller)\n")
         return 1
+
+    _write_build_stamp()
 
     # Textual ships a CSS file we must bundle; '.tcss' next to the package.
     sep = ";" if os.name == "nt" else ":"
@@ -44,6 +76,9 @@ def main() -> int:
     ]
     print("$", " ".join(cmd))
     rc = subprocess.call(cmd, cwd=str(ROOT))
+    # The stamp has served its purpose (it's now inside the bundle); keep the
+    # source tree clean so it's never accidentally committed.
+    BUILD_STAMP.unlink(missing_ok=True)
     if rc != 0:
         return rc
 

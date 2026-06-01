@@ -7,13 +7,14 @@ Three things are resolved here, all independent of the webAgent server:
   DB / Full Reset of the web app never touches the server manager's memory.
 * **project dir** — the target webAgent checkout the agent operates on.
 * **LLM provider** — api key / base url / model, resolved from (highest first):
-  explicit ``WEBAGENT_TUI_*`` / ``LLM_*`` overrides, then the target project's
+  an explicit per-TUI ``WEBAGENT_TUI_*`` override, then the linked repo's
   ``provider.json`` (the live, *complete* credential store the web app itself
-  uses), then legacy ``OPENROUTER_*`` values, then the saved config, then
-  built-in defaults. Resolving ``provider.json`` as a coherent (api_key,
-  base_url, model) triple — above the often partial/stale ``OPENROUTER_*`` env —
-  prevents pairing one provider's key with another's base URL (the 401 bug).
-  OpenAI-compatible.
+  uses — authoritative once a checkout is linked), then generic/legacy ``LLM_*``
+  / ``OPENROUTER_*`` (the app-level key used during onboarding), then the saved
+  config, then built-in defaults. Resolving ``provider.json`` as a coherent
+  (api_key, base_url, model) triple — above both the partial ``OPENROUTER_*`` env
+  and the generic ``LLM_*`` key — fixes the 401 *and* makes a linked repo's key
+  win over the app key. OpenAI-compatible.
 """
 
 from __future__ import annotations
@@ -142,18 +143,22 @@ class ProviderConfig:
 def resolve_provider(project_dir: Optional[Path], saved: "TuiConfig") -> ProviderConfig:
     """Resolve LLM provider config. Order, highest priority first:
 
-    1. explicit overrides ``WEBAGENT_TUI_*`` / ``LLM_*`` (env or project ``.env``)
-    2. the web app's ``provider.json`` — a *complete*, internally-consistent
-       (api_key, base_url, model) triple (see ``_load_provider_json``)
-    3. legacy ``OPENROUTER_*`` values (env or project ``.env``) — often partial
+    1. explicit per-TUI override ``WEBAGENT_TUI_*`` (env or project ``.env``)
+    2. the linked repo's ``provider.json`` — a *complete*, internally-consistent
+       (api_key, base_url, model) triple; authoritative once a checkout is linked
+    3. generic/legacy ``LLM_*`` / ``OPENROUTER_*`` (env or project ``.env``) — these
+       act as the app-level key during onboarding (no repo linked)
     4. the saved TUI config
     5. built-in defaults
 
-    Putting ``provider.json`` (2) above the partial ``OPENROUTER_*`` values (3) is
-    what fixes the 401: those ``.env`` keys supply a key + model but no base URL,
-    so base_url silently defaulted to OpenRouter while the key/model were really a
-    different provider's. Taking the whole triple from ``provider.json`` keeps the
-    three fields from being mixed across providers.
+    Two things this ordering buys us:
+    * ``provider.json`` above ``OPENROUTER_*`` fixes the 401 — those ``.env`` keys
+      supply a key + model but no base URL, so base_url silently defaulted to
+      OpenRouter while the key/model were really another provider's. Taking the
+      whole triple from ``provider.json`` keeps the three from being mixed.
+    * ``provider.json`` above the generic ``LLM_*`` means a **linked repo's key
+      wins** over an app-level ``LLM_*`` key — so onboarding uses the app key and a
+      linked checkout uses its own, exactly as intended.
     """
     env = os.environ
     proj_env = _parse_env_file(project_dir / ".env") if project_dir else {}
@@ -169,22 +174,22 @@ def resolve_provider(project_dir: Optional[Path], saved: "TuiConfig") -> Provide
         return ""
 
     api_key = (
-        pick("WEBAGENT_TUI_API_KEY", "LLM_API_KEY")
+        pick("WEBAGENT_TUI_API_KEY")
         or pj.get("api_key", "")
-        or pick("OPENROUTER_API_KEY")
+        or pick("LLM_API_KEY", "OPENROUTER_API_KEY")
         or saved.api_key
     )
     base_url = (
-        pick("WEBAGENT_TUI_BASE_URL", "LLM_BASE_URL")
+        pick("WEBAGENT_TUI_BASE_URL")
         or pj.get("base_url", "")
-        or pick("OPENROUTER_BASE_URL")
+        or pick("LLM_BASE_URL", "OPENROUTER_BASE_URL")
         or saved.base_url
         or "https://openrouter.ai/api/v1"
     )
     model = (
-        pick("WEBAGENT_TUI_MODEL", "LLM_MODEL")
+        pick("WEBAGENT_TUI_MODEL")
         or pj.get("model", "")
-        or pick("OPENROUTER_MODEL")
+        or pick("LLM_MODEL", "OPENROUTER_MODEL")
         or saved.model
         or "deepseek/deepseek-v4-flash"
     )
@@ -200,6 +205,7 @@ class TuiConfig:
     autonomous: bool = False       # opt-in: act on mutating tools without per-call gating
     writes_enabled: bool = False   # interactive "armed" toggle for mutating tools
     theme_name: str = "lime"       # active Textual theme (see themes.THEME_ORDER)
+    anim_enabled: bool = True      # show the animated logo banner
     max_turns: int = 50
     temperature: float = 0.0
 
