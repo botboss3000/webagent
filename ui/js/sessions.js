@@ -18,6 +18,7 @@ import {
   onChange as onAccountsChange,
 } from './accounts.js';
 import { showLeftOverlay, authHeaders } from './left-login.js';
+import { ensureFreshToken } from './auth-refresh.js';
 import { randomUUID } from './uuid.js';
 import {
   getPinnedAgents,
@@ -49,6 +50,29 @@ const _VS_BUFFER = 400;
 let _origAddChatBubble = null;
 let _origCreateBubble = null;
 let _totalUnpinnedCount = 0; // total unpinned sessions on the server (for "+ N more" row)
+
+// ── Last-active session per agent ──────────────────────────────────────────
+// Map<agentId, sessionId> — persisted in localStorage so switching back to an
+// agent resumes the session you were last using with it.
+const _lastSessionPerAgent = new Map();
+
+function _loadLastSessionMap() {
+  try {
+    const raw = localStorage.getItem('lastSessionPerAgent');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      for (const [k, v] of Object.entries(parsed)) _lastSessionPerAgent.set(k, v);
+    }
+  } catch (_) { /* ignore corrupt data */ }
+}
+
+function _saveLastSessionMap() {
+  try {
+    const obj = {};
+    for (const [k, v] of _lastSessionPerAgent.entries()) obj[k] = v;
+    localStorage.setItem('lastSessionPerAgent', JSON.stringify(obj));
+  } catch (_) { /* storage may be full */ }
+}
 
 export function generateUUID() {
   return randomUUID();
@@ -105,6 +129,11 @@ function _setAgentTriggerLabel() {
   const title = (found && found.name) || (window.__agentName) || aid || 'No agent';
   labelEl.textContent = _truncate(title, 20);
   labelEl.title = (found && found.name) || title || '';
+  // Click the label to re-enter rename mode
+  labelEl.addEventListener('click', (e) => {
+    e.stopPropagation();
+    _headerRenameAgent();
+  });
   // Mark the agent dropdown as loaded (removes shimmer + re-enables trigger)
   const agentDropdown = document.getElementById('agent-dropdown');
   if (agentDropdown) agentDropdown.dataset.loaded = 'true';
@@ -435,6 +464,11 @@ function _setTriggerLabel() {
   const title = (found && found.title) || 'New Session';
   labelEl.textContent = _truncate(title, 20);
   labelEl.title = (found && found.id) || sid || '';
+  // Click the label to re-enter rename mode
+  labelEl.addEventListener('click', (e) => {
+    e.stopPropagation();
+    _headerRenameSession();
+  });
   // Mark the session dropdown as loaded (removes shimmer + re-enables trigger)
   const sessionDropdown = document.getElementById('session-dropdown');
   if (sessionDropdown) sessionDropdown.dataset.loaded = 'true';
@@ -568,6 +602,73 @@ export async function populateSessionSelect(userId) {
 }
 
 /**
+ * After all bubbles are rendered, walk the message list and attach tool-call
+ * panels to assistant bubbles that have tool call data in their `output` field.
+ * Tool results are stored as separate `role="tool"` interactions with a
+ * `parent_id` linking back to the assistant interaction that made the call.
+ * Also attaches the full saved `input` (messages sent to LLM) and `output`
+ * (LLM response) to each bubble for inspection.
+ */
+function _attachToolCallsFromMessages(messages) {
+  if (!app.attachToolCallsToLastBubble) return;
+  // Collect tool results keyed by parent_id
+  const toolResultsByParent = {};
+  for (const msg of messages) {
+    if (msg.role === 'tool' && msg.parent_id) {
+      if (!toolResultsByParent[msg.parent_id]) toolResultsByParent[msg.parent_id] = [];
+      toolResultsByParent[msg.parent_id].push(msg);
+    }
+  }
+
+  // Walk assistant messages and attach tool calls
+  for (const msg of messages) {
+    if (msg.role !== 'assistant') continue;
+    if (!msg.output) continue;
+    let outputData;
+    try { outputData = JSON.parse(msg.output); } catch (_) { continue; }
+    const toolCalls = outputData.tool_calls;
+    if (!toolCalls || toolCalls.length === 0) continue;
+
+    // Reconstruct tool call entries matching the format chat-activity.js expects
+    const calls = toolCalls.map((tc, idx) => {
+      let args = {};
+      try { args = JSON.parse(tc.function.arguments); } catch (_) {}
+      const toolName = tc.function.name;
+      // Find matching tool result by tool_call_id
+      const results = toolResultsByParent[msg.id] || [];
+      const resultEntry = results.find(r => r.tool_name === toolName);
+      return {
+        tool: toolName,
+        args: args,
+        status: resultEntry ? 'done' : 'done',
+        result: resultEntry ? resultEntry.content : null,
+        durationMs: resultEntry ? _parseDuration(resultEntry.metadata) : null,
+        errorType: null,
+        turn: 0,
+        open: false,
+        // Full saved data for inspection
+        _savedInput: msg.input || null,
+        _savedOutput: msg.output || null,
+        _savedToolOutput: resultEntry ? resultEntry.output : null,
+        _savedToolMetadata: resultEntry ? resultEntry.metadata : null,
+      };
+    });
+
+    if (calls.length > 0) {
+      app.attachToolCallsToLastBubble(calls);
+    }
+  }
+}
+
+function _parseDuration(metadataStr) {
+  if (!metadataStr) return null;
+  try {
+    const meta = JSON.parse(metadataStr);
+    return meta.duration_ms != null ? meta.duration_ms : null;
+  } catch (_) { return null; }
+}
+
+/**
  * Render an array of message objects into app.chatMessages.
  * Used by both the initial load and the "load earlier" pagination path.
  * Returns the number of messages rendered.
@@ -620,6 +721,11 @@ function _renderMessages(messages, sessionId, run, prepend) {
     app.lastSessionSeq[sessionId] = Math.max(app.lastSessionSeq[sessionId] || 0, floor);
   } else if (!run || !run.active) {
     if (!prepend) app.isProcessing = false;
+  }
+
+  // Attach tool-call panels from persisted data (only on initial load, not pagination)
+  if (!prepend) {
+    _attachToolCallsFromMessages(messages);
   }
 
   return count;
@@ -1015,6 +1121,9 @@ export async function loadSessionChat(sessionId) {
         }
       }
 
+      // Attach tool-call panels from cached data
+      _attachToolCallsFromMessages(cached.messages);
+
       if (cached.hasMore) {
         _prependLoadEarlierBtn(sessionId);
       }
@@ -1026,7 +1135,18 @@ export async function loadSessionChat(sessionId) {
     }
 
     // Cache miss or stale — fetch from API
-    const data = await _fetchMessages(sessionId, 100);
+    let data = await _fetchMessages(sessionId, 100);
+
+    // A `restricted` response almost always means our access token expired, so
+    // the server's participant check can't see who we are and the session looks
+    // off-limits — which is what made switching sessions silently bounce us into
+    // a new empty one. If we hold a persistent credential, refresh the token and
+    // retry once before giving up. (The keep-fresh timer in auth-refresh.js
+    // normally prevents ever reaching this; this is the boundary safety net.)
+    if (data.restricted && getActive() && getActive().remember_token) {
+      await ensureFreshToken();
+      data = await _fetchMessages(sessionId, 100);
+    }
 
     // Clear DOM when switching to a new session
     if (sessionId !== app._lastLoadedSessionId) {
@@ -1344,6 +1464,11 @@ export function initSessions() {
 
   async function switchToSession(sid) {
     if (!sid || sid === app.currentSessionId) { closeMenu(); return; }
+    // Record this session as the last active for the current agent
+    if (app.currentAgentId) {
+      _lastSessionPerAgent.set(app.currentAgentId, sid);
+      _saveLastSessionMap();
+    }
     // Leaving a session does NOT stop its run — it keeps going server-side and
     // we can view it again later from any device. Only tear down LOCAL UI state.
     abortChatStream();
@@ -1525,6 +1650,9 @@ export function initSessions() {
     input.value = current;
     input.style.width = '140px';
     labelEl.replaceWith(input);
+    // Override the trigger's pointer-events:none on direct children so clicks
+    // reach the input and the cursor can be placed at the click location.
+    input.style.pointerEvents = 'auto';
     input.focus();
     input.select();
     let done = false;
@@ -1625,6 +1753,11 @@ export function initSessions() {
     sessionNewBtn.addEventListener('pointerdown', (ev) => {
       ev.preventDefault();
       closeMenu();
+      // Record the current session under the current agent before creating a new one
+      if (app.currentAgentId && app.currentSessionId) {
+        _lastSessionPerAgent.set(app.currentAgentId, app.currentSessionId);
+        _saveLastSessionMap();
+      }
       // Starting a new session leaves the current one running in the background —
       // do NOT interrupt it. Only reset local UI state.
       abortChatStream();
@@ -1638,6 +1771,7 @@ export function initSessions() {
       loopVisualSessionChanged();
       autoAgentSessionChanged();
       chatActivitySessionChanged();
+      document.getElementById('chat-input')?.focus();
     });
   }
 
@@ -1721,17 +1855,35 @@ export function initSessions() {
 
   function switchToAgent(aid) {
     if (!aid || aid === app.currentAgentId) { closeAgentMenu(); return; }
-    // Switching agent starts a fresh session but leaves the current session's
-    // run going in the background — do NOT interrupt it. Reset local UI only.
+    // Save the current session under the PREVIOUS agent before switching
+    const prevAgentId = app.currentAgentId;
+    if (prevAgentId && app.currentSessionId) {
+      _lastSessionPerAgent.set(prevAgentId, app.currentSessionId);
+      _saveLastSessionMap();
+    }
+    // Switching agent leaves the current session's run going in the
+    // background — do NOT interrupt it. Reset local UI only.
     abortChatStream();
     app.currentAgentId = aid;
     localStorage.setItem('selectedAgentId', aid);
-    // Sessions are bound to agents — start a fresh session
-    app.currentSessionId = generateUUID();
-    localStorage.setItem('terminalSessionId', app.currentSessionId);
-    _teardownVirtualScroll();
-    app.chatMessages.innerHTML = '';
-    app.addChatBubble('agent', 'Switched agent. New session started.');
+    // Look up the last session for this agent
+    const lastSid = _lastSessionPerAgent.get(aid);
+    if (lastSid) {
+      app.currentSessionId = lastSid;
+      localStorage.setItem('terminalSessionId', app.currentSessionId);
+      _teardownVirtualScroll();
+      app.chatMessages.innerHTML = '';
+      // loadSessionChat will render messages; if the session was deleted
+      // (restricted response) it auto-creates a fresh one.
+      loadSessionChat(lastSid);
+    } else {
+      // No prior session for this agent — start a fresh one
+      app.currentSessionId = generateUUID();
+      localStorage.setItem('terminalSessionId', app.currentSessionId);
+      _teardownVirtualScroll();
+      app.chatMessages.innerHTML = '';
+      app.addChatBubble('agent', 'Switched agent. New session started.');
+    }
     populateSessionSelect(app.currentUserId);
     loopSessionChanged();
     loopVisualSessionChanged();
@@ -1846,6 +1998,9 @@ export function initSessions() {
     input.value = current;
     input.style.width = '140px';
     labelEl.replaceWith(input);
+    // Override the trigger's pointer-events:none on direct children so clicks
+    // reach the input and the cursor can be placed at the click location.
+    input.style.pointerEvents = 'auto';
     input.focus();
     input.select();
     let done = false;
@@ -1967,6 +2122,9 @@ export function initSessions() {
       }, 50);
     });
   }
+
+  // Restore the last-session-per-agent map from localStorage
+  _loadLastSessionMap();
 
   // populateUserSelect drives populateAgentSelect, which sets currentAgentId.
   // Phase 1: agents (eagerly fetched in populateUserSelect).

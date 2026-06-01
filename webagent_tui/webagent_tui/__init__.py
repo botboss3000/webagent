@@ -7,7 +7,8 @@ webAgent checkout even when the server is down.
 
 v1 scope: the serverless agent with **Codebase Admin** + **Source Control**
 abilities operating on a target project directory, with its own external
-database (kept separate from the web app's ``app/db/local.db``).
+database (kept separate from the web app's ``app/db/local.db``), plus
+**self-update** — it can pull/rebuild and relaunch its own code.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

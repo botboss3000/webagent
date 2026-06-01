@@ -234,9 +234,9 @@ body {
 .bubble-actions {
   display: flex;
   gap: 4px;
-  margin-top: 8px;
-  padding-top: 6px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: none;
   opacity: 0.55;
   transition: opacity 0.15s ease;
 }
@@ -553,6 +553,7 @@ body.light-mode .chat-stop-btn:hover {
     padding: 12px 6px 12px 0;
     color: #c0caf5;
     font-size: 13px;
+    font-weight: 700;
     /* Explicit line-height so the JS auto-resize and the min/max heights
        below all line up. 1 line of content = 18px. */
     line-height: 18px;
@@ -603,7 +604,6 @@ body.light-mode .chat-stop-btn:hover {
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    margin-right: 5px;
   }
 .chat-pill-voice,
 .chat-pill-send {
@@ -620,7 +620,6 @@ body.light-mode .chat-stop-btn:hover {
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    margin-right: 5px;
   }
 /* Send (or mic) is the TOP of the right-side button stack; attach (+) sits
    immediately BELOW. Both rows are auto-sized and the 1fr spacer row above
@@ -638,7 +637,7 @@ body.light-mode .chat-stop-btn:hover {
     grid-column: 2;
     grid-row: 3;
     align-self: end;
-    justify-self: end;
+    justify-self: center;
   }
 .chat-pill-attach:hover,
 .chat-pill-voice:hover,
@@ -813,9 +812,9 @@ body.light-mode .chat-stop-btn:hover {
    ("N tool calls") that expands to show the same accordion tool list as the
    live activity panel. Uses the same .ca-tool-* classes for row rendering. */
 .bubble-tool-calls {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
 }
 .bubble-tool-calls-head {
   display: inline-flex;
@@ -852,16 +851,20 @@ body.light-mode .chat-stop-btn:hover {
   transform: rotate(90deg);
 }
 .bubble-tool-calls-panel {
-  margin-top: 6px;
-  border-radius: 8px;
-  background: color-mix(in oklab, var(--bg-elev) 90%, transparent);
-  border: 1px solid var(--border-soft);
-  padding: 4px;
-  max-height: 300px;
-  overflow-y: auto;
-  scrollbar-width: thin;
+  margin-top: 0;
+  border-radius: 0;
+  background: transparent;
+  border: none;
+  padding: 0;
+  max-height: none;
+  overflow: visible;
 }
 .bubble-tool-calls-panel[hidden] { display: none; }
+
+/* When panel is open, hide the header chip */
+.bubble-tool-calls.open .bubble-tool-calls-head {
+  display: none;
+}
 
 /* One tool call (accordion row) */
 .ca-tool-row { border-radius: 8px; }
@@ -965,6 +968,47 @@ body.light-mode .chat-stop-btn:hover {
     border: 1px solid var(--border);
     margin-top: 2px;
   }
+
+/* Copy button on tool call rows and pre blocks */
+.ca-tool-copy-btn {
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 1px 5px;
+  cursor: pointer;
+  color: var(--fg-4);
+  font-size: 10px;
+  line-height: 1.4;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  font-family: inherit;
+}
+.ca-tool-head:hover .ca-tool-copy-btn,
+.ca-tool-pre-wrap:hover .ca-tool-copy-btn {
+  opacity: 1;
+}
+.ca-tool-copy-btn:hover {
+  color: var(--accent);
+  border-color: var(--border-soft);
+}
+.ca-tool-copy-btn.copied {
+  color: var(--success);
+  opacity: 1;
+}
+.ca-tool-pre-wrap {
+  position: relative;
+}
+.ca-tool-pre-wrap .ca-tool-copy-btn {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  padding: 1px 6px;
+  z-index: 1;
+}
 @media (prefers-reduced-motion: reduce) {
     .chat-pill.thinking {
       animation: none;

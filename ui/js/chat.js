@@ -997,9 +997,11 @@ function attachToolCallsToLastBubble(calls) {
     panel.hidden = !panelOpen;
     head.setAttribute('aria-expanded', panelOpen ? 'true' : 'false');
     container.classList.toggle('open', panelOpen);
+    // When open, hide the head chip so it's one compact panel
+    head.style.display = panelOpen ? 'none' : '';
   });
 
-  last.appendChild(container);
+  last.insertBefore(container, last.querySelector('.bubble-actions'));
 }
 
 /**
@@ -1135,21 +1137,20 @@ export function initChat() {
     const show = !app.isProcessing && !!app.currentAgentId;
     continueBtn.style.display = show ? 'flex' : 'none';
   }
-  setInterval(_updateContinueBtn, 500);
-  _updateContinueBtn();
-
   // ── Stop button (above the pill, left of continue) ──────────────
   const stopBtn = document.getElementById('chat-stop-btn');
   if (stopBtn) {
     stopBtn.addEventListener('click', sendStopMessage);
-    // Extend the poll to also update stop button visibility
-    const origUpdate = _updateContinueBtn;
+    // Extend the continue-btn poll to also update stop button visibility.
+    // We wrap the original so the interval picks up the combined function.
+    const origContinue = _updateContinueBtn;
     _updateContinueBtn = function() {
-      origUpdate();
+      origContinue();
       stopBtn.style.display = app.isProcessing ? 'flex' : 'none';
     };
-    _updateContinueBtn();
   }
+  setInterval(_updateContinueBtn, 500);
+  _updateContinueBtn();
 
   // Apply gating immediately with cached value, then re-apply once mode is loaded
   applyChatGate();

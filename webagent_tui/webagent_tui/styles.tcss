@@ -11,11 +11,21 @@ Screen {
     color: $foreground;
 }
 
-Header {
+/* Custom header toolbar — clickable control buttons + live server status. */
+#status {
+    layout: horizontal;
+    height: 1;
+    width: 100%;
     background: $bar-bg;
     color: $bar-fg;
-    text-style: bold;
+    padding: 0 2;
 }
+#status .hdr-btn { width: auto; margin: 0 2 0 0; color: $bar-accent; }
+#status .hdr-btn:hover { color: $bar-fg; text-style: bold; }
+#status .hdr-note { width: auto; margin: 0 2 0 0; }
+
+/* Animated logo banner (vendored from the launcher) — fixed height above the log. */
+#anim { height: 7; width: 100%; }
 
 #log {
     height: 1fr;
@@ -32,7 +42,6 @@ Header {
 }
 
 #prompt {
-    dock: bottom;
     width: 100%;
     height: 3;
     border: round $border-dim;
@@ -43,7 +52,11 @@ Header {
     border: round $primary;
 }
 
-Footer {
+/* Footer legend — editing / exit shortcuts. */
+#hints {
+    height: 1;
+    width: 100%;
     background: $bar-bg;
     color: $bar-fg;
+    padding: 0 2;
 }
