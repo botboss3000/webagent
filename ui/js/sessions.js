@@ -191,8 +191,13 @@ export async function populateAgentSelect(userId) {
   if (!userId) return;
 
   try {
-    const agentsRes = await fetch(apiPath(`/api/v1/agents?user_id=${encodeURIComponent(userId)}`));
-    const agentsData = agentsRes.ok ? await agentsRes.json() : { agents: [] };
+    // Share the agent data with agents.js so it doesn't re-fetch.
+    let agentsData = window.__agentsSharedData;
+    if (!agentsData) {
+      const agentsRes = await fetch(apiPath(`/api/v1/agents?user_id=${encodeURIComponent(userId)}`));
+      agentsData = agentsRes.ok ? await agentsRes.json() : { agents: [] };
+      window.__agentsSharedData = agentsData;
+    }
 
     const saved = localStorage.getItem('selectedAgentId');
     const pinned = getPinnedAgents(userId);
@@ -249,8 +254,9 @@ export async function populateAgentSelect(userId) {
     _setAgentTriggerLabel();
 
     // Sessions are scoped to an agent — refresh the session list now that
-    // currentAgentId is settled.
-    populateSessionSelect(userId);
+    // currentAgentId is settled. Deferred: sessions are fetched lazily when
+    // the user first opens the session dropdown (see openMenu below).
+    // populateSessionSelect(userId);
 
     // Fetch running status for all agents so the dropdown shows spinners
     // next to agents that are currently thinking.
@@ -276,13 +282,10 @@ export async function populateUserSelect() {
   }
   // Re-render the dropdown contents so the current-row + other accounts stay fresh
   renderUserDropdown();
-  // Refresh the agent list, which in turn refreshes sessions filtered by the
-  // resolved agent. Going through populateAgentSelect (rather than calling
-  // populateSessionSelect directly here) guarantees currentAgentId is set
-  // before the session query fires — otherwise the first fetch would have
-  // no agent_id filter and could clobber the filtered result on slow
-  // networks. Skipped while the session menu is open so the user doesn't
-  // lose their place mid-click.
+  // Refresh the agent list, which sets currentAgentId. Sessions are now
+  // loaded lazily when the user first opens the session dropdown (see
+  // openMenu in initSessions). Skipped while the session menu is open so
+  // the user doesn't lose their place mid-click.
   if (app.currentUserId) {
     const menu = document.getElementById('session-dropdown-menu');
     const isOpen = menu && !menu.hidden;
@@ -1310,6 +1313,7 @@ export function initSessions() {
   const sessionTrigger = document.getElementById('session-dropdown-trigger');
   const menu = document.getElementById('session-dropdown-menu');
 
+  let _sessionsLoaded = false;
   function openMenu() {
     if (!menu) return;
     // Opening one header dropdown closes the other — treat the gesture as
@@ -1318,6 +1322,11 @@ export function initSessions() {
     menu.hidden = false;
     dropdown.classList.add('open');
     _resetAllDeleteButtons();
+    // Lazy-load sessions on first open instead of fetching eagerly on page load.
+    if (!_sessionsLoaded && app.currentUserId) {
+      _sessionsLoaded = true;
+      populateSessionSelect(app.currentUserId);
+    }
   }
 
   function closeMenu() {
@@ -1953,9 +1962,8 @@ export function initSessions() {
     });
   }
 
-  // populateUserSelect now drives populateAgentSelect, which in turn drives
-  // populateSessionSelect — see the comment in populateUserSelect for why we
-  // funnel through that chain instead of starting two fetches in parallel.
+  // populateUserSelect drives populateAgentSelect, which sets currentAgentId.
+  // Sessions are now loaded lazily on first dropdown open (see openMenu).
   populateUserSelect().then(function () {
     if (app.currentSessionId) {
       loadSessionChat(app.currentSessionId);
