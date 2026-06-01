@@ -1,4 +1,4 @@
-"""Tool context + spec shared by every operator tool."""
+"""Tool context + spec shared by every server manager tool."""
 
 from __future__ import annotations
 

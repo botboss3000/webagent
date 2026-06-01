@@ -1,4 +1,4 @@
-"""webagent TUI — a standalone, server-independent operator agent.
+"""webagent TUI — a standalone, server-independent server manager agent.
 
 This is a separate project from the web app and from ``launcher/``: a single
 self-contained Textual TUI whose agent talks **directly to the LLM API** (never

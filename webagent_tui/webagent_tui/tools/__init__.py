@@ -1,4 +1,4 @@
-"""Operator tool layer — Codebase Admin + Source Control."""
+"""Server Manager tool layer — Codebase Admin + Source Control."""
 
 from .base import ToolContext, ToolSpec
 from .registry import ToolRegistry

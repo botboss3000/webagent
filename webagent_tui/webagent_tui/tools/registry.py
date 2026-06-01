@@ -1,4 +1,4 @@
-"""Assemble the operator tool registry (schemas + dispatch).
+"""Assemble the server manager tool registry (schemas + dispatch).
 
 v1 abilities: **Codebase Admin** (file/search/run) + **Source Control** (git).
 The registry exposes OpenAI-style function schemas to the LLM and dispatches

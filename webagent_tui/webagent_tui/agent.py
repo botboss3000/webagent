@@ -1,4 +1,4 @@
-"""The serverless operator agent loop.
+"""The serverless server manager agent loop.
 
 A bounded tool-calling loop that runs entirely in-process: build messages →
 ask the LLM (with the Codebase Admin + Source Control tool schemas) → dispatch
@@ -19,7 +19,7 @@ from .db import Store
 from .llm import LLMClient, LLMError
 from .tools import ToolContext, ToolRegistry
 
-SYSTEM_PROMPT = """You are **webAgent Operator** — a privileged, server-independent agent that \
+SYSTEM_PROMPT = """You are **webAgent Server Manager** — a privileged, server-independent agent that \
 installs, diagnoses, repairs, and manages a webAgent checkout. You talk directly \
 to the LLM API, so you keep working even when the webAgent server is down.
 
@@ -61,7 +61,7 @@ class AgentEvent:
 EventCB = Callable[[AgentEvent], Awaitable[None]]
 
 
-class OperatorAgent:
+class ServerManagerAgent:
     def __init__(
         self,
         cfg: TuiConfig,

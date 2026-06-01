@@ -4,7 +4,7 @@ Three things are resolved here, all independent of the webAgent server:
 
 * **data dir** — a per-user directory for the TUI's OWN state (its external
   database, config). Deliberately outside any webAgent checkout so a Clear
-  DB / Full Reset of the web app never touches the operator's memory.
+  DB / Full Reset of the web app never touches the server manager's memory.
 * **project dir** — the target webAgent checkout the agent operates on.
 * **LLM provider** — api key / base url / model, resolved from (in order)
   explicit ``WEBAGENT_TUI_*`` env, generic ``LLM_*`` env, ``OPENROUTER_*`` env,
@@ -134,6 +134,7 @@ class TuiConfig:
     model: str = ""
     autonomous: bool = False       # opt-in: act on mutating tools without per-call gating
     writes_enabled: bool = False   # interactive "armed" toggle for mutating tools
+    theme_name: str = "lime"       # active Textual theme (see themes.THEME_ORDER)
     max_turns: int = 50
     temperature: float = 0.0
 

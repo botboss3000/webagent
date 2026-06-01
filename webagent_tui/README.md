@@ -1,6 +1,6 @@
-# webagent TUI
+# webagent TUI — Server Manager
 
-A **standalone, server-independent operator agent** for webAgent. It is its own
+A **standalone, server-independent Server Manager agent** for webAgent. It is its own
 project — separate from the web app and from `launcher/` — packaged as a single
 relocatable executable.
 
@@ -16,10 +16,10 @@ server is down**. v1 gives the agent two ability sets:
 
 ## External database
 
-The operator keeps its **own** SQLite store (conversation history + a full audit
+The server manager keeps its **own** SQLite store (conversation history + a full audit
 trail of every mutating action) in the per-user data dir — **separate from the
 web app's `app/db/local.db`** — so resetting the web app never wipes the
-operator's memory:
+server manager's memory:
 
 | OS | Location |
 |----|----------|
@@ -68,7 +68,13 @@ python scripts/build_exe.py      # → ./webagent-tui  (or webagent-tui.exe)
 | `Enter` | Send |
 | `Ctrl+W` | Toggle *Allow writes* (mutating tools) |
 | `Ctrl+A` | Toggle *Autonomous* mode |
+| `Ctrl+T` | Cycle theme (23 shared with the launcher) |
 | `Ctrl+Q` | Quit |
+
+The UI shares the launcher's **23 themes** and emoji/ASCII **glyph** set (the
+relevant assets are vendored alongside this package, so the `.exe` stays
+self-contained). The active theme persists to config. Force emoji on/off with
+`WEBAGENT_EMOJI=1` / `=0`.
 
 ## Status
 

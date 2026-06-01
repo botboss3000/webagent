@@ -1,6 +1,6 @@
 """Safety helpers shared by the tool layer.
 
-The operator runs with the user's own shell privileges, so the guardrails here
+The server manager runs with the user's own shell privileges, so the guardrails here
 are about *predictability*, not sandboxing:
 
 * **path resolution** scoped to the target project (relative paths can't escape;
