@@ -54,7 +54,7 @@ const TOUR = [
 
   { tab: 'agents', selector: '#agent-builder-bar-row',
     title: 'Or describe what you want',
-    body: 'Or just tell the Agent Builder, in plain English, what you need. It will create or tune the agent for you — no manual config required.' },
+    body: 'Or just tell the Agent Manager, in plain English, what you need. It will create or tune the agent for you — no manual config required.' },
 
   { tab: 'autoagent', selector: '#autoagent-new-page-btn',
     title: 'AI-built custom pages',

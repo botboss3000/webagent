@@ -971,14 +971,26 @@ async def stream_agent_events(
             _STREAM_PERSIST_INTERVAL = float(os.environ.get("AGENT_STREAM_PERSIST_INTERVAL", "0.6"))
         except (ValueError, TypeError):
             _STREAM_PERSIST_INTERVAL = 0.6
-        try:
-            _MAX_IDENTICAL_CALLS = max(2, int(os.environ.get("AGENT_MAX_IDENTICAL_TOOL_CALLS", "3")))
-        except (ValueError, TypeError):
-            _MAX_IDENTICAL_CALLS = 3
-        try:
-            _MAX_STALL_STRIKES = max(1, int(os.environ.get("AGENT_MAX_STALL_STRIKES", "4")))
-        except (ValueError, TypeError):
-            _MAX_STALL_STRIKES = 4
+        # Per-agent identical-tool-calls limit (0 = disabled/infinite).
+        # Falls back to AGENT_MAX_IDENTICAL_TOOL_CALLS env var, then 0 (off).
+        _raw_identical = _agent_rec.get("max_identical_tool_calls", 0) if _agent_rec else 0
+        if _raw_identical is not None and int(_raw_identical) > 0:
+            _MAX_IDENTICAL_CALLS = max(2, int(_raw_identical))
+        else:
+            try:
+                _MAX_IDENTICAL_CALLS = int(os.environ.get("AGENT_MAX_IDENTICAL_TOOL_CALLS", "0"))
+            except (ValueError, TypeError):
+                _MAX_IDENTICAL_CALLS = 0
+        # Per-agent stall-strikes limit (0 = disabled/infinite).
+        # Falls back to AGENT_MAX_STALL_STRIKES env var, then 0 (off).
+        _raw_stall = _agent_rec.get("max_stall_strikes", 0) if _agent_rec else 0
+        if _raw_stall is not None and int(_raw_stall) > 0:
+            _MAX_STALL_STRIKES = max(1, int(_raw_stall))
+        else:
+            try:
+                _MAX_STALL_STRIKES = int(os.environ.get("AGENT_MAX_STALL_STRIKES", "0"))
+            except (ValueError, TypeError):
+                _MAX_STALL_STRIKES = 0
         try:
             _MAX_WALL_SECONDS = float(os.environ.get("AGENT_MAX_WALL_SECONDS", str(DEFAULT_MAX_WALL_SECONDS)))
         except (ValueError, TypeError):
@@ -1547,20 +1559,22 @@ async def stream_agent_events(
                         # too many times, it is looping (e.g. run_worker_trials x6).
                         # Block the repeat, tell it to change approach, count a
                         # strike, and move on without executing.
+                        # 0 = disabled (infinite).
                         _sig = f"{tool_name}|{tc.function.arguments or ''}"
                         _tool_call_counts[_sig] += 1
 
                         # ── Stall guard: same-tool-name streak (different args) ──
                         # Catches e.g. 19 consecutive run_python or 12 consecutive
                         # read_source with different paths. The agent is thrashing.
+                        # 0 = disabled (infinite).
                         if tool_name == _last_tool_streak_name:
                             _tool_name_streak += 1
                         else:
                             _tool_name_streak = 1
                             _last_tool_streak_name = tool_name
 
-                        _hit_identical = _tool_call_counts[_sig] >= _MAX_IDENTICAL_CALLS
-                        _hit_streak = _tool_name_streak >= _MAX_IDENTICAL_CALLS
+                        _hit_identical = _MAX_IDENTICAL_CALLS > 0 and _tool_call_counts[_sig] >= _MAX_IDENTICAL_CALLS
+                        _hit_streak = _MAX_IDENTICAL_CALLS > 0 and _tool_name_streak >= _MAX_IDENTICAL_CALLS
 
                         if _hit_identical or _hit_streak:
                             stall_strikes += 1
@@ -1856,7 +1870,8 @@ async def stream_agent_events(
                             logger.debug(f"Skill tracking skipped for {tool_name}: {track_err}")
 
                 # ── Stall guard: too many loop strikes → stop cleanly ──
-                if stall_strikes >= _MAX_STALL_STRIKES:
+                # 0 = disabled (infinite).
+                if _MAX_STALL_STRIKES > 0 and stall_strikes >= _MAX_STALL_STRIKES:
                     yield {"type": "pipeline", "level": "pipeline",
                            "step": "stall_guard_stop", "reason": "repeated_loops",
                            "strikes": stall_strikes, "turn": turn_count}

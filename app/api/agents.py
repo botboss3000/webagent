@@ -60,6 +60,8 @@ class UpdateAgentRequest(BaseModel):
     description: Optional[str] = None
     max_turn_count: Optional[int] = None
     max_wall_seconds: Optional[float] = None
+    max_identical_tool_calls: Optional[int] = None
+    max_stall_strikes: Optional[int] = None
     model: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None

@@ -50,9 +50,9 @@ nul
 temp/
 .server.pid
 
-# Local SQLite DB — app/db/local.db is intentionally TRACKED and shared (see CLAUDE.md).
-# The base DB stays in git on purpose; its transient sidecars and the stray root
-# copy stay ignored — never commit a live WAL/SHM/journal:
+# Local SQLite DB — now gitignored; was previously tracked but is now a runtime artifact.
+# The transient sidecars and stray root copy stay ignored too:
+app/db/local.db
 app/db/local.db-journal
 app/db/local.db-wal
 app/db/local.db-shm

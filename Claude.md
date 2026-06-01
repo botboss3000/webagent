@@ -108,7 +108,7 @@ The app runs on a **Google Cloud Compute Engine VM** (project `webagent-495517`,
 | App server | **uvicorn** running `app.main:app` bound to `127.0.0.1:8080` (loopback only — Caddy is the only public ingress) | systemd unit `/etc/systemd/system/webagent.service` |
 | GCE firewall | `allow-http-https` rule opens tcp 80, 443 to `0.0.0.0/0`. Port 8080 is **not** exposed publicly. | Created from Cloud Shell, not from VM SSH (VM SA lacks compute scope) |
 
-**Repo on VM:** `~/webagent` (user `botboss3000`). Python venv inside. Deploy via `git pull` on `main`. **`app/db/local.db` is now a tracked, shared file** (committed in the repo on purpose), so the VM must **not** keep a diverging working copy or every pull collides. Keep the VM's DB clean so pulls fast-forward onto the committed `local.db`; if a stale runtime copy ever blocks the pull, discard it first (`git checkout -- app/db/local.db`, or `git stash push -- app/db/local.db`) then pull. (Owner is clearing the VM's old runtime DB so deploys land cleanly.)
+**Repo on VM:** `~/webagent` (user `botboss3000`). Python venv inside. Deploy via `git pull` on `main`. **`app/db/local.db` is now gitignored** — it is a runtime artifact, not tracked in the repo. The VM generates its own `local.db` on first run. When pulling, if a stale `local.db` blocks the pull, discard it first (`git stash push -- app/db/local.db` or simply delete it) then pull. The initial seed DB is created by the app's migration logic on startup.
 
 **Google OAuth:** redirect URI must match the public HTTPS URL → `https://webagent.live/api/v1/oauth/callback/google`. JS origin `https://webagent.live`. OAuth never works against `http://<vm-ip>:8080`.
 
