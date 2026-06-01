@@ -24,8 +24,8 @@ def main():
 
     config = Config(
         app="app.main:app",
-        host=HOST,
-        port=PORT,
+        host=HOST if sock is None else None,
+        port=PORT if sock is None else None,
         ws="wsproto",
     )
     server = Server(config=config)

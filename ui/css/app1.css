@@ -150,6 +150,39 @@ body {
     scrollbar-width: thin;
     scrollbar-color: #2a2a4a transparent;
   }
+  /* Scroll-to-bottom FAB — floats at the bottom-center of #chat-messages,
+     just above the input area. Hidden by default; shown when the user has
+     scrolled up away from the latest message. Clicking it scrolls to the
+     bottom and re-engages auto-scroll. */
+  #chat-scroll-bottom-btn {
+    position: absolute;
+    bottom: 4px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 10;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 1px solid #2a2a4a;
+    background: #1a1b2e;
+    color: #565f89;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 0.2s, background 0.2s, color 0.2s;
+    opacity: 0;
+    pointer-events: none;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  }
+  #chat-scroll-bottom-btn.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  #chat-scroll-bottom-btn:hover {
+    background: #2a2a4a;
+    color: #7dcfff;
+  }
 .chat-bubble {
     padding: 10px 14px;
     border-radius: 12px;
