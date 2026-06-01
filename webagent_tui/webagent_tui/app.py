@@ -241,6 +241,9 @@ class ServerManagerApp(App):
         yield Static("", id="hud")         # session HUD (tokens / context gauge)
         self._walker = WalkerBar(id="walker")
         yield self._walker                 # loop-reactive ascii walker
+        cta = Static(self._cta_label(), id="cta", markup=False)
+        cta.display = self.project_root is None   # onboarding-only call-to-action
+        yield cta
         yield PromptInput(placeholder="Ask the Server Manager…", id="prompt")
         yield Static("", id="hints")       # editing-shortcut legend
 
@@ -302,13 +305,17 @@ class ServerManagerApp(App):
             log.write(f"[b {c['primary']}]{G.ADMIN} webAgent Server Manager[/] "
                       f"[{c['dim']}]— let's get you set up[/]\n")
             log.write(self._host_line())
-            if not self.provider.configured:
+            if self.provider.configured:
+                log.write(f"[{c['dim']}]model:[/] {self.provider.model}")
+            else:
                 log.write(f"[{c['tool']}]{G.WARN} No AI key configured yet.[/] "
                           "Set the app key (LLM_API_KEY) to power onboarding.")
             log.write(f"[{c['dim']}]No webAgent repo is linked yet. I can:[/]")
             log.write(f"  {G.BULLET} install webAgent for you (recommended: {self._recommended_install_path()})")
             log.write(f"  {G.BULLET} link an existing copy — tell me its folder and I'll manage it")
             log.write(f"  {G.BULLET} tell you about webAgent, or help with general questions")
+            log.write(f"\n[{c['accent']}]{G.BULLET} New here? Tap [b]Click here to get started[/] "
+                      f"below and I'll install and set everything up.[/]")
         log.write(self._tip_line())
 
     async def _build_situation(self) -> str:
@@ -361,6 +368,7 @@ class ServerManagerApp(App):
         if old_llm is not None and old_llm is not self.llm:
             await old_llm.aclose()
         self._refresh_status()
+        self._hide_cta()
         if self.provider.configured:
             keynote = f"using this repo's AI key (model {self.provider.model})"
         else:
@@ -448,6 +456,10 @@ class ServerManagerApp(App):
                 t.append(f"   {G.SEP}   ", style=c["dim"])
             t.append(key + " ", style=c["accent"])
             t.append(what, style=c["dim"])
+        if self.facts.is_termux:
+            t.append(f"   {G.SEP}   ", style=c["dim"])
+            t.append("Vol+ then K ", style=c["accent"])
+            t.append("toggles keyboard", style=c["dim"])
         try:
             self.query_one("#hints", Static).update(t)
         except Exception:
@@ -528,6 +540,48 @@ class ServerManagerApp(App):
         fn = getattr(self, f"action_{action}", None) if action else None
         if fn is not None:
             fn()
+
+    # ── onboarding call-to-action (the tappable "get started" button) ──────
+    def _cta_label(self) -> str:
+        return "🚀  Click here to get started" if EMOJI else "»  Click here to get started"
+
+    def _hide_cta(self) -> None:
+        try:
+            self.query_one("#cta", Static).display = False
+        except Exception:
+            pass
+
+    @on(Click, "#cta")
+    def _on_cta_click(self, event: Click) -> None:
+        self.action_get_started()
+
+    def action_get_started(self) -> None:
+        """Hand the agent a kickoff message that drives the full guided install.
+        The tap is explicit consent, so we enable writes (the install steps are
+        mutating) and hide the button, then run the turn."""
+        if self.project_root is not None:
+            return
+        if not self.provider.configured:
+            self._log(f"[{self.cc['tool']}]{G.WARN} No AI key configured.[/] "
+                      "Set LLM_API_KEY (the app key), or link a repo that has one, then tap again.")
+            return
+        if not (self.cfg.writes_enabled or self.cfg.autonomous):
+            self.cfg.writes_enabled = True
+            self.cfg.save()
+            self._refresh_status()
+            self._log(f"[{self.cc['secondary']}]{G.BULLET} writes enabled for setup[/]")
+        self._hide_cta()
+        kickoff = (
+            "Let's get started setting up webAgent on this device. Walk me through the full "
+            "install step by step — check readiness, clone, build the environment, seed the "
+            "config, verify, and link it — confirming the install folder with me first. Handle "
+            "problems automatically as they arise (e.g. the headless browser isn't available on "
+            "Android/Termux: skip it and explain, don't treat it as a failure). When it's "
+            "running, set up the home-screen shortcut and tell me how to add it. Keep me posted "
+            "in plain language at each step."
+        )
+        self._log(f"\n[b {self.cc['secondary']}]{G.USER} ›[/] Click here to get started")
+        self._run_turn(kickoff)
 
     # ── direct (button / auto) server control — explicit intent, not gated ──
     def _server_ctx(self):

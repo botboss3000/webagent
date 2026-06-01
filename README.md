@@ -398,7 +398,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 **Android (Termux, TUI manager only):** to install just the standalone **Server Manager TUI** (`webagent_tui/`) on a phone — not the full server — paste one line into Termux:
 
 ```
-pkg install -y git && git clone --depth 1 https://github.com/botboss3000/webagent ~/webagent && bash ~/webagent/webagent_tui/install-termux.sh
+cd ~ && pkg install -y git && git clone --depth 1 https://github.com/botboss3000/webagent ~/webagent && bash ~/webagent/webagent_tui/install-termux.sh
 ```
 
 …or, using the short public URL the server itself hosts:
@@ -407,7 +407,7 @@ pkg install -y git && git clone --depth 1 https://github.com/botboss3000/webagen
 pkg install -y curl && curl -fsSL https://webagent.live/termux | bash
 ```
 
-The installer (`webagent_tui/install-termux.sh`) installs Python + git, the TUI and its two deps (clean editable install on Python 3.11/3.12, deps-only run-from-source fallback on newer), then drops a `webagent-tui` command on PATH plus a Termux:Widget home-screen shortcut. The app serves that script verbatim (LF-normalised) at **`/termux`** (and `/termux.sh`). Unlike `launcher_android/` (which runs the whole server under proot), this is just the lightweight manager. See `webagent_tui/README.md`.
+The installer (`webagent_tui/install-termux.sh`) installs Python + git, the TUI and its two deps (clean editable install on Python 3.11/3.12, deps-only run-from-source fallback on newer), then drops a `webagent` command on PATH plus a Termux:Widget home-screen shortcut. The app serves that script verbatim (LF-normalised) at **`/termux`** (and `/termux.sh`). Unlike `launcher_android/` (which runs the whole server under proot), this is just the lightweight manager. See `webagent_tui/README.md`.
 
 **Useful URLs**
 

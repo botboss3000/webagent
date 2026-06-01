@@ -20,7 +20,7 @@
 #   3. installs the TUI — a clean editable install on Python 3.11/3.12, or a
 #      deps-only "run from source" fallback on newer Python (so the version pin
 #      never blocks the install)
-#   4. drops a `webagent-tui` command on PATH + a Termux:Widget home-screen shortcut
+#   4. drops a `webagent` command on PATH + a Termux:Widget home-screen shortcut
 #   5. tells you how to add an LLM API key if one isn't present
 #
 # Safe to re-run (idempotent).
@@ -40,6 +40,9 @@ if [ -z "${PREFIX:-}" ] || ! command -v pkg >/dev/null 2>&1; then
 fi
 
 # ── 1. Base packages ─────────────────────────────────────────────────────────
+# A deleted/unreadable current directory makes git abort with "Unable to read
+# current working directory". Move somewhere that definitely exists first.
+cd "$HOME" 2>/dev/null || cd / 2>/dev/null || true
 say "Installing base packages (python, git)…"
 pkg install -y python git >/dev/null 2>&1 \
   || pkg install -y python git \
@@ -79,7 +82,7 @@ say "Python $PYVER detected."
 python -m pip install --upgrade pip >/dev/null 2>&1 || true
 case "$PYVER" in
   3.11|3.12)
-    say "Installing webagent-tui (editable)…"
+    say "Installing webagent (editable)…"
     ( cd "$TUI_DIR" && python -m pip install -e . ) || die "'pip install -e .' failed."
     ;;
   *)
@@ -88,8 +91,8 @@ case "$PYVER" in
     ;;
 esac
 
-# ── 4. `webagent-tui` launcher on PATH ───────────────────────────────────────
-LAUNCHER="$PREFIX/bin/webagent-tui"
+# ── 4. `webagent` launcher on PATH ───────────────────────────────────────
+LAUNCHER="$PREFIX/bin/webagent"
 say "Writing launcher → $LAUNCHER"
 cat > "$LAUNCHER" <<EOF
 #!$PREFIX/bin/bash
@@ -104,11 +107,15 @@ chmod +x "$LAUNCHER"
 # ── 5. Termux:Widget shortcut (tap-to-launch from the Android home screen) ───
 SHORTCUTS="$HOME/.shortcuts"
 mkdir -p "$SHORTCUTS"
-cat > "$SHORTCUTS/webagent-tui.sh" <<EOF
+cat > "$SHORTCUTS/webagent.sh" <<EOF
 #!$PREFIX/bin/bash
 exec "$LAUNCHER"
 EOF
-chmod +x "$SHORTCUTS/webagent-tui.sh"
+chmod +x "$SHORTCUTS/webagent.sh"
+
+# Tidy the old `webagent-tui` name: earlier installs of this script, and the
+# console script pip's editable install creates from pyproject. Leaves only `webagent`.
+rm -f "$PREFIX/bin/webagent-tui" "$SHORTCUTS/webagent-tui.sh"
 
 # ── 6. API-key check ─────────────────────────────────────────────────────────
 HAVE_KEY=0
@@ -119,12 +126,12 @@ if [ "$HAVE_KEY" = 0 ] && [ -f "$REPO/.env" ] && grep -q '^LLM_API_KEY=..*' "$RE
 fi
 
 echo
-say "Done. Launch it with:   webagent-tui"
-say "Tap-to-launch: install the Termux:Widget add-on (F-Droid), then add its home-screen widget — 'webagent-tui' will be listed."
+say "Done. Launch it with:   webagent"
+say "Tap-to-launch: install the Termux:Widget add-on (F-Droid), then add its home-screen widget — 'webagent' will be listed."
 if [ "$HAVE_KEY" = 0 ]; then
   echo
   warn "No LLM API key found — the agent can't reach a model until you add one. Either:"
-  warn "  • run it with a key inline:   LLM_API_KEY=sk-... webagent-tui"
+  warn "  • run it with a key inline:   LLM_API_KEY=sk-... webagent"
   warn "  • or add to $REPO/.env :"
   warn "        LLM_API_KEY=sk-..."
   warn "        LLM_BASE_URL=https://openrouter.ai/api/v1"
