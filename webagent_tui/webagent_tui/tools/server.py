@@ -28,6 +28,8 @@ from .base import WRITES_DISABLED_MSG, ToolContext
 
 PORT = 8080
 _IS_WIN = sys.platform == "win32"
+# Keep helper console tools (tasklist/taskkill) from flashing a window on Windows.
+_NO_WINDOW = {"creationflags": 0x08000000} if _IS_WIN else {}  # CREATE_NO_WINDOW
 
 
 # ── state files (per-user data dir, not the repo) ─────────────────────────────
@@ -70,7 +72,7 @@ def _venv_python(project_root: Path) -> Optional[Path]:
 def _pid_alive(pid: int) -> bool:
     if _IS_WIN:
         out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                             capture_output=True, text=True)
+                             capture_output=True, text=True, **_NO_WINDOW)
         return str(pid) in (out.stdout or "")
     try:
         os.kill(pid, 0)
@@ -85,7 +87,12 @@ def _spawn_detached(args: list[str], cwd: Path, log_path: Path) -> int:
     logf = open(log_path, "ab")  # noqa: SIM115 — handed to the child, closed below
     kwargs: dict = dict(cwd=str(cwd), stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
     if _IS_WIN:
-        kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED_PROCESS | NEW_PROCESS_GROUP
+        # CREATE_NO_WINDOW (not DETACHED_PROCESS): both keep the server alive
+        # after the manager exits, but DETACHED_PROCESS still lets a console
+        # subsystem app (python/uvicorn) pop its own visible window — so the
+        # background server showed up as a stray second window. CREATE_NO_WINDOW
+        # gives it a console that is never shown, keeping it truly headless.
+        kwargs["creationflags"] = 0x08000000 | 0x00000200  # CREATE_NO_WINDOW | NEW_PROCESS_GROUP
     else:
         kwargs["start_new_session"] = True
     try:
@@ -99,7 +106,7 @@ def _terminate(pid: int) -> bool:
     try:
         if _IS_WIN:
             subprocess.run(["taskkill", "/PID", str(pid), "/F", "/T"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, **_NO_WINDOW)
         else:
             os.kill(pid, signal.SIGTERM)
         return True
