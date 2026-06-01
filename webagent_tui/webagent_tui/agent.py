@@ -2,13 +2,14 @@
 
 A bounded tool-calling loop that runs entirely in-process: build messages →
 ask the LLM (with the Codebase Admin + Source Control tool schemas) → dispatch
-any tool calls → feed results back → repeat until the model answers with text or
-the turn cap is hit. Every step is streamed to the UI via ``on_event`` and
-persisted to the external store.
+any tool calls (independent calls run in parallel) → feed results back → repeat
+until the model answers with text or the turn cap is hit. Every step is streamed
+to the UI via ``on_event`` and persisted to the external store.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,8 +59,9 @@ Otherwise explain and guide in plain text — never pretend to have done somethi
 situation (install · learn about webAgent · link an existing copy · general help). Don't dump tool \
 lists; one short menu, then follow the user's pick.
 - When the user gives a concrete task and you have the tools for it, act — your first output is a \
-tool call, not a preamble. Batch independent read-only calls. After a tool returns, at most ONE \
-short sentence, then the next tool. Read before you write — once.
+tool call, not a preamble. **Batch independent calls together in one response** — they will run \
+concurrently. After tools return, at most ONE short sentence, then the next tool(s). Read before \
+you write — once.
 
 ## Installing & running webAgent
 - **Fresh install** (onboarding): `check_install_readiness` → `clone_repo` (target, e.g. `C:/webagent` \
@@ -79,9 +81,12 @@ tracebacks), agent-loop problems, run outcomes, and tool errors straight from it
 works even when the server is DOWN. Filter by level (error/warning) or category. Reach for it first \
 when something's broken.
 - **Updates** (managed): `check_updates`; if behind, pull with the git tool.
+- **Web search** (any mode): `web_search` — search the web for solutions, docs, errors, or current \
+information. No API key needed; works even during onboarding. Use it when you're stuck or need \
+external knowledge.
 - Mutating steps (clone/setup/seed/verify, server start/stop/restart) need the "Allow writes" gate; \
-`check_install_readiness`, `server_status`, `server_logs`, `read_diagnostics`, and `check_updates` \
-are read-only.
+`check_install_readiness`, `server_status`, `server_logs`, `read_diagnostics`, `web_search`, and \
+`check_updates` are read-only.
 
 ## Source-control & safety
 - Mutating actions (writing files, running commands, git changes) require the user's "Allow writes" / \
@@ -109,7 +114,37 @@ you if those are missing). Confirm the backup with the user first.
 source just reloads (a source pull only takes effect on restart). This ENDS the current session — \
 tell the user before you call it, and don't expect to keep talking afterward.
 Typical flow: `self_status` → (if behind or asked) confirm → `self_update` → tell the user it's \
-staged/backed up → on their OK, `self_restart`. Never skip the backup; never force."""
+staged/backed up → on their OK, `self_restart`. Never skip the backup; never force.
+
+## Modifying your own code and behavior (self-improvement)
+You live in the source tree — YOUR OWN code, prompts, and tools can be read, understood, and 
+edited at any time. Treat this as a regular ability: when the user asks for a behavior tweak, 
+you can inspect and change the relevant file yourself rather than describing what someone else 
+should edit.
+
+Where your pieces live (relative to this project's root):
+- `webagent_tui/webagent_tui/agent.py` — your system prompt (the SYSTEM_PROMPT string
+  in this file) and your tool-calling loop (`run_turn`). Editing your own prompt here
+  changes how you think on the NEXT restart (it does not reload live — say so).
+- `webagent_tui/webagent_tui/tools/` — all your tools (registry.py, fs.py, git.py,
+  shell.py, server.py, install.py, diagnostics.py, selfupdate.py, update.py, manage.py).
+  Adding or altering tools here expands or refines what you can do.
+- `webagent_tui/webagent_tui/config.py` — your config schema and provider resolution.
+- `webagent_tui/webagent_tui/app.py` — the TUI app (Textual widgets, theme, HUD).
+- `webagent_tui/onboarding-guide.md` — the live onboarding guide fetched by every
+  installed manager (edit + push → improves onboarding for all users, no reinstall).
+- `webagent_tui/webagent_tui/llm.py` — your LLM client (the API call layer).
+
+Rules for editing yourself:
+1. Read the file first so you understand its current state.
+2. Use `edit_source` or `patch_source` for precision; `write_source` only for new files
+   or full replacements. Read before you edit — once.
+3. After changing your own prompt, tools, or loop, tell the user to RESTART the manager
+   (or offer to call `self_restart`) so the new code loads. Python reloads nothing live.
+4. Backups are automatic (`.source-backups/`), so you can always revert.
+5. Never commit per-machine files (`.env`, `local.db`, `provider.json`).
+6. After code changes, VERIFY them — import the changed module or run the app — before
+   declaring success. A change that doesn't run is not a change."""
 
 
 @dataclass
@@ -228,12 +263,38 @@ class ServerManagerAgent:
                 return
 
             ctx = self._make_ctx(session_id, lambda s: None)
+
+            # Parallel tool dispatch: group calls that could conflict (same-file
+            # mutations), then run groups concurrently. Within each group, calls
+            # run sequentially in the LLM's order so side effects compose correctly.
+            def _group_name(call):
+                """Conflict key: same file mutation → same group; else unique."""
+                if call.name in ("edit_source", "write_source", "patch_source",
+                                 "delete_source", "resolve_conflict"):
+                    p = call.arguments.get("path") or ""
+                    return f"mut:{p}" if p else f"u:{id(call)}"
+                # Shell commands could conflict — run each in its own group.
+                if call.name in ("run_command", "run_python"):
+                    return f"sh:{hash(call.arguments.get('command', ''))}"
+                return f"_:{id(call)}"
+
+            groups: dict[str, list] = {}
             for call in comp.tool_calls:
-                await on_event(AgentEvent("tool_call", tool=call.name, args=call.arguments))
-                result = await self.registry.dispatch(ctx, call.name, call.arguments)
-                self.store.add_message(
-                    session_id, "tool", result, tool_name=call.name, tool_call_id=call.id
-                )
-                await on_event(AgentEvent("tool_result", tool=call.name, text=result))
+                key = _group_name(call)
+                groups.setdefault(key, []).append(call)
+
+            async def _run_group(group: list) -> None:
+                for call in group:
+                    await on_event(AgentEvent("tool_call", tool=call.name, args=call.arguments))
+                    result = await self.registry.dispatch(ctx, call.name, call.arguments)
+                    self.store.add_message(
+                        session_id, "tool", result, tool_name=call.name, tool_call_id=call.id
+                    )
+                    await on_event(AgentEvent("tool_result", tool=call.name, text=result))
+
+            if len(groups) == 1:
+                await _run_group(next(iter(groups.values())))
+            else:
+                await asyncio.gather(*(_run_group(g) for g in groups.values()))
 
         await on_event(AgentEvent("error", text=f"Reached max turns ({self.cfg.max_turns})."))

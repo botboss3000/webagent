@@ -7,7 +7,7 @@ tool calls back to the handlers, injecting the live ``ToolContext``.
 
 from __future__ import annotations
 
-from . import diagnostics, fs, git, install, manage, selfupdate, server, shell, update
+from . import diagnostics, fs, git, install, manage, selfupdate, server, shell, update, web_search
 from .base import ToolContext, ToolSpec
 
 _STR = {"type": "string"}
@@ -103,6 +103,18 @@ def build_specs() -> list[ToolSpec]:
                            "level": {**_STR, "default": ""},
                            "category": {**_STR, "default": ""}},
         }, diagnostics.read_diagnostics),
+        # ── Web search (any mode) ──────────────────────────────────────────
+        ToolSpec("web_search", (
+            "Search the web via DuckDuckGo. Returns titles, URLs, and snippets "
+            "(no API key required). Use to research errors, find current docs, "
+            "check dependency versions, or look up solutions. Read-only."), {
+            "type": "object",
+            "properties": {
+                "query": _STR,
+                "max_results": {**_INT, "default": 5},
+            },
+            "required": ["query"],
+        }, web_search.web_search, needs_project=False),
         # ── Codebase Admin: files ──────────────────────────────────────────
         ToolSpec("read_source", "Read a file region with line numbers.", {
             "type": "object",
