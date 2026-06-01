@@ -6,11 +6,55 @@ import { addAttachmentsToMessage, renderAttachmentElement } from './attachments.
 import { getAccessMode, fetchAccessMode, authHeaders } from './left-login.js';
 import { _cacheAppendMessage } from './sessions.js';
 
-/** Scroll to bottom only if the user is already at or near the bottom (within 60px). */
+/** Whether the user has explicitly locked auto-scroll (by clicking the
+ *  scroll-to-bottom chevron or by being at the bottom). When true, new
+ *  content auto-scrolls into view. Set to false when the user scrolls
+ *  away from the bottom. */
+let _scrollLocked = true;
+
+/** The scroll-to-bottom chevron button, cached after init. */
+let _scrollBtn = null;
+
+/** Set to true while _scrollToBottomIfNear is doing a programmatic scroll,
+ *  so the scroll event listener knows not to release the lock. */
+let _programmaticScroll = false;
+
+/** Show/hide the scroll-to-bottom chevron based on scroll position.
+ *  Releases the scroll lock only on genuine user-initiated scrolls
+ *  (not programmatic scrolls from _scrollToBottomIfNear). */
+function _updateScrollChevron(el) {
+  if (!el || !_scrollBtn) return;
+  // If this scroll was triggered by our own programmatic scroll, don't
+  // release the lock — just update the chevron and bail.
+  if (_programmaticScroll) {
+    _programmaticScroll = false;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    _scrollBtn.classList.toggle('visible', !atBottom);
+    return;
+  }
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  _scrollBtn.classList.toggle('visible', !atBottom);
+  if (!atBottom) _scrollLocked = false;
+}
+
+/** Scroll to bottom only if the user has locked auto-scroll (clicked the
+ *  chevron or is at the bottom). Forces a synchronous reflow (via
+ *  offsetHeight) so scrollHeight reflects the latest DOM changes — without
+ *  this, new content appended/replaced in the same tick isn't laid out yet
+ *  and scrollTop = scrollHeight becomes a no-op. */
 function _scrollToBottomIfNear(el) {
   if (!el) return;
-  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-  if (nearBottom) el.scrollTop = el.scrollHeight;
+  if (!_scrollLocked) {
+    // Still update the chevron visibility in case the user scrolled back down
+    _updateScrollChevron(el);
+    return;
+  }
+  // Force reflow so scrollHeight includes any content just added/replaced.
+  const _ = el.offsetHeight;
+  _programmaticScroll = true;
+  el.scrollTop = el.scrollHeight;
+  // Chevron should be hidden when we're at the bottom
+  if (_scrollBtn) _scrollBtn.classList.remove('visible');
 }
 
 /** Returns true when the current visitor may use chat under the active access mode. */
@@ -1072,6 +1116,27 @@ export function initChat() {
     };
     new ResizeObserver(syncPad).observe(inputArea);
     syncPad();
+  }
+
+  // ── Scroll-to-bottom chevron ──────────────────────────────────────
+  _scrollBtn = document.getElementById('chat-scroll-bottom-btn');
+  if (messagesInner && _scrollBtn) {
+    // Scroll listener: update chevron visibility + release scroll lock
+    messagesInner.addEventListener('scroll', () => {
+      _updateScrollChevron(messagesInner);
+    }, { passive: true });
+
+    // Click: scroll to bottom, lock auto-scroll, hide chevron
+    _scrollBtn.addEventListener('click', () => {
+      _scrollLocked = true;
+      _programmaticScroll = true;
+      messagesInner.scrollTop = messagesInner.scrollHeight;
+      _scrollBtn.classList.remove('visible');
+    });
+
+    // Initial state: locked at bottom, chevron hidden
+    _scrollLocked = true;
+    _scrollBtn.classList.remove('visible');
   }
 }
 

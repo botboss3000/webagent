@@ -154,9 +154,14 @@ function _renderAgentRows() {
     const configBtn = a.type === 'custom'
       ? `<button class="agent-row-config" title="Configure agent" data-id="${a.id}">${icon('settings', { size: '14px' })}</button>`
       : '';
+    const hasRunning = !!_agentRunningStatus[a.id];
+    const statusHtml = hasRunning
+      ? `<span class="session-row-status session-status-running" title="Agent is thinking…">${icon('loader-2', { size: '12px' })}</span>`
+      : '';
     row.innerHTML = `
       <span class="row-drag-handle" data-drag-handle title="Drag to reorder · hold to pin">${icon('grip-vertical', { size: '13px' })}</span>
       <span class="agent-row-pin-icon">${icon('pin', { size: '12px' })}</span>
+      ${statusHtml}
       <span class="agent-row-title" title="Hold to rename">${_truncate(label, 28).replace(/</g, '&lt;')}</span>
       ${configBtn}
       <button class="agent-row-delete" title="Delete agent" data-id="${a.id}">${icon('trash-2', { size: '14px' })}</button>
@@ -246,6 +251,10 @@ export async function populateAgentSelect(userId) {
     // Sessions are scoped to an agent — refresh the session list now that
     // currentAgentId is settled.
     populateSessionSelect(userId);
+
+    // Fetch running status for all agents so the dropdown shows spinners
+    // next to agents that are currently thinking.
+    _fetchAgentRunningStatuses();
   } catch (e) {
     console.warn('Failed to load agents for selector:', e);
   }
@@ -358,11 +367,45 @@ export function renderUserDropdown() {
 // Cache of last-fetched sessions (used when rendering rows without refetch)
 let _sessionsCache = [];
 
+// Map of agentId → boolean indicating whether that agent has running sessions.
+// Populated by _fetchAgentRunningStatuses() and used by _renderAgentRows() to
+// show a spinner next to agents that are currently thinking.
+let _agentRunningStatus = {};
+
 // Monotonic counter — on init we fire one fetch from populateUserSelect (no
 // agent filter yet) and another from populateAgentSelect (filtered once the
 // agent is resolved). Whichever resolves last would otherwise win, so we
 // tag each call and drop responses from stale calls.
 let _sessionFetchSeq = 0;
+
+/**
+ * Fetch running session statuses for all agents the user owns, building a
+ * map of agentId → hasRunning. Called after the agent list is populated so
+ * _renderAgentRows() can show a spinner next to agents with active runs.
+ */
+async function _fetchAgentRunningStatuses() {
+  const userId = app.currentUserId;
+  if (!userId) return;
+  try {
+    const token = localStorage.getItem('auth_token');
+    let url = `/api/v1/db/sessions?db=local.db&user_id=${encodeURIComponent(userId)}&limit=50`;
+    if (token) url += `&token=${encodeURIComponent(token)}`;
+    const res = await fetch(apiPath(url));
+    if (!res.ok) return;
+    const data = await res.json();
+    const map = {};
+    for (const s of (data.sessions || [])) {
+      if (s.run_status === 'running' && s.agent_id) {
+        map[s.agent_id] = true;
+      }
+    }
+    _agentRunningStatus = map;
+    // Re-render agent rows so the status sprites appear
+    _renderAgentRows();
+  } catch (e) {
+    // Silently fail — the spinner is a nice-to-have, not critical
+  }
+}
 
 function _truncate(s, n) {
   return (s && s.length > n) ? s.slice(0, n) + '…' : (s || '');
@@ -509,6 +552,7 @@ export async function populateSessionSelect(userId) {
     _renderSessionRows();
     _setTriggerLabel();
     _setAgentTriggerLabel();  // refresh agent status icon based on session states
+    _fetchAgentRunningStatuses();  // refresh running-status sprites in agent dropdown
   } catch (e) {
     console.warn('Failed to load sessions:', e);
   }
