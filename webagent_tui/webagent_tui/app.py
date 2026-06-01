@@ -166,6 +166,38 @@ class SettingsModal(ModalScreen):
         self.dismiss()
 
 
+class ConfirmModal(ModalScreen[bool]):
+    """A details + confirm/cancel screen for important admin actions (Update,
+    Uninstall). Dismisses True on confirm, False on cancel/Esc."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, title: str, body: str, confirm_label: str = "Confirm") -> None:
+        super().__init__()
+        self._title = title
+        self._body = body
+        self._confirm_label = confirm_label
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="confirm-panel"):
+            yield Static(self._title, id="confirm-title")
+            yield Static(self._body, id="confirm-body", markup=False)
+            with Horizontal(id="confirm-buttons"):
+                yield Static(f"[ {self._confirm_label} ]", classes="confirm-btn confirm-yes")
+                yield Static("[ Cancel ]", classes="confirm-btn confirm-no")
+
+    @on(Click, ".confirm-yes")
+    def _confirm(self, event: Click) -> None:
+        self.dismiss(True)
+
+    @on(Click, ".confirm-no")
+    def _cancel_click(self, event: Click) -> None:
+        self.dismiss(False)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
 class ServerManagerApp(App):
     CSS_PATH = "styles.tcss"
     TITLE = "webAgent Server Manager"
@@ -209,6 +241,7 @@ class ServerManagerApp(App):
         self._s_in = 0               # session token accumulators (HUD)
         self._s_out = 0
         self._ctx_tokens = 0         # latest prompt size = current context usage
+        self._admin_mode = False     # header shows admin controls (Update/Uninstall/Diagnostics/Logs)
 
     def _apply_provider(self) -> None:
         """(Re)resolve the AI provider for the current project and rebuild the LLM
@@ -411,6 +444,11 @@ class ServerManagerApp(App):
             return Text("[Write]", style=f"bold {c['secondary']}")
         return Text("[Read]", style=f"bold {c['dim']}")
 
+    def _admin_label(self) -> Text:
+        """The leftmost header toggle — highlighted while the admin sub-header is on."""
+        c = self.cc
+        return Text("[Admin]", style=f"bold {c['tool'] if self._admin_mode else c['accent']}")
+
     def _add_hdr(self, bar: Horizontal, content, action: str | None) -> Static:
         btn = Static(content, classes="hdr-btn" if action else "hdr-note", markup=False)
         if action:
@@ -429,22 +467,30 @@ class ServerManagerApp(App):
             return
         bar.remove_children()
         self._dot = None
-        self._add_hdr(bar, self._mode_label(), "cycle_mode")
-        self._add_hdr(bar, "[Theme]", "open_settings")
-        if self.project_root:
-            self._add_hdr(bar, "[Browser]", "open_browser")
-            # State-aware: a running server can be restarted/stopped; a stopped one started.
-            if self._server_state == "running":
-                self._add_hdr(bar, "[Restart]", "server_restart")
-                self._add_hdr(bar, "[Stop]", "server_stop")
-            else:
-                self._add_hdr(bar, "[Start]", "server_start")
-            self._add_hdr(bar, "[Logs]", "server_logs")
+        # [Admin] toggles between the standard header and the admin sub-header.
+        self._add_hdr(bar, self._admin_label(), "toggle_admin")
+        if self._admin_mode:
+            self._add_hdr(bar, "[Update]", "admin_update")
+            self._add_hdr(bar, "[Uninstall]", "admin_uninstall")
             self._add_hdr(bar, "[Diagnostics]", "diagnostics")
+            self._add_hdr(bar, "[Logs]", "server_logs")
+        else:
+            self._add_hdr(bar, self._mode_label(), "cycle_mode")
+            self._add_hdr(bar, "[Theme]", "open_settings")
+            if self.project_root:
+                self._add_hdr(bar, "[Browser]", "open_browser")
+                # State-aware: a running server can be restarted/stopped; a stopped one started.
+                if self._server_state == "running":
+                    self._add_hdr(bar, "[Restart]", "server_restart")
+                    self._add_hdr(bar, "[Stop]", "server_stop")
+                else:
+                    self._add_hdr(bar, "[Start]", "server_start")
+            else:
+                self._add_hdr(bar, Text("onboarding", style=c["secondary"]), None)
+        # Live server dot (managed mode) — shown in both standard and admin headers.
+        if self.project_root:
             dot, col = self._server_dot()
             self._dot = self._add_hdr(bar, Text(dot or "checking", style=col), None)
-        else:
-            self._add_hdr(bar, Text("onboarding", style=c["secondary"]), None)
 
     def _refresh_hints(self) -> None:
         """Footer legend (replaces the stock Footer): the editing / exit shortcuts."""
@@ -596,6 +642,24 @@ class ServerManagerApp(App):
             session_id=self.session_id,
         )
 
+    def _admin_ctx(self):
+        """A ToolContext for direct admin actions (Update / Uninstall): writes are on
+        (the confirm dialog IS the consent) and request_exit is wired so a restart or
+        uninstall can close the manager."""
+        from .tools.base import ToolContext
+        return ToolContext(
+            project_root=self.project_root,
+            writes_enabled=True,
+            autonomous=self.cfg.autonomous,
+            log=lambda s: None,
+            audit=lambda tool, args, ok, detail: self.store.log_action(
+                self.session_id, tool, args, ok, detail),
+            session_id=self.session_id,
+            set_project=self._link_project,
+            app_provider=self.provider,
+            request_exit=self._request_exit,
+        )
+
     async def _do_server(self, which: str) -> None:
         from .tools import server as srv
         fn = {"start": srv.server_start, "stop": srv.server_stop,
@@ -687,6 +751,9 @@ class ServerManagerApp(App):
         self.run_worker(self._do_server("start"), group="server", exclusive=True)
 
     def action_server_logs(self) -> None:
+        if self.project_root is None:
+            self._log(f"[{self.cc['dim']}]no server logs in onboarding mode (link a checkout first)[/]")
+            return
         self.run_worker(self._show_logs(), group="diag", exclusive=True)
 
     async def _show_logs(self) -> None:
@@ -704,6 +771,77 @@ class ServerManagerApp(App):
         from .tools import diagnostics as diag
         msg = await diag.read_diagnostics(self._server_ctx(), limit=20)
         self._log_block(msg)
+
+    # ── admin header: toggle + Update / Uninstall (each with info + confirm) ──
+    def action_toggle_admin(self) -> None:
+        self._admin_mode = not self._admin_mode
+        self._refresh_status()
+
+    def _update_info(self) -> str:
+        si = self._self_info
+        if si.mode == "source":
+            how = (f"Pulls the latest code from the repo and reloads on restart.\n"
+                   f"Source: {si.repo_root}")
+        else:
+            how = ("Rebuilds the app from fresh source and swaps it in on restart "
+                   "(needs git + Python 3.11/3.12 installed).")
+        return "\n".join([
+            how,
+            f"Version {si.version} (build {si.build_commit or 'unstamped'}).",
+            f"{self._self_update_state}.",
+            "",
+            "A backup is taken first and force is never used. The manager will close "
+            "and relaunch to apply the update.",
+        ])
+
+    def action_admin_update(self) -> None:
+        self.push_screen(ConfirmModal("Update webAgent", self._update_info(), "Update now"),
+                         self._after_update_confirm)
+
+    def _after_update_confirm(self, ok: bool | None) -> None:
+        if ok:
+            self.run_worker(self._do_update(), group="admin", exclusive=True)
+
+    async def _do_update(self) -> None:
+        from .tools import selfupdate
+        self._log(f"[{self.cc['tool']}]{G.BULLET} updating — backing up, fetching, and restarting…[/]")
+        msg = await selfupdate.self_update(self._admin_ctx(), make_backup=True, restart=True)
+        self._log_block(msg)
+
+    def _uninstall_info(self) -> str:
+        from .config import data_dir
+        si = self._self_info
+        if not self.facts.is_termux:
+            return ("Automatic uninstall is available on Android/Termux only. On this platform, "
+                    "remove the manager's install by hand: its launcher/.exe, the cloned repo, "
+                    "and its data folder.")
+        repo = si.repo_root or "~/webagent"
+        return "\n".join([
+            "This permanently removes webAgent from this device:",
+            "  • launcher:  $PREFIX/bin/webagent",
+            "  • home-screen shortcut:  ~/.shortcuts/webagent.sh",
+            f"  • repo + virtualenv:  {repo}",
+            f"  • manager data (history, config, cached guide):  {data_dir()}",
+            "  • the Python package (pip uninstall webagent-tui)",
+            "",
+            "This cannot be undone. The manager closes immediately afterward.",
+        ])
+
+    def action_admin_uninstall(self) -> None:
+        self.push_screen(ConfirmModal("Uninstall webAgent", self._uninstall_info(),
+                                      "Remove everything"),
+                         self._after_uninstall_confirm)
+
+    def _after_uninstall_confirm(self, ok: bool | None) -> None:
+        if ok:
+            self.run_worker(self._do_uninstall(), group="admin", exclusive=True)
+
+    async def _do_uninstall(self) -> None:
+        from .tools import manage
+        msg = await manage.uninstall(self._admin_ctx())
+        self._log_block(msg)
+        if self.facts.is_termux:
+            self.set_timer(2.0, self.exit)
 
     # ── theme & animation picker (settings modal) ─────────────────────────
     def action_open_settings(self) -> None:

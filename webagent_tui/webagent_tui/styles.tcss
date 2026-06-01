@@ -56,6 +56,18 @@ SettingsModal { align: center middle; }
 .set-row .set-label { width: 12; height: 3; content-align: left middle; color: $dim; }
 .set-row Select { width: 1fr; }
 
+/* Confirm dialog — details + Confirm/Cancel, for admin actions (Update/Uninstall). */
+ConfirmModal { align: center middle; }
+#confirm-panel {
+    width: 76; height: auto; max-height: 90%;
+    background: $panel; border: round $primary; padding: 1 2;
+}
+#confirm-title { text-style: bold; color: $bar-accent; margin-bottom: 1; }
+#confirm-body { height: auto; color: $foreground; margin-bottom: 1; }
+#confirm-buttons { height: 3; align: right middle; }
+#confirm-buttons .confirm-btn { width: auto; margin: 0 0 0 2; color: $bar-accent; }
+#confirm-buttons .confirm-btn:hover { text-style: bold; color: $foreground; }
+
 #log {
     height: 1fr;
     width: 100%;

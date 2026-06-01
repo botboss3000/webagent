@@ -69,3 +69,58 @@ async def setup_launch_shortcut(ctx: ToolContext) -> str:
         "an empty spot → Widgets → Termux:Widget; 3) pick **webagent**. Tapping it opens "
         "the manager."
     )
+
+
+async def uninstall(ctx: ToolContext) -> str:
+    """Remove webAgent from this device (Termux only): the launcher, the home-screen
+    shortcut, the cloned repo + venv, the manager's data dir, and the pip package.
+    Irreversible. Mutating. The caller should close the manager afterward (the code
+    being removed is the one running — on Linux/Android the inodes survive until exit).
+    """
+    if not _is_termux():
+        return ("Automatic uninstall is Android/Termux only. On desktop, remove the manager's "
+                "install by hand: its launcher/.exe, the cloned repo, and its data folder.")
+    if not ctx.writes_enabled:
+        return WRITES_DISABLED_MSG
+    import shutil
+    import sys
+
+    from ..config import data_dir
+    from ..selfinfo import gather
+    from . import install as _install
+
+    prefix = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
+    home = Path(os.environ.get("HOME") or Path.home())
+    info = gather()
+    repo = Path(info.repo_root) if info.repo_root else (home / "webagent")
+    targets = [
+        ("launcher", Path(prefix) / "bin" / "webagent"),
+        ("home-screen shortcut", home / ".shortcuts" / "webagent.sh"),
+        ("repo + virtualenv", repo),
+        ("manager data", data_dir()),
+    ]
+    removed: list[str] = []
+    failed: list[str] = []
+    for label, p in targets:
+        try:
+            if p.is_dir():
+                shutil.rmtree(p)
+                removed.append(f"{label} ({p})")
+            elif p.exists():
+                p.unlink()
+                removed.append(f"{label} ({p})")
+        except OSError as e:
+            failed.append(f"{label} ({p}): {e}")
+    # Best-effort: drop the pip-installed package too.
+    try:
+        _out, code = await _install._run(
+            [sys.executable, "-m", "pip", "uninstall", "-y", "webagent-tui"], None, 90)
+        if code == 0:
+            removed.append("python package (webagent-tui)")
+    except Exception:
+        pass
+    msg = "[uninstall] removed: " + ("; ".join(removed) if removed else "(nothing found)")
+    if failed:
+        msg += "\n[uninstall] could NOT remove: " + "; ".join(failed)
+    msg += "\nwebAgent has been removed from this device. Closing the manager now."
+    return msg
