@@ -105,6 +105,9 @@ function _setAgentTriggerLabel() {
   const title = (found && found.name) || (window.__agentName) || aid || 'No agent';
   labelEl.textContent = _truncate(title, 20);
   labelEl.title = (found && found.name) || title || '';
+  // Mark the agent dropdown as loaded (removes shimmer + re-enables trigger)
+  const agentDropdown = document.getElementById('agent-dropdown');
+  if (agentDropdown) agentDropdown.dataset.loaded = 'true';
   // Status icon: check if any session for this agent is running or has unread
   const statusEl = document.getElementById('agent-dropdown-status');
   if (statusEl) {
@@ -432,6 +435,9 @@ function _setTriggerLabel() {
   const title = (found && found.title) || 'New Session';
   labelEl.textContent = _truncate(title, 20);
   labelEl.title = (found && found.id) || sid || '';
+  // Mark the session dropdown as loaded (removes shimmer + re-enables trigger)
+  const sessionDropdown = document.getElementById('session-dropdown');
+  if (sessionDropdown) sessionDropdown.dataset.loaded = 'true';
   // Status icon in the trigger button
   const statusEl = document.getElementById('session-dropdown-status');
   if (statusEl) {

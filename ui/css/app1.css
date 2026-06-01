@@ -1784,6 +1784,32 @@ body.light-mode .session-dropdown-status.session-status-unread,
 body.light-mode .agent-dropdown-status.session-status-unread { color: #73a64a; }
 
 /* ── Session / Agent dropdown (custom) ───────────────────────── */
+
+/* Loading shimmer animation for unloaded labels */
+@keyframes dropdown-label-shimmer {
+  0% { opacity: 0.3; }
+  50% { opacity: 0.8; }
+  100% { opacity: 0.3; }
+}
+
+/* When the dropdown is NOT yet loaded, show a shimmer on the label
+   and disable the trigger so the user can't open an empty menu. */
+.session-dropdown:not([data-loaded="true"]) #session-dropdown-label,
+.agent-dropdown:not([data-loaded="true"]) #agent-dropdown-label {
+  animation: dropdown-label-shimmer 1.2s ease-in-out infinite;
+  color: #565f89;
+}
+body.light-mode .session-dropdown:not([data-loaded="true"]) #session-dropdown-label,
+body.light-mode .agent-dropdown:not([data-loaded="true"]) #agent-dropdown-label {
+  color: #b09580;
+}
+.session-dropdown:not([data-loaded="true"]) .session-dropdown-trigger,
+.agent-dropdown:not([data-loaded="true"]) .agent-dropdown-trigger {
+  pointer-events: none;
+  opacity: 0.5;
+  cursor: default;
+}
+
   .session-dropdown,
 .agent-dropdown {
     position: relative;
