@@ -360,14 +360,6 @@ function addChatBubble(role, text, extraClass, imageUrl, turnId, msgId) {
     }
     window.__streamAttachments = null;
   }
-  if (role === 'agent' && extraClass === 'streaming') {
-    const stopBtn = document.createElement('button');
-    stopBtn.className = 'stop-btn';
-    stopBtn.textContent = '\ud83d\uded1';
-    stopBtn.title = 'Stop generation';
-    stopBtn.addEventListener('click', sendStopMessage);
-    bubble.appendChild(stopBtn);
-  }
   app.chatMessages.appendChild(bubble);
   _scrollToBottomIfNear(app.chatMessages);
   _addBubbleActions(bubble);
@@ -708,14 +700,6 @@ function updateLastBubble(text, extraClass, imageUrl) {
     }
     window.__streamAttachments = null;
   }
-  if (extraClass === 'streaming') {
-    const stopBtn = document.createElement('button');
-    stopBtn.className = 'stop-btn';
-    stopBtn.textContent = '\ud83d\uded1';
-    stopBtn.title = 'Stop generation';
-    stopBtn.addEventListener('click', sendStopMessage);
-    last.appendChild(stopBtn);
-  }
   if (extraClass) last.className = 'chat-bubble agent ' + extraClass;
   else last.classList.remove('streaming');
   if (isMd) last.classList.add('md');
@@ -868,12 +852,6 @@ function _setBubbleText(bubble, text, extraClass) {
   while (bubble.firstChild) bubble.removeChild(bubble.firstChild);
   const isMd = _fillAgentBubble(bubble, text, extraClass !== 'streaming');
   if (extraClass === 'streaming') {
-    const stopBtn = document.createElement('button');
-    stopBtn.className = 'stop-btn';
-    stopBtn.textContent = '🛑';
-    stopBtn.title = 'Stop generation';
-    stopBtn.addEventListener('click', sendStopMessage);
-    bubble.appendChild(stopBtn);
     bubble.className = 'chat-bubble agent streaming';
   } else if (extraClass) {
     bubble.className = 'chat-bubble agent ' + extraClass;
@@ -1159,6 +1137,19 @@ export function initChat() {
   }
   setInterval(_updateContinueBtn, 500);
   _updateContinueBtn();
+
+  // ── Stop button (above the pill, left of continue) ──────────────
+  const stopBtn = document.getElementById('chat-stop-btn');
+  if (stopBtn) {
+    stopBtn.addEventListener('click', sendStopMessage);
+    // Extend the poll to also update stop button visibility
+    const origUpdate = _updateContinueBtn;
+    _updateContinueBtn = function() {
+      origUpdate();
+      stopBtn.style.display = app.isProcessing ? 'flex' : 'none';
+    };
+    _updateContinueBtn();
+  }
 
   // Apply gating immediately with cached value, then re-apply once mode is loaded
   applyChatGate();

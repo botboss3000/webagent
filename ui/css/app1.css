@@ -438,6 +438,41 @@ body.light-mode .chat-continue-btn:hover {
     border-color: #ff8c4260;
   }
 
+/* ── Stop button (above the chat pill, left of continue) ────────────────
+   Shown while the agent is processing. Clicking it interrupts the run. */
+.chat-stop-btn {
+    display: none;
+    align-self: flex-end;
+    background: #f7768e15;
+    border: 1px solid #f7768e30;
+    color: #f7768e;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 14px;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    line-height: 1.4;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+.chat-stop-btn:hover {
+    background: #f7768e25;
+    border-color: #f7768e60;
+  }
+.chat-stop-btn:active {
+    background: #f7768e35;
+  }
+body.light-mode .chat-stop-btn {
+    background: #e6455315;
+    border-color: #e6455330;
+    color: #e64553;
+  }
+body.light-mode .chat-stop-btn:hover {
+    background: #e6455325;
+    border-color: #e6455360;
+  }
+
 /* ── Chat-pill ─────────────────────────────────────────────────────────────
    CHAT-PILL-SYNC: single source of truth for every chat-style "pill" input
    in the app. Apply these classes to opt in:
