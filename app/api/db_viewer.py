@@ -651,13 +651,17 @@ async def get_session_messages(
     request: Request,
     session_id: str = Query(..., description="Session ID"),
     limit: int = Query(20, description="Max messages to return"),
-    before_id: Optional[str] = Query(None, description="If set, return only messages older than this message's created_at (for pagination)"),
+    before_id: Optional[str] = Query(None, description="If set, return the batch of messages immediately older than this message (backward pagination)"),
     db: str = Query("local.db", description="Database filename"),
 ):
-    """Get messages for a session, ordered by created_at ASC.
+    """Return the most recent `limit` messages for a session, oldest-first.
 
-    Supports cursor-based pagination via `before_id` and `limit`.
-    Returns a `has_more` boolean indicating whether older messages exist.
+    Initial load (no `before_id`) returns the NEWEST `limit` rows — not the
+    oldest — so a long session opens on its latest messages instead of stopping
+    at an old point. Page further back with `before_id` (the oldest row
+    currently shown); each call returns the `limit` rows immediately older than
+    it. `has_more` reports whether still-older rows remain. Within a batch, rows
+    are ordered oldest-first for top-to-bottom rendering.
     """
     # Route to temp DB if session has one
     resolved_db = _resolve_session_db(session_id, db)
@@ -705,18 +709,28 @@ async def get_session_messages(
             pass  # No sessions table — fall through to message fetch
 
         messages = []
-        # Resolve before_id to a created_at cutoff if provided
-        before_cutoff = None
+        # Pagination cursor. `before_id` marks the oldest row already shown; we
+        # return the rows immediately OLDER than it. created_at alone is NOT a
+        # safe cursor — insert_interaction relies on the second-resolution
+        # datetime('now') default, so a whole turn's rows usually share the same
+        # created_at. We therefore order and page by the composite
+        # (created_at, rowid): rowid is the table's monotonic insertion counter,
+        # which breaks same-second ties in true chronological order.
+        before_ts = None
+        before_rowid = None
         if before_id:
             for _tbl in ("interactions", "messages"):
                 try:
-                    cur.execute(f'SELECT created_at FROM "{_tbl}" WHERE id = ?', (before_id,))
+                    cur.execute(f'SELECT created_at, rowid FROM "{_tbl}" WHERE id = ?', (before_id,))
                     _r = cur.fetchone()
                     if _r:
-                        before_cutoff = _r[0]
+                        before_ts, before_rowid = _r[0], _r[1]
                         break
                 except sqlite3.OperationalError:
                     pass
+        # Fetch one extra row so we can detect whether older messages remain
+        # (has_more) without a second existence query.
+        fetch_n = (limit or 20) + 1
 
         # Try interactions table first (has richer data)
         try:
@@ -730,14 +744,14 @@ async def get_session_messages(
             _status_col = "status" if _has_status else "'complete' AS status"
             _where = "session_id = ?"
             _params: list = [session_id]
-            if before_cutoff is not None:
-                _where += " AND created_at < ?"
-                _params.append(before_cutoff)
+            if before_ts is not None:
+                _where += " AND (created_at < ? OR (created_at = ? AND rowid < ?))"
+                _params.extend([before_ts, before_ts, before_rowid])
             cur.execute(
                 f'SELECT id, session_id, role, content, tool_name, created_at, {_status_col}, session_seq, '
                 f'output, metadata, parent_id, input '
-                f'FROM interactions WHERE {_where} ORDER BY created_at ASC LIMIT ?',
-                (*_params, limit)
+                f'FROM interactions WHERE {_where} ORDER BY created_at DESC, rowid DESC LIMIT ?',
+                (*_params, fetch_n)
             )
             for row in cur.fetchall():
                 messages.append({
@@ -762,13 +776,13 @@ async def get_session_messages(
             try:
                 _where = "session_id = ?"
                 _params = [session_id]
-                if before_cutoff is not None:
-                    _where += " AND created_at < ?"
-                    _params.append(before_cutoff)
+                if before_ts is not None:
+                    _where += " AND (created_at < ? OR (created_at = ? AND rowid < ?))"
+                    _params.extend([before_ts, before_ts, before_rowid])
                 cur.execute(
                     f'SELECT id, session_id, role, content, created_at '
-                    f'FROM messages WHERE {_where} ORDER BY created_at ASC LIMIT ?',
-                    (*_params, limit)
+                    f'FROM messages WHERE {_where} ORDER BY created_at DESC, rowid DESC LIMIT ?',
+                    (*_params, fetch_n)
                 )
                 for row in cur.fetchall():
                     messages.append({
@@ -781,21 +795,13 @@ async def get_session_messages(
             except sqlite3.OperationalError:
                 pass
 
-        # Determine has_more: check if any older message exists beyond this batch
-        has_more = False
-        if messages:
-            oldest_ts = messages[0]["created_at"]
-            for _tbl in ("interactions", "messages"):
-                try:
-                    cur.execute(
-                        f'SELECT 1 FROM "{_tbl}" WHERE session_id = ? AND created_at < ? LIMIT 1',
-                        (session_id, oldest_ts)
-                    )
-                    if cur.fetchone():
-                        has_more = True
-                        break
-                except sqlite3.OperationalError:
-                    pass
+        # We fetched newest-first with one extra row. If the extra came back,
+        # older messages remain (has_more); drop it, keeping the newest `limit`.
+        # Then flip back to chronological (oldest-first) order for rendering.
+        has_more = len(messages) > limit
+        if has_more:
+            messages = messages[:limit]
+        messages.reverse()
 
         # ── Durable run-state: is a turn in progress for this session? ──
         # Lets a cold/second device know to show the live indicator and where to

@@ -33,6 +33,7 @@ class Completion:
     content: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     raw: dict = field(default_factory=dict)
+    usage: dict = field(default_factory=dict)   # {prompt_tokens, completion_tokens, total_tokens}
 
 
 class LLMClient:
@@ -94,4 +95,5 @@ class LLMClient:
             except json.JSONDecodeError:
                 args = {}
             calls.append(ToolCall(id=tc.get("id", ""), name=fn.get("name", ""), arguments=args))
-        return Completion(content=msg.get("content") or "", tool_calls=calls, raw=msg)
+        return Completion(content=msg.get("content") or "", tool_calls=calls, raw=msg,
+                          usage=data.get("usage") or {})

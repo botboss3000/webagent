@@ -27,6 +27,21 @@ Screen {
 /* Animated logo banner (vendored from the launcher) — fixed height above the log. */
 #anim { height: 7; width: 100%; }
 
+/* Session HUD (tokens + context gauge) + loop-reactive walker, above the input. */
+#hud { height: 1; width: 100%; background: $panel; color: $dim; padding: 0 2; }
+#walker { height: 1; width: 100%; padding: 0 2; }
+
+/* Theme & animation picker (settings modal). */
+SettingsModal { align: center middle; }
+#settings-panel {
+    width: 64; height: auto; max-height: 90%;
+    background: $panel; border: round $primary; padding: 1 2;
+}
+#settings-title { text-style: bold; color: $bar-accent; margin-bottom: 1; }
+.set-row { height: 3; width: 100%; }
+.set-row .set-label { width: 12; height: 3; content-align: left middle; color: $dim; }
+.set-row Select { width: 1fr; }
+
 #log {
     height: 1fr;
     width: 100%;
