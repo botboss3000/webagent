@@ -1,0 +1,19 @@
+# build artifacts
+build/
+dist/
+*.spec
+webagent-tui
+webagent-tui.exe
+
+# python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# local data (the external DB lives in the per-user data dir, not here — but
+# guard against accidental local copies)
+*.db
+*.db-journal
+*.db-wal
+config.json
