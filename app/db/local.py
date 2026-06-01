@@ -4341,7 +4341,7 @@ class LocalBackend(StorageBackend):
                        (id, template_id, name, max_turn_count, max_wall_seconds, model, provider,
                         temperature, max_tokens, status, metadata, trigger_type, trigger_key, loop_logic,
                         is_admin_agent, admin_users, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (agent_id, template_id,
                      agent.get("name", ""),
                      agent.get("max_turn_count", 0),
@@ -5616,7 +5616,7 @@ class LocalBackend(StorageBackend):
                     safety_policy, is_admin_agent,
                     admin_users,
                     created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'[]','[]',?,?,?,'{}',?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,'[]','[]',?,?,?,'{}',?,?,?,?)""",
                 (
                     agent_id, name, description,
                     _new_max_turns,

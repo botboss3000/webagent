@@ -217,24 +217,32 @@ async def _canonical_host_redirect(request, call_next):
 
     No-op when no canonical URL is configured; localhost requests are exempt
     so local development is never redirected to production."""
+    # Decide whether to redirect *without* invoking the downstream app, so a
+    # failure in the redirect logic can never swallow (and retry) call_next.
+    # Calling call_next twice on one request deadlocks: the ASGI receive stream
+    # is already consumed, so the second await blocks forever — which is how any
+    # downstream 500 used to turn into a silent hang instead of an error.
+    redirect_target = None
     try:
         from app.admin.integrations import _get_configured_base_url
         canonical = _get_configured_base_url()
-        if not canonical:
-            return await call_next(request)
-        host = (request.headers.get("x-forwarded-host") or request.url.netloc or "").split(",")[0].strip()
-        if not host or host.startswith("localhost") or host.startswith("127."):
-            return await call_next(request)
-        scheme = (request.headers.get("x-forwarded-proto") or request.url.scheme or "http").split(",")[0].strip()
-        actual = f"{scheme}://{host}".rstrip("/")
-        if actual.lower() == canonical.rstrip("/").lower():
-            return await call_next(request)
-        target = canonical.rstrip("/") + request.url.path
-        if request.url.query:
-            target += "?" + request.url.query
-        return RedirectResponse(target, status_code=301)
+        if canonical:
+            host = (request.headers.get("x-forwarded-host") or request.url.netloc or "").split(",")[0].strip()
+            if host and not host.startswith("localhost") and not host.startswith("127."):
+                scheme = (request.headers.get("x-forwarded-proto") or request.url.scheme or "http").split(",")[0].strip()
+                actual = f"{scheme}://{host}".rstrip("/")
+                if actual.lower() != canonical.rstrip("/").lower():
+                    target = canonical.rstrip("/") + request.url.path
+                    if request.url.query:
+                        target += "?" + request.url.query
+                    redirect_target = target
     except Exception:
-        return await call_next(request)
+        redirect_target = None
+    if redirect_target:
+        return RedirectResponse(redirect_target, status_code=301)
+    # Single call_next, outside the try — downstream exceptions propagate to the
+    # real exception handlers (→ proper 500) instead of being caught here.
+    return await call_next(request)
 
 
 # HTTP-error capture for the flight-recorder — records every raised 4xx/5xx
