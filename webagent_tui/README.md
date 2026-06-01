@@ -24,6 +24,8 @@ guidance stays grounded instead of guessed.
 
 Ability sets:
 
+- **Web Search** — `web_search` (any mode, no API key) — search DuckDuckGo for
+errors, docs, solutions, and current information.
 - **Onboarding / Install** — `check_install_readiness`, `clone_repo`,
   `setup_environment`, `seed_config`, `verify_install` (clone
   `github.com/botboss3000/webagent` → build the venv + deps + browser → seed
@@ -131,8 +133,10 @@ the session and hands the agent a kickoff message that runs the whole guided ins
 browser skip, fixes issues as they arise, and on Termux finishes by writing the
 home-screen shortcut (the `setup_launch_shortcut` tool) with instructions to add the
 Termux:Widget. It's deliberately tap-driven, because a terminal app **cannot raise
-the Android soft keyboard** — that's controlled by Termux, not the program (toggle it
-with **Volume-Up + K** if you need to type; the footer shows this hint on Termux).
+the Android soft keyboard** — that's controlled by Termux, not the program (raise it
+from the **Termux left-edge drawer ▸ KEYBOARD** toggle, or **Volume-Up + K**, if you
+need to type; the footer's **⌨ Keyboard** shortcut focuses the input and, on Termux,
+flashes this reminder).
 
 The agent's onboarding context is a **live guide fetched from the public repo** at
 runtime — [`onboarding-guide.md`](onboarding-guide.md). Edit that file (and push to
@@ -203,36 +207,44 @@ which via `self_status`):
   the **whole repository**, so a managed checkout living in the same repo is updated
   too. Work (clone + build venv) is cached under `…/webagent-tui/self-update/`.
 
-## Header toolbar (clickable)
+## Header toolbar + side panels (clickable)
 
-The header is a row of **clickable controls** (no title/model text). An **`[Admin]`**
-button on the left toggles between the **standard** header and an **admin sub-header**;
-clicking `[Admin]` again returns to standard.
+The header is a row of **clickable category buttons** (no title/model text). Clicking
+one opens a **thin panel docked to the right** holding that category's controls. The
+**chat column stays visible to its left**, and the header/footer span the full width
+above and below — opening a menu never hides the conversation. The panel appears only
+while a category is open.
 
-**Standard header:**
+| Header item | Opens a right panel with |
+|-------------|--------------------------|
+| **Admin** | `[Update]` · `[Install]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` |
+| **Scene** | the theme & animation controls (theme · animation style · palette · speed · intensity · FPS · banner on/off) — each applies **live** |
+| **App** | an **AI-key** field (paste/update the key; it's saved and re-resolves the model), the write-gate `[Read-only]` / `[Write]` / `[Autonomous]` (the current one is highlighted), and `[Open Browser]` (opens `http://localhost:8080/index.html`) |
+| **server status** (the last item — shows `live` / `stopped` / `checking`, **not** the word "Server"; managed mode) | `[Start]` · `[Restart]` · `[Kill]` |
 
-| Control | Action |
-|---------|--------|
-| `[Admin]` | Toggle the admin sub-header (Update / Uninstall / Diagnostics / Logs) on/off |
-| `[Read]` / `[Write]` / `[Auto]` | Write-gate button — shows the current mode; click to cycle Read → Write → Auto. |
-| `[Theme]` | Open the theme & animation picker (theme · animation style · palette · speed · intensity · FPS · banner on/off) |
-| `[Browser]` | Open the web UI (`http://localhost:8080/index.html`) in your browser (managed mode) |
-| `[Start]` ↔ `[Restart]` `[Stop]` | Server control, state-aware: `[Start]` when stopped; `[Restart]` + `[Stop]` when running (managed mode) |
-| server dot | live (green) / stopped (red) / checking — polled every few seconds (managed mode) |
+**Closing a panel:** click anywhere **outside** it (e.g. in the chat), press **Esc**,
+or click the same category again to toggle it shut. The open category is highlighted in
+the header.
 
-**Admin sub-header** (`[Admin]` active):
+**Admin panel actions:**
 
-| Control | Action |
-|---------|--------|
+| Button | Action |
+|--------|--------|
 | `[Update]` | Update the manager/repo — opens an info + confirm screen, then backs up, pulls (source) or rebuilds the exe (frozen), and restarts |
+| `[Install]` | Run the guided install (onboarding mode); in managed mode it points you at `[Update]` instead |
 | `[Uninstall]` | Remove webAgent from the device (Termux) — opens an info + confirm screen listing exactly what's deleted (launcher, shortcut, repo, data, package), then removes it and closes |
 | `[Diagnostics]` | Show the app's recorded warnings/errors — reads the local DB, so it works even when the server is down |
 | `[Logs]` | Show the captured server log in the transcript |
 
-Update and Uninstall always open a **details-and-confirmation screen** first; Uninstall is irreversible. More admin actions will land here over time.
+Update and Uninstall always open a **details-and-confirmation screen** first; Uninstall is irreversible.
 
 The server **auto-starts** when you open the manager in managed mode (if it isn't
-already running), so there's no separate Launch control.
+already running), so there's no separate Launch control. The server status item is
+polled every few seconds (live = green, stopped = red, checking = amber).
+
+**Small screens:** the panel is narrow (capped at 60% width) so the chat stays visible
+even on a phone, and its labels stack vertically and wrap. Because the header collapsed
+to a few short words (Admin · Scene · App · status), it fits a narrow terminal.
 
 ### Look & feel (vendored from the launcher)
 
@@ -240,9 +252,9 @@ already running), so there's no separate Launch control.
   "off") behind the "webagent" ASCII logo, above the transcript. Coloured from
   the active theme (or a chosen palette). Stops animating when off or when the
   window loses focus (≈0% CPU).
-- **`[Theme]` picker** — a modal to set the theme, animation style, palette
-  (match-theme or a preset), speed, intensity, FPS, and the banner on/off. Every
-  choice applies **live** and persists.
+- **Scene panel** — the theme, animation style, palette (match-theme or a preset),
+  speed, intensity, FPS, and the banner on/off, opened from the header's **Scene**
+  button. Every choice applies **live** and persists.
 - **Walker** — a tiny ascii guy above the input reacts to the agent loop: walks
   while thinking, works during a tool, cheers on a reply, trips on an error.
 - **Session HUD** — tokens in/out this session and a context-window gauge
@@ -253,10 +265,20 @@ already running), so there's no separate Launch control.
 | Key | Action |
 |-----|--------|
 | `Enter` | Send |
-| `Esc` | Exit |
+| `Esc` | Open the side menu (the **App** panel) — or close it if one is already open |
+| `Ctrl+Q` | Quit the manager |
 | `Ctrl+A` | Select all text in the input field |
 | `Ctrl+C` / `Ctrl+V` / `Ctrl+X` | Copy / paste / cut (input field) |
 | `Ctrl+T` | Cycle theme (23 shared with the launcher; not shown in the footer) |
+
+The **footer** is minimal: a left `Esc menu` hint and a right-aligned **⌨ Keyboard**
+shortcut. Tapping **⌨ Keyboard** focuses the input — the standard way to raise the soft
+keyboard on desktop and most platforms.
+
+> **Android/Termux note.** A terminal program **cannot force the Android soft keyboard
+> up** — only the OS/Termux can. If tapping **⌨ Keyboard** doesn't raise it, open it
+> from the **Termux left-edge drawer ▸ KEYBOARD** toggle (or Vol-Up + K). The manager
+> flashes this reminder on Termux.
 
 **Copying transcript text.** The footer's `Ctrl+C` copies the input field. To copy
 text from the **transcript**, hold **Shift** while dragging to use your terminal's

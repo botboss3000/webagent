@@ -114,56 +114,37 @@ class WalkerBar(Widget):
         return line
 
 
-class SettingsModal(ModalScreen):
-    """Theme & animation picker. Each change applies live and persists. Esc closes."""
+def _scene_rows(app) -> list[tuple[str, "Select"]]:
+    """The theme/animation ('Scene') controls — one labelled Select per setting.
+    Shared shape so every change routes through app.apply_setting (live + persisted)."""
+    cfg = app.cfg
 
-    BINDINGS = [Binding("escape", "close", "Close")]
+    def safe(v, allowed, default):
+        return v if v in allowed else default
 
-    def compose(self) -> ComposeResult:
-        app = self.app
-        cfg = app.cfg
-
-        def safe(v, allowed, default):
-            return v if v in allowed else default
-
-        pal_names = {"theme", *[p.name for p in PRESETS]}
-        rows = [
-            ("Banner", Select([("On", True), ("Off", False)],
-                              value=bool(app._anim_on), allow_blank=False, id="set-banner")),
-            ("Theme", Select([(THEME_LABELS.get(t, t), t) for t in THEME_ORDER],
-                             value=safe(app.theme, set(THEME_ORDER), DEFAULT_THEME),
-                             allow_blank=False, id="set-theme")),
-            ("Animation", Select([(ANIM_LABELS[s], s) for s in ANIM_STYLES],
-                                 value=safe(cfg.anim_style, set(ANIM_STYLES), "plasma"),
-                                 allow_blank=False, id="set-anim")),
-            ("Palette", Select([("Match theme", "theme")] + [(p.name, p.name) for p in PRESETS],
-                               value=safe(cfg.anim_palette, pal_names, "theme"),
-                               allow_blank=False, id="set-pal")),
-            ("Speed", Select([("Slow", 0.5), ("Normal", 1.0), ("Fast", 2.0)],
-                             value=safe(cfg.anim_speed, {0.5, 1.0, 2.0}, 1.0),
-                             allow_blank=False, id="set-speed")),
-            ("Intensity", Select([("Low", 0.6), ("Normal", 1.0), ("High", 1.5)],
-                                 value=safe(cfg.anim_intensity, {0.6, 1.0, 1.5}, 1.0),
-                                 allow_blank=False, id="set-int")),
-            ("FPS", Select([("12", 12), ("20", 20), ("30", 30)],
-                           value=safe(cfg.anim_fps, {12, 20, 30}, 20),
-                           allow_blank=False, id="set-fps")),
-        ]
-        with Vertical(id="settings-panel"):
-            yield Static("Theme & Animation  —  applies live · Esc to close", id="settings-title")
-            for label, sel in rows:
-                with Horizontal(classes="set-row"):
-                    yield Static(label, classes="set-label")
-                    yield sel
-
-    @on(Select.Changed)
-    def _on_change(self, event: Select.Changed) -> None:
-        if event.value is Select.BLANK:
-            return
-        self.app.apply_setting(event.select.id, event.value)
-
-    def action_close(self) -> None:
-        self.dismiss()
+    pal_names = {"theme", *[p.name for p in PRESETS]}
+    return [
+        ("Banner", Select([("On", True), ("Off", False)],
+                          value=bool(app._anim_on), allow_blank=False, id="set-banner")),
+        ("Theme", Select([(THEME_LABELS.get(t, t), t) for t in THEME_ORDER],
+                         value=safe(app.theme, set(THEME_ORDER), DEFAULT_THEME),
+                         allow_blank=False, id="set-theme")),
+        ("Animation", Select([(ANIM_LABELS[s], s) for s in ANIM_STYLES],
+                             value=safe(cfg.anim_style, set(ANIM_STYLES), "plasma"),
+                             allow_blank=False, id="set-anim")),
+        ("Palette", Select([("Match theme", "theme")] + [(p.name, p.name) for p in PRESETS],
+                           value=safe(cfg.anim_palette, pal_names, "theme"),
+                           allow_blank=False, id="set-pal")),
+        ("Speed", Select([("Slow", 0.5), ("Normal", 1.0), ("Fast", 2.0)],
+                         value=safe(cfg.anim_speed, {0.5, 1.0, 2.0}, 1.0),
+                         allow_blank=False, id="set-speed")),
+        ("Intensity", Select([("Low", 0.6), ("Normal", 1.0), ("High", 1.5)],
+                             value=safe(cfg.anim_intensity, {0.6, 1.0, 1.5}, 1.0),
+                             allow_blank=False, id="set-int")),
+        ("FPS", Select([("12", 12), ("20", 20), ("30", 30)],
+                       value=safe(cfg.anim_fps, {12, 20, 30}, 20),
+                       allow_blank=False, id="set-fps")),
+    ]
 
 
 class ConfirmModal(ModalScreen[bool]):
@@ -202,11 +183,12 @@ class ServerManagerApp(App):
     CSS_PATH = "styles.tcss"
     TITLE = "webAgent Server Manager"
 
-    # Esc exits; the editing keys (Ctrl+A/C/V) are handled by the focused input.
-    # Theme stays on Ctrl+T (not advertised). priority=True so Esc/theme fire even
-    # while the input is focused.
+    # Esc opens/closes the side menu (a panel); Ctrl+Q quits the app. The editing
+    # keys (Ctrl+A/C/V) are handled by the focused input. Theme stays on Ctrl+T (not
+    # advertised). priority=True so these fire even while the input is focused.
     BINDINGS = [
-        Binding("escape", "exit", "Exit", priority=True),
+        Binding("escape", "exit", "Menu", priority=True),
+        Binding("ctrl+q", "quit_app", "Quit", priority=True),
         Binding("ctrl+t", "cycle_theme", "Theme", priority=True),
     ]
 
@@ -241,7 +223,7 @@ class ServerManagerApp(App):
         self._s_in = 0               # session token accumulators (HUD)
         self._s_out = 0
         self._ctx_tokens = 0         # latest prompt size = current context usage
-        self._admin_mode = False     # header shows admin controls (Update/Uninstall/Diagnostics/Logs)
+        self._panel_kind = None      # which side-panel category is open (None = closed)
 
     def _apply_provider(self) -> None:
         """(Re)resolve the AI provider for the current project and rebuild the LLM
@@ -259,26 +241,35 @@ class ServerManagerApp(App):
         return CUSTOM_VAR_DEFAULTS
 
     def compose(self) -> ComposeResult:
-        # Custom chrome modelled on the launcher's chat screen: a Rich-drawn
-        # status bar (server dot + mode + writes + model) instead of the stock
-        # Header, and a clickable hint-pill bar instead of the stock Footer.
-        yield Horizontal(id="status")      # clickable control toolbar
-        self._anim = AnimatedStage(palette=self._build_palette(), style=self.cfg.anim_style,
-                                   fps=self.cfg.anim_fps, speed=self.cfg.anim_speed,
-                                   intensity=self.cfg.anim_intensity, show_logo=True)
-        self._anim.id = "anim"
-        self._anim.display = self._anim_on
-        self._anim.set_idle(not self._anim_on)
-        yield self._anim                   # animated logo banner
-        yield RichLog(id="log", wrap=True, markup=True, highlight=False)
-        yield Static("", id="hud")         # session HUD (tokens / context gauge)
-        self._walker = WalkerBar(id="walker")
-        yield self._walker                 # loop-reactive ascii walker
-        cta = Static(self._cta_label(), id="cta", markup=False)
-        cta.display = self.project_root is None   # onboarding-only call-to-action
-        yield cta
-        yield PromptInput(placeholder="Ask the Server Manager…", id="prompt")
-        yield Static("", id="hints")       # editing-shortcut legend
+        # Custom chrome modelled on the launcher's chat screen: a header toolbar of
+        # clickable CATEGORY buttons + a footer legend, both spanning the FULL width
+        # above and below a middle body. The body splits into the chat column (left,
+        # always visible) and a thin side panel (right) that appears only when a
+        # category is opened — so opening a menu never hides the conversation.
+        yield Horizontal(id="status")      # header: clickable category toolbar
+        with Horizontal(id="body"):
+            with Vertical(id="main"):      # the chat column (stays visible)
+                self._anim = AnimatedStage(palette=self._build_palette(), style=self.cfg.anim_style,
+                                           fps=self.cfg.anim_fps, speed=self.cfg.anim_speed,
+                                           intensity=self.cfg.anim_intensity, show_logo=True)
+                self._anim.id = "anim"
+                self._anim.display = self._anim_on
+                self._anim.set_idle(not self._anim_on)
+                yield self._anim                   # animated logo banner
+                yield RichLog(id="log", wrap=True, markup=True, highlight=False)
+                yield Static("", id="hud")         # session HUD (tokens / context gauge)
+                self._walker = WalkerBar(id="walker")
+                yield self._walker                 # loop-reactive ascii walker
+                cta = Static(self._cta_label(), id="cta", markup=False)
+                cta.display = self.project_root is None   # onboarding-only call-to-action
+                yield cta
+                yield PromptInput(placeholder="Ask the Server Manager…", id="prompt")
+            panel = Vertical(id="side-panel")  # thin right menu; hidden until a category opens
+            panel.display = False
+            yield panel
+        with Horizontal(id="footer"):
+            yield Static("", id="hints")               # left: minimal legend
+            yield Static(self._kbd_label(), id="kbd", markup=False)  # right: open-keyboard shortcut
 
     async def on_mount(self) -> None:
         # Register the 23 shared themes and activate the saved one.
@@ -292,6 +283,7 @@ class ServerManagerApp(App):
         self._server_state = await server_health() if self.project_root else "n/a"
         self._render_welcome(self._server_state)
         self._refresh_hints()
+        self._refresh_kbd()
         self._refresh_status()
         self._update_hud()
         self.query_one("#prompt", Input).focus()
@@ -434,21 +426,6 @@ class ServerManagerApp(App):
             return "", c["dim"]
         return f"{G.DOT_WARN} checking", c["tool"]
 
-    def _mode_label(self) -> Text:
-        """The write-gate button — shows the CURRENT mode only; clicking cycles
-        Read → Write → Auto → Read."""
-        c = self.cc
-        if self.cfg.autonomous:
-            return Text("[Auto]", style=f"bold {c['tool']}")
-        if self.cfg.writes_enabled:
-            return Text("[Write]", style=f"bold {c['secondary']}")
-        return Text("[Read]", style=f"bold {c['dim']}")
-
-    def _admin_label(self) -> Text:
-        """The leftmost header toggle — highlighted while the admin sub-header is on."""
-        c = self.cc
-        return Text("[Admin]", style=f"bold {c['tool'] if self._admin_mode else c['accent']}")
-
     def _add_hdr(self, bar: Horizontal, content, action: str | None) -> Static:
         btn = Static(content, classes="hdr-btn" if action else "hdr-note", markup=False)
         if action:
@@ -457,9 +434,11 @@ class ServerManagerApp(App):
         return btn
 
     def _refresh_status(self) -> None:
-        """(Re)build the header toolbar (replaces the stock Header): a write-gate
-        button that cycles Read/Write/Auto and, in managed mode, clickable
-        Browser / Restart / Stop plus the live server dot. No title or model text."""
+        """(Re)build the header toolbar (replaces the stock Header): one clickable
+        CATEGORY button per group — Admin · Scene · App — each of which opens a thin
+        right-side panel of buttons. The last item is the live SERVER STATUS itself
+        (live / stopped / checking); clicking it opens the server panel (Start /
+        Restart / Kill). No title or model text."""
         c = self.cc
         try:
             bar = self.query_one("#status", Horizontal)
@@ -467,49 +446,48 @@ class ServerManagerApp(App):
             return
         bar.remove_children()
         self._dot = None
-        # [Admin] toggles between the standard header and the admin sub-header.
-        self._add_hdr(bar, self._admin_label(), "toggle_admin")
-        if self._admin_mode:
-            self._add_hdr(bar, "[Update]", "admin_update")
-            self._add_hdr(bar, "[Uninstall]", "admin_uninstall")
-            self._add_hdr(bar, "[Diagnostics]", "diagnostics")
-            self._add_hdr(bar, "[Logs]", "server_logs")
-        else:
-            self._add_hdr(bar, self._mode_label(), "cycle_mode")
-            self._add_hdr(bar, "[Theme]", "open_settings")
-            if self.project_root:
-                self._add_hdr(bar, "[Browser]", "open_browser")
-                # State-aware: a running server can be restarted/stopped; a stopped one started.
-                if self._server_state == "running":
-                    self._add_hdr(bar, "[Restart]", "server_restart")
-                    self._add_hdr(bar, "[Stop]", "server_stop")
-                else:
-                    self._add_hdr(bar, "[Start]", "server_start")
-            else:
-                self._add_hdr(bar, Text("onboarding", style=c["secondary"]), None)
-        # Live server dot (managed mode) — shown in both standard and admin headers.
+
+        def cat(label: str, kind: str, action: str) -> None:
+            # Highlight the category whose panel is currently open.
+            col = c["tool"] if self._panel_kind == kind else c["accent"]
+            self._add_hdr(bar, Text(label, style=f"bold {col}"), action)
+
+        cat("Admin", "admin", "panel_admin")
+        cat("Scene", "scene", "panel_scene")
+        cat("App", "app", "panel_app")
+        # Last header item = the server STATUS (not the word "Server"); click → server panel.
         if self.project_root:
             dot, col = self._server_dot()
-            self._dot = self._add_hdr(bar, Text(dot or "checking", style=col), None)
+            sty = c["tool"] if self._panel_kind == "server" else col
+            self._dot = self._add_hdr(bar, Text(dot or "checking", style=f"bold {sty}"),
+                                      "panel_server")
+        else:
+            self._add_hdr(bar, Text("onboarding", style=c["secondary"]), None)
 
     def _refresh_hints(self) -> None:
-        """Footer legend (replaces the stock Footer): the editing / exit shortcuts."""
+        """Footer-left legend. Esc opens/closes the side menu (the Ctrl+ editing hints
+        were removed); the open-keyboard shortcut lives on the footer-RIGHT (#kbd)."""
         c = self.cc
         t = Text(no_wrap=True, overflow="crop")
-        for i, (key, what) in enumerate((("Esc", "exit"), ("Ctrl+A", "select all"),
-                                         ("Ctrl+C", "copy"), ("Ctrl+V", "paste"))):
-            if i:
-                t.append(f"   {G.SEP}   ", style=c["dim"])
-            t.append(key + " ", style=c["accent"])
-            t.append(what, style=c["dim"])
-        if self.facts.is_termux:
-            t.append(f"   {G.SEP}   ", style=c["dim"])
-            t.append("Vol+ then K ", style=c["accent"])
-            t.append("toggles keyboard", style=c["dim"])
+        t.append("Esc ", style=c["accent"])
+        t.append("menu", style=c["dim"])
         try:
             self.query_one("#hints", Static).update(t)
         except Exception:
             pass
+
+    def _refresh_kbd(self) -> None:
+        try:
+            self.query_one("#kbd", Static).update(self._kbd_label())
+        except Exception:
+            pass
+
+    def _kbd_label(self):
+        c = self.cc
+        t = Text(no_wrap=True, overflow="crop")
+        t.append(("⌨ " if EMOJI else ""), style=c["accent"])
+        t.append("Keyboard", style=f"bold {c['accent']}")
+        return t
 
     # ── session HUD (tokens + context gauge) ──────────────────────────────
     @staticmethod
@@ -576,7 +554,7 @@ class ServerManagerApp(App):
         elif self._dot is not None:
             dot, col = self._server_dot()
             try:
-                self._dot.update(Text(dot or "checking", style=col))
+                self._dot.update(Text(dot or "checking", style=f"bold {col}"))
             except Exception:
                 pass
 
@@ -586,6 +564,10 @@ class ServerManagerApp(App):
         fn = getattr(self, f"action_{action}", None) if action else None
         if fn is not None:
             fn()
+
+    @on(Click, "#kbd")
+    def _on_kbd_click(self, event: Click) -> None:
+        self.action_open_keyboard()
 
     # ── onboarding call-to-action (the tappable "get started" button) ──────
     def _cta_label(self) -> str:
@@ -707,22 +689,208 @@ class ServerManagerApp(App):
 
     # ── actions ──────────────────────────────────────────────────────────
     def action_exit(self) -> None:
+        # Esc toggles the side MENU: it closes an open confirm dialog or panel, and
+        # otherwise OPENS the App panel (the keyboard way in). Quitting is Ctrl+Q.
+        if isinstance(self.screen, ConfirmModal):
+            self.screen.dismiss(False)
+            return
+        if self._panel_open():
+            self._close_panel()
+        else:
+            self._open_panel("app")
+
+    def action_quit_app(self) -> None:
         self.exit()
 
-    def action_cycle_mode(self) -> None:
-        """Cycle the agent's write gate: read-only → writes → autonomous → …"""
-        if self.cfg.autonomous:
-            self.cfg.autonomous = False
-            self.cfg.writes_enabled = False
-        elif self.cfg.writes_enabled:
-            self.cfg.autonomous = True
+    # ── header categories → thin docked right-side panel ──────────────────
+    def _panel_open(self) -> bool:
+        return self._panel_kind is not None
+
+    def _close_panel(self) -> None:
+        self._panel_kind = None
+        self._refresh_status()
+        self.run_worker(self._render_panel(None), group="panel", exclusive=True)
+
+    def _open_panel(self, kind: str) -> None:
+        """Open (or, if already open for this category, close) the docked side panel.
+        The chat column stays visible to its left; the panel is rebuilt from live
+        state each time so mode highlights / server buttons / the key field are fresh."""
+        if self._panel_kind == kind:
+            self._close_panel()
+            return
+        self._panel_kind = kind
+        self._refresh_status()
+        self.run_worker(self._render_panel(kind), group="panel", exclusive=True)
+
+    def _rebuild_panel(self) -> None:
+        """Re-render the open panel in place (after a state change, e.g. a saved key)."""
+        if self._panel_kind:
+            self.run_worker(self._render_panel(self._panel_kind), group="panel", exclusive=True)
+
+    async def _render_panel(self, kind: str | None) -> None:
+        """Swap the docked panel's contents (or hide it when kind is None). Removal is
+        awaited before mounting so widget IDs never collide; an exclusive worker group
+        means rapid category switches cancel the previous render cleanly."""
+        try:
+            panel = self.query_one("#side-panel", Vertical)
+        except Exception:
+            return
+        await panel.remove_children()
+        if kind is None:
+            panel.display = False
+            return
+        await panel.mount(*self._panel_widgets(kind))
+        panel.display = True
+
+    def _panel_btn(self, label: str, action: str, active: bool = False) -> Static:
+        b = Static(label, classes="panel-btn panel-btn-active" if active else "panel-btn",
+                   markup=False)
+        b._btn_action = action  # type: ignore[attr-defined]
+        return b
+
+    def _panel_widgets(self, kind: str) -> list[Widget]:
+        """Build the widgets for one category panel: a TITLE then its buttons (Admin /
+        Server), the theme/animation Selects (Scene), or the App controls (AI key field,
+        Read/Write/Auto, Open Browser)."""
+        c = self.cc
+        title = {"admin": "ADMIN", "scene": "SCENE", "app": "APP",
+                 "server": "SERVER"}.get(kind, kind.upper())
+        out: list[Widget] = [Static(Text(title, style=f"bold {c['accent']}"), id="panel-title")]
+        if kind == "scene":
+            for label, sel in _scene_rows(self):
+                out.append(Horizontal(Static(label, classes="set-label"), sel, classes="set-row"))
+            return out
+        if kind == "app":
+            out.append(Static(Text("AI key", style=c["dim"]), classes="panel-sub"))
+            out.append(Input(value="", password=True, id="key-input",
+                             placeholder="update key…" if self.provider.configured else "paste API key…"))
+            keynote = (f"model {self.provider.model}" if self.provider.configured
+                       else "not configured")
+            out.append(Static(Text(keynote, style=c["dim"]), id="key-status", classes="panel-sub"))
+            cur = "auto" if self.cfg.autonomous else "write" if self.cfg.writes_enabled else "read"
+            out.append(Static(Text("Mode", style=c["dim"]), classes="panel-sub"))
+            out.append(self._panel_btn("[Read-only]", "mode_read", cur == "read"))
+            out.append(self._panel_btn("[Write]", "mode_write", cur == "write"))
+            out.append(self._panel_btn("[Autonomous]", "mode_auto", cur == "auto"))
+            out.append(self._panel_btn("[Open Browser]", "open_browser"))
+            return out
+        specs = {
+            "admin": [("[Update]", "admin_update"), ("[Install]", "install"),
+                      ("[Uninstall]", "admin_uninstall"), ("[Diagnostics]", "diagnostics"),
+                      ("[Logs]", "server_logs")],
+            "server": [("[Start]", "server_start"), ("[Restart]", "server_restart"),
+                       ("[Kill]", "server_stop")],
+        }.get(kind, [])
+        for label, action in specs:
+            out.append(self._panel_btn(label, action))
+        return out
+
+    def action_panel_admin(self) -> None:
+        self._open_panel("admin")
+
+    def action_panel_scene(self) -> None:
+        self._open_panel("scene")
+
+    def action_panel_app(self) -> None:
+        self._open_panel("app")
+
+    def action_panel_server(self) -> None:
+        if self.project_root is None:
+            return
+        self._open_panel("server")
+
+    # ── panel interactions: button clicks, click-outside, settings, AI key ──
+    @on(Click, ".panel-btn")
+    def _on_panel_btn(self, event: Click) -> None:
+        action = getattr(event.widget, "_btn_action", None)
+        self._close_panel()
+        if action:
+            fn = getattr(self, f"action_{action}", None)
+            if fn is not None:
+                fn()
+
+    def on_click(self, event: Click) -> None:
+        # Click anywhere OUTSIDE the open panel (and not on a header/panel button) closes it.
+        if not self._panel_open():
+            return
+        node = event.widget
+        while node is not None:
+            if getattr(node, "id", None) == "side-panel":
+                return
+            cls = getattr(node, "classes", ())
+            if "hdr-btn" in cls or "panel-btn" in cls:
+                return
+            node = node.parent
+        self._close_panel()
+
+    @on(Select.Changed)
+    def _on_setting_change(self, event: Select.Changed) -> None:
+        # Scene controls apply live; the panel stays open so several can be tweaked.
+        if event.value is Select.BLANK:
+            return
+        self.apply_setting(event.select.id, event.value)
+
+    @on(Input.Submitted, "#key-input")
+    def _save_key(self, event: Input.Submitted) -> None:
+        key = event.value.strip()
+        if not key:
+            return
+        self.cfg.api_key = key
+        self.cfg.save()
+        self._apply_provider()
+        self._refresh_status()
+        if self.provider.configured:
+            self._log(f"[{self.cc['secondary']}]{G.OK} AI key saved[/] "
+                      f"[{self.cc['dim']}]— model {self.provider.model}[/]")
         else:
-            self.cfg.writes_enabled = True
+            self._log(f"[{self.cc['tool']}]{G.WARN} key saved but still not resolving — "
+                      f"a linked repo's provider.json may be overriding it.[/]")
+        self._rebuild_panel()
+
+    # ── App panel: set the write gate directly (Read / Write / Auto) ───────
+    def _set_mode(self, mode: str) -> None:
+        """Set the agent's write gate directly. read = no writes; write = writes on;
+        auto = writes on + autonomous (mutating tools run without per-call gating)."""
+        self.cfg.writes_enabled = mode in ("write", "auto")
+        self.cfg.autonomous = (mode == "auto")
         self.cfg.save()
         self._refresh_status()
-        mode = ("autonomous" if self.cfg.autonomous else
-                "writes" if self.cfg.writes_enabled else "read-only")
-        self._log(f"[{self.cc['secondary']}]{G.BULLET} mode: {mode}[/]")
+        label = {"read": "read-only", "write": "writes", "auto": "autonomous"}[mode]
+        self._log(f"[{self.cc['secondary']}]{G.BULLET} mode: {label}[/]")
+
+    def action_mode_read(self) -> None:
+        self._set_mode("read")
+
+    def action_mode_write(self) -> None:
+        self._set_mode("write")
+
+    def action_mode_auto(self) -> None:
+        self._set_mode("auto")
+
+    # ── Admin panel: Install (guided setup) ────────────────────────────────
+    def action_install(self) -> None:
+        """Run the guided install. Onboarding mode → drive the full setup (same as the
+        'get started' button). Managed mode → there's already a linked checkout, so
+        point the user at Update instead of re-installing."""
+        if self.project_root is not None:
+            self._log(f"[{self.cc['dim']}]a webAgent checkout is already linked "
+                      f"({self.project_root}) — use Admin ▸ Update to upgrade it.[/]")
+            return
+        self.action_get_started()
+
+    # ── footer-right: open the soft keyboard ──────────────────────────────
+    def action_open_keyboard(self) -> None:
+        """Focus the prompt input — the standard trigger that raises the soft keyboard
+        on desktop and most platforms. On Android/Termux the OS does NOT let a terminal
+        program force the soft keyboard up (only the user can, via the Termux drawer's
+        'KEYBOARD' toggle or Vol-Up+K), so there we focus the input and flash the hint."""
+        try:
+            self.query_one("#prompt", Input).focus()
+        except Exception:
+            pass
+        if self.facts.is_termux:
+            self._log(f"[{self.cc['dim']}]tip: if the keyboard didn't appear, open it from the "
+                      f"Termux left-edge drawer ▸ KEYBOARD (Android blocks apps from raising it).[/]")
 
     def action_open_browser(self) -> None:
         url = "http://localhost:8080/index.html"
@@ -772,11 +940,7 @@ class ServerManagerApp(App):
         msg = await diag.read_diagnostics(self._server_ctx(), limit=20)
         self._log_block(msg)
 
-    # ── admin header: toggle + Update / Uninstall (each with info + confirm) ──
-    def action_toggle_admin(self) -> None:
-        self._admin_mode = not self._admin_mode
-        self._refresh_status()
-
+    # ── admin panel: Update / Uninstall (each with an info + confirm screen) ──
     def _update_info(self) -> str:
         si = self._self_info
         if si.mode == "source":
@@ -843,10 +1007,7 @@ class ServerManagerApp(App):
         if self.facts.is_termux:
             self.set_timer(2.0, self.exit)
 
-    # ── theme & animation picker (settings modal) ─────────────────────────
-    def action_open_settings(self) -> None:
-        self.push_screen(SettingsModal())
-
+    # ── theme & animation ('Scene' panel) helpers ─────────────────────────
     def _build_palette(self):
         """The animation palette for the current choice: a named preset, or
         (default 'theme') one derived from the active theme's colours."""
@@ -915,6 +1076,7 @@ class ServerManagerApp(App):
         self.cfg.save()
         self._refresh_status()
         self._refresh_hints()
+        self._refresh_kbd()
         self._update_hud()
         self._log(f"[{self.cc['accent']}]theme: {THEME_LABELS.get(name, name)}[/]")
 

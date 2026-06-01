@@ -45,16 +45,37 @@ Screen {
 }
 #cta:hover { background: $primary; color: $background; }
 
-/* Theme & animation picker (settings modal). */
-SettingsModal { align: center middle; }
-#settings-panel {
-    width: 64; height: auto; max-height: 90%;
-    background: $panel; border: round $primary; padding: 1 2;
+/* Body = the middle band between header and footer: the chat column on the left
+ * (always visible) and the docked side panel on the right (shown only when open). */
+#body { layout: horizontal; width: 100%; height: 1fr; }
+#main { width: 1fr; height: 100%; }
+
+/* Thin docked right-side category panel (Admin / Scene / App / Server). Appears only
+ * while a category is open; click outside it (the chat) or press Esc to close. Theme
+ * variables only — legible in light AND dark. Width is capped at 60% so the chat stays
+ * visible even on a small phone; button labels stack and wrap so they stay readable. */
+#side-panel {
+    width: 32; max-width: 60%;
+    height: 100%;
+    background: $panel;
+    border-left: thick $primary;
+    padding: 1 1;
 }
-#settings-title { text-style: bold; color: $bar-accent; margin-bottom: 1; }
-.set-row { height: 3; width: 100%; }
-.set-row .set-label { width: 12; height: 3; content-align: left middle; color: $dim; }
-.set-row Select { width: 1fr; }
+#side-panel #panel-title { text-style: bold; color: $bar-accent; margin-bottom: 1; }
+#side-panel .panel-sub { width: 100%; height: auto; color: $dim; margin-top: 1; }
+#side-panel #key-input { width: 100%; height: 3; }
+#side-panel .panel-btn {
+    width: 100%; height: auto;
+    padding: 0 1;
+    color: $bar-accent;
+}
+#side-panel .panel-btn:hover { background: $primary; color: $background; text-style: bold; }
+#side-panel .panel-btn-active { color: $secondary; text-style: bold; }
+
+/* 'Scene' panel rows — one labelled Select per theme/animation setting. */
+#side-panel .set-row { height: 3; width: 100%; }
+#side-panel .set-row .set-label { width: 8; height: 3; content-align: left middle; color: $dim; }
+#side-panel .set-row Select { width: 1fr; }
 
 /* Confirm dialog — details + Confirm/Cancel, for admin actions (Update/Uninstall). */
 ConfirmModal { align: center middle; }
@@ -93,11 +114,15 @@ ConfirmModal { align: center middle; }
     border: round $primary;
 }
 
-/* Footer legend — editing / exit shortcuts. */
-#hints {
+/* Footer bar: minimal exit hint on the left, an open-keyboard shortcut on the right. */
+#footer {
+    layout: horizontal;
     height: 1;
     width: 100%;
     background: $bar-bg;
     color: $bar-fg;
     padding: 0 2;
 }
+#footer #hints { width: 1fr; height: 1; background: $bar-bg; color: $bar-fg; }
+#footer #kbd { width: auto; height: 1; color: $bar-accent; }
+#footer #kbd:hover { text-style: bold; color: $bar-fg; }
