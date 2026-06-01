@@ -41,6 +41,9 @@ class ServerManagerApp(App):
         Binding("ctrl+w", "toggle_writes", "Allow writes", priority=True),
         Binding("ctrl+a", "toggle_autonomous", "Autonomous", priority=True),
         Binding("ctrl+t", "cycle_theme", "Theme", priority=True),
+        # Copy the transcript selection. priority=True so it wins while the Input
+        # is focused (it always is), instead of Textual's default ctrl+c handling.
+        Binding("ctrl+c", "copy_selection", "Copy", priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
     ]
 
@@ -93,6 +96,8 @@ class ServerManagerApp(App):
             log.write(f"[{self.cc['tool']}]{G.WARN} No API key.[/] Set LLM_API_KEY (or the project's .env).")
         else:
             log.write(f"[{self.cc['dim']}]model:[/] {self.provider.model}")
+        log.write(f"[{self.cc['dim']}]tip: drag to select {G.SEP} Ctrl+C copies {G.SEP} "
+                  f"Shift+drag for your terminal's native select/copy[/]")
         self._refresh_subtitle()
         self.query_one("#prompt", Input).focus()
 
@@ -135,6 +140,28 @@ class ServerManagerApp(App):
         self.cfg.save()
         self._refresh_subtitle()
         self._log(f"[{self.cc['accent']}]theme: {THEME_LABELS.get(nxt, nxt)}[/]")
+
+    def action_copy_selection(self) -> None:
+        """Copy the highlighted transcript text to the system clipboard.
+
+        A TUI captures the mouse, so a normal click-drag is handled by the app
+        (Textual highlights it) rather than the terminal. This sends that
+        highlight to the OS clipboard via OSC-52. With nothing selected we keep
+        the reflexive-Ctrl+C-quit hint so the key still does something useful.
+        """
+        selection = self.screen.get_selected_text()
+        if selection:
+            self.copy_to_clipboard(selection)
+            n = len(selection)
+            self.notify(f"Copied {n} character{'' if n == 1 else 's'} to the clipboard.",
+                        title="Copy", timeout=2)
+        else:
+            self.notify(
+                "Nothing selected. Drag over text to highlight it, then Ctrl+C to copy — "
+                "or hold Shift while dragging to use your terminal's own select/copy. "
+                "Ctrl+Q quits.",
+                title="Copy", timeout=6,
+            )
 
     @on(Input.Submitted, "#prompt")
     def _submit(self, event: Input.Submitted) -> None:

@@ -785,6 +785,15 @@ export function initStorageUi() {
       loadStreamBufferSetting();
       loadTemplatePanel();
     };
-    setTimeout(() => { try { window.__refreshStorageSection(); } catch {} }, 200);
+    // Data fetching deferred to startStorageUi() — runs only when the
+    // Storage section is visible.
+  }
+}
+
+/** Fetch storage config, encryption status, and tenants. Called when the
+ *  Storage section becomes visible (from startAdminTools in files.js). */
+export function startStorageUi() {
+  if (window.__refreshStorageSection) {
+    window.__refreshStorageSection();
   }
 }

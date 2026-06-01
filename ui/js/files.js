@@ -13,9 +13,14 @@ import { createTerminalInstance } from './terminal.js';
 import { randomUUID } from './uuid.js';
 import { startAppConfig, stopAppConfig } from './app-config.js';
 import { startAutoRefresh, stopAutoRefresh } from './db/pagination.js';
+import { startDbViewer } from './db/index.js';
 import { startLoop, stopLoop, renderInteractionsSidebar } from './loop.js';
 import { startLoopVisual, stopLoopVisual, renderRuntimeLoopSidebar } from './loop-logic.js';
 import { startDiagnostics, stopDiagnostics, renderDiagnosticsSidebar } from './diagnostics.js';
+import { startDataManagement } from './data-management.js';
+import { startRemoteAccess } from './remote-access.js';
+import { startStorageUi } from './storage.js';
+import { startBilling, stopBilling } from './billing.js';
 import { showRestrictedModal } from './left-login.js';
 
 const API_BASE = '/api/v1/files';
@@ -3060,14 +3065,20 @@ function applySidebarView(view) {
   if (!isAdmin) return;
   // Per-view background work (poll loops, lazy renders).
   if (view === 'database') {
+    try { startDbViewer(); } catch (_) {}
     try { startAutoRefresh(); } catch (_) {}
   } else {
     try { stopAutoRefresh(); } catch (_) {}
   }
   if (view === 'settings') {
     try { startAppConfig(); } catch (_) {}
+    try { startDataManagement(); } catch (_) {}
+    try { startRemoteAccess(); } catch (_) {}
+    try { startStorageUi(); } catch (_) {}
+    try { startBilling(); } catch (_) {}
   } else {
     try { stopAppConfig(); } catch (_) {}
+    try { stopBilling(); } catch (_) {}
   }
   if (view === 'interactions') {
     try { startLoop(); } catch (_) {}

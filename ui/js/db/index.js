@@ -22,8 +22,14 @@ export function initDbViewer() {
   initDbRowDelete();
   initDbPaginationAndToolbar();
   initCellModal();
-  runInitialDbTableLoad();
+  // Data fetching deferred to startDbViewer() — runs only when the
+  // Database sidebar view is activated.
+}
 
+/** Fetch tables and render the DB viewer. Called when the Database sidebar
+ *  view becomes active (from applySidebarView in files.js). */
+export function startDbViewer() {
+  runInitialDbTableLoad();
   // Admin status arrives after init. When it lands, re-fetch table counts
   // (server-side filtering now depends on admin status) and re-render the
   // current view so button restricted-state matches the loaded admin flag.

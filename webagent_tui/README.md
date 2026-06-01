@@ -40,9 +40,15 @@ WEBAGENT_TUI_PROJECT=/path/to/webagent python -m webagent_tui
 - **Target project** — the webAgent checkout to operate on. Auto-detected from
   the working directory if it contains `run.py` + `app/`; otherwise set
   `WEBAGENT_TUI_PROJECT`.
-- **LLM provider** — resolved from `WEBAGENT_TUI_*` env → `LLM_*` env →
-  `OPENROUTER_*` env → the **target project's `.env`** → saved config. OpenAI
-  compatible (OpenRouter by default).
+- **LLM provider** — resolved (highest priority first) from `WEBAGENT_TUI_*` /
+  `LLM_*` overrides → the **target project's `provider.json`** (the same
+  credential store the webAgent server itself uses; `admin_default` profile
+  preferred) → legacy `OPENROUTER_*` env / the project's `.env` → saved config →
+  built-in defaults. OpenAI compatible. Reading `provider.json` as one coherent
+  (api_key, base_url, model) triple means the server manager "just works" with
+  whatever the web app is already configured to use, and avoids pairing a key
+  from one provider with another provider's base URL (a 401 cause). It's
+  gitignored, so a fresh checkout with none falls back to env / `.env`.
 
 ## Safety model
 
@@ -69,7 +75,13 @@ python scripts/build_exe.py      # → ./webagent-tui  (or webagent-tui.exe)
 | `Ctrl+W` | Toggle *Allow writes* (mutating tools) |
 | `Ctrl+A` | Toggle *Autonomous* mode |
 | `Ctrl+T` | Cycle theme (23 shared with the launcher) |
+| `Ctrl+C` | Copy the highlighted transcript text to the clipboard |
 | `Ctrl+Q` | Quit |
+
+**Selecting / copying text.** The TUI captures the mouse, so a normal click-drag
+is handled by the app: drag to highlight transcript text, then `Ctrl+C` to copy
+it to your system clipboard. Alternatively, hold **Shift** while dragging to use
+your terminal's own native selection/copy (works anywhere on screen).
 
 The UI shares the launcher's **23 themes** and emoji/ASCII **glyph** set (the
 relevant assets are vendored alongside this package, so the `.exe` stays

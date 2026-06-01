@@ -21,7 +21,7 @@ import { initFiles, relocateAdminToolsContainers } from './files.js';
 import { initDataManagement } from './data-management.js';
 import { initRemoteAccess } from './remote-access.js';
 import { initChatResize } from './chatResize.js';
-import { initTutorial } from './tutorial.js';
+import { initTutorial, startTutorial } from './tutorial.js';
 import { fetchAdminStatus, isAdmin, fetchAccessMode } from './left-login.js';
 import './icons.js'; // auto-renders Lucide icons on DOM mutations
 import { randomUUID } from './uuid.js';
@@ -210,6 +210,9 @@ _anonReady.then(() => {
   _safeInit('initSessions',    initSessions);
   _safeInit('initChatResize',  initChatResize);
   _safeInit('initTutorial',    initTutorial);
+  // Defer startTutorial() so it doesn't block the critical path — it fetches
+  // tutorial state from the server but isn't needed for first paint.
+  setTimeout(() => { try { startTutorial(); } catch (_) {} }, 0);
 });
 
 // ── Visibility change: reconnect when user returns to this tab ──
