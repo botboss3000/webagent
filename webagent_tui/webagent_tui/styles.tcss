@@ -31,6 +31,20 @@ Screen {
 #hud { height: 1; width: 100%; background: $panel; color: $dim; padding: 0 2; }
 #walker { height: 1; width: 100%; padding: 0 2; }
 
+/* Onboarding call-to-action — the tappable "get started" button (hidden once a
+ * checkout is linked). Theme variables only, so it stays legible in every theme. */
+#cta {
+    height: 3;
+    width: 100%;
+    content-align: center middle;
+    text-align: center;
+    text-style: bold;
+    color: $bar-accent;
+    background: $panel;
+    border: round $primary;
+}
+#cta:hover { background: $primary; color: $background; }
+
 /* Theme & animation picker (settings modal). */
 SettingsModal { align: center middle; }
 #settings-panel {

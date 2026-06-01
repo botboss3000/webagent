@@ -25,6 +25,13 @@ def build_specs() -> list[ToolSpec]:
             "properties": {"path": _STR},
             "required": ["path"],
         }, manage.link_project, needs_project=False),
+        ToolSpec("setup_launch_shortcut", (
+            "Android/Termux only: write a Termux:Widget home-screen shortcut that "
+            "launches the manager (~/.shortcuts/webagent.sh). Use as the FINAL "
+            "onboarding step on Termux, then tell the user to install the "
+            "Termux:Widget add-on and add the widget. Mutating."), {
+            "type": "object", "properties": {},
+        }, manage.setup_launch_shortcut, mutating=True, needs_project=False),
         # ── Fresh install (onboarding; operate on a target folder) ─────────
         ToolSpec("check_install_readiness", (
             "Read-only preflight for a fresh install: OS, Python 3.11-3.12, git, "

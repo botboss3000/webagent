@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable, Optional
 from .config import ProviderConfig, TuiConfig
 from .db import Store
 from .llm import LLMClient, LLMError
+from .onboarding import fetch_onboarding_guide
 from .tools import ToolContext, ToolRegistry
 
 SYSTEM_PROMPT = """You are **webAgent Server Manager** — a privileged, server-independent agent whose \
@@ -48,6 +49,9 @@ unavailable; the server itself still runs.
 - A **Current situation** block is appended below every turn: the host, whether a webAgent repo is \
 linked (managed mode) or not (onboarding mode), whether the server is up, the AI key in use, and \
 **the actions you can take right now**.
+- In **onboarding mode** a live **onboarding guide** (fetched from the repo) is appended below — \
+treat it as authoritative for the install steps, the Android/Termux specifics, the home-screen \
+shortcut, and how to uninstall.
 - **Only offer to PERFORM an action if you have a tool for it in the available-actions list.** \
 Otherwise explain and guide in plain text — never pretend to have done something you cannot.
 - On a greeting or a fresh, unscoped conversation, briefly orient: offer the few paths that fit the \
@@ -63,6 +67,10 @@ or `~/webagent`) → `setup_environment` (slow — a few minutes — builds the 
 browser) → `seed_config` (writes config and seeds the AI key) → `verify_install` → `link_project` to \
 finish. **Confirm the target folder with the user before cloning**, and warn that setup takes a few \
 minutes.
+- **On Android/Termux, finish the install** by calling `setup_launch_shortcut` (writes a \
+tap-to-launch home-screen shortcut), then tell the user to install the **Termux:Widget** add-on \
+from F-Droid and add its widget. The headless browser is skipped on Android by design — say so; \
+it is NOT a failure.
 - **Already have a copy**: just `link_project <folder>`.
 - **Run / manage** (managed): `server_start`, `server_status`, `server_stop`, `server_restart`, and \
 `server_logs` to read output or a traceback. The server lives at http://localhost:8080.
@@ -135,6 +143,8 @@ class ServerManagerAgent:
         self.set_project = set_project            # app callback to link a checkout
         self.provider = provider                  # current app provider (seeded into installs)
         self.request_exit = request_exit          # app callback to close (self-update restart)
+        self._onboarding_guide = ""               # live guide text (fetched once, onboarding only)
+        self._guide_loaded = False
 
     def _make_ctx(self, session_id: str, log: Callable[[str], None]) -> ToolContext:
         writes = self.cfg.writes_enabled or self.cfg.autonomous
@@ -154,8 +164,10 @@ class ServerManagerAgent:
 
     def _build_messages(self, session_id: str, situation: str = "") -> list[dict[str, Any]]:
         system = SYSTEM_PROMPT
+        if self.project_root is None and self._onboarding_guide:
+            system = f"{system}\n\n## Onboarding guide (live, from the repo)\n{self._onboarding_guide}"
         if situation:
-            system = f"{SYSTEM_PROMPT}\n\n## Current situation\n{situation}"
+            system = f"{system}\n\n## Current situation\n{situation}"
         msgs: list[dict[str, Any]] = [{"role": "system", "content": system}]
         for row in self.store.history(session_id):
             role = row["role"]
@@ -176,6 +188,12 @@ class ServerManagerAgent:
         """Process one user message to completion (text answer or turn cap)."""
         self.store.add_message(session_id, "user", user_text)
         self.store.touch_session(session_id)
+
+        # In onboarding mode, fetch the live guide from the repo once per session
+        # (cached to disk for offline use). Best-effort; the fetch never raises.
+        if self.project_root is None and not self._guide_loaded:
+            self._guide_loaded = True
+            self._onboarding_guide = await fetch_onboarding_guide()
 
         async def status(s: str) -> None:
             await on_event(AgentEvent("status", text=s))
