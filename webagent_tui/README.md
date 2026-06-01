@@ -205,17 +205,31 @@ which via `self_status`):
 
 ## Header toolbar (clickable)
 
-The header is a row of **clickable controls** (no title/model text):
+The header is a row of **clickable controls** (no title/model text). An **`[Admin]`**
+button on the left toggles between the **standard** header and an **admin sub-header**;
+clicking `[Admin]` again returns to standard.
+
+**Standard header:**
 
 | Control | Action |
 |---------|--------|
+| `[Admin]` | Toggle the admin sub-header (Update / Uninstall / Diagnostics / Logs) on/off |
 | `[Read]` / `[Write]` / `[Auto]` | Write-gate button — shows the current mode; click to cycle Read → Write → Auto. |
 | `[Theme]` | Open the theme & animation picker (theme · animation style · palette · speed · intensity · FPS · banner on/off) |
-| `[Browser]` | Open the web UI (`http://localhost:8080/index.html`) in your browser |
-| `[Start]` ↔ `[Restart]` `[Stop]` | Server control, state-aware: `[Start]` when stopped; `[Restart]` + `[Stop]` when running |
-| `[Logs]` | Show the captured server log in the transcript |
+| `[Browser]` | Open the web UI (`http://localhost:8080/index.html`) in your browser (managed mode) |
+| `[Start]` ↔ `[Restart]` `[Stop]` | Server control, state-aware: `[Start]` when stopped; `[Restart]` + `[Stop]` when running (managed mode) |
+| server dot | live (green) / stopped (red) / checking — polled every few seconds (managed mode) |
+
+**Admin sub-header** (`[Admin]` active):
+
+| Control | Action |
+|---------|--------|
+| `[Update]` | Update the manager/repo — opens an info + confirm screen, then backs up, pulls (source) or rebuilds the exe (frozen), and restarts |
+| `[Uninstall]` | Remove webAgent from the device (Termux) — opens an info + confirm screen listing exactly what's deleted (launcher, shortcut, repo, data, package), then removes it and closes |
 | `[Diagnostics]` | Show the app's recorded warnings/errors — reads the local DB, so it works even when the server is down |
-| server dot | live (green) / stopped (red) / checking — polled every few seconds |
+| `[Logs]` | Show the captured server log in the transcript |
+
+Update and Uninstall always open a **details-and-confirmation screen** first; Uninstall is irreversible. More admin actions will land here over time.
 
 The server **auto-starts** when you open the manager in managed mode (if it isn't
 already running), so there's no separate Launch control.
