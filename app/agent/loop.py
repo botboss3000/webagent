@@ -1662,7 +1662,7 @@ async def stream_agent_events(
                                     "error_type": "guardrail_blocked",
                                     "recoverable": True,
                                 }
-                                tool_msg = {"role": "tool", "content": f"Tool '{tool_name}' was blocked because user confirmation is required for destructive operations.", "tool_call_id": tc.id}
+                                tool_msg = {"role": "tool", "content": f"Tool '{tool_name}' was blocked — it requires your explicit permission to run. If this is the only way to complete the task, please authorize it. Otherwise, the agent can explore alternative approaches that don't need confirmation.", "tool_call_id": tc.id}
                                 messages.append(tool_msg)
                                 inp = _build_input()
                                 outp = json.dumps({"role": "tool", "content": tool_msg["content"], "tool_call_id": tc.id, "name": tool_name, "success": False})

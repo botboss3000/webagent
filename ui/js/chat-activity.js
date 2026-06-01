@@ -127,23 +127,22 @@ function stop() {
   active = false;
   if (pillEl) pillEl.classList.remove('thinking');
 
-  if (toolCalls.length > 0) {
-    // Keep the bar so the user can still inspect this turn's tool calls.
-    resting = true;
-    if (rootEl) rootEl.classList.add('resting');
-    const n = toolCalls.length;
-    currentNote = '';
-    setNote(n === 1 ? '1 tool call' : n + ' tool calls');
-    _updateBarAffordance();
-  } else {
-    // Nothing to inspect — fade everything out.
-    resting = false;
-    currentNote = '';
-    if (rootEl) rootEl.classList.remove('visible', 'resting');
-    closePanel();
-    _clearTextTimer();
-    clearTimer = setTimeout(() => { if (textEl) textEl.textContent = ''; }, 260);
+  // Attach any remaining tool calls from the last turn (if not already
+  // attached by a turn_start boundary). Each turn's calls are attached
+  // incrementally as turns progress, so this only catches the final turn.
+  if (toolCalls.length > 0 && app.attachToolCallsToLastBubble) {
+    const calls = toolCalls.slice();
+    app.attachToolCallsToLastBubble(calls);
   }
+
+  // Always fade the activity bar out — tool calls now live on the bubble.
+  resting = false;
+  currentNote = '';
+  if (rootEl) rootEl.classList.remove('visible', 'resting');
+  closePanel();
+  _clearTextTimer();
+  clearTimer = setTimeout(() => { if (textEl) textEl.textContent = ''; }, 260);
+  _updateBarAffordance();
 }
 
 // Show a final note (Error / Stopped) briefly, then settle.
@@ -398,7 +397,18 @@ function handleEvent(event) {
   // Track the inference-turn number — turn_start (and several other in-loop
   // events) carry `turn`. tool_call/tool_result don't, so they inherit the
   // last value seen this exchange.
-  if (typeof event.turn === 'number' && event.turn > 0) currentTurn = event.turn;
+  // When the turn number INCREASES, it means the previous turn's tool calls
+  // are complete — attach them to the last agent bubble before resetting.
+  if (typeof event.turn === 'number' && event.turn > 0 && event.turn !== currentTurn) {
+    const prevTurn = currentTurn;
+    currentTurn = event.turn;
+    // If we had tool calls from the previous turn, attach them now.
+    if (prevTurn > 0 && toolCalls.length > 0 && app.attachToolCallsToLastBubble) {
+      const calls = toolCalls.slice();
+      app.attachToolCallsToLastBubble(calls);
+    }
+    _resetForNewTurn();
+  }
 
   const type = event.type;
 
@@ -437,6 +447,12 @@ function handleEvent(event) {
   }
   _ensureActive(note);
 }
+
+// ── Exported helpers for chat.js (bubble-attached tool panels) ──────────────
+// Reuse the same accordion row rendering so bubble panels look identical to the
+// live activity panel.
+
+export { _fmtArgs as fmtArgs, _buildRow as buildToolRow };
 
 export function initChatActivity() {
   rootEl = document.getElementById('chat-activity');

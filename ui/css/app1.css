@@ -559,8 +559,8 @@ body.light-mode .chat-continue-btn:hover {
     border: none;
     color: #565f89;
     cursor: pointer;
-    width: 48px;
-    height: 48px;
+    width: 33px;
+    height: 33px;
     padding: 0;
     border-radius: 50%;
     transition: 0.15s;
@@ -576,8 +576,8 @@ body.light-mode .chat-continue-btn:hover {
     border: none;
     color: #565f89;
     cursor: pointer;
-    width: 72px;
-    height: 72px;
+    width: 57px;
+    height: 57px;
     padding: 0;
     border-radius: 50%;
     transition: 0.15s;
@@ -611,20 +611,20 @@ body.light-mode .chat-continue-btn:hover {
     color: #7dcfff;
     background: #7dcfff15;
   }
-.chat-pill-attach i,
-.chat-pill-voice i,
-.chat-pill-send i { pointer-events: none; }
-/* Icons inside the pill buttons — sized to fit the 48px button comfortably.
-   Inline width/height on <i> uses !important here to beat the inline style
-   attribute set in the HTML markup. */
-.chat-pill-attach i {
-    width: 28px !important;
-    height: 28px !important;
+.chat-pill-attach svg,
+.chat-pill-voice svg,
+.chat-pill-send svg { pointer-events: none; }
+/* Icons inside the pill buttons — sized to fill the button comfortably.
+   Targets <svg> because Lucide replaces <i data-lucide> with an inline SVG
+   and copies the inline style attribute to it. !important beats that. */
+.chat-pill-attach svg {
+    width: 21px !important;
+    height: 21px !important;
   }
-.chat-pill-voice i,
-.chat-pill-send i {
-    width: 40px !important;
-    height: 40px !important;
+.chat-pill-voice svg,
+.chat-pill-send svg {
+    width: 41px !important;
+    height: 41px !important;
   }
 .chat-pill-send:disabled { opacity: 0.4; cursor: default; }
 .chat-pill-voice.recording {
@@ -772,6 +772,61 @@ body.light-mode .chat-continue-btn:hover {
     scrollbar-width: thin;
   }
 .chat-activity-panel[hidden] { display: none; }
+
+/* ── Bubble-attached tool call panel ──────────────────────────────────────────
+   Rendered inside an agent bubble after the turn ends. A small clickable chip
+   ("N tool calls") that expands to show the same accordion tool list as the
+   live activity panel. Uses the same .ca-tool-* classes for row rendering. */
+.bubble-tool-calls {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.bubble-tool-calls-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: color-mix(in oklab, currentColor 6%, transparent);
+  border: 1px solid color-mix(in oklab, currentColor 10%, transparent);
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+  -webkit-backdrop-filter: blur(8px) saturate(120%);
+          backdrop-filter: blur(8px) saturate(120%);
+}
+.bubble-tool-calls-head:hover {
+  background: color-mix(in oklab, currentColor 10%, transparent);
+  border-color: color-mix(in oklab, var(--accent) 40%, transparent);
+}
+.bubble-tool-calls-icon {
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.7;
+}
+.bubble-tool-calls-chevron {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg-4);
+  transition: transform 0.15s ease;
+}
+.bubble-tool-calls.open .bubble-tool-calls-chevron {
+  transform: rotate(90deg);
+}
+.bubble-tool-calls-panel {
+  margin-top: 6px;
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--bg-elev) 90%, transparent);
+  border: 1px solid var(--border-soft);
+  padding: 4px;
+  max-height: 300px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.bubble-tool-calls-panel[hidden] { display: none; }
 
 /* One tool call (accordion row) */
 .ca-tool-row { border-radius: 8px; }
