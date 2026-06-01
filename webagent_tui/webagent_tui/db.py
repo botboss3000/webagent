@@ -1,7 +1,7 @@
 """External SQLite store for the webagent TUI.
 
 Deliberately SEPARATE from the web app's ``app/db/local.db`` (see config.db_path)
-so the operator keeps its own conversation history + a full audit trail of every
+so the server manager keeps its own conversation history + a full audit trail of every
 mutating action it takes, surviving any reset of the web app's own database.
 
 Three tables:

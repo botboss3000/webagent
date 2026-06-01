@@ -1,7 +1,7 @@
 """Minimal OpenAI-compatible chat client over httpx.
 
 Server-independent by design: this talks straight to the LLM provider (OpenRouter
-/ OpenAI / any compatible ``/chat/completions`` endpoint), so the operator works
+/ OpenAI / any compatible ``/chat/completions`` endpoint), so the server manager works
 when the webAgent server is down. No ``openai`` SDK dependency — keeps the .exe
 small and bionic-friendly for a future Termux build.
 """
