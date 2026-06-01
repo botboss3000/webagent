@@ -150,13 +150,13 @@ body {
     scrollbar-width: thin;
     scrollbar-color: #2a2a4a transparent;
   }
-  /* Scroll-to-bottom FAB — floats at the bottom-center of #chat-messages,
-     just above the input area. Hidden by default; shown when the user has
-     scrolled up away from the latest message. Clicking it scrolls to the
-     bottom and re-engages auto-scroll. */
+  /* Scroll-to-bottom FAB — floats centered above the chat pill, just below
+     the message fade mask. Hidden by default; shown when the user has scrolled
+     up away from the latest message. Clicking it scrolls to the bottom and
+     re-engages auto-scroll. */
   #chat-scroll-bottom-btn {
     position: absolute;
-    bottom: 4px;
+    bottom: calc(100% + 4px);
     left: 50%;
     transform: translateX(-50%);
     z-index: 10;

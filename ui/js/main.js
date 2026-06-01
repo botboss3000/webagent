@@ -163,6 +163,21 @@ _anonReady.then(() => {
   _applyAdminToolsVisibility();
   fetchAdminStatus();
 
+  // Fire profile + app settings early so initAgents() can use cached results
+  // instead of fetching them sequentially later. These are fire-and-forget;
+  // they store results on window.__agentsProfileData / __agentsAppSettingsData.
+  if (app.currentUserId) {
+    fetch(`/api/v1/user/profile?user_id=${encodeURIComponent(app.currentUserId)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) window.__agentsProfileData = d; })
+      .catch(() => {});
+    const _token = localStorage.getItem('auth_token');
+    fetch('/admin/settings/app', { headers: _token ? { Authorization: `Bearer ${_token}` } : {} })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) window.__agentsAppSettingsData = d; })
+      .catch(() => {});
+  }
+
   _safeInit('initStorageUi',        initStorageUi);
   _safeInit('initChat',             initChat);
   _safeInit('initChatActivity',     initChatActivity);

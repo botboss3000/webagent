@@ -174,6 +174,15 @@ export async function initAgents() {
   // logged in yet — _sendAgentBuilderPrompt checks app.currentUserId itself.
   _bindAgentBuilderBar();
   if (!app.currentUserId) return;
+
+  // If the agents tab isn't active, defer the 3 fetches + grid render until
+  // the user switches to it. The tab switch calls startAgents() → initAgents()
+  // again, which will then proceed past this guard.
+  const tabSelect = document.getElementById('main-tab-select');
+  if (tabSelect && tabSelect.value !== 'agents') {
+    return;
+  }
+
   await Promise.all([_loadProfile(), _loadAgents(), _loadAppSettings()]);
   _renderList();
   _bindCreateModal();
@@ -226,6 +235,12 @@ export function stopAgents() {
 // ── Data loading ──────────────────────────────────────────────────────────────
 
 async function _loadProfile() {
+  // Use cached data from main.js's early fetch if available.
+  const cached = window.__agentsProfileData;
+  if (cached) {
+    _userIsAdmin = !!cached.is_admin;
+    return;
+  }
   try {
     const res = await fetch(`/api/v1/user/profile?user_id=${encodeURIComponent(app.currentUserId)}`);
     if (res.ok) {
@@ -239,18 +254,30 @@ async function _loadProfile() {
 
 async function _loadAgents() {
   try {
+    // Use shared data from sessions.js if available — avoids a duplicate fetch.
+    const shared = window.__agentsSharedData;
+    if (shared && shared.agents) {
+      _agents = shared.agents;
+      return;
+    }
     const res = await fetch(`/api/v1/agents?user_id=${encodeURIComponent(app.currentUserId)}`);
     if (res.ok) {
       const data = await res.json();
       _agents = data.agents || [];
+      window.__agentsSharedData = data;
     }
-
   } catch (e) {
     console.warn('agents: could not load agent list', e);
   }
 }
 
 async function _loadAppSettings() {
+  // Use cached data from main.js's early fetch if available.
+  const cached = window.__agentsAppSettingsData;
+  if (cached) {
+    _extendLlmToAgents = cached.extend_llm_to_agents !== false;
+    return;
+  }
   try {
     const token = localStorage.getItem('auth_token');
     const headers = token ? { Authorization: `Bearer ${token}` } : {};
