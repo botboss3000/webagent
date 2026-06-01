@@ -6,9 +6,14 @@ Three things are resolved here, all independent of the webAgent server:
   database, config). Deliberately outside any webAgent checkout so a Clear
   DB / Full Reset of the web app never touches the server manager's memory.
 * **project dir** — the target webAgent checkout the agent operates on.
-* **LLM provider** — api key / base url / model, resolved from (in order)
-  explicit ``WEBAGENT_TUI_*`` env, generic ``LLM_*`` env, ``OPENROUTER_*`` env,
-  the target project's ``.env`` file, then the saved config. OpenAI-compatible.
+* **LLM provider** — api key / base url / model, resolved from (highest first):
+  explicit ``WEBAGENT_TUI_*`` / ``LLM_*`` overrides, then the target project's
+  ``provider.json`` (the live, *complete* credential store the web app itself
+  uses), then legacy ``OPENROUTER_*`` values, then the saved config, then
+  built-in defaults. Resolving ``provider.json`` as a coherent (api_key,
+  base_url, model) triple — above the often partial/stale ``OPENROUTER_*`` env —
+  prevents pairing one provider's key with another's base URL (the 401 bug).
+  OpenAI-compatible.
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ import os
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 # ── locations ────────────────────────────────────────────────────────────────
@@ -85,6 +90,42 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     return out
 
 
+def _load_provider_json(project_dir: Path) -> dict[str, str]:
+    """Read the web app's ``provider.json`` and return a *coherent* provider triple.
+
+    ``provider.json`` is the credential store the webAgent server itself uses, so
+    its base_url / api_key / model always agree (unlike the project's ``.env``,
+    whose ``OPENROUTER_*`` values are often partial or stale). Mirrors the
+    selection in ``app/admin/settings.py``: prefer the ``admin_default`` profile
+    (this is an operator/admin tool), then ``__anonymous__``, then the first
+    profile that carries a key. Also handles the legacy flat format (config at the
+    root). Returns ``{}`` when the file is absent — it's gitignored, so fresh
+    checkouts won't have one — or unreadable, so resolution falls back cleanly.
+    """
+    try:
+        data = json.loads((project_dir / "provider.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    if "api_key" in data and "base_url" in data:      # legacy flat format
+        cfg: Any = data
+    else:
+        cfg = data.get("admin_default") or data.get("__anonymous__")
+        if not isinstance(cfg, dict):
+            cfg = next(
+                (v for v in data.values() if isinstance(v, dict) and v.get("api_key")),
+                None,
+            )
+    if not isinstance(cfg, dict):
+        return {}
+    return {
+        "api_key": str(cfg.get("api_key") or "").strip(),
+        "base_url": str(cfg.get("base_url") or "").strip().rstrip("/"),
+        "model": str(cfg.get("model") or "").strip(),
+    }
+
+
 @dataclass
 class ProviderConfig:
     api_key: str = ""
@@ -99,31 +140,55 @@ class ProviderConfig:
 
 
 def resolve_provider(project_dir: Optional[Path], saved: "TuiConfig") -> ProviderConfig:
-    """Resolve LLM provider config from env → project .env → saved config."""
+    """Resolve LLM provider config. Order, highest priority first:
+
+    1. explicit overrides ``WEBAGENT_TUI_*`` / ``LLM_*`` (env or project ``.env``)
+    2. the web app's ``provider.json`` — a *complete*, internally-consistent
+       (api_key, base_url, model) triple (see ``_load_provider_json``)
+    3. legacy ``OPENROUTER_*`` values (env or project ``.env``) — often partial
+    4. the saved TUI config
+    5. built-in defaults
+
+    Putting ``provider.json`` (2) above the partial ``OPENROUTER_*`` values (3) is
+    what fixes the 401: those ``.env`` keys supply a key + model but no base URL,
+    so base_url silently defaulted to OpenRouter while the key/model were really a
+    different provider's. Taking the whole triple from ``provider.json`` keeps the
+    three fields from being mixed across providers.
+    """
     env = os.environ
     proj_env = _parse_env_file(project_dir / ".env") if project_dir else {}
+    pj = _load_provider_json(project_dir) if project_dir else {}
 
     def pick(*keys: str) -> str:
         for k in keys:
             if env.get(k):
-                return env[k]
+                return env[k].strip()
         for k in keys:
             if proj_env.get(k):
-                return proj_env[k]
+                return proj_env[k].strip()
         return ""
 
-    api_key = pick("WEBAGENT_TUI_API_KEY", "LLM_API_KEY", "OPENROUTER_API_KEY") or saved.api_key
+    api_key = (
+        pick("WEBAGENT_TUI_API_KEY", "LLM_API_KEY")
+        or pj.get("api_key", "")
+        or pick("OPENROUTER_API_KEY")
+        or saved.api_key
+    )
     base_url = (
-        pick("WEBAGENT_TUI_BASE_URL", "LLM_BASE_URL", "OPENROUTER_BASE_URL")
+        pick("WEBAGENT_TUI_BASE_URL", "LLM_BASE_URL")
+        or pj.get("base_url", "")
+        or pick("OPENROUTER_BASE_URL")
         or saved.base_url
         or "https://openrouter.ai/api/v1"
     )
     model = (
-        pick("WEBAGENT_TUI_MODEL", "LLM_MODEL", "OPENROUTER_MODEL")
+        pick("WEBAGENT_TUI_MODEL", "LLM_MODEL")
+        or pj.get("model", "")
+        or pick("OPENROUTER_MODEL")
         or saved.model
         or "deepseek/deepseek-v4-flash"
     )
-    return ProviderConfig(api_key=api_key, base_url=base_url.rstrip("/"), model=model)
+    return ProviderConfig(api_key=api_key.strip(), base_url=base_url.rstrip("/"), model=model.strip())
 
 
 @dataclass

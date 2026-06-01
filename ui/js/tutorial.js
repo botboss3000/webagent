@@ -623,8 +623,11 @@ export function initTutorial() {
   // after with the same id, but this avoids a flash on first paint.
   const saved = localStorage.getItem('lastActiveTab');
   if (saved) refreshTutorial(saved);
+  // Server hydrate deferred to startTutorial() — runs after init is complete.
+}
 
-  // Pull the cross-device state from the server; overwrites local if it
-  // differs and re-renders.
+/** Fetch tutorial state from the server. Called after init settles so it
+ *  doesn't block the critical path. */
+export function startTutorial() {
   _hydrateFromServer();
 }

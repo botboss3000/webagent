@@ -668,8 +668,18 @@ function _install402Interceptor() {
 export function initBilling() {
   _injectBalancePill();
   _install402Interceptor();
+  // One initial fetch for the header pill so it shows on page load.
   _refreshBalancePill();
-  setInterval(_refreshBalancePill, 60000);
+  // Polling deferred to startBilling() — runs only when billing UI is visible.
+}
+
+/** Start billing polling. Called when billing UI becomes visible
+ *  (admin-tools tab or agent monetization tab). */
+export function startBilling() {
+  if (!window.__billingInterval) {
+    _refreshBalancePill();
+    window.__billingInterval = setInterval(_refreshBalancePill, 60000);
+  }
   // Refresh after the user returns from a Stripe/PayPal redirect.
   try {
     const url = new URL(window.location.href);
@@ -677,6 +687,14 @@ export function initBilling() {
       setTimeout(_refreshBalancePill, 1500);
     }
   } catch (_) {}
+}
+
+/** Stop billing polling. Called when billing UI is hidden. */
+export function stopBilling() {
+  if (window.__billingInterval) {
+    clearInterval(window.__billingInterval);
+    window.__billingInterval = null;
+  }
 }
 
 // Expose for non-module callers (agents.js renders the per-agent tab).

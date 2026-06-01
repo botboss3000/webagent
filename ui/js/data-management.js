@@ -279,17 +279,14 @@ export function initDataManagement() {
     if (typeof prev === 'function') { try { prev(); } catch {} }
     _load();
   };
+  // Data fetching deferred to startDataManagement() — runs only when the
+  // Chat Attachments card is visible.
+}
 
-  // Pre-warm the cache so attachments.js can read the active backend before
-  // the user opens the tab.
-  fetch(apiPath('/admin/storage/attachments/status?requesting_user_id=' + encodeURIComponent(_userId())))
-    .then(r => r.ok ? r.json() : null)
-    .then(s => {
-      if (!s) return;
-      _statusCache = s;
-      try { window.__webagentAttachmentBackend = s.mode; } catch {}
-    })
-    .catch(() => {});
+/** Fetch attachment backend status. Called when the Data Management card
+ *  becomes visible (from startAdminTools in files.js). */
+export function startDataManagement() {
+  _load();
 }
 
 // Public helper for attachments.js — sync lookup; cached and refreshed on

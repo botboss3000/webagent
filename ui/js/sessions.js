@@ -1969,8 +1969,14 @@ export function initSessions() {
   }
 
   // populateUserSelect drives populateAgentSelect, which sets currentAgentId.
-  // Sessions are now loaded lazily on first dropdown open (see openMenu).
+  // Phase 1: agents (eagerly fetched in populateUserSelect).
+  // Phase 2: sessions (eagerly fetched right after agents resolve).
+  // Phase 3: messages (loaded after both are settled).
   populateUserSelect().then(function () {
+    if (app.currentUserId) {
+      _sessionsLoaded = true;
+      populateSessionSelect(app.currentUserId);
+    }
     if (app.currentSessionId) {
       loadSessionChat(app.currentSessionId);
     }

@@ -374,7 +374,12 @@ export function initRemoteAccess() {
 
   // Re-load whenever the App Settings section is shown (wired in app-config.js).
   window.__refreshRemoteAccess = _load;
+  // Data fetching deferred to startRemoteAccess() — runs only when the
+  // Remote Access card is visible.
+}
 
-  // Initial load (no-op for non-admins).
+/** Fetch remote access status. Called when the Remote Access card becomes
+ *  visible (from startAdminTools in files.js). */
+export function startRemoteAccess() {
   _load();
 }

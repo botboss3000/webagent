@@ -4,6 +4,8 @@ import { app } from './state.js';
 import { agentWsUrl, apiPath } from './config.js';
 import { logTool } from './toolLog.js';
 import { getAuthToken } from './left-login.js';
+import { renderAvatar } from './user-avatar.js';
+import { getActive } from './accounts.js';
 
 let reconnectTimer = null;
 let reconnectAttempts = 0;
@@ -114,8 +116,15 @@ export function connectAgent() {
     if (event.type === 'subscribed') {
       setAgentStatus('green');
       reconnectAttempts = 0;
-      if (typeof app.populateUserSelect === 'function') {
-        app.populateUserSelect();
+      // Lightweight refresh on WS (re)connect — don't re-fetch agents/sessions,
+      // initSessions() already loaded them eagerly. Just update the user avatar
+      // in case the account changed in another tab.
+      const slot = document.getElementById('top-user-avatar-slot');
+      if (slot) {
+        const active = getActive();
+        const acct = active || { display_name: app.currentUserId || 'None', username: app.currentUserId || '' };
+        slot.innerHTML = '';
+        slot.appendChild(renderAvatar(acct, 'sm'));
       }
       // Server tells us which sessions still have an in-flight run buffered.
       // Stash it so the chat module can decide to "reattach" the bubble for
