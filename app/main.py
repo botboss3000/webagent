@@ -469,6 +469,28 @@ async def tos_page():
     return HTMLResponse(content=tos_html.read_text(encoding="utf-8"))
 
 
+@app.get("/termux", include_in_schema=False)
+@app.get("/termux.sh", include_in_schema=False)
+async def termux_installer():
+    """Serve the Termux one-line installer for the standalone webAgent TUI.
+
+    Enables `curl -fsSL https://webagent.live/termux | bash` to install the
+    Server Manager TUI on Android. Served verbatim from
+    `webagent_tui/install-termux.sh`, with line endings forced to LF so a
+    Windows checkout can never ship a CRLF script that bash refuses to run.
+    Registered BEFORE the `/{agent_id}` catch-all below so it isn't shadowed."""
+    from fastapi.responses import PlainTextResponse
+    script = _APP_DIR.parent / "webagent_tui" / "install-termux.sh"
+    if not script.is_file():
+        return PlainTextResponse("# webAgent TUI installer not found\n", status_code=404)
+    body = script.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    return PlainTextResponse(
+        body,
+        media_type="text/x-shellscript",  # Starlette appends "; charset=utf-8"
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}

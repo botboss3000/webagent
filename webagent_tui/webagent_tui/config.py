@@ -206,6 +206,11 @@ class TuiConfig:
     writes_enabled: bool = False   # interactive "armed" toggle for mutating tools
     theme_name: str = "lime"       # active Textual theme (see themes.THEME_ORDER)
     anim_enabled: bool = True      # show the animated logo banner
+    anim_style: str = "plasma"     # plasma | flowfield | rings | static | off
+    anim_palette: str = "theme"    # "theme" = match active theme; else a preset name
+    anim_speed: float = 1.0        # 0.5 / 1.0 / 2.0
+    anim_intensity: float = 1.0    # 0.6 / 1.0 / 1.5
+    anim_fps: int = 20             # 12 / 20 / 30
     max_turns: int = 50
     temperature: float = 0.0
 

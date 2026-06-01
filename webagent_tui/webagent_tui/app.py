@@ -21,19 +21,22 @@ from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.events import Click
-from textual.widgets import Input, RichLog, Static
+from textual.screen import ModalScreen
+from textual.widget import Widget
+from textual.widgets import Input, RichLog, Select, Static
 
 from .agent import AgentEvent, ServerManagerAgent
-from .ascii_anim import PLASMA
+from .ascii_anim import ANIM_LABELS, ANIM_STYLES
 from .config import ProviderConfig, TuiConfig, _looks_like_project, db_path, resolve_provider
 from .db import Store
 from .env_probe import probe_machine, server_health
-from .glyphs import G
+from .glyphs import EMOJI, G
 from .llm import LLMClient
+from .model_windows import MODEL_CONTEXT_BY_ID, MODEL_CONTEXT_WINDOWS
 from .selfinfo import check_self_update, gather
-from .palette import palette_from_theme
+from .palette import PRESETS, palette_from_theme
 from .stage import AnimatedStage
 from .theme_colors import chrome_colors
 from .themes import CUSTOM_VAR_DEFAULTS, DEFAULT_THEME, THEME_LABELS, THEME_ORDER, build_themes
@@ -45,6 +48,122 @@ class PromptInput(Input):
     Ctrl+V paste / Ctrl+X cut are inherited from Input."""
 
     BINDINGS = [Binding("ctrl+a", "select_all", "Select all", show=False)]
+
+
+class WalkerBar(Widget):
+    """A one-row strip where a tiny ascii guy reacts to the agent loop:
+    idle (blank) · walk (thinking) · work (tool running) · cheer (reply) ·
+    trip (error). Animates only while active, so it costs nothing at rest.
+    Colours come from the app's live theme (``app.cc``)."""
+
+    DEFAULT_CSS = "WalkerBar { height: 1; width: 100%; padding: 0 2; }"
+
+    def __init__(self, id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._state = "idle"
+        self._pos = 0
+        self._frame = 0
+        self._timer = None
+
+    def on_mount(self) -> None:
+        self._timer = self.set_interval(0.12, self._tick, pause=True)  # ~8 fps, paused at rest
+
+    def set_state(self, state: str) -> None:
+        if state == self._state:
+            return
+        self._state = state
+        self._frame = 0
+        if self._timer is not None:
+            self._timer.pause() if state == "idle" else self._timer.resume()
+        self.refresh()
+
+    def _tick(self) -> None:
+        self._frame += 1
+        if self._state == "walk":
+            self._pos += 1
+        self.refresh()
+
+    def render(self) -> Text:
+        w = max(6, self.size.width)
+        if self._state == "idle":
+            return Text(" " * w)
+        cc = getattr(self.app, "cc", {})
+        green = cc.get("success", "#7be06a")
+        amber = cc.get("tool", "#ff9d2f")
+        red = cc.get("error", "#ff5f56")
+        if self._state == "walk":
+            sprite = "🚶" if EMOJI else ("o/" if self._frame % 2 == 0 else "o\\")
+            color = green
+        elif self._state == "work":
+            sprite = "🔧" if EMOJI else "o" + "|/-\\"[self._frame % 4]
+            color = amber
+        elif self._state == "cheer":
+            sprite = "🙌" if EMOJI else "\\o/"
+            color = green
+        else:  # trip
+            sprite = "💥" if EMOJI else "x_"
+            color = red
+        pos = self._pos % max(1, w - 3)
+        line = Text(no_wrap=True, overflow="crop")
+        if pos:
+            line.append(" " * pos)
+        line.append(sprite, style=f"bold {color}")
+        tail = w - pos - len(sprite)
+        if tail > 0:
+            line.append(" " * tail)
+        return line
+
+
+class SettingsModal(ModalScreen):
+    """Theme & animation picker. Each change applies live and persists. Esc closes."""
+
+    BINDINGS = [Binding("escape", "close", "Close")]
+
+    def compose(self) -> ComposeResult:
+        app = self.app
+        cfg = app.cfg
+
+        def safe(v, allowed, default):
+            return v if v in allowed else default
+
+        pal_names = {"theme", *[p.name for p in PRESETS]}
+        rows = [
+            ("Banner", Select([("On", True), ("Off", False)],
+                              value=bool(app._anim_on), allow_blank=False, id="set-banner")),
+            ("Theme", Select([(THEME_LABELS.get(t, t), t) for t in THEME_ORDER],
+                             value=safe(app.theme, set(THEME_ORDER), DEFAULT_THEME),
+                             allow_blank=False, id="set-theme")),
+            ("Animation", Select([(ANIM_LABELS[s], s) for s in ANIM_STYLES],
+                                 value=safe(cfg.anim_style, set(ANIM_STYLES), "plasma"),
+                                 allow_blank=False, id="set-anim")),
+            ("Palette", Select([("Match theme", "theme")] + [(p.name, p.name) for p in PRESETS],
+                               value=safe(cfg.anim_palette, pal_names, "theme"),
+                               allow_blank=False, id="set-pal")),
+            ("Speed", Select([("Slow", 0.5), ("Normal", 1.0), ("Fast", 2.0)],
+                             value=safe(cfg.anim_speed, {0.5, 1.0, 2.0}, 1.0),
+                             allow_blank=False, id="set-speed")),
+            ("Intensity", Select([("Low", 0.6), ("Normal", 1.0), ("High", 1.5)],
+                                 value=safe(cfg.anim_intensity, {0.6, 1.0, 1.5}, 1.0),
+                                 allow_blank=False, id="set-int")),
+            ("FPS", Select([("12", 12), ("20", 20), ("30", 30)],
+                           value=safe(cfg.anim_fps, {12, 20, 30}, 20),
+                           allow_blank=False, id="set-fps")),
+        ]
+        with Vertical(id="settings-panel"):
+            yield Static("Theme & Animation  —  applies live · Esc to close", id="settings-title")
+            for label, sel in rows:
+                with Horizontal(classes="set-row"):
+                    yield Static(label, classes="set-label")
+                    yield sel
+
+    @on(Select.Changed)
+    def _on_change(self, event: Select.Changed) -> None:
+        if event.value is Select.BLANK:
+            return
+        self.app.apply_setting(event.select.id, event.value)
+
+    def action_close(self) -> None:
+        self.dismiss()
 
 
 class ServerManagerApp(App):
@@ -86,6 +205,10 @@ class ServerManagerApp(App):
         self._dot = None             # the server-status widget, updated in place by the poll
         self._anim = None            # the animated logo banner
         self._anim_on = self.cfg.anim_enabled
+        self._walker = None          # the loop-reactive ascii walker (above the input)
+        self._s_in = 0               # session token accumulators (HUD)
+        self._s_out = 0
+        self._ctx_tokens = 0         # latest prompt size = current context usage
 
     def _apply_provider(self) -> None:
         """(Re)resolve the AI provider for the current project and rebuild the LLM
@@ -107,13 +230,17 @@ class ServerManagerApp(App):
         # status bar (server dot + mode + writes + model) instead of the stock
         # Header, and a clickable hint-pill bar instead of the stock Footer.
         yield Horizontal(id="status")      # clickable control toolbar
-        self._anim = AnimatedStage(palette=palette_from_theme(self), style=PLASMA,
-                                   fps=20, show_logo=True)
+        self._anim = AnimatedStage(palette=self._build_palette(), style=self.cfg.anim_style,
+                                   fps=self.cfg.anim_fps, speed=self.cfg.anim_speed,
+                                   intensity=self.cfg.anim_intensity, show_logo=True)
         self._anim.id = "anim"
         self._anim.display = self._anim_on
         self._anim.set_idle(not self._anim_on)
         yield self._anim                   # animated logo banner
         yield RichLog(id="log", wrap=True, markup=True, highlight=False)
+        yield Static("", id="hud")         # session HUD (tokens / context gauge)
+        self._walker = WalkerBar(id="walker")
+        yield self._walker                 # loop-reactive ascii walker
         yield PromptInput(placeholder="Ask the Server Manager…", id="prompt")
         yield Static("", id="hints")       # editing-shortcut legend
 
@@ -124,12 +251,13 @@ class ServerManagerApp(App):
         self.theme = self.cfg.theme_name if self.cfg.theme_name in THEME_ORDER else DEFAULT_THEME
         self.cc = chrome_colors(self)
         if self._anim is not None:
-            self._anim.set_palette(palette_from_theme(self))
+            self._retint_anim()
             self._anim.set_idle(not self._anim_on)
         self._server_state = await server_health() if self.project_root else "n/a"
         self._render_welcome(self._server_state)
         self._refresh_hints()
         self._refresh_status()
+        self._update_hud()
         self.query_one("#prompt", Input).focus()
         # Keep the server dot live in managed mode (cheap localhost /health poll).
         self.set_interval(3.0, self._poll_server)
@@ -294,7 +422,7 @@ class ServerManagerApp(App):
         bar.remove_children()
         self._dot = None
         self._add_hdr(bar, self._mode_label(), "cycle_mode")
-        self._add_hdr(bar, "[Anim]", "toggle_anim")
+        self._add_hdr(bar, "[Theme]", "open_settings")
         if self.project_root:
             self._add_hdr(bar, "[Browser]", "open_browser")
             # State-aware: a running server can be restarted/stopped; a stopped one started.
@@ -322,6 +450,60 @@ class ServerManagerApp(App):
             t.append(what, style=c["dim"])
         try:
             self.query_one("#hints", Static).update(t)
+        except Exception:
+            pass
+
+    # ── session HUD (tokens + context gauge) ──────────────────────────────
+    @staticmethod
+    def _fmt_tokens(n) -> str:
+        try:
+            n = int(n)
+        except (TypeError, ValueError):
+            return "0"
+        return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+    def _context_max(self, model: str):
+        m = (model or "").lower()
+        if m in MODEL_CONTEXT_BY_ID:
+            return MODEL_CONTEXT_BY_ID[m]
+        for sub, mx in MODEL_CONTEXT_WINDOWS:   # longest-substring entries first
+            if sub in m:
+                return mx
+        return None
+
+    def _ctx_gauge(self) -> Text:
+        c = self.cc
+        g = Text(no_wrap=True)
+        used = self._ctx_tokens
+        if used <= 0:
+            g.append("ctx --", style=c["dim"])
+            return g
+        mx = self._context_max(self.provider.model) if self.provider.configured else None
+        if not mx:
+            g.append(f"ctx {self._fmt_tokens(used)}", style=c["dim"])
+            return g
+        frac = max(0.0, min(1.0, used / mx))
+        cells = 12
+        filled = int(round(frac * cells))
+        col = c["error"] if frac >= 0.85 else c["tool"] if frac >= 0.6 else c["success"]
+        g.append("ctx [", style=c["dim"])
+        g.append("#" * filled, style=col)
+        g.append("." * (cells - filled), style=c["dim"])
+        g.append("] ", style=c["dim"])
+        g.append(f"{self._fmt_tokens(used)}/{self._fmt_tokens(mx)} ", style=c["dim"])
+        g.append(f"{int(frac * 100)}%", style=col)
+        return g
+
+    def _update_hud(self) -> None:
+        c = self.cc
+        t = Text(no_wrap=True, overflow="crop")
+        t.append("session ", style=c["dim"])
+        t.append(f"{self._fmt_tokens(self._s_in)} in / {self._fmt_tokens(self._s_out)} out",
+                 style=f"bold {c['success']}")
+        t.append("   |   ", style=c["dim"])
+        t.append_text(self._ctx_gauge())
+        try:
+            self.query_one("#hud", Static).update(t)
         except Exception:
             pass
 
@@ -469,14 +651,80 @@ class ServerManagerApp(App):
         msg = await diag.read_diagnostics(self._server_ctx(), limit=20)
         self._log_block(msg)
 
-    def action_toggle_anim(self) -> None:
-        """Show/hide the animated logo banner (stops the frame timer when hidden)."""
-        self._anim_on = not self._anim_on
-        self.cfg.anim_enabled = self._anim_on
-        self.cfg.save()
+    # ── theme & animation picker (settings modal) ─────────────────────────
+    def action_open_settings(self) -> None:
+        self.push_screen(SettingsModal())
+
+    def _build_palette(self):
+        """The animation palette for the current choice: a named preset, or
+        (default 'theme') one derived from the active theme's colours."""
+        name = self.cfg.anim_palette
+        if name and name != "theme":
+            for p in PRESETS:
+                if p.name == name:
+                    try:
+                        return p.builder()
+                    except Exception:
+                        break
+        return palette_from_theme(self)
+
+    def _retint_anim(self) -> None:
         if self._anim is not None:
-            self._anim.display = self._anim_on
-            self._anim.set_idle(not self._anim_on)
+            self._anim.set_palette(self._build_palette())
+
+    def apply_setting(self, key: str, value) -> None:
+        """Apply one picker change live + persist it (no-op if unchanged)."""
+        cfg = self.cfg
+        if key == "set-banner":
+            on = bool(value)
+            if on != self._anim_on:
+                self._anim_on = on
+                cfg.anim_enabled = on
+                if self._anim is not None:
+                    self._anim.display = on
+                    self._anim.set_idle(not on)
+                cfg.save()
+            return
+        if key == "set-theme":
+            self._apply_theme(value)
+            return
+        changed = True
+        if key == "set-anim" and value != cfg.anim_style:
+            cfg.anim_style = value
+            if self._anim is not None:
+                self._anim.set_style(value)
+        elif key == "set-pal" and value != cfg.anim_palette:
+            cfg.anim_palette = value
+            self._retint_anim()
+        elif key == "set-speed" and float(value) != cfg.anim_speed:
+            cfg.anim_speed = float(value)
+            if self._anim is not None:
+                self._anim.set_speed(float(value))
+        elif key == "set-int" and float(value) != cfg.anim_intensity:
+            cfg.anim_intensity = float(value)
+            if self._anim is not None:
+                self._anim.set_intensity(float(value))
+        elif key == "set-fps" and int(value) != cfg.anim_fps:
+            cfg.anim_fps = int(value)
+            if self._anim is not None:
+                self._anim.set_fps(int(value))
+        else:
+            changed = False
+        if changed:
+            cfg.save()
+
+    def _apply_theme(self, name: str) -> None:
+        if name not in THEME_ORDER or name == self.theme:
+            return
+        self.theme = name
+        self.cc = chrome_colors(self)
+        self._retint_anim()
+        self.cfg.theme_name = name
+        self.cfg.save()
+        self._refresh_status()
+        self._refresh_hints()
+        self._update_hud()
+        self._log(f"[{self.cc['accent']}]theme: {THEME_LABELS.get(name, name)}[/]")
 
     def on_app_blur(self) -> None:
         if self._anim is not None:
@@ -488,16 +736,7 @@ class ServerManagerApp(App):
 
     def action_cycle_theme(self) -> None:
         idx = THEME_ORDER.index(self.theme) if self.theme in THEME_ORDER else -1
-        nxt = THEME_ORDER[(idx + 1) % len(THEME_ORDER)]
-        self.theme = nxt
-        self.cc = chrome_colors(self)
-        if self._anim is not None:
-            self._anim.set_palette(palette_from_theme(self))
-        self.cfg.theme_name = nxt
-        self.cfg.save()
-        self._refresh_status()
-        self._refresh_hints()
-        self._log(f"[{self.cc['accent']}]theme: {THEME_LABELS.get(nxt, nxt)}[/]")
+        self._apply_theme(THEME_ORDER[(idx + 1) % len(THEME_ORDER)])
 
     @on(Input.Submitted, "#prompt")
     def _submit(self, event: Input.Submitted) -> None:
@@ -512,17 +751,34 @@ class ServerManagerApp(App):
         self._log(f"\n[b {self.cc['secondary']}]{G.USER} ›[/] {text}")
         self._run_turn(text)
 
+    def _walk(self, state: str) -> None:
+        if self._walker is not None:
+            self._walker.set_state(state)
+
+    def _rest_walker_soon(self) -> None:
+        """Let the final pose (cheer/trip) linger briefly, then go idle."""
+        def _rest() -> None:
+            if self._walker is not None:
+                self._walker.set_state("idle")
+        try:
+            self.set_timer(0.9, _rest)
+        except Exception:
+            _rest()
+
     @work(exclusive=True, group="agent")
     async def _run_turn(self, text: str) -> None:
         assert self.agent is not None
         c = self.cc
+        self._walk("walk")
 
         async def on_event(ev: AgentEvent) -> None:
             if ev.kind == "assistant" and ev.text:
                 self._log(f"[{c['fg']}]{G.BOT} {ev.text}[/]")
+                self._walk("walk")
             elif ev.kind == "tool_call":
                 args = json.dumps(ev.args or {}, ensure_ascii=False)
                 self._log(f"[{c['tool']}]{G.TOOL} {ev.tool}[/] [{c['dim']}]{args[:160]}[/]")
+                self._walk("work")
             elif ev.kind == "tool_result":
                 snippet = ev.text.strip().splitlines()
                 head = snippet[0] if snippet else ""
@@ -530,8 +786,21 @@ class ServerManagerApp(App):
                 extra = f" (+{len(snippet) - 1} lines)" if len(snippet) > 1 else ""
                 mark = G.OK if ok else G.WARN
                 self._log(f"[{c['dim']}]{mark} {head[:200]}{extra}[/]")
+                self._walk("walk")
+            elif ev.kind == "final":
+                self._walk("cheer")
+            elif ev.kind == "usage":
+                u = ev.args or {}
+                pin, pout = int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
+                if pin:
+                    self._s_in += pin
+                    self._ctx_tokens = pin       # latest prompt = current context size
+                if pout:
+                    self._s_out += pout
+                self._update_hud()
             elif ev.kind == "error":
                 self._log(f"[{c['error']}]{G.ERR} {ev.text}[/]")
+                self._walk("trip")
             elif ev.kind == "status":
                 self._log(f"[{c['dim']}]{ev.text}[/]")
 
@@ -540,6 +809,9 @@ class ServerManagerApp(App):
             await self.agent.run_turn(self.session_id, text, on_event, situation=situation)
         except Exception as e:  # surface, never crash the UI
             self._log(f"[{c['error']}]{G.ERR} agent error: {type(e).__name__}: {e}[/]")
+            self._walk("trip")
+        finally:
+            self._rest_walker_soon()
 
     async def on_unmount(self) -> None:
         await self.llm.aclose()

@@ -193,6 +193,9 @@ class ServerManagerAgent:
                 self.store.add_message(session_id, "assistant", f"[error] {e}")
                 return
 
+            if comp.usage:
+                await on_event(AgentEvent("usage", args=comp.usage))
+
             # Persist the assistant message (with any tool calls) for history.
             raw_tcs = comp.raw.get("tool_calls") or []
             self.store.add_message(

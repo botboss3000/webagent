@@ -92,6 +92,36 @@ Already have the `.venv` from a previous run? Just launch with it directly —
   cause). `provider.json` is gitignored, so a fresh checkout with none falls back
   to env / `.env`.
 
+## Install on Android (Termux)
+
+Install the manager straight into Termux — no proot, no full server — with a
+single paste:
+
+```bash
+pkg install -y git && git clone --depth 1 https://github.com/botboss3000/webagent ~/webagent && bash ~/webagent/webagent_tui/install-termux.sh
+```
+
+…or via the short URL the webAgent server hosts (it serves `/termux` → this same
+script, LF-normalised):
+
+```bash
+pkg install -y curl && curl -fsSL https://webagent.live/termux | bash
+```
+
+`install-termux.sh` installs Termux's `python` + `git`, finds the checkout it's
+running inside (or clones one into `~/webagent`), then installs the TUI — a clean
+`pip install -e .` on Python 3.11/3.12, or a **deps-only "run from source"
+fallback** on newer Python so the `<3.13` pin never blocks the install. It writes
+a **`webagent-tui`** command onto `$PREFIX/bin` and a `~/.shortcuts/webagent-tui.sh`
+**Termux:Widget** shortcut (install the Termux:Widget add-on from F-Droid for a
+tappable home-screen button). Launch afterwards with `webagent-tui`. The script is
+idempotent — safe to re-run to update.
+
+On Android the agent runs in onboarding / managed mode but **headless-browser
+features are off** (no Chromium on Android), so it's a codebase / source-control /
+diagnostics manager there. Give it a key inline (`LLM_API_KEY=… webagent-tui`) or
+in the checkout's `.env`; the installer prints exactly what to set if none is found.
+
 ## Safety model
 
 - Mutating tools are **gated**: off by default. Press **Ctrl+W** to *Allow
@@ -147,7 +177,7 @@ The header is a row of **clickable controls** (no title/model text):
 | Control | Action |
 |---------|--------|
 | `[Read]` / `[Write]` / `[Auto]` | Write-gate button — shows the current mode; click to cycle Read → Write → Auto. |
-| `[Anim]` | Show/hide the animated logo banner |
+| `[Theme]` | Open the theme & animation picker (theme · animation style · palette · speed · intensity · FPS · banner on/off) |
 | `[Browser]` | Open the web UI (`http://localhost:8080/index.html`) in your browser |
 | `[Start]` ↔ `[Restart]` `[Stop]` | Server control, state-aware: `[Start]` when stopped; `[Restart]` + `[Stop]` when running |
 | `[Logs]` | Show the captured server log in the transcript |
@@ -157,11 +187,19 @@ The header is a row of **clickable controls** (no title/model text):
 The server **auto-starts** when you open the manager in managed mode (if it isn't
 already running), so there's no separate Launch control.
 
-An **animated logo banner** (vendored from the launcher — plasma background +
-"webagent" ASCII art, coloured from the active theme) sits above the transcript.
-It stops animating when hidden (`[Anim]`) or when the window loses focus (≈0% CPU),
-and persists its on/off state. Planned visual follow-ons: a loop-reactive "walker",
-a theme/animation picker (palettes + speed/intensity), and a token/context HUD.
+### Look & feel (vendored from the launcher)
+
+- **Animated logo banner** — plasma / flow-field / rings / noise (or a static
+  "off") behind the "webagent" ASCII logo, above the transcript. Coloured from
+  the active theme (or a chosen palette). Stops animating when off or when the
+  window loses focus (≈0% CPU).
+- **`[Theme]` picker** — a modal to set the theme, animation style, palette
+  (match-theme or a preset), speed, intensity, FPS, and the banner on/off. Every
+  choice applies **live** and persists.
+- **Walker** — a tiny ascii guy above the input reacts to the agent loop: walks
+  while thinking, works during a tool, cheers on a reply, trips on an error.
+- **Session HUD** — tokens in/out this session and a context-window gauge
+  (green → amber → red) when the model's window is known.
 
 ## Keyboard
 
@@ -189,11 +227,13 @@ self-contained). The active theme persists to config. Force emoji on/off with
   context-aware AI-key resolution with live re-pick; **linking** an existing
   checkout; the **desktop install flow** (readiness → clone → environment → seed →
   verify); **local server lifecycle** control (start/stop/restart/status/logs);
-  **update checks**; and **self-update** (the manager pulls/rebuilds and relaunches
-  its own code, backing up first — source pull or frozen-exe rebuild + swap).
+  **update checks**; **self-update** (the manager pulls/rebuilds and relaunches
+  its own code, backing up first — source pull or frozen-exe rebuild + swap); and
+  the **Android/Termux one-line install** (`install-termux.sh`, also served by the
+  app at `/termux` — installs python+git, the TUI, a `webagent-tui` launcher + a
+  Termux:Widget home-screen shortcut).
 - **Planned next** — **keyless web search** + page reading, a secure **credential
   prompt** (ask-and-seed a key when a context has none), general-coding in any
   folder, live **progress streaming** for long installs (incl. the self-update
-  rebuild), the **Android/Termux** branch (one-line bootstrap + Termux:Widget
-  shortcuts + server-core deps), and opt-in autonomous self-repair. See
+  rebuild), and opt-in autonomous self-repair. See
   `temp/webagent-tui-onboarding-design.md` for the full design.
