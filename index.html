@@ -454,6 +454,31 @@
       }
     });
   })();
+
+  // Mobile swipe gesture: swipe left on chat → show main, swipe right on main → show chat
+  (function () {
+    var _sx = 0, _sy = 0, _active = false;
+    document.addEventListener('touchstart', function (e) {
+      if (!window.__isMobileChatLayout()) return;
+      if (e.touches.length !== 1) return;
+      _sx = e.touches[0].clientX;
+      _sy = e.touches[0].clientY;
+      _active = true;
+    }, { passive: true });
+    document.addEventListener('touchmove', function (e) {
+      if (!_active || !window.__isMobileChatLayout()) return;
+      if (e.touches.length !== 1) { _active = false; return; }
+      var dx = e.touches[0].clientX - _sx;
+      var dy = e.touches[0].clientY - _sy;
+      if (Math.abs(dy) > 30) { _active = false; return; }
+      if (Math.abs(dx) > 80) {
+        _active = false;
+        window.__toggleChat();
+      }
+    }, { passive: true });
+    document.addEventListener('touchend', function () { _active = false; }, { passive: true });
+    document.addEventListener('touchcancel', function () { _active = false; }, { passive: true });
+  })();
 </script>
 
 <div id="main-header">
