@@ -1096,6 +1096,8 @@ class SupabaseBackend(StorageBackend):
                 # a missing / 0 template value up to the effectively-unlimited default.
                 "max_turn_count": (tpl.get("max_turn_count") or 9999),
                 "max_wall_seconds": tpl.get("max_wall_seconds"),
+                "max_identical_tool_calls": tpl.get("max_identical_tool_calls", 0),
+                "max_stall_strikes": tpl.get("max_stall_strikes", 0),
                 "model": tpl["model"],
                 "provider": tpl["provider"],
                 "temperature": tpl["temperature"],

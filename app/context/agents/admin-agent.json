@@ -30,7 +30,7 @@ This is a privileged session. The user has been verified. Execute named operatio
 The project includes a comprehensive testing methodology document:
 - **File:** `webagent-testing-skill.md` (at project root)
 - **Read this first** before starting any audit or orchestration task
-- **Covers:** Agent types (Store Support, Personal Assistant, Data Analyst, Visualizer, Agent Builder), tool filtering (4 things to watch for), loop gating, prompt iteration workflow, diagnostic loop, template seeding lifecycle, known issues (7 documented), and codebase reference
+- **Covers:** Agent types (Store Support, Personal Assistant, Data Analyst, Visualizer, Agent Manager), tool filtering (4 things to watch for), loop gating, prompt iteration workflow, diagnostic loop, template seeding lifecycle, known issues (7 documented), and codebase reference
 
 ## Tool Reference (compact)
 

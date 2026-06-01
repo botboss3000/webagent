@@ -10,6 +10,7 @@
  */
 
 import { app } from './state.js';
+import { apiPath } from './config.js';
 import { fetchAllToolMeta } from './loop-logic.js';
 import { NODE_PANEL_INFO } from './loop-node-data.js';
 import { LOOP_W, LOOP_H, LOOP_NODES, TOGGLEABLE_NODES, renderLoopDiagram } from './loop-diagram.js';
@@ -33,7 +34,7 @@ let _expandedAgents = new Map(); // Map<agentId, { tab: string }>
 let _userIsAdmin    = false;
 let _extendLlmToAgents = true; // mirrors app-settings.json extend_llm_to_agents
 
-// ── Agent Builder (per-detail-panel chat bar) ────────────────────────────────
+// ── Agent Manager (per-detail-panel chat bar) ────────────────────────────────
 const AGENT_BUILDER_TEMPLATE_ID = 'agent-builder';
 const _agentBuilderAgentCache = new Map(); // userId → agentId
 
@@ -169,11 +170,13 @@ function _toolsForAgent(agent) {
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 export async function initAgents() {
+  // Always bind the pill bar so the send button works even if the user hasn't
+  // logged in yet — _sendAgentBuilderPrompt checks app.currentUserId itself.
+  _bindAgentBuilderBar();
   if (!app.currentUserId) return;
   await Promise.all([_loadProfile(), _loadAgents(), _loadAppSettings()]);
   _renderList();
   _bindCreateModal();
-  _bindAgentBuilderBar();
   _restoreViewState();
 }
 
@@ -521,7 +524,7 @@ function _buildDetailPanel(agent) {
   return panel;
 }
 
-// ── Agent Builder chat bar ────────────────────────────────────────────────────
+// ── Agent Manager chat bar ────────────────────────────────────────────────────
 //
 // Persistent textarea + send button at the top of every agent detail body.
 // Submitting a prompt hands the conversation off to the built-in `agent-builder`
@@ -533,7 +536,7 @@ async function _findAgentBuilderAgent(userId) {
   const cached = _agentBuilderAgentCache.get(userId);
   if (cached) return cached;
   try {
-    const res = await fetch(`/api/v1/agents?user_id=${encodeURIComponent(userId)}`);
+    const res = await fetch(apiPath(`/api/v1/agents?user_id=${encodeURIComponent(userId)}`));
     if (!res.ok) return null;
     const data = await res.json();
     const match = (data.agents || []).find(a => a.template_id === AGENT_BUILDER_TEMPLATE_ID);
@@ -541,22 +544,29 @@ async function _findAgentBuilderAgent(userId) {
       _agentBuilderAgentCache.set(userId, match.id);
       return match.id;
     }
-  } catch (_) { /* fall through */ }
+  } catch (e) {
+    console.warn('[AgentMgr] find failed:', e);
+  }
   return null;
 }
 
 async function _createAgentBuilderAgent(userId) {
-  const res = await fetch('/api/v1/agents', {
+  const res = await fetch(apiPath('/api/v1/agents'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       user_id: userId,
-      name: 'Agent Builder',
+      name: 'Agent Manager',
       description: 'Guides agent configuration — templates, prompt slots, abilities, model settings.',
       template_id: AGENT_BUILDER_TEMPLATE_ID,
     }),
   });
-  if (!res.ok) throw new Error(`agent create failed (${res.status})`);
+  if (!res.ok) {
+    // Try to read error detail from the response
+    let detail = `agent create failed (${res.status})`;
+    try { const errBody = await res.json(); detail = errBody.detail || detail; } catch (_) {}
+    throw new Error(detail);
+  }
   const data = await res.json();
   const id = data.agent && data.agent.id;
   if (!id) throw new Error('agent create returned no id');
@@ -574,24 +584,29 @@ async function _ensureAgentBuilderAgent(userId) {
 async function _sendAgentBuilderPrompt() {
   const input = document.getElementById('agent-builder-bar-input');
   const row   = document.getElementById('agent-builder-bar-row');
-  if (!input) return;
+  if (!input) { console.error('[AgentMgr] input not found'); return; }
 
   const text = input.value.trim();
   if (!text) return;
-  if (!app.currentUserId) return;
+  if (!app.currentUserId) {
+    console.error('[AgentMgr] no userId');
+    return;
+  }
 
-  const tagged = `[Agent Builder Request | Source: Agents Page]: ${text}`;
+  const tagged = `[Agent Manager Request | Source: Agents Page]: ${text}`;
 
   let builderAgentId;
   try {
     builderAgentId = await _ensureAgentBuilderAgent(app.currentUserId);
-  } catch (_e) {
+  } catch (e) {
+    console.error('[AgentMgr] _ensureAgentBuilderAgent failed:', e);
+    app.addChatBubble('agent', '❌ Agent Manager unavailable: ' + (e.message || e), 'error');
     return;
   }
 
   if (typeof app.switchToAgent === 'function') {
     app.switchToAgent(builderAgentId);
-  } else if (builderAgentId !== app.currentAgentId) {
+  } else {
     app.currentAgentId = builderAgentId;
     try { localStorage.setItem('selectedAgentId', builderAgentId); } catch (_) {}
   }
@@ -599,10 +614,38 @@ async function _sendAgentBuilderPrompt() {
   input.value = '';
   if (row) row.classList.remove('has-text');
 
-  if (app.chatInput && app.chatSend) {
+  if (app.chatInput) {
     app.chatInput.value = tagged;
     app.chatInput.dispatchEvent(new Event('input', { bubbles: true }));
-    app.chatSend.click();
+    setTimeout(() => {
+      if (app.chatSend) {
+        app.chatSend.click();
+      } else {
+        // Direct fallback if the main chat send button is not wired
+        fetch(apiPath('/api/v1/chat/send'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: tagged,
+            session_id: app.currentSessionId,
+            user_id: app.currentUserId,
+            agent_id: builderAgentId,
+          }),
+        }).catch(err => console.error('[AgentMgr] direct send failed:', err));
+      }
+    }, 50);
+  } else {
+    // No main chat input at all — fire direct
+    fetch(apiPath('/api/v1/chat/send'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: tagged,
+        session_id: app.currentSessionId,
+        user_id: app.currentUserId,
+        agent_id: builderAgentId,
+      }),
+    }).catch(err => console.error('[AgentMgr] direct send (no chatInput) failed:', err));
   }
 }
 
@@ -1630,6 +1673,34 @@ function _renderConfigTab(body, agent, panelEl) {
       ${!isEditable ? 'readonly' : ''} style="width:100px" placeholder="0 (off)">
   `;
   limitsRow.appendChild(wcGroup);
+
+  // Max identical tool calls (stall guard)
+  const icGroup = document.createElement('div');
+  icGroup.className = 'agents-field-group';
+  icGroup.style = 'flex:1;min-width:200px;';
+  const icVal = agent.max_identical_tool_calls != null ? agent.max_identical_tool_calls : '';
+  icGroup.innerHTML = `
+    <label class="agents-field-label">Max Identical Tool Calls <span style="font-weight:normal;color:var(--fg-3);">(0 = off)</span></label>
+    <span class="agents-field-hint">Limits how many times the agent can call the <strong>same tool with the same arguments</strong>. Prevents infinite loops (e.g. running the same search 20 times). Also limits how many consecutive calls to the same tool (different args) are allowed. Set to 0 for no limit.</span>
+    <input type="number" class="agents-input" data-field="max_identical_tool_calls"
+      value="${icVal}" min="0" max="9999" step="1"
+      ${!isEditable ? 'readonly' : ''} style="width:100px" placeholder="0 (off)">
+  `;
+  limitsRow.appendChild(icGroup);
+
+  // Max stall strikes (loop strikes before hard stop)
+  const ssGroup = document.createElement('div');
+  ssGroup.className = 'agents-field-group';
+  ssGroup.style = 'flex:1;min-width:200px;';
+  const ssVal = agent.max_stall_strikes != null ? agent.max_stall_strikes : '';
+  ssGroup.innerHTML = `
+    <label class="agents-field-label">Max Stall Strikes <span style="font-weight:normal;color:var(--fg-3);">(0 = off)</span></label>
+    <span class="agents-field-hint">After this many stall guard strikes (tool-call loop detections), the agent stops and asks the user for clarification. Set to 0 for no limit — the agent can keep looping as long as max-turn-count allows.</span>
+    <input type="number" class="agents-input" data-field="max_stall_strikes"
+      value="${ssVal}" min="0" max="99" step="1"
+      ${!isEditable ? 'readonly' : ''} style="width:100px" placeholder="0 (off)">
+  `;
+  limitsRow.appendChild(ssGroup);
 
   body.appendChild(limitsRow);
 
@@ -5358,6 +5429,18 @@ async function _saveChanges(agent, barEl, panelEl) {
     updates.max_wall_seconds = isNaN(parsed) ? null : parsed;
   } else if (wcVal !== undefined) {
     updates.max_wall_seconds = null;
+  }
+
+  // Stall guard limits (0 = off/infinite)
+  const icVal = fv('max_identical_tool_calls');
+  if (icVal !== undefined && icVal !== '') {
+    const parsed = parseInt(icVal, 10);
+    updates.max_identical_tool_calls = isNaN(parsed) ? 0 : parsed;
+  }
+  const ssVal = fv('max_stall_strikes');
+  if (ssVal !== undefined && ssVal !== '') {
+    const parsed = parseInt(ssVal, 10);
+    updates.max_stall_strikes = isNaN(parsed) ? 0 : parsed;
   }
   const ttVal   = fv('trigger_type');   if (ttVal !== undefined) updates.trigger_type   = ttVal;
   const tkVal   = fv('trigger_key');    if (tkVal !== undefined) updates.trigger_key    = tkVal || null;

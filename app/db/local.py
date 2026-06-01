@@ -1352,6 +1352,17 @@ class LocalBackend(StorageBackend):
                     logger.info("Added %s.max_wall_seconds column", tbl)
             conn.commit()
 
+            # ── Migration: add max_identical_tool_calls / max_stall_strikes to agents and agent_templates ──
+            for tbl in ("agents", "agent_templates"):
+                tbl_cols = {row[1] for row in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
+                if "max_identical_tool_calls" not in tbl_cols:
+                    conn.execute(f"ALTER TABLE {tbl} ADD COLUMN max_identical_tool_calls INTEGER NOT NULL DEFAULT 0")
+                    logger.info("Added %s.max_identical_tool_calls column", tbl)
+                if "max_stall_strikes" not in tbl_cols:
+                    conn.execute(f"ALTER TABLE {tbl} ADD COLUMN max_stall_strikes INTEGER NOT NULL DEFAULT 0")
+                    logger.info("Added %s.max_stall_strikes column", tbl)
+            conn.commit()
+
             # ── Migration: add fire_token / external_job_id / external_provider to agent_automations ──
             try:
                 cursor = conn.execute("PRAGMA table_info(agent_automations)")
@@ -2620,18 +2631,22 @@ class LocalBackend(StorageBackend):
             # 1. agent_templates row — config only, always upsert
             conn.execute(
                 """INSERT INTO agent_templates
-                   (id, name, description, icon, max_turn_count, max_wall_seconds, model, provider,
+                   (id, name, description, icon, max_turn_count, max_wall_seconds,
+                    max_identical_tool_calls, max_stall_strikes,
+                    model, provider,
                     temperature, max_tokens, metadata,
                     can_be_default, is_system, is_pipeline, access_level,
                     is_admin_agent, discoverable, trigger_type, trigger_key, loop_logic,
                     created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name,
                     description = excluded.description,
                     icon = excluded.icon,
                     max_turn_count = excluded.max_turn_count,
                     max_wall_seconds = excluded.max_wall_seconds,
+                    max_identical_tool_calls = excluded.max_identical_tool_calls,
+                    max_stall_strikes = excluded.max_stall_strikes,
                     model = excluded.model,
                     provider = excluded.provider,
                     temperature = excluded.temperature,
@@ -2649,6 +2664,8 @@ class LocalBackend(StorageBackend):
                 (tpl_id, tpl.get("name", tpl_id), tpl.get("description", ""),
                  tpl.get("icon", ""), tpl["max_turn_count"],
                  tpl.get("max_wall_seconds"),
+                 tpl.get("max_identical_tool_calls", 0),
+                 tpl.get("max_stall_strikes", 0),
                  tpl["model"], tpl["provider"], tpl["temperature"],
                  tpl["max_tokens"], tpl["metadata"],
                  tpl.get("can_be_default", 1), tpl.get("is_system", 0),
@@ -3991,13 +4008,18 @@ class LocalBackend(StorageBackend):
             conn.execute(
                 """INSERT INTO agents
                    (id, name,
-                    max_turn_count, model, provider,
+                    max_turn_count, max_wall_seconds,
+                    max_identical_tool_calls, max_stall_strikes,
+                    model, provider,
                     temperature, max_tokens, status, metadata,
                     trigger_type, trigger_key, loop_logic,
                     is_user_default, admin_users, assigned_at, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
                 (agent_id, tpl_data.get("name", "autoAgent"),
                  tpl_data["max_turn_count"],
+                 tpl_data.get("max_wall_seconds"),
+                 tpl_data.get("max_identical_tool_calls", 0),
+                 tpl_data.get("max_stall_strikes", 0),
                  tpl_data["model"],
                  tpl_data["provider"],
                  tpl_data["temperature"],
@@ -5371,13 +5393,15 @@ class LocalBackend(StorageBackend):
                 now = _now_iso()
                 conn.execute(
                     """INSERT INTO agent_templates
-                       (id, name, description, icon, max_turn_count, max_wall_seconds, model, provider,
+                       (id, name, description, icon, max_turn_count, max_wall_seconds,
+                        max_identical_tool_calls, max_stall_strikes,
+                        model, provider,
                         temperature, max_tokens, metadata,
                         can_be_default, is_system, is_pipeline, access_level,
                         is_admin_agent, discoverable,
                         trigger_type, trigger_key, loop_logic,
                         created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         template_id,
                         name.strip(),
@@ -5385,6 +5409,8 @@ class LocalBackend(StorageBackend):
                         icon or "",
                         agent.get("max_turn_count") if agent.get("max_turn_count") is not None else 0,
                         agent.get("max_wall_seconds"),
+                        agent.get("max_identical_tool_calls", 0),
+                        agent.get("max_stall_strikes", 0),
                         agent.get("model"),
                         agent.get("provider"),
                         agent.get("temperature") if agent.get("temperature") is not None else 0.0,
@@ -5580,7 +5606,9 @@ class LocalBackend(StorageBackend):
             conn.execute(
                 """INSERT INTO agents
                    (id, name, description,
-                    max_turn_count, model, provider,
+                    max_turn_count, max_wall_seconds,
+                    max_identical_tool_calls, max_stall_strikes,
+                    model, provider,
                     temperature, max_tokens, metadata,
                     template_id, is_user_default,
                     allowed_tools, custom_tool_ids,
@@ -5588,10 +5616,13 @@ class LocalBackend(StorageBackend):
                     safety_policy, is_admin_agent,
                     admin_users,
                     created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,0,'[]','[]',?,?,?,'{}',?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'[]','[]',?,?,?,'{}',?,?,?,?)""",
                 (
                     agent_id, name, description,
                     _new_max_turns,
+                    tpl.get("max_wall_seconds"),
+                    tpl.get("max_identical_tool_calls", 0),
+                    tpl.get("max_stall_strikes", 0),
                     tpl.get("model", ""),
                     tpl.get("provider", ""),
                     tpl.get("temperature", 0.7),
@@ -5607,6 +5638,37 @@ class LocalBackend(StorageBackend):
                 ),
             )
             self._clone_template_slots(conn, source_id=template_id, target_id=agent_id, now=now)
+
+            # ── Seed pre-enabled connections ──
+            # If the template's metadata specifies pre_enabled_connections, create
+            # agent_connections rows so the tools are available at runtime.
+            _pec = None
+            _meta_raw = tpl.get("metadata", "{}")
+            if isinstance(_meta_raw, str):
+                try:
+                    _meta = json.loads(_meta_raw)
+                    if isinstance(_meta, dict):
+                        _pec = _meta.get("pre_enabled_connections")
+                except Exception:
+                    pass
+            if _pec and isinstance(_pec, list):
+                now = now or _now_iso()
+                for _ct in _pec:
+                    if not isinstance(_ct, str) or not _ct.strip():
+                        continue
+                    _existing = conn.execute(
+                        "SELECT 1 FROM agent_connections WHERE agent_id = ? AND connection_type = ?",
+                        (agent_id, _ct),
+                    ).fetchone()
+                    if _existing:
+                        continue
+                    conn.execute(
+                        """INSERT INTO agent_connections
+                               (id, agent_id, connection_type, section, enabled, config, created_at, updated_at)
+                           VALUES (?, ?, ?, 'ability', 1, '{}', ?, ?)""",
+                        (_uuid(), agent_id, _ct, now, now),
+                    )
+
             conn.commit()
             row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
         finally:
@@ -5683,6 +5745,7 @@ class LocalBackend(StorageBackend):
             "trigger_type", "trigger_key", "loop_logic",
             "safety_policy", "user_mode", "metadata",
             "sort_order",
+            "max_identical_tool_calls", "max_stall_strikes",
         }
         safe = {}
         for k, v in updates.items():

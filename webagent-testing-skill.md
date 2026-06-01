@@ -95,7 +95,7 @@ The seeder updates `agent_templates` and `agent_prompt_templates` tables. It doe
 | **Personal Assistant** | `personal-assistant.json` | web_search, memory, get_time, gmail/gcal/drive (OAuth-gated) | Admin tools, file ops (unless OAuth grants it) |
 | **Data Analyst** | `enterprise-db-agent.json` | db_query, web_search, memory, render_visual, connectors | Email, calendar, Drive, admin/shell tools |
 | **Visualizer** | `visualizer.json` | render_visual, page tools, web_search, browser_action | Admin tools, db_query (unless needed) |
-| **Agent Builder** | `agent-builder.json` | http_request (REST API), web_search, memory | db_query (uses REST API instead) |
+| **Agent Manager** | `agent-builder.json` | http_request (REST API), web_search, memory, read_diagnostics | db_query (uses REST API instead) |
 
 ## Tool Filtering — 4 Things to Watch For
 
@@ -142,7 +142,7 @@ The seeder updates `agent_templates` and `agent_prompt_templates` tables. It doe
 | 4 | **Template DB version stale** | After editing agent JSON, the DB keeps the old version until the seeder runs (server restart or Re-Seed). |
 | 5 | **browser_action not gated by Codebase Admin** | All agents get it as builtin. Must manually Deny in Tools tab for isolation tests. |
 | 6 | **Store Support template may not override model identity** | Agent says "general-purpose assistant" instead of "store support clerk". |
-| 7 | **Agent Builder uses http_request not db_query** | Must verify URLs include full `http://127.0.0.1:8080` base. |
+| 7 | **Agent Manager uses http_request not db_query** | Must verify URLs include full `http://127.0.0.1:8080` base. |
 
 ## Codebase Reference
 

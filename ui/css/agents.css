@@ -51,7 +51,7 @@
   scrollbar-width: thin;
   scrollbar-color: #2a2a4a transparent;
   /* Soft fade at the top so cards melt into the page background as they
-     scroll up under the Agent Builder bar — no hard seam between the bar
+     scroll up under the Agent Manager bar — no hard seam between the bar
      and the first card. */
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 20px, #000 100%);
           mask-image: linear-gradient(to bottom, transparent 0, #000 20px, #000 100%);
@@ -341,7 +341,7 @@ body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; co
 .agent-detail-body::-webkit-scrollbar { width: 5px; }
 .agent-detail-body::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
 
-/* ── Agent Builder page-level chat bar ──
+/* ── Agent Manager page-level chat bar ──
    Sits between #agents-toolbar and #agents-grid, page-wide chat entry that
    hands off to the built-in agent-builder system agent.
    CHAT-PILL-SYNC: pill geometry, focus state, attach/voice/send buttons,
