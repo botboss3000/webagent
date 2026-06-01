@@ -72,15 +72,20 @@ const TOOL_DESCRIPTIONS = {
   write_source:                 'Create or overwrite a file (with backup)',
   edit_source:                  'Replace exact text in a file',
   delete_source:                'Delete a file or directory',
+  resolve_conflict:             'Resolve merge conflict markers in a file',
   run_command:                  'Execute a shell command on the server',
   restart_server:               'Restart the webAgent server process',
   register_user:                'Register a new user from a communication channel',
+  generate_image:               'Generate an image from a text description',
+  read_diagnostics:             'Read server diagnostics, errors, and logs',
+  maps_geocode:                 'Geocode an address or reverse-geocode coordinates',
 };
 
 // ── Tool tier definitions ─────────────────────────────────────────────
 // Tier 0: Admin-only. Never shown or toggleable for normal agents.
 const TIER_0_ADMIN = new Set([
-  'read_source','write_source','edit_source','delete_source','run_command','restart_server',
+  'read_source','write_source','edit_source','delete_source','resolve_conflict',
+  'run_command','restart_server',
   'run_worker_trials','handoff_to_closer','deploy_optimization',
 ]);
 
@@ -88,7 +93,7 @@ const TIER_0_ADMIN = new Set([
 const TIER_1_ALWAYS_ON = new Set([
   'list_tools','search_tools','get_tool_definition',
   'get_time','get_date','calculate','read_attachment',
-  'delegate_to_agent','list_delegatable_agents','register_user',
+  'register_user',
 ]);
 
 // Tier 2: Configurable standard tools — shown in the toggle UI.
@@ -111,6 +116,7 @@ const TOOL_CATEGORIES = [
     tools: [
       'web_search','http_request','browser_action','session_search','memory',
       'list_tools','search_tools','get_tool_definition','read_attachment',
+      'maps_geocode',
     ],
   },
   {
@@ -119,7 +125,7 @@ const TOOL_CATEGORIES = [
     tools: [
       'db_query','list_agent_context_documents','get_agent_context_document',
       'update_agent_context_document','insert_agent_context_document','create_tool',
-      'get_time','get_date','calculate','delegate_to_agent','list_delegatable_agents','register_user',
+      'get_time','get_date','calculate','register_user',
     ],
   },
   {
@@ -131,13 +137,58 @@ const TOOL_CATEGORIES = [
     ],
   },
   {
+    label: 'Image & Diagnostics',
+    condition: null,
+    tools: [
+      'generate_image','read_diagnostics',
+    ],
+  },
+  {
     label: 'Admin & System',
     condition: 'admin',
     tools: [
-      'read_source','write_source','edit_source','delete_source',
+      'read_source','write_source','edit_source','delete_source','resolve_conflict',
       'run_command','restart_server',
       'run_worker_trials','handoff_to_closer','deploy_optimization',
     ],
+  },
+  {
+    label: 'Codebase Admin',
+    condition: 'codebase_admin',
+    tools: [
+      'read_source','write_source','edit_source','delete_source','resolve_conflict',
+      'run_command','restart_server',
+    ],
+  },
+  {
+    label: 'Web Access',
+    condition: 'web_access',
+    tools: ['web_search','get_weather','maps_geocode'],
+  },
+  {
+    label: 'Browser Control',
+    condition: 'browser_control',
+    tools: ['browser_action','http_request'],
+  },
+  {
+    label: 'Image Generation',
+    condition: 'image_generation',
+    tools: ['generate_image'],
+  },
+  {
+    label: 'Create Tools',
+    condition: 'create_tools',
+    tools: ['create_tool'],
+  },
+  {
+    label: 'Diagnostics',
+    condition: 'diagnostics',
+    tools: ['read_diagnostics'],
+  },
+  {
+    label: 'Agent Orchestration',
+    condition: 'agent_orchestration',
+    tools: ['delegate_to_agent','list_delegatable_agents'],
   },
 ];
 
@@ -148,10 +199,27 @@ const PIPELINE_TOOLS = {
 
 const DESTRUCTIVE = new Set([
   'db_query','update_agent_context_document','create_tool',
-  'delete_webhook','write_source','edit_source','delete_source','run_command','restart_server',
+  'delete_webhook','write_source','edit_source','delete_source','resolve_conflict',
+  'run_command','restart_server',
 ]);
 
-function _toolsForAgent(agent) {
+// ── Ability-to-tools mapping ──────────────────────────────────────────
+// Maps agent connection_type (ability) to the tool names it unlocks.
+// Mirrors the gating logic in app/tools/loader.py _inject_builtin_tools.
+const ABILITY_TO_TOOLS = {
+  codebase_admin:   ['read_source','write_source','edit_source','delete_source','resolve_conflict','run_command','restart_server','db_query'],
+  web_access:       ['web_search','get_weather','maps_geocode'],
+  browser_control:  ['browser_action','http_request'],
+  image_generation: ['generate_image'],
+  create_tools:     ['create_tool'],
+  diagnostics:      ['read_diagnostics'],
+  automation:       [],  // automation tools are injected dynamically; no static tool names to list
+  visualizer:       [],  // visualizer tools are injected dynamically
+  agent_orchestration: ['delegate_to_agent','list_delegatable_agents'],
+  // register_user is always-on (Tier 1), not gated by an ability
+};
+
+function _toolsForAgent(agent, enabledAbilities) {
   const id = agent.id || '';
   if (agent.is_admin_agent) {
     return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL,
@@ -161,9 +229,26 @@ function _toolsForAgent(agent) {
   if (id === 'opt_closer')  return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL, ...(PIPELINE_TOOLS.opt_closer  || [])];
 
   const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
+  const base = TIER_2_ALL.filter(name => !disabled.has(name));
+
+  // Add ability-gated tools for any enabled abilities
+  const abilityTools = [];
+  if (enabledAbilities) {
+    for (const [ability, tools] of Object.entries(ABILITY_TO_TOOLS)) {
+      if (enabledAbilities.has(ability)) {
+        for (const t of tools) {
+          if (!disabled.has(t) && !abilityTools.includes(t)) {
+            abilityTools.push(t);
+          }
+        }
+      }
+    }
+  }
+
   return [
     ...TIER_1_ALWAYS_ON,
-    ...TIER_2_ALL.filter(name => !disabled.has(name)),
+    ...base,
+    ...abilityTools,
   ];
 }
 
@@ -420,8 +505,8 @@ function _populateAgentTabBar(tabBar, agent, panel) {
   if (_userIsAdmin) tabs.push(['members','Members']);
   tabs.push(['monetization','Monetization']);
 
-  // ── Compute synchronous counts ──
-  const toolCount = _toolsForAgent(agent).length;
+  // ── Compute synchronous counts (base tools, no abilities yet) ──
+  const baseToolCount = _toolsForAgent(agent).length;
 
   for (const [key, label] of tabs) {
     const btn = document.createElement('button');
@@ -429,7 +514,7 @@ function _populateAgentTabBar(tabBar, agent, panel) {
     btn.dataset.tab = key;
     // Set label with count badge where applicable
     if (key === 'tools') {
-      btn.innerHTML = `${label} <span class="tab-count-badge">${toolCount}</span>`;
+      btn.innerHTML = `${label} <span class="tab-count-badge tab-count-badge-pending">…</span>`;
     } else if (key === 'connections') {
       btn.innerHTML = `${label} <span class="tab-count-badge tab-count-badge-pending">…</span>`;
     } else if (key === 'members') {
@@ -453,13 +538,22 @@ function _populateAgentTabBar(tabBar, agent, panel) {
     tabBar.appendChild(btn);
   }
 
-  // ── Async: fetch abilities count ──
-  _fetchAbilitiesCount(agent).then(count => {
+  // ── Async: fetch abilities + compute tool count ──
+  _fetchAbilitiesAndTools(agent).then(({ toolCount, abilitiesCount }) => {
+    const toolsBtn = tabBar.querySelector('.agents-detail-tab[data-tab="tools"]');
+    if (toolsBtn) {
+      toolsBtn.innerHTML = `Tools <span class="tab-count-badge">${toolCount}</span>`;
+    }
     const connBtn = tabBar.querySelector('.agents-detail-tab[data-tab="connections"]');
     if (connBtn) {
-      connBtn.innerHTML = `Abilities <span class="tab-count-badge">${count}</span>`;
+      connBtn.innerHTML = `Abilities <span class="tab-count-badge">${abilitiesCount}</span>`;
     }
   }).catch(() => {
+    // Fallback: show base count if fetch fails
+    const toolsBtn = tabBar.querySelector('.agents-detail-tab[data-tab="tools"]');
+    if (toolsBtn) {
+      toolsBtn.innerHTML = `Tools <span class="tab-count-badge">${baseToolCount}</span>`;
+    }
     const connBtn = tabBar.querySelector('.agents-detail-tab[data-tab="connections"]');
     if (connBtn) {
       connBtn.innerHTML = `Abilities <span class="tab-count-badge">0</span>`;
@@ -487,6 +581,44 @@ async function _fetchAbilitiesCount(agent) {
   const abilities = data.abilities || [];
   // Count non-implicit, enabled abilities
   return abilities.filter(a => !a.implicit && a.enabled).length;
+}
+
+/**
+ * Fetch abilities and compute both the abilities count and the tool count
+ * (including ability-gated tools). Returns { toolCount, abilitiesCount }.
+ *
+ * Uses the connections API to get enabled ability-type connection_types
+ * (codebase_admin, web_access, browser_control, etc.) and the abilities
+ * API to count non-implicit OAuth abilities.
+ */
+async function _fetchAbilitiesAndTools(agent) {
+  // Fetch connections (for ability-type toggles like codebase_admin)
+  let connEnabled = new Set();
+  let abilitiesCount = 0;
+  try {
+    const [connRes, abilRes] = await Promise.all([
+      fetch(`/api/v1/agents/${agent.id}/connections?user_id=${encodeURIComponent(app.currentUserId)}`),
+      fetch(`/api/v1/agents/${agent.id}/abilities?user_id=${encodeURIComponent(app.currentUserId)}`).catch(() => null),
+    ]);
+    if (connRes.ok) {
+      const connData = await connRes.json();
+      for (const c of (connData.connections || [])) {
+        if (c.enabled && c.section === 'ability') {
+          connEnabled.add(c.connection_type);
+        }
+      }
+    }
+    if (abilRes && abilRes.ok) {
+      const abilData = await abilRes.json();
+      const abilities = abilData.abilities || [];
+      abilitiesCount = abilities.filter(a => !a.implicit && a.enabled).length;
+    }
+  } catch (e) {
+    // non-fatal — proceed without ability data
+  }
+
+  const tools = _toolsForAgent(agent, connEnabled);
+  return { toolCount: tools.length, abilitiesCount };
 }
 
 async function _fetchMembersCount(agent) {
@@ -2393,9 +2525,25 @@ function _localLoopLogicObjs(agent) {
 async function _renderToolsTab(body, agent, panelEl) {
   const isEditable = agent.source === 'custom';
 
+  // ── Fetch enabled abilities to include ability-gated tools ──────────────
+  let enabledAbilities = new Set();
+  try {
+    const connRes = await fetch(`/api/v1/agents/${agent.id}/connections?user_id=${encodeURIComponent(app.currentUserId)}`);
+    if (connRes.ok) {
+      const connData = await connRes.json();
+      for (const c of (connData.connections || [])) {
+        if (c.enabled && c.section === 'ability') {
+          enabledAbilities.add(c.connection_type);
+        }
+      }
+    }
+  } catch (e) {
+    // non-fatal — proceed without ability-gated tools
+  }
+
   // ── Non-editable: read-only tool list ────────────────────────────────────
   if (!isEditable) {
-    const tools = _toolsForAgent(agent);
+    const tools = _toolsForAgent(agent, enabledAbilities);
     const toolSet = new Set(tools);
     const section = document.createElement('div');
     section.className = 'agents-tools-list';
@@ -2408,7 +2556,10 @@ async function _renderToolsTab(body, agent, panelEl) {
     const isAdmin = agent.is_admin_agent || agentId.startsWith('opt_');
 
     for (const cat of TOOL_CATEGORIES) {
+      // Check category condition: null=always, 'admin'=admin/optimizer only,
+      // otherwise it's an ability name that must be enabled
       if (cat.condition === 'admin' && !isAdmin) continue;
+      if (cat.condition && cat.condition !== 'admin' && !enabledAbilities.has(cat.condition)) continue;
       const catTools = cat.tools.filter(n => toolSet.has(n));
       if (catTools.length === 0) continue;
 
@@ -2416,17 +2567,19 @@ async function _renderToolsTab(body, agent, panelEl) {
       wrapper.className = 'agents-tool-category';
 
       const header = document.createElement('div');
-      header.className = 'agents-tool-category-header';
-      header.innerHTML = `<span class="agents-tool-category-chevron">▼</span>
+      header.className = 'agents-tool-category-header collapsed';
+      header.innerHTML = `<span class="agents-tool-category-chevron">▶</span>
         <span class="agents-tool-category-label">${_esc(cat.label)}</span>
         <span class="agents-tool-category-count">${catTools.length}</span>`;
 
       const catBody = document.createElement('div');
-      catBody.className = 'agents-tool-category-body';
+      catBody.className = 'agents-tool-category-body collapsed';
 
       header.addEventListener('click', () => {
         header.classList.toggle('collapsed');
         catBody.classList.toggle('collapsed');
+        const chevron = header.querySelector('.agents-tool-category-chevron');
+        if (chevron) chevron.textContent = header.classList.contains('collapsed') ? '▶' : '▼';
       });
 
       for (const name of catTools) {
@@ -2455,15 +2608,17 @@ async function _renderToolsTab(body, agent, panelEl) {
       const wrapper = document.createElement('div');
       wrapper.className = 'agents-tool-category';
       const header = document.createElement('div');
-      header.className = 'agents-tool-category-header';
-      header.innerHTML = `<span class="agents-tool-category-chevron">▼</span>
+      header.className = 'agents-tool-category-header collapsed';
+      header.innerHTML = `<span class="agents-tool-category-chevron">▶</span>
         <span class="agents-tool-category-label">Custom Skills</span>
         <span class="agents-tool-category-count">${uncategorized.length}</span>`;
       const catBody = document.createElement('div');
-      catBody.className = 'agents-tool-category-body';
+      catBody.className = 'agents-tool-category-body collapsed';
       header.addEventListener('click', () => {
         header.classList.toggle('collapsed');
         catBody.classList.toggle('collapsed');
+        const chevron = header.querySelector('.agents-tool-category-chevron');
+        if (chevron) chevron.textContent = header.classList.contains('collapsed') ? '▶' : '▼';
       });
       for (const name of uncategorized) {
         const item = document.createElement('div');
@@ -2663,7 +2818,7 @@ async function _renderToolsTab(body, agent, panelEl) {
   try {
     const allMeta    = await fetchAllToolMeta();
     const metaByName = new Map(allMeta.map(t => [t.name, t]));
-    const tools      = _toolsForAgent(agent);
+    const tools      = _toolsForAgent(agent, enabledAbilities);
     const toolSet    = new Set(tools);
 
     loadingEl.remove();
@@ -2741,11 +2896,14 @@ async function _renderToolsTab(body, agent, panelEl) {
       return row;
     }
 
-    // Render categories as collapsible accordions
+    // Render categories as collapsible accordions (collapsed by default)
     const categorized = new Set(TOOL_CATEGORIES.flatMap(c => c.tools));
 
     for (const cat of TOOL_CATEGORIES) {
+      // Check category condition: null=always, 'admin'=admin/optimizer only,
+      // otherwise it's an ability name that must be enabled
       if (cat.condition === 'admin' && !isAdmin) continue;
+      if (cat.condition && cat.condition !== 'admin' && !enabledAbilities.has(cat.condition)) continue;
       const catTools = cat.tools.filter(n => toolSet.has(n));
       if (catTools.length === 0) continue;
 
@@ -2753,17 +2911,19 @@ async function _renderToolsTab(body, agent, panelEl) {
       wrapper.className = 'agents-tool-category';
 
       const header = document.createElement('div');
-      header.className = 'agents-tool-category-header';
-      header.innerHTML = `<span class="agents-tool-category-chevron">▼</span>
+      header.className = 'agents-tool-category-header collapsed';
+      header.innerHTML = `<span class="agents-tool-category-chevron">▶</span>
         <span class="agents-tool-category-label">${_esc(cat.label)}</span>
         <span class="agents-tool-category-count">${catTools.length}</span>`;
 
       const catBody = document.createElement('div');
-      catBody.className = 'agents-tool-category-body';
+      catBody.className = 'agents-tool-category-body collapsed';
 
       header.addEventListener('click', () => {
         header.classList.toggle('collapsed');
         catBody.classList.toggle('collapsed');
+        const chevron = header.querySelector('.agents-tool-category-chevron');
+        if (chevron) chevron.textContent = header.classList.contains('collapsed') ? '▶' : '▼';
       });
 
       for (const name of catTools) {
@@ -2781,15 +2941,17 @@ async function _renderToolsTab(body, agent, panelEl) {
       const wrapper = document.createElement('div');
       wrapper.className = 'agents-tool-category';
       const header = document.createElement('div');
-      header.className = 'agents-tool-category-header';
-      header.innerHTML = `<span class="agents-tool-category-chevron">▼</span>
+      header.className = 'agents-tool-category-header collapsed';
+      header.innerHTML = `<span class="agents-tool-category-chevron">▶</span>
         <span class="agents-tool-category-label">Custom Skills</span>
         <span class="agents-tool-category-count">${uncategorized.length}</span>`;
       const catBody = document.createElement('div');
-      catBody.className = 'agents-tool-category-body';
+      catBody.className = 'agents-tool-category-body collapsed';
       header.addEventListener('click', () => {
         header.classList.toggle('collapsed');
         catBody.classList.toggle('collapsed');
+        const chevron = header.querySelector('.agents-tool-category-chevron');
+        if (chevron) chevron.textContent = header.classList.contains('collapsed') ? '▶' : '▼';
       });
       for (const name of uncategorized) {
         catBody.appendChild(buildToolRow(name, metaByName.get(name) || {}));

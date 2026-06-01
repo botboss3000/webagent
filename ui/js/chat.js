@@ -5,6 +5,7 @@ import { apiPath } from './config.js';
 import { addAttachmentsToMessage, renderAttachmentElement } from './attachments.js';
 import { getAccessMode, fetchAccessMode, authHeaders } from './left-login.js';
 import { _cacheAppendMessage } from './sessions.js';
+import { fmtArgs, buildToolRow } from './chat-activity.js';
 
 /** Whether the user has explicitly locked auto-scroll (by clicking the
  *  scroll-to-bottom chevron or by being at the bottom). When true, new
@@ -954,6 +955,76 @@ function finalizeAgentResponse(content, turnId, isReplayed) {
 }
 
 /**
+ * Attach a tool-call panel to the last agent bubble in the chat.
+ *
+ * Called by chat-activity.js's stop() when a turn ends with tool calls.
+ * Renders a clickable chip ("N tool calls") inside the bubble; clicking it
+ * expands an accordion list of every tool call made during that turn, each
+ * independently expandable to show arguments + result. Reuses the same row
+ * rendering as the live activity panel so the UX is identical.
+ */
+function attachToolCallsToLastBubble(calls) {
+  if (!calls || calls.length === 0) return;
+  if (!app.chatMessages) return;
+  const bubbles = app.chatMessages.querySelectorAll('.chat-bubble.agent');
+  const last = bubbles[bubbles.length - 1];
+  if (!last) return;
+
+  // Don't double-attach if already present.
+  if (last.querySelector('.bubble-tool-calls')) return;
+
+  const container = document.createElement('div');
+  container.className = 'bubble-tool-calls';
+
+  // ── Header chip (clickable) ──
+  const head = document.createElement('button');
+  head.type = 'button';
+  head.className = 'bubble-tool-calls-head';
+  head.setAttribute('aria-expanded', 'false');
+  const n = calls.length;
+  head.innerHTML = '<span class="bubble-tool-calls-icon" aria-hidden="true">⚙</span> '
+    + (n === 1 ? '1 tool call' : n + ' tool calls')
+    + ' <span class="bubble-tool-calls-chevron" aria-hidden="true">›</span>';
+  container.appendChild(head);
+
+  // ── Expandable panel ──
+  const panel = document.createElement('div');
+  panel.className = 'bubble-tool-calls-panel';
+  panel.hidden = true;
+
+  // Render each tool call row (reusing the same accordion logic)
+  calls.forEach((entry, i) => {
+    // Clone the entry so we can toggle .open independently per bubble
+    const rowEntry = { ...entry, open: false };
+    const row = buildToolRow(rowEntry, i);
+    // Wire accordion toggle
+    const rowHead = row.querySelector('.ca-tool-head');
+    if (rowHead) {
+      rowHead.addEventListener('click', (e) => {
+        e.stopPropagation();
+        rowEntry.open = !rowEntry.open;
+        row.classList.toggle('open', rowEntry.open);
+        rowHead.setAttribute('aria-expanded', rowEntry.open ? 'true' : 'false');
+      });
+    }
+    panel.appendChild(row);
+  });
+  container.appendChild(panel);
+
+  // ── Toggle panel on header click ──
+  let panelOpen = false;
+  head.addEventListener('click', (e) => {
+    e.stopPropagation();
+    panelOpen = !panelOpen;
+    panel.hidden = !panelOpen;
+    head.setAttribute('aria-expanded', panelOpen ? 'true' : 'false');
+    container.classList.toggle('open', panelOpen);
+  });
+
+  last.appendChild(container);
+}
+
+/**
  * On reconnect / session reattach: if the server reported this session has
  * an active turn buffered, render a placeholder streaming bubble so the
  * user sees feedback immediately. The first replayed `stream` chunk hydrates
@@ -1042,6 +1113,7 @@ export function initChat() {
   app.seedStreamingBubble = seedStreamingBubble;
   app.finalizeAgentStep = finalizeAgentStep;
   app.markAgentInterrupted = markAgentInterrupted;
+  app.attachToolCallsToLastBubble = attachToolCallsToLastBubble;
   app.autoResizeChatInput = () => _autoResizePill(app.chatInput);
   // Expose for virtual-scroll recycling in sessions.js
   app._linkifyText = linkifyText;
