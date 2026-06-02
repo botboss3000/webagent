@@ -210,18 +210,21 @@ which via `self_status`):
 ## Header toolbar + side panels (clickable)
 
 The header is a row of **clickable pill buttons** (rounded, padded — easy to tap on a
-phone; no title/model text). Clicking one opens a **thin panel docked to the right**
-holding that category's controls, themselves pill buttons. The **chat column stays
-visible to its left**, and the header/footer span the full width above and below —
-opening a menu never hides the conversation. The panel appears only while a category is
-open, and the open category's pill is highlighted.
+phone; no title/model text). The pills are **flat** — they share the main background and
+are **stacked with no gaps**, distinguished by a bright outline rather than a filled box.
+An open category (and the current mode) is highlighted by **colouring its outline + text**,
+not by inverting its fill. Clicking a category opens a **thin panel docked to the right**
+holding that category's controls. The **chat column stays visible to its left**, and the
+header/footer span the full width above and below — opening a menu never hides the
+conversation. The panel appears only while a category is open.
 
-| Header item | Opens a right panel with |
-|-------------|--------------------------|
-| **Admin** | `[Commands]` (command reference) · `[Update]` · `[Install]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` |
+| Header item | Action |
+|-------------|--------|
+| **mode** (far left) — a **one-word** write-gate (`read` / `write` / `auto`) | **Click to cycle** read → write → auto (colour signals the mode). Same gate as the App panel's Read/Write/Auto. |
+| **Admin** | opens `[Commands]` (command reference) · `[Update]` · `[Install]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` |
 | **Scene** | the theme & animation controls (theme · animation style · palette · speed · intensity · FPS · banner on/off) — each applies **live** |
 | **App** | the **AI provider** block — a **Provider** dropdown (OpenRouter / OpenAI / DeepSeek / Groq / Together / Mistral / xAI / Custom) that fills the **Base URL** + **Model** to match, an **AI key** field, and `[Save]` / `[Clear]` pills; plus the write-gate `[Read-only]` / `[Write]` / `[Autonomous]` (current one highlighted) and `[Open Browser]` (opens `http://localhost:8080/index.html`) |
-| **server status** (the last item — shows `live` / `stopped` / `checking`, **not** the word "Server"; managed mode) | `[Start]` · `[Restart]` · `[Kill]` |
+| **server status** (the last item — shows `live` / `stopped`, **not** the word "Server"; managed mode; spins a `-\|/` with `starting` while it loads) | `[Start]` · `[Restart]` · `[Kill]` |
 
 **Closing a panel:** click anywhere **outside** it (e.g. in the chat), press **Esc**,
 or click the same category again to toggle it shut. The open category is highlighted in
@@ -277,13 +280,17 @@ to a few short words (Admin · Scene · App · status), it fits a narrow termina
 - **Activity spinner** — a small `-/|\` spinner above the input spins whenever the
   agent is busy (thinking or running a tool), so it's clear the app isn't frozen;
   it's blank at rest.
-- **Stop / Continue** — pill buttons on the right of the action bar (above the input):
-  **Stop** cancels the running turn (enabled only while busy); **Continue** asks the
-  agent to pick up where it left off (enabled only when idle).
-- **Messages** — your messages render in a filled, bordered **bubble** (distinct
-  background); the agent's replies are plain text. No user/agent emoji prefixes.
-- **Session HUD** — tokens in/out this session and a context-window gauge
-  (green → amber → red) when the model's window is known.
+- **Stop / Continue** — small bracketed **text** (`[Stop]` `[Continue]`) on the right of
+  the action bar (above the input): **Stop** cancels the running turn (enabled only while
+  busy); **Continue** asks the agent to pick up where it left off (enabled only when idle).
+- **Messages** — your messages render in a bordered **bubble** that matches the input pill
+  (the main background with a bright outline); the agent's replies render as **Markdown**
+  (code fences, lists, emphasis). No user/agent emoji prefixes.
+- **Expandable tool calls** — a turn's tool calls collapse to a single **"N tool calls"**
+  row; expand it to list each call, and expand a call to see its **arguments and result,
+  each in a code block** (nested collapsibles, like the launcher).
+- **Session HUD** — a tight line: tokens in/out this session and a compact context
+  reading **`ctx N%`** (green → amber → red) when the model's window is known.
 
 ## Keyboard
 

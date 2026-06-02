@@ -17,17 +17,15 @@ import json
 import webbrowser
 from pathlib import Path
 
-from rich import box
-from rich.panel import Panel
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Click
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Input, RichLog, Select, Static
+from textual.widgets import Collapsible, Input, Select, Static
 
 from .agent import AgentEvent, ServerManagerAgent
 from .ascii_anim import ANIM_LABELS, ANIM_STYLES
@@ -98,6 +96,52 @@ class SpinnerBar(Widget):
                  style=f"bold {cc.get('accent', '#46d4ff')}")
         t.append(" working…", style=cc.get("dim", "#56657a"))
         return t
+
+
+class ServerStatusWidget(Widget):
+    """The header's live server-status pill. Shows ``live`` / ``stopped`` at rest,
+    and a spinning ``-\\|/`` with ``starting`` while the server is loading (an
+    in-flight start/restart or an indeterminate health probe). Click → server panel.
+    The timer is paused unless loading, so it costs ~0% CPU at rest. Colour comes
+    from the live theme (read from ``app.cc`` at render time)."""
+
+    FRAMES = "-\\|/"
+
+    def __init__(self, id: str | None = None) -> None:
+        super().__init__(id=id, classes="hdr-btn")
+        self._btn_action = "panel_server"   # picked up by the .hdr-btn click handler
+        self._state = "n/a"
+        self._frame = 0
+        self._timer = None
+
+    def on_mount(self) -> None:
+        self._timer = self.set_interval(0.1, self._tick, pause=True)
+        self._sync()
+
+    def set_state(self, state: str) -> None:
+        self._state = state
+        self._sync()
+
+    def _loading(self) -> bool:
+        return self._state in ("checking", "starting", "unknown")
+
+    def _sync(self) -> None:
+        if self._timer is not None:
+            self._timer.resume() if self._loading() else self._timer.pause()
+        self.refresh()
+
+    def _tick(self) -> None:
+        self._frame += 1
+        self.refresh()
+
+    def render(self) -> Text:
+        cc = getattr(self.app, "cc", {})
+        if self._state == "running":
+            return Text(f"{G.DOT_LIVE} live", style=f"bold {cc.get('success', '#7be06a')}")
+        if self._state == "stopped":
+            return Text(f"{G.DOT_DEAD} stopped", style=f"bold {cc.get('error', '#ff5f56')}")
+        spin = self.FRAMES[self._frame % len(self.FRAMES)]
+        return Text(f"{spin} starting", style=f"bold {cc.get('tool', '#ff9d2f')}")
 
 
 def _scene_rows(app) -> list[tuple[str, "Select"]]:
@@ -213,6 +257,9 @@ class ServerManagerApp(App):
         self._s_out = 0
         self._ctx_tokens = 0         # latest prompt size = current context usage
         self._panel_kind = None      # which side-panel category is open (None = closed)
+        self._tool_group = None      # current open "N tool calls" Collapsible (None = none)
+        self._tool_n = 0             # how many calls are in the current group
+        self._tool_pending: list[dict] = []  # calls awaiting their result (fill in place)
 
     def _apply_provider(self) -> None:
         """(Re)resolve the AI provider for the current project and rebuild the LLM
@@ -245,13 +292,13 @@ class ServerManagerApp(App):
                 self._anim.display = self._anim_on
                 self._anim.set_idle(not self._anim_on)
                 yield self._anim                   # animated logo banner
-                yield RichLog(id="log", wrap=True, markup=True, highlight=False)
+                yield VerticalScroll(id="log")     # transcript (mounted widgets)
                 yield Static("", id="hud")         # session HUD (tokens / context gauge)
-                # Action bar: activity spinner (left) + Stop / Continue pills (far right).
+                # Action bar: activity spinner (left) + [Stop] / [Continue] text (far right).
                 self._spinner = SpinnerBar(id="spinner")
-                self._stop_btn = Static("Stop", classes="act-btn disabled", markup=False)
+                self._stop_btn = Static("[Stop]", classes="act-btn disabled", markup=False)
                 self._stop_btn._btn_action = "stop"          # type: ignore[attr-defined]
-                self._cont_btn = Static("Continue", classes="act-btn", markup=False)
+                self._cont_btn = Static("[Continue]", classes="act-btn", markup=False)
                 self._cont_btn._btn_action = "continue"      # type: ignore[attr-defined]
                 yield Horizontal(self._spinner, self._stop_btn, self._cont_btn, id="actionbar")
                 cta = Static(self._cta_label(), id="cta", markup=False)
@@ -274,6 +321,8 @@ class ServerManagerApp(App):
         if self._anim is not None:
             self._retint_anim()
             self._anim.set_idle(not self._anim_on)
+        self._server_state = "checking" if self.project_root else "n/a"
+        self._refresh_status()   # paint the header (server pill spins while we probe)
         self._server_state = await server_health() if self.project_root else "n/a"
         self._render_welcome(self._server_state)
         self._refresh_hints()
@@ -305,37 +354,36 @@ class ServerManagerApp(App):
 
     def _render_welcome(self, server_status: str) -> None:
         c = self.cc
-        log = self.query_one("#log", RichLog)
         if self.project_root:
-            log.write(f"[b {c['primary']}]{G.ADMIN} webAgent Server Manager[/] "
-                      f"[{c['dim']}]— managing your checkout[/]\n")
-            log.write(f"[{c['dim']}]project:[/] {self.project_root}")
-            log.write(self._host_line())
+            self._log(f"[b {c['primary']}]{G.ADMIN} webAgent Server Manager[/] "
+                      f"[{c['dim']}]— managing your checkout[/]")
+            self._log(f"[{c['dim']}]project:[/] {self.project_root}")
+            self._log(self._host_line())
             srv = (f"[{c['secondary']}]running[/] at http://localhost:8080"
                    if server_status == "running" else f"{server_status}")
-            log.write(f"[{c['dim']}]server:[/] {srv}")
+            self._log(f"[{c['dim']}]server:[/] {srv}")
             if self.provider.configured:
-                log.write(f"[{c['dim']}]model:[/] {self.provider.model}")
+                self._log(f"[{c['dim']}]model:[/] {self.provider.model}")
             else:
-                log.write(f"[{c['tool']}]{G.WARN} No AI key.[/] Set one to enable the agent.")
-            log.write(f"\n[{c['dim']}]Ask me to check status, diagnose an issue, change code, "
+                self._log(f"[{c['tool']}]{G.WARN} No AI key.[/] Set one to enable the agent.")
+            self._log(f"[{c['dim']}]Ask me to check status, diagnose an issue, change code, "
                       f"run it, or manage git.[/]")
         else:
-            log.write(f"[b {c['primary']}]{G.ADMIN} webAgent Server Manager[/] "
-                      f"[{c['dim']}]— let's get you set up[/]\n")
-            log.write(self._host_line())
+            self._log(f"[b {c['primary']}]{G.ADMIN} webAgent Server Manager[/] "
+                      f"[{c['dim']}]— let's get you set up[/]")
+            self._log(self._host_line())
             if self.provider.configured:
-                log.write(f"[{c['dim']}]model:[/] {self.provider.model}")
+                self._log(f"[{c['dim']}]model:[/] {self.provider.model}")
             else:
-                log.write(f"[{c['tool']}]{G.WARN} No AI key configured yet.[/] "
+                self._log(f"[{c['tool']}]{G.WARN} No AI key configured yet.[/] "
                           "Set the app key (LLM_API_KEY) to power onboarding.")
-            log.write(f"[{c['dim']}]No webAgent repo is linked yet. I can:[/]")
-            log.write(f"  {G.BULLET} install webAgent for you (recommended: {self._recommended_install_path()})")
-            log.write(f"  {G.BULLET} link an existing copy — tell me its folder and I'll manage it")
-            log.write(f"  {G.BULLET} tell you about webAgent, or help with general questions")
-            log.write(f"\n[{c['accent']}]{G.BULLET} New here? Tap [b]Click here to get started[/] "
+            self._log(f"[{c['dim']}]No webAgent repo is linked yet. I can:[/]")
+            self._log(f"  {G.BULLET} install webAgent for you (recommended: {self._recommended_install_path()})")
+            self._log(f"  {G.BULLET} link an existing copy — tell me its folder and I'll manage it")
+            self._log(f"  {G.BULLET} tell you about webAgent, or help with general questions")
+            self._log(f"[{c['accent']}]{G.BULLET} New here? Tap [b]Click here to get started[/] "
                       f"below and I'll install and set everything up.[/]")
-        log.write(self._tip_line())
+        self._log(self._tip_line())
 
     async def _build_situation(self) -> str:
         """The per-turn snapshot handed to the agent so it never guesses the state."""
@@ -396,30 +444,44 @@ class ServerManagerApp(App):
                   f"[{self.cc['dim']}]- {keynote}[/]")
         return f"Linked to {self.project_root}. Managed mode is active, {keynote}."
 
-    # ── theme-aware Rich coloring ─────────────────────────────────────────
-    def _log(self, markup: str) -> None:
-        self.query_one("#log", RichLog).write(markup)
-
-    def _log_block(self, text: str) -> None:
-        """Write raw multi-line text (server logs / diagnostics) WITHOUT markup
-        parsing — they contain brackets and tracebacks that aren't Rich markup."""
+    # ── transcript: mounted widgets in a scrolling column ─────────────────
+    def _mount(self, widget: Widget) -> None:
+        """Mount a widget at the end of the transcript and keep it scrolled to the
+        bottom. Fire-and-forget mount (Textual processes it on the next cycle)."""
         try:
-            self.query_one("#log", RichLog).write(Text(text, style=self.cc["dim"]))
+            log = self.query_one("#log", VerticalScroll)
+            log.mount(widget)
+            log.scroll_end(animate=False)
         except Exception:
             pass
 
-    # ── custom chrome: status bar (header) + hint bar (footer) ────────────
-    def _server_dot(self) -> tuple[str, str]:
-        c = self.cc
-        st = self._server_state
-        if st == "running":
-            return f"{G.DOT_LIVE} live", c["success"]
-        if st == "stopped":
-            return f"{G.DOT_DEAD} stopped", c["error"]
-        if st == "n/a":
-            return "", c["dim"]
-        return f"{G.DOT_WARN} checking", c["tool"]
+    def _scroll_end(self) -> None:
+        try:
+            self.query_one("#log", VerticalScroll).scroll_end(animate=False)
+        except Exception:
+            pass
 
+    def _log(self, markup: str) -> None:
+        """A single transcript line carrying Rich console markup (theme colours)."""
+        self._mount(Static(markup, classes="msg-line"))
+
+    def _log_block(self, text: str) -> None:
+        """Mount raw multi-line text (server logs / diagnostics) WITHOUT markup
+        parsing — they contain brackets and tracebacks that aren't Rich markup."""
+        self._mount(Static(Text(text, style=self.cc["dim"]), classes="msg-block", markup=False))
+
+    def _log_assistant(self, text: str) -> None:
+        """Render the agent's reply as Markdown (so code fences, lists, and emphasis
+        format nicely) — markup is off, so the model's text can't break parsing."""
+        self._end_tool_group()
+        try:
+            from rich.markdown import Markdown
+            renderable = Markdown(text) if text.strip() else Text("(no reply)", style=self.cc["dim"])
+        except Exception:
+            renderable = Text(text, style=self.cc["fg"])
+        self._mount(Static(renderable, classes="msg-agent", markup=False))
+
+    # ── custom chrome: status bar (header) + hint bar (footer) ────────────
     def _add_hdr(self, bar: Horizontal, content, action: str | None) -> Static:
         btn = Static(content, classes="hdr-btn" if action else "hdr-note", markup=False)
         if action:
@@ -447,16 +509,22 @@ class ServerManagerApp(App):
             if self._panel_kind == kind:
                 w.add_class("hdr-on")
 
+        # Far-left = the write-gate as a ONE-WORD toggle (read → write → auto on click).
+        # Coloured text shows the current mode; no inverted fill.
+        mode = "auto" if self.cfg.autonomous else "write" if self.cfg.writes_enabled else "read"
+        mcol = {"read": c["dim"], "write": c["secondary"], "auto": c["tool"]}[mode]
+        self._add_hdr(bar, Text(mode, style=f"bold {mcol}"), "mode_cycle")
+
         cat("Admin", "admin", "panel_admin")
         cat("Scene", "scene", "panel_scene")
         cat("App", "app", "panel_app")
-        # Last header item = the server STATUS (not the word "Server"); click → server panel.
+        # Last header item = the live server STATUS (spins while loading); click → server panel.
         if self.project_root:
-            dot, col = self._server_dot()
-            self._dot = self._add_hdr(bar, Text(dot or "checking", style=f"bold {col}"),
-                                      "panel_server")
+            self._dot = ServerStatusWidget()
             if self._panel_kind == "server":
                 self._dot.add_class("hdr-on")
+            bar.mount(self._dot)
+            self._dot.set_state(self._server_state)
         else:
             self._add_hdr(bar, Text("onboarding", style=c["secondary"]), None)
 
@@ -504,6 +572,8 @@ class ServerManagerApp(App):
         return None
 
     def _ctx_gauge(self) -> Text:
+        """Compact context usage: a single 'ctx N%' (or a raw token count if the
+        model's window is unknown) — no bar, to keep the HUD tight."""
         c = self.cc
         g = Text(no_wrap=True)
         used = self._ctx_tokens
@@ -515,24 +585,17 @@ class ServerManagerApp(App):
             g.append(f"ctx {self._fmt_tokens(used)}", style=c["dim"])
             return g
         frac = max(0.0, min(1.0, used / mx))
-        cells = 12
-        filled = int(round(frac * cells))
         col = c["error"] if frac >= 0.85 else c["tool"] if frac >= 0.6 else c["success"]
-        g.append("ctx [", style=c["dim"])
-        g.append("#" * filled, style=col)
-        g.append("." * (cells - filled), style=c["dim"])
-        g.append("] ", style=c["dim"])
-        g.append(f"{self._fmt_tokens(used)}/{self._fmt_tokens(mx)} ", style=c["dim"])
+        g.append("ctx ", style=c["dim"])
         g.append(f"{int(frac * 100)}%", style=col)
         return g
 
     def _update_hud(self) -> None:
         c = self.cc
         t = Text(no_wrap=True, overflow="crop")
-        t.append("session ", style=c["dim"])
         t.append(f"{self._fmt_tokens(self._s_in)} in / {self._fmt_tokens(self._s_out)} out",
                  style=f"bold {c['success']}")
-        t.append("   |   ", style=c["dim"])
+        t.append(" | ", style=c["dim"])
         t.append_text(self._ctx_gauge())
         try:
             self.query_one("#hud", Static).update(t)
@@ -541,16 +604,16 @@ class ServerManagerApp(App):
 
     async def _poll_server(self) -> None:
         """Poll server health. When running/stopped flips, rebuild the toolbar so
-        the Start↔Stop button switches; otherwise just refresh the dot in place."""
+        the Start↔Stop panel switches; otherwise just update the status pill in place
+        (which keeps its own spinner running while loading)."""
         new = await server_health() if self.project_root else "n/a"
         changed = new != self._server_state
         self._server_state = new
         if changed:
             self._refresh_status()
         elif self._dot is not None:
-            dot, col = self._server_dot()
             try:
-                self._dot.update(Text(dot or "checking", style=f"bold {col}"))
+                self._dot.set_state(new)
             except Exception:
                 pass
 
@@ -649,6 +712,9 @@ class ServerManagerApp(App):
         from .tools import server as srv
         fn = {"start": srv.server_start, "stop": srv.server_stop,
               "restart": srv.server_restart}[which]
+        if which in ("start", "restart"):
+            self._server_state = "starting"     # spin the header pill while it boots
+            self._refresh_status()
         msg = await fn(self._server_ctx())
         self._log(f"[{self.cc['dim']}]{msg}[/]")
         self._server_state = await server_health() if self.project_root else "n/a"
@@ -927,6 +993,12 @@ class ServerManagerApp(App):
         self._refresh_status()
         label = {"read": "read-only", "write": "writes", "auto": "autonomous"}[mode]
         self._log(f"[{self.cc['secondary']}]{G.BULLET} mode: {label}[/]")
+
+    def action_mode_cycle(self) -> None:
+        """Header mode pill: cycle read → write → auto on each click."""
+        order = ["read", "write", "auto"]
+        cur = "auto" if self.cfg.autonomous else "write" if self.cfg.writes_enabled else "read"
+        self._set_mode(order[(order.index(cur) + 1) % len(order)])
 
     def action_mode_read(self) -> None:
         self._set_mode("read")
@@ -1293,16 +1365,110 @@ class ServerManagerApp(App):
         self._run_turn("Please continue from where you left off.")
 
     def _log_user(self, text: str) -> None:
-        """Render a user message as a filled, bordered bubble (distinct background,
-        no emoji) so it reads differently from the agent's plain replies."""
-        c = self.cc
+        """Render a user message as a bordered bubble that matches the input pill —
+        the main background with a bright outline — so it reads as 'yours'."""
+        self._end_tool_group()
+        self._mount(Static(Text(text, style=self.cc["fg"]), classes="msg-user", markup=False))
+
+    # ── expandable tool-call blocks (nested collapsibles, like the launcher) ──
+    @staticmethod
+    def _fmt_args(args) -> str:
         try:
-            log = self.query_one("#log", RichLog)
+            if isinstance(args, (dict, list)):
+                return json.dumps(args, indent=2, ensure_ascii=False)
         except Exception:
+            pass
+        return str(args)
+
+    def _preview(self, args) -> str:
+        """A short one-line argument summary for the collapsed call title."""
+        try:
+            if isinstance(args, dict):
+                parts = []
+                for k, v in list(args.items())[:2]:
+                    sv = str(v).replace("\n", " ")
+                    parts.append(f"{k}={sv[:24] + '…' if len(sv) > 24 else sv}")
+                s = ", ".join(parts)
+            else:
+                s = str(args).replace("\n", " ")
+        except Exception:
+            s = ""
+        return s[:48] + "…" if len(s) > 48 else s
+
+    def _args_code(self, args) -> str:
+        """The call's arguments as a code block — if a call carries a command or a
+        code/content field, show THAT prominently with any other args summarised."""
+        if isinstance(args, dict):
+            for k in ("command", "code", "content", "patch", "text", "script"):
+                v = args.get(k)
+                if isinstance(v, str) and v.strip():
+                    extra = {kk: vv for kk, vv in args.items() if kk != k}
+                    head = (json.dumps(extra, ensure_ascii=False) + "\n\n") if extra else ""
+                    return head + v
+        return self._fmt_args(args)
+
+    def _build_inner(self, tool: str, args) -> tuple[Collapsible, Static]:
+        """One call's collapsible: arguments code block + a result code block that
+        gets filled in place when the tool returns. Returns (collapsible, result)."""
+        c = self.cc
+        call_code = Static(Text(self._args_code(args), style=c["fg"]),
+                           classes="code-block", markup=False)
+        result = Static(Text("running…", style=c["dim"]), classes="code-block", markup=False)
+        inner = Collapsible(call_code, result,
+                            title=f"{G.TOOL} {tool}  {self._preview(args)}",
+                            collapsed=True, classes="tool-block")
+        return inner, result
+
+    def _add_tool_call(self, tool: str, args) -> None:
+        """Add a call to the current group (creating the group on the first call).
+        The group title tracks the count: '1 tool call' → 'N tool calls'."""
+        inner, result = self._build_inner(tool, args)
+        if self._tool_group is None:
+            self._tool_n = 1
+            self._tool_group = Collapsible(inner, title="1 tool call",
+                                           collapsed=True, classes="tool-group")
+            self._mount(self._tool_group)
+        else:
+            self._tool_n += 1
+            self._tool_group.title = f"{self._tool_n} tool calls"
+            try:
+                self._tool_group.query_one(Collapsible.Contents).mount(inner)
+            except Exception:
+                # Group not fully mounted yet (rare) — queue into its contents list.
+                self._tool_group._contents_list.append(inner)
+            self._scroll_end()
+        self._tool_pending.append({"tool": tool, "inner": inner, "result": result, "done": False})
+
+    def _fill_tool_result(self, tool: str, text: str) -> None:
+        """Fill the first still-open call of this name with its result + an ok/err mark."""
+        entry = next((e for e in self._tool_pending
+                      if e["tool"] == tool and not e["done"]), None)
+        if entry is None:
             return
-        log.write(Panel(Text(text, style=c["fg"]), box=box.ROUNDED,
-                        border_style=c["dim"], style=f"on {c['panel']}",
-                        expand=True, padding=(0, 1)))
+        entry["done"] = True
+        out = text or ""
+        lines = out.splitlines()
+        head = lines[0] if lines else ""
+        ok = not head.startswith(("Error", "Refused", "[exit 1"))
+        shown = out[:4000] + ("\n… (truncated)" if len(out) > 4000 else "")
+        try:
+            entry["result"].update(Text(shown if shown.strip() else "(no output)",
+                                        style=self.cc["fg"]))
+        except Exception:
+            pass
+        mark = G.OK if ok else G.ERR
+        extra = f"  (+{len(lines) - 1} lines)" if len(lines) > 1 else ""
+        try:
+            entry["inner"].title = f"{G.TOOL} {tool}  {mark}{extra}"
+        except Exception:
+            pass
+
+    def _end_tool_group(self) -> None:
+        """Close the current tool group so the next call starts a fresh one (called
+        when an assistant reply, a user message, or an error interrupts the calls)."""
+        self._tool_group = None
+        self._tool_n = 0
+        self._tool_pending = [e for e in self._tool_pending if not e["done"]]
 
     @work(exclusive=True, group="agent")
     async def _run_turn(self, text: str) -> None:
@@ -1313,17 +1479,11 @@ class ServerManagerApp(App):
 
         async def on_event(ev: AgentEvent) -> None:
             if ev.kind == "assistant" and ev.text:
-                self._log(f"[{c['fg']}]{ev.text}[/]")
+                self._log_assistant(ev.text)
             elif ev.kind == "tool_call":
-                args = json.dumps(ev.args or {}, ensure_ascii=False)
-                self._log(f"[{c['tool']}]{G.TOOL} {ev.tool}[/] [{c['dim']}]{args[:160]}[/]")
+                self._add_tool_call(ev.tool, ev.args or {})
             elif ev.kind == "tool_result":
-                snippet = ev.text.strip().splitlines()
-                head = snippet[0] if snippet else ""
-                ok = not head.startswith(("Error", "Refused", "[exit 1"))
-                extra = f" (+{len(snippet) - 1} lines)" if len(snippet) > 1 else ""
-                mark = G.OK if ok else G.WARN
-                self._log(f"[{c['dim']}]{mark} {head[:200]}{extra}[/]")
+                self._fill_tool_result(ev.tool, ev.text)
             elif ev.kind == "usage":
                 u = ev.args or {}
                 pin, pout = int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
@@ -1334,6 +1494,7 @@ class ServerManagerApp(App):
                     self._s_out += pout
                 self._update_hud()
             elif ev.kind == "error":
+                self._end_tool_group()
                 self._log(f"[{c['error']}]{G.ERR} {ev.text}[/]")
             elif ev.kind == "status":
                 self._log(f"[{c['dim']}]{ev.text}[/]")
