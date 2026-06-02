@@ -1704,9 +1704,24 @@ class ServerManagerApp(App):
 
     # ── admin panel: Reset (wipe the app's data back to a clean state) ──
     def _reset_info(self) -> str:
+        from .tools.reset import _PG_PROVIDERS, _active_provider
+        is_pg = (self.project_root is not None
+                 and _active_provider(self.project_root) in _PG_PROVIDERS)
+        if is_pg:
+            db_line = "  • database  (active Postgres backend — its schema is dropped & recreated)"
+        else:
+            db_line = "  • database  (app/db/local.db + its journal/wal/shm sidecars)"
+        backup_lines = (
+            ["The Postgres wipe is NOT backed up — dropping the schema is irreversible. The other "
+             "removed files are backed up to temp/reset-backup-<timestamp>/. The server is stopped "
+             "before the wipe."]
+            if is_pg else
+            ["Everything removed is backed up first to temp/reset-backup-<timestamp>/, so this is "
+             "reversible. The server is stopped before the wipe."]
+        )
         return "\n".join([
             "Resets this webAgent install to a clean state. The app's data is wiped:",
-            "  • database  (app/db/local.db + its journal/wal/shm sidecars)",
+            db_line,
             "  • generated pages  (visuals/users/)",
             "  • app secrets  (AI keys, OAuth tokens, integration creds, scheduler/db-mode config)",
             "  • local accounts  (passwords + remember-me tokens)",
@@ -1714,8 +1729,7 @@ class ServerManagerApp(App):
             "Kept: your .env and the agent template JSONs, so the app still boots — the "
             "database, the default admin/admin login, and the agents are recreated on next start.",
             "",
-            "Everything removed is backed up first to temp/reset-backup-<timestamp>/, so this is "
-            "reversible. The server is stopped before the wipe.",
+            *backup_lines,
             "",
             "(For a deeper or lighter wipe — e.g. keep secrets, or also delete .env / the agent "
             "templates — ask the agent to run reset_app with the flags you want.)",

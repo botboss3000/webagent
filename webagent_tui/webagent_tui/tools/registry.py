@@ -138,15 +138,18 @@ def _base_specs() -> list[ToolSpec]:
         }, server.server_logs),
         ToolSpec("reset_app", (
             "Reset the linked webAgent install to a clean state (like reset_webagent.bat). "
-            "ALWAYS wipes the userbase: the local SQLite DB (+ its -journal/-wal/-shm/"
-            ".preprompt-bak sidecars and any stray root local.db) and the per-user generated "
-            "pages in visuals/users/. Opt-in extras: clear_secrets (AI keys, OAuth tokens, "
-            "integration creds, scheduler/db-mode config), clear_users (local accounts + "
-            "remember-me tokens), delete_env (.env), delete_agents (the agent template JSONs — "
-            "NO fallback: next start has zero agents). Backs up everything it removes to "
-            "temp/reset-backup-<timestamp>/ unless backup=false. Stops the server first. The "
-            "DB, default admin/admin user, and agents are recreated on next start (if the agent "
-            "JSONs were kept). Mutating — confirm with the user before running."), {
+            "ALWAYS wipes the userbase: the ACTIVE database backend + the per-user generated "
+            "pages in visuals/users/. Backend-aware via app/db_connection.json: if Postgres "
+            "(postgres/neon/gcp_cloud_sql) is active, it connects through the checkout's venv and "
+            "drops+recreates the schema (NOT backed up — irreversible — and the stray SQLite "
+            "files are left alone); if SQLite is active, it removes local.db (+ its -journal/-wal/"
+            "-shm/.preprompt-bak sidecars and any stray root local.db), backed up unless "
+            "backup=false. Opt-in extras: clear_secrets (AI keys, OAuth tokens, integration "
+            "creds, scheduler/db-mode config), clear_users (local accounts + remember-me tokens), "
+            "delete_env (.env), delete_agents (the agent template JSONs — NO fallback: next start "
+            "has zero agents). backup also covers visuals/users + the opt-in file groups. Stops "
+            "the server first. The DB, default admin/admin user, and agents are recreated on next "
+            "start (if the agent JSONs were kept). Mutating — confirm with the user before running."), {
             "type": "object",
             "properties": {
                 "backup": {"type": "boolean", "default": True},
