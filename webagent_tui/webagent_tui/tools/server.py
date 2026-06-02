@@ -64,9 +64,15 @@ def _clear_pidinfo() -> None:
 # ── process primitives (cross-platform, testable in isolation) ────────────────
 def _venv_python(project_root: Path) -> Optional[Path]:
     """The checkout's own venv interpreter, or None if the env isn't built yet."""
-    cand = (project_root / ".venv" / ("Scripts" if _IS_WIN else "bin")
-            / ("python.exe" if _IS_WIN else "python"))
-    return cand if cand.exists() else None
+    for venv_dir in (".venv", "venv"):
+        cand = (project_root / venv_dir / ("Scripts" if _IS_WIN else "bin")
+                / ("python.exe" if _IS_WIN else "python"))
+        # The symlink may be broken on the host (e.g. inside proot), but the
+        # venv itself is valid — treat an existing symlink as "found" so the
+        # manager can still discover the env even when python lives elsewhere.
+        if cand.exists() or cand.is_symlink():
+            return cand
+    return None
 
 
 def _is_termux() -> bool:
@@ -82,18 +88,44 @@ def _proot_distro() -> Optional[str]:
     return None
 
 
+def _proot_project_path(host_path: Path) -> str:
+    """Translate a host path to the equivalent path inside the proot container.
+
+    Termux binds /data/data/com.termux/files/home -> /data/data/com.termux/files/home
+    (identity mount for the Termux home), so host paths inside the user's home
+    are the same inside the proot.  The webAgent clone lives on the Termux
+    filesystem, not under the proot's own rootfs.
+    """
+    return str(host_path)
+
+
+def _proot_venv_activate(project_root: Path) -> Optional[str]:
+    """Find a venv activation script inside the proot container."""
+    for venv_dir in (".venv", "venv"):
+        act = project_root / venv_dir / "bin" / "activate"
+        if act.exists():
+            return f"{venv_dir}/bin/activate"
+    return None
+
+
 def _spawn_detached_proot(project_root: Path, log_path: Path) -> int:
     """Launch the server inside a proot-distro container (Android/Termux)."""
     distro = _proot_distro()
     if distro is None:
         raise RuntimeError("No proot-distro container found (expected 'ubuntu').")
+    act = _proot_venv_activate(project_root)
+    if act is None:
+        raise RuntimeError(
+            "No venv found for proot (looked for .venv/bin/activate and venv/bin/activate)."
+        )
     log_path.parent.mkdir(parents=True, exist_ok=True)
     logf = open(log_path, "ab")
     proot_bin = "/data/data/com.termux/files/usr/bin/proot-distro"
+    proot_root = _proot_project_path(project_root)
     args = [
         proot_bin, "login", distro,
         "--", "bash", "-c",
-        f"cd '{project_root}' && source .venv/bin/activate && exec python run.py"
+        f"cd '{proot_root}' && source {act} && exec python run.py"
     ]
     try:
         proc = subprocess.Popen(

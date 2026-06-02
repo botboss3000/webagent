@@ -35,7 +35,7 @@ from .monstate import load_alarms, load_monitor_config
 from .notify import Notifier
 
 PORT = 8080
-_DIAG_COLS = "id, ts, level, category, source, message, detail"
+_DIAG_COLS = "rowid AS _rid, ts, level, category, source, message, detail"
 
 # The app registers its live Watchdog here so the monitor_* tools can read its
 # in-memory state (recent reactions, restart counts) — config/alarms come from disk.
@@ -63,7 +63,7 @@ def _read_new_diagnostics(db: Path, after_id: int) -> tuple[list[dict[str, Any]]
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         rows = con.execute(
-            f"SELECT {_DIAG_COLS} FROM diagnostics WHERE id > ? ORDER BY id ASC LIMIT 500",
+            f"SELECT {_DIAG_COLS} FROM diagnostics WHERE rowid > ? ORDER BY rowid ASC LIMIT 500",
             (after_id,),
         ).fetchall()
         con.close()
@@ -71,9 +71,9 @@ def _read_new_diagnostics(db: Path, after_id: int) -> tuple[list[dict[str, Any]]
         return [], after_id
     out: list[dict[str, Any]] = []
     max_id = after_id
-    for rid, ts, level, category, source, message, detail in rows:
-        max_id = max(max_id, int(rid))
-        out.append({"id": int(rid), "ts": ts or "", "level": (level or "").lower(),
+    for _rid, ts, level, category, source, message, detail in rows:
+        max_id = max(max_id, _rid)
+        out.append({"id": _rid, "ts": ts or "", "level": (level or "").lower(),
                     "category": (category or "").lower(), "source": source or "",
                     "message": message or "", "detail": detail or ""})
     return out, max_id
@@ -84,9 +84,9 @@ def _current_max_id(db: Path) -> int:
         return 0
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-        row = con.execute("SELECT COALESCE(MAX(id), 0) FROM diagnostics").fetchone()
+        row = con.execute("SELECT COALESCE(MAX(rowid), 0) FROM diagnostics").fetchone()
         con.close()
-        return int(row[0]) if row else 0
+        return row[0] if row else 0
     except sqlite3.Error:
         return 0
 

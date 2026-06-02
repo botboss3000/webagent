@@ -24,9 +24,10 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Click
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Collapsible, Input, Select, Static
+from textual.widgets import Collapsible, Input, Select, Static, TextArea
 
 from .agent import AgentEvent, ServerManagerAgent
 from .ascii_anim import ANIM_LABELS, ANIM_STYLES
@@ -55,33 +56,64 @@ from .theme_colors import chrome_colors
 from .themes import CUSTOM_VAR_DEFAULTS, DEFAULT_THEME, THEME_LABELS, THEME_ORDER, build_themes
 
 
-class PromptInput(Input):
-    """Single-line input. Textual's Input maps Ctrl+A to 'cursor home'; we rebind
-    it to select-all so Ctrl+A highlights everything in the field (then Ctrl+C copies
-    the whole value).
+class PromptInput(TextArea):
+    """Multi-line input pill. Starts at 3 rows tall; expands up to 5 rows as text
+    is added; submits on Ctrl+Enter. Border stays coloured always (never dims).
+    Inherits clipboard-aware Ctrl+V paste (multi-line now allowed) and Ctrl+A
+    select-all from TextArea."""
 
-    Ctrl+V is overridden here: Textual's default pastes ``app.clipboard`` (its internal
-    buffer, empty for text copied from another program), so we read the real OS
-    clipboard instead — that's what 'paste my token/key' actually needs. (The terminal's
-    own bracketed-paste path still works via the inherited handler.) Ctrl+C copy /
-    Ctrl+X cut are inherited from Input, but reach the OS clipboard because the app
-    overrides ``copy_to_clipboard`` (Textual's default only emits OSC 52)."""
+    DEFAULT_CSS = """
+    PromptInput { height: 3; }
+    """
 
-    BINDINGS = [Binding("ctrl+a", "select_all", "Select all", show=False)]
+    def on_mount(self) -> None:
+        """Lock in the initial 3-row height so the widget doesn't start at 1 line."""
+        self.styles.height = 3
+
+    class Submitted(Message):
+        """Fired on Ctrl+Enter with the current text."""
+        def __init__(self, value: str) -> None:
+            super().__init__()
+            self.value = value
+
+        @property
+        def control(self) -> "PromptInput":
+            return self._sender  # type: ignore[return-value]
+
+    MAX_ROWS = 5
+
+    BINDINGS = [
+        Binding("ctrl+enter", "submit", "Submit", show=False),
+        Binding("ctrl+a", "select_all", "Select all", show=False),
+    ]
+
+    def action_submit(self) -> None:
+        text = self.text.strip()
+        if text:
+            self.text = ""
+            self.post_message(self.Submitted(text))
 
     def action_paste(self) -> None:
         text = read_clipboard() or self.app.clipboard
         if not text:
             return
-        text = text.splitlines()[0] if "\n" in text else text   # single-line field
-        start, end = self.selection
-        self.replace(text, start, end)
+        self.insert(text)
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        """Auto-grow up to MAX_ROWS lines."""
+        nlines = self.text.count("\n") + 1
+        target = max(3, min(nlines + 1, self.MAX_ROWS))
+        self.styles.height = target
 
 
 class SpinnerBar(Widget):
     """A one-row activity spinner (``-`` ``/`` ``|`` ``\\``) shown whenever the agent
     is busy, so the user can see it isn't frozen. Blank at rest, and the timer is
-    paused when idle so it costs ~0% CPU. Colour comes from the live theme."""
+    paused when idle so it costs ~0% CPU. Colour comes from the live theme.
+
+    This widget is kept invisible — it only provides frame+timing for the HUD,
+    which embeds the spinning character between the token in/out counts.
+    """
 
     FRAMES = "-\\|/"
 
@@ -105,17 +137,14 @@ class SpinnerBar(Widget):
 
     def _tick(self) -> None:
         self._frame += 1
-        self.refresh()
+        # Push the new frame into the merged HUD bar so the slash animates live.
+        try:
+            self.app._update_hud()
+        except Exception:
+            pass
 
     def render(self) -> Text:
-        if not self._active:
-            return Text("")
-        cc = getattr(self.app, "cc", {})
-        t = Text(no_wrap=True, overflow="crop")
-        t.append(self.FRAMES[self._frame % len(self.FRAMES)],
-                 style=f"bold {cc.get('accent', '#46d4ff')}")
-        t.append(" working…", style=cc.get("dim", "#56657a"))
-        return t
+        return Text("")
 
 
 class ServerStatusWidget(Widget):
@@ -315,8 +344,8 @@ class ServerManagerApp(App):
 
     def compose(self) -> ComposeResult:
         # Custom chrome modelled on the launcher's chat screen: a header toolbar of
-        # clickable CATEGORY buttons + a footer legend, both spanning the FULL width
-        # above and below a middle body. The body splits into the chat column (left,
+        # clickable CATEGORY buttons spanning the FULL width
+        # above the middle body. The body splits into the chat column (left,
         # always visible) and a thin side panel (right) that appears only when a
         # category is opened — so opening a menu never hides the conversation.
         yield Horizontal(id="status")      # header: clickable category toolbar
@@ -325,26 +354,35 @@ class ServerManagerApp(App):
                 self._anim = None                  # (the animated logo banner was removed)
                 yield Static(self._title_text(), id="title", markup=False)  # plain text header
                 yield VerticalScroll(id="log")     # transcript (mounted widgets)
-                yield Static("", id="hud")         # session HUD (tokens / context gauge)
-                # Action bar: activity spinner (left) + [Stop] / [Continue] text (far right).
+                # Merged bar: token HUD (left) + [Stop] / [Continue] (right).
+                # The spinner is invisible; its animated frame shows in the HUD's slash.
                 self._spinner = SpinnerBar(id="spinner")
                 self._stop_btn = Static("[Stop]", classes="act-btn disabled", markup=False)
                 self._stop_btn._btn_action = "stop"          # type: ignore[attr-defined]
                 self._cont_btn = Static("[Continue]", classes="act-btn", markup=False)
                 self._cont_btn._btn_action = "continue"      # type: ignore[attr-defined]
-                yield Horizontal(self._spinner, self._stop_btn, self._cont_btn, id="actionbar")
+                with Horizontal(id="hud"):
+                    yield Static("", id="hud-text")       # token + context text (left)
+                    yield self._spinner                   # invisible, drives the slash
+                    yield self._stop_btn
+                    yield self._cont_btn
                 cta = Static(self._cta_label(), id="cta", markup=False)
                 cta.display = self.project_root is None   # onboarding-only call-to-action
                 yield cta
-                yield PromptInput(placeholder="Ask the Server Manager…", id="prompt")
-            panel = Vertical(id="side-panel")  # thin right menu; hidden until a category opens
+                with Horizontal(id="input-row"):
+                    yield PromptInput(
+                        placeholder="Ask the Server Manager…",
+                        soft_wrap=True, compact=True, show_line_numbers=False,
+                        id="prompt",
+                    )
+                    yield Static(">>>", id="send-btn", markup=False)
+            # right after App) — not a separate edge strip.
+            # The docked side panel (Admin / Git / App / Server / Connect / Sessions / Config).
+            # Hidden by default; shown when a category button is clicked.
+            panel = Vertical(id="side-panel")
             panel.display = False
             yield panel
-            # The live server-status control is a header button (built in _refresh_status,
-            # right after App) — not a separate edge strip.
-        with Horizontal(id="footer"):
-            yield Static("", id="hints")               # left: minimal legend
-            yield Static(self._kbd_label(), id="kbd", markup=False)  # right: open-keyboard shortcut
+        
 
     async def on_mount(self) -> None:
         # Register the 23 shared themes and activate the saved one.
@@ -359,12 +397,10 @@ class ServerManagerApp(App):
         self._refresh_status()   # paint the header (server pill spins while we probe)
         self._server_state = await server_health() if self.project_root else "n/a"
         self._render_welcome(self._server_state)
-        self._refresh_hints()
-        self._refresh_kbd()
         self._refresh_title()
         self._refresh_status()
         self._update_hud()
-        self.query_one("#prompt", Input).focus()
+        self.query_one("#prompt", PromptInput).focus()
         # Keep the server dot live in managed mode (cheap localhost /health poll).
         self.set_interval(3.0, self._poll_server)
         # Scan for running webAgent server PIDs (and stale/zombie ones) on open.
@@ -580,24 +616,6 @@ class ServerManagerApp(App):
         else:
             self._add_hdr(bar, Text("onboarding", style=c["secondary"]), None)
 
-    def _refresh_hints(self) -> None:
-        """Footer-left legend. Esc opens/closes the side menu (the Ctrl+ editing hints
-        were removed); the open-keyboard shortcut lives on the footer-RIGHT (#kbd)."""
-        c = self.cc
-        t = Text(no_wrap=True, overflow="crop")
-        t.append("Esc ", style=c["accent"])
-        t.append("menu", style=c["dim"])
-        try:
-            self.query_one("#hints", Static).update(t)
-        except Exception:
-            pass
-
-    def _refresh_kbd(self) -> None:
-        try:
-            self.query_one("#kbd", Static).update(self._kbd_label())
-        except Exception:
-            pass
-
     def _title_text(self) -> Text:
         """The plain-text app header (replaces the animated logo banner):
         'WEBAGENT' on top, 'Server Manager' beneath, coloured from the theme."""
@@ -612,13 +630,6 @@ class ServerManagerApp(App):
             self.query_one("#title", Static).update(self._title_text())
         except Exception:
             pass
-
-    def _kbd_label(self):
-        c = self.cc
-        t = Text(no_wrap=True, overflow="crop")
-        t.append(("⌨ " if EMOJI else ""), style=c["accent"])
-        t.append("Keyboard", style=f"bold {c['accent']}")
-        return t
 
     # ── session HUD (tokens + context gauge) ──────────────────────────────
     @staticmethod
@@ -660,12 +671,20 @@ class ServerManagerApp(App):
     def _update_hud(self) -> None:
         c = self.cc
         t = Text(no_wrap=True, overflow="crop")
-        t.append(f"{self._fmt_tokens(self._s_in)} in / {self._fmt_tokens(self._s_out)} out",
-                 style=f"bold {c['success']}")
+        t.append(f"{self._fmt_tokens(self._s_in)} in ", style=f"bold {c['success']}")
+
+        # The slash between in/out animates as a spinner when busy.
+        if self._spinner and self._spinner._active:
+            frame = self._spinner.FRAMES[self._spinner._frame % len(self._spinner.FRAMES)]
+            t.append(frame, style=f"bold {c.get('accent', '#46d4ff')}")
+        else:
+            t.append("/", style=c["dim"])
+
+        t.append(f" {self._fmt_tokens(self._s_out)} out", style=f"bold {c['success']}")
         t.append(" | ", style=c["dim"])
         t.append_text(self._ctx_gauge())
         try:
-            self.query_one("#hud", Static).update(t)
+            self.query_one("#hud-text", Static).update(t)
         except Exception:
             pass
 
@@ -690,10 +709,6 @@ class ServerManagerApp(App):
         fn = getattr(self, f"action_{action}", None) if action else None
         if fn is not None:
             fn()
-
-    @on(Click, "#kbd")
-    def _on_kbd_click(self, event: Click) -> None:
-        self.action_open_keyboard()
 
     @on(Click, ".act-btn")
     def _on_act_click(self, event: Click) -> None:
@@ -788,10 +803,15 @@ class ServerManagerApp(App):
         self._refresh_status()
 
     def _log_watchdog(self, text: str) -> None:
-        """Transcript sink for the watchdog/notifier. Plain text (markup off) — the
-        messages carry tracebacks/brackets that aren't Rich markup."""
+        """Transcript sink for the watchdog/notifier. Rendered as a distinct
+        notification block — bordered, accent-coloured, with its own CSS class
+        (``msg-notify``) so it stands apart from user/agent/web-app messages."""
         try:
-            self._mount(Static(Text(text, style=self.cc["tool"]), classes="msg-line", markup=False))
+            # Strip any leading bell/emoji prefix if present; the CSS border + accent
+            # colour already signal "this is a notification" — cleaner without it.
+            clean = text.lstrip("\u2600\ufe0f \U0001f514")  # strip ☀️/🔔 + spaces
+            self._mount(Static(Text(clean, style=self.cc["accent"]),
+                               classes="msg-notify", markup=False))
         except Exception:
             pass
 
@@ -920,6 +940,7 @@ class ServerManagerApp(App):
         c = self.cc
         title = {"admin": "ADMIN", "scene": "THEME", "app": "APP", "server": "SERVER",
                  "git": "GIT", "connect": "CONNECT", "config": "APP CONFIG",
+                 "sessions": "ALL SESSIONS",
                  "confirm": (self._confirm_state or {}).get("title", "CONFIRM")}.get(kind, kind.upper())
         # Top row in EVERY view: an expand/collapse toggle, then the title.
         exp_label = "[›‹ narrow]" if self.cfg.side_expanded else "[‹› wide]"
@@ -939,6 +960,8 @@ class ServerManagerApp(App):
             return out + self._git_widgets()
         if kind == "connect":
             return out + self._connect_widgets()
+        if kind == "sessions":
+            return out + self._sessions_widgets()
         if kind == "config":
             return out + self._config_widgets()
         if kind == "scene":
@@ -966,13 +989,13 @@ class ServerManagerApp(App):
             if row:
                 out.append(Horizontal(*row, classes="panel-row"))
             out.append(Static(Text("AI key", style=c["dim"]), classes="panel-sub"))
-            out.append(PromptInput(value=self.provider.api_key, id="key-input",
+            out.append(PromptInput(text=self.provider.api_key, id="key-input",
                              placeholder="paste API key…"))
             out.append(Static(Text("Base URL", style=c["dim"]), classes="panel-sub"))
-            out.append(PromptInput(value=self.provider.base_url, id="base-input",
+            out.append(PromptInput(text=self.provider.base_url, id="base-input",
                              placeholder="https://…/v1"))
             out.append(Static(Text("Model", style=c["dim"]), classes="panel-sub"))
-            out.append(PromptInput(value=self.provider.model, id="model-input", placeholder="model id"))
+            out.append(PromptInput(text=self.provider.model, id="model-input", placeholder="model id"))
             out.append(Horizontal(self._panel_btn("[Save]", "key_save"),
                                   self._panel_btn("[Clear]", "key_clear"),
                                   classes="panel-row"))
@@ -1008,7 +1031,7 @@ class ServerManagerApp(App):
         c = self.cc
         out: list[Widget] = []
         out.append(Static(Text("GitHub token", style=c["dim"]), classes="panel-sub"))
-        out.append(PromptInput(value=self.cfg.git_token, id="git-token-input",
+        out.append(PromptInput(text=self.cfg.git_token, id="git-token-input",
                          placeholder="paste GitHub token…"))
         out.append(Horizontal(self._panel_btn("[Save]", "git_token_save"),
                               self._panel_btn("[Clear]", "git_token_clear"),
@@ -1054,6 +1077,42 @@ class ServerManagerApp(App):
         out.append(self._panel_btn("[Refresh]", "connect_refresh"))
         return out
 
+    # ── Sessions view (resume a previous TUI session) ─────────────────────────
+    def _sessions_widgets(self) -> list[Widget]:
+        c = self.cc
+        out: list[Widget] = []
+        sessions = self.store.list_sessions(limit=50)
+        if not sessions:
+            out.append(Static(Text("No previous sessions.", style=c["dim"]), classes="panel-sub"))
+            return out
+        out.append(Static(Text(f"{len(sessions)} session(s) — click to resume",
+                               style=c["dim"]), classes="panel-sub"))
+        for s in sessions:
+            sid = s["id"]
+            title = s.get("title") or "(untitled)"
+            short_id = sid[:12]
+            when = ""
+            if s.get("updated_at"):
+                import time as _time
+                age = _time.time() - s["updated_at"]
+                if age < 120:
+                    when = "just now"
+                elif age < 7200:
+                    when = f"{int(age // 60)}m ago"
+                elif age < 86400:
+                    when = f"{int(age // 3600)}h ago"
+                else:
+                    when = f"{int(age // 86400)}d ago"
+            label = f"{title}  [{short_id}]"
+            if when:
+                label += f"  {when}"
+            active = " panel-btn-active" if sid == self.session_id else ""
+            out.append(self._value_btn(label, "resume_session",
+                                       "resume-session" + active, s))
+        out.append(Static(Text("Click a session to switch to it.",
+                               style=c["dim"]), classes="panel-sub"))
+        return out
+
     # ── Config view (app-settings.json + the LLM auth key) ────────────────────
     def _config_widgets(self) -> list[Widget]:
         c = self.cc
@@ -1072,16 +1131,34 @@ class ServerManagerApp(App):
             out.append(Select([("On", True), ("Off", False)],
                               value=bool(s.get("presentation_mode", False)),
                               allow_blank=False, id="cfg-present"))
+            out.append(Static(Text("Max tool calls/turn", style=c["dim"]), classes="panel-sub"))
+            out.append(PromptInput(text=str(s.get("max_tool_calls", 25)),
+                                   id="cfg-max-tool-calls", placeholder="25 (0 = unlimited)"))
+            out.append(Static(Text("Max wall clock (seconds)", style=c["dim"]), classes="panel-sub"))
+            out.append(PromptInput(text=str(s.get("max_wall_seconds", 600)),
+                                   id="cfg-max-wall", placeholder="600 (0 = unlimited)"))
+            out.append(Static(Text("Max identical tool calls", style=c["dim"]), classes="panel-sub"))
+            out.append(PromptInput(text=str(s.get("max_identical_tool_calls", 0)),
+                                   id="cfg-max-identical", placeholder="0 = disabled"))
+            out.append(Static(Text("Run resume attempts", style=c["dim"]), classes="panel-sub"))
+            out.append(PromptInput(text=str(s.get("run_max_resume_attempts", 3)),
+                                   id="cfg-max-resume", placeholder="3"))
+            out.append(Static(Text("Frozen threshold (seconds)", style=c["dim"]), classes="panel-sub"))
+            out.append(PromptInput(text=str(s.get("run_frozen_threshold_seconds", 360)),
+                                   id="cfg-frozen", placeholder="360"))
+            out.append(Static(Text("Stream buffer retention (s)", style=c["dim"]), classes="panel-sub"))
+            out.append(PromptInput(text=str(s.get("stream_buffer_retention_seconds", 60)),
+                                   id="cfg-buffer", placeholder="60"))
             out.append(self._panel_btn("[Save settings]", "cfg_save_settings"))
         out.append(Static(Text("LLM auth key", style=f"bold {c['accent']}"), classes="panel-sub"))
         out.append(Static(Text("Provider", style=c["dim"]), classes="panel-sub"))
-        out.append(PromptInput(value=p.get("provider", ""), id="cfg-provider", placeholder="openrouter"))
+        out.append(PromptInput(text=p.get("provider", ""), id="cfg-provider", placeholder="openrouter"))
         out.append(Static(Text("Base URL", style=c["dim"]), classes="panel-sub"))
-        out.append(PromptInput(value=p.get("base_url", ""), id="cfg-baseurl", placeholder="https://…/v1"))
+        out.append(PromptInput(text=p.get("base_url", ""), id="cfg-baseurl", placeholder="https://…/v1"))
         out.append(Static(Text("Model", style=c["dim"]), classes="panel-sub"))
-        out.append(PromptInput(value=p.get("model", ""), id="cfg-model", placeholder="model id"))
+        out.append(PromptInput(text=p.get("model", ""), id="cfg-model", placeholder="model id"))
         out.append(Static(Text("API key", style=c["dim"]), classes="panel-sub"))
-        out.append(PromptInput(value=p.get("api_key", ""), id="cfg-apikey",
+        out.append(PromptInput(text=p.get("api_key", ""), id="cfg-apikey",
                                placeholder="paste API key… (blank = keep current)"))
         out.append(self._panel_btn("[Save auth key]", "cfg_save_auth"))
         out.append(self._panel_btn("[Refresh]", "cfg_refresh"))
@@ -1213,6 +1290,58 @@ class ServerManagerApp(App):
                                    f"tui-{uuid.uuid4().hex[:16]}", "(new)")
             self._rebuild_panel()
 
+    @on(Click, ".resume-session")
+    def _on_resume_session(self, event: Click) -> None:
+        s = getattr(event.widget, "_btn_value", None)
+        if not s or not s.get("id"):
+            return
+        sid = s["id"]
+        if sid == self.session_id:
+            self._log(f"[{self.cc['dim']}]{G.BULLET} already on that session.[/]")
+            self._close_panel()
+            return
+        # Switch to the chosen session — rebuild the transcript from its history
+        import asyncio
+        self._end_tool_group()
+        # Clear the transcript and load the selected session's messages
+        try:
+            log = self.query_one("#log", VerticalScroll)
+            log.remove_children()
+        except Exception:
+            pass
+        old_sid = self.session_id[:12]
+        self.session_id = sid
+        self._dismiss_banner()
+        # Reload all messages from DB into the transcript
+        msgs = self.store.history(sid)
+        for m in msgs:
+            role = m.get("role", "")
+            content = m.get("content", "")
+            if role == "user":
+                self._log_user(content)
+            elif role == "assistant":
+                self._log_assistant(content)
+            elif role == "tool" and m.get("tool_name"):
+                tool_name = m["tool_name"]
+                try:
+                    args = json.loads(m.get("tool_calls") or "{}") if m.get("tool_calls") else {}
+                except Exception:
+                    args = {}
+                self._add_tool_call(tool_name, args)
+                try:
+                    self._fill_tool_result(tool_name, content)
+                except Exception:
+                    pass
+        # Notice banner
+        title = s.get("title") or "(untitled)"
+        self._mount(Static(
+            Text(f" {G.OK} Resumed session: {title} [{sid[:12]}]",
+                 style=f"bold {self.cc['secondary']}"),
+            classes="msg-line",
+            markup=False,
+        ))
+        self._close_panel()
+
     # ── config view: app-settings + LLM auth key ──────────────────────────────
     async def _load_config(self) -> None:
         try:
@@ -1234,12 +1363,30 @@ class ServerManagerApp(App):
         try:
             access = self.query_one("#cfg-access", Select).value
             present = self.query_one("#cfg-present", Select).value
+            max_tc = self.query_one("#cfg-max-tool-calls", Input).value.strip()
+            max_wall = self.query_one("#cfg-max-wall", Input).value.strip()
+            max_iden = self.query_one("#cfg-max-identical", Input).value.strip()
+            max_resume = self.query_one("#cfg-max-resume", Input).value.strip()
+            frozen = self.query_one("#cfg-frozen", Input).value.strip()
+            buffer_ = self.query_one("#cfg-buffer", Input).value.strip()
         except Exception:
             return
         patch = {}
         if access is not Select.BLANK:
             patch["access_mode"] = access
         patch["presentation_mode"] = bool(present)
+        if max_tc:
+            patch["max_tool_calls"] = max(0, int(max_tc))
+        if max_wall:
+            patch["max_wall_seconds"] = max(0, int(max_wall))
+        if max_iden:
+            patch["max_identical_tool_calls"] = max(0, int(max_iden))
+        if max_resume:
+            patch["run_max_resume_attempts"] = max(0, int(max_resume))
+        if frozen:
+            patch["run_frozen_threshold_seconds"] = max(15, int(frozen))
+        if buffer_:
+            patch["stream_buffer_retention_seconds"] = max(0, min(3600, int(buffer_)))
         self.run_worker(self._save_settings(patch), group="cfgsave", exclusive=True)
 
     async def _save_settings(self, patch: dict) -> None:
@@ -1506,20 +1653,6 @@ class ServerManagerApp(App):
     def _after_install_confirm(self, ok: bool | None) -> None:
         if ok:
             self.action_get_started()
-
-    # ── footer-right: open the soft keyboard ──────────────────────────────
-    def action_open_keyboard(self) -> None:
-        """Focus the prompt input — the standard trigger that raises the soft keyboard
-        on desktop and most platforms. On Android/Termux the OS does NOT let a terminal
-        program force the soft keyboard up (only the user can, via the Termux drawer's
-        'KEYBOARD' toggle or Vol-Up+K), so there we focus the input and flash the hint."""
-        try:
-            self.query_one("#prompt", Input).focus()
-        except Exception:
-            pass
-        if self.facts.is_termux:
-            self._log(f"[{self.cc['dim']}]tip: if the keyboard didn't appear, open it from the "
-                      f"Termux left-edge drawer ▸ KEYBOARD (Android blocks apps from raising it).[/]")
 
     def action_open_browser(self) -> None:
         url = "http://localhost:8080/index.html"
@@ -1823,8 +1956,6 @@ class ServerManagerApp(App):
         self.cfg.theme_name = name
         self.cfg.save()
         self._refresh_status()
-        self._refresh_hints()
-        self._refresh_kbd()
         self._refresh_title()
         self._update_hud()
         self._log(f"[{self.cc['accent']}]theme: {THEME_LABELS.get(name, name)}[/]")
@@ -1841,12 +1972,51 @@ class ServerManagerApp(App):
         idx = THEME_ORDER.index(self.theme) if self.theme in THEME_ORDER else -1
         self._apply_theme(THEME_ORDER[(idx + 1) % len(THEME_ORDER)])
 
-    @on(Input.Submitted, "#prompt")
-    def _submit(self, event: Input.Submitted) -> None:
-        text = event.value.strip()
+    @on(PromptInput.Submitted, "#prompt")
+    def _submit(self, event: PromptInput.Submitted) -> None:
+        self._do_submit(event.value.strip())
+
+    @on(Click, "#send-btn")
+    def _send_click(self) -> None:
+        try:
+            inp = self.query_one("#prompt", PromptInput)
+            text = inp.text.strip()
+        except Exception:
+            return
+        self._do_submit(text)
+
+    def _do_submit(self, text: str) -> None:
         if not text:
             return
-        event.input.value = ""
+        # Clear the input so the same text isn't resent on accident.
+        try:
+            self.query_one("#prompt", PromptInput).text = ""
+        except Exception:
+            pass
+        # ── /new: start a fresh session (context reset) ──
+        # Keeps the transcript visible but inserts a blue notice marking the reset,
+        # and creates a brand-new session so the agent starts with empty context.
+        if text.strip() == "/new":
+            old_id = self.session_id[:12]
+            self.session_id = self.store.create_session(
+                str(self.project_root) if self.project_root else "(onboarding)"
+            )
+            self._end_tool_group()
+            self._mount(Static(
+                Text(
+                    f" {G.NEW} ── Session reset (new context) ── \n"
+                    f"  Previous session: {old_id} — transcript preserved above.",
+                    style=f"bold {self.cc['bg']}",
+                ),
+                classes="msg-session-new",
+                markup=False,
+            ))
+            return
+
+        # ── /resume: open the session-list panel ──
+        if text.strip() == "/resume":
+            self._open_panel("sessions")
+            return
         # ── Direct-to-web-app mode: Manager muted, WebAgent live → my input goes
         # straight to the app agent (using the web app normally, from the TUI).
         if not self._webagent_muted and self._manager_muted:
