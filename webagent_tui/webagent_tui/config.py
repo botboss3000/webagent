@@ -131,13 +131,38 @@ def _load_provider_json(project_dir: Path) -> dict[str, str]:
 class ProviderConfig:
     api_key: str = ""
     base_url: str = "https://openrouter.ai/api/v1"
-    model: str = "deepseek/deepseek-v4-flash"
+    model: str = "deepseek/deepseek-chat"
 
     @property
     def configured(self) -> bool:
         return bool(self.api_key) and self.api_key not in (
             "your_api_key", "your_openrouter_api_key", "your_key_here",
         )
+
+
+# Known OpenAI-compatible providers → (base_url, a sensible default model). The App
+# panel offers these so the base URL always MATCHES the key's provider — the usual
+# cause of a "missing authentication header" / 401 is a key paired with the wrong URL
+# (e.g. an OpenAI key sent to the OpenRouter endpoint). "Custom" lets you type a URL.
+PROVIDER_PRESETS: list[tuple[str, str, str]] = [
+    ("OpenRouter", "https://openrouter.ai/api/v1", "deepseek/deepseek-chat"),
+    ("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"),
+    ("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"),
+    ("Groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
+    ("Together", "https://api.together.xyz/v1", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
+    ("Mistral", "https://api.mistral.ai/v1", "mistral-large-latest"),
+    ("xAI (Grok)", "https://api.x.ai/v1", "grok-2-latest"),
+    ("Custom", "", ""),
+]
+
+
+def provider_name_for_base(base_url: str) -> str:
+    """Best-match provider preset name for a base URL (for pre-selecting the dropdown)."""
+    b = (base_url or "").strip().rstrip("/")
+    for name, url, _ in PROVIDER_PRESETS:
+        if url and b == url.rstrip("/"):
+            return name
+    return "Custom"
 
 
 def resolve_provider(project_dir: Optional[Path], saved: "TuiConfig") -> ProviderConfig:
@@ -173,14 +198,24 @@ def resolve_provider(project_dir: Optional[Path], saved: "TuiConfig") -> Provide
                 return proj_env[k].strip()
         return ""
 
+    # An explicit UI override (set via the App panel's Save) wins over the linked
+    # repo's provider.json / .env, so a user can fix a bad/mismatched repo key from
+    # the manager. Only the WEBAGENT_TUI_* env override sits above it. Cleared with
+    # the panel's Clear button (provider_override → False).
+    ui_key = saved.api_key if (saved.provider_override and saved.api_key) else ""
+    ui_base = saved.base_url if saved.provider_override else ""
+    ui_model = saved.model if saved.provider_override else ""
+
     api_key = (
         pick("WEBAGENT_TUI_API_KEY")
+        or ui_key
         or pj.get("api_key", "")
         or pick("LLM_API_KEY", "OPENROUTER_API_KEY")
         or saved.api_key
     )
     base_url = (
         pick("WEBAGENT_TUI_BASE_URL")
+        or ui_base
         or pj.get("base_url", "")
         or pick("LLM_BASE_URL", "OPENROUTER_BASE_URL")
         or saved.base_url
@@ -188,10 +223,11 @@ def resolve_provider(project_dir: Optional[Path], saved: "TuiConfig") -> Provide
     )
     model = (
         pick("WEBAGENT_TUI_MODEL")
+        or ui_model
         or pj.get("model", "")
         or pick("LLM_MODEL", "OPENROUTER_MODEL")
         or saved.model
-        or "deepseek/deepseek-v4-flash"
+        or "deepseek/deepseek-chat"
     )
     return ProviderConfig(api_key=api_key.strip(), base_url=base_url.rstrip("/"), model=model.strip())
 
@@ -202,6 +238,9 @@ class TuiConfig:
     api_key: str = ""              # optional override saved here if user enters one
     base_url: str = ""
     model: str = ""
+    provider: str = ""             # provider preset name chosen in the App panel (display)
+    provider_override: bool = False  # True once the user Saves a key/provider in the UI →
+                                     # the saved triple then wins over the repo's provider.json/.env
     autonomous: bool = False       # opt-in: act on mutating tools without per-call gating
     writes_enabled: bool = False   # interactive "armed" toggle for mutating tools
     theme_name: str = "lime"       # active Textual theme (see themes.THEME_ORDER)

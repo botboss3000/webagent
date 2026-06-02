@@ -209,17 +209,18 @@ which via `self_status`):
 
 ## Header toolbar + side panels (clickable)
 
-The header is a row of **clickable category buttons** (no title/model text). Clicking
-one opens a **thin panel docked to the right** holding that category's controls. The
-**chat column stays visible to its left**, and the header/footer span the full width
-above and below — opening a menu never hides the conversation. The panel appears only
-while a category is open.
+The header is a row of **clickable pill buttons** (rounded, padded — easy to tap on a
+phone; no title/model text). Clicking one opens a **thin panel docked to the right**
+holding that category's controls, themselves pill buttons. The **chat column stays
+visible to its left**, and the header/footer span the full width above and below —
+opening a menu never hides the conversation. The panel appears only while a category is
+open, and the open category's pill is highlighted.
 
 | Header item | Opens a right panel with |
 |-------------|--------------------------|
 | **Admin** | `[Update]` · `[Install]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` |
 | **Scene** | the theme & animation controls (theme · animation style · palette · speed · intensity · FPS · banner on/off) — each applies **live** |
-| **App** | an **AI-key** field (paste/update the key; it's saved and re-resolves the model), the write-gate `[Read-only]` / `[Write]` / `[Autonomous]` (the current one is highlighted), and `[Open Browser]` (opens `http://localhost:8080/index.html`) |
+| **App** | the **AI provider** block — a **Provider** dropdown (OpenRouter / OpenAI / DeepSeek / Groq / Together / Mistral / xAI / Custom) that fills the **Base URL** + **Model** to match, an **AI key** field, and `[Save]` / `[Clear]` pills; plus the write-gate `[Read-only]` / `[Write]` / `[Autonomous]` (current one highlighted) and `[Open Browser]` (opens `http://localhost:8080/index.html`) |
 | **server status** (the last item — shows `live` / `stopped` / `checking`, **not** the word "Server"; managed mode) | `[Start]` · `[Restart]` · `[Kill]` |
 
 **Closing a panel:** click anywhere **outside** it (e.g. in the chat), press **Esc**,
@@ -236,7 +237,23 @@ the header.
 | `[Diagnostics]` | Show the app's recorded warnings/errors — reads the local DB, so it works even when the server is down |
 | `[Logs]` | Show the captured server log in the transcript |
 
-Update and Uninstall always open a **details-and-confirmation screen** first; Uninstall is irreversible.
+Install, Update and Uninstall each open a **warning + Yes/No confirmation** first;
+Uninstall is irreversible.
+
+### Setting the AI key / provider (App panel)
+
+Pick your **Provider** (it sets the matching **Base URL** and a default **Model**),
+paste your **AI key**, and press **`[Save]`** (or Enter in the key field). **`[Clear]`**
+forgets it. A key saved here is an **explicit override that wins over the linked repo's
+`provider.json` / `.env`** (only a `WEBAGENT_TUI_*` env var outranks it), so you can fix
+a bad or mismatched key straight from the manager. Everything persists to the manager's
+config.
+
+> The usual cause of a **"missing authentication header" / 401** is a key paired with
+> the *wrong base URL* (e.g. an OpenAI key sent to the OpenRouter endpoint). The
+> Provider dropdown keeps the URL and the key aligned. The client is **OpenAI-compatible**
+> (`/chat/completions`, `Authorization: Bearer`), so use a provider that exposes that —
+> Anthropic's native API is **not** OpenAI-compatible; reach Claude via OpenRouter instead.
 
 The server **auto-starts** when you open the manager in managed mode (if it isn't
 already running), so there's no separate Launch control. The server status item is
