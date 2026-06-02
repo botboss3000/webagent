@@ -78,8 +78,13 @@ app/db/optimizer_*.db-journal
 app/db/optimizer_*.db-wal
 app/db/optimizer_*.db-shm
 
+# Per-machine runtime artifacts (Android/proot etc.)
+.proot.pid
+start_server_proot.sh
+
 # Runtime auth + config (per-machine, contains hashes/tokens)
 db_connection.json
+/db_mode.json
 app/auth/users.json
 app/auth/users.json.bak
 app/db_mode.json
