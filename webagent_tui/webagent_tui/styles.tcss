@@ -11,18 +11,29 @@ Screen {
     color: $foreground;
 }
 
-/* Custom header toolbar — clickable control buttons + live server status. */
+/* Custom header toolbar — clickable PILL buttons + live server status. The pills are
+ * rounded, padded boxes (height 3) so they're easy to tap on a phone. Category names
+ * are short, so the row fits a narrow terminal. Theme variables only (dark + light). */
 #status {
     layout: horizontal;
-    height: 1;
+    height: 3;
     width: 100%;
     background: $bar-bg;
     color: $bar-fg;
-    padding: 0 2;
+    padding: 0 1;
+    align: left middle;
 }
-#status .hdr-btn { width: auto; margin: 0 2 0 0; color: $bar-accent; }
-#status .hdr-btn:hover { color: $bar-fg; text-style: bold; }
-#status .hdr-note { width: auto; margin: 0 2 0 0; }
+#status .hdr-btn {
+    width: auto; height: 3;
+    margin: 0 1 0 0; padding: 0 1;
+    border: round $border-dim;
+    background: $boost;
+    color: $bar-accent;
+    content-align: center middle;
+}
+#status .hdr-btn:hover { background: $primary; color: $background; border: round $primary; }
+#status .hdr-btn.hdr-on { background: $primary; color: $background; border: round $primary; }
+#status .hdr-note { width: auto; height: 3; margin: 0 1 0 0; padding: 0 1; content-align: center middle; }
 
 /* Animated logo banner (vendored from the launcher) — fixed height above the log. */
 #anim { height: 7; width: 100%; }
@@ -55,22 +66,31 @@ Screen {
  * variables only — legible in light AND dark. Width is capped at 60% so the chat stays
  * visible even on a small phone; button labels stack and wrap so they stay readable. */
 #side-panel {
-    width: 32; max-width: 60%;
+    width: 34; max-width: 60%;
     height: 100%;
     background: $panel;
     border-left: thick $primary;
     padding: 1 1;
+    overflow-y: auto; overflow-x: hidden;
+    scrollbar-size-vertical: 1;
 }
 #side-panel #panel-title { text-style: bold; color: $bar-accent; margin-bottom: 1; }
 #side-panel .panel-sub { width: 100%; height: auto; color: $dim; margin-top: 1; }
-#side-panel #key-input { width: 100%; height: 3; }
+#side-panel Input { width: 100%; height: 3; }
+/* Side-panel PILL buttons — rounded, full-width, centred; big tap targets for phones. */
 #side-panel .panel-btn {
-    width: 100%; height: auto;
-    padding: 0 1;
+    width: 100%; height: 3;
+    margin-bottom: 1; padding: 0 1;
+    border: round $border-dim;
+    background: $boost;
     color: $bar-accent;
+    content-align: center middle; text-align: center;
 }
-#side-panel .panel-btn:hover { background: $primary; color: $background; text-style: bold; }
-#side-panel .panel-btn-active { color: $secondary; text-style: bold; }
+#side-panel .panel-btn:hover { background: $primary; color: $background; border: round $primary; }
+#side-panel .panel-btn-active { color: $background; background: $secondary; border: round $secondary; }
+/* A row of side-by-side pills (e.g. Save / Clear). */
+#side-panel .panel-row { layout: horizontal; width: 100%; height: 3; }
+#side-panel .panel-row .panel-btn { width: 1fr; margin: 0 1 0 0; }
 
 /* 'Scene' panel rows — one labelled Select per theme/animation setting. */
 #side-panel .set-row { height: 3; width: 100%; }
@@ -86,8 +106,13 @@ ConfirmModal { align: center middle; }
 #confirm-title { text-style: bold; color: $bar-accent; margin-bottom: 1; }
 #confirm-body { height: auto; color: $foreground; margin-bottom: 1; }
 #confirm-buttons { height: 3; align: right middle; }
-#confirm-buttons .confirm-btn { width: auto; margin: 0 0 0 2; color: $bar-accent; }
-#confirm-buttons .confirm-btn:hover { text-style: bold; color: $foreground; }
+#confirm-buttons .confirm-btn {
+    width: auto; height: 3; margin: 0 0 0 2; padding: 0 2;
+    border: round $border-dim; background: $boost; color: $bar-accent;
+    content-align: center middle;
+}
+#confirm-buttons .confirm-btn:hover { background: $primary; color: $background; border: round $primary; }
+#confirm-buttons .confirm-yes { color: $secondary; }
 
 #log {
     height: 1fr;

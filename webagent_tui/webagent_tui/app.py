@@ -29,7 +29,15 @@ from textual.widgets import Input, RichLog, Select, Static
 
 from .agent import AgentEvent, ServerManagerAgent
 from .ascii_anim import ANIM_LABELS, ANIM_STYLES
-from .config import ProviderConfig, TuiConfig, _looks_like_project, db_path, resolve_provider
+from .config import (
+    PROVIDER_PRESETS,
+    ProviderConfig,
+    TuiConfig,
+    _looks_like_project,
+    db_path,
+    provider_name_for_base,
+    resolve_provider,
+)
 from .db import Store
 from .env_probe import probe_machine, server_health
 from .glyphs import EMOJI, G
@@ -164,8 +172,8 @@ class ConfirmModal(ModalScreen[bool]):
             yield Static(self._title, id="confirm-title")
             yield Static(self._body, id="confirm-body", markup=False)
             with Horizontal(id="confirm-buttons"):
-                yield Static(f"[ {self._confirm_label} ]", classes="confirm-btn confirm-yes")
-                yield Static("[ Cancel ]", classes="confirm-btn confirm-no")
+                yield Static(self._confirm_label, classes="confirm-btn confirm-yes", markup=False)
+                yield Static("Cancel", classes="confirm-btn confirm-no", markup=False)
 
     @on(Click, ".confirm-yes")
     def _confirm(self, event: Click) -> None:
@@ -448,9 +456,10 @@ class ServerManagerApp(App):
         self._dot = None
 
         def cat(label: str, kind: str, action: str) -> None:
-            # Highlight the category whose panel is currently open.
-            col = c["tool"] if self._panel_kind == kind else c["accent"]
-            self._add_hdr(bar, Text(label, style=f"bold {col}"), action)
+            # The pill of the open category gets the .hdr-on highlight class.
+            w = self._add_hdr(bar, Text(label, style=f"bold {c['accent']}"), action)
+            if self._panel_kind == kind:
+                w.add_class("hdr-on")
 
         cat("Admin", "admin", "panel_admin")
         cat("Scene", "scene", "panel_scene")
@@ -458,9 +467,10 @@ class ServerManagerApp(App):
         # Last header item = the server STATUS (not the word "Server"); click → server panel.
         if self.project_root:
             dot, col = self._server_dot()
-            sty = c["tool"] if self._panel_kind == "server" else col
-            self._dot = self._add_hdr(bar, Text(dot or "checking", style=f"bold {sty}"),
+            self._dot = self._add_hdr(bar, Text(dot or "checking", style=f"bold {col}"),
                                       "panel_server")
+            if self._panel_kind == "server":
+                self._dot.add_class("hdr-on")
         else:
             self._add_hdr(bar, Text("onboarding", style=c["secondary"]), None)
 
@@ -761,12 +771,27 @@ class ServerManagerApp(App):
                 out.append(Horizontal(Static(label, classes="set-label"), sel, classes="set-row"))
             return out
         if kind == "app":
+            # ── AI provider / key block ──────────────────────────────────
+            prov_name = self.cfg.provider or provider_name_for_base(self.provider.base_url)
+            out.append(Static(Text("Provider", style=c["dim"]), classes="panel-sub"))
+            out.append(Select([(n, n) for n, _, _ in PROVIDER_PRESETS],
+                              value=prov_name if prov_name in {n for n, _, _ in PROVIDER_PRESETS} else "Custom",
+                              allow_blank=False, id="provider-select"))
             out.append(Static(Text("AI key", style=c["dim"]), classes="panel-sub"))
             out.append(Input(value="", password=True, id="key-input",
                              placeholder="update key…" if self.provider.configured else "paste API key…"))
-            keynote = (f"model {self.provider.model}" if self.provider.configured
-                       else "not configured")
-            out.append(Static(Text(keynote, style=c["dim"]), id="key-status", classes="panel-sub"))
+            out.append(Static(Text("Base URL", style=c["dim"]), classes="panel-sub"))
+            out.append(Input(value=self.provider.base_url, id="base-input",
+                             placeholder="https://…/v1"))
+            out.append(Static(Text("Model", style=c["dim"]), classes="panel-sub"))
+            out.append(Input(value=self.provider.model, id="model-input", placeholder="model id"))
+            out.append(Horizontal(self._panel_btn("[Save]", "key_save"),
+                                  self._panel_btn("[Clear]", "key_clear"),
+                                  classes="panel-row"))
+            keynote = (f"✓ {self.provider.model}" if self.provider.configured else "not configured")
+            kcol = c["secondary"] if self.provider.configured else c["tool"]
+            out.append(Static(Text(keynote, style=kcol), id="key-status", classes="panel-sub"))
+            # ── write-gate ───────────────────────────────────────────────
             cur = "auto" if self.cfg.autonomous else "write" if self.cfg.writes_enabled else "read"
             out.append(Static(Text("Mode", style=c["dim"]), classes="panel-sub"))
             out.append(self._panel_btn("[Read-only]", "mode_read", cur == "read"))
@@ -800,9 +825,15 @@ class ServerManagerApp(App):
         self._open_panel("server")
 
     # ── panel interactions: button clicks, click-outside, settings, AI key ──
+    # Buttons whose action should NOT close the panel (they edit it in place).
+    _KEEP_OPEN = {"key_save", "key_clear"}
+
     @on(Click, ".panel-btn")
     def _on_panel_btn(self, event: Click) -> None:
         action = getattr(event.widget, "_btn_action", None)
+        if action in self._KEEP_OPEN:
+            getattr(self, f"action_{action}")()
+            return
         self._close_panel()
         if action:
             fn = getattr(self, f"action_{action}", None)
@@ -825,26 +856,72 @@ class ServerManagerApp(App):
 
     @on(Select.Changed)
     def _on_setting_change(self, event: Select.Changed) -> None:
-        # Scene controls apply live; the panel stays open so several can be tweaked.
         if event.value is Select.BLANK:
             return
+        if event.select.id == "provider-select":
+            # Fill the Base URL + Model fields with the chosen provider's defaults so
+            # the URL matches the key (Custom leaves them for manual entry). Save persists.
+            self._apply_provider_preset(str(event.value))
+            return
+        # Scene controls apply live; the panel stays open so several can be tweaked.
         self.apply_setting(event.select.id, event.value)
 
-    @on(Input.Submitted, "#key-input")
-    def _save_key(self, event: Input.Submitted) -> None:
-        key = event.value.strip()
-        if not key:
+    def _apply_provider_preset(self, name: str) -> None:
+        preset = next((p for p in PROVIDER_PRESETS if p[0] == name), None)
+        if preset is None or name == "Custom":
             return
-        self.cfg.api_key = key
+        _, base, model = preset
+        try:
+            self.query_one("#base-input", Input).value = base
+            self.query_one("#model-input", Input).value = model
+        except Exception:
+            pass
+
+    @on(Input.Submitted, "#key-input")
+    def _key_enter(self, event: Input.Submitted) -> None:
+        self.action_key_save()   # Enter in the key field is a shortcut for [Save]
+
+    def action_key_save(self) -> None:
+        """Persist the App-panel provider/key/model as an explicit UI override (wins
+        over the repo's provider.json/.env) and rebuild the LLM client."""
+        try:
+            panel = self.query_one("#side-panel", Vertical)
+            key = panel.query_one("#key-input", Input).value.strip()
+            base = panel.query_one("#base-input", Input).value.strip()
+            model = panel.query_one("#model-input", Input).value.strip()
+            prov = panel.query_one("#provider-select", Select).value
+        except Exception:
+            return
+        if key:
+            self.cfg.api_key = key
+        self.cfg.base_url = base
+        self.cfg.model = model
+        self.cfg.provider = str(prov) if prov is not Select.BLANK else ""
+        self.cfg.provider_override = True
         self.cfg.save()
         self._apply_provider()
         self._refresh_status()
         if self.provider.configured:
-            self._log(f"[{self.cc['secondary']}]{G.OK} AI key saved[/] "
-                      f"[{self.cc['dim']}]— model {self.provider.model}[/]")
+            self._log(f"[{self.cc['secondary']}]{G.OK} AI settings saved[/] "
+                      f"[{self.cc['dim']}]— {self.cfg.provider or 'custom'} · {self.provider.model}[/]")
         else:
-            self._log(f"[{self.cc['tool']}]{G.WARN} key saved but still not resolving — "
-                      f"a linked repo's provider.json may be overriding it.[/]")
+            self._log(f"[{self.cc['tool']}]{G.WARN} saved, but no key is set yet — "
+                      f"paste a key and Save again.[/]")
+        self._rebuild_panel()
+
+    def action_key_clear(self) -> None:
+        """Forget the UI-set key/provider/override so resolution falls back to the
+        repo/env (or built-in defaults) again."""
+        self.cfg.api_key = ""
+        self.cfg.base_url = ""
+        self.cfg.model = ""
+        self.cfg.provider = ""
+        self.cfg.provider_override = False
+        self.cfg.save()
+        self._apply_provider()
+        self._refresh_status()
+        self._log(f"[{self.cc['dim']}]{G.BULLET} AI key cleared "
+                  f"(falling back to the repo/env key, if any).[/]")
         self._rebuild_panel()
 
     # ── App panel: set the write gate directly (Read / Write / Auto) ───────
@@ -867,16 +944,31 @@ class ServerManagerApp(App):
     def action_mode_auto(self) -> None:
         self._set_mode("auto")
 
-    # ── Admin panel: Install (guided setup) ────────────────────────────────
+    # ── Admin panel: Install (guided setup, with a warning + Yes/No first) ──
     def action_install(self) -> None:
-        """Run the guided install. Onboarding mode → drive the full setup (same as the
-        'get started' button). Managed mode → there's already a linked checkout, so
+        """Run the guided install. Onboarding mode → show a warning + confirm, then
+        drive the full setup. Managed mode → there's already a linked checkout, so
         point the user at Update instead of re-installing."""
         if self.project_root is not None:
             self._log(f"[{self.cc['dim']}]a webAgent checkout is already linked "
                       f"({self.project_root}) — use Admin ▸ Update to upgrade it.[/]")
             return
-        self.action_get_started()
+        body = "\n".join([
+            f"This installs webAgent on this device (recommended folder: "
+            f"{self._recommended_install_path()}):",
+            "  • clone the repo from GitHub",
+            "  • build a Python virtualenv + install dependencies",
+            "  • download the headless browser (desktop only)",
+            "  • seed the config and your AI key, then verify",
+            "",
+            "It enables writes for the setup and may take several minutes.",
+        ])
+        self.push_screen(ConfirmModal("Install webAgent", body, "Install now"),
+                         self._after_install_confirm)
+
+    def _after_install_confirm(self, ok: bool | None) -> None:
+        if ok:
+            self.action_get_started()
 
     # ── footer-right: open the soft keyboard ──────────────────────────────
     def action_open_keyboard(self) -> None:
