@@ -717,7 +717,8 @@ def _check_user_confirmed(messages: List[Dict[str, Any]], tool_name: str) -> boo
     model_asked = any(kw in last_assistant_content for kw in ask_keywords)
 
     confirm_keywords = ["yes", "go ahead", "proceed", "approved", "ok", "okay",
-                        "sure", "do it", "confirm", "go for it", "please do"]
+                        "sure", "do it", "confirm", "go for it", "please do",
+                        "continue"]
 
     if not model_asked:
         return any(kw in last_user_content for kw in confirm_keywords)
