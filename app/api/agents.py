@@ -1075,19 +1075,17 @@ async def test_agent(req: TestAgentRequest):
     # a pipeline loop without a separate round-trip (avoids session-ownership checks).
     interactions: List[Dict[str, Any]] = []
     try:
-        import sqlite3 as _sqlite3
-        from pathlib import Path as _Path
-        _db_path = _Path(__file__).resolve().parent.parent / "db" / "local.db"
-        if _db_path.exists():
-            _conn = _sqlite3.connect(str(_db_path))
-            _conn.row_factory = _sqlite3.Row
+        from app.db import get_db as _get_db
+        _conn = _get_db()._get_conn()
+        try:
             _rows = _conn.execute(
                 "SELECT id, session_id, role, content, tool_name, metadata, created_at "
                 "FROM interactions WHERE session_id = ? ORDER BY created_at ASC",
                 (test_session_id,),
             ).fetchall()
-            _conn.close()
             interactions = [dict(r) for r in _rows]
+        finally:
+            _conn.close()
     except Exception:
         pass  # frontend falls back to plain reply display
 

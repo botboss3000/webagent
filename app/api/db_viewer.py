@@ -1,5 +1,11 @@
 """
-Database viewer API — local SQLite introspection for the terminal UI.
+Database viewer API — backend-aware DB introspection for the terminal UI.
+
+Reads/writes the active application database: SQLite by default, or Postgres
+when it is the active backend (the main DB routes through a standalone autocommit
+PgPortableConnection; SQLite-dialect SQL is translated on the fly — see
+app/db/pg_portable.py). Temp/optimizer `.db` scratch files are always SQLite.
+Dispatch happens in `_open()`.
 """
 
 import json
@@ -113,14 +119,16 @@ def _get_caller(payload: Optional[dict]) -> tuple[Optional[str], bool]:
         return None, False
     is_admin = False
     try:
-        conn = sqlite3.connect(str(_DB_FILES_DIR / "local.db"))
-        row = conn.execute(
-            "SELECT is_admin FROM user_profiles WHERE user_id = ?", (user_id,)
-        ).fetchone()
-        conn.close()
+        conn, _dialect = _open("local.db")
+        try:
+            row = conn.execute(
+                "SELECT is_admin FROM user_profiles WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        finally:
+            conn.close()
         if row and row[0]:
             is_admin = True
-    except sqlite3.Error:
+    except Exception:
         pass
     return user_id, is_admin
 
@@ -163,19 +171,51 @@ def _get_db_path(name: str = "local.db") -> Path:
     if Path(name).name != name:
         raise HTTPException(status_code=400, detail="Database name must be a plain filename")
     db_path = _DB_FILES_DIR / name
-    if not db_path.exists():
+    # When Postgres is the active backend, the main DB has no file — callers that
+    # only need it for the (now Postgres) connection still call this; don't 404.
+    if not db_path.exists() and _pg_conninfo_for(name) is None:
         raise HTTPException(status_code=404, detail=f"Database '{name}' not found at {db_path}")
     return db_path
 
 
-def _resolve_session_db(session_id: str, fallback_db: str = "local.db") -> str:
-    """If a session has temp_db_path in local.db metadata, route to that temp DB.
-    Otherwise return fallback_db."""
+def _pg_conninfo_for(db: str):
+    """Return PG conninfo when Postgres is the active backend AND `db` is the
+    main database. Temp/optimizer .db files always stay on SQLite."""
+    if db not in ("local.db", "", None):
+        return None
     try:
-        conn = sqlite3.connect(str(_DB_FILES_DIR / "local.db"))
-        conn.row_factory = sqlite3.Row
-        row = conn.execute("SELECT metadata FROM sessions WHERE id=?", (session_id,)).fetchone()
-        conn.close()
+        from app.db import active_postgres_conninfo
+        return active_postgres_conninfo()
+    except Exception:
+        return None
+
+
+def _open(db: str = "local.db"):
+    """Open the right connection for `db`. Returns (conn, dialect).
+
+    - Postgres active + main DB → standalone autocommit PgPortableConnection
+      ('postgres'). Autocommit isolates each statement so the endpoints'
+      best-effort per-statement guards behave like they do on SQLite.
+    - Otherwise the SQLite file ('sqlite').
+    """
+    conninfo = _pg_conninfo_for(db)
+    if conninfo:
+        from app.db.pg_portable import connect_standalone
+        return connect_standalone(conninfo), "postgres"
+    conn = sqlite3.connect(str(_get_db_path(db)))
+    conn.row_factory = sqlite3.Row
+    return conn, "sqlite"
+
+
+def _resolve_session_db(session_id: str, fallback_db: str = "local.db") -> str:
+    """If a session has temp_db_path in its metadata, route to that temp DB.
+    Otherwise return fallback_db. Reads from the active backend (SQLite or PG)."""
+    try:
+        conn, _dialect = _open(fallback_db)
+        try:
+            row = conn.execute("SELECT metadata FROM sessions WHERE id=?", (session_id,)).fetchone()
+        finally:
+            conn.close()
         if row and row['metadata']:
             meta = json.loads(row['metadata'])
             tdb = meta.get('temp_db_path', '')
@@ -192,29 +232,29 @@ async def list_tables(
     _auth: dict = Depends(require_db_auth),
 ):
     """List all tables in the database."""
-    db_path = _get_db_path(db)
     user_id, is_admin = _get_caller(_auth)
-    # Cache is keyed by (db_path, is_admin, user_id) — row counts differ per caller.
-    cache_key = f"{db_path}|{1 if is_admin else 0}|{user_id or ''}"
+    is_pg = _pg_conninfo_for(db) is not None
+    cache_key = f"{db}|{1 if is_admin else 0}|{user_id or ''}"
 
-    # Try cache: valid if the db file hasn't been touched since we cached, and
-    # the TTL hasn't elapsed. mtime+size is a cheap stat that catches all writes.
+    # File-stat cache only applies to SQLite (Postgres has no file to stat, and
+    # its row counts change without touching any file). On PG we always compute.
+    mtime, size = 0.0, 0
+    if not is_pg:
+        db_path = _get_db_path(db)
+        try:
+            st = db_path.stat()
+            mtime, size = st.st_mtime, st.st_size
+        except OSError:
+            mtime, size = 0.0, 0
+        now = time.monotonic()
+        cached = _TABLES_CACHE.get(cache_key)
+        if cached is not None:
+            c_mtime, c_size, c_expiry, c_payload = cached
+            if c_mtime == mtime and c_size == size and now < c_expiry:
+                return c_payload
+
     try:
-        st = db_path.stat()
-        mtime, size = st.st_mtime, st.st_size
-    except OSError:
-        mtime, size = 0.0, 0
-
-    now = time.monotonic()
-    cached = _TABLES_CACHE.get(cache_key)
-    if cached is not None:
-        c_mtime, c_size, c_expiry, c_payload = cached
-        if c_mtime == mtime and c_size == size and now < c_expiry:
-            return c_payload
-
-    try:
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
+        conn, _dialect = _open(db)
         cur = conn.cursor()
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         tables = []
@@ -232,7 +272,7 @@ async def list_tables(
             try:
                 cur.execute(f'SELECT COUNT(*) FROM "{name}"{where_sql}', params)
                 count = cur.fetchone()[0]
-            except sqlite3.OperationalError:
+            except Exception:
                 # ACL parent table missing (e.g. FTS or stale schema) — treat as 0
                 # for non-admins; admins still see the real count via the
                 # unfiltered query above falling through.
@@ -240,9 +280,12 @@ async def list_tables(
             tables.append({"name": name, "columns": columns, "row_count": count})
         conn.close()
         payload = {"tables": tables, "db": db, "is_admin": is_admin}
-        _TABLES_CACHE[cache_key] = (mtime, size, now + _TABLES_CACHE_TTL_S, payload)
+        if not is_pg:
+            _TABLES_CACHE[cache_key] = (mtime, size, time.monotonic() + _TABLES_CACHE_TTL_S, payload)
         return payload
-    except sqlite3.Error as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -262,7 +305,7 @@ async def list_users(
 
     db_path = _get_db_path(db)
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn, _dialect = _open(db)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
         users = set()
@@ -271,11 +314,13 @@ async def list_users(
                 cur.execute(f'SELECT DISTINCT user_id FROM "{tbl}" WHERE user_id IS NOT NULL')
                 for row in cur.fetchall():
                     users.add(row[0])
-            except sqlite3.OperationalError:
+            except Exception:
                 pass
         conn.close()
         return {"users": sorted(users), "db": db}
-    except sqlite3.Error as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -288,7 +333,7 @@ async def delete_user(
     """Delete all sessions, interactions, and messages for a user."""
     db_path = _get_db_path(db)
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn, _dialect = _open(db)
         cur = conn.cursor()
         deleted = {}
 
@@ -304,11 +349,11 @@ async def delete_user(
             deleted["interactions"] = deleted.get("interactions", 0) + cur.rowcount
             try:
                 cur.execute("DELETE FROM pipeline_events WHERE session_id = ?", (sid,))
-            except sqlite3.OperationalError:
+            except Exception:
                 pass
             try:
                 cur.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
-            except sqlite3.OperationalError:
+            except Exception:
                 pass
 
         # Delete sessions
@@ -319,21 +364,23 @@ async def delete_user(
         try:
             cur.execute("DELETE FROM session_summaries WHERE user_id = ?", (user_id,))
             deleted["summaries"] = cur.rowcount
-        except sqlite3.OperationalError:
+        except Exception:
             pass
 
         # Delete attachments
         try:
             cur.execute("DELETE FROM attachments WHERE user_id = ?", (user_id,))
             deleted["attachments"] = cur.rowcount
-        except sqlite3.OperationalError:
+        except Exception:
             pass
 
         conn.commit()
         conn.close()
         logger.info(f"Deleted user {user_id[:12]}: {deleted}")
         return {"success": True, "user_id": user_id, "deleted": deleted}
-    except sqlite3.Error as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -345,7 +392,7 @@ async def delete_session(
     """Delete a session and all its interactions/messages."""
     db_path = _get_db_path(db)
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn, _dialect = _open(db)
         cur = conn.cursor()
 
         # Delete interactions for this session
@@ -358,7 +405,7 @@ async def delete_session(
         # Delete pipeline events
         try:
             cur.execute('DELETE FROM pipeline_events WHERE session_id = ?', (session_id,))
-        except sqlite3.OperationalError:
+        except Exception:
             pass
 
         # Delete the session itself
@@ -375,7 +422,9 @@ async def delete_session(
             "session_deleted": session_deleted,
             "interactions_deleted": interactions_deleted,
         }
-    except sqlite3.Error as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -403,7 +452,7 @@ async def patch_session(
 
     db_path = _get_db_path(db)
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn, _dialect = _open(db)
         cur = conn.cursor()
 
         sets = []
@@ -430,7 +479,9 @@ async def patch_session(
         if affected == 0:
             raise HTTPException(status_code=404, detail="Session not found")
         return {"success": True, "session_id": session_id, "affected": affected}
-    except sqlite3.Error as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -450,7 +501,7 @@ async def reorder_sessions(
         return {"success": True, "updated": 0}
     db_path = _get_db_path(db)
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn, _dialect = _open(db)
         cur = conn.cursor()
         # Auto-add the column on older DBs (mirrors the pinned guard above).
         cur.execute("PRAGMA table_info(sessions)")
@@ -468,7 +519,9 @@ async def reorder_sessions(
         conn.commit()
         conn.close()
         return {"success": True, "updated": updated}
-    except sqlite3.Error as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -506,7 +559,7 @@ async def list_sessions(
 
     db_path = _get_db_path(db)
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn, _dialect = _open(db)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
@@ -550,7 +603,7 @@ async def list_sessions(
                 cur2.execute("SELECT session_id, status, updated_at FROM session_runs")
                 for r in cur2.fetchall():
                     run_statuses[r[0]] = {"status": r[1], "updated_at": r[2]}
-            except sqlite3.OperationalError:
+            except Exception:
                 pass
 
             # ── Step 1: fetch all pinned sessions (no limit) ──
@@ -620,12 +673,14 @@ async def list_sessions(
                         "run_status": run_status,
                         "has_unread": has_unread,
                     })
-        except sqlite3.OperationalError:
+        except Exception:
             pass
 
         conn.close()
         return {"sessions": sessions, "db": db, "total_count": total_count}
-    except sqlite3.Error as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -634,7 +689,7 @@ async def mark_session_read(session_id: str, db: str = Query("local.db", descrip
     """Mark a session as read by setting read_at to now."""
     db_path = _get_db_path(db)
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn, _dialect = _open(db)
         conn.execute(
             "UPDATE sessions SET read_at = ? WHERE id = ?",
             (datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f+00:00"), session_id),
@@ -642,7 +697,9 @@ async def mark_session_read(session_id: str, db: str = Query("local.db", descrip
         conn.commit()
         conn.close()
         return {"ok": True, "session_id": session_id}
-    except sqlite3.Error as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -669,9 +726,11 @@ async def get_session_messages(
         db = resolved_db
     db_path = _get_db_path(db)
     try:
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
+        conn, _dialect = _open(db)
         cur = conn.cursor()
+        # Same-second tie-breaker for stable pagination: SQLite has an implicit
+        # monotonic `rowid`; Postgres doesn't, so fall back to the (uuid) `id`.
+        _tb = "rowid" if _dialect == "sqlite" else "id"
 
         # Participant check: requesting user must own or be a participant in the session.
         # Decode JWT directly — BaseHTTPMiddleware state doesn't reliably propagate to handlers.
@@ -705,7 +764,7 @@ async def get_session_messages(
                 if not is_authorized:
                     conn.close()
                     return {"messages": [], "session_id": session_id, "db": db, "restricted": True}
-        except sqlite3.OperationalError:
+        except Exception:
             pass  # No sessions table — fall through to message fetch
 
         messages = []
@@ -721,12 +780,12 @@ async def get_session_messages(
         if before_id:
             for _tbl in ("interactions", "messages"):
                 try:
-                    cur.execute(f'SELECT created_at, rowid FROM "{_tbl}" WHERE id = ?', (before_id,))
+                    cur.execute(f'SELECT created_at, {_tb} FROM "{_tbl}" WHERE id = ?', (before_id,))
                     _r = cur.fetchone()
                     if _r:
                         before_ts, before_rowid = _r[0], _r[1]
                         break
-                except sqlite3.OperationalError:
+                except Exception:
                     pass
         # Fetch one extra row so we can detect whether older messages remain
         # (has_more) without a second existence query.
@@ -739,18 +798,18 @@ async def get_session_messages(
             try:
                 _icols = {r[1] for r in cur.execute("PRAGMA table_info(interactions)").fetchall()}
                 _has_status = "status" in _icols
-            except sqlite3.OperationalError:
+            except Exception:
                 _has_status = False
             _status_col = "status" if _has_status else "'complete' AS status"
             _where = "session_id = ?"
             _params: list = [session_id]
             if before_ts is not None:
-                _where += " AND (created_at < ? OR (created_at = ? AND rowid < ?))"
+                _where += f" AND (created_at < ? OR (created_at = ? AND {_tb} < ?))"
                 _params.extend([before_ts, before_ts, before_rowid])
             cur.execute(
                 f'SELECT id, session_id, role, content, tool_name, created_at, {_status_col}, session_seq, '
                 f'output, metadata, parent_id, input '
-                f'FROM interactions WHERE {_where} ORDER BY created_at DESC, rowid DESC LIMIT ?',
+                f'FROM interactions WHERE {_where} ORDER BY created_at DESC, {_tb} DESC LIMIT ?',
                 (*_params, fetch_n)
             )
             for row in cur.fetchall():
@@ -768,7 +827,7 @@ async def get_session_messages(
                     "parent_id": row[10],
                     "input": row[11],
                 })
-        except sqlite3.OperationalError:
+        except Exception:
             pass
 
         if not messages:
@@ -777,11 +836,11 @@ async def get_session_messages(
                 _where = "session_id = ?"
                 _params = [session_id]
                 if before_ts is not None:
-                    _where += " AND (created_at < ? OR (created_at = ? AND rowid < ?))"
+                    _where += f" AND (created_at < ? OR (created_at = ? AND {_tb} < ?))"
                     _params.extend([before_ts, before_ts, before_rowid])
                 cur.execute(
                     f'SELECT id, session_id, role, content, created_at '
-                    f'FROM messages WHERE {_where} ORDER BY created_at DESC, rowid DESC LIMIT ?',
+                    f'FROM messages WHERE {_where} ORDER BY created_at DESC, {_tb} DESC LIMIT ?',
                     (*_params, fetch_n)
                 )
                 for row in cur.fetchall():
@@ -792,7 +851,7 @@ async def get_session_messages(
                         "content": row[3],
                         "created_at": row[4],
                     })
-            except sqlite3.OperationalError:
+            except Exception:
                 pass
 
         # We fetched newest-first with one extra row. If the extra came back,
@@ -823,12 +882,14 @@ async def get_session_messages(
                     "latest_session_seq": r[3],
                     "updated_at": r[4],
                 }
-        except sqlite3.OperationalError:
+        except Exception:
             pass  # session_runs table not present (legacy/temp DB)
 
         conn.close()
         return {"messages": messages, "session_id": session_id, "db": db, "run": run_info, "has_more": has_more}
-    except sqlite3.Error as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -861,7 +922,7 @@ def _session_access_ok(cur, session_id: str, request: Request, user_id: Optional
             (session_id,),
         )
         session_row = cur.fetchone()
-    except sqlite3.OperationalError:
+    except Exception:
         return None  # no sessions table — fall through
     if not session_row:
         return None  # unknown / anonymous session — fall through
@@ -901,7 +962,7 @@ async def delete_turn(
     resolved_db = _resolve_session_db(session_id, db)
     db_path = _get_db_path(resolved_db)
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn, _dialect = _open(db)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
@@ -965,7 +1026,9 @@ async def delete_turn(
             "turn_root": root,
             "session_id": session_id,
         }
-    except sqlite3.Error as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -985,7 +1048,7 @@ async def session_stats(
     """
     db_path = _get_db_path(db)
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn, _dialect = _open(db)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
@@ -996,7 +1059,7 @@ async def session_stats(
                 (user_id,)
             )
             session_rows = cur.fetchall()
-        except sqlite3.OperationalError:
+        except Exception:
             session_rows = []
 
         sessions_map = {
@@ -1014,7 +1077,7 @@ async def session_stats(
                     sid = row[0]
                     if sid and sid not in sessions_map:
                         sessions_map[sid] = {"title": sid[:12], "created_at": None}
-            except sqlite3.OperationalError:
+            except Exception:
                 pass
 
         if not sessions_map:
@@ -1032,7 +1095,7 @@ async def session_stats(
                     (sid,)
                 )
                 rows = cur.fetchall()
-            except sqlite3.OperationalError:
+            except Exception:
                 rows = []
 
             total_input_tokens = 0
@@ -1108,7 +1171,9 @@ async def session_stats(
 
         conn.close()
         return {"sessions": results, "db": db}
-    except sqlite3.Error as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1127,7 +1192,7 @@ async def stream_interactions(
             db = resolved_db
     db_path = _get_db_path(db)
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn, _dialect = _open(db)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
@@ -1164,7 +1229,9 @@ async def stream_interactions(
         rows = [dict(row) for row in cur.fetchall()]
         conn.close()
         return {"interactions": rows, "db": db}
-    except sqlite3.Error as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1186,7 +1253,7 @@ async def update_row(
     """Update a row in a table. Admin-only."""
     db_path = _get_db_path(req.db)
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn, _dialect = _open(db)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
@@ -1220,7 +1287,9 @@ async def update_row(
 
         logger.info(f"Updated {affected} row(s) in {req.table}")
         return {"affected": affected, "success": True}
-    except sqlite3.Error as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1240,7 +1309,7 @@ async def delete_row(
     """Delete a single row from a table, identified by the `where` clause. Admin-only."""
     db_path = _get_db_path(req.db)
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn, _dialect = _open(db)
         cur = conn.cursor()
 
         # Verify table exists
@@ -1274,7 +1343,9 @@ async def delete_row(
 
         logger.info(f"Deleted {affected} row(s) from {req.table}")
         return {"affected": affected, "success": True}
-    except sqlite3.Error as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1287,7 +1358,7 @@ async def reset_database(
     """Delete ALL rows from ALL tables. Skips excluded tables. Admin-only."""
     db_path = _get_db_path(db)
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn, _dialect = _open(db)
         cur = conn.cursor()
 
         # Get all user tables (not internal sqlite ones)
@@ -1313,7 +1384,9 @@ async def reset_database(
 
         logger.info(f"Database reset: {len(results)} tables truncated ({sum(results.values())} rows total)")
         return {"success": True, "tables_truncated": results, "total_rows_deleted": sum(results.values()), "db": db}
-    except sqlite3.Error as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1326,7 +1399,7 @@ async def truncate_table(
     """Delete ALL rows from a table. Admin-only."""
     db_path = _get_db_path(db)
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn, _dialect = _open(db)
         cur = conn.cursor()
 
         # Verify table exists
@@ -1345,7 +1418,9 @@ async def truncate_table(
 
         logger.info(f"Truncated table '{table}': {before} rows deleted")
         return {"success": True, "table": table, "deleted": before, "db": db}
-    except sqlite3.Error as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1360,7 +1435,7 @@ async def column_values(
     """Get distinct values for a column (for filter popup)."""
     db_path = _get_db_path(db)
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn, _dialect = _open(db)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
@@ -1409,7 +1484,9 @@ async def column_values(
             "total": total,
             "db": db,
         }
-    except sqlite3.Error as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1431,7 +1508,7 @@ async def query_table(
     """Query rows from a table."""
     db_path = _get_db_path(db)
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn, _dialect = _open(db)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
@@ -1542,7 +1619,9 @@ async def query_table(
             "offset": offset,
             "db": db,
         }
-    except sqlite3.Error as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 

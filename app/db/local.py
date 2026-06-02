@@ -1136,9 +1136,15 @@ def _slot_apply(base: str, override: Optional[str], lock: bool, merge_mode: str)
 class LocalBackend(StorageBackend):
     """SQLite implementation of StorageBackend."""
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: Optional[str] = None, seed: bool = True):
         self._db_path = db_path or DEFAULT_DB_PATH
         self._write_lock = asyncio.Lock()
+        # Subclasses (PostgresBackend) flip these. seed=False builds a schema-only
+        # reference instance (used to introspect the canonical column set).
+        # _scan_sibling_dbs is a SQLite-only feature (parallel agent .db files)
+        # that has no meaning on a server-backed store.
+        self._seed_on_init = seed
+        self._scan_sibling_dbs = True
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -2147,7 +2153,8 @@ class LocalBackend(StorageBackend):
                 logger.info("Added sessions.read_at column")
 
             # ── Seed: agent templates from app/context/agents/*.json (full schema) ──
-            self._seed_agent_templates_from_json_files(conn)
+            if getattr(self, "_seed_on_init", True):
+                self._seed_agent_templates_from_json_files(conn)
 
         except Exception as e:
             logger.error("Error initializing local database: %s", e)
@@ -2163,7 +2170,7 @@ class LocalBackend(StorageBackend):
         This allows code that uses the Supabase query builder directly
         (ToolLoader, ToolExecutionTracker, etc.) to work with minimal changes.
         """
-        return _LocalTableProxy(self._db_path)
+        return _LocalTableProxy(self._get_conn)
 
     # ---- Sessions ----
 
@@ -3232,6 +3239,10 @@ class LocalBackend(StorageBackend):
                             await self._embed_and_store_chunks(conn, memory_id, text, source)
                         except Exception as chunk_err:
                             logger.warning("Chunk+embed failed for memory %s (%s): %s", slug, source, chunk_err)
+                    # Persist the chunk inserts (the memory row was already
+                    # committed above; without this the chunks + embeddings are
+                    # discarded when the connection closes).
+                    conn.commit()
 
                 logger.debug("Memory upserted: %s (%s)", slug, "updated" if existing else "created")
                 return data
@@ -5505,16 +5516,20 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
-        # 2b. Aggregate agents from sibling .db files (parallel agent databases)
-        db_dir = os.path.dirname(os.path.abspath(self._db_path))
-        primary_name = os.path.basename(self._db_path)
-        try:
-            sibling_paths = [
-                os.path.join(db_dir, f)
-                for f in os.listdir(db_dir)
-                if f.endswith(".db") and f != primary_name
-            ]
-        except OSError:
+        # 2b. Aggregate agents from sibling .db files (parallel agent databases).
+        # SQLite-only: a server-backed store (Postgres) has no sibling .db files.
+        if getattr(self, "_scan_sibling_dbs", True):
+            db_dir = os.path.dirname(os.path.abspath(self._db_path))
+            primary_name = os.path.basename(self._db_path)
+            try:
+                sibling_paths = [
+                    os.path.join(db_dir, f)
+                    for f in os.listdir(db_dir)
+                    if f.endswith(".db") and f != primary_name
+                ]
+            except OSError:
+                sibling_paths = []
+        else:
             sibling_paths = []
 
         for sibling_path in sorted(sibling_paths):
@@ -7273,11 +7288,15 @@ class _LocalTableProxy:
     Usage: proxy.table("tools").select("*").eq("status", "active").execute()
     """
 
-    def __init__(self, db_path: str):
-        self._db_path = db_path
+    def __init__(self, conn_factory):
+        # conn_factory: a zero-arg callable returning a connection that emulates
+        # the sqlite3 API (LocalBackend._get_conn for SQLite, or the Postgres
+        # PgPortableConnection). Routing through the backend's own connection
+        # makes this proxy backend-agnostic.
+        self._conn_factory = conn_factory
 
     def table(self, table_name: str) -> "_LocalQueryBuilder":
-        return _LocalQueryBuilder(self._db_path, table_name)
+        return _LocalQueryBuilder(self._conn_factory, table_name)
 
 
 class _LocalQueryBuilder:
@@ -7287,8 +7306,8 @@ class _LocalQueryBuilder:
     Returns objects with .data (list of dicts) matching supabase's response shape.
     """
 
-    def __init__(self, db_path: str, table_name: str):
-        self._db_path = db_path
+    def __init__(self, conn_factory, table_name: str):
+        self._conn_factory = conn_factory
         self._table_name = table_name
         self._select_cols = "*"
         self._filters: List[tuple[str, str, Any]] = []  # (op, field, value)
@@ -7340,15 +7359,19 @@ class _LocalQueryBuilder:
                 clauses.append(f"{field} IN ({placeholders})")
                 params.extend(value)
             elif op == "ilike":
-                clauses.append(f"{field} LIKE ?")
+                # Portable case-insensitive match: SQLite LIKE is case-insensitive
+                # for ASCII but Postgres LIKE is not. LOWER() on both sides is
+                # case-insensitive on both backends.
+                clauses.append(f"LOWER({field}) LIKE LOWER(?)")
                 params.append(value)
         if clauses:
             return " WHERE " + " AND ".join(clauses), params
         return "", []
 
     def execute(self) -> Any:
-        conn = sqlite3.connect(self._db_path)
-        conn.row_factory = sqlite3.Row
+        # Backend-agnostic: SQLite returns sqlite3.Row, Postgres returns PgRow;
+        # both support dict(row). No need to set row_factory here.
+        conn = self._conn_factory()
         try:
             # ---- UPDATE ----
             if hasattr(self, '_update_data') and self._update_data is not None:

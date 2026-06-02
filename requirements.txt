@@ -20,6 +20,12 @@ twilio>=9.0.0
 tzdata>=2025.0
 # Pluggable storage backends (test-connection / bootstrap support)
 asyncpg>=0.29.0
+# pgvector adapter — registers the `vector` type with asyncpg for embedding similarity search
+pgvector>=0.3.0
+# Synchronous Postgres driver — powers the PgPortableConnection (sqlite3-API-compatible
+# translation layer) so the SQLite-dialect backend code runs unchanged on Postgres.
+psycopg[binary]>=3.2.0
+psycopg-pool>=3.2.0
 # Secrets-vault providers (optional; runtime check guards import errors)
 keyring>=24.0.0
 # External data-source connectors (per-agent)

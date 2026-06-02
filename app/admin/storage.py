@@ -295,15 +295,36 @@ async def activate_db(body: ActivateBody):
         set_db_mode("cloud")
         return {"ok": True, "mode": "cloud", "stats": await get_db_stats()}
 
-    # Raw postgres / mysql / cloud SQL: data path not yet implemented
+    # Raw Postgres family (postgres / neon / gcp_cloud_sql): live backend.
+    if cfg.dialect == "postgres":
+        # Resolve the password from the vault and stash it in the process env so
+        # both this activation and cold restarts (which re-read the vault) work.
+        if cfg.password_secret_key:
+            pw = await get_secrets().get(cfg.password_secret_key)
+            if pw:
+                os.environ["WEBAGENT_DB_PASSWORD"] = pw
+        try:
+            from app.db import reset_db_instance, get_db, get_db_stats
+            reset_db_instance()
+            backend = get_db()  # builds PostgresBackend (raises/falls back on failure)
+            if type(backend).__name__ not in ("_PostgresBackend",) and not hasattr(backend, "_pool"):
+                # get_db fell back (bad creds / unreachable) — surface the problem.
+                return JSONResponse(status_code=502, content={
+                    "ok": False,
+                    "error": "Postgres activation failed — check host/credentials and that the server is reachable.",
+                })
+            return {"ok": True, "provider": cfg.provider, "stats": await get_db_stats()}
+        except Exception as e:
+            return JSONResponse(status_code=502, content={"ok": False, "error": str(e)})
+
+    # MySQL / other: not wired as a live backend yet.
     return JSONResponse(
         status_code=501,
         content={
             "ok": False,
             "error": (
                 f"Provider '{cfg.provider}' can be tested and bootstrapped but is not yet "
-                "wired as a live backend. The full data-method port is pending. "
-                "Use Supabase or SQLite for live workloads in the meantime."
+                "wired as a live backend."
             ),
         },
     )

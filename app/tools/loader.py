@@ -376,8 +376,8 @@ class ToolLoader:
             async def _run_optimizer_wrapper(feedback: str = "", skill_name: str = "", criteria: str = ""):
                 """Start an interactive optimizer session. User chats with the Planner agent."""
                 # Safety check: if we're already in an optimizer session, don't create another
-                import sqlite3 as _sq3
-                _dbc = _sq3.connect("app/db/local.db")
+                from app.db import get_db as _get_db
+                _dbc = _get_db()._get_conn()
                 _recent = _dbc.execute(
                     "SELECT metadata FROM sessions WHERE user_id=? AND id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1",
                     (user_id,)
@@ -406,10 +406,11 @@ class ToolLoader:
                     return json.dumps({"status": "error", "message": result.get("message", "Unknown error")})
                 except Exception as e:
                     from app.admin.settings import load_provider_for_user
-                    import uuid, sqlite3, json as jmod
+                    import uuid, json as jmod
+                    from app.db import get_db as _get_db
                     await load_provider_for_user(user_id)
                     opt_sid = f"optimizer-{user_id[:8]}-{str(uuid.uuid4())[:8]}"
-                    db_conn = sqlite3.connect('app/db/local.db')
+                    db_conn = _get_db()._get_conn()
                     db_conn.execute(
                         "INSERT OR IGNORE INTO sessions (id,user_id,title,metadata,created_at,updated_at) VALUES (?,?,?,?,datetime('now'),datetime('now'))",
                         (opt_sid, user_id, f"Optimizer - {opt_sid[:12]}", jmod.dumps({"opt_role": "planner"}))
@@ -1542,7 +1543,7 @@ class ToolLoader:
             _log.warning(f"_WRAPPER CALLED: user_id={user_id}")
             try:
                 # Find latest optimizer session
-                db = sqlite3.connect("app/db/local.db")
+                from app.db import get_db as _gdb; db = _gdb()._get_conn()
                 row = db.execute(
                     "SELECT id FROM sessions WHERE id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1"
                 ).fetchone()
@@ -1571,7 +1572,7 @@ class ToolLoader:
         async def _handoff_to_closer_wrapper(summary: str = "", judging_criteria: str = "",
                                                   baseline_transcript: str = "", worker_results: str = ""):
             import sqlite3, uuid as _uid
-            db = sqlite3.connect("app/db/local.db")
+            from app.db import get_db as _gdb; db = _gdb()._get_conn()
             row = db.execute(
                 "SELECT id FROM sessions WHERE id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1"
             ).fetchone()
@@ -1600,7 +1601,7 @@ class ToolLoader:
 
         async def _deploy_optimization_wrapper(changes_json: str = ""):
             import sqlite3, uuid as _uid
-            db = sqlite3.connect("app/db/local.db")
+            from app.db import get_db as _gdb; db = _gdb()._get_conn()
             row = db.execute(
                 "SELECT id FROM sessions WHERE id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1"
             ).fetchone()

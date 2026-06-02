@@ -120,6 +120,77 @@ def reset_db_instance() -> None:
     _db_instance = None
 
 
+_PG_PROVIDERS = ("postgres", "neon", "gcp_cloud_sql")
+
+
+def _resolve_pg_password(cfg) -> str:
+    """Resolve the Postgres password synchronously: explicit env wins, then the
+    secrets vault (best-effort sync), else empty. get_db() is sync, so we cannot
+    await the async secrets API here — the activate flow stashes the resolved
+    password into WEBAGENT_DB_PASSWORD for cold-start use."""
+    pw = os.environ.get("WEBAGENT_DB_PASSWORD", "")
+    if pw:
+        return pw
+    key = getattr(cfg, "password_secret_key", None)
+    if key:
+        try:
+            import asyncio
+            from app.secrets import get_secrets
+            coro = get_secrets().get(key)
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                resolved = asyncio.run(coro)
+                if resolved:
+                    return resolved
+        except Exception as e:
+            logger.debug("Could not resolve PG password from secrets: %s", e)
+    return pw
+
+
+def active_postgres_conninfo() -> Optional[str]:
+    """If the active backend is a Postgres-family provider, return a libpq
+    conninfo string for it (host/port/db/user/password/ssl). Else None.
+
+    Used by tools that need a direct Postgres connection (e.g. the admin DB
+    viewer) without going through the storage interface."""
+    try:
+        from app.db.connection_config import load_config
+        cfg = load_config()
+    except Exception:
+        return None
+    if getattr(cfg, "provider", "sqlite") not in _PG_PROVIDERS:
+        return None
+    try:
+        from app.db.postgres_backend import make_conninfo
+        return make_conninfo(cfg, _resolve_pg_password(cfg))
+    except Exception as e:
+        logger.debug("Could not build active PG conninfo: %s", e)
+        return None
+
+
+def _maybe_build_postgres():
+    """Return a live PostgresBackend if the saved connection config selects a
+    Postgres-family provider; otherwise None (fall through to mode-based logic)."""
+    try:
+        from app.db.connection_config import load_config
+        cfg = load_config()
+    except Exception as e:
+        logger.debug("Could not load connection config: %s", e)
+        return None
+    if getattr(cfg, "provider", "sqlite") not in _PG_PROVIDERS:
+        return None
+    try:
+        from app.db.postgres_backend import build_postgres_backend
+        password = _resolve_pg_password(cfg)
+        backend = build_postgres_backend(cfg, password=password)
+        logger.info("Initialized PostgresBackend (provider=%s)", cfg.provider)
+        return backend
+    except Exception as e:
+        logger.error("PostgresBackend init failed (%s); falling back to mode-based backend", e)
+        return None
+
+
 def get_db() -> StorageBackend:
     """
     Get the current storage backend instance.
@@ -133,6 +204,14 @@ def get_db() -> StorageBackend:
     global _db_instance, _db_mode
 
     if _db_instance is None:
+        # Postgres-family providers (postgres / neon / gcp_cloud_sql) are selected
+        # via the saved connection config, independent of the cloud/local mode.
+        # This takes precedence so an activated Postgres backend is always used.
+        pg_backend = _maybe_build_postgres()
+        if pg_backend is not None:
+            _db_instance = _maybe_wrap_encryption(pg_backend)
+            return _db_instance
+
         mode = get_mode()
         if mode == "local":
             from app.db.local import LocalBackend

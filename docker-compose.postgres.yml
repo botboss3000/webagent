@@ -1,0 +1,33 @@
+# Local Postgres + pgvector for webAgent development.
+#
+#   docker compose -f docker-compose.postgres.yml up -d
+#
+# Brings up Postgres 16 with the pgvector extension on localhost:5433
+# (5433 avoids clashing with any system Postgres on 5432). Data persists in
+# the named volume `webagent_pgdata`. The `vector` extension is created
+# automatically by the app on first connect.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: webagent-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: webagent
+      POSTGRES_PASSWORD: webagent
+      POSTGRES_DB: webagent
+    ports:
+      - "5433:5432"
+    volumes:
+      - webagent_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U webagent"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  # Reuse the existing named volume created by the initial `docker run`, so data
+  # persists whether the container is managed by compose or run manually.
+  webagent_pgdata:
+    external: true
+    name: webagent_pgdata
