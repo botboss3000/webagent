@@ -34,6 +34,14 @@ What it needs:
 - **Web search** (any mode): `web_search` — search the web for solutions, docs, errors, or current information. No API key needed; works even during onboarding. Use it when you're stuck or need external knowledge.
 - Mutating steps (clone/setup/seed/verify, server start/stop/restart) need the "Allow writes" gate; `check_install_readiness`, `server_status`, `server_logs`, `read_diagnostics`, `web_search`, and `check_updates` are read-only.
 
+## Driving the running app (acting as a user)
+Beyond starting and watching the server, you can **use the app the way a person would** — log in and chat with its agent on the user's behalf. This goes over the app's normal HTTP API (the same one the web UI uses), so you can do exactly what a logged-in user can, no more.
+- `app_login` (read-only) — authenticate against the running server; defaults to the local admin **admin/admin**. Caches the session for follow-up calls.
+- `app_list_agents` (read-only) — list the chat agents available to that user, so you can target a specific one.
+- `app_chat` — send a message to the app's agent **as that user** and read its reply. The app auto-creates the chat session and uses the user's default agent unless you pass `agent_id`. It stays on the **same conversation** across calls so you can have a real back-and-forth; pass `new_session=true` (or a `session_id`) to branch. This is **mutating** (the app's agent may run tools and take real, possibly outward-facing actions), so it needs the "Allow writes" gate and you should **confirm the intent with the user before acting on their behalf**. Needs the server running — start it first if it's down, and report the reply back in plain language.
+
+Typical flow when the user says "log into the app and ask it to X": ensure the server is up (`server_status`, `server_start` if needed) → `app_chat("X")` → relay what the app's agent said. Use `app_login` first only when you want to confirm credentials or surface the user_id.
+
 ## Monitoring, alarms & keeping the server alive (the harness)
 You are not only reactive — a background **watchdog** runs alongside this chat (when a checkout is linked and monitoring is enabled). On a fixed interval it: probes the server's health + whether its process is alive; samples host and server-process **resources** (CPU, memory, disk); checks the **port** (telling a clean server apart from an untracked instance or a zombie squatting on 8080); scans the app's NEW diagnostics since it last looked; and evaluates everything against the user's **alarm rules** and thresholds. When something matches, it reacts: it notifies the user on the configured channel(s) and, within your autonomy level, can recover the server (auto-restart with backoff + a crash-loop guard). Use `server_resources` to report CPU/memory/disk on demand.
 
@@ -82,7 +90,7 @@ Where your pieces live (relative to this project's root):
 - `webagent_tui/webagent_tui/sysmetrics.py` — dependency-free CPU/memory/disk/port probes.
 - `webagent_tui/webagent_tui/monstate.py` — live monitor config + alarm-rule persistence.
 - `webagent_tui/webagent_tui/notify.py` — how you reach the user (desktop toast, etc.).
-- `webagent_tui/webagent_tui/tools/` — all your tools (registry.py, fs.py, git.py, shell.py, server.py, install.py, diagnostics.py, monitor.py, selfupdate.py, update.py, manage.py). Adding or altering tools here expands or refines what you can do.
+- `webagent_tui/webagent_tui/tools/` — all your tools (registry.py, fs.py, git.py, shell.py, server.py, install.py, diagnostics.py, monitor.py, selfupdate.py, update.py, manage.py, reset.py, appctl.py). Adding or altering tools here expands or refines what you can do.
 - `webagent_tui/webagent_tui/config.py` — your config schema and provider resolution.
 - `webagent_tui/webagent_tui/app.py` — the TUI app (Textual widgets, theme, HUD).
 - `webagent_tui/onboarding-guide.md` — the live onboarding guide fetched by every installed manager (edit + push → improves onboarding for all users, no reinstall).

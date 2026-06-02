@@ -15,12 +15,14 @@ from __future__ import annotations
 
 from ..resources import load_tool_overrides
 from . import (
+    appctl,
     diagnostics,
     fs,
     git,
     install,
     manage,
     monitor,
+    reset,
     selfupdate,
     server,
     shell,
@@ -133,11 +135,65 @@ def _base_specs() -> list[ToolSpec]:
             "type": "object",
             "properties": {"lines": {**_INT, "default": 40}},
         }, server.server_logs),
+        ToolSpec("reset_app", (
+            "Reset the linked webAgent install to a clean state (like reset_webagent.bat). "
+            "ALWAYS wipes the userbase: the local SQLite DB (+ its -journal/-wal/-shm/"
+            ".preprompt-bak sidecars and any stray root local.db) and the per-user generated "
+            "pages in visuals/users/. Opt-in extras: clear_secrets (AI keys, OAuth tokens, "
+            "integration creds, scheduler/db-mode config), clear_users (local accounts + "
+            "remember-me tokens), delete_env (.env), delete_agents (the agent template JSONs — "
+            "NO fallback: next start has zero agents). Backs up everything it removes to "
+            "temp/reset-backup-<timestamp>/ unless backup=false. Stops the server first. The "
+            "DB, default admin/admin user, and agents are recreated on next start (if the agent "
+            "JSONs were kept). Mutating — confirm with the user before running."), {
+            "type": "object",
+            "properties": {
+                "backup": {"type": "boolean", "default": True},
+                "clear_secrets": {"type": "boolean", "default": False},
+                "clear_users": {"type": "boolean", "default": False},
+                "delete_env": {"type": "boolean", "default": False},
+                "delete_agents": {"type": "boolean", "default": False},
+            },
+        }, reset.reset_app, mutating=True),
         ToolSpec("check_updates", (
             "Check whether the linked checkout is behind the public repo "
             "(read-only). Offer to pull if so."), {
             "type": "object", "properties": {},
         }, update.check_updates),
+        # ── Drive the running app as a user (the same API the web UI uses) ──
+        ToolSpec("app_login", (
+            "Log into the RUNNING webAgent app over its HTTP API and cache the "
+            "session. Defaults to the local admin (admin/admin). Read-only side "
+            "effect (just authentication). Use before app_chat if you want to "
+            "confirm credentials first; app_chat also logs in on its own."), {
+            "type": "object",
+            "properties": {"username": {**_STR, "default": "admin"},
+                           "password": {**_STR, "default": "admin"}},
+        }, appctl.app_login, needs_project=False),
+        ToolSpec("app_list_agents", (
+            "List the chat agents available to the logged-in app user (id + name) "
+            "so you can target one with app_chat(agent_id=...). Read-only."), {
+            "type": "object",
+            "properties": {"username": {**_STR, "default": "admin"},
+                           "password": {**_STR, "default": "admin"}},
+        }, appctl.app_list_agents, needs_project=False),
+        ToolSpec("app_chat", (
+            "Talk to the RUNNING app's agent AS the logged-in user (default "
+            "admin/admin) and return its reply — i.e. start/continue a chat session "
+            "and act on the user's behalf. The app auto-creates the session and uses "
+            "the user's default agent unless you pass agent_id. Stays on the same "
+            "conversation across calls unless you pass a session_id or new_session=true. "
+            "Mutating: the app's agent may run tools and take real actions, so confirm "
+            "intent with the user first. Needs the server running."), {
+            "type": "object",
+            "properties": {"message": _STR,
+                           "session_id": {**_STR, "default": ""},
+                           "agent_id": {**_STR, "default": ""},
+                           "new_session": {"type": "boolean", "default": False},
+                           "username": {**_STR, "default": "admin"},
+                           "password": {**_STR, "default": "admin"}},
+            "required": ["message"],
+        }, appctl.app_chat, mutating=True, needs_project=False),
         ToolSpec("read_diagnostics", (
             "Read the webAgent app's diagnostics — its flight-recorder of "
             "warnings/errors (with tracebacks), agent-loop problems, run outcomes "

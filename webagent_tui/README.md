@@ -33,6 +33,18 @@ errors, docs, solutions, and current information.
 - **Server (local)** — `server_status`, `server_start`, `server_stop`,
   `server_restart`, `server_logs`. Runs `run.py` from the checkout's venv as a
   detached process on port 8080; PID + log live in the manager's data dir.
+- **Reset** — `reset_app` wipes the linked install back to a clean state (the
+  in-app `reset_webagent.bat`): always the **userbase** (local SQLite DB + its
+  sidecars and `visuals/users/`), and opt-in the app's **secrets**, **local
+  logins**, **`.env`**, and **agent template JSONs**. Stops the server first and
+  **backs up** everything to `temp/reset-backup-<timestamp>/` unless told not to.
+  The DB, the default `admin/admin` user, and the agents regenerate on next start.
+- **Drive the app (as a user)** — `app_login`, `app_list_agents`, `app_chat`. Log
+  into the **running** server over its HTTP API (default `admin`/`admin`) and chat
+  with the app's own agent **on the user's behalf** — start/continue a session, target
+  a specific agent, read its replies. Same API the web UI uses (no direct DB access),
+  so it can do exactly what a logged-in user can. `app_chat` is write-gated (the app's
+  agent takes real actions) and keeps the conversation across calls.
 - **Updates** — `check_updates` (compare the checkout to the public repo).
 - **Diagnose** — `read_diagnostics` reads the app's flight-recorder (warnings /
   errors with tracebacks, agent-loop problems, tool errors) straight from the
@@ -303,7 +315,7 @@ conversation. The panel appears only while a category is open.
 | Header item | Action |
 |-------------|--------|
 | **mode** (far left) — a **one-word** write-gate (`read` / `write` / `auto`) | **Click to cycle** read → write → auto (colour signals the mode). Same gate as the App panel's Read/Write/Auto. |
-| **Admin** | opens `[Commands]` (command reference) · `[Update]` · `[Install]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` |
+| **Admin** | opens `[Commands]` (command reference) · `[Update]` · `[Install]` · `[Reset]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` |
 | **Scene** | the theme & animation controls (theme · animation style · palette · speed · intensity · FPS · banner on/off) — each applies **live** |
 | **App** | the **AI provider** block — a **Provider** dropdown (OpenRouter / OpenAI / DeepSeek / Groq / Together / Mistral / xAI / Custom) that fills the **Base URL** + **Model** to match, an **AI key** field, and `[Save]` / `[Clear]` pills; plus the write-gate `[Read-only]` / `[Write]` / `[Autonomous]` (current one highlighted) and `[Open Browser]` (opens `http://localhost:8080/index.html`) |
 | **server status** (the last item — shows `live` / `stopped`, **not** the word "Server"; managed mode; spins a `-\|/` with `starting` while it loads) | `[Start]` · `[Restart]` · `[Kill]` |
@@ -319,12 +331,13 @@ the header.
 | `[Commands]` | Print a user reference to the transcript — on-screen controls, keyboard shortcuts, plain-language things to ask the agent, and the terminal commands for install / launch / proot-Python / uninstall (tailored to Termux vs desktop) |
 | `[Update]` | Update the manager/repo — opens an info + confirm screen, then backs up, pulls (source) or rebuilds the exe (frozen), and restarts |
 | `[Install]` | Run the guided install (onboarding mode); in managed mode it points you at `[Update]` instead |
+| `[Reset]` | Reset the install to a clean state — opens an info + confirm screen, then stops the server, **backs up** to `temp/reset-backup-<timestamp>/`, and wipes the userbase (DB + generated pages), app secrets, and local logins (keeps `.env` + agent templates so the app reboots clean). For a deeper/lighter wipe, ask the agent to run `reset_app` with the flags you want |
 | `[Uninstall]` | Remove webAgent from the device (Termux) — opens an info + confirm screen listing exactly what's deleted (launcher, shortcut, repo, data, package), then removes it and closes |
 | `[Diagnostics]` | Show the app's recorded warnings/errors — reads the local DB, so it works even when the server is down |
 | `[Logs]` | Show the captured server log in the transcript |
 
-Install, Update and Uninstall each open a **warning + Yes/No confirmation** first;
-Uninstall is irreversible.
+Install, Update, Reset and Uninstall each open a **warning + Yes/No confirmation**
+first; Uninstall is irreversible, and Reset is reversible only via its backup.
 
 ### Setting the AI key / provider (App panel)
 
