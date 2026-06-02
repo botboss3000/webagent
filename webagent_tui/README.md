@@ -34,11 +34,16 @@ errors, docs, solutions, and current information.
   `server_restart`, `server_logs`. Runs `run.py` from the checkout's venv as a
   detached process on port 8080; PID + log live in the manager's data dir.
 - **Reset** — `reset_app` wipes the linked install back to a clean state (the
-  in-app `reset_webagent.bat`): always the **userbase** (local SQLite DB + its
-  sidecars and `visuals/users/`), and opt-in the app's **secrets**, **local
-  logins**, **`.env`**, and **agent template JSONs**. Stops the server first and
-  **backs up** everything to `temp/reset-backup-<timestamp>/` unless told not to.
-  The DB, the default `admin/admin` user, and the agents regenerate on next start.
+  in-app `reset_webagent.bat`): always the **userbase** (the **active database
+  backend** + `visuals/users/`), and opt-in the app's **secrets**, **local
+  logins**, **`.env`**, and **agent template JSONs**. **Backend-aware** via
+  `app/db_connection.json`: if **Postgres** (`postgres`/`neon`/`gcp_cloud_sql`)
+  is active, it connects through the checkout's venv and **drops + recreates the
+  schema** (irreversible — **not** backed up — and the stray SQLite files are left
+  alone); if **SQLite** is active, it removes `local.db` + its sidecars (backed up).
+  Stops the server first and **backs up** the files it removes to
+  `temp/reset-backup-<timestamp>/` unless told not to. The DB, the default
+  `admin/admin` user, and the agents regenerate on next start.
 - **Drive & observe the app (as a user)** — log into the **running** server over its
   HTTP + **WebSocket** API (default `admin`/`admin`) and hold a **live, shared
   conversation** with the app's own agent — the same stream the browser sees. Browse
@@ -340,15 +345,16 @@ the header.
 | `[Commands]` | Print a user reference to the transcript — on-screen controls, keyboard shortcuts, plain-language things to ask the agent, and the terminal commands for install / launch / proot-Python / uninstall (tailored to Termux vs desktop) |
 | `[Update]` | Update the manager/repo — backs up, pulls (source) or rebuilds the exe (frozen), and restarts |
 | `[Install]` | Run the guided install (onboarding mode); in managed mode it points you at `[Update]` instead |
-| `[Reset]` | Reset the install to a clean state — stops the server, **backs up** to `temp/reset-backup-<timestamp>/`, and wipes the userbase (DB + generated pages), app secrets, and local logins (keeps `.env` + agent templates so the app reboots clean). For a deeper/lighter wipe, ask the agent to run `reset_app` with the flags you want |
+| `[Reset]` | Reset the install to a clean state — stops the server and wipes the userbase (active database backend + generated pages), app secrets, and local logins (keeps `.env` + agent templates so the app reboots clean). **Backend-aware:** an active **Postgres** DB has its schema dropped & recreated (irreversible — not backed up); an active **SQLite** DB and the other files are **backed up** to `temp/reset-backup-<timestamp>/` first. For a deeper/lighter wipe, ask the agent to run `reset_app` with the flags you want |
 | `[Uninstall]` | Remove webAgent from the device (Termux) — lists exactly what's deleted (launcher, shortcut, repo, data, package), then removes it and closes |
 | `[Diagnostics]` | Show the app's recorded warnings/errors — reads the local DB, so it works even when the server is down |
 | `[Logs]` | Show the captured server log in the transcript |
 
 Install, Update, Reset and Uninstall each open a **confirmation right inside the
 sidebar** (the panel switches from its buttons to an info + `[…]` / `[Cancel]` view —
-no pop-up modal); Esc or Cancel returns to the buttons. Uninstall is irreversible, and
-Reset is reversible only via its backup.
+no pop-up modal); Esc or Cancel returns to the buttons. Uninstall is irreversible.
+Reset of a **SQLite** install is reversible via its backup; Reset of a **Postgres**
+install drops the schema and is **not** reversible.
 
 ### Driving the running app (the two mutes)
 
