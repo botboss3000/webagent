@@ -38,9 +38,20 @@ Screen {
 /* Animated logo banner (vendored from the launcher) — fixed height above the log. */
 #anim { height: 7; width: 100%; }
 
-/* Session HUD (tokens + context gauge) + loop-reactive walker, above the input. */
+/* Session HUD (tokens + context gauge), above the action bar. */
 #hud { height: 1; width: 100%; background: $panel; color: $dim; padding: 0 2; }
-#walker { height: 1; width: 100%; padding: 0 2; }
+
+/* Action bar above the prompt: activity spinner on the left, Stop / Continue pills
+ * on the far right (Continue rightmost). Pill buttons are big tap targets for phones. */
+#actionbar { layout: horizontal; height: 3; width: 100%; padding: 0 1; }
+#actionbar #spinner { width: 1fr; height: 3; content-align: left middle; padding: 0 1; }
+#actionbar .act-btn {
+    width: auto; height: 3; margin: 0 0 0 1; padding: 0 2;
+    border: round $border-dim; background: $boost; color: $bar-accent;
+    content-align: center middle;
+}
+#actionbar .act-btn:hover { background: $primary; color: $background; border: round $primary; }
+#actionbar .act-btn.disabled { color: $dim; background: $bar-bg; border: round $border-dim; }
 
 /* Onboarding call-to-action — the tappable "get started" button (hidden once a
  * checkout is linked). Theme variables only, so it stays legible in every theme. */

@@ -44,6 +44,12 @@ the default local/offline mode needs no external service.
 - Recommended install location: Windows `C:\\webagent`, macOS/Linux `~/webagent`, Android/Termux `~/webagent`.
 - **Android/Termux caveat:** the headless browser cannot run there, so browser-driven features are \
 unavailable; the server itself still runs.
+- **Android/Termux Python:** Termux's native `python` is usually too new (3.13+) for the 3.11–3.12 \
+pin. The proven fix is an **Ubuntu proot environment** (`pkg install proot-distro` → `proot-distro \
+install ubuntu` → `proot-distro login ubuntu`, then `apt install python3.11 python3.11-venv git` \
+inside it) and doing the clone/venv/run there — that's where 3.11/3.12 lives. The repo's \
+`start_agent.sh` launches webAgent this way (via proot-distro into Ubuntu). The live onboarding \
+guide has the full steps.
 - Public reference repo: github.com/botboss3000/webagent (public).
 
 ## How you operate

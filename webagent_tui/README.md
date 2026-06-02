@@ -218,7 +218,7 @@ open, and the open category's pill is highlighted.
 
 | Header item | Opens a right panel with |
 |-------------|--------------------------|
-| **Admin** | `[Update]` · `[Install]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` |
+| **Admin** | `[Commands]` (command reference) · `[Update]` · `[Install]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` |
 | **Scene** | the theme & animation controls (theme · animation style · palette · speed · intensity · FPS · banner on/off) — each applies **live** |
 | **App** | the **AI provider** block — a **Provider** dropdown (OpenRouter / OpenAI / DeepSeek / Groq / Together / Mistral / xAI / Custom) that fills the **Base URL** + **Model** to match, an **AI key** field, and `[Save]` / `[Clear]` pills; plus the write-gate `[Read-only]` / `[Write]` / `[Autonomous]` (current one highlighted) and `[Open Browser]` (opens `http://localhost:8080/index.html`) |
 | **server status** (the last item — shows `live` / `stopped` / `checking`, **not** the word "Server"; managed mode) | `[Start]` · `[Restart]` · `[Kill]` |
@@ -231,6 +231,7 @@ the header.
 
 | Button | Action |
 |--------|--------|
+| `[Commands]` | Print a user reference to the transcript — on-screen controls, keyboard shortcuts, plain-language things to ask the agent, and the terminal commands for install / launch / proot-Python / uninstall (tailored to Termux vs desktop) |
 | `[Update]` | Update the manager/repo — opens an info + confirm screen, then backs up, pulls (source) or rebuilds the exe (frozen), and restarts |
 | `[Install]` | Run the guided install (onboarding mode); in managed mode it points you at `[Update]` instead |
 | `[Uninstall]` | Remove webAgent from the device (Termux) — opens an info + confirm screen listing exactly what's deleted (launcher, shortcut, repo, data, package), then removes it and closes |
@@ -266,14 +267,21 @@ to a few short words (Admin · Scene · App · status), it fits a narrow termina
 ### Look & feel (vendored from the launcher)
 
 - **Animated logo banner** — plasma / flow-field / rings / noise (or a static
-  "off") behind the "webagent" ASCII logo, above the transcript. Coloured from
-  the active theme (or a chosen palette). Stops animating when off or when the
-  window loses focus (≈0% CPU).
+  "off") behind the "webagent" ASCII logo. Shown on the welcome screen, it
+  **collapses once the conversation starts** so the transcript uses the full height
+  (it doesn't stay pinned on top). Coloured from the active theme (or a chosen
+  palette); stops animating when off or when the window loses focus (≈0% CPU).
 - **Scene panel** — the theme, animation style, palette (match-theme or a preset),
   speed, intensity, FPS, and the banner on/off, opened from the header's **Scene**
   button. Every choice applies **live** and persists.
-- **Walker** — a tiny ascii guy above the input reacts to the agent loop: walks
-  while thinking, works during a tool, cheers on a reply, trips on an error.
+- **Activity spinner** — a small `-/|\` spinner above the input spins whenever the
+  agent is busy (thinking or running a tool), so it's clear the app isn't frozen;
+  it's blank at rest.
+- **Stop / Continue** — pill buttons on the right of the action bar (above the input):
+  **Stop** cancels the running turn (enabled only while busy); **Continue** asks the
+  agent to pick up where it left off (enabled only when idle).
+- **Messages** — your messages render in a filled, bordered **bubble** (distinct
+  background); the agent's replies are plain text. No user/agent emoji prefixes.
 - **Session HUD** — tokens in/out this session and a context-window gauge
   (green → amber → red) when the model's window is known.
 

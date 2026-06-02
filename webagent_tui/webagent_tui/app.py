@@ -17,6 +17,8 @@ import json
 import webbrowser
 from pathlib import Path
 
+from rich import box
+from rich.panel import Panel
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -58,68 +60,44 @@ class PromptInput(Input):
     BINDINGS = [Binding("ctrl+a", "select_all", "Select all", show=False)]
 
 
-class WalkerBar(Widget):
-    """A one-row strip where a tiny ascii guy reacts to the agent loop:
-    idle (blank) · walk (thinking) · work (tool running) · cheer (reply) ·
-    trip (error). Animates only while active, so it costs nothing at rest.
-    Colours come from the app's live theme (``app.cc``)."""
+class SpinnerBar(Widget):
+    """A one-row activity spinner (``-`` ``/`` ``|`` ``\\``) shown whenever the agent
+    is busy, so the user can see it isn't frozen. Blank at rest, and the timer is
+    paused when idle so it costs ~0% CPU. Colour comes from the live theme."""
 
-    DEFAULT_CSS = "WalkerBar { height: 1; width: 100%; padding: 0 2; }"
+    FRAMES = "-\\|/"
 
     def __init__(self, id: str | None = None) -> None:
         super().__init__(id=id)
-        self._state = "idle"
-        self._pos = 0
+        self._active = False
         self._frame = 0
         self._timer = None
 
     def on_mount(self) -> None:
-        self._timer = self.set_interval(0.12, self._tick, pause=True)  # ~8 fps, paused at rest
+        self._timer = self.set_interval(0.1, self._tick, pause=True)  # ~10 fps, paused at rest
 
-    def set_state(self, state: str) -> None:
-        if state == self._state:
+    def set_active(self, on: bool) -> None:
+        if on == self._active:
             return
-        self._state = state
+        self._active = on
         self._frame = 0
         if self._timer is not None:
-            self._timer.pause() if state == "idle" else self._timer.resume()
+            self._timer.resume() if on else self._timer.pause()
         self.refresh()
 
     def _tick(self) -> None:
         self._frame += 1
-        if self._state == "walk":
-            self._pos += 1
         self.refresh()
 
     def render(self) -> Text:
-        w = max(6, self.size.width)
-        if self._state == "idle":
-            return Text(" " * w)
+        if not self._active:
+            return Text("")
         cc = getattr(self.app, "cc", {})
-        green = cc.get("success", "#7be06a")
-        amber = cc.get("tool", "#ff9d2f")
-        red = cc.get("error", "#ff5f56")
-        if self._state == "walk":
-            sprite = "🚶" if EMOJI else ("o/" if self._frame % 2 == 0 else "o\\")
-            color = green
-        elif self._state == "work":
-            sprite = "🔧" if EMOJI else "o" + "|/-\\"[self._frame % 4]
-            color = amber
-        elif self._state == "cheer":
-            sprite = "🙌" if EMOJI else "\\o/"
-            color = green
-        else:  # trip
-            sprite = "💥" if EMOJI else "x_"
-            color = red
-        pos = self._pos % max(1, w - 3)
-        line = Text(no_wrap=True, overflow="crop")
-        if pos:
-            line.append(" " * pos)
-        line.append(sprite, style=f"bold {color}")
-        tail = w - pos - len(sprite)
-        if tail > 0:
-            line.append(" " * tail)
-        return line
+        t = Text(no_wrap=True, overflow="crop")
+        t.append(self.FRAMES[self._frame % len(self.FRAMES)],
+                 style=f"bold {cc.get('accent', '#46d4ff')}")
+        t.append(" working…", style=cc.get("dim", "#56657a"))
+        return t
 
 
 def _scene_rows(app) -> list[tuple[str, "Select"]]:
@@ -225,9 +203,12 @@ class ServerManagerApp(App):
         self._server_state = "n/a"   # cached server health for the status-bar dot
         self._do_autostart = True    # auto-start the managed server on open (tests disable)
         self._dot = None             # the server-status widget, updated in place by the poll
-        self._anim = None            # the animated logo banner
+        self._anim = None            # the animated logo banner (collapses once chat starts)
         self._anim_on = self.cfg.anim_enabled
-        self._walker = None          # the loop-reactive ascii walker (above the input)
+        self._spinner = None         # activity spinner (above the input), spins while busy
+        self._stop_btn = None        # action-bar [Stop] pill
+        self._cont_btn = None        # action-bar [Continue] pill
+        self._busy = False           # an agent turn is currently running
         self._s_in = 0               # session token accumulators (HUD)
         self._s_out = 0
         self._ctx_tokens = 0         # latest prompt size = current context usage
@@ -266,8 +247,13 @@ class ServerManagerApp(App):
                 yield self._anim                   # animated logo banner
                 yield RichLog(id="log", wrap=True, markup=True, highlight=False)
                 yield Static("", id="hud")         # session HUD (tokens / context gauge)
-                self._walker = WalkerBar(id="walker")
-                yield self._walker                 # loop-reactive ascii walker
+                # Action bar: activity spinner (left) + Stop / Continue pills (far right).
+                self._spinner = SpinnerBar(id="spinner")
+                self._stop_btn = Static("Stop", classes="act-btn disabled", markup=False)
+                self._stop_btn._btn_action = "stop"          # type: ignore[attr-defined]
+                self._cont_btn = Static("Continue", classes="act-btn", markup=False)
+                self._cont_btn._btn_action = "continue"      # type: ignore[attr-defined]
+                yield Horizontal(self._spinner, self._stop_btn, self._cont_btn, id="actionbar")
                 cta = Static(self._cta_label(), id="cta", markup=False)
                 cta.display = self.project_root is None   # onboarding-only call-to-action
                 yield cta
@@ -579,6 +565,13 @@ class ServerManagerApp(App):
     def _on_kbd_click(self, event: Click) -> None:
         self.action_open_keyboard()
 
+    @on(Click, ".act-btn")
+    def _on_act_click(self, event: Click) -> None:
+        action = getattr(event.widget, "_btn_action", None)
+        fn = getattr(self, f"action_{action}", None) if action else None
+        if fn is not None:
+            fn()
+
     # ── onboarding call-to-action (the tappable "get started" button) ──────
     def _cta_label(self) -> str:
         return "🚀  Click here to get started" if EMOJI else "»  Click here to get started"
@@ -618,7 +611,7 @@ class ServerManagerApp(App):
             "running, set up the home-screen shortcut and tell me how to add it. Keep me posted "
             "in plain language at each step."
         )
-        self._log(f"\n[b {self.cc['secondary']}]{G.USER} ›[/] Click here to get started")
+        self._log_user("Click here to get started")
         self._run_turn(kickoff)
 
     # ── direct (button / auto) server control — explicit intent, not gated ──
@@ -800,9 +793,9 @@ class ServerManagerApp(App):
             out.append(self._panel_btn("[Open Browser]", "open_browser"))
             return out
         specs = {
-            "admin": [("[Update]", "admin_update"), ("[Install]", "install"),
-                      ("[Uninstall]", "admin_uninstall"), ("[Diagnostics]", "diagnostics"),
-                      ("[Logs]", "server_logs")],
+            "admin": [("[Commands]", "help"), ("[Update]", "admin_update"),
+                      ("[Install]", "install"), ("[Uninstall]", "admin_uninstall"),
+                      ("[Diagnostics]", "diagnostics"), ("[Logs]", "server_logs")],
             "server": [("[Start]", "server_start"), ("[Restart]", "server_restart"),
                        ("[Kill]", "server_stop")],
         }.get(kind, [])
@@ -1032,6 +1025,71 @@ class ServerManagerApp(App):
         msg = await diag.read_diagnostics(self._server_ctx(), limit=20)
         self._log_block(msg)
 
+    # ── admin panel: Commands (a user-facing reference, printed to the transcript) ──
+    def action_help(self) -> None:
+        """Print a reference of the controls, keyboard shortcuts, things to ask the
+        agent, and the terminal commands for install / launch / uninstall."""
+        c = self.cc
+        self._close_panel()
+
+        def head(t: str) -> None:
+            self._log(f"\n[b {c['accent']}]{t}[/]")
+
+        def line(label: str, what: str) -> None:
+            self._log(f"  [{c['secondary']}]{label}[/]  [{c['dim']}]{what}[/]")
+
+        self._log(f"\n[b {c['primary']}]{G.ADMIN} webAgent — command reference[/]")
+
+        head("On-screen controls")
+        line("Admin", "Commands · Update · Install · Uninstall · Diagnostics · Logs")
+        line("Scene", "theme, animation, palette, speed, banner on/off")
+        line("App", "AI provider + key (Save/Clear), Read/Write/Auto, Open Browser")
+        line("status pill", "click the live/stopped status → Start · Restart · Kill")
+        line("Stop / Continue", "above the input — cancel a turn / resume it")
+        line("click a pill", "opens its menu; click outside or Esc to close it")
+
+        head("Keyboard")
+        line("Enter", "send your message")
+        line("Esc", "open the side menu (or close it)")
+        line("Ctrl+Q", "quit the manager")
+        line("Ctrl+T", "cycle theme")
+        line("Ctrl+A / C / V / X", "select-all / copy / paste / cut (input field)")
+        line("Shift+drag", "select transcript text with your terminal's native copy")
+        if self.facts.is_termux:
+            line("Vol-Up then K", "toggle the Android keyboard (or Termux drawer ▸ KEYBOARD)")
+
+        head("Ask the agent (plain language)")
+        for ask in ("install webAgent  /  link <folder>",
+                    "check the server status  /  is it running?",
+                    "diagnose the problem  /  show the logs",
+                    "start / stop / restart the server",
+                    "update yourself   (the manager pulls/rebuilds + restarts)",
+                    "commit and push my changes",
+                    "edit <file> / run <command>  (needs Write or Auto mode)"):
+            self._log(f"  [{c['dim']}]{G.BULLET} {ask}[/]")
+
+        head("Terminal commands")
+        termux = [
+            "# Install on Android/Termux (one line):",
+            "pkg install -y curl && curl -fsSL https://webagent.live/termux | bash",
+            "# Launch afterwards:",
+            "webagent",
+            "# Need Python 3.11/3.12 on Termux? use an Ubuntu proot:",
+            "pkg install -y proot-distro && proot-distro install ubuntu",
+            "proot-distro login ubuntu   # then: apt install python3.11 python3.11-venv git",
+            "# Uninstall (Termux):",
+            'rm -f "$PREFIX/bin/webagent" "$HOME/.shortcuts/webagent.sh"',
+            "rm -rf ~/webagent ~/.local/share/webagent-tui",
+            "pip uninstall -y webagent-tui",
+        ]
+        desktop = [
+            "# Desktop: run from source / the packaged app:",
+            "run.bat            (Windows, from the webagent_tui folder)",
+            "webagent-tui.exe   (frozen build)",
+        ]
+        self._log_block("\n".join((termux if self.facts.is_termux else desktop)
+                                  + ["", "Web UI when the server runs: http://localhost:8080/index.html"]))
+
     # ── admin panel: Update / Uninstall (each with an info + confirm screen) ──
     def _update_info(self) -> str:
         si = self._self_info
@@ -1194,37 +1252,71 @@ class ServerManagerApp(App):
             self._log(f"[{self.cc['tool']}]{G.WARN} No AI key configured.[/] "
                       "Set LLM_API_KEY (the app key), or link a repo that has one.")
             return
-        self._log(f"\n[b {self.cc['secondary']}]{G.USER} ›[/] {text}")
+        self._log_user(text)
         self._run_turn(text)
 
-    def _walk(self, state: str) -> None:
-        if self._walker is not None:
-            self._walker.set_state(state)
-
-    def _rest_walker_soon(self) -> None:
-        """Let the final pose (cheer/trip) linger briefly, then go idle."""
-        def _rest() -> None:
-            if self._walker is not None:
-                self._walker.set_state("idle")
+    # ── activity spinner + Stop / Continue ─────────────────────────────────
+    def _set_busy(self, busy: bool) -> None:
+        """Reflect agent activity: spin the spinner and flip which of Stop/Continue
+        is enabled (Stop while busy, Continue while idle)."""
+        self._busy = busy
+        if self._spinner is not None:
+            self._spinner.set_active(busy)
         try:
-            self.set_timer(0.9, _rest)
+            self._stop_btn.set_class(not busy, "disabled")
+            self._cont_btn.set_class(busy, "disabled")
         except Exception:
-            _rest()
+            pass
+
+    def _dismiss_banner(self) -> None:
+        """Collapse the logo banner once the session has activity, so it doesn't sit
+        pinned above the transcript — the chat then uses the full height."""
+        if self._anim is not None and self._anim.display:
+            self._anim.display = False
+            self._anim.set_idle(True)
+
+    def action_stop(self) -> None:
+        if not self._busy:
+            return
+        self.workers.cancel_group(self, "agent")
+        self._log(f"[{self.cc['dim']}]{G.BULLET} stopped[/]")
+        self._set_busy(False)
+
+    def action_continue(self) -> None:
+        if self._busy:
+            return
+        if not self.provider.configured:
+            self._log(f"[{self.cc['tool']}]{G.WARN} No AI key configured.[/] "
+                      "Open the App panel and set a provider + key.")
+            return
+        self._log_user("Continue.")
+        self._run_turn("Please continue from where you left off.")
+
+    def _log_user(self, text: str) -> None:
+        """Render a user message as a filled, bordered bubble (distinct background,
+        no emoji) so it reads differently from the agent's plain replies."""
+        c = self.cc
+        try:
+            log = self.query_one("#log", RichLog)
+        except Exception:
+            return
+        log.write(Panel(Text(text, style=c["fg"]), box=box.ROUNDED,
+                        border_style=c["dim"], style=f"on {c['panel']}",
+                        expand=True, padding=(0, 1)))
 
     @work(exclusive=True, group="agent")
     async def _run_turn(self, text: str) -> None:
         assert self.agent is not None
         c = self.cc
-        self._walk("walk")
+        self._dismiss_banner()
+        self._set_busy(True)
 
         async def on_event(ev: AgentEvent) -> None:
             if ev.kind == "assistant" and ev.text:
-                self._log(f"[{c['fg']}]{G.BOT} {ev.text}[/]")
-                self._walk("walk")
+                self._log(f"[{c['fg']}]{ev.text}[/]")
             elif ev.kind == "tool_call":
                 args = json.dumps(ev.args or {}, ensure_ascii=False)
                 self._log(f"[{c['tool']}]{G.TOOL} {ev.tool}[/] [{c['dim']}]{args[:160]}[/]")
-                self._walk("work")
             elif ev.kind == "tool_result":
                 snippet = ev.text.strip().splitlines()
                 head = snippet[0] if snippet else ""
@@ -1232,9 +1324,6 @@ class ServerManagerApp(App):
                 extra = f" (+{len(snippet) - 1} lines)" if len(snippet) > 1 else ""
                 mark = G.OK if ok else G.WARN
                 self._log(f"[{c['dim']}]{mark} {head[:200]}{extra}[/]")
-                self._walk("walk")
-            elif ev.kind == "final":
-                self._walk("cheer")
             elif ev.kind == "usage":
                 u = ev.args or {}
                 pin, pout = int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
@@ -1246,7 +1335,6 @@ class ServerManagerApp(App):
                 self._update_hud()
             elif ev.kind == "error":
                 self._log(f"[{c['error']}]{G.ERR} {ev.text}[/]")
-                self._walk("trip")
             elif ev.kind == "status":
                 self._log(f"[{c['dim']}]{ev.text}[/]")
 
@@ -1255,9 +1343,8 @@ class ServerManagerApp(App):
             await self.agent.run_turn(self.session_id, text, on_event, situation=situation)
         except Exception as e:  # surface, never crash the UI
             self._log(f"[{c['error']}]{G.ERR} agent error: {type(e).__name__}: {e}[/]")
-            self._walk("trip")
         finally:
-            self._rest_walker_soon()
+            self._set_busy(False)
 
     async def on_unmount(self) -> None:
         await self.llm.aclose()
