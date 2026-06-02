@@ -69,6 +69,43 @@ def _venv_python(project_root: Path) -> Optional[Path]:
     return cand if cand.exists() else None
 
 
+def _is_termux() -> bool:
+    """Detect whether we're running inside Termux (Android)."""
+    return bool(os.environ.get("TERMUX_VERSION")) or os.path.exists("/data/data/com.termux")
+
+
+def _proot_distro() -> Optional[str]:
+    """Return the proot-distro name to use, or None if not available."""
+    for d in ("ubuntu",):
+        if os.path.exists(f"/data/data/com.termux/files/usr/var/lib/proot-distro/containers/{d}"):
+            return d
+    return None
+
+
+def _spawn_detached_proot(project_root: Path, log_path: Path) -> int:
+    """Launch the server inside a proot-distro container (Android/Termux)."""
+    distro = _proot_distro()
+    if distro is None:
+        raise RuntimeError("No proot-distro container found (expected 'ubuntu').")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logf = open(log_path, "ab")
+    proot_bin = "/data/data/com.termux/files/usr/bin/proot-distro"
+    args = [
+        proot_bin, "login", distro,
+        "--", "bash", "-c",
+        f"cd '{project_root}' && source .venv/bin/activate && exec python run.py"
+    ]
+    try:
+        proc = subprocess.Popen(
+            args,
+            stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    finally:
+        logf.close()
+    return proc.pid
+
+
 def _pid_alive(pid: int) -> bool:
     if _IS_WIN:
         out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
@@ -138,15 +175,22 @@ async def server_start(ctx: ToolContext) -> str:
         return "Error: no checkout linked — link or install one first."
     if await server_health(PORT) == "running":
         return f"[server] already running at http://localhost:{PORT}."
-    py = _venv_python(ctx.project_root)
-    if py is None:
-        return ("Error: no virtual environment found in this checkout (.venv). "
-                "Build the environment first (setup_environment).")
     runpy = ctx.project_root / "run.py"
     if not runpy.exists():
         return "Error: run.py not found in the checkout — is this a complete webAgent install?"
     try:
-        pid = _spawn_detached([str(py), "run.py"], ctx.project_root, _log_file())
+        if _is_termux():
+            distro = _proot_distro()
+            if distro is None:
+                return ("Error: on Termux/Android but no proot-distro container found. "
+                        "Install one: proot-distro install ubuntu")
+            pid = _spawn_detached_proot(ctx.project_root, _log_file())
+        else:
+            py = _venv_python(ctx.project_root)
+            if py is None:
+                return ("Error: no virtual environment found in this checkout (.venv). "
+                        "Build the environment first (setup_environment).")
+            pid = _spawn_detached([str(py), "run.py"], ctx.project_root, _log_file())
     except OSError as e:
         ctx.audit("server_start", {}, False, str(e))
         return f"Error: failed to launch the server: {e}"

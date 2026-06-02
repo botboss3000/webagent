@@ -32,6 +32,9 @@ class NoCacheMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
         p = request.url.path
+        # Don't no-store the PWA manifest — Chrome needs it cacheable for "Add to Home Screen"
+        if p == "/ui/manifest.json":
+            return response
         if p.startswith("/ui/") or p.startswith("/web-terminal") or p == "/index.html" or p == "/":
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response.headers["Pragma"] = "no-cache"
@@ -162,7 +165,14 @@ async def pwa_manifest():
     m_path = _APP_DIR.parent / "ui" / "manifest.json"
     if not m_path.is_file():
         return HTMLResponse("", status_code=404)
-    return FileResponse(str(m_path), media_type="application/manifest+json")
+    return FileResponse(
+        str(m_path),
+        media_type="application/manifest+json",
+        headers={
+            "Cache-Control": "max-age=86400",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 # CORS middleware (adjust origins as needed)
