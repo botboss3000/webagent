@@ -84,7 +84,42 @@
     "app_chat": {
       "category": "app_control",
       "enabled": true,
-      "description": "Talk to the RUNNING app's agent AS the logged-in user (default admin/admin) and return its reply — start or continue a chat session and act on the user's behalf. The app auto-creates the session and uses the user's default agent unless you pass agent_id. Stays on the same conversation across calls unless you pass session_id or new_session=true. Mutating: the app's agent may run tools and take real actions, so confirm intent with the user first. Needs the server running."
+      "description": "Talk to the RUNNING app's agent AS the logged-in user (default admin/admin) and return its reply — a one-shot synchronous chat. For an ongoing live conversation in the connected panel, use webapp_send instead. The app auto-creates the session and uses the user's default agent unless you pass agent_id. Mutating: the app's agent may run tools and take real actions, so confirm intent first. Needs the server running."
+    },
+    "webapp_send": {
+      "category": "app_control",
+      "enabled": true,
+      "description": "Send a message to the CONNECTED web-app session (the active target set in the Connect panel) and return the app agent's reply. Use this when the WebAgent is unmuted and you're bridged to a session — it holds a real back-and-forth and the exchange streams into the shared transcript. Mutating; the app agent may run tools and take real actions."
+    },
+    "webapp_status": {
+      "category": "app_control",
+      "enabled": true,
+      "description": "Report the connected web-app target (agent + session) and live-stream health. Read-only."
+    },
+    "app_list_sessions": {
+      "category": "app_control",
+      "enabled": true,
+      "description": "List the logged-in app user's chat sessions (id, title, agent). Optionally filter by agent_id. Read-only."
+    },
+    "app_get_settings": {
+      "category": "app_control",
+      "enabled": true,
+      "description": "Read the app's settings (app-settings.json): access mode, presentation mode, run-watchdog tuning, etc. Read-only."
+    },
+    "app_set_settings": {
+      "category": "app_control",
+      "enabled": true,
+      "description": "Update one or more app settings (app-settings.json). Pass an object of the keys to change; the rest are preserved. Mutating."
+    },
+    "app_get_auth_keys": {
+      "category": "app_control",
+      "enabled": true,
+      "description": "Read the app's LLM provider config (the auth-key entry in the DB): provider, model, base URL; the API key is masked. Read-only."
+    },
+    "app_set_auth_keys": {
+      "category": "app_control",
+      "enabled": true,
+      "description": "Set the app's LLM auth key / provider / base URL / model (writes the DB auth_elements row + provider.json). Only the fields you pass change; the key is never echoed. Mutating — confirm with the user first."
     },
     "read_diagnostics": {
       "category": "diagnostics",

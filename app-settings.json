@@ -3,6 +3,12 @@
   "access_mode": "public_anonymous",
   "presentation_mode": true,
   "stream_buffer_retention_seconds": 60,
+  "run_watchdog_enabled": true,
+  "run_watchdog_poll_seconds": 30,
+  "run_frozen_threshold_seconds": 360,
+  "run_zombie_grace_seconds": 45,
+  "run_max_resume_attempts": 3,
+  "run_resume_backoff_seconds": 30,
   "feedback_enabled": true,
   "feedback_relay_url": "",
   "turnstile_site_key": ""

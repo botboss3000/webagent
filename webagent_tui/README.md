@@ -39,12 +39,17 @@ errors, docs, solutions, and current information.
   logins**, **`.env`**, and **agent template JSONs**. Stops the server first and
   **backs up** everything to `temp/reset-backup-<timestamp>/` unless told not to.
   The DB, the default `admin/admin` user, and the agents regenerate on next start.
-- **Drive the app (as a user)** — `app_login`, `app_list_agents`, `app_chat`. Log
-  into the **running** server over its HTTP API (default `admin`/`admin`) and chat
-  with the app's own agent **on the user's behalf** — start/continue a session, target
-  a specific agent, read its replies. Same API the web UI uses (no direct DB access),
-  so it can do exactly what a logged-in user can. `app_chat` is write-gated (the app's
-  agent takes real actions) and keeps the conversation across calls.
+- **Drive & observe the app (as a user)** — log into the **running** server over its
+  HTTP + **WebSocket** API (default `admin`/`admin`) and hold a **live, shared
+  conversation** with the app's own agent — the same stream the browser sees. Browse
+  agents/sessions (`app_list_agents`, `app_list_sessions`), set a target and bridge the
+  Manager to it (`webapp_send`, governed by the two mutes — see
+  [Driving the running app](#driving-the-running-app-the-two-mutes)), or fire a one-shot
+  `app_chat`. Same API the web UI uses (no direct DB access), so it can do exactly what a
+  logged-in admin can. Send is write-gated (the app's agent takes real actions).
+- **Edit app config** — read/write `app-settings.json` (`app_get_settings` /
+  `app_set_settings`) and the app's **LLM auth key / provider** stored in the DB
+  (`app_get_auth_keys` / `app_set_auth_keys`), via the App Config panel or the agent.
 - **Updates** — `check_updates` (compare the checkout to the public repo).
 - **Diagnose** — `read_diagnostics` reads the app's flight-recorder (warnings /
   errors with tracebacks, agent-loop problems, tool errors) straight from the
@@ -249,8 +254,8 @@ rm -rf ~/webagent                                              # the cloned repo
 rm -rf ~/.local/share/webagent-tui                             # the manager's data (history, config, cached guide)
 ```
 
-The data folder honours `XDG_DATA_HOME` / `WEBAGENT_TUI_DB` overrides; `textual` and
-`httpx` are left in place since other tools may use them. The agent can also do this
+The data folder honours `XDG_DATA_HOME` / `WEBAGENT_TUI_DB` overrides; `textual`,
+`httpx`, and `websockets` are left in place since other tools may use them. The agent can also do this
 for you on request — the uninstall steps live in its onboarding guide too.
 
 ## Safety model
@@ -310,15 +315,21 @@ An open category (and the current mode) is highlighted by **colouring its outlin
 not by inverting its fill. Clicking a category opens a **thin panel docked to the right**
 holding that category's controls. The **chat column stays visible to its left**, and the
 header/footer span the full width above and below — opening a menu never hides the
-conversation. The panel appears only while a category is open.
+conversation. The panel appears only while a category is open. **Every panel view has
+an expand/collapse toggle at the top** (`[‹› wide]` / `[›‹ narrow]`) that widens the
+panel for the busier views (Connect, App Config) and is remembered across sessions.
 
 | Header item | Action |
 |-------------|--------|
 | **mode** (far left) — a **one-word** write-gate (`read` / `write` / `auto`) | **Click to cycle** read → write → auto (colour signals the mode). Same gate as the App panel's Read/Write/Auto. |
-| **Admin** | opens `[Commands]` (command reference) · `[Update]` · `[Install]` · `[Reset]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` |
-| **Scene** | the theme & animation controls (theme · animation style · palette · speed · intensity · FPS · banner on/off) — each applies **live** |
+| **Admin** | opens `[Connect]` · `[App Config]` · `[Commands]` · `[Update]` · `[Install]` · `[Reset]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` |
+| **Theme** | the colour-theme picker (one of the 23 shared themes) — applies **live** |
 | **App** | the **AI provider** block — a **Provider** dropdown (OpenRouter / OpenAI / DeepSeek / Groq / Together / Mistral / xAI / Custom) that fills the **Base URL** + **Model** to match, an **AI key** field, and `[Save]` / `[Clear]` pills; plus the write-gate `[Read-only]` / `[Write]` / `[Autonomous]` (current one highlighted) and `[Open Browser]` (opens `http://localhost:8080/index.html`) |
-| **server status** (the last item — shows `live` / `stopped`, **not** the word "Server"; managed mode; spins a `-\|/` with `starting` while it loads) | `[Start]` · `[Restart]` · `[Kill]` |
+
+The **live server status** is **no longer in the header** — it's a thin **vertical strip
+docked on the right edge** of the screen (managed mode), showing `live` / `stop` (or a
+spinner + `boot` while starting). **Click it** to open the **Server** view (`[Start]` ·
+`[Restart]` · `[Kill]`).
 
 **Closing a panel:** click anywhere **outside** it (e.g. in the chat), press **Esc**,
 or click the same category again to toggle it shut. The open category is highlighted in
@@ -328,16 +339,47 @@ the header.
 
 | Button | Action |
 |--------|--------|
+| `[Connect]` | Open the **Connect** view — browse the admin's agents, pick one, then pick (or start) a session to set the **target**, and flip the two mute toggles (see [Driving the running app](#driving-the-running-app-the-two-mutes)) |
+| `[App Config]` | Open the **App Config** view — edit `app-settings.json` (access mode, presentation mode) and the app's **LLM auth key** (provider / base URL / model / API key), saved over the admin API |
 | `[Commands]` | Print a user reference to the transcript — on-screen controls, keyboard shortcuts, plain-language things to ask the agent, and the terminal commands for install / launch / proot-Python / uninstall (tailored to Termux vs desktop) |
-| `[Update]` | Update the manager/repo — opens an info + confirm screen, then backs up, pulls (source) or rebuilds the exe (frozen), and restarts |
+| `[Update]` | Update the manager/repo — backs up, pulls (source) or rebuilds the exe (frozen), and restarts |
 | `[Install]` | Run the guided install (onboarding mode); in managed mode it points you at `[Update]` instead |
-| `[Reset]` | Reset the install to a clean state — opens an info + confirm screen, then stops the server, **backs up** to `temp/reset-backup-<timestamp>/`, and wipes the userbase (DB + generated pages), app secrets, and local logins (keeps `.env` + agent templates so the app reboots clean). For a deeper/lighter wipe, ask the agent to run `reset_app` with the flags you want |
-| `[Uninstall]` | Remove webAgent from the device (Termux) — opens an info + confirm screen listing exactly what's deleted (launcher, shortcut, repo, data, package), then removes it and closes |
+| `[Reset]` | Reset the install to a clean state — stops the server, **backs up** to `temp/reset-backup-<timestamp>/`, and wipes the userbase (DB + generated pages), app secrets, and local logins (keeps `.env` + agent templates so the app reboots clean). For a deeper/lighter wipe, ask the agent to run `reset_app` with the flags you want |
+| `[Uninstall]` | Remove webAgent from the device (Termux) — lists exactly what's deleted (launcher, shortcut, repo, data, package), then removes it and closes |
 | `[Diagnostics]` | Show the app's recorded warnings/errors — reads the local DB, so it works even when the server is down |
 | `[Logs]` | Show the captured server log in the transcript |
 
-Install, Update, Reset and Uninstall each open a **warning + Yes/No confirmation**
-first; Uninstall is irreversible, and Reset is reversible only via its backup.
+Install, Update, Reset and Uninstall each open a **confirmation right inside the
+sidebar** (the panel switches from its buttons to an info + `[…]` / `[Cancel]` view —
+no pop-up modal); Esc or Cancel returns to the buttons. Uninstall is irreversible, and
+Reset is reversible only via its backup.
+
+### Driving the running app (the two mutes)
+
+The TUI can hold a **live, shared conversation** with the running app's own agent — the
+same stream the browser sees, so anything you do is saved server-side and continuable in
+the web UI. Open **Admin ▸ Connect**, pick an **agent** and a **session** (or start a new
+one) to set the **target**, then use the two toggles:
+
+| State | Effect |
+|-------|--------|
+| **Mute WebAgent** *(default)* | No app link — the **Manager** (the TUI's own agent) talks to you. Prep it and set up the target here. |
+| **Unmute WebAgent** | The Manager is **bridged** to the target session: it's told the agent/session is ready and can send/receive/respond to the app agent on your behalf (`webapp_send`); replies — and anything you type in the browser — stream into the transcript. |
+| **Mute Manager** | The Manager goes silent and **your input goes straight to the app agent** — using the web app normally, from the TUI. |
+
+The connection is built on the app's own HTTP + WebSocket API (login as `admin/admin` by
+default), so the TUI can only do what a logged-in admin can. The agent also has matching
+tools (`app_login`, `app_list_agents`, `app_list_sessions`, `webapp_send`, `webapp_status`,
+`app_chat`, and the config tools `app_get/set_settings`, `app_get/set_auth_keys`).
+
+### Open-time process manager
+
+On open the manager **lists every running webAgent server process** (PIDs, whether each
+holds port 8080, and which one it tracks) and flags **stale/zombie** instances — a process
+squatting on 8080 without serving `/health`, or a leftover `run.py` from a crashed launch.
+If any are found it opens a sidebar confirmation listing them; **with your permission** it
+terminates them. The healthy/serving instance (and a healthy server's uvicorn-reload
+supervisor) is never touched.
 
 ### Setting the AI key / provider (App panel)
 
@@ -360,18 +402,15 @@ polled every few seconds (live = green, stopped = red, checking = amber).
 
 **Small screens:** the panel is narrow (capped at 60% width) so the chat stays visible
 even on a phone, and its labels stack vertically and wrap. Because the header collapsed
-to a few short words (Admin · Scene · App · status), it fits a narrow terminal.
+to a few short words (Admin · Theme · App · status), it fits a narrow terminal.
 
 ### Look & feel (vendored from the launcher)
 
-- **Animated logo banner** — plasma / flow-field / rings / noise (or a static
-  "off") behind the "webagent" ASCII logo. Shown on the welcome screen, it
-  **collapses once the conversation starts** so the transcript uses the full height
-  (it doesn't stay pinned on top). Coloured from the active theme (or a chosen
-  palette); stops animating when off or when the window loses focus (≈0% CPU).
-- **Scene panel** — the theme, animation style, palette (match-theme or a preset),
-  speed, intensity, FPS, and the banner on/off, opened from the header's **Scene**
-  button. Every choice applies **live** and persists.
+- **Plain-text header** — a simple two-line title (**WEBAGENT** / **Server Manager**)
+  at the top of the chat column, coloured from the active theme. (The old animated
+  ASCII logo banner was removed.)
+- **Theme panel** — the colour-theme picker (one of the 23 shared themes), opened from
+  the header's **Theme** button. The choice applies **live** and persists.
 - **Activity spinner** — a small `-/|\` spinner above the input spins whenever the
   agent is busy (thinking or running a tool), so it's clear the app isn't frozen;
   it's blank at rest.

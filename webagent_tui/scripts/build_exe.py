@@ -75,6 +75,7 @@ def main() -> int:
         sys.executable, "-m", "PyInstaller",
         "--onefile", "--name", NAME,
         "--collect-all", "textual",      # Textual loads resources at runtime
+        "--collect-all", "websockets",   # lazy submodule loading (asyncio client) — collect all
         "--add-data", add_data,
         "--add-data", manager_data,
         "--console",
