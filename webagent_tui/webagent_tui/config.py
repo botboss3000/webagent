@@ -252,6 +252,7 @@ class TuiConfig:
     anim_fps: int = 20             # 12 / 20 / 30
     max_turns: int = 50
     temperature: float = 0.0
+    side_expanded: bool = False    # sidebar width: narrow (default) ↔ wide, toggled in-panel
 
     @classmethod
     def load(cls) -> "TuiConfig":

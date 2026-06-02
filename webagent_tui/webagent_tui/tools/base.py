@@ -33,6 +33,15 @@ class ToolContext:
     # Ask the app to close the manager (provided by the app). Used by the
     # self-update restart so a staged exe swap / source reload can finish.
     request_exit: Optional[Callable[[], Awaitable[None]]] = None
+    # The shared client for the RUNNING webAgent app (login + WS stream + send).
+    # Set by the app so app-facing tools (appctl / webapp) reuse one session +
+    # the live stream. None in plain tool calls → a standalone client is used.
+    webapp_client: Optional[Any] = None
+    # The session_id of the currently connected web-app target (set when the
+    # WebAgent is unmuted), so webapp_send knows where to post. "" when none.
+    webapp_session_id: str = ""
+    webapp_agent_id: str = ""
+    webapp_agent_name: str = ""
 
 
 @dataclass

@@ -40,8 +40,8 @@ Screen {
 #status .hdr-btn.hdr-on { border: round $primary; color: $primary; background: $background; }
 #status .hdr-note { width: auto; height: 3; margin: 0; padding: 0 2; content-align: center middle; }
 
-/* Animated logo banner (vendored from the launcher) — fixed height above the log. */
-#anim { height: 7; width: 100%; }
+/* Plain-text app header (WEBAGENT / Server Manager) — replaces the old logo banner. */
+#title { height: 3; width: 100%; content-align: center middle; padding: 1 0 0 0; }
 
 /* Session HUD (tokens + context %), above the action bar — flat on the main bg. */
 #hud { height: 1; width: 100%; background: $background; color: $dim; padding: 0 2; }
@@ -109,10 +109,39 @@ Screen {
 #side-panel .panel-row { layout: horizontal; width: 100%; height: 3; }
 #side-panel .panel-row .panel-btn { width: 1fr; margin: 0 1 0 0; }
 
+/* Expanded sidebar width — toggled by the [‹› wide] button at the top of every view. */
+#side-panel.side-wide { width: 60; max-width: 85%; }
+
+/* Top row of every panel view: the expand/collapse toggle + the title. */
+#side-panel .panel-top { layout: horizontal; width: 100%; height: 3; margin-bottom: 1; }
+#side-panel .panel-top .panel-btn { width: auto; margin-bottom: 0; padding: 0 1; }
+#side-panel .panel-top #panel-title { width: 1fr; height: 3; margin: 0 0 0 1; content-align: left middle; }
+
+/* In-sidebar confirmation body (replaces the pop-up modal). */
+#side-panel .confirm-body { width: 100%; height: auto; color: $foreground; margin: 1 0; }
+
+/* Connect view: agent / session pick buttons read left-aligned (they're a list). */
+#side-panel .connect-agent, #side-panel .connect-session, #side-panel .connect-new {
+    content-align: left middle; text-align: left;
+}
+
 /* 'Scene' panel rows — one labelled Select per theme/animation setting. */
 #side-panel .set-row { height: 3; width: 100%; }
 #side-panel .set-row .set-label { width: 8; height: 3; content-align: left middle; color: $dim; }
 #side-panel .set-row Select { width: 1fr; }
+
+/* Live server-status control, docked as a thin vertical strip on the right edge.
+ * Click → the server panel (Start / Restart / Kill). Theme variables only. */
+#server-edge {
+    dock: right;
+    width: 3; height: 100%;
+    background: $panel;
+    border-left: thick $primary;
+    content-align: center middle;
+    color: $bar-accent;
+}
+#server-edge:hover { border-left: thick $secondary; }
+#server-edge.edge-on { background: $boost; border-left: thick $secondary; }
 
 /* Confirm dialog — details + Confirm/Cancel, for admin actions (Update/Uninstall). */
 ConfirmModal { align: center middle; }
@@ -156,6 +185,16 @@ ConfirmModal { align: center middle; }
     width: 100%; height: auto;
     background: $background; color: $foreground;
     border: round $primary; padding: 0 1; margin: 1 0 0 0;
+}
+/* Live web-app stream: the app agent's reply, and a message bound for the app. */
+.msg-webagent {
+    width: 100%; height: auto;
+    color: $foreground; background: $boost;
+    border-left: thick $secondary; padding: 0 1; margin: 1 0 0 0;
+}
+.msg-webuser {
+    width: 100%; height: auto;
+    color: $secondary; padding: 0 1; margin: 1 0 0 0;
 }
 
 /* Expandable tool calls (nested, like the launcher).

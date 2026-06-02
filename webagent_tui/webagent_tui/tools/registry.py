@@ -24,6 +24,7 @@ from . import (
     monitor,
     reset,
     selfupdate,
+    webapp,
     server,
     shell,
     update,
@@ -179,11 +180,10 @@ def _base_specs() -> list[ToolSpec]:
         }, appctl.app_list_agents, needs_project=False),
         ToolSpec("app_chat", (
             "Talk to the RUNNING app's agent AS the logged-in user (default "
-            "admin/admin) and return its reply — i.e. start/continue a chat session "
-            "and act on the user's behalf. The app auto-creates the session and uses "
-            "the user's default agent unless you pass agent_id. Stays on the same "
-            "conversation across calls unless you pass a session_id or new_session=true. "
-            "Mutating: the app's agent may run tools and take real actions, so confirm "
+            "admin/admin) and return its reply — a one-shot synchronous chat. For an "
+            "ongoing live conversation in the connected panel use webapp_send instead. "
+            "The app auto-creates the session and uses the user's default agent unless "
+            "you pass agent_id. Mutating: the app's agent may run tools, so confirm "
             "intent with the user first. Needs the server running."), {
             "type": "object",
             "properties": {"message": _STR,
@@ -194,6 +194,55 @@ def _base_specs() -> list[ToolSpec]:
                            "password": {**_STR, "default": "admin"}},
             "required": ["message"],
         }, appctl.app_chat, mutating=True, needs_project=False),
+        ToolSpec("webapp_send", (
+            "Send a message to the CONNECTED web-app session (the active target set "
+            "in the Connect panel) and return the app agent's reply. Use this when the "
+            "WebAgent is unmuted and you're bridged to a session — it holds a real "
+            "back-and-forth and the exchange streams into the shared transcript. "
+            "Mutating; the app agent may run tools and take real actions."), {
+            "type": "object",
+            "properties": {"message": _STR},
+            "required": ["message"],
+        }, webapp.webapp_send, mutating=True, needs_project=False),
+        ToolSpec("webapp_status", (
+            "Report the connected web-app target (agent + session) and live-stream "
+            "health. Read-only."), {
+            "type": "object", "properties": {},
+        }, webapp.webapp_status, needs_project=False),
+        ToolSpec("app_list_sessions", (
+            "List the logged-in app user's chat sessions (id, title, agent). Optionally "
+            "filter by agent_id. Read-only."), {
+            "type": "object",
+            "properties": {"agent_id": {**_STR, "default": ""},
+                           "limit": {**_INT, "default": 20}},
+        }, webapp.app_list_sessions, needs_project=False),
+        ToolSpec("app_get_settings", (
+            "Read the app's settings (app-settings.json): access mode, presentation "
+            "mode, run-watchdog tuning, etc. Read-only."), {
+            "type": "object", "properties": {},
+        }, webapp.app_get_settings, needs_project=False),
+        ToolSpec("app_set_settings", (
+            "Update one or more app settings (app-settings.json). Pass an object of the "
+            "keys to change; the rest are preserved. Mutating."), {
+            "type": "object",
+            "properties": {"patch": {"type": "object"}},
+            "required": ["patch"],
+        }, webapp.app_set_settings, mutating=True, needs_project=False),
+        ToolSpec("app_get_auth_keys", (
+            "Read the app's LLM provider config (the auth-key entry in the DB): "
+            "provider, model, base URL; the API key is masked. Read-only."), {
+            "type": "object", "properties": {},
+        }, webapp.app_get_auth_keys, needs_project=False),
+        ToolSpec("app_set_auth_keys", (
+            "Set the app's LLM auth key / provider / base URL / model (writes the DB "
+            "auth_elements row + provider.json). Only the fields you pass change; the "
+            "key is never echoed. Mutating — confirm with the user first."), {
+            "type": "object",
+            "properties": {"api_key": {**_STR, "default": ""},
+                           "provider": {**_STR, "default": ""},
+                           "base_url": {**_STR, "default": ""},
+                           "model": {**_STR, "default": ""}},
+        }, webapp.app_set_auth_keys, mutating=True, needs_project=False),
         ToolSpec("read_diagnostics", (
             "Read the webAgent app's diagnostics — its flight-recorder of "
             "warnings/errors (with tracebacks), agent-loop problems, run outcomes "

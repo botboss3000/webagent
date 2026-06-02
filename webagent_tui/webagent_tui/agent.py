@@ -61,6 +61,13 @@ class ServerManagerAgent:
         self.request_exit = request_exit          # app callback to close (self-update restart)
         self._onboarding_guide = ""               # live guide text (fetched once, onboarding only)
         self._guide_loaded = False
+        # Live link to the RUNNING web app (set by the app). The shared WebAppClient
+        # plus the currently connected target session, so the webapp_* tools can
+        # reuse one admin session + the live stream.
+        self.webapp_client: Any = None
+        self.webapp_session_id: str = ""
+        self.webapp_agent_id: str = ""
+        self.webapp_agent_name: str = ""
 
     def _make_ctx(self, session_id: str, log: Callable[[str], None]) -> ToolContext:
         writes = self.cfg.writes_enabled or self.cfg.autonomous
@@ -76,6 +83,10 @@ class ServerManagerAgent:
             set_project=self.set_project,
             app_provider=self.provider,
             request_exit=self.request_exit,
+            webapp_client=self.webapp_client,
+            webapp_session_id=self.webapp_session_id,
+            webapp_agent_id=self.webapp_agent_id,
+            webapp_agent_name=self.webapp_agent_name,
         )
 
     def _build_messages(self, session_id: str, situation: str = "") -> list[dict[str, Any]]:

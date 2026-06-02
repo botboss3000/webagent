@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import webbrowser
 from pathlib import Path
+from typing import Optional
 
 from rich.text import Text
 from textual import on, work
@@ -38,6 +39,7 @@ from .config import (
     provider_name_for_base,
     resolve_provider,
 )
+from .appclient import WebAppClient, WebAppError
 from .db import Store
 from .env_probe import probe_machine, server_health
 from .glyphs import EMOJI, G
@@ -45,9 +47,9 @@ from .llm import LLMClient
 from .model_windows import MODEL_CONTEXT_BY_ID, MODEL_CONTEXT_WINDOWS
 from .selfinfo import check_self_update, gather
 from .notify import Notifier
+from .procscan import scan_webagent_processes
 from .watchdog import Watchdog, set_active_watchdog
 from .palette import PRESETS, palette_from_theme
-from .stage import AnimatedStage
 from .theme_colors import chrome_colors
 from .themes import CUSTOM_VAR_DEFAULTS, DEFAULT_THEME, THEME_LABELS, THEME_ORDER, build_themes
 
@@ -146,6 +148,54 @@ class ServerStatusWidget(Widget):
         return Text(f"{spin} starting", style=f"bold {cc.get('tool', '#ff9d2f')}")
 
 
+class ServerEdge(Widget):
+    """The live server-status control, docked as a thin VERTICAL strip on the right
+    edge of the screen. Shows ``live`` / ``stop`` at rest and a spinning frame with
+    ``boot`` while starting; click → the server panel (Start / Restart / Kill).
+    Status text is stacked one character per line so it reads down the edge."""
+
+    FRAMES = "-\\|/"
+
+    def __init__(self, id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._btn_action = "panel_server"   # opens the server view
+        self._state = "n/a"
+        self._frame = 0
+        self._timer = None
+
+    def on_mount(self) -> None:
+        self._timer = self.set_interval(0.1, self._tick, pause=True)
+        self._sync()
+
+    def set_state(self, state: str) -> None:
+        self._state = state
+        self._sync()
+
+    def _loading(self) -> bool:
+        return self._state in ("checking", "starting", "unknown")
+
+    def _sync(self) -> None:
+        if self._timer is not None:
+            self._timer.resume() if self._loading() else self._timer.pause()
+        self.refresh()
+
+    def _tick(self) -> None:
+        self._frame += 1
+        self.refresh()
+
+    def render(self) -> Text:
+        cc = getattr(self.app, "cc", {})
+        if self._state == "running":
+            glyph, word, col = G.DOT_LIVE, "live", cc.get("success", "#7be06a")
+        elif self._state == "stopped":
+            glyph, word, col = G.DOT_DEAD, "stop", cc.get("error", "#ff5f56")
+        elif self._state == "n/a":
+            glyph, word, col = "·", "n/a", cc.get("dim", "#888")
+        else:
+            glyph, word, col = self.FRAMES[self._frame % len(self.FRAMES)], "boot", cc.get("tool", "#ff9d2f")
+        return Text(glyph + "\n" + "\n".join(word), style=f"bold {col}", justify="center")
+
+
 def _scene_rows(app) -> list[tuple[str, "Select"]]:
     """The theme/animation ('Scene') controls — one labelled Select per setting.
     Shared shape so every change routes through app.apply_setting (live + persisted)."""
@@ -154,28 +204,11 @@ def _scene_rows(app) -> list[tuple[str, "Select"]]:
     def safe(v, allowed, default):
         return v if v in allowed else default
 
-    pal_names = {"theme", *[p.name for p in PRESETS]}
+    # The animated banner was removed, so only the theme picker remains here.
     return [
-        ("Banner", Select([("On", True), ("Off", False)],
-                          value=bool(app._anim_on), allow_blank=False, id="set-banner")),
         ("Theme", Select([(THEME_LABELS.get(t, t), t) for t in THEME_ORDER],
                          value=safe(app.theme, set(THEME_ORDER), DEFAULT_THEME),
                          allow_blank=False, id="set-theme")),
-        ("Animation", Select([(ANIM_LABELS[s], s) for s in ANIM_STYLES],
-                             value=safe(cfg.anim_style, set(ANIM_STYLES), "plasma"),
-                             allow_blank=False, id="set-anim")),
-        ("Palette", Select([("Match theme", "theme")] + [(p.name, p.name) for p in PRESETS],
-                           value=safe(cfg.anim_palette, pal_names, "theme"),
-                           allow_blank=False, id="set-pal")),
-        ("Speed", Select([("Slow", 0.5), ("Normal", 1.0), ("Fast", 2.0)],
-                         value=safe(cfg.anim_speed, {0.5, 1.0, 2.0}, 1.0),
-                         allow_blank=False, id="set-speed")),
-        ("Intensity", Select([("Low", 0.6), ("Normal", 1.0), ("High", 1.5)],
-                             value=safe(cfg.anim_intensity, {0.6, 1.0, 1.5}, 1.0),
-                             allow_blank=False, id="set-int")),
-        ("FPS", Select([("12", 12), ("20", 20), ("30", 30)],
-                       value=safe(cfg.anim_fps, {12, 20, 30}, 20),
-                       allow_blank=False, id="set-fps")),
     ]
 
 
@@ -241,6 +274,27 @@ class ServerManagerApp(App):
             set_project=self._link_project, provider=self.provider,
             request_exit=self._request_exit,
         )
+        # ── Live link to the RUNNING web app (drive + observe it) ──
+        # A single persistent client (admin session + WebSocket stream). The two
+        # mutes govern who talks: WebAgent muted (default) → Manager talks to me,
+        # no app link; unmuted → Manager bridged to the target session; Manager
+        # muted → my input goes straight to the app agent.
+        self._webapp = WebAppClient()
+        self.agent.webapp_client = self._webapp
+        self._webapp_target: Optional[dict] = None   # {agent_id, agent_name, session_id, session_title}
+        self._webagent_muted = True                  # default: no app connection
+        self._manager_muted = False
+        self._webapp_stream_on = False               # the WS stream worker is running
+        self._ws_bubble = None                       # current streaming app-agent Static
+        self._ws_bubble_text = ""                    # accumulated stream text for it
+        # Sidebar view state: confirmations + the connect/config views render IN the
+        # panel (no pop-up modals). _confirm_state carries the active confirm dialog.
+        self._confirm_state: Optional[dict] = None   # {title, body, label, on_yes}
+        self._connect_agents: list[dict] = []        # agents fetched for the Connect view
+        self._connect_sessions: list[dict] = []      # sessions for the picked agent
+        self._connect_agent: Optional[dict] = None   # the agent currently expanded
+        self._cfg_settings: dict = {}                # last-fetched app settings (config view)
+        self._cfg_provider: dict = {}                # last-fetched LLM provider (config view)
         self.session_id = self.store.create_session(
             str(self.project_root) if self.project_root else "(onboarding)"
         )
@@ -288,13 +342,8 @@ class ServerManagerApp(App):
         yield Horizontal(id="status")      # header: clickable category toolbar
         with Horizontal(id="body"):
             with Vertical(id="main"):      # the chat column (stays visible)
-                self._anim = AnimatedStage(palette=self._build_palette(), style=self.cfg.anim_style,
-                                           fps=self.cfg.anim_fps, speed=self.cfg.anim_speed,
-                                           intensity=self.cfg.anim_intensity, show_logo=True)
-                self._anim.id = "anim"
-                self._anim.display = self._anim_on
-                self._anim.set_idle(not self._anim_on)
-                yield self._anim                   # animated logo banner
+                self._anim = None                  # (the animated logo banner was removed)
+                yield Static(self._title_text(), id="title", markup=False)  # plain text header
                 yield VerticalScroll(id="log")     # transcript (mounted widgets)
                 yield Static("", id="hud")         # session HUD (tokens / context gauge)
                 # Action bar: activity spinner (left) + [Stop] / [Continue] text (far right).
@@ -311,6 +360,11 @@ class ServerManagerApp(App):
             panel = Vertical(id="side-panel")  # thin right menu; hidden until a category opens
             panel.display = False
             yield panel
+            # Live server-status control, docked as a thin vertical strip on the far
+            # right edge (managed mode only); click → the server panel.
+            self._dot = ServerEdge(id="server-edge")
+            self._dot.display = self.project_root is not None
+            yield self._dot
         with Horizontal(id="footer"):
             yield Static("", id="hints")               # left: minimal legend
             yield Static(self._kbd_label(), id="kbd", markup=False)  # right: open-keyboard shortcut
@@ -330,11 +384,14 @@ class ServerManagerApp(App):
         self._render_welcome(self._server_state)
         self._refresh_hints()
         self._refresh_kbd()
+        self._refresh_title()
         self._refresh_status()
         self._update_hud()
         self.query_one("#prompt", Input).focus()
         # Keep the server dot live in managed mode (cheap localhost /health poll).
         self.set_interval(3.0, self._poll_server)
+        # Scan for running webAgent server PIDs (and stale/zombie ones) on open.
+        self.run_worker(self._scan_pids_on_open(), group="pidscan", exclusive=True)
         # Auto-start the managed server on open, so a manual Launch is unnecessary.
         if self._do_autostart and self.project_root is not None:
             self.run_worker(self._autostart_server(), group="server", exclusive=True)
@@ -516,7 +573,6 @@ class ServerManagerApp(App):
         except Exception:
             return
         bar.remove_children()
-        self._dot = None
 
         def cat(label: str, kind: str, action: str) -> None:
             # The pill of the open category gets the .hdr-on highlight class.
@@ -531,17 +587,17 @@ class ServerManagerApp(App):
         self._add_hdr(bar, Text(mode, style=f"bold {mcol}"), "mode_cycle")
 
         cat("Admin", "admin", "panel_admin")
-        cat("Scene", "scene", "panel_scene")
+        cat("Theme", "scene", "panel_scene")
         cat("App", "app", "panel_app")
-        # Last header item = the live server STATUS (spins while loading); click → server panel.
-        if self.project_root:
-            self._dot = ServerStatusWidget()
-            if self._panel_kind == "server":
-                self._dot.add_class("hdr-on")
-            bar.mount(self._dot)
-            self._dot.set_state(self._server_state)
-        else:
+        if not self.project_root:
             self._add_hdr(bar, Text("onboarding", style=c["secondary"]), None)
+        # The live server STATUS lives on the right-edge strip (#server-edge), not in
+        # this header row. Keep it in sync (managed mode only).
+        if self._dot is not None:
+            self._dot.display = self.project_root is not None
+            if self.project_root:
+                self._dot.set_state(self._server_state)
+                self._dot.set_class(self._panel_kind == "server", "edge-on")
 
     def _refresh_hints(self) -> None:
         """Footer-left legend. Esc opens/closes the side menu (the Ctrl+ editing hints
@@ -558,6 +614,21 @@ class ServerManagerApp(App):
     def _refresh_kbd(self) -> None:
         try:
             self.query_one("#kbd", Static).update(self._kbd_label())
+        except Exception:
+            pass
+
+    def _title_text(self) -> Text:
+        """The plain-text app header (replaces the animated logo banner):
+        'WEBAGENT' on top, 'Server Manager' beneath, coloured from the theme."""
+        c = self.cc
+        t = Text(justify="center", no_wrap=True, overflow="crop")
+        t.append("WEBAGENT\n", style=f"bold {c['accent']}")
+        t.append("Server Manager", style=c["dim"])
+        return t
+
+    def _refresh_title(self) -> None:
+        try:
+            self.query_one("#title", Static).update(self._title_text())
         except Exception:
             pass
 
@@ -642,6 +713,10 @@ class ServerManagerApp(App):
     @on(Click, "#kbd")
     def _on_kbd_click(self, event: Click) -> None:
         self.action_open_keyboard()
+
+    @on(Click, "#server-edge")
+    def _on_edge_click(self, event: Click) -> None:
+        self.action_panel_server()
 
     @on(Click, ".act-btn")
     def _on_act_click(self, event: Click) -> None:
@@ -843,6 +918,7 @@ class ServerManagerApp(App):
         if kind is None:
             panel.display = False
             return
+        panel.set_class(self.cfg.side_expanded, "side-wide")
         await panel.mount(*self._panel_widgets(kind))
         panel.display = True
 
@@ -852,14 +928,40 @@ class ServerManagerApp(App):
         b._btn_action = action  # type: ignore[attr-defined]
         return b
 
+    def _value_btn(self, label: str, action: str, cls: str, value) -> Static:
+        """A panel button that carries a data value (agent/session) for its own
+        class-specific click handler; the generic .panel-btn handler skips it."""
+        b = Static(label, classes=f"panel-btn {cls}", markup=False)
+        b._btn_action = action       # type: ignore[attr-defined]
+        b._btn_value = value         # type: ignore[attr-defined]
+        return b
+
     def _panel_widgets(self, kind: str) -> list[Widget]:
-        """Build the widgets for one category panel: a TITLE then its buttons (Admin /
-        Server), the theme/animation Selects (Scene), or the App controls (AI key field,
-        Read/Write/Auto, Open Browser)."""
+        """Build the widgets for one panel view. Every view starts with an
+        expand/collapse toggle + a TITLE; then the view's content (category buttons,
+        Scene/App controls, or the confirm / connect / config views)."""
         c = self.cc
-        title = {"admin": "ADMIN", "scene": "SCENE", "app": "APP",
-                 "server": "SERVER"}.get(kind, kind.upper())
-        out: list[Widget] = [Static(Text(title, style=f"bold {c['accent']}"), id="panel-title")]
+        title = {"admin": "ADMIN", "scene": "THEME", "app": "APP", "server": "SERVER",
+                 "connect": "CONNECT", "config": "APP CONFIG",
+                 "confirm": (self._confirm_state or {}).get("title", "CONFIRM")}.get(kind, kind.upper())
+        # Top row in EVERY view: an expand/collapse toggle, then the title.
+        exp_label = "[›‹ narrow]" if self.cfg.side_expanded else "[‹› wide]"
+        out: list[Widget] = [
+            Horizontal(self._panel_btn(exp_label, "panel_expand"),
+                       Static(Text(title, style=f"bold {c['accent']}"), id="panel-title"),
+                       classes="panel-top"),
+        ]
+        if kind == "confirm":
+            st = self._confirm_state or {}
+            out.append(Static(Text(st.get("body", ""), style=c["fg"]), classes="confirm-body", markup=False))
+            out.append(Horizontal(
+                self._panel_btn(f"[{st.get('label', 'Confirm')}]", "confirm_yes"),
+                self._panel_btn("[Cancel]", "confirm_no"), classes="panel-row"))
+            return out
+        if kind == "connect":
+            return out + self._connect_widgets()
+        if kind == "config":
+            return out + self._config_widgets()
         if kind == "scene":
             for label, sel in _scene_rows(self):
                 out.append(Horizontal(Static(label, classes="set-label"), sel, classes="set-row"))
@@ -894,7 +996,8 @@ class ServerManagerApp(App):
             out.append(self._panel_btn("[Open Browser]", "open_browser"))
             return out
         specs = {
-            "admin": [("[Commands]", "help"), ("[Update]", "admin_update"),
+            "admin": [("[Connect]", "panel_connect"), ("[App Config]", "panel_config"),
+                      ("[Commands]", "help"), ("[Update]", "admin_update"),
                       ("[Install]", "install"), ("[Reset]", "admin_reset"),
                       ("[Uninstall]", "admin_uninstall"),
                       ("[Diagnostics]", "diagnostics"), ("[Logs]", "server_logs")],
@@ -903,6 +1006,70 @@ class ServerManagerApp(App):
         }.get(kind, [])
         for label, action in specs:
             out.append(self._panel_btn(label, action))
+        return out
+
+    # ── Connect view (browse agents/sessions, set target, the two mutes) ──────
+    def _connect_widgets(self) -> list[Widget]:
+        c = self.cc
+        out: list[Widget] = []
+        t = self._webapp_target
+        if t:
+            out.append(Static(Text(f"Target: {t['agent_name']}\nsession {t['session_id'][:18]}",
+                                   style=c["secondary"]), classes="panel-sub", markup=False))
+            wlabel = "[Unmute WebAgent]" if self._webagent_muted else "[Mute WebAgent]"
+            out.append(self._panel_btn(wlabel, "toggle_webagent", not self._webagent_muted))
+            if not self._webagent_muted:
+                mlabel = "[Unmute Manager]" if self._manager_muted else "[Mute Manager]"
+                out.append(self._panel_btn(mlabel, "toggle_manager", self._manager_muted))
+            out.append(Static(Text("— pick a different target —", style=c["dim"]), classes="panel-sub"))
+        else:
+            out.append(Static(Text("Pick an agent, then a session.", style=c["dim"]), classes="panel-sub"))
+        if not self._connect_agents:
+            out.append(Static(Text("(no agents loaded — Refresh)", style=c["dim"]), classes="panel-sub"))
+        for a in self._connect_agents:
+            active = bool(self._connect_agent and self._connect_agent.get("id") == a.get("id"))
+            out.append(self._value_btn(f"▸ {a.get('name', '(agent)')}", "connect_agent",
+                                       "connect-agent" + (" panel-btn-active" if active else ""), a))
+        if self._connect_agent is not None:
+            out.append(Static(Text(f"sessions · {self._connect_agent.get('name', '')}",
+                                   style=c["dim"]), classes="panel-sub"))
+            out.append(self._value_btn("[+ New session]", "connect_new", "connect-new", {}))
+            for s in self._connect_sessions:
+                stitle = (s.get("title") or "(untitled)").strip()[:22]
+                out.append(self._value_btn(f"• {stitle}", "connect_session", "connect-session", s))
+        out.append(self._panel_btn("[Refresh]", "connect_refresh"))
+        return out
+
+    # ── Config view (app-settings.json + the LLM auth key) ────────────────────
+    def _config_widgets(self) -> list[Widget]:
+        c = self.cc
+        s, p = self._cfg_settings, self._cfg_provider
+        out: list[Widget] = [Static(Text("App settings", style=f"bold {c['accent']}"), classes="panel-sub")]
+        if not s:
+            out.append(Static(Text("(loading… or Refresh)", style=c["dim"]), classes="panel-sub"))
+        else:
+            modes = ["public_anonymous", "public_registered", "admin_approval", "private"]
+            am = s.get("access_mode", "public_anonymous")
+            out.append(Static(Text("Access mode", style=c["dim"]), classes="panel-sub"))
+            out.append(Select([(m, m) for m in modes],
+                              value=am if am in modes else "public_anonymous",
+                              allow_blank=False, id="cfg-access"))
+            out.append(Static(Text("Presentation mode", style=c["dim"]), classes="panel-sub"))
+            out.append(Select([("On", True), ("Off", False)],
+                              value=bool(s.get("presentation_mode", False)),
+                              allow_blank=False, id="cfg-present"))
+            out.append(self._panel_btn("[Save settings]", "cfg_save_settings"))
+        out.append(Static(Text("LLM auth key", style=f"bold {c['accent']}"), classes="panel-sub"))
+        out.append(Static(Text("Provider", style=c["dim"]), classes="panel-sub"))
+        out.append(Input(value=p.get("provider", ""), id="cfg-provider", placeholder="openrouter"))
+        out.append(Static(Text("Base URL", style=c["dim"]), classes="panel-sub"))
+        out.append(Input(value=p.get("base_url", ""), id="cfg-baseurl", placeholder="https://…/v1"))
+        out.append(Static(Text("Model", style=c["dim"]), classes="panel-sub"))
+        out.append(Input(value=p.get("model", ""), id="cfg-model", placeholder="model id"))
+        out.append(Static(Text("API key", style=c["dim"]), classes="panel-sub"))
+        out.append(Input(value="", password=True, id="cfg-apikey", placeholder="blank = keep current"))
+        out.append(self._panel_btn("[Save auth key]", "cfg_save_auth"))
+        out.append(self._panel_btn("[Refresh]", "cfg_refresh"))
         return out
 
     def action_panel_admin(self) -> None:
@@ -919,15 +1086,184 @@ class ServerManagerApp(App):
             return
         self._open_panel("server")
 
+    def action_panel_connect(self) -> None:
+        self._open_panel("connect")
+        if self._panel_kind == "connect":
+            self.run_worker(self._load_connect_agents(), group="connectload", exclusive=True)
+
+    def action_panel_config(self) -> None:
+        self._open_panel("config")
+        if self._panel_kind == "config":
+            self.run_worker(self._load_config(), group="cfgload", exclusive=True)
+
+    def action_panel_expand(self) -> None:
+        """Toggle the sidebar width (narrow ↔ wide); persists and applies live."""
+        self.cfg.side_expanded = not self.cfg.side_expanded
+        self.cfg.save()
+        try:
+            self.query_one("#side-panel", Vertical).set_class(self.cfg.side_expanded, "side-wide")
+        except Exception:
+            pass
+        self._rebuild_panel()   # flip the toggle label
+
+    # ── in-sidebar confirmations (replace pop-up modals) ──────────────────────
+    def _open_sidebar_confirm(self, title: str, body: str, label: str, on_yes) -> None:
+        self._confirm_state = {"title": title, "body": body, "label": label, "on_yes": on_yes}
+        self._panel_kind = "confirm"
+        self._refresh_status()
+        self.run_worker(self._render_panel("confirm"), group="panel", exclusive=True)
+
+    def action_confirm_yes(self) -> None:
+        st = self._confirm_state or {}
+        on_yes = st.get("on_yes")
+        self._confirm_state = None
+        self._close_panel()
+        if callable(on_yes):
+            on_yes()
+
+    def action_confirm_no(self) -> None:
+        self._confirm_state = None
+        self._close_panel()
+
+    # ── connect view: target + the two mutes ──────────────────────────────────
+    async def _load_connect_agents(self) -> None:
+        try:
+            self._connect_agents = await self._webapp.list_agents()
+        except WebAppError as e:
+            self._connect_agents = []
+            self._log(f"[{self.cc['tool']}]{G.WARN} {e}[/]")
+        self._rebuild_panel()
+
+    async def _load_connect_sessions(self) -> None:
+        agent = self._connect_agent or {}
+        try:
+            self._connect_sessions = await self._webapp.list_sessions(agent_id=agent.get("id", ""))
+        except WebAppError as e:
+            self._connect_sessions = []
+            self._log(f"[{self.cc['tool']}]{G.WARN} {e}[/]")
+        self._rebuild_panel()
+
+    def action_connect_refresh(self) -> None:
+        self.run_worker(self._load_connect_agents(), group="connectload", exclusive=True)
+
+    def action_toggle_webagent(self) -> None:
+        self.set_webagent_muted(not self._webagent_muted)
+        self._rebuild_panel()
+
+    def action_toggle_manager(self) -> None:
+        self.set_manager_muted(not self._manager_muted)
+        self._rebuild_panel()
+
+    @on(Click, ".connect-agent")
+    def _on_connect_agent(self, event: Click) -> None:
+        a = getattr(event.widget, "_btn_value", None)
+        if a:
+            self._connect_agent = a
+            self._connect_sessions = []
+            self.run_worker(self._load_connect_sessions(), group="connectload", exclusive=True)
+
+    @on(Click, ".connect-session")
+    def _on_connect_session(self, event: Click) -> None:
+        s = getattr(event.widget, "_btn_value", None)
+        a = self._connect_agent or {}
+        if s:
+            self.set_webapp_target(a.get("id", ""), a.get("name", "agent"),
+                                   s.get("id", ""), s.get("title", ""))
+            self._rebuild_panel()
+
+    @on(Click, ".connect-new")
+    def _on_connect_new(self, event: Click) -> None:
+        import uuid
+        a = self._connect_agent or {}
+        if a:
+            self.set_webapp_target(a.get("id", ""), a.get("name", "agent"),
+                                   f"tui-{uuid.uuid4().hex[:16]}", "(new)")
+            self._rebuild_panel()
+
+    # ── config view: app-settings + LLM auth key ──────────────────────────────
+    async def _load_config(self) -> None:
+        try:
+            self._cfg_settings = await self._webapp.get_app_settings()
+        except WebAppError as e:
+            self._cfg_settings = {}
+            self._log(f"[{self.cc['tool']}]{G.WARN} settings: {e}[/]")
+        try:
+            self._cfg_provider = await self._webapp.get_provider()
+        except WebAppError as e:
+            self._cfg_provider = {}
+            self._log(f"[{self.cc['tool']}]{G.WARN} provider: {e}[/]")
+        self._rebuild_panel()
+
+    def action_cfg_refresh(self) -> None:
+        self.run_worker(self._load_config(), group="cfgload", exclusive=True)
+
+    def action_cfg_save_settings(self) -> None:
+        try:
+            access = self.query_one("#cfg-access", Select).value
+            present = self.query_one("#cfg-present", Select).value
+        except Exception:
+            return
+        patch = {}
+        if access is not Select.BLANK:
+            patch["access_mode"] = access
+        patch["presentation_mode"] = bool(present)
+        self.run_worker(self._save_settings(patch), group="cfgsave", exclusive=True)
+
+    async def _save_settings(self, patch: dict) -> None:
+        try:
+            merged = {**(self._cfg_settings or await self._webapp.get_app_settings()), **patch}
+            self._cfg_settings = await self._webapp.set_app_settings(merged)
+            self._log(f"[{self.cc['secondary']}]{G.OK} app settings saved.[/]")
+        except WebAppError as e:
+            self._log(f"[{self.cc['error']}]{G.ERR} {e}[/]")
+        self._rebuild_panel()
+
+    def action_cfg_save_auth(self) -> None:
+        try:
+            prov = self.query_one("#cfg-provider", Input).value.strip()
+            base = self.query_one("#cfg-baseurl", Input).value.strip()
+            model = self.query_one("#cfg-model", Input).value.strip()
+            key = self.query_one("#cfg-apikey", Input).value.strip()
+        except Exception:
+            return
+        self.run_worker(self._save_auth(prov, base, model, key), group="cfgsave", exclusive=True)
+
+    async def _save_auth(self, provider: str, base_url: str, model: str, api_key: str) -> None:
+        try:
+            cfg = dict(self._cfg_provider or await self._webapp.get_provider())
+            if provider:
+                cfg["provider"] = provider
+            if base_url:
+                cfg["base_url"] = base_url
+            if model:
+                cfg["model"] = model
+            if api_key:
+                cfg["api_key"] = api_key
+            await self._webapp.set_provider(cfg)
+            self._cfg_provider = cfg
+            self._log(f"[{self.cc['secondary']}]{G.OK} LLM auth key saved"
+                      + (" (key updated)" if api_key else "") + ".[/]")
+        except WebAppError as e:
+            self._log(f"[{self.cc['error']}]{G.ERR} {e}[/]")
+        self._rebuild_panel()
+
     # ── panel interactions: button clicks, click-outside, settings, AI key ──
     # Buttons whose action should NOT close the panel (they edit it in place).
-    _KEEP_OPEN = {"key_save", "key_clear"}
+    _KEEP_OPEN = {"key_save", "key_clear", "panel_expand",
+                  "panel_connect", "panel_config",
+                  "toggle_webagent", "toggle_manager", "connect_refresh",
+                  "cfg_save_settings", "cfg_save_auth", "cfg_refresh"}
 
     @on(Click, ".panel-btn")
     def _on_panel_btn(self, event: Click) -> None:
+        # Buttons that carry a data value have their own class handler (connect-*).
+        if getattr(event.widget, "_btn_value", None) is not None:
+            return
         action = getattr(event.widget, "_btn_action", None)
         if action in self._KEEP_OPEN:
-            getattr(self, f"action_{action}")()
+            fn = getattr(self, f"action_{action}", None)
+            if fn is not None:
+                fn()
             return
         self._close_panel()
         if action:
@@ -952,6 +1288,9 @@ class ServerManagerApp(App):
     @on(Select.Changed)
     def _on_setting_change(self, event: Select.Changed) -> None:
         if event.value is Select.BLANK:
+            return
+        # Config-view selects (cfg-*) are read on [Save], not applied live.
+        if (event.select.id or "").startswith("cfg-"):
             return
         if event.select.id == "provider-select":
             # Fill the Base URL + Model fields with the chosen provider's defaults so
@@ -1064,8 +1403,8 @@ class ServerManagerApp(App):
             "",
             "It enables writes for the setup and may take several minutes.",
         ])
-        self.push_screen(ConfirmModal("Install webAgent", body, "Install now"),
-                         self._after_install_confirm)
+        self._open_sidebar_confirm("Install webAgent", body, "Install now",
+                                   lambda: self._after_install_confirm(True))
 
     def _after_install_confirm(self, ok: bool | None) -> None:
         if ok:
@@ -1150,7 +1489,7 @@ class ServerManagerApp(App):
 
         head("On-screen controls")
         line("Admin", "Commands · Update · Install · Reset · Uninstall · Diagnostics · Logs")
-        line("Scene", "theme, animation, palette, speed, banner on/off")
+        line("Theme", "pick one of the 23 colour themes")
         line("App", "AI provider + key (Save/Clear), Read/Write/Auto, Open Browser")
         line("status pill", "click the live/stopped status → Start · Restart · Kill")
         line("Stop / Continue", "above the input — cancel a turn / resume it")
@@ -1217,8 +1556,8 @@ class ServerManagerApp(App):
         ])
 
     def action_admin_update(self) -> None:
-        self.push_screen(ConfirmModal("Update webAgent", self._update_info(), "Update now"),
-                         self._after_update_confirm)
+        self._open_sidebar_confirm("Update webAgent", self._update_info(), "Update now",
+                                   lambda: self._after_update_confirm(True))
 
     def _after_update_confirm(self, ok: bool | None) -> None:
         if ok:
@@ -1250,9 +1589,9 @@ class ServerManagerApp(App):
         ])
 
     def action_admin_uninstall(self) -> None:
-        self.push_screen(ConfirmModal("Uninstall webAgent", self._uninstall_info(),
-                                      "Remove everything"),
-                         self._after_uninstall_confirm)
+        self._open_sidebar_confirm("Uninstall webAgent", self._uninstall_info(),
+                                   "Remove everything",
+                                   lambda: self._after_uninstall_confirm(True))
 
     def _after_uninstall_confirm(self, ok: bool | None) -> None:
         if ok:
@@ -1288,8 +1627,8 @@ class ServerManagerApp(App):
         if self.project_root is None:
             self._log(f"[{self.cc['dim']}]nothing to reset in onboarding mode (link a checkout first)[/]")
             return
-        self.push_screen(ConfirmModal("Reset webAgent", self._reset_info(), "Reset now"),
-                         self._after_reset_confirm)
+        self._open_sidebar_confirm("Reset webAgent", self._reset_info(), "Reset now",
+                                   lambda: self._after_reset_confirm(True))
 
     def _after_reset_confirm(self, ok: bool | None) -> None:
         if ok:
@@ -1374,6 +1713,7 @@ class ServerManagerApp(App):
         self._refresh_status()
         self._refresh_hints()
         self._refresh_kbd()
+        self._refresh_title()
         self._update_hud()
         self._log(f"[{self.cc['accent']}]theme: {THEME_LABELS.get(name, name)}[/]")
 
@@ -1395,6 +1735,16 @@ class ServerManagerApp(App):
         if not text:
             return
         event.input.value = ""
+        # ── Direct-to-web-app mode: Manager muted, WebAgent live → my input goes
+        # straight to the app agent (using the web app normally, from the TUI).
+        if not self._webagent_muted and self._manager_muted:
+            if not self._webapp_target:
+                self._log(f"[{self.cc['tool']}]{G.WARN} No web-app session connected.[/] "
+                          "Open Connect, pick an agent + session first.")
+                return
+            self._send_to_webapp(text)
+            return
+        # ── Manager modes (default, or bridged): the Manager handles the turn. ──
         if not self.provider.configured:
             self._log(f"[{self.cc['tool']}]{G.WARN} No AI key configured.[/] "
                       "Set LLM_API_KEY (the app key), or link a repo that has one.")
@@ -1582,7 +1932,206 @@ class ServerManagerApp(App):
         finally:
             self._set_busy(False)
 
+    # ── open-time PID / stale-instance manager ─────────────────────────────
+    async def _scan_pids_on_open(self) -> None:
+        """List every running webAgent server process and flag stale/zombie ones,
+        offering (with permission) to remove them. Runs once on open."""
+        import asyncio as _asyncio
+        from .tools import server as srv
+        procs = await _asyncio.to_thread(scan_webagent_processes)
+        info = srv._read_pidinfo()
+        tracked = int(info["pid"]) if info and info.get("pid") else None
+        if not procs:
+            self._log(f"[{self.cc['dim']}]{G.BULLET} no running webAgent server processes found.[/]")
+            return
+        health = await server_health()
+        lines = ["webAgent server processes:"]
+        stale: list[dict] = []
+        for p in procs:
+            pid, on, cmd = p["pid"], p["on_8080"], p["cmdline"]
+            who = "tracked" if pid == tracked else ("port 8080" if on else "run.py")
+            # Zombie: holds 8080 but doesn't serve /health. Orphan run.py: a leftover
+            # launcher process — but ONLY when nothing is serving (a healthy server's
+            # uvicorn-reload supervisor also runs run.py without holding the port).
+            zombie = on and health != "running"
+            orphan = (not on) and pid != tracked and health != "running"
+            if zombie or orphan:
+                stale.append(p)
+                label = " — STALE (zombie on 8080)" if zombie else " — STALE (leftover run.py)"
+            elif on and health == "running":
+                label = " — serving"
+            else:
+                label = ""
+            lines.append(f"  pid {pid}  [{who}]{label}  {cmd[:56]}")
+        self._log_block("\n".join(lines))
+        if stale:
+            pids = [p["pid"] for p in stale]
+            body = ("These look stale — holding port 8080 without serving /health, or a "
+                    "leftover run.py from a crashed launch:\n\n"
+                    + "\n".join(f"  • pid {p['pid']}  {p['cmdline'][:64]}" for p in stale)
+                    + "\n\nTerminate them? (The healthy/serving instance is never touched.)")
+            self._open_sidebar_confirm("Remove stale webAgent processes", body,
+                                       "Terminate", lambda: self._terminate_pids(pids))
+
+    def _terminate_pids(self, pids: list[int]) -> None:
+        from .tools import server as srv
+        ok, bad = [], []
+        for pid in pids:
+            (ok if srv._terminate(pid) else bad).append(pid)
+        if ok:
+            self._log(f"[{self.cc['secondary']}]{G.OK} terminated: {', '.join(map(str, ok))}[/]")
+        if bad:
+            self._log(f"[{self.cc['error']}]{G.ERR} could not terminate: {', '.join(map(str, bad))}[/]")
+
+    # ── live web-app link: target, mutes, send, stream rendering ───────────
+    def _sync_agent_target(self) -> None:
+        """Push the connected target onto the agent so webapp_* tools can reach it."""
+        t = self._webapp_target or {}
+        self.agent.webapp_session_id = t.get("session_id", "") if not self._webagent_muted else ""
+        self.agent.webapp_agent_id = t.get("agent_id", "")
+        self.agent.webapp_agent_name = t.get("agent_name", "")
+
+    def set_webapp_target(self, agent_id: str, agent_name: str,
+                          session_id: str, session_title: str = "") -> None:
+        """Set the active web-app target (agent + session). Does not connect by
+        itself — unmute the WebAgent to go live."""
+        self._webapp_target = {"agent_id": agent_id, "agent_name": agent_name,
+                               "session_id": session_id, "session_title": session_title}
+        self._sync_agent_target()
+        self._log(f"[{self.cc['secondary']}]{G.OK} target set:[/] "
+                  f"[{self.cc['dim']}]{agent_name} · session {session_id[:12]}[/]")
+
+    def _ensure_webapp_stream(self) -> None:
+        if not self._webapp_stream_on:
+            self._webapp_stream_on = True
+            self.run_worker(self._webapp.run_stream(self._on_webapp_event),
+                            group="webappws", exclusive=True)
+
+    def set_webagent_muted(self, muted: bool) -> None:
+        """Toggle the WebAgent link. Muted (default) = Manager only, no app link.
+        Unmuted = bridge the Manager to the target session (it can send/receive)."""
+        if muted == self._webagent_muted:
+            return
+        self._webagent_muted = muted
+        if muted:
+            self._manager_muted = False
+            self._sync_agent_target()
+            self.workers.cancel_group(self, "webappws")
+            self._webapp_stream_on = False
+            self.run_worker(self._webapp.stop(), group="webappstop")
+            self._log(f"[{self.cc['dim']}]{G.BULLET} WebAgent muted — back to the Manager only.[/]")
+            self._refresh_status()
+            return
+        # Unmuting — need a target.
+        if not self._webapp_target:
+            self._webagent_muted = True
+            self._log(f"[{self.cc['tool']}]{G.WARN} Pick an agent + session in Connect first.[/]")
+            return
+        self._sync_agent_target()
+        self._ensure_webapp_stream()
+        t = self._webapp_target
+        self._log(f"[{self.cc['secondary']}]{G.OK} WebAgent live[/] "
+                  f"[{self.cc['dim']}]— bridged to {t['agent_name']} (session {t['session_id'][:12]}).[/]")
+        self._refresh_status()
+        # Hand the Manager a readiness prompt so it acknowledges and can take over.
+        readiness = (f"[system] You are now connected to the web app agent "
+                     f"'{t['agent_name']}' (session {t['session_id']}). Use webapp_send to "
+                     "talk to it on my behalf; its replies arrive in this transcript. "
+                     "Acknowledge briefly that you're ready.")
+        if self.provider.configured:
+            self._run_turn(readiness)
+
+    def set_manager_muted(self, muted: bool) -> None:
+        """Toggle the Manager. Muted = my input goes straight to the app agent
+        (normal web-app use); only meaningful while the WebAgent is live."""
+        self._manager_muted = muted
+        word = "muted — you're talking to the app agent directly" if muted else "unmuted"
+        self._log(f"[{self.cc['dim']}]{G.BULLET} Manager {word}.[/]")
+        self._refresh_status()
+
+    @work(exclusive=True, group="agent")
+    async def _send_to_webapp(self, text: str) -> None:
+        """Manager-muted path: send my message straight to the connected app agent.
+        The echo + reply render via the live stream."""
+        self._dismiss_banner()
+        t = self._webapp_target or {}
+        try:
+            await self._webapp.send(t.get("session_id", ""), text, agent_id=t.get("agent_id", ""))
+        except WebAppError as e:
+            self._log(f"[{self.cc['error']}]{G.ERR} {e}[/]")
+
+    async def _on_webapp_event(self, ev: dict) -> None:
+        """Render live web-app stream events for the connected target session into
+        the shared transcript (sender-labelled)."""
+        et = ev.get("type")
+        if et == "subscribed":
+            return
+        if et == "_ws_status":
+            if not ev.get("ok"):
+                self._log(f"[{self.cc['dim']}]{G.BULLET} web-app stream dropped; reconnecting…[/]")
+            return
+        t = self._webapp_target
+        if not t or ev.get("session_id") != t.get("session_id"):
+            return  # the per-user WS delivers all sessions; only show the connected one
+        if et == "user_message":
+            self._flush_ws_bubble()
+            self._mount(Static(Text("↦ " + (ev.get("content") or ""), style=self.cc["secondary"]),
+                               classes="msg-webuser", markup=False))
+        elif et == "stream":
+            self._ws_append(ev.get("content") or "")
+        elif et == "response":
+            self._ws_finalize(ev.get("content") or self._ws_bubble_text)
+        elif et == "tool_call":
+            self._flush_ws_bubble()
+            self._log(f"[{self.cc['dim']}]  {G.TOOL} web: {ev.get('tool', '?')}[/]")
+        elif et == "error":
+            self._flush_ws_bubble()
+            self._log(f"[{self.cc['error']}]{G.ERR} web: {ev.get('message', 'error')}[/]")
+        elif et == "interrupted":
+            self._flush_ws_bubble()
+            self._log(f"[{self.cc['dim']}]  {G.BULLET} web: turn interrupted/replaced[/]")
+
+    def _ws_append(self, delta: str) -> None:
+        if not delta:
+            return
+        self._dismiss_banner()
+        name = (self._webapp_target or {}).get("agent_name", "app agent")
+        if self._ws_bubble is None:
+            self._ws_bubble_text = ""
+            self._ws_bubble = Static(Text("", style=self.cc["fg"]), classes="msg-webagent", markup=False)
+            self._mount(self._ws_bubble)
+        self._ws_bubble_text += delta
+        try:
+            self._ws_bubble.update(Text(f"{name}: {self._ws_bubble_text}", style=self.cc["fg"]))
+            self._scroll_end()
+        except Exception:
+            pass
+
+    def _ws_finalize(self, full: str) -> None:
+        name = (self._webapp_target or {}).get("agent_name", "app agent")
+        text = full or self._ws_bubble_text
+        if self._ws_bubble is not None:
+            try:
+                self._ws_bubble.update(Text(f"{name}: {text}", style=self.cc["fg"]))
+            except Exception:
+                pass
+        elif text:
+            self._mount(Static(Text(f"{name}: {text}", style=self.cc["fg"]),
+                               classes="msg-webagent", markup=False))
+        self._ws_bubble = None
+        self._ws_bubble_text = ""
+        self._scroll_end()
+
+    def _flush_ws_bubble(self) -> None:
+        """Finalize any in-progress streaming bubble before a new event type."""
+        if self._ws_bubble is not None:
+            self._ws_finalize(self._ws_bubble_text)
+
     async def on_unmount(self) -> None:
+        try:
+            await self._webapp.stop()
+        except Exception:
+            pass
         await self.llm.aclose()
         self.store.close()
 
