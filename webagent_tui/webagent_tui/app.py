@@ -44,6 +44,8 @@ from .glyphs import EMOJI, G
 from .llm import LLMClient
 from .model_windows import MODEL_CONTEXT_BY_ID, MODEL_CONTEXT_WINDOWS
 from .selfinfo import check_self_update, gather
+from .notify import Notifier
+from .watchdog import Watchdog, set_active_watchdog
 from .palette import PRESETS, palette_from_theme
 from .stage import AnimatedStage
 from .theme_colors import chrome_colors
@@ -246,6 +248,7 @@ class ServerManagerApp(App):
         self._self_update_state = "manager update: checking…"  # refreshed by a startup probe
         self._server_state = "n/a"   # cached server health for the status-bar dot
         self._do_autostart = True    # auto-start the managed server on open (tests disable)
+        self._watchdog = None        # the autonomous monitor loop (started in on_mount)
         self._dot = None             # the server-status widget, updated in place by the poll
         self._anim = None            # the animated logo banner (collapses once chat starts)
         self._anim_on = self.cfg.anim_enabled
@@ -337,6 +340,18 @@ class ServerManagerApp(App):
             self.run_worker(self._autostart_server(), group="server", exclusive=True)
         # Check (in the background) whether a newer manager is available upstream.
         self.run_worker(self._check_self_update(), group="selfupd", exclusive=True)
+        # Start the autonomous watchdog. It idles in onboarding mode / when disabled
+        # (re-read each tick) and picks up a checkout linked mid-session, so we can
+        # start it unconditionally. It notifies via desktop toast + the transcript
+        # and can auto-restart the server within the configured autonomy level.
+        self._watchdog = Watchdog(
+            get_project_root=lambda: self.project_root,
+            restart_server=self._watchdog_restart,
+            notifier=Notifier(log=self._log_watchdog),
+            log=self._log_watchdog,
+        )
+        set_active_watchdog(self._watchdog)
+        self.run_worker(self._watchdog.run(), group="watchdog", exclusive=True)
 
     # ── welcome / situation ───────────────────────────────────────────────
     def _recommended_install_path(self) -> str:
@@ -719,6 +734,26 @@ class ServerManagerApp(App):
         self._log(f"[{self.cc['dim']}]{msg}[/]")
         self._server_state = await server_health() if self.project_root else "n/a"
         self._refresh_status()
+
+    def _log_watchdog(self, text: str) -> None:
+        """Transcript sink for the watchdog/notifier. Plain text (markup off) — the
+        messages carry tracebacks/brackets that aren't Rich markup."""
+        try:
+            self._mount(Static(Text(text, style=self.cc["tool"]), classes="msg-line", markup=False))
+        except Exception:
+            pass
+
+    async def _watchdog_restart(self) -> str:
+        """Restart hook handed to the watchdog for autonomous recovery. Reuses the
+        same gated-off direct server context the UI buttons use and refreshes the
+        header pill so the UI reflects the restart."""
+        from .tools import server as srv
+        self._server_state = "starting"
+        self._refresh_status()
+        msg = await srv.server_restart(self._server_ctx())
+        self._server_state = await server_health() if self.project_root else "n/a"
+        self._refresh_status()
+        return msg
 
     async def _autostart_server(self) -> None:
         """Start the managed server on open if it isn't already up — so a manual

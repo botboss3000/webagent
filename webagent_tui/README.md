@@ -37,6 +37,10 @@ errors, docs, solutions, and current information.
 - **Diagnose** — `read_diagnostics` reads the app's flight-recorder (warnings /
   errors with tracebacks, agent-loop problems, tool errors) straight from the
   checkout's local DB, so it works even when the server is **down**.
+- **Monitoring / alarms** — `monitor_status`, `server_resources`, `list_alarms`,
+  `add_alarm`, `remove_alarm`, `set_monitor_config`, `notify_test`. Configure the
+  autonomous **watchdog** by talking to the agent (see
+  [Monitoring & alarms](#monitoring--alarms-autonomous-watchdog)).
 - **Codebase Admin** — `read_source`, `write_source`, `edit_source`,
   `patch_source`, `delete_source`, `search_source`, `read_directory`,
   `run_command`, `run_python`.
@@ -60,6 +64,84 @@ server manager's memory:
 | Linux | `$XDG_DATA_HOME/webagent-tui/webagent_tui.db` (or `~/.local/share/...`) |
 
 Override with `WEBAGENT_TUI_DB=/path/to.db`.
+
+## Monitoring & alarms (autonomous watchdog)
+
+Alongside the chat, a background **watchdog** ([`webagent_tui/watchdog.py`](webagent_tui/watchdog.py))
+runs on a fixed interval (managed mode, when enabled). Each tick it:
+
+1. probes the server's health (`/health`) + PID-alive,
+2. reads the app's **new** diagnostics since it last looked,
+3. samples **host + process resources** (CPU, memory, disk, server-process RSS) and
+   checks the **port** (8080),
+4. evaluates everything against the user's **alarm rules** and thresholds,
+5. reacts within the configured **autonomy** level — notifies the user and, when
+   allowed, recovers the server (auto-restart with backoff + a **crash-loop guard**).
+
+**Liveness & process checks:**
+
+- **Health + PID** — `/health` probe plus whether the manager's tracked process is
+  still alive.
+- **Crash-loop detection** — if the server keeps dying right after start, it stops
+  auto-restarting (capped at `max_restarts_per_hour`) and **escalates** instead of
+  flapping.
+- **Auto-restart with backoff** — recovers a server that *was* up (never fights the
+  initial autostart), waiting `restart_backoff_seconds` and respecting the cap.
+- **Port / zombie detection** — distinguishes a clean server, an **untracked**
+  instance the manager didn't start, and a **zombie** holding port 8080 without
+  serving `/health` (which blocks a clean restart — the orphaned-LISTENER case
+  `run.py` fights). Built dependency-free in
+  [`webagent_tui/sysmetrics.py`](webagent_tui/sysmetrics.py).
+
+**Resource health** (`sysmetrics.py`, no `psutil`): host **disk** (`shutil`),
+**memory** (Windows `GlobalMemoryStatusEx` / Linux `/proc/meminfo`), **CPU** (a
+delta sample between ticks; load-average fallback), and the **server process's
+memory** (Windows ctypes / Linux `/proc` / macOS `ps`). Thresholds in `monitor.json`
+(`disk_percent_threshold`, `mem_percent_threshold`, `cpu_percent_threshold`; a
+percent of `0` disables that check) alert when crossed, deduped hourly. Ask the
+agent for `server_resources` to see them on demand; metrics an OS can't supply show
+as `n/a`.
+
+**Autonomy levels** (in `monitor.json`):
+
+| Level | What the watchdog may do unattended |
+|-------|-------------------------------------|
+| `notify` | Watch and alert only — never restart or change anything. |
+| `auto_restart` *(default)* | Restart/recover the server automatically; **code changes wait for the user**. |
+| `self_heal` | Reserved for agent-driven code fixes; recovery behaves like `auto_restart` (fixes happen in conversation, with the user's eyes). |
+
+**Notifications** go to the channels in `monitor.json` (`channels`). v1 ships the
+**`desktop`** channel — a native OS toast (Windows tray balloon, macOS
+`osascript`, Linux `notify-send`) via [`webagent_tui/notify.py`](webagent_tui/notify.py),
+which always **also** echoes the alert into the chat transcript. The notifier is
+channel-based so Telegram / email / an in-webapp banner can be added later.
+
+**The "watch for this error" flow:** tell the agent about an error → it finds the
+matching diagnostics → on your OK it writes an **alarm rule** (`add_alarm`): a
+`contains` / `level` / `category` match, an `action` (`notify` | `auto_restart`),
+a `loudness` (`every` | `once` | `digest`), and channels. "Stop watching that" →
+`remove_alarm`. Retune the whole watchdog with `set_monitor_config`; inspect it
+with `monitor_status`.
+
+The live files are per-machine and **gitignored**: `monitor.json` (config, seeded
+from the shipped defaults) and `alarms.json` (the watch list), both in the data
+dir. The watchdog re-reads them every tick, so edits apply with no restart.
+
+## Configuration files (human-readable)
+
+The agent's **prose and settings** live in files, not Python, so its behaviour can
+be read and changed without editing code or rebuilding the `.exe`. See
+[`webagent_tui/manager/README.md`](webagent_tui/manager/README.md):
+
+| File | Holds |
+|------|-------|
+| `webagent_tui/manager/prompt.md` | The system prompt (loaded at startup; restart to apply). |
+| `webagent_tui/manager/tools.json` | Each tool's description + `enabled` + category (the code only binds names → handlers + schemas). |
+| `webagent_tui/manager/monitor.defaults.json` | Shipped watchdog defaults; seeds the live `monitor.json`. |
+
+Loaded by [`webagent_tui/resources.py`](webagent_tui/resources.py) with a
+**user-override → packaged-default → built-in-fallback** order, and bundled into
+the frozen build by `scripts/build_exe.py`.
 
 ## Run from source
 
