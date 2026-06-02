@@ -87,6 +87,7 @@ class ServerManagerAgent:
             webapp_session_id=self.webapp_session_id,
             webapp_agent_id=self.webapp_agent_id,
             webapp_agent_name=self.webapp_agent_name,
+            git_token=self.cfg.git_token,
         )
 
     def _build_messages(self, session_id: str, situation: str = "") -> list[dict[str, Any]]:
