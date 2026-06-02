@@ -5,7 +5,7 @@
  * Custom tokens ($dim, $tool, $bar-bg, $bar-fg, $bar-accent, $border-dim,
  * $sel) come from each theme plus the app's get_theme_variable_defaults().
  *
- * Flat look: the chrome (header pills, action buttons, footer, the input pill,
+ * Flat look: the chrome (header pills, action buttons, the input pill,
  * and user-message bubbles) all share the MAIN background and are distinguished
  * by a bright outline — not a filled background. A "toggled" / active control
  * is shown by colouring its TEXT and OUTLINE, never by inverting its fill.
@@ -43,20 +43,20 @@ Screen {
 /* Plain-text app header (WEBAGENT / Server Manager) — replaces the old logo banner. */
 #title { height: 3; width: 100%; content-align: center middle; padding: 1 0 0 0; }
 
-/* Session HUD (tokens + context %), above the action bar — flat on the main bg. */
-#hud { height: 1; width: 100%; background: $background; color: $dim; padding: 0 2; }
-
-/* Action bar above the prompt: activity spinner on the left, [Stop] / [Continue]
- * as small bracketed TEXT on the far right (Continue rightmost). Flat, one row. */
-#actionbar { layout: horizontal; height: 1; width: 100%; padding: 0 2; }
-#actionbar #spinner { width: 1fr; height: 1; content-align: left middle; }
-#actionbar .act-btn {
+/* Merged bar: token HUD text (left) + [Stop] / [Continue] (right).
+ * Handles what was previously two rows (HUD + actionbar). The spinner widget
+ * lives in here too but is invisible — its animated frame shows inside the
+ * token HUD text as a spinning slash between in/out counts. */
+#hud { layout: horizontal; height: 1; width: 100%; background: $background; color: $dim; padding: 0 2; }
+#hud #hud-text { width: 1fr; height: 1; content-align: left middle; }
+#hud #spinner { display: none; }   /* invisible — drives the slash animation */
+#hud .act-btn {
     width: auto; height: 1; margin: 0 0 0 2; padding: 0;
     background: $background; color: $bar-accent;
     content-align: center middle;
 }
-#actionbar .act-btn:hover { text-style: bold; color: $primary; }
-#actionbar .act-btn.disabled { color: $dim; text-style: none; }
+#hud .act-btn:hover { text-style: bold; color: $primary; }
+#hud .act-btn.disabled { color: $dim; text-style: none; }
 
 /* Onboarding call-to-action — the tappable "get started" button (hidden once a
  * checkout is linked). Theme variables only, so it stays legible in every theme. */
@@ -175,12 +175,33 @@ ConfirmModal { align: center middle; }
 .msg-line { width: 100%; height: auto; }
 .msg-block { width: 100%; height: auto; color: $dim; }
 .msg-agent { width: 100%; height: auto; color: $foreground; padding: 0 1; margin: 1 0 0 0; }
-/* User message — same design as the input pill: main background, bright outline. */
+/* System notification from the watchdog — distinct from user/agent messages. */
+.msg-notify {
+    width: 100%; height: auto;
+    background: $boost;
+    border: wide $accent; padding: 0 1; margin: 1 0 0 0;
+    color: $accent;
+}
 .msg-user {
     width: 100%; height: auto;
     background: $background; color: $foreground;
     border: round $primary; padding: 0 1; margin: 1 0 0 0;
 }
+/* New-session notice: a blue-background warning banner marking a session reset.
+   Uses the $accent CSS variable (the theme's blue/cyan) for background + border. */
+.msg-session-new {
+    width: 100%; height: auto;
+    background: $accent;
+    border: wide $accent;
+    padding: 0 1; margin: 1 0 0 0;
+    color: $background;
+}
+
+/* Resume-session row in the sessions panel — distinct from other panel buttons. */
+.resume-session {
+    content-align: left middle; text-align: left;
+}
+
 /* Live web-app stream: the app agent's reply, and a message bound for the app. */
 .msg-webagent {
     width: 100%; height: auto;
@@ -221,27 +242,42 @@ ConfirmModal { align: center middle; }
     padding: 0 1; margin: 0 0 1 0;
 }
 
-#prompt {
+#input-row {
+    layout: horizontal;
     width: 100%;
-    height: 3;
-    border: round $border-dim;
+    height: auto;
+    border: round $primary;
+    background: $background;
+    min-height: 3;
+    max-height: 5;
+}
+#input-row #prompt {
+    width: 1fr;
+    height: auto;
+    border: none;
+    outline: none;
     background: $background;
     color: $foreground;
+    padding: 0 0 0 1;
+    margin: 0;
+    scrollbar-size: 0 0;
 }
-#prompt:focus {
-    border: round $primary;
+#input-row #prompt .text-area-cursor { display: none; }
+#input-row #prompt .text-area-gutter { display: none; }
+#input-row #prompt .text-area-scrollbar { display: none; }
+#input-row #prompt .text-area-editor { padding: 0; margin: 0; border: none; }
+#input-row #send-btn {
+    width: auto; min-width: 5; height: auto;
+    padding: 0 1 0 0;
+    margin-top: 1;
+    background: $background;
+    color: $primary;
+    content-align: center middle;
+    text-style: bold;
+}
+#input-row #send-btn:hover {
+    color: $secondary;
+    text-style: bold underline;
 }
 
-/* Footer bar: minimal exit hint on the left, an open-keyboard shortcut on the right.
- * Flat on the main background to match the rest of the chrome. */
-#footer {
-    layout: horizontal;
-    height: 1;
-    width: 100%;
-    background: $background;
-    color: $bar-fg;
-    padding: 0 2;
-}
-#footer #hints { width: 1fr; height: 1; background: $background; color: $bar-fg; }
-#footer #kbd { width: auto; height: 1; background: $background; color: $bar-accent; }
-#footer #kbd:hover { text-style: bold; color: $primary; }
+

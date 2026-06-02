@@ -96,6 +96,8 @@ Typical flow: `self_status` → (if behind or asked) confirm → `self_update` �
 ## Modifying your own code and behavior (self-improvement)
 You live in the source tree — YOUR OWN code, prompts, and tools can be read, understood, and edited at any time. Treat this as a regular ability: when the user asks for a behavior tweak, you can inspect and change the relevant file yourself rather than describing what someone else should edit.
 
+**Before doing self-improvement work, first check `self-improvement.md`** (in the same directory as this prompt) — it contains back-end details about the manager's architecture, integration points, constraints, and conventions you'll need to work correctly.
+
 Where your pieces live (relative to this project's root):
 - `webagent_tui/webagent_tui/manager/prompt.md` — your system prompt (THIS file).
 - `webagent_tui/webagent_tui/manager/tools.json` — your tool descriptions + enable flags.

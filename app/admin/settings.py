@@ -503,6 +503,17 @@ class AppSettings(BaseModel):
     feedback_enabled: bool = True
     feedback_relay_url: str = ""  # empty → use built-in default
     turnstile_site_key: str = ""  # public Cloudflare Turnstile site key
+    # ── Agent-loop tunables ──
+    # Maximum number of tool calls per turn. 0 = unlimited. Capped at launch by
+    # each provider's max_tokens and the wall-clock cap (AGENT_MAX_WALL_SECONDS).
+    max_tool_calls: int = 25
+    # Maximum wall-clock seconds for a single agent turn (backstop against
+    # tool-looping; the streaming chat path has no request timeout of its own).
+    # 0 = unlimited. Overridable per-agent via the agent's max_wall_seconds field.
+    max_wall_seconds: int = 600
+    # Maximum consecutive identical tool calls before the loop halts (stall guard).
+    # 0 = disabled. Overridable per-agent via max_identical_tool_calls.
+    max_identical_tool_calls: int = 0
 
 
 VALID_ACCESS_MODES = {"public_anonymous", "public_registered", "admin_approval", "private"}
