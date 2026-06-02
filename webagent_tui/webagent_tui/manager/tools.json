@@ -66,6 +66,26 @@
       "enabled": true,
       "description": "Check whether the linked checkout is behind the public repo (read-only). Offer to pull if so."
     },
+    "reset_app": {
+      "category": "server",
+      "enabled": true,
+      "description": "Reset the linked webAgent install to a clean state (like reset_webagent.bat). ALWAYS wipes the userbase (local SQLite DB + sidecars + visuals/users/). Opt-in: clear_secrets (AI keys, OAuth/integration creds, scheduler/db-mode config), clear_users (local accounts + tokens), delete_env (.env), delete_agents (agent template JSONs — no fallback, zero agents after). Backs up to temp/reset-backup-<timestamp>/ unless backup=false; stops the server first. The DB, default admin/admin user, and agents regenerate on next start (if agent JSONs were kept). Mutating — confirm first."
+    },
+    "app_login": {
+      "category": "app_control",
+      "enabled": true,
+      "description": "Log into the RUNNING webAgent app over its HTTP API (the same API the web UI uses) and cache the session. Defaults to the local admin (admin/admin). Read-only side effect — just authentication. app_chat logs in on its own, so use this only to confirm credentials or surface the user_id."
+    },
+    "app_list_agents": {
+      "category": "app_control",
+      "enabled": true,
+      "description": "List the chat agents available to the logged-in app user (id + name) so you can target one with app_chat(agent_id=...). Read-only."
+    },
+    "app_chat": {
+      "category": "app_control",
+      "enabled": true,
+      "description": "Talk to the RUNNING app's agent AS the logged-in user (default admin/admin) and return its reply — start or continue a chat session and act on the user's behalf. The app auto-creates the session and uses the user's default agent unless you pass agent_id. Stays on the same conversation across calls unless you pass session_id or new_session=true. Mutating: the app's agent may run tools and take real actions, so confirm intent with the user first. Needs the server running."
+    },
     "read_diagnostics": {
       "category": "diagnostics",
       "enabled": true,

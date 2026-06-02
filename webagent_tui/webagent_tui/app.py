@@ -895,7 +895,8 @@ class ServerManagerApp(App):
             return out
         specs = {
             "admin": [("[Commands]", "help"), ("[Update]", "admin_update"),
-                      ("[Install]", "install"), ("[Uninstall]", "admin_uninstall"),
+                      ("[Install]", "install"), ("[Reset]", "admin_reset"),
+                      ("[Uninstall]", "admin_uninstall"),
                       ("[Diagnostics]", "diagnostics"), ("[Logs]", "server_logs")],
             "server": [("[Start]", "server_start"), ("[Restart]", "server_restart"),
                        ("[Kill]", "server_stop")],
@@ -1148,7 +1149,7 @@ class ServerManagerApp(App):
         self._log(f"\n[b {c['primary']}]{G.ADMIN} webAgent — command reference[/]")
 
         head("On-screen controls")
-        line("Admin", "Commands · Update · Install · Uninstall · Diagnostics · Logs")
+        line("Admin", "Commands · Update · Install · Reset · Uninstall · Diagnostics · Logs")
         line("Scene", "theme, animation, palette, speed, banner on/off")
         line("App", "AI provider + key (Save/Clear), Read/Write/Auto, Open Browser")
         line("status pill", "click the live/stopped status → Start · Restart · Kill")
@@ -1263,6 +1264,45 @@ class ServerManagerApp(App):
         self._log_block(msg)
         if self.facts.is_termux:
             self.set_timer(2.0, self.exit)
+
+    # ── admin panel: Reset (wipe the app's data back to a clean state) ──
+    def _reset_info(self) -> str:
+        return "\n".join([
+            "Resets this webAgent install to a clean state. The app's data is wiped:",
+            "  • database  (app/db/local.db + its journal/wal/shm sidecars)",
+            "  • generated pages  (visuals/users/)",
+            "  • app secrets  (AI keys, OAuth tokens, integration creds, scheduler/db-mode config)",
+            "  • local accounts  (passwords + remember-me tokens)",
+            "",
+            "Kept: your .env and the agent template JSONs, so the app still boots — the "
+            "database, the default admin/admin login, and the agents are recreated on next start.",
+            "",
+            "Everything removed is backed up first to temp/reset-backup-<timestamp>/, so this is "
+            "reversible. The server is stopped before the wipe.",
+            "",
+            "(For a deeper or lighter wipe — e.g. keep secrets, or also delete .env / the agent "
+            "templates — ask the agent to run reset_app with the flags you want.)",
+        ])
+
+    def action_admin_reset(self) -> None:
+        if self.project_root is None:
+            self._log(f"[{self.cc['dim']}]nothing to reset in onboarding mode (link a checkout first)[/]")
+            return
+        self.push_screen(ConfirmModal("Reset webAgent", self._reset_info(), "Reset now"),
+                         self._after_reset_confirm)
+
+    def _after_reset_confirm(self, ok: bool | None) -> None:
+        if ok:
+            self.run_worker(self._do_reset(), group="admin", exclusive=True)
+
+    async def _do_reset(self) -> None:
+        from .tools import reset
+        self._log(f"[{self.cc['tool']}]{G.BULLET} resetting — stopping the server, backing up, and wiping data…[/]")
+        msg = await reset.reset_app(self._admin_ctx(), backup=True,
+                                    clear_secrets=True, clear_users=True)
+        self._log_block(msg)
+        self._server_state = await server_health() if self.project_root else "n/a"
+        self._refresh_status()
 
     # ── theme & animation ('Scene' panel) helpers ─────────────────────────
     def _build_palette(self):

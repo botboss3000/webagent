@@ -50,6 +50,8 @@ nul
 # Temp / scratch
 temp/
 .server.pid
+# Ad-hoc prompt-slot dumps written to the project root (scratch; belong in temp/)
+/tmp_*.txt
 
 # Local SQLite DB — now gitignored; was previously tracked but is now a runtime artifact.
 # The transient sidecars and stray root copy stay ignored too:
