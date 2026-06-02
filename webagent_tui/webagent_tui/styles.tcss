@@ -92,7 +92,15 @@ Screen {
 }
 #side-panel #panel-title { text-style: bold; color: $bar-accent; margin-bottom: 1; }
 #side-panel .panel-sub { width: 100%; height: auto; color: $dim; margin-top: 1; }
-#side-panel Input { width: 100%; height: 3; }
+/* Panel text fields use the same rounded PILL as the chat input + buttons
+ * (override Textual's default heavy Input border). */
+#side-panel Input {
+    width: 100%; height: 3;
+    border: round $border-dim;
+    background: $background;
+    color: $foreground;
+}
+#side-panel Input:focus { border: round $primary; }
 /* Side-panel PILL buttons — rounded, full-width, centred; big tap targets for phones. */
 #side-panel .panel-btn {
     width: 100%; height: 3;
@@ -129,19 +137,6 @@ Screen {
 #side-panel .set-row { height: 3; width: 100%; }
 #side-panel .set-row .set-label { width: 8; height: 3; content-align: left middle; color: $dim; }
 #side-panel .set-row Select { width: 1fr; }
-
-/* Live server-status control, docked as a thin vertical strip on the right edge.
- * Click → the server panel (Start / Restart / Kill). Theme variables only. */
-#server-edge {
-    dock: right;
-    width: 3; height: 100%;
-    background: $panel;
-    border-left: thick $primary;
-    content-align: center middle;
-    color: $bar-accent;
-}
-#server-edge:hover { border-left: thick $secondary; }
-#server-edge.edge-on { background: $boost; border-left: thick $secondary; }
 
 /* Confirm dialog — details + Confirm/Cancel, for admin actions (Update/Uninstall). */
 ConfirmModal { align: center middle; }

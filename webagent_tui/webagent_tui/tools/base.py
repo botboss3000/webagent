@@ -42,6 +42,9 @@ class ToolContext:
     webapp_session_id: str = ""
     webapp_agent_id: str = ""
     webapp_agent_name: str = ""
+    # GitHub token (set in the Git panel) used to authenticate network git ops
+    # (fetch/pull/push) against github.com. Empty → rely on the host's own git creds.
+    git_token: str = ""
 
 
 @dataclass

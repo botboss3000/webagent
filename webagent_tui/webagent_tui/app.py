@@ -40,6 +40,7 @@ from .config import (
     resolve_provider,
 )
 from .appclient import WebAppClient, WebAppError
+from .clip import read_clipboard, write_clipboard
 from .db import Store
 from .env_probe import probe_machine, server_health
 from .glyphs import EMOJI, G
@@ -55,11 +56,26 @@ from .themes import CUSTOM_VAR_DEFAULTS, DEFAULT_THEME, THEME_LABELS, THEME_ORDE
 
 
 class PromptInput(Input):
-    """Single-line prompt. Textual's Input maps Ctrl+A to 'cursor home'; we rebind
-    it to select-all so Ctrl+A highlights everything in the field. Ctrl+C copy /
-    Ctrl+V paste / Ctrl+X cut are inherited from Input."""
+    """Single-line input. Textual's Input maps Ctrl+A to 'cursor home'; we rebind
+    it to select-all so Ctrl+A highlights everything in the field (then Ctrl+C copies
+    the whole value).
+
+    Ctrl+V is overridden here: Textual's default pastes ``app.clipboard`` (its internal
+    buffer, empty for text copied from another program), so we read the real OS
+    clipboard instead — that's what 'paste my token/key' actually needs. (The terminal's
+    own bracketed-paste path still works via the inherited handler.) Ctrl+C copy /
+    Ctrl+X cut are inherited from Input, but reach the OS clipboard because the app
+    overrides ``copy_to_clipboard`` (Textual's default only emits OSC 52)."""
 
     BINDINGS = [Binding("ctrl+a", "select_all", "Select all", show=False)]
+
+    def action_paste(self) -> None:
+        text = read_clipboard() or self.app.clipboard
+        if not text:
+            return
+        text = text.splitlines()[0] if "\n" in text else text   # single-line field
+        start, end = self.selection
+        self.replace(text, start, end)
 
 
 class SpinnerBar(Widget):
@@ -146,54 +162,6 @@ class ServerStatusWidget(Widget):
             return Text(f"{G.DOT_DEAD} stopped", style=f"bold {cc.get('error', '#ff5f56')}")
         spin = self.FRAMES[self._frame % len(self.FRAMES)]
         return Text(f"{spin} starting", style=f"bold {cc.get('tool', '#ff9d2f')}")
-
-
-class ServerEdge(Widget):
-    """The live server-status control, docked as a thin VERTICAL strip on the right
-    edge of the screen. Shows ``live`` / ``stop`` at rest and a spinning frame with
-    ``boot`` while starting; click → the server panel (Start / Restart / Kill).
-    Status text is stacked one character per line so it reads down the edge."""
-
-    FRAMES = "-\\|/"
-
-    def __init__(self, id: str | None = None) -> None:
-        super().__init__(id=id)
-        self._btn_action = "panel_server"   # opens the server view
-        self._state = "n/a"
-        self._frame = 0
-        self._timer = None
-
-    def on_mount(self) -> None:
-        self._timer = self.set_interval(0.1, self._tick, pause=True)
-        self._sync()
-
-    def set_state(self, state: str) -> None:
-        self._state = state
-        self._sync()
-
-    def _loading(self) -> bool:
-        return self._state in ("checking", "starting", "unknown")
-
-    def _sync(self) -> None:
-        if self._timer is not None:
-            self._timer.resume() if self._loading() else self._timer.pause()
-        self.refresh()
-
-    def _tick(self) -> None:
-        self._frame += 1
-        self.refresh()
-
-    def render(self) -> Text:
-        cc = getattr(self.app, "cc", {})
-        if self._state == "running":
-            glyph, word, col = G.DOT_LIVE, "live", cc.get("success", "#7be06a")
-        elif self._state == "stopped":
-            glyph, word, col = G.DOT_DEAD, "stop", cc.get("error", "#ff5f56")
-        elif self._state == "n/a":
-            glyph, word, col = "·", "n/a", cc.get("dim", "#888")
-        else:
-            glyph, word, col = self.FRAMES[self._frame % len(self.FRAMES)], "boot", cc.get("tool", "#ff9d2f")
-        return Text(glyph + "\n" + "\n".join(word), style=f"bold {col}", justify="center")
 
 
 def _scene_rows(app) -> list[tuple[str, "Select"]]:
@@ -295,6 +263,7 @@ class ServerManagerApp(App):
         self._connect_agent: Optional[dict] = None   # the agent currently expanded
         self._cfg_settings: dict = {}                # last-fetched app settings (config view)
         self._cfg_provider: dict = {}                # last-fetched LLM provider (config view)
+        self._provider_pick: str = ""                # the highlighted provider pill (App view)
         self.session_id = self.store.create_session(
             str(self.project_root) if self.project_root else "(onboarding)"
         )
@@ -333,6 +302,17 @@ class ServerManagerApp(App):
     def get_theme_variable_defaults(self) -> dict[str, str]:
         return CUSTOM_VAR_DEFAULTS
 
+    def copy_to_clipboard(self, text: str) -> None:
+        """Route every copy/cut (input fields via Ctrl+C / Ctrl+X, and on-screen text
+        selection) to the REAL OS clipboard. Textual's default only emits an OSC 52
+        escape, which doesn't reach the clipboard on Windows conhost / many terminals —
+        so we write it directly, then still call super() for terminals that honour OSC 52."""
+        try:
+            write_clipboard(text)
+        except Exception:
+            pass
+        super().copy_to_clipboard(text)
+
     def compose(self) -> ComposeResult:
         # Custom chrome modelled on the launcher's chat screen: a header toolbar of
         # clickable CATEGORY buttons + a footer legend, both spanning the FULL width
@@ -360,11 +340,8 @@ class ServerManagerApp(App):
             panel = Vertical(id="side-panel")  # thin right menu; hidden until a category opens
             panel.display = False
             yield panel
-            # Live server-status control, docked as a thin vertical strip on the far
-            # right edge (managed mode only); click → the server panel.
-            self._dot = ServerEdge(id="server-edge")
-            self._dot.display = self.project_root is not None
-            yield self._dot
+            # The live server-status control is a header button (built in _refresh_status,
+            # right after App) — not a separate edge strip.
         with Horizontal(id="footer"):
             yield Static("", id="hints")               # left: minimal legend
             yield Static(self._kbd_label(), id="kbd", markup=False)  # right: open-keyboard shortcut
@@ -563,8 +540,9 @@ class ServerManagerApp(App):
 
     def _refresh_status(self) -> None:
         """(Re)build the header toolbar (replaces the stock Header): one clickable
-        CATEGORY button per group — Admin · Scene · App — each of which opens a thin
-        right-side panel of buttons. The last item is the live SERVER STATUS itself
+        CATEGORY button per group — Admin · Git (managed mode) · App — each of which
+        opens a thin right-side panel of buttons. The theme is cycled with Ctrl+T (no
+        header button). The last item is the live SERVER STATUS itself
         (live / stopped / checking); clicking it opens the server panel (Start /
         Restart / Kill). No title or model text."""
         c = self.cc
@@ -587,17 +565,20 @@ class ServerManagerApp(App):
         self._add_hdr(bar, Text(mode, style=f"bold {mcol}"), "mode_cycle")
 
         cat("Admin", "admin", "panel_admin")
-        cat("Theme", "scene", "panel_scene")
+        if self.project_root:
+            cat("Git", "git", "panel_git")   # source control: fetch / pull / push
         cat("App", "app", "panel_app")
-        if not self.project_root:
+        # The live server STATUS sits right after App (managed mode); click → server panel.
+        # Rebuilt each refresh, so keep self._dot pointing at the current widget.
+        self._dot = None
+        if self.project_root:
+            self._dot = ServerStatusWidget()
+            if self._panel_kind == "server":
+                self._dot.add_class("hdr-on")
+            bar.mount(self._dot)
+            self._dot.set_state(self._server_state)
+        else:
             self._add_hdr(bar, Text("onboarding", style=c["secondary"]), None)
-        # The live server STATUS lives on the right-edge strip (#server-edge), not in
-        # this header row. Keep it in sync (managed mode only).
-        if self._dot is not None:
-            self._dot.display = self.project_root is not None
-            if self.project_root:
-                self._dot.set_state(self._server_state)
-                self._dot.set_class(self._panel_kind == "server", "edge-on")
 
     def _refresh_hints(self) -> None:
         """Footer-left legend. Esc opens/closes the side menu (the Ctrl+ editing hints
@@ -713,10 +694,6 @@ class ServerManagerApp(App):
     @on(Click, "#kbd")
     def _on_kbd_click(self, event: Click) -> None:
         self.action_open_keyboard()
-
-    @on(Click, "#server-edge")
-    def _on_edge_click(self, event: Click) -> None:
-        self.action_panel_server()
 
     @on(Click, ".act-btn")
     def _on_act_click(self, event: Click) -> None:
@@ -942,7 +919,7 @@ class ServerManagerApp(App):
         Scene/App controls, or the confirm / connect / config views)."""
         c = self.cc
         title = {"admin": "ADMIN", "scene": "THEME", "app": "APP", "server": "SERVER",
-                 "connect": "CONNECT", "config": "APP CONFIG",
+                 "git": "GIT", "connect": "CONNECT", "config": "APP CONFIG",
                  "confirm": (self._confirm_state or {}).get("title", "CONFIRM")}.get(kind, kind.upper())
         # Top row in EVERY view: an expand/collapse toggle, then the title.
         exp_label = "[›‹ narrow]" if self.cfg.side_expanded else "[‹› wide]"
@@ -958,6 +935,8 @@ class ServerManagerApp(App):
                 self._panel_btn(f"[{st.get('label', 'Confirm')}]", "confirm_yes"),
                 self._panel_btn("[Cancel]", "confirm_no"), classes="panel-row"))
             return out
+        if kind == "git":
+            return out + self._git_widgets()
         if kind == "connect":
             return out + self._connect_widgets()
         if kind == "config":
@@ -968,19 +947,32 @@ class ServerManagerApp(App):
             return out
         if kind == "app":
             # ── AI provider / key block ──────────────────────────────────
+            # Provider as PILL buttons (one per preset), not a Select — the dropdown's
+            # expand glyph rendered as a broken symbol. The active one is highlighted;
+            # clicking one fills Base URL + Model (Custom leaves them for manual entry).
+            names = [n for n, _, _ in PROVIDER_PRESETS]
             prov_name = self.cfg.provider or provider_name_for_base(self.provider.base_url)
+            if prov_name not in names:
+                prov_name = "Custom"
+            self._provider_pick = prov_name
             out.append(Static(Text("Provider", style=c["dim"]), classes="panel-sub"))
-            out.append(Select([(n, n) for n, _, _ in PROVIDER_PRESETS],
-                              value=prov_name if prov_name in {n for n, _, _ in PROVIDER_PRESETS} else "Custom",
-                              allow_blank=False, id="provider-select"))
+            row: list[Widget] = []
+            for n in names:
+                active = " panel-btn-active" if n == prov_name else ""
+                row.append(self._value_btn(n, "provider_pick", "provider-pick" + active, n))
+                if len(row) == 2:
+                    out.append(Horizontal(*row, classes="panel-row"))
+                    row = []
+            if row:
+                out.append(Horizontal(*row, classes="panel-row"))
             out.append(Static(Text("AI key", style=c["dim"]), classes="panel-sub"))
-            out.append(Input(value="", password=True, id="key-input",
-                             placeholder="update key…" if self.provider.configured else "paste API key…"))
+            out.append(PromptInput(value=self.provider.api_key, id="key-input",
+                             placeholder="paste API key…"))
             out.append(Static(Text("Base URL", style=c["dim"]), classes="panel-sub"))
-            out.append(Input(value=self.provider.base_url, id="base-input",
+            out.append(PromptInput(value=self.provider.base_url, id="base-input",
                              placeholder="https://…/v1"))
             out.append(Static(Text("Model", style=c["dim"]), classes="panel-sub"))
-            out.append(Input(value=self.provider.model, id="model-input", placeholder="model id"))
+            out.append(PromptInput(value=self.provider.model, id="model-input", placeholder="model id"))
             out.append(Horizontal(self._panel_btn("[Save]", "key_save"),
                                   self._panel_btn("[Clear]", "key_clear"),
                                   classes="panel-row"))
@@ -1006,6 +998,28 @@ class ServerManagerApp(App):
         }.get(kind, [])
         for label, action in specs:
             out.append(self._panel_btn(label, action))
+        return out
+
+    # ── Git view (source control: token + fetch / pull / push) ────────────────
+    def _git_widgets(self) -> list[Widget]:
+        """The Git panel: a GitHub token field (Save/Clear) used to authenticate
+        network ops, then Fetch / Pull / Push — each hands the agent a plain-language
+        request so it runs the matching git_tool op (with the op-safety rules)."""
+        c = self.cc
+        out: list[Widget] = []
+        out.append(Static(Text("GitHub token", style=c["dim"]), classes="panel-sub"))
+        out.append(PromptInput(value=self.cfg.git_token, id="git-token-input",
+                         placeholder="paste GitHub token…"))
+        out.append(Horizontal(self._panel_btn("[Save]", "git_token_save"),
+                              self._panel_btn("[Clear]", "git_token_clear"),
+                              classes="panel-row"))
+        tnote = "✓ token set" if self.cfg.git_token else "no token (using the host's git credentials)"
+        tcol = c["secondary"] if self.cfg.git_token else c["dim"]
+        out.append(Static(Text(tnote, style=tcol), id="git-token-status", classes="panel-sub"))
+        out.append(Static(Text("Actions", style=c["dim"]), classes="panel-sub"))
+        out.append(self._panel_btn("[Fetch]", "git_fetch"))
+        out.append(self._panel_btn("[Pull]", "git_pull"))
+        out.append(self._panel_btn("[Push]", "git_push"))
         return out
 
     # ── Connect view (browse agents/sessions, set target, the two mutes) ──────
@@ -1061,13 +1075,14 @@ class ServerManagerApp(App):
             out.append(self._panel_btn("[Save settings]", "cfg_save_settings"))
         out.append(Static(Text("LLM auth key", style=f"bold {c['accent']}"), classes="panel-sub"))
         out.append(Static(Text("Provider", style=c["dim"]), classes="panel-sub"))
-        out.append(Input(value=p.get("provider", ""), id="cfg-provider", placeholder="openrouter"))
+        out.append(PromptInput(value=p.get("provider", ""), id="cfg-provider", placeholder="openrouter"))
         out.append(Static(Text("Base URL", style=c["dim"]), classes="panel-sub"))
-        out.append(Input(value=p.get("base_url", ""), id="cfg-baseurl", placeholder="https://…/v1"))
+        out.append(PromptInput(value=p.get("base_url", ""), id="cfg-baseurl", placeholder="https://…/v1"))
         out.append(Static(Text("Model", style=c["dim"]), classes="panel-sub"))
-        out.append(Input(value=p.get("model", ""), id="cfg-model", placeholder="model id"))
+        out.append(PromptInput(value=p.get("model", ""), id="cfg-model", placeholder="model id"))
         out.append(Static(Text("API key", style=c["dim"]), classes="panel-sub"))
-        out.append(Input(value="", password=True, id="cfg-apikey", placeholder="blank = keep current"))
+        out.append(PromptInput(value=p.get("api_key", ""), id="cfg-apikey",
+                               placeholder="paste API key… (blank = keep current)"))
         out.append(self._panel_btn("[Save auth key]", "cfg_save_auth"))
         out.append(self._panel_btn("[Refresh]", "cfg_refresh"))
         return out
@@ -1085,6 +1100,11 @@ class ServerManagerApp(App):
         if self.project_root is None:
             return
         self._open_panel("server")
+
+    def action_panel_git(self) -> None:
+        if self.project_root is None:
+            return
+        self._open_panel("git")
 
     def action_panel_connect(self) -> None:
         self._open_panel("connect")
@@ -1153,6 +1173,19 @@ class ServerManagerApp(App):
     def action_toggle_manager(self) -> None:
         self.set_manager_muted(not self._manager_muted)
         self._rebuild_panel()
+
+    @on(Click, ".provider-pick")
+    def _on_provider_pick(self, event: Click) -> None:
+        """Pick a provider pill: remember it, fill Base URL + Model from the preset
+        (Custom leaves them as typed), and move the highlight — without rebuilding the
+        panel, so a key/URL already typed isn't lost."""
+        name = getattr(event.widget, "_btn_value", None)
+        if name is None:
+            return
+        self._provider_pick = str(name)
+        self._apply_provider_preset(self._provider_pick)
+        for b in self.query(".provider-pick"):
+            b.set_class(getattr(b, "_btn_value", None) == name, "panel-btn-active")
 
     @on(Click, ".connect-agent")
     def _on_connect_agent(self, event: Click) -> None:
@@ -1251,6 +1284,7 @@ class ServerManagerApp(App):
     # Buttons whose action should NOT close the panel (they edit it in place).
     _KEEP_OPEN = {"key_save", "key_clear", "panel_expand",
                   "panel_connect", "panel_config",
+                  "git_token_save", "git_token_clear",
                   "toggle_webagent", "toggle_manager", "connect_refresh",
                   "cfg_save_settings", "cfg_save_auth", "cfg_refresh"}
 
@@ -1292,11 +1326,6 @@ class ServerManagerApp(App):
         # Config-view selects (cfg-*) are read on [Save], not applied live.
         if (event.select.id or "").startswith("cfg-"):
             return
-        if event.select.id == "provider-select":
-            # Fill the Base URL + Model fields with the chosen provider's defaults so
-            # the URL matches the key (Custom leaves them for manual entry). Save persists.
-            self._apply_provider_preset(str(event.value))
-            return
         # Scene controls apply live; the panel stays open so several can be tweaked.
         self.apply_setting(event.select.id, event.value)
 
@@ -1323,14 +1352,14 @@ class ServerManagerApp(App):
             key = panel.query_one("#key-input", Input).value.strip()
             base = panel.query_one("#base-input", Input).value.strip()
             model = panel.query_one("#model-input", Input).value.strip()
-            prov = panel.query_one("#provider-select", Select).value
         except Exception:
             return
+        prov = self._provider_pick   # the highlighted provider pill
         if key:
             self.cfg.api_key = key
         self.cfg.base_url = base
         self.cfg.model = model
-        self.cfg.provider = str(prov) if prov is not Select.BLANK else ""
+        self.cfg.provider = prov if prov and prov != "Custom" else ""
         self.cfg.provider_override = True
         self.cfg.save()
         self._apply_provider()
@@ -1357,6 +1386,74 @@ class ServerManagerApp(App):
         self._log(f"[{self.cc['dim']}]{G.BULLET} AI key cleared "
                   f"(falling back to the repo/env key, if any).[/]")
         self._rebuild_panel()
+
+    # ── Git panel: store the GitHub token + run fetch / pull / push ────────
+    @on(Input.Submitted, "#git-token-input")
+    def _git_token_enter(self, event: Input.Submitted) -> None:
+        self.action_git_token_save()   # Enter in the token field == [Save]
+
+    def action_git_token_save(self) -> None:
+        """Persist the GitHub token used to authenticate fetch/pull/push. Stored in
+        the TUI's own config (data dir), never written into the repo's .git/config."""
+        try:
+            tok = self.query_one("#side-panel", Vertical).query_one("#git-token-input", Input).value.strip()
+        except Exception:
+            return
+        if tok:
+            self.cfg.git_token = tok
+            self.cfg.save()
+            self._log(f"[{self.cc['secondary']}]{G.OK} GitHub token saved[/] "
+                      f"[{self.cc['dim']}]— used to authenticate fetch/pull/push[/]")
+        else:
+            self._log(f"[{self.cc['tool']}]{G.WARN} no token entered — paste one and Save again.[/]")
+        self._rebuild_panel()
+
+    def action_git_token_clear(self) -> None:
+        self.cfg.git_token = ""
+        self.cfg.save()
+        self._log(f"[{self.cc['dim']}]{G.BULLET} GitHub token cleared "
+                  f"(falling back to the host's git credentials, if any).[/]")
+        self._rebuild_panel()
+
+    def _git_request(self, prompt: str, label: str, needs_writes: bool) -> None:
+        """Hand the agent a plain-language git request (the button → server-manager
+        bridge). Mutating ops (pull/push) arm writes first — the click is the consent,
+        mirroring the get-started flow — so the agent's git_tool isn't refused."""
+        if self.project_root is None:
+            self._log(f"[{self.cc['dim']}]no checkout linked — nothing to {label}[/]")
+            return
+        if not self.provider.configured:
+            self._log(f"[{self.cc['tool']}]{G.WARN} No AI key configured.[/] "
+                      "Set a provider + key in the App panel first.")
+            return
+        if needs_writes and not (self.cfg.writes_enabled or self.cfg.autonomous):
+            self.cfg.writes_enabled = True
+            self.cfg.save()
+            self._refresh_status()
+            self._log(f"[{self.cc['secondary']}]{G.BULLET} writes enabled for git {label}[/]")
+        self._log_user(f"Git: {label}")
+        self._run_turn(prompt)
+
+    def action_git_fetch(self) -> None:
+        self._git_request(
+            "Fetch from the git remote (run git_tool with operation 'fetch') and tell me "
+            "what's new on the upstream branch. Don't merge or change my working tree.",
+            "fetch", needs_writes=False)
+
+    def action_git_pull(self) -> None:
+        self._git_request(
+            "Pull the latest changes from the git remote into the current branch (git_tool "
+            "operation 'pull'). If there are uncommitted local changes that would block it, or "
+            "a merge conflict arises, stop and tell me before doing anything destructive. "
+            "Summarize what changed.",
+            "pull", needs_writes=True)
+
+    def action_git_push(self) -> None:
+        self._git_request(
+            "Push my committed changes to the git remote on the current branch (git_tool "
+            "operation 'push'). Never force-push. First check git status; if there's nothing to "
+            "push or the push is rejected, tell me why instead of forcing it.",
+            "push", needs_writes=True)
 
     # ── App panel: set the write gate directly (Read / Write / Auto) ───────
     def _set_mode(self, mode: str) -> None:
@@ -1489,8 +1586,9 @@ class ServerManagerApp(App):
 
         head("On-screen controls")
         line("Admin", "Commands · Update · Install · Reset · Uninstall · Diagnostics · Logs")
-        line("Theme", "pick one of the 23 colour themes")
+        line("Git", "GitHub token (Save/Clear), then Fetch · Pull · Push")
         line("App", "AI provider + key (Save/Clear), Read/Write/Auto, Open Browser")
+        line("theme", "Ctrl+T cycles the 23 colour themes (no header button)")
         line("status pill", "click the live/stopped status → Start · Restart · Kill")
         line("Stop / Continue", "above the input — cancel a turn / resume it")
         line("click a pill", "opens its menu; click outside or Esc to close it")

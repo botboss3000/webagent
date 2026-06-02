@@ -323,13 +323,9 @@ panel for the busier views (Connect, App Config) and is remembered across sessio
 |-------------|--------|
 | **mode** (far left) — a **one-word** write-gate (`read` / `write` / `auto`) | **Click to cycle** read → write → auto (colour signals the mode). Same gate as the App panel's Read/Write/Auto. |
 | **Admin** | opens `[Connect]` · `[App Config]` · `[Commands]` · `[Update]` · `[Install]` · `[Reset]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` |
-| **Theme** | the colour-theme picker (one of the 23 shared themes) — applies **live** |
-| **App** | the **AI provider** block — a **Provider** dropdown (OpenRouter / OpenAI / DeepSeek / Groq / Together / Mistral / xAI / Custom) that fills the **Base URL** + **Model** to match, an **AI key** field, and `[Save]` / `[Clear]` pills; plus the write-gate `[Read-only]` / `[Write]` / `[Autonomous]` (current one highlighted) and `[Open Browser]` (opens `http://localhost:8080/index.html`) |
-
-The **live server status** is **no longer in the header** — it's a thin **vertical strip
-docked on the right edge** of the screen (managed mode), showing `live` / `stop` (or a
-spinner + `boot` while starting). **Click it** to open the **Server** view (`[Start]` ·
-`[Restart]` · `[Kill]`).
+| **Git** (managed mode only) | source control: a **GitHub token** field with `[Save]` / `[Clear]` (used to authenticate network ops; stored in the TUI's own config, never written into the repo's `.git/config`), then `[Fetch]` · `[Pull]` · `[Push]`. Each button hands the agent a plain-language request so it runs the matching `git_tool` op under the usual op-safety rules (force-push blocked); Pull/Push arm writes first since the click is the consent. |
+| **App** | the **AI provider** block — **Provider** as a grid of **pill buttons** (OpenRouter / OpenAI / DeepSeek / Groq / Together / Mistral / xAI / Custom); clicking one highlights it and fills the **Base URL** + **Model** to match (Custom leaves them as typed). Then a plain-text **AI key** field, `[Save]` / `[Clear]`; plus the write-gate `[Read-only]` / `[Write]` / `[Autonomous]` (current one highlighted) and `[Open Browser]` (opens `http://localhost:8080/index.html`). **Keys are shown in clear text** (not masked) so you can verify what you pasted. |
+| **server status** (right after **App**, managed mode) | the live `live` / `stopped` pill (spins `…starting` while booting). **Click it** to open the **Server** view (`[Start]` · `[Restart]` · `[Kill]`). |
 
 **Closing a panel:** click anywhere **outside** it (e.g. in the chat), press **Esc**,
 or click the same category again to toggle it shut. The open category is highlighted in
@@ -402,15 +398,15 @@ polled every few seconds (live = green, stopped = red, checking = amber).
 
 **Small screens:** the panel is narrow (capped at 60% width) so the chat stays visible
 even on a phone, and its labels stack vertically and wrap. Because the header collapsed
-to a few short words (Admin · Theme · App · status), it fits a narrow terminal.
+to a few short words (Admin · Git · App), it fits a narrow terminal.
 
 ### Look & feel (vendored from the launcher)
 
 - **Plain-text header** — a simple two-line title (**WEBAGENT** / **Server Manager**)
   at the top of the chat column, coloured from the active theme. (The old animated
   ASCII logo banner was removed.)
-- **Theme panel** — the colour-theme picker (one of the 23 shared themes), opened from
-  the header's **Theme** button. The choice applies **live** and persists.
+- **Theme** — cycle the 23 shared themes with **Ctrl+T** (there is no longer a Theme
+  header button). The choice applies **live** and persists.
 - **Activity spinner** — a small `-/|\` spinner above the input spins whenever the
   agent is busy (thinking or running a tool), so it's clear the app isn't frozen;
   it's blank at rest.
@@ -434,7 +430,7 @@ to a few short words (Admin · Theme · App · status), it fits a narrow termina
 | `Esc` | Open the side menu (the **App** panel) — or close it if one is already open |
 | `Ctrl+Q` | Quit the manager |
 | `Ctrl+A` | Select all text in the input field |
-| `Ctrl+C` / `Ctrl+V` / `Ctrl+X` | Copy / paste / cut (input field) |
+| `Ctrl+C` / `Ctrl+V` / `Ctrl+X` | Copy / paste / cut — wired to the **real OS clipboard** (Ctrl+V reads it, Ctrl+C/X write it), so pasting a key/token from a browser or password manager works. (Textual's defaults only use an internal buffer + OSC 52, which don't reach the OS clipboard on Windows/many terminals.) |
 | `Ctrl+T` | Cycle theme (23 shared with the launcher; not shown in the footer) |
 
 The **footer** is minimal: a left `Esc menu` hint and a right-aligned **⌨ Keyboard**
