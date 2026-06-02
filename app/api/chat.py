@@ -204,9 +204,9 @@ async def _handle_optimize_command(
     Returns a user-facing message."""
 
     # Find the user's most recent real session (not optimizer-*)
-    import sqlite3
     try:
-        conn = sqlite3.connect("app/db/local.db")
+        from app.db import get_db as _get_db
+        conn = _get_db()._get_conn()
         row = conn.execute(
             "SELECT id FROM sessions WHERE user_id=? AND id NOT LIKE 'optimizer-%' AND id NOT LIKE 'worker-%' AND id NOT LIKE 'closer-%' ORDER BY created_at DESC LIMIT 1",
             (user_id,)

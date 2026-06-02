@@ -411,9 +411,9 @@ async def session_search(
             except Exception as e:
                 logger.debug("Supabase session_search failed, falling back to local: %s", e)
         
-        # Fallback: local SQLite (join through sessions table for user_id)
-        import sqlite3
-        conn = sqlite3.connect("app/db/local.db")
+        # Fallback: the active local backend (SQLite or Postgres)
+        from app.db import get_db
+        conn = get_db()._get_conn()
         rows = conn.execute(
             """SELECT i.id, i.session_id, i.role, i.content, i.tool_name, i.created_at
                FROM interactions i

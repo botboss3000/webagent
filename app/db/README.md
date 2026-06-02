@@ -1,6 +1,18 @@
 the system_prompt is hardcoded to use the system_prompt.md as fallback. the priority prompt is loaded through the database.
 
-local.db is SQL_lite and used for local development. final direction is to use supabase, so all coding solutions need to be optimized for future supabase impelemntation.
+`local.db` is SQLite and is the **zero-config default** (and the shipped seed DB). The backend is pluggable: `get_db()` returns a `LocalBackend` (SQLite), a `SupabaseBackend` (Postgres over REST), or a **`PostgresBackend`** (raw Postgres via `psycopg`). All three implement the same `StorageBackend` interface.
+
+## Pluggable backends + the Postgres translation layer
+
+`PostgresBackend` (in `postgres_backend.py`) is a **subclass of `LocalBackend`** that overrides only the connection and schema bootstrap. Every data method is inherited and runs through **`pg_portable.py`** — a `sqlite3`-compatible facade over a pooled `psycopg` connection that translates SQLite-dialect SQL to Postgres on the fly (`?`→`%s`, `INSERT OR IGNORE/REPLACE`→`ON CONFLICT`, `datetime('now')`→text timestamp, `IFNULL`→`COALESCE`, `json_each(col)`→`json_array_elements_text(...)`). This means **one codebase serves both stores** — when writing new backend code, keep using `self._get_conn()` + SQLite-dialect SQL and it works on both. Avoid Postgres-only or SQLite-only SQL in shared methods; if a method genuinely needs native features (FTS, embeddings), override it in `PostgresBackend` (see `_fts5_search`, `_vector_search`, `doc_chunk_upsert`).
+
+Parity rules for the Postgres schema (`ddl_renderer.py`): `TIMESTAMP` and `JSON` columns render as **TEXT** (the app stores ISO strings / `json.dumps` text and reads them back as strings — JSONB/timestamptz would hand back parsed objects and break callers). The one native type is **`VECTOR`** (pgvector `vector(1536)`) for embeddings. Tables are emitted in **foreign-key dependency order** (Postgres enforces FK targets at CREATE time; SQLite doesn't).
+
+`PostgresBackend._init_db()` renders the schema, then **reconciles columns** against a throwaway no-seed SQLite reference instance — any column added by a future SQLite `ALTER` migration is auto-added to Postgres, so the two never drift.
+
+Copy data with `python -m app.db.migrate_sqlite_to_pg` (see `migrate_sqlite_to_pg.py`).
+
+**Still SQLite-only even under Postgres:** the optimizer self-improvement subsystem (`app/optimizer/`, `app/tools/optimizer_tools.py` — temp `.db` scratch files). The admin DB Viewer (`app/api/db_viewer.py`) is now backend-aware (routes the main DB to Postgres via `_open()` + a standalone autocommit `PgPortableConnection`; temp `.db` files stay SQLite).
 
 ## Agent template + prompt tables (three-way split)
 

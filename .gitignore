@@ -81,6 +81,8 @@ db_connection.json
 app/auth/users.json
 app/auth/users.json.bak
 app/db_mode.json
+app/db_connection.json
+app/secrets_mode.json
 app/pages_mode.json
 app/attachments_store_config.json
 # Remote Access (per-machine config + the signpost directory written at runtime)

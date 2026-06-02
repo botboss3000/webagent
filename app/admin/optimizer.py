@@ -116,8 +116,8 @@ async def trigger_optimizer_run(
         from app.optimizer.prefilter import prefilter
         # If session_id is empty, find the most recent session for this user
         if not session_id:
-            import sqlite3 as _sq3
-            _conn = _sq3.connect("app/db/local.db")
+            from app.db import get_db as _get_db
+            _conn = _get_db()._get_conn()
             _row = _conn.execute(
                 "SELECT id FROM sessions WHERE user_id=? AND id NOT LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1",
                 (user_id,)

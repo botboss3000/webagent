@@ -29,7 +29,8 @@ def build() -> None:
     global _index
     new_index: dict = {}
     try:
-        conn = sqlite3.connect(_DB_PATH)
+        from app.db import get_db
+        conn = get_db()._get_conn()
         # Base layer: system templates
         # Also track the template-level key per template_id so the override
         # layer can evict the old key when the user changes it.

@@ -28,6 +28,9 @@ class Column:
     unique: bool = False
     references: Optional[str] = None  # e.g. "sessions(id)"
     on_delete: Optional[str] = None   # e.g. "CASCADE"
+    # For type == "VECTOR": embedding dimensionality. Postgres renders
+    # vector(<dim>) (pgvector); SQLite/MySQL fall back to BLOB (raw float32 bytes).
+    vector_dim: Optional[int] = None
 
 
 @dataclass
@@ -307,7 +310,7 @@ TABLES: List[Table] = [
         Column("chunk_index", "INTEGER", nullable=False),
         Column("chunk_text", "TEXT", nullable=False),
         Column("chunk_source", "TEXT", nullable=False, default="'compiled_truth'"),
-        Column("embedding", "BLOB"),
+        Column("embedding", "VECTOR", vector_dim=1536),
         Column("token_count", "INTEGER"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ], constraints=[
@@ -550,7 +553,7 @@ TABLES: List[Table] = [
         Column("chunk_index", "INTEGER", nullable=False, default="0"),
         Column("chunk_text", "TEXT", nullable=False),
         Column("content_hash", "TEXT"),
-        Column("embedding", "BLOB"),
+        Column("embedding", "VECTOR", vector_dim=1536),
         Column("token_count", "INTEGER"),
         Column("metadata", "TEXT", nullable=False, default="'{}'"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
@@ -710,6 +713,94 @@ TABLES: List[Table] = [
     ], constraints=[
         "CHECK (kind IN ('agent','user','user_for_agent'))",
     ]),
+
+    # ── Automation / events (cron + push/poll triggers; see migration 016) ──
+    Table("agent_automations", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("agent_id", "TEXT", nullable=False),
+        Column("owner_user_id", "TEXT", nullable=False),
+        Column("task_label", "TEXT", nullable=False, default="''"),
+        Column("prompt", "TEXT", nullable=False, default="''"),
+        Column("schedule_cron", "TEXT", nullable=False, default="''"),
+        Column("schedule_natural", "TEXT", nullable=False, default="''"),
+        Column("timezone", "TEXT", nullable=False, default="'UTC'"),
+        Column("channel", "TEXT"),
+        Column("channel_recipient", "TEXT"),
+        Column("silent", "INTEGER", nullable=False, default="0"),
+        Column("enabled", "INTEGER", nullable=False, default="1"),
+        Column("next_run_at", "TEXT"),
+        Column("last_run_at", "TEXT"),
+        Column("last_status", "TEXT"),
+        Column("last_error", "TEXT"),
+        Column("last_session_id", "TEXT"),
+        Column("source_hash", "TEXT", nullable=False, default="''"),
+        Column("fire_token", "TEXT"),
+        Column("external_job_id", "TEXT"),
+        Column("external_provider", "TEXT"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ]),
+
+    Table("agent_event_subscriptions", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("agent_id", "TEXT", nullable=False),
+        Column("owner_user_id", "TEXT", nullable=False),
+        Column("source", "TEXT", nullable=False),
+        Column("event_type", "TEXT", nullable=False),
+        Column("filter_json", "TEXT", nullable=False, default="'{}'"),
+        Column("task_label", "TEXT", nullable=False, default="''"),
+        Column("prompt", "TEXT", nullable=False, default="''"),
+        Column("trigger_natural", "TEXT", nullable=False, default="''"),
+        Column("channel", "TEXT"),
+        Column("channel_recipient", "TEXT"),
+        Column("silent", "INTEGER", nullable=False, default="0"),
+        Column("enabled", "INTEGER", nullable=False, default="1"),
+        Column("external_subscription_id", "TEXT"),
+        Column("external_resource_id", "TEXT"),
+        Column("external_expiration_at", "TEXT"),
+        Column("external_metadata", "TEXT", nullable=False, default="'{}'"),
+        Column("poll_cursor", "TEXT"),
+        Column("poll_interval_seconds", "INTEGER"),
+        Column("last_polled_at", "TEXT"),
+        Column("last_event_at", "TEXT"),
+        Column("last_event_external_id", "TEXT"),
+        Column("last_status", "TEXT"),
+        Column("last_error", "TEXT"),
+        Column("last_session_id", "TEXT"),
+        Column("fire_count", "INTEGER", nullable=False, default="0"),
+        Column("source_hash", "TEXT", nullable=False, default="''"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ]),
+
+    Table("event_deliveries", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("subscription_id", "TEXT", nullable=False),
+        Column("source", "TEXT", nullable=False),
+        Column("event_type", "TEXT", nullable=False),
+        Column("event_external_id", "TEXT", nullable=False),
+        Column("owner_user_id", "TEXT", nullable=False),
+        Column("agent_id", "TEXT", nullable=False),
+        Column("session_id", "TEXT"),
+        Column("status", "TEXT", nullable=False, default="'pending'"),
+        Column("error", "TEXT"),
+        Column("payload_excerpt", "TEXT"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ]),
+
+    # Visualizer workspace pages (see migration 019).
+    Table("pages", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("user_id", "TEXT", nullable=False),
+        Column("slug", "TEXT", nullable=False),
+        Column("title", "TEXT", nullable=False),
+        Column("agent_context", "TEXT", nullable=False, default="''"),
+        Column("html", "TEXT"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ], constraints=[
+        "UNIQUE(user_id, slug)",
+    ]),
 ]
 
 
@@ -786,6 +877,22 @@ INDEXES: List[Index] = [
     Index("idx_exemptions_agent", "billing_exemptions", "agent_id"),
     Index("idx_exemptions_user", "billing_exemptions", "user_id"),
     Index("idx_exemptions_kind", "billing_exemptions", "kind"),
+    # Automation / events
+    Index("idx_agent_automations_agent", "agent_automations", "agent_id"),
+    Index("idx_agent_automations_owner", "agent_automations", "owner_user_id"),
+    Index("idx_agent_automations_next", "agent_automations", "next_run_at"),
+    Index("idx_agent_automations_hash", "agent_automations", "agent_id, owner_user_id, source_hash", unique=True),
+    Index("idx_evt_sub_agent", "agent_event_subscriptions", "agent_id"),
+    Index("idx_evt_sub_owner", "agent_event_subscriptions", "owner_user_id"),
+    Index("idx_evt_sub_source", "agent_event_subscriptions", "source, event_type"),
+    Index("idx_evt_sub_ext", "agent_event_subscriptions", "source, external_subscription_id"),
+    Index("idx_evt_sub_expiry", "agent_event_subscriptions", "external_expiration_at"),
+    Index("idx_evt_sub_poll", "agent_event_subscriptions", "source, last_polled_at"),
+    Index("idx_evt_sub_hash", "agent_event_subscriptions", "agent_id, owner_user_id, source_hash", unique=True),
+    Index("idx_evt_del_sub", "event_deliveries", "subscription_id"),
+    Index("idx_evt_del_dedup", "event_deliveries", "subscription_id, event_external_id"),
+    Index("idx_evt_del_created", "event_deliveries", "created_at DESC"),
+    Index("idx_pages_user", "pages", "user_id"),
 ]
 
 

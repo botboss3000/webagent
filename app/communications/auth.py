@@ -231,16 +231,15 @@ async def migrate_anonymous_to_user(anon_user_id: str, target_user_id: str) -> i
     at the target user, re-parents sessions and interactions, then returns
     the number of interactions moved.
     """
-    import sqlite3 as _sqlite3
-
     db = get_db()
     raw = db.get_raw_client()
     moved = 0
     try:
-        db_path = getattr(raw, '_db_path', None)
-        if db_path:
-            conn = _sqlite3.connect(db_path)
-            conn.row_factory = _sqlite3.Row
+        # Local backends (SQLite or Postgres) expose a connection factory via the
+        # raw-client proxy; Supabase falls through to the query-builder branch.
+        factory = getattr(raw, '_conn_factory', None)
+        if factory:
+            conn = factory()
             try:
                 cur = conn.execute(
                     "UPDATE interactions SET session_id = ? WHERE session_id = ?",

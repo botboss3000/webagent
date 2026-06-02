@@ -154,6 +154,7 @@ def load_config() -> DBConnectionConfig:
             database=os.environ.get("WEBAGENT_DB_NAME", ""),
             username=os.environ.get("WEBAGENT_DB_USER") or None,
             password_secret_key=os.environ.get("WEBAGENT_DB_PASSWORD_KEY") or None,
+            ssl_mode=os.environ.get("WEBAGENT_DB_SSLMODE", "require"),
             supabase_url=os.environ.get("SUPABASE_URL") or None,
             supabase_service_key_secret=os.environ.get("WEBAGENT_SUPABASE_KEY_SECRET") or None,
         )
