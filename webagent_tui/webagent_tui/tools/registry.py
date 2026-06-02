@@ -1,20 +1,66 @@
 """Assemble the server manager tool registry (schemas + dispatch).
 
-v1 abilities: **Codebase Admin** (file/search/run) + **Source Control** (git).
+Abilities: **Codebase Admin** (file/search/run), **Source Control** (git),
+**Server lifecycle**, **Diagnostics**, and **Monitoring** (the watchdog/alarms).
 The registry exposes OpenAI-style function schemas to the LLM and dispatches
 tool calls back to the handlers, injecting the live ``ToolContext``.
+
+Each tool's NAME is bound to its handler + parameter schema + mutating/needs_project
+flags here in Python, but the human-readable ``description`` and whether a tool is
+``enabled`` are overlaid from ``manager/tools.json`` (see ``resources.py``) so the
+prose the model reads — and the on/off list — can be edited without touching code.
 """
 
 from __future__ import annotations
 
-from . import diagnostics, fs, git, install, manage, selfupdate, server, shell, update, web_search
+from ..resources import load_tool_overrides
+from . import (
+    diagnostics,
+    fs,
+    git,
+    install,
+    manage,
+    monitor,
+    selfupdate,
+    server,
+    shell,
+    update,
+    web_search,
+)
 from .base import ToolContext, ToolSpec
 
 _STR = {"type": "string"}
 _INT = {"type": "integer"}
 
 
+def _apply_overrides(specs: list[ToolSpec]) -> list[ToolSpec]:
+    """Overlay ``manager/tools.json`` onto the Python specs: replace each tool's
+    human-readable description and drop any whose ``enabled`` is false. A tool
+    missing from the file keeps its Python default and stays enabled, so a partial
+    or absent file degrades cleanly."""
+    overrides = load_tool_overrides()
+    if not overrides:
+        return specs
+    out: list[ToolSpec] = []
+    for spec in specs:
+        o = overrides.get(spec.name)
+        if o is None:
+            out.append(spec)
+            continue
+        if o.get("enabled") is False:
+            continue
+        desc = o.get("description")
+        if isinstance(desc, str) and desc.strip():
+            spec.description = desc.strip()
+        out.append(spec)
+    return out
+
+
 def build_specs() -> list[ToolSpec]:
+    return _apply_overrides(_base_specs())
+
+
+def _base_specs() -> list[ToolSpec]:
     return [
         # ── Manager state (available in onboarding mode) ───────────────────
         ToolSpec("link_project", (
@@ -103,6 +149,58 @@ def build_specs() -> list[ToolSpec]:
                            "level": {**_STR, "default": ""},
                            "category": {**_STR, "default": ""}},
         }, diagnostics.read_diagnostics),
+        # ── Monitoring / alarms (the watchdog) ─────────────────────────────
+        # These edit the manager's OWN config (data dir JSON) or just report /
+        # notify — they never touch the repo or run commands, so they are not
+        # gated behind "Allow writes" and work in onboarding mode too.
+        ToolSpec("monitor_status",
+                 "Report the background watchdog state (on/off, interval, autonomy, "
+                 "channels, thresholds, current health, recent reactions). Read-only.",
+                 {"type": "object", "properties": {}},
+                 monitor.monitor_status, needs_project=False),
+        ToolSpec("list_alarms", "List the current alarm rules. Read-only.",
+                 {"type": "object", "properties": {}},
+                 monitor.list_alarms, needs_project=False),
+        ToolSpec("add_alarm",
+                 "Add a standing alarm rule the watchdog evaluates each heartbeat.",
+                 {"type": "object",
+                  "properties": {"contains": {**_STR, "default": ""},
+                                 "level": {**_STR, "default": ""},
+                                 "category": {**_STR, "default": ""},
+                                 "action": {**_STR, "enum": ["notify", "auto_restart"],
+                                            "default": "notify"},
+                                 "loudness": {**_STR, "enum": ["every", "once", "digest"],
+                                              "default": "every"},
+                                 "channels": {"type": "array", "items": _STR, "default": []},
+                                 "label": {**_STR, "default": ""}}},
+                 monitor.add_alarm, needs_project=False),
+        ToolSpec("remove_alarm", "Remove an alarm rule by its id (from list_alarms).",
+                 {"type": "object", "properties": {"id": _STR}, "required": ["id"]},
+                 monitor.remove_alarm, needs_project=False),
+        ToolSpec("set_monitor_config",
+                 "Change the watchdog config (enable/disable, interval_seconds, "
+                 "autonomy, channels, auto_restart, thresholds).",
+                 {"type": "object",
+                  "properties": {"enabled": {"type": "boolean"},
+                                 "interval_seconds": _INT,
+                                 "autonomy": {**_STR,
+                                              "enum": ["notify", "auto_restart", "self_heal"]},
+                                 "channels": {"type": "array", "items": _STR},
+                                 "auto_restart": {"type": "boolean"},
+                                 "error_rate_threshold": _INT,
+                                 "max_restarts_per_hour": _INT,
+                                 "disk_percent_threshold": _INT,
+                                 "mem_percent_threshold": _INT,
+                                 "cpu_percent_threshold": _INT}},
+                 monitor.set_monitor_config, needs_project=False),
+        ToolSpec("notify_test", "Send a test notification on the configured channel(s).",
+                 {"type": "object", "properties": {"message": {**_STR, "default": ""}}},
+                 monitor.notify_test, needs_project=False),
+        ToolSpec("server_resources",
+                 "Report the server process + host resources right now: host CPU, "
+                 "memory, disk, and the webAgent process's memory. Read-only.",
+                 {"type": "object", "properties": {}},
+                 monitor.server_resources),
         # ── Web search (any mode) ──────────────────────────────────────────
         ToolSpec("web_search", (
             "Search the web via DuckDuckGo. Returns titles, URLs, and snippets "

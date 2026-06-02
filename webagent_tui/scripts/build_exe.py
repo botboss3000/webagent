@@ -65,12 +65,18 @@ def main() -> int:
     # Textual ships a CSS file we must bundle; '.tcss' next to the package.
     sep = ";" if os.name == "nt" else ":"
     add_data = f"{PKG / 'styles.tcss'}{sep}webagent_tui"
+    # The manager's human-readable config (system prompt, tool list, monitor
+    # defaults) lives under manager/ and is loaded at runtime (resources.py), so
+    # the whole folder must ride along in the frozen bundle, landing at
+    # webagent_tui/manager/ where Path(__file__).parent/'manager' resolves it.
+    manager_data = f"{PKG / 'manager'}{sep}webagent_tui/manager"
 
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--onefile", "--name", NAME,
         "--collect-all", "textual",      # Textual loads resources at runtime
         "--add-data", add_data,
+        "--add-data", manager_data,
         "--console",
         str(PKG / "__main__.py"),
     ]
