@@ -4,6 +4,11 @@
  * across all 23 shared themes and stays legible in light AND dark schemes.
  * Custom tokens ($dim, $tool, $bar-bg, $bar-fg, $bar-accent, $border-dim,
  * $sel) come from each theme plus the app's get_theme_variable_defaults().
+ *
+ * Flat look: the chrome (header pills, action buttons, footer, the input pill,
+ * and user-message bubbles) all share the MAIN background and are distinguished
+ * by a bright outline — not a filled background. A "toggled" / active control
+ * is shown by colouring its TEXT and OUTLINE, never by inverting its fill.
  */
 
 Screen {
@@ -11,47 +16,47 @@ Screen {
     color: $foreground;
 }
 
-/* Custom header toolbar — clickable PILL buttons + live server status. The pills are
- * rounded, padded boxes (height 3) so they're easy to tap on a phone. Category names
- * are short, so the row fits a narrow terminal. Theme variables only (dark + light). */
+/* Custom header toolbar — clickable PILL buttons + live server status. The pills
+ * share the main background and are STACKED with no gaps; the open category and the
+ * mode pill are highlighted by outline + text colour, not a filled background. */
 #status {
     layout: horizontal;
     height: 3;
     width: 100%;
-    background: $bar-bg;
+    background: $background;
     color: $bar-fg;
     padding: 0 1;
     align: left middle;
 }
 #status .hdr-btn {
     width: auto; height: 3;
-    margin: 0 1 0 0; padding: 0 1;
+    margin: 0; padding: 0 2;
     border: round $border-dim;
-    background: $boost;
+    background: $background;
     color: $bar-accent;
     content-align: center middle;
 }
-#status .hdr-btn:hover { background: $primary; color: $background; border: round $primary; }
-#status .hdr-btn.hdr-on { background: $primary; color: $background; border: round $primary; }
-#status .hdr-note { width: auto; height: 3; margin: 0 1 0 0; padding: 0 1; content-align: center middle; }
+#status .hdr-btn:hover { border: round $primary; color: $primary; }
+#status .hdr-btn.hdr-on { border: round $primary; color: $primary; background: $background; }
+#status .hdr-note { width: auto; height: 3; margin: 0; padding: 0 2; content-align: center middle; }
 
 /* Animated logo banner (vendored from the launcher) — fixed height above the log. */
 #anim { height: 7; width: 100%; }
 
-/* Session HUD (tokens + context gauge), above the action bar. */
-#hud { height: 1; width: 100%; background: $panel; color: $dim; padding: 0 2; }
+/* Session HUD (tokens + context %), above the action bar — flat on the main bg. */
+#hud { height: 1; width: 100%; background: $background; color: $dim; padding: 0 2; }
 
-/* Action bar above the prompt: activity spinner on the left, Stop / Continue pills
- * on the far right (Continue rightmost). Pill buttons are big tap targets for phones. */
-#actionbar { layout: horizontal; height: 3; width: 100%; padding: 0 1; }
-#actionbar #spinner { width: 1fr; height: 3; content-align: left middle; padding: 0 1; }
+/* Action bar above the prompt: activity spinner on the left, [Stop] / [Continue]
+ * as small bracketed TEXT on the far right (Continue rightmost). Flat, one row. */
+#actionbar { layout: horizontal; height: 1; width: 100%; padding: 0 2; }
+#actionbar #spinner { width: 1fr; height: 1; content-align: left middle; }
 #actionbar .act-btn {
-    width: auto; height: 3; margin: 0 0 0 1; padding: 0 2;
-    border: round $border-dim; background: $boost; color: $bar-accent;
+    width: auto; height: 1; margin: 0 0 0 2; padding: 0;
+    background: $background; color: $bar-accent;
     content-align: center middle;
 }
-#actionbar .act-btn:hover { background: $primary; color: $background; border: round $primary; }
-#actionbar .act-btn.disabled { color: $dim; background: $bar-bg; border: round $border-dim; }
+#actionbar .act-btn:hover { text-style: bold; color: $primary; }
+#actionbar .act-btn.disabled { color: $dim; text-style: none; }
 
 /* Onboarding call-to-action — the tappable "get started" button (hidden once a
  * checkout is linked). Theme variables only, so it stays legible in every theme. */
@@ -62,10 +67,10 @@ Screen {
     text-align: center;
     text-style: bold;
     color: $bar-accent;
-    background: $panel;
+    background: $background;
     border: round $primary;
 }
-#cta:hover { background: $primary; color: $background; }
+#cta:hover { color: $primary; border: round $primary; }
 
 /* Body = the middle band between header and footer: the chat column on the left
  * (always visible) and the docked side panel on the right (shown only when open). */
@@ -97,8 +102,9 @@ Screen {
     color: $bar-accent;
     content-align: center middle; text-align: center;
 }
-#side-panel .panel-btn:hover { background: $primary; color: $background; border: round $primary; }
-#side-panel .panel-btn-active { color: $background; background: $secondary; border: round $secondary; }
+#side-panel .panel-btn:hover { color: $primary; border: round $primary; }
+/* Toggled state = coloured outline + text, NOT an inverted fill. */
+#side-panel .panel-btn-active { color: $secondary; background: $boost; border: round $secondary; }
 /* A row of side-by-side pills (e.g. Save / Clear). */
 #side-panel .panel-row { layout: horizontal; width: 100%; height: 3; }
 #side-panel .panel-row .panel-btn { width: 1fr; margin: 0 1 0 0; }
@@ -119,18 +125,20 @@ ConfirmModal { align: center middle; }
 #confirm-buttons { height: 3; align: right middle; }
 #confirm-buttons .confirm-btn {
     width: auto; height: 3; margin: 0 0 0 2; padding: 0 2;
-    border: round $border-dim; background: $boost; color: $bar-accent;
+    border: round $border-dim; background: $background; color: $bar-accent;
     content-align: center middle;
 }
-#confirm-buttons .confirm-btn:hover { background: $primary; color: $background; border: round $primary; }
+#confirm-buttons .confirm-btn:hover { color: $primary; border: round $primary; }
 #confirm-buttons .confirm-yes { color: $secondary; }
 
+/* Transcript — a scrolling column of mounted widgets (text lines, user bubbles,
+ * agent replies, and expandable tool-call blocks). Flat on the main background. */
 #log {
     height: 1fr;
     width: 100%;
     background: $background;
-    border: round $border-dim;
     padding: 0 1;
+    overflow-y: auto;
     scrollbar-gutter: stable;
     scrollbar-size-vertical: 1;
     scrollbar-color: $primary $background;
@@ -139,26 +147,67 @@ ConfirmModal { align: center middle; }
     scrollbar-background: $background;
 }
 
+/* Transcript message kinds. */
+.msg-line { width: 100%; height: auto; }
+.msg-block { width: 100%; height: auto; color: $dim; }
+.msg-agent { width: 100%; height: auto; color: $foreground; padding: 0 1; margin: 1 0 0 0; }
+/* User message — same design as the input pill: main background, bright outline. */
+.msg-user {
+    width: 100%; height: auto;
+    background: $background; color: $foreground;
+    border: round $primary; padding: 0 1; margin: 1 0 0 0;
+}
+
+/* Expandable tool calls (nested, like the launcher).
+ *   • collapsed group  → "N tool calls"
+ *   • expand once       → each call listed (one row each)
+ *   • expand a call     → its arguments + result, each in a code block */
+.tool-group {
+    width: 100%; height: auto;
+    background: $background;
+    border: round $border-dim;
+    margin: 1 0 0 0;
+    padding-bottom: 0;
+}
+.tool-group > CollapsibleTitle { color: $accent; text-style: bold; }
+.tool-block {
+    width: 1fr; height: auto;
+    background: $background;
+    border: none;
+    border-top: hkey $border-dim;
+    padding-bottom: 0;
+}
+.tool-block CollapsibleTitle { color: $tool; }
+/* Code block — the "special codeblock" for a call's arguments / command and its
+ * result. Distinct, slightly raised surface so code reads apart from the chrome. */
+.code-block {
+    width: 100%; height: auto;
+    background: $panel; color: $foreground;
+    border: round $border-dim;
+    padding: 0 1; margin: 0 0 1 0;
+}
+
 #prompt {
     width: 100%;
     height: 3;
     border: round $border-dim;
-    background: $panel;
+    background: $background;
     color: $foreground;
 }
 #prompt:focus {
     border: round $primary;
 }
 
-/* Footer bar: minimal exit hint on the left, an open-keyboard shortcut on the right. */
+/* Footer bar: minimal exit hint on the left, an open-keyboard shortcut on the right.
+ * Flat on the main background to match the rest of the chrome. */
 #footer {
     layout: horizontal;
     height: 1;
     width: 100%;
-    background: $bar-bg;
+    background: $background;
     color: $bar-fg;
     padding: 0 2;
 }
-#footer #hints { width: 1fr; height: 1; background: $bar-bg; color: $bar-fg; }
-#footer #kbd { width: auto; height: 1; color: $bar-accent; }
-#footer #kbd:hover { text-style: bold; color: $bar-fg; }
+#footer #hints { width: 1fr; height: 1; background: $background; color: $bar-fg; }
+#footer #kbd { width: auto; height: 1; background: $background; color: $bar-accent; }
+#footer #kbd:hover { text-style: bold; color: $primary; }
