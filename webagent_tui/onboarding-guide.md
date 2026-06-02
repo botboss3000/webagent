@@ -45,8 +45,22 @@ automatically, so you can proceed without making them toggle anything.
 - **No headless browser.** Chromium cannot run on Android. `setup_environment`
   **skips the browser automatically** — this is expected, NOT a failure. Tell the
   user that browser-driven features will be off, but the server itself runs fine.
-- **Python must be 3.11–3.12.** If readiness reports a newer Python, explain the
-  limitation rather than forcing the install.
+- **Python must be 3.11–3.12.** Termux's own `python` is often newer (e.g. 3.13+),
+  which the install pin rejects. **The proven fix on Android is an Ubuntu proot
+  environment**, NOT Termux's native python:
+  - Install once (these are shell commands the user pastes, or you run them with
+    `run_command` once writes are enabled): `pkg install -y proot-distro` then
+    `proot-distro install ubuntu`.
+  - Enter it with `proot-distro login ubuntu`, and inside Ubuntu install a supported
+    interpreter: `apt update && apt install -y python3.11 python3.11-venv git`
+    (use the `deadsnakes` PPA if `python3.11` isn't in Ubuntu's default repos).
+  - Then do the clone / venv / pip / run **inside that Ubuntu proot** — that's where
+    Python 3.11/3.12 lives. The repo's **`start_agent.sh`** already launches the
+    webAgent app this way (via `proot-distro` into Ubuntu), so it's the supported
+    pattern: Python 3.11/3.12 comes from Ubuntu proot, not directly from Termux.
+  - Tell the user this is a one-time setup that takes a few minutes and uses extra
+    storage (~hundreds of MB for the Ubuntu rootfs). If they'd rather not, explain
+    the limitation instead of forcing Termux's unsupported python.
 - **Recommended folder:** `~/webagent`.
 - **Keyboard:** the on-screen keyboard cannot be raised by tapping inside this app
   (Termux controls the keyboard, not the program). If the user must type, tell
