@@ -11,7 +11,7 @@
   "categories": ["productivity", "utilities", "artificial-intelligence"],
   "lang": "en-US",
   "scope": "/",
-  "id": "/",
+  "id": "/?utm_source=homescreen",
   "icons": [
     {
       "src": "/ui/icons/icon-192x192.png",
