@@ -133,7 +133,8 @@ Any file the **running app writes to** is per-machine runtime data and, as a rul
 | `app/auth/users.json` (+ `.bak`) | Password hashes, remember tokens |
 | `app/db_mode.json` | Per-machine DB target switch |
 | `app/db/.fuse_hidden*`, `**/.fuse_hidden*` | FUSE/SSHFS temp leftovers |
-| `visuals/users/` | Per-user generated pages and artifacts |
+| `data/visuals/users/` | Per-user generated pages and artifacts |
+| `data/uploads/` | User-uploaded files (runtime) |
 | `data/config/provider.json` | LLM + GitHub tokens (gitignored, shared cred store) |
 | `data/config/scheduler_config.json` | Scheduler runtime state |
 | `data/config/remote_access.json` (+ `.bak`, `_pointers.json`) | Remote-access tunnel config (per-machine) |

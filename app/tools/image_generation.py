@@ -28,7 +28,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-VISUALS_ROOT = PROJECT_ROOT / "visuals" / "users"
+VISUALS_ROOT = PROJECT_ROOT / "data" / "visuals" / "users"
 
 # Provider presets known to support image generation. Mirrors the LLM
 # PROVIDER_PRESETS shape so the UI can offer a familiar dropdown.

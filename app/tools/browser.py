@@ -329,7 +329,7 @@ async def browser_action(
 
         elif action == "screenshot":
             # Determine screenshots directory (project root / screenshots)
-            screenshots_dir = Path(__file__).resolve().parent.parent.parent / "screenshots"
+            screenshots_dir = Path(__file__).resolve().parent.parent.parent / "data" / "screenshots"
             screenshots_dir.mkdir(parents=True, exist_ok=True)
 
             filename = f"{uuid.uuid4().hex}.png"

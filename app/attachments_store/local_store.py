@@ -26,7 +26,7 @@ class LocalAttachmentStore(AttachmentStore):
     name = "local"
 
     def __init__(self, upload_dir: Optional[str] = None):
-        self._dir = Path(upload_dir or os.environ.get("UPLOAD_DIR", "uploads"))
+        self._dir = Path(upload_dir or os.environ.get("UPLOAD_DIR", "data/uploads"))
 
     async def store(self, user_id: str, file_bytes: bytes, filename: str, mime_type: str) -> dict:
         rel_path = f"{user_id}/{_make_storage_name(filename)}"
