@@ -156,6 +156,31 @@ function _setAgentTriggerLabel() {
       statusEl.title = '';
     }
   }
+  // TUI bridge indicator: show when the selected agent is the TUI bridge agent
+  const tuiIndicator = document.getElementById('tui-bridge-indicator');
+  if (tuiIndicator) {
+    const isTuiAgent = found && (found.template_id === 'web-agent-tui' || found.trigger_type === 'tui_bridge');
+    if (isTuiAgent) {
+      // Check if the bridge is alive
+      fetch('/api/v1/chat/tui-bridge/status')
+        .then(r => r.json())
+        .then(data => {
+          tuiIndicator.style.display = 'inline';
+          tuiIndicator.title = data.alive
+            ? 'TUI agent bridge active (port ' + data.port + ')'
+            : 'TUI agent bridge not connected — start the Server Manager (TUI)';
+          tuiIndicator.style.opacity = data.alive ? '1' : '0.4';
+        })
+        .catch(() => {
+          tuiIndicator.style.display = 'inline';
+          tuiIndicator.style.opacity = '0.4';
+          tuiIndicator.title = 'TUI agent bridge unavailable';
+        });
+    } else {
+      tuiIndicator.style.display = 'none';
+    }
+  }
+  _updateHeaderSessionCounter();
 }
 
 function _renderAgentRows() {
@@ -587,6 +612,7 @@ function _setTriggerLabel() {
       statusEl.title = '';
     }
   }
+  _updateHeaderSessionCounter();
 }
 
 function _formatRelativeTime(dateStr) {
@@ -728,8 +754,47 @@ export async function populateSessionSelect(userId) {
     _setTriggerLabel();
     _setAgentTriggerLabel();  // refresh agent status icon based on session states
     _fetchAgentRunningStatuses();  // refresh running-status sprites in agent dropdown
+    _updateHeaderSessionCounter();
   } catch (e) {
     console.warn('Failed to load sessions:', e);
+  }
+}
+
+/**
+ * Update the header notification badge with counts of sessions needing attention.
+ * Shows a warning triangle + count for interrupted/errored sessions,
+ * and a running count for in-progress sessions.
+ */
+function _updateHeaderSessionCounter() {
+  const badge = document.getElementById('header-session-counter');
+  const countEl = document.getElementById('header-session-count');
+  if (!badge || !countEl) return;
+
+  const needingAttention = _sessionsCache.filter(
+    s => s.run_status === 'interrupted' || s.run_status === 'error'
+  ).length;
+  const running = _sessionsCache.filter(
+    s => s.run_status === 'running'
+  ).length;
+
+  if (needingAttention > 0) {
+    countEl.textContent = needingAttention;
+    badge.style.display = 'inline-flex';
+    badge.title = needingAttention === 1
+      ? '1 session needs attention'
+      : `${needingAttention} sessions need attention`;
+  } else if (running > 0) {
+    countEl.textContent = running;
+    badge.style.display = 'inline-flex';
+    badge.title = running === 1
+      ? '1 session running'
+      : `${running} sessions running`;
+    // Use a different icon/color for running vs attention
+    const iconEl = badge.querySelector('[data-lucide]');
+    if (iconEl) iconEl.setAttribute('data-lucide', 'loader-2');
+    badge.className = 'header-notif-badge header-notif-running';
+  } else {
+    badge.style.display = 'none';
   }
 }
 
@@ -1210,6 +1275,18 @@ function _createBubble(role, text, extraClass, imageUrl, turnId, msgId) {
   return bubble;
 }
 
+/**
+ * Show a debug bubble with agentId + sessionId for admin users.
+ * Only shown when the user is authenticated (not anonymous).
+ */
+function _showDebugBubble(sessionId) {
+  const token = localStorage.getItem('auth_token');
+  if (!token) return; // only for authenticated users
+  const agentId = app.currentAgentId || '—';
+  const text = `🔍 **Debug** — Agent: \`${agentId}\` · Session: \`${sessionId}\``;
+  app.addChatBubble('agent', text, 'debug-info');
+}
+
 export async function loadSessionChat(sessionId) {
   try {
     // Check cache first
@@ -1226,6 +1303,9 @@ export async function loadSessionChat(sessionId) {
       // Remove any stale load-earlier button
       const oldBtn = document.getElementById(`load-earlier-${sessionId}`);
       if (oldBtn) oldBtn.remove();
+
+      // Debug bubble: show agentId + sessionId for admin users
+      _showDebugBubble(sessionId);
 
       for (const msg of cached.messages) {
         if (msg.role === 'user') {
@@ -1286,6 +1366,9 @@ export async function loadSessionChat(sessionId) {
       app.chatMessages.innerHTML = '';
     }
     app._lastLoadedSessionId = sessionId;
+
+    // Debug bubble: show agentId + sessionId for admin users
+    _showDebugBubble(sessionId);
 
     if (data.restricted) {
       // Not a participant — silently switch to a fresh session
@@ -1878,20 +1961,11 @@ export function initSessions() {
     if (e.key === 'Escape' && menu && !menu.hidden) closeMenu();
   });
 
+  // New session button — creates a fresh session for the current agent
   const sessionNewBtn = document.getElementById('session-new');
   if (sessionNewBtn) {
-    // Use pointerdown — lucide replaces the inner SVG paths between mousedown
-    // and mouseup, which prevents the browser from synthesising a click event.
-    sessionNewBtn.addEventListener('pointerdown', (ev) => {
-      ev.preventDefault();
-      closeMenu();
-      // Record the current session under the current agent before creating a new one
-      if (app.currentAgentId && app.currentSessionId) {
-        _lastSessionPerAgent.set(app.currentAgentId, app.currentSessionId);
-        _saveLastSessionMap();
-      }
-      // Starting a new session leaves the current one running in the background —
-      // do NOT interrupt it. Only reset local UI state.
+    sessionNewBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
       abortChatStream();
       app.currentSessionId = generateUUID();
       localStorage.setItem('terminalSessionId', app.currentSessionId);
@@ -1903,7 +1977,6 @@ export function initSessions() {
       loopVisualSessionChanged();
       autoAgentSessionChanged();
       chatActivitySessionChanged();
-      document.getElementById('chat-input')?.focus();
     });
   }
 
@@ -2247,10 +2320,11 @@ export function initSessions() {
         sel.value = 'agents';
         sel.dispatchEvent(new Event('change'));
       }
-      // Defer to let startAgents() bind the create modal button before clicking
+      // Defer to let the agents tab render, then expand the mock card
       setTimeout(() => {
-        const btn = document.getElementById('btn-new-agent');
-        if (btn) btn.click();
+        if (window.expandAgent) {
+          window.expandAgent('__new__');
+        }
       }, 50);
     });
   }
@@ -2271,4 +2345,27 @@ export function initSessions() {
       loadSessionChat(app.currentSessionId);
     }
   });
+
+  // ── TUI bridge status poll ──
+  // Refresh the TUI bridge indicator every 15 seconds so it stays in sync.
+  setInterval(() => {
+    const tuiIndicator = document.getElementById('tui-bridge-indicator');
+    if (!tuiIndicator || tuiIndicator.style.display === 'none') return;
+    fetch('/api/v1/chat/tui-bridge/status')
+      .then(r => r.json())
+      .then(data => {
+        tuiIndicator.title = data.alive
+          ? 'TUI agent bridge active (port ' + data.port + ')'
+          : 'TUI agent bridge not connected — start the Server Manager (TUI)';
+        tuiIndicator.style.opacity = data.alive ? '1' : '0.4';
+      })
+      .catch(() => {});
+  }, 15000);
+
+  // ── Session counter poll ──
+  // Refresh the header notification badge every 10 seconds so it stays in sync
+  // with session status changes (runs completing, erroring, etc.).
+  setInterval(() => {
+    _updateHeaderSessionCounter();
+  }, 10000);
 }

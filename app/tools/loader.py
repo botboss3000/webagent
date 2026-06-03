@@ -109,6 +109,7 @@ class ToolInfo:
     parameters: dict
     tool_id: str = ''
     requires_confirmation: bool = False  # True → treated as destructive (guardrail check)
+    destructive: bool = False  # True → tool writes, deletes, or has side-effects
 
 
 class ToolLoader:
@@ -1877,13 +1878,16 @@ async def load_tools(
     """
     tools = await _tool_loader.load_tools(user_id, agent_id=agent_id, agent_template_id=agent_template_id, session_id=session_id)
 
-    # Propagate requires_confirmation from BUILTIN_TOOL_METADATA to built-in ToolInfo entries.
-    # DB tools already have this set from their row; built-ins need it applied from metadata.
+    # Propagate requires_confirmation and destructive from BUILTIN_TOOL_METADATA
+    # to built-in ToolInfo entries. DB tools already have these set from their row;
+    # built-ins need them applied from metadata.
     for name, info in tools.items():
-        if not info.requires_confirmation and name in BUILTIN_TOOL_METADATA:
+        if name in BUILTIN_TOOL_METADATA:
             meta = BUILTIN_TOOL_METADATA[name]
-            if meta.get("requires_confirmation", False):
+            if not info.requires_confirmation and meta.get("requires_confirmation", False):
                 info.requires_confirmation = True
+            if meta.get("destructive", False):
+                info.destructive = True
 
     # Phase 5: enforce allowed_tools filter.
     # Tier-1 tools are always-on and must never be filtered.

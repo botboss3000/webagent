@@ -535,11 +535,12 @@ body.light-mode *::-webkit-scrollbar-thumb:hover {
 }
 /* ── Horizontal main-tabs strip with chevron-scroll carousel ── */
 #main-tabs-wrap {
-  position: relative;
-  flex: 1 1 auto;
-  min-width: 0;
-  display: block;
-}
+	  position: relative;
+	  flex: 1 1 auto;
+	  min-width: 0;
+	  display: block;
+	  background: transparent;
+	}
 #main-tabs {
   display: flex;
   gap: 4px;
@@ -577,6 +578,33 @@ body.light-mode *::-webkit-scrollbar-thumb:hover {
   background: rgba(125,207,255,0.12);
   color: var(--accent);
   border-color: rgba(125,207,255,0.30);
+}
+
+/* ── Server health dot in Admin Tools button ── */
+.health-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: background 0.3s, box-shadow 0.3s;
+}
+.health-dot-green {
+  background: #3fb950;
+  box-shadow: 0 0 6px rgba(63,185,80,0.5);
+}
+.health-dot-red {
+  background: #f85149;
+  box-shadow: 0 0 6px rgba(248,81,73,0.5);
+}
+.health-dot-orange {
+  background: #d29922;
+  box-shadow: 0 0 6px rgba(210,153,34,0.5);
+  animation: health-dot-pulse 0.8s ease-in-out infinite alternate;
+}
+@keyframes health-dot-pulse {
+  from { opacity: 0.4; transform: scale(0.85); }
+  to   { opacity: 1;   transform: scale(1.15); }
 }
 
 /* ── Admin Tools group (reset button + Admin Tools tab) ── */
@@ -620,15 +648,15 @@ body.light-mode *::-webkit-scrollbar-thumb:hover {
   z-index: 2;
 }
 .main-tabs-chev.left {
-  left: 0;
-  justify-content: flex-start;
-  background: linear-gradient(to right, var(--bg-0) 55%, transparent 100%);
-}
-.main-tabs-chev.right {
-  right: 0;
-  justify-content: flex-end;
-  background: linear-gradient(to left, var(--bg-0) 55%, transparent 100%);
-}
+	  left: 0;
+	  justify-content: flex-start;
+	  background: linear-gradient(to right, #07070c 55%, #07070c 100%);
+	}
+	.main-tabs-chev.right {
+	  right: 0;
+	  justify-content: flex-end;
+	  background: linear-gradient(to left, #07070c 55%, #07070c 100%);
+	}
 .main-tabs-chev.visible { display: flex; }
 .main-tabs-chev:hover { color: var(--fg-1); }
 
@@ -657,11 +685,11 @@ body.light-mode .main-tab.active { background: var(--accent-soft); color: var(--
 body.light-mode .main-tabs-chev { color: var(--fg-2); }
 body.light-mode .main-tabs-chev:hover { color: var(--accent); }
 body.light-mode .main-tabs-chev.left {
-  background: linear-gradient(to right, var(--bg-0) 55%, transparent 100%);
-}
-body.light-mode .main-tabs-chev.right {
-  background: linear-gradient(to left, var(--bg-0) 55%, transparent 100%);
-}
+	  background: linear-gradient(to right, #faf5ee 55%, #faf5ee 100%);
+	}
+	body.light-mode .main-tabs-chev.right {
+	  background: linear-gradient(to left, #faf5ee 55%, #faf5ee 100%);
+	}
 
 /* ── Agents tab — transparent bg,
 card-aware borders ────────── */

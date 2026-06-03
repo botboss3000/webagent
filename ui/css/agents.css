@@ -26,19 +26,7 @@
   color: #3a3a5a;
   font-weight: 400;
 }
-#btn-new-agent {
-  background: #7aa2f7;
-  border: none;
-  color: #0d0d1a;
-  padding: 7px 16px;
-  border-radius: 20px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  font-family: inherit;
-  transition: background 0.15s, opacity 0.15s;
-}
-#btn-new-agent:hover { background: #89b4fa; }
+
 
 /* ── Card grid ── */
 #agents-grid {
@@ -46,7 +34,8 @@
   overflow-y: auto;
   padding: 16px 20px;
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  align-content: flex-start;
   gap: 12px;
   scrollbar-width: thin;
   scrollbar-color: #2a2a4a transparent;
@@ -94,35 +83,49 @@
   padding: 40px 20px;
 }
 
-/* ── Row wrapper — one per agent; receives the grid gap ── */
+/* ── Row wrapper — one per agent; receives the grid gap ──
+   Collapsed: square flex item. Expanded: full-width column. */
 .agent-row {
   display: flex;
   flex-direction: column;
+  width: auto;
+  min-width: 0;
+  transition: width 0.2s ease;
+}
+.agent-row.expanded {
+  width: 100%;
 }
 
 /* ── Loading skeleton — shown while the agent list is being fetched ──
-   Theme-aware (uses design-system vars so it works in dark and light). */
+   Theme-aware (uses design-system vars so it works in dark and light).
+   Square shape to match collapsed agent cards. */
 .agent-skeleton {
   background: var(--bg-1);
   border: 1px solid var(--border-soft);
   border-radius: 10px;
   padding: 16px 18px;
   display: flex;
-  align-items: flex-start;
-  gap: 14px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  height: 120px;
+  width: 120px;
+  box-sizing: border-box;
 }
 .agent-skeleton .sk-icon {
-  width: 42px;
-  height: 42px;
-  border-radius: 10px;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
   flex-shrink: 0;
 }
 .agent-skeleton .sk-lines {
-  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  padding-top: 5px;
+  align-items: center;
+  gap: 6px;
+  width: 70%;
 }
 .agent-skeleton .sk-line {
   height: 11px;
@@ -148,20 +151,37 @@
   .sk-shimmer { animation: none; }
 }
 
-/* ── Agent card ── */
+/* ── Agent card ──
+   Collapsed: square showing icon + name only.
+   Expanded (active): full-width card with all details. */
 .agent-card {
   background: #12122a;
   border: 1px solid #1e1e3a;
   border-radius: 10px;
-  padding: 16px 18px;
+  padding: 14px 10px;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s, border-radius 0.15s;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  height: 120px;
+  width: 120px;
+  box-sizing: border-box;
 }
 .agent-card:hover { border-color: #3a3a6a; background: #14142e; }
-.agent-card.active { border-color: #7aa2f7; background: #13132e; }
+.agent-card.active {
+  border-color: #7aa2f7;
+  background: #13132e;
+  align-items: stretch;
+  justify-content: flex-start;
+  text-align: left;
+  gap: 10px;
+  height: auto;
+  width: auto;
+}
 
 /* When the detail panel is open inside the same row, flatten the connecting edges */
 .agent-row .agent-detail-panel {
@@ -169,7 +189,8 @@
   border-top-left-radius: 0;
   border-top-right-radius: 0;
 }
-.agent-row .agent-card.active {
+/* Only flatten card bottom corners when a detail panel actually follows */
+.agent-row:has(.agent-detail-panel) .agent-card.active {
   border-bottom-color: #1e1e3a; /* subtle section divider */
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
@@ -177,6 +198,13 @@
 
 .agent-card-top {
   display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+}
+.agent-card.active .agent-card-top {
+  flex-direction: row;
   align-items: flex-start;
   gap: 14px;
 }
@@ -189,6 +217,14 @@
   justify-content: center;
   font-size: 20px;
   flex-shrink: 0;
+  transition: width 0.2s, height 0.2s, font-size 0.2s, border-radius 0.2s;
+}
+/* Icon in square (collapsed) mode */
+.agent-card:not(.active) .agent-card-icon-wrap {
+  width: 44px;
+  height: 44px;
+  font-size: 24px;
+  border-radius: 12px;
 }
 .agent-card-icon-wrap.color-teal    { background: #0d2a2a; }
 .agent-card-icon-wrap.color-purple  { background: #1e1030; }
@@ -199,17 +235,36 @@
 .agent-card-meta {
   flex: 1;
   min-width: 0;
+  width: 100%;
 }
 .agent-card-name-row {
   display: flex;
   align-items: center;
   gap: 7px;
   margin-bottom: 2px;
+  justify-content: center;
+}
+.agent-card.active .agent-card-name-row {
+  justify-content: flex-start;
 }
 .agent-card-name {
   font-size: 15px;
   font-weight: 700;
   color: #c0caf5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.agent-card:not(.active) .agent-card-name {
+  font-size: 11px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.3;
 }
 .agent-status-dot {
   width: 7px;
@@ -227,6 +282,10 @@
   align-items: flex-end;
   gap: 4px;
 }
+/* Hide badge in collapsed (square) mode */
+.agent-card:not(.active) .agent-card-badge-wrap {
+  display: none;
+}
 
 .agent-card-desc {
   font-size: 12px;
@@ -240,6 +299,10 @@
   overflow: hidden;
   text-overflow: ellipsis;
   overflow-wrap: anywhere;
+}
+/* Hide description in collapsed (square) mode */
+.agent-card:not(.active) .agent-card-desc {
+  display: none;
 }
 body.light-mode .agent-card-desc { color: #7a5a4a; }
 
@@ -256,6 +319,10 @@ body.light-mode .agent-card-desc { color: #7a5a4a; }
   margin: 4px -18px -16px;
   padding: 0 12px;
   border-top: 1px solid #1e1e3a;
+}
+/* Hide tabs in collapsed (square) mode */
+.agent-card:not(.active) .agent-card-tabs {
+  display: none;
 }
 body.light-mode .agent-card-tabs { border-top-color: #ffdec4; }
 .agent-card-tabs::-webkit-scrollbar { display: none; }
@@ -684,38 +751,13 @@ body.light-mode .agents-test-loop .lv-node.lv-done { border-color: #44aa44 !impo
 body.light-mode .agents-test-loop .lv-node.lv-active { border-color: #2288cc !important; background: #e0f0ff !important; color: #2288cc !important; }
 body.light-mode .agents-test-loop .lv-node.lv-error  { border-color: #cc4455 !important; background: #ffeeee !important; color: #cc4455 !important; }
 
-/* ── Create modal ── */
-#agents-create-modal {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 999;
-}
-#agents-create-modal.hidden { display: none; }
-#agents-create-box {
-  background: #13132a;
-  border: 1px solid #2a2a4a;
-  border-radius: 8px;
-  padding: 24px;
-  width: 400px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-#agents-create-box h3 { font-size: 15px; font-weight: 700; color: #c0caf5; }
-.agents-create-row { display: flex; flex-direction: column; gap: 5px; }
-.agents-create-row label { font-size: 11px; color: #7aa2f7; font-weight: 600; text-transform: uppercase; }
-#agents-create-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+/* ── Create modal (removed — replaced by mock card) ── */
 
 /* ── Light mode ── */
 body.light-mode #tab-agents           { background: #fffaf5; }
 body.light-mode #agents-toolbar-title { color: #3d2c2e; }
 body.light-mode #agents-toolbar-sub   { color: #d0b0a0; }
-body.light-mode #btn-new-agent        { background: #ff8c42; color: #fff; }
-body.light-mode #btn-new-agent:hover  { background: #e07030; }
+
 body.light-mode .agent-card           { background: #fff7f0; border-color: #ffdec4; }
 body.light-mode .agent-card:hover     { background: #fff2e6; border-color: #ffb880; }
 body.light-mode .agent-card.active    { border-color: #ff8c42; }
@@ -740,9 +782,7 @@ body.light-mode .agents-save-bar      { background: #fff2e6; border-top-color: #
 body.light-mode .agents-tool-item     { background: #fff2e6; border-color: #ffdec4; }
 body.light-mode .agents-tool-name     { color: #cc6a28; }
 body.light-mode .agents-tool-desc     { color: #7a5a4a; }
-body.light-mode #agents-create-box    { background: #fff7f0; border-color: #ffdec4; }
-body.light-mode #agents-create-box h3 { color: #3d2c2e; }
-body.light-mode .agents-create-row label { color: #cc6a28; }
+
 
 /* Icon wrap – pastel tints per color */
 body.light-mode .agent-card-icon-wrap.color-teal   { background: #e0f5f0; }
@@ -1704,6 +1744,58 @@ body.light-mode .members-policy-opt-label { color: #2a1f17; }
 }
 .members-btn.restrict:hover { background: rgba(247,118,142,0.12); }
 
+
+/* ── Mock agent card ──────────────────────────────────────────────────── */
+.agent-card-mock .agent-card-name {
+  color: #7aa2f7;
+  font-style: italic;
+}
+.agent-card-mock-hint {
+  font-size: 11px;
+  color: #565f89;
+  font-style: italic;
+}
+body.light-mode .agent-card-mock .agent-card-name {
+  color: #ff8c42;
+}
+
+/* ── Mock agent create button bar ─────────────────────────────────────── */
+.agent-mock-create-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 8px 14px;
+  border-bottom: 1px solid #1e1e3a;
+  flex-shrink: 0;
+}
+.agent-mock-create-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #7aa2f7;
+  border: none;
+  color: #0d0d1a;
+  padding: 8px 20px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+.agent-mock-create-btn:hover {
+  background: #89b4fa;
+}
+body.light-mode .agent-mock-create-bar {
+  border-bottom-color: #ffdec4;
+}
+body.light-mode .agent-mock-create-btn {
+  background: #ff8c42;
+  color: #fff;
+}
+body.light-mode .agent-mock-create-btn:hover {
+  background: #e07030;
+}
 
 /* ── Automation tab ────────────────────────────────────────────────────── */
 .agents-automation-textarea {

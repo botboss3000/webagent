@@ -886,7 +886,7 @@ async def _prepare_send(request: ChatRequest, fastapi_request: Request) -> Dict[
     else:
         req_agent_id = getattr(request, 'agent_id', None)
         req_template = getattr(request, 'agent_template_id', None)
-        if req_template in ('admin-agent', 'integration-admin-agent'):
+        if req_template in ('admin-agent', 'integration-admin-agent', 'web-agent-tui'):
             if not await db.is_user_admin(request.user_id):
                 raise HTTPException(status_code=403, detail="This agent is only available to admin users.")
             agent = await db.get_or_resolve_session_agent(
@@ -952,11 +952,19 @@ async def _prepare_send(request: ChatRequest, fastapi_request: Request) -> Dict[
         "content": request.message, "id": user_interaction_id,
     }, user_id=request.user_id)
 
+    # ── TUI bridge check: if the agent is a TUI bridge agent, forward the
+    # message to the TUI instead of running the normal agent loop.
+    is_tui_bridge = (
+        agent.get("trigger_type") == "tui_bridge"
+        or agent.get("template_id") == "web-agent-tui"
+    )
+
     return {
         "db": db,
         "agent": agent,
         "user_interaction_id": user_interaction_id,
         "channel": channel,
+        "is_tui_bridge": is_tui_bridge,
     }
 
 
@@ -1215,12 +1223,14 @@ async def _run_turn_background(
                 _raw_at = []
 
         assistant_reply = ""
+        _exec_mode = getattr(request, 'execution_mode', 'write') or 'write'
         async for event in stream_agent_events(
             user_id=request.user_id, session_id=request.session_id,
             user_message=user_message_content, system_prompt=system_prompt,
             agent_id=agent["id"], history=history, parent_interaction_id=parent_id,
             max_turns=agent.get("max_turn_count", 0), channel=channel, db=db,
             agent_template_id=agent.get("template_id"), allowed_tools=_raw_at or None,
+            execution_mode=_exec_mode,
         ):
             await event_callback(event)
             if event["type"] == "response":
@@ -1397,6 +1407,51 @@ async def _sse_tail_run(session_id: str):
             yield ": ping\n\n"
 
 
+# ── TUI Bridge registration ──────────────────────────────────────────────────
+
+class TuiBridgeRegisterRequest(BaseModel):
+    port: int
+    user_id: str
+
+
+@router.post("/tui-bridge/register")
+async def tui_bridge_register(request: TuiBridgeRegisterRequest, fastapi_request: Request):
+    """Register a TUI bridge server for the current user.
+    
+    Called by the TUI app when it starts its bridge server. The web app uses
+    this to forward messages to the TUI agent when the user chats with the
+    "Web Agent TUI" agent.
+    """
+    from app.auth.identity import assert_caller_is
+    user_id = await assert_caller_is(fastapi_request, request.user_id)
+    from app.tui_bridge import register_bridge
+    register_bridge(user_id, request.port)
+    return {"status": "ok", "port": request.port}
+
+
+@router.post("/tui-bridge/unregister")
+async def tui_bridge_unregister(fastapi_request: Request):
+    """Unregister the TUI bridge for the current user."""
+    from app.auth.identity import assert_caller_is
+    user_id = await assert_caller_is(fastapi_request, None)
+    if user_id:
+        from app.tui_bridge import unregister_bridge
+        unregister_bridge(user_id)
+    return {"status": "ok"}
+
+
+@router.get("/tui-bridge/status")
+async def tui_bridge_status(fastapi_request: Request):
+    """Check if a TUI bridge is registered for the current user."""
+    from app.auth.identity import assert_caller_is
+    user_id = await assert_caller_is(fastapi_request, None)
+    from app.tui_bridge import is_bridge_alive, get_bridge_port
+    return {
+        "alive": is_bridge_alive(user_id) if user_id else False,
+        "port": get_bridge_port(user_id) if user_id else None,
+    }
+
+
 @router.post("/send")
 async def chat_send(request: ChatRequest, fastapi_request: Request):
     """Fire-and-forget send. Saves the user message, starts the agent turn as a
@@ -1412,6 +1467,60 @@ async def chat_send(request: ChatRequest, fastapi_request: Request):
     prep = await _prepare_send(request, fastapi_request)
     if "slash_result" in prep:
         return {"status": "ok", "session_id": request.session_id, "reply": prep["slash_result"]}
+
+    # ── TUI bridge path: forward to the TUI agent instead of running the
+    # normal agent loop. The TUI processes the message and streams the reply
+    # back. This is synchronous (the TUI bridge returns the full reply).
+    if prep.get("is_tui_bridge"):
+        from app.tui_bridge import forward_to_bridge, is_bridge_alive
+
+        if is_bridge_alive(request.user_id):
+            reply = await forward_to_bridge(
+                request.user_id, request.session_id, request.message or "",
+            )
+            if reply is not None:
+                # Persist the assistant reply
+                try:
+                    await prep["db"].insert_interaction(
+                        request.user_id, request.session_id,
+                        role="assistant", content=reply,
+                        parent_id=prep["user_interaction_id"],
+                        channel=prep["channel"],
+                        sender_id=prep["agent"]["id"],
+                        receiver_id=request.user_id,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to persist TUI bridge reply: %s", e)
+
+                # Emit the response event so the UI renders it
+                await _emit_to_visualizers(request.session_id, {
+                    "type": "response", "level": "agent",
+                    "content": reply, "turn_id": prep["user_interaction_id"],
+                }, user_id=request.user_id)
+
+                return {
+                    "status": "complete",
+                    "session_id": request.session_id,
+                    "turn_id": prep["user_interaction_id"],
+                    "reply": reply,
+                }
+            else:
+                # Bridge not available — fall through to error
+                pass
+
+        # Bridge not available — return an error message
+        error_msg = ("The TUI agent is not running. "
+                     "Start the Server Manager (TUI) to use this agent.")
+        await _emit_to_visualizers(request.session_id, {
+            "type": "error", "level": "agent",
+            "message": error_msg, "turn_id": prep["user_interaction_id"],
+        }, user_id=request.user_id)
+        return {
+            "status": "error",
+            "session_id": request.session_id,
+            "turn_id": prep["user_interaction_id"],
+            "error": error_msg,
+        }
 
     status = await get_run_manager().start_or_replace(
         session_id=request.session_id,
@@ -1445,6 +1554,40 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             yield f"data: {json.dumps({'type': 'stream', 'level': 'agent', 'content': result})}\n\n"
             yield f"data: {json.dumps({'type': 'response', 'level': 'agent', 'content': result})}\n\n"
         return StreamingResponse(_slash_events(), media_type="text/event-stream")
+
+    # ── TUI bridge path ──
+    if prep.get("is_tui_bridge"):
+        from app.tui_bridge import forward_to_bridge, is_bridge_alive
+
+        async def _tui_bridge_events():
+            if is_bridge_alive(request.user_id):
+                reply = await forward_to_bridge(
+                    request.user_id, request.session_id, request.message or "",
+                )
+                if reply is not None:
+                    # Persist the assistant reply
+                    try:
+                        await prep["db"].insert_interaction(
+                            request.user_id, request.session_id,
+                            role="assistant", content=reply,
+                            parent_id=prep["user_interaction_id"],
+                            channel=prep["channel"],
+                            sender_id=prep["agent"]["id"],
+                            receiver_id=request.user_id,
+                        )
+                    except Exception as e:
+                        logger.warning("Failed to persist TUI bridge reply: %s", e)
+
+                    yield f"data: {json.dumps({'type': 'stream', 'level': 'agent', 'content': reply})}\n\n"
+                    yield f"data: {json.dumps({'type': 'response', 'level': 'agent', 'content': reply})}\n\n"
+                else:
+                    error_msg = "The TUI agent is not running. Start the Server Manager (TUI) to use this agent."
+                    yield f"data: {json.dumps({'type': 'error', 'level': 'agent', 'message': error_msg})}\n\n"
+            else:
+                error_msg = "The TUI agent is not running. Start the Server Manager (TUI) to use this agent."
+                yield f"data: {json.dumps({'type': 'error', 'level': 'agent', 'message': error_msg})}\n\n"
+
+        return StreamingResponse(_tui_bridge_events(), media_type="text/event-stream")
 
     await get_run_manager().start_or_replace(
         session_id=request.session_id,
