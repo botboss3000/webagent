@@ -57,3 +57,4 @@ class G:
     IMAGE = _g("🖼", "[img]")
     USER = _g("🧑", "you")
     BOT = _g("🤖", "")
+    CROSS = _g("✕", "x")

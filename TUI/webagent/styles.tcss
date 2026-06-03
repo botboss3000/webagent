@@ -78,9 +78,10 @@ Screen {
 #main { width: 1fr; height: 100%; }
 
 /* Thin docked right-side category panel (Admin / Scene / App / Server). Appears only
- * while a category is open; click outside it (the chat) or press Esc to close. Theme
- * variables only — legible in light AND dark. Width is capped at 60% so the chat stays
- * visible even on a small phone; button labels stack and wrap so they stay readable. */
+ * while a category is open; closes only on Esc or the ✕ header button — clicking
+ * in the main/chat area does NOT dismiss it. Theme variables only — legible in light
+ * AND dark. Width is capped at 60% so the chat stays visible even on a small phone;
+ * button labels stack and wrap so they stay readable. */
 #side-panel {
     width: 34; max-width: 85%;
     height: 100%;
@@ -229,14 +230,29 @@ ConfirmModal { align: center middle; }
     background: $background; color: $foreground;
     border: round $primary; padding: 0 1; margin: 1 0 0 0;
 }
-/* New-session notice: a blue-background warning banner marking a session reset.
-   Uses the $accent CSS variable (the theme's blue/cyan) for background + border. */
+/* New-session notice: a pill-style announcement marking a session reset.
+   Flush with the main background; outlined in the accent (blue/cyan) like
+   the user-message pill but with a different border colour. */
 .msg-session-new {
     width: 100%; height: auto;
-    background: $accent;
+    background: $background;
     border: round $accent;
     padding: 0 1; margin: 1 0 0 0;
-    color: $background;
+    color: $foreground;
+}
+/* Clickable [Clear] pill inside the session-new notice — styled as a flat
+   action button, same accent colour as the bordering outline. */
+.session-clear-btn {
+    width: auto; height: 3;
+    background: $background;
+    border: round $accent;
+    padding: 0 2; margin: 0 0 1 0;
+    color: $accent; text-style: bold;
+    content-align: center middle;
+}
+.session-clear-btn:hover {
+    color: $primary;
+    border: round $primary;
 }
 
 /* Resume-session row in the sessions panel — distinct from other panel buttons. */
@@ -296,6 +312,7 @@ ConfirmModal { align: center middle; }
 #input-row #prompt {
     width: 1fr;
     height: auto;
+    min-width: 2;
     border: none;
     outline: none;
     background: $background;

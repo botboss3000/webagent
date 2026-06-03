@@ -51,6 +51,15 @@ def _should_skip_memory(message: str) -> bool:
     return bool(not stripped or _SKIP_MEMORY_PATTERN.match(stripped))
 
 
+def _session_title_from_message(message: str, max_words: int = 6) -> str:
+    """Extract a concise 3–6 word session title from the user's first message."""
+    words = (message or "").strip().split()
+    if not words:
+        return "New Session"
+    title = " ".join(words[:max_words]).rstrip(".,!?;: ")
+    return title[:60] or "New Session"
+
+
 async def _enforce_agent_access_policy(db, agent: dict, user_id: str) -> None:
     """Raise 403 if user is not allowed to chat with this agent under its user_mode policy."""
     mode = (agent or {}).get("user_mode") or "anonymous"
@@ -348,7 +357,7 @@ async def chat(request: ChatRequest, fastapi_request: Request):
             return ChatResponse(reply=result, response=result, session_id=request.session_id)
 
         # Ensure the session exists before inserting interactions
-        _session_title = (request.message or "").strip()[:60] or None
+        _session_title = _session_title_from_message(request.message) if (request.message or "").strip() else None
         await _ensure_session(db, request.user_id, request.session_id, title=_session_title)
 
         # ── Optimizer / Closer session: route to dedicated agent ──
@@ -778,7 +787,7 @@ async def _prepare_send(request: ChatRequest, fastapi_request: Request) -> Dict[
         return {"slash_result": result}
 
     # Ensure the session exists before inserting interactions
-    _session_title = (request.message or "").strip()[:60] or None
+    _session_title = _session_title_from_message(request.message) if (request.message or "").strip() else None
     await _ensure_session(db, request.user_id, request.session_id, title=_session_title)
 
     # ── Optimizer / Closer session: route to dedicated agent ──

@@ -32,11 +32,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_RETENTION_SECONDS = 60
 SWEEP_INTERVAL_SECONDS = 30
 MAX_EVENTS_PER_BUFFER = 5000  # safety cap — protects against runaway loops
-SETTINGS_FILE = "app-settings.json"
+SETTINGS_FILE = "data/config/app-settings.json"
 
 
 def _read_retention_seconds() -> int:
-    """Read stream_buffer_retention_seconds from app-settings.json (project root)."""
+    """Read stream_buffer_retention_seconds from data/config/app-settings.json."""
     try:
         if os.path.exists(SETTINGS_FILE):
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:

@@ -213,6 +213,9 @@ webAgent/
 │   ├── web-terminal/       # Self-contained terminal-styled chat page (Terminal tab); React+Babel single-file app, served at /web-terminal/ (see its README.md)
 │   └── db/
 │       └── attachments/    # File storage abstraction (store_file / read_file / delete_file)
+├── data/                   # Human-editable seed data + app config (relocated here for a tidy root)
+│   ├── agents/             # Agent template JSON — seeded into agent_templates (reverse-export: scripts/export_agent_templates.py)
+│   └── config/             # App config JSON: provider.json, app-settings.json, scheduler_config.json, optimizer.json, remote_access.json
 ├── docs/                   # Operator docs: events-setup.md (Pub/Sub, Graph, Dropbox, Shopify)
 ├── tests/                  # e.g. test_session_history.py (unittest)
 ├── sw.js                   # PWA service worker (must be at root scope for coverage)
@@ -238,6 +241,7 @@ webAgent/
 ├── webagent.exe            # Built launcher + self-bootstrapping installer (gitignored). Produced at the project ROOT by launcher/scripts/build_exe.py.
 ├── launcher/               # Polished Textual TUI launcher + self-bootstrapping installer; builds to a single portable webagent.exe at the PROJECT ROOT (../webagent.exe). FIRST RUN can install webAgent from nothing — downloads the public repo (git if present, else ZIP), fetches the self-contained uv toolchain (which installs its own private Python), uv-syncs all deps, and downloads the Playwright Chromium browser (~150MB) for browser_action; the end user needs only the .exe (or it can point at an existing folder). Server controls (Launch / Restart / Stop / Browser / Clear DB / Reset Python / Full Reset / Update = re-pull code + re-sync deps) + watchdogs that relaunch the server if it crashes (auto_restart_server) OR goes unresponsive on a health probe (health_check_restart) — shared exponential backoff + 5-strike crash-loop guard; both default ON, toggle in launcher.json + animated procedural ASCII background, AND an embedded keyboard-driven chat client (default view): agent/session scrolling pickers, live token streaming, expandable tool-call blocks, per-turn token/cost stats, image drag-to-attach, talks to the local server's chat/stream + db APIs (can drive the admin coding agent — shell/grep/file-edit). Emoji when the terminal supports it (auto-relaunches into Windows Terminal). See launcher/README.md.
 ├── launcher_android/       # Termux + proot-distro Ubuntu TUI launcher for running webAgent on an Android phone. Launch / Restart / Kill / Browser + dependency Doctor with one-tap fixes for the common Android-ARM issues (Playwright Chromium, build-essential, missing .env). See launcher_android/README.md.
+├── TUI/                    # Standalone server-manager TUI (Textual; inner package `webagent`). `/termux` serves TUI/install-termux.sh. See TUI/README.md.
 ├── run.py                  # Pre-opens port with SO_REUSEADDR for zombie-port resilience
 ├── uploads/                # Uploaded attachments directory (auto-created, gitignored)
 ├── Dockerfile
@@ -334,7 +338,7 @@ cp .env.example .env          # Windows (cmd): copy .env.example .env
 
 In **local** mode, Supabase vars are not required for storage; you still need **`OPENROUTER_API_KEY`** (and usually **`OPENROUTER_MODEL`**) for LLM calls.
 
-Provider, API key, and model can **also** be configured at runtime via the ⚙️ **Settings** modal in the UI (gear icon next to Cloud/Local toggle). Changes are saved to **`provider.json`** in the project root and applied on next server start. The API key is masked in the UI after saving.
+Provider, API key, and model can **also** be configured at runtime via the ⚙️ **Settings** modal in the UI (gear icon next to Cloud/Local toggle). Changes are saved to **`data/config/provider.json`** and applied on next server start. The API key is masked in the UI after saving.
 
 **Multi-provider parallel mode:** When `parallel_mode: true` and 2+ entries in `multi_providers`, the agent fans out each LLM call to all configured providers in parallel and uses the first complete response. Configured via `POST /admin/settings/multi-providers` or directly in `provider.json`. Fallback: single-provider path is unchanged when parallel mode is off or < 2 providers.
 
@@ -401,10 +405,10 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 
 **Android (Termux + proot-distro Ubuntu):** the `launcher_android/` directory is the Android counterpart to `launcher/` — a Textual TUI with Launch / Restart / Kill / Browser buttons plus a dependency **Doctor** that surfaces venv / `.env` / apt build-deps / per-package pip status and offers one-tap fixes. The known Android-ARM blocker (Playwright Chromium download fails on ARM) is downgraded from fatal to skip-OK by writing `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` into `.env`; other optional deps that fail to install are listed as non-critical rather than blocking startup. Run it from Termux with `bash launcher_android/start.sh` — the shim handles installing `proot-distro`, the Ubuntu distro, and `textual` inside the proot on first run. See `launcher_android/README.md` for full setup steps and the Browser-bridge mechanism that forwards URLs to Android's `termux-open-url`.
 
-**Android (Termux, TUI manager only):** to install just the standalone **Server Manager TUI** (`webagent_tui/`) on a phone — not the full server — paste one line into Termux:
+**Android (Termux, TUI manager only):** to install just the standalone **Server Manager TUI** (`TUI/`) on a phone — not the full server — paste one line into Termux:
 
 ```
-cd ~ && pkg install -y git && git clone --depth 1 https://github.com/botboss3000/webagent ~/webagent && bash ~/webagent/webagent_tui/install-termux.sh
+cd ~ && pkg install -y git && git clone --depth 1 https://github.com/botboss3000/webagent ~/webagent && bash ~/webagent/TUI/install-termux.sh
 ```
 
 …or, using the short public URL the server itself hosts:
@@ -413,7 +417,7 @@ cd ~ && pkg install -y git && git clone --depth 1 https://github.com/botboss3000
 pkg install -y curl && curl -fsSL https://webagent.live/termux | bash
 ```
 
-The installer (`webagent_tui/install-termux.sh`) installs Python + git, the TUI and its two deps (clean editable install on Python 3.11/3.12, deps-only run-from-source fallback on newer), then drops a `webagent` command on PATH plus a Termux:Widget home-screen shortcut. The app serves that script verbatim (LF-normalised) at **`/termux`** (and `/termux.sh`). Unlike `launcher_android/` (which runs the whole server under proot), this is just the lightweight manager. See `webagent_tui/README.md`.
+The installer (`TUI/install-termux.sh`) installs Python + git, the TUI and its two deps (clean editable install on Python 3.11/3.12, deps-only run-from-source fallback on newer), then drops a `webagent` command on PATH plus a Termux:Widget home-screen shortcut. The app serves that script verbatim (LF-normalised) at **`/termux`** (and `/termux.sh`). Unlike `launcher_android/` (which runs the whole server under proot), this is just the lightweight manager. See `TUI/README.md`.
 
 **Useful URLs**
 
@@ -426,7 +430,7 @@ The installer (`webagent_tui/install-termux.sh`) installs Python + git, the TUI 
 | `http://localhost:8080/web-terminal/` | Terminal tab page (self-contained web-terminal app; also embedded in the main UI) |
 | `http://localhost:8080/privacy` | Privacy Policy page (`ui/privacy.html`, public, no auth) |
 | `http://localhost:8080/tos` | Terms of Service page (`ui/tos.html`, public, no auth) |
-| `https://webagent.live/termux` (also `/termux.sh`) | One-line Termux installer for the standalone webAgent TUI — serves `webagent_tui/install-termux.sh` (LF-normalised); `curl -fsSL https://webagent.live/termux \| bash` |
+| `https://webagent.live/termux` (also `/termux.sh`) | One-line Termux installer for the standalone webAgent TUI — serves `TUI/install-termux.sh` (LF-normalised); `curl -fsSL https://webagent.live/termux \| bash` |
 | `http://localhost:8080/uploads/` | Served uploaded files directory |
 | `http://localhost:8080/visuals/users/<uid>/<slug>.html` | Served AutoAgent page output (ephemeral) |
 | `http://localhost:8080/api/v1/pages?user_id=...` | AutoAgent pages REST API |
@@ -652,7 +656,7 @@ Use **`reset_webagent.bat`** (repo root, Windows) to wipe webAgent back to a cle
 | # | Prompt | Default | Targets when "yes" |
 |---|--------|---------|---------------------|
 | 1 | Back up files to `temp\reset-backup-<timestamp>\` before deleting? | **Yes** | Every targeted file/folder is `move`d into a timestamped folder under `temp\` mirroring its original path (reversible). On "No", everything is hard-deleted via `del /F /Q` or `rmdir /S /Q`. |
-| 2 | Clear app secrets (LLM API keys, OAuth tokens, integration creds, scheduler config)? | No | `provider.json`, `app-settings.json`, `scheduler_config.json`, `app\db_mode.json`, `app\pages_mode.json`, `app\db_connection.json`, `app\secrets_mode.json`. App falls back to local defaults when these are missing. |
+| 2 | Clear app secrets (LLM API keys, OAuth tokens, integration creds, scheduler config)? | No | `data/config/provider.json`, `data/config/app-settings.json`, `data/config/scheduler_config.json`, `app\db_mode.json`, `app\pages_mode.json`, `app\db_connection.json`, `app\secrets_mode.json`. App falls back to local defaults when these are missing. |
 | 3 | Clear local user accounts (passwords, remember-me tokens)? | No | `app\auth\users.json`, `app\auth\users.json.bak`. `admin / admin` is re-created on next start. |
 | 4 | Delete `.env`? | **No** | `.env` at repo root. Default No — most installs (Supabase, OAuth client IDs) need this file to start. |
 | 5 | Delete agent template JSON files in `app\context\agents\`? | No | All `*.json` under `app\context\agents\`. **Warning:** there is no fallback — the next start will boot with zero agents until you restore templates. |
