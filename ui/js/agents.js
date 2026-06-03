@@ -207,7 +207,7 @@ const DESTRUCTIVE = new Set([
 // Maps agent connection_type (ability) to the tool names it unlocks.
 // Mirrors the gating logic in app/tools/loader.py _inject_builtin_tools.
 const ABILITY_TO_TOOLS = {
-  codebase_admin:   ['read_source','write_source','edit_source','delete_source','resolve_conflict','run_command','restart_server','db_query'],
+  codebase_admin:   ['read_source','write_source','edit_source','delete_source','resolve_conflict','run_command','restart_server','db_query','git_tool'],
   web_access:       ['web_search','get_weather','maps_geocode'],
   browser_control:  ['browser_action','http_request'],
   image_generation: ['generate_image'],
@@ -223,7 +223,7 @@ function _toolsForAgent(agent, enabledAbilities) {
   const id = agent.id || '';
   if (agent.is_admin_agent) {
     return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL,
-            'read_source','write_source','edit_source','delete_source','run_command','restart_server'];
+            'read_source','write_source','edit_source','delete_source','run_command','restart_server','git_tool'];
   }
   if (id === 'opt_planner') return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL, ...(PIPELINE_TOOLS.opt_planner || [])];
   if (id === 'opt_closer')  return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL, ...(PIPELINE_TOOLS.opt_closer  || [])];
