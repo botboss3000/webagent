@@ -1640,15 +1640,6 @@ body.light-mode .members-policy-opt-label { color: #2a1f17; }
 
 
 /* ── Mock agent card ──────────────────────────────────────────────────── */
-.agent-card-mock {
-  border-style: dashed;
-  border-color: #3a3a6a;
-  opacity: 0.85;
-}
-.agent-card-mock:hover {
-  border-color: #7aa2f7;
-  opacity: 1;
-}
 .agent-card-mock .agent-card-name {
   color: #7aa2f7;
   font-style: italic;
@@ -1657,12 +1648,6 @@ body.light-mode .members-policy-opt-label { color: #2a1f17; }
   font-size: 11px;
   color: #565f89;
   font-style: italic;
-}
-body.light-mode .agent-card-mock {
-  border-color: #ffdec4;
-}
-body.light-mode .agent-card-mock:hover {
-  border-color: #ff8c42;
 }
 body.light-mode .agent-card-mock .agent-card-name {
   color: #ff8c42;
