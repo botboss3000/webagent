@@ -39,7 +39,7 @@ let _scrollListener = null; // the active scroll listener (one at a time)
 
 // ── Virtual-scroll state ────────────────────────────────────────────────────
 // WeakMap<msgId, offsetHeight> — measured after first render of each bubble
-const _bubbleHeights = new WeakMap();
+const _bubbleHeights = new Map();
 // Set of msgIds currently rendered as placeholders (not real bubbles)
 const _placeholderIds = new Set();
 // The virtual-scroll scroll handler (bound once per session load)
