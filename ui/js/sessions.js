@@ -1878,20 +1878,11 @@ export function initSessions() {
     if (e.key === 'Escape' && menu && !menu.hidden) closeMenu();
   });
 
+  // New session button — creates a fresh session for the current agent
   const sessionNewBtn = document.getElementById('session-new');
   if (sessionNewBtn) {
-    // Use pointerdown — lucide replaces the inner SVG paths between mousedown
-    // and mouseup, which prevents the browser from synthesising a click event.
-    sessionNewBtn.addEventListener('pointerdown', (ev) => {
-      ev.preventDefault();
-      closeMenu();
-      // Record the current session under the current agent before creating a new one
-      if (app.currentAgentId && app.currentSessionId) {
-        _lastSessionPerAgent.set(app.currentAgentId, app.currentSessionId);
-        _saveLastSessionMap();
-      }
-      // Starting a new session leaves the current one running in the background —
-      // do NOT interrupt it. Only reset local UI state.
+    sessionNewBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
       abortChatStream();
       app.currentSessionId = generateUUID();
       localStorage.setItem('terminalSessionId', app.currentSessionId);
@@ -1903,7 +1894,6 @@ export function initSessions() {
       loopVisualSessionChanged();
       autoAgentSessionChanged();
       chatActivitySessionChanged();
-      document.getElementById('chat-input')?.focus();
     });
   }
 
@@ -2247,10 +2237,11 @@ export function initSessions() {
         sel.value = 'agents';
         sel.dispatchEvent(new Event('change'));
       }
-      // Defer to let startAgents() bind the create modal button before clicking
+      // Defer to let the agents tab render, then expand the mock card
       setTimeout(() => {
-        const btn = document.getElementById('btn-new-agent');
-        if (btn) btn.click();
+        if (window.expandAgent) {
+          window.expandAgent('__new__');
+        }
       }, 50);
     });
   }

@@ -48,6 +48,7 @@ from .appclient import WebAppClient, WebAppError
 from . import attach
 from .clip import read_clipboard, read_clipboard_image, write_clipboard
 from .db import Store
+from .tui_logger import TuiLogger
 from .env_probe import probe_machine, server_health
 from .glyphs import EMOJI, G
 from .llm import LLMClient
@@ -425,6 +426,9 @@ class ServerManagerApp(App):
         self._tool_group = None      # current open "N tool calls" Collapsible (None = none)
         self._tool_n = 0             # how many calls are in the current group
         self._tool_pending: list[dict] = []  # calls awaiting their result (fill in place)
+        # ── TUI log (persistent, human-readable) ──
+        log_dir = self.project_root or Path.cwd()
+        self._tui_log = TuiLogger(log_dir)
 
     def _apply_provider(self) -> None:
         """(Re)resolve the AI provider for the current project and rebuild the LLM
@@ -514,6 +518,10 @@ class ServerManagerApp(App):
         self._refresh_status()   # paint the header (server pill spins while we probe)
         self._server_state = await server_health() if self.project_root else "n/a"
         self._render_welcome(self._server_state)
+        # Log the session start
+        proj = str(self.project_root) if self.project_root else ""
+        model = self.provider.model if self.provider.configured else ""
+        self._tui_log.start(self._self_info.version, project=proj, model=model)
         self._refresh_title()
         self._refresh_status()
         self._update_hud()
@@ -674,6 +682,16 @@ class ServerManagerApp(App):
         Text is unsafe here because ASCII glyph fallbacks like '[admin]' look like
         markup tags. URL linkifying is done on the plain-text paths instead."""
         self._mount(Static(markup, classes="msg-line"))
+        # Log notable system messages to the TUI log (strip markup tags for readability)
+        plain = re.sub(r"\[/?[a-z#][^\]]*\]", "", markup) if "[" in markup else markup
+        plain = plain.strip()
+        if plain and not plain.startswith("tip:") and not plain.startswith("host:"):
+            if "WARN" in markup or "warn" in markup or "No AI key" in markup:
+                self._tui_log.warn(plain)
+            elif "error" in markup.lower() or "fail" in markup.lower():
+                self._tui_log.error(plain)
+            elif "server" in plain.lower() and ("start" in plain.lower() or "stop" in plain.lower() or "running" in plain.lower()):
+                self._tui_log.server(plain)
 
     def _log_block(self, text: str) -> None:
         """Mount raw multi-line text (server logs / diagnostics) WITHOUT markup
@@ -686,6 +704,7 @@ class ServerManagerApp(App):
         """Render the agent's reply as Markdown (so code fences, lists, and emphasis
         format nicely) — markup is off, so the model's text can't break parsing."""
         self._end_tool_group()
+        self._tui_log.assistant(text)
         try:
             from rich.markdown import Markdown
             renderable = Markdown(text) if text.strip() else Text("(no reply)", style=self.cc["dim"])
@@ -927,6 +946,7 @@ class ServerManagerApp(App):
             self._refresh_status()
         msg = await fn(self._server_ctx())
         self._log(f"[{self.cc['dim']}]{msg}[/]")
+        self._tui_log.server(f"server {which}: {msg}")
         self._server_state = await server_health() if self.project_root else "n/a"
         self._refresh_status()
 
@@ -940,6 +960,7 @@ class ServerManagerApp(App):
             clean = text.lstrip("\u2600\ufe0f \U0001f514")  # strip ☀️/🔔 + spaces
             self._mount(Static(Text(clean, style=self.cc["accent"]),
                                classes="msg-notify", markup=False))
+            self._tui_log.event(clean)
         except Exception:
             pass
 
@@ -1003,6 +1024,7 @@ class ServerManagerApp(App):
         """Close the manager shortly after the current message renders, so a staged
         self-update swap / source reload (scheduled by self_restart) can finish."""
         self._log(f"[{self.cc['tool']}]{G.BULLET} restarting the manager…[/]")
+        self._tui_log.stop()
         self.set_timer(1.2, self.exit)
 
     # ── actions ──────────────────────────────────────────────────────────
@@ -1023,6 +1045,7 @@ class ServerManagerApp(App):
         self._close_panel()
 
     def action_quit_app(self) -> None:
+        self._tui_log.stop()
         self.exit()
 
     # ── header categories → thin docked right-side panel ──────────────────
@@ -2348,6 +2371,7 @@ class ServerManagerApp(App):
         the main background with a bright outline — so it reads as 'yours'. Any
         attached images are listed by name on a dim trailing line."""
         self._end_tool_group()
+        self._tui_log.user(text)
         body = Text(text, style=self.cc["fg"])
         if images:
             names = ", ".join(i.get("name", "image") for i in images)

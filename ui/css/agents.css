@@ -26,19 +26,7 @@
   color: #3a3a5a;
   font-weight: 400;
 }
-#btn-new-agent {
-  background: #7aa2f7;
-  border: none;
-  color: #0d0d1a;
-  padding: 7px 16px;
-  border-radius: 20px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  font-family: inherit;
-  transition: background 0.15s, opacity 0.15s;
-}
-#btn-new-agent:hover { background: #89b4fa; }
+
 
 /* ── Card grid ── */
 #agents-grid {
@@ -657,38 +645,13 @@ body.light-mode .agents-test-loop .lv-node.lv-done { border-color: #44aa44 !impo
 body.light-mode .agents-test-loop .lv-node.lv-active { border-color: #2288cc !important; background: #e0f0ff !important; color: #2288cc !important; }
 body.light-mode .agents-test-loop .lv-node.lv-error  { border-color: #cc4455 !important; background: #ffeeee !important; color: #cc4455 !important; }
 
-/* ── Create modal ── */
-#agents-create-modal {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 999;
-}
-#agents-create-modal.hidden { display: none; }
-#agents-create-box {
-  background: #13132a;
-  border: 1px solid #2a2a4a;
-  border-radius: 8px;
-  padding: 24px;
-  width: 400px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-#agents-create-box h3 { font-size: 15px; font-weight: 700; color: #c0caf5; }
-.agents-create-row { display: flex; flex-direction: column; gap: 5px; }
-.agents-create-row label { font-size: 11px; color: #7aa2f7; font-weight: 600; text-transform: uppercase; }
-#agents-create-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+/* ── Create modal (removed — replaced by mock card) ── */
 
 /* ── Light mode ── */
 body.light-mode #tab-agents           { background: #fffaf5; }
 body.light-mode #agents-toolbar-title { color: #3d2c2e; }
 body.light-mode #agents-toolbar-sub   { color: #d0b0a0; }
-body.light-mode #btn-new-agent        { background: #ff8c42; color: #fff; }
-body.light-mode #btn-new-agent:hover  { background: #e07030; }
+
 body.light-mode .agent-card           { background: #fff7f0; border-color: #ffdec4; }
 body.light-mode .agent-card:hover     { background: #fff2e6; border-color: #ffb880; }
 body.light-mode .agent-card.active    { border-color: #ff8c42; }
@@ -713,9 +676,7 @@ body.light-mode .agents-save-bar      { background: #fff2e6; border-top-color: #
 body.light-mode .agents-tool-item     { background: #fff2e6; border-color: #ffdec4; }
 body.light-mode .agents-tool-name     { color: #cc6a28; }
 body.light-mode .agents-tool-desc     { color: #7a5a4a; }
-body.light-mode #agents-create-box    { background: #fff7f0; border-color: #ffdec4; }
-body.light-mode #agents-create-box h3 { color: #3d2c2e; }
-body.light-mode .agents-create-row label { color: #cc6a28; }
+
 
 /* Icon wrap – pastel tints per color */
 body.light-mode .agent-card-icon-wrap.color-teal   { background: #e0f5f0; }
@@ -1677,6 +1638,73 @@ body.light-mode .members-policy-opt-label { color: #2a1f17; }
 }
 .members-btn.restrict:hover { background: rgba(247,118,142,0.12); }
 
+
+/* ── Mock agent card ──────────────────────────────────────────────────── */
+.agent-card-mock {
+  border-style: dashed;
+  border-color: #3a3a6a;
+  opacity: 0.85;
+}
+.agent-card-mock:hover {
+  border-color: #7aa2f7;
+  opacity: 1;
+}
+.agent-card-mock .agent-card-name {
+  color: #7aa2f7;
+  font-style: italic;
+}
+.agent-card-mock-hint {
+  font-size: 11px;
+  color: #565f89;
+  font-style: italic;
+}
+body.light-mode .agent-card-mock {
+  border-color: #ffdec4;
+}
+body.light-mode .agent-card-mock:hover {
+  border-color: #ff8c42;
+}
+body.light-mode .agent-card-mock .agent-card-name {
+  color: #ff8c42;
+}
+
+/* ── Mock agent create button bar ─────────────────────────────────────── */
+.agent-mock-create-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 8px 14px;
+  border-bottom: 1px solid #1e1e3a;
+  flex-shrink: 0;
+}
+.agent-mock-create-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #7aa2f7;
+  border: none;
+  color: #0d0d1a;
+  padding: 8px 20px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+.agent-mock-create-btn:hover {
+  background: #89b4fa;
+}
+body.light-mode .agent-mock-create-bar {
+  border-bottom-color: #ffdec4;
+}
+body.light-mode .agent-mock-create-btn {
+  background: #ff8c42;
+  color: #fff;
+}
+body.light-mode .agent-mock-create-btn:hover {
+  background: #e07030;
+}
 
 /* ── Automation tab ────────────────────────────────────────────────────── */
 .agents-automation-textarea {
