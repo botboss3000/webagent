@@ -232,7 +232,8 @@ async def seed_config(ctx: ToolContext, target: str) -> str:
     if have_key:
         entry = {"provider": _provider_label(prov.base_url), "base_url": prov.base_url,
                  "api_key": prov.api_key, "model": prov.model}
-        (p / "provider.json").write_text(
+        (p / "data" / "config").mkdir(parents=True, exist_ok=True)
+        (p / "data" / "config" / "provider.json").write_text(
             json.dumps({"admin_default": entry, "__anonymous__": entry}, indent=2), encoding="utf-8")
     # 3) db_connection.json → explicit local sqlite (no external service needed).
     (p / "db_connection.json").write_text(

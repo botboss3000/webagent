@@ -49,7 +49,7 @@ FLUSH_INTERVAL_SECONDS = 3         # batch-writer cadence
 PRUNE_INTERVAL_SECONDS = 120       # how often the writer prunes the table
 MAX_DETAIL_LEN = 16000
 MAX_LABEL_LEN = 500
-SETTINGS_FILE = "app-settings.json"
+SETTINGS_FILE = "data/config/app-settings.json"
 
 # Record kinds the recorder will accept. Anything else is dropped.
 VALID_KINDS = frozenset({

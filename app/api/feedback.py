@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/feedback")
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-_PROVIDER_FILE = _PROJECT_ROOT / "provider.json"
+_PROVIDER_FILE = _PROJECT_ROOT / "data" / "config" / "provider.json"
 
 # Default relay URL — points at the upstream webAgent project's relay.
 # Cloners can override via app-settings.json `feedback_relay_url`.

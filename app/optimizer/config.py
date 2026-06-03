@@ -26,7 +26,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-CONFIG_PATH = PROJECT_ROOT / "optimizer.json"
+CONFIG_PATH = PROJECT_ROOT / "data" / "config" / "optimizer.json"
 
 
 DEFAULTS: Dict[str, Any] = {

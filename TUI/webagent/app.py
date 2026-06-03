@@ -29,6 +29,7 @@ from textual.events import Click, Paste
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widget import Widget
+from textual.strip import Strip
 from textual.widgets import Checkbox, Collapsible, Input, Select, Static, TextArea
 
 from .agent import AgentEvent, ServerManagerAgent
@@ -75,9 +76,9 @@ def _linkify_text(text: Text) -> Text:
 
 class PromptInput(TextArea):
     """Multi-line input pill. Starts at 3 rows tall; expands up to 5 rows as text
-    is added; submits on Ctrl+Enter. Border stays coloured always (never dims).
-    Inherits clipboard-aware Ctrl+V paste (multi-line now allowed) and Ctrl+A
-    select-all from TextArea."""
+    is added; submits on Enter. Ctrl+Enter and Shift+Enter start a new line.
+    Border stays coloured always (never dims). Inherits clipboard-aware Ctrl+V
+    paste (multi-line now allowed) and Ctrl+A select-all from TextArea."""
 
     DEFAULT_CSS = """
     PromptInput { height: 3; }
@@ -88,7 +89,7 @@ class PromptInput(TextArea):
         self.styles.height = 3
 
     class Submitted(Message):
-        """Fired on Ctrl+Enter with the current text."""
+        """Fired on Enter with the current text."""
         def __init__(self, value: str) -> None:
             super().__init__()
             self.value = value
@@ -100,9 +101,18 @@ class PromptInput(TextArea):
     MAX_ROWS = 5
 
     BINDINGS = [
-        Binding("ctrl+enter", "submit", "Submit", show=False),
+        Binding("ctrl+enter", "new_line", "New line", show=False),
+        Binding("shift+enter", "new_line", "New line", show=False),
         Binding("ctrl+a", "select_all", "Select all", show=False),
     ]
+
+    def key_enter(self) -> None:
+        """Intercept Enter before TextArea's own handler inserts a newline."""
+        self.action_submit()
+
+    def action_new_line(self) -> None:
+        """Insert a newline at the cursor without submitting."""
+        self.insert("\n")
 
     def action_submit(self) -> None:
         text = self.text.strip()
@@ -141,6 +151,13 @@ class PromptInput(TextArea):
             event.prevent_default()
             return
         await super()._on_paste(event)
+
+    def render_line(self, y: int) -> Strip:
+        """Render a line, guarding against zero-width content (crashes rich's
+        chop_cells / divide_line with ValueError: range() arg 3 must not be zero)."""
+        if self.content_size.width <= 0:
+            return Strip.blank(self.size.width, self.get_visual_style("text-area"))
+        return super().render_line(y)
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Auto-grow up to MAX_ROWS lines."""
@@ -704,8 +721,9 @@ class ServerManagerApp(App):
             if self._panel_kind == kind:
                 w.add_class("hdr-on")
 
-        # Far-left = the write-gate as a ONE-WORD toggle (read → write → auto on click).
-        # Coloured text shows the current mode; no inverted fill.
+        # Far-left = ✕ close button (shown only while a panel is open) + write-gate toggle.
+        close_btn = self._add_hdr(bar, Text(f"{G.CROSS} ", style=f"bold {c['accent']}"), "close_panel")
+        close_btn.display = self._panel_open()
         mode = "auto" if self.cfg.autonomous else "write" if self.cfg.writes_enabled else "read"
         mcol = {"read": c["dim"], "write": c["secondary"], "auto": c["tool"]}[mode]
         self._add_hdr(bar, Text(mode, style=f"bold {mcol}"), "mode_cycle")
@@ -998,6 +1016,11 @@ class ServerManagerApp(App):
             self._close_panel()
         else:
             self._open_panel("admin")
+
+    def action_close_panel(self) -> None:
+        """Close the side panel. Triggered by the ✕ header button — always closes
+        regardless of which panel is open (or no-ops if none)."""
+        self._close_panel()
 
     def action_quit_app(self) -> None:
         self.exit()
@@ -1575,22 +1598,10 @@ class ServerManagerApp(App):
                 fn()
 
     def on_click(self, event: Click) -> None:
-        # Click anywhere OUTSIDE the open panel (and not on a header/panel button) closes it.
-        if not self._panel_open():
-            return
-        node = event.widget
-        while node is not None:
-            # Keep the panel open when interacting with the panel itself, the resize
-            # grip, the header/panel buttons, OR the chat input row (so typing or
-            # clicking into the prompt never dismisses an open panel).
-            if getattr(node, "id", None) in ("side-panel", "panel-grip",
-                                             "input-row", "prompt", "send-btn"):
-                return
-            cls = getattr(node, "classes", ())
-            if "hdr-btn" in cls or "panel-btn" in cls:
-                return
-            node = node.parent
-        self._close_panel()
+        # Click-outside no longer closes the panel — only Esc or the ✕ header
+        # button close it. This ensures clicking in the main/chat area never
+        # dismisses an open side panel. Stay no-op here.
+        pass
 
     @on(Select.Changed)
     def _on_setting_change(self, event: Select.Changed) -> None:
@@ -2169,23 +2180,30 @@ class ServerManagerApp(App):
         except Exception:
             pass
         # ── /new: start a fresh session (context reset) ──
-        # Keeps the transcript visible but inserts a blue notice marking the reset,
+        # Keeps the transcript visible but inserts a notice marking the reset,
         # and creates a brand-new session so the agent starts with empty context.
+        # The notice includes a clickable [Clear] pill to wipe the old transcript.
         if text.strip() == "/new":
             old_id = self.session_id[:12]
             self.session_id = self.store.create_session(
                 str(self.project_root) if self.project_root else "(onboarding)"
             )
             self._end_tool_group()
+            clear_btn = Static(
+                Text(" [Clear]", style=f"bold {self.cc['accent']}"),
+                classes="session-clear-btn act-btn", markup=False,
+            )
+            clear_btn._btn_action = "clear_transcript"  # type: ignore[attr-defined]
             self._mount(Static(
                 Text(
                     f" {G.NEW} ── Session reset (new context) ── \n"
-                    f"  Previous session: {old_id} — transcript preserved above.",
-                    style=f"bold {self.cc['bg']}",
+                    f"  Previous session: {old_id} — transcript preserved above.\n",
+                    style=f"bold {self.cc['fg']}",
                 ),
                 classes="msg-session-new",
                 markup=False,
             ))
+            self._mount(clear_btn)
             return
 
         # ── /resume: open the session-list panel ──
@@ -2751,6 +2769,14 @@ class ServerManagerApp(App):
             pass
         await self.llm.aclose()
         self.store.close()
+
+    def action_clear_transcript(self) -> None:
+        """Clear the transcript / log pane of all widgets (preserving the session)."""
+        try:
+            log = self.query_one("#log", VerticalScroll)
+            log.remove_children()
+        except Exception:
+            pass
 
 
 def run() -> int:

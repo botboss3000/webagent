@@ -589,18 +589,48 @@ function _setTriggerLabel() {
   }
 }
 
+function _formatRelativeTime(dateStr) {
+  if (!dateStr) return '';
+  const now = Date.now();
+  const d = new Date(dateStr.endsWith('Z') ? dateStr : dateStr + 'Z');
+  const diffMs = now - d.getTime();
+  if (diffMs < 0) return 'just now';
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 60) return 'just now';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hrs = Math.floor(min / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 4) return `${weeks}w ago`;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
 function _renderSessionRows() {
   const menu = document.getElementById('session-dropdown-menu');
   if (!menu) return;
   menu.innerHTML = '';
-  if (!_sessionsCache.length) {
+
+  // Sort by last active (updated_at), newest first
+  // Pinned sessions float to the top in their existing pinned order
+  const sorted = [..._sessionsCache].sort((a, b) => {
+    if (a.pinned && !b.pinned) return -1;
+    if (!a.pinned && b.pinned) return 1;
+    const aTime = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+    const bTime = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+    return bTime - aTime;
+  });
+
+  if (!sorted.length) {
     const empty = document.createElement('div');
     empty.className = 'session-dropdown-empty';
     empty.textContent = 'No sessions yet';
     menu.appendChild(empty);
     return;
   }
-  for (const s of _sessionsCache) {
+  for (const s of sorted) {
     const row = document.createElement('div');
     row.className = 'session-row' + (s.pinned ? ' pinned' : '') + (s.id === app.currentSessionId ? ' selected' : '');
     row.dataset.id = s.id;
@@ -612,17 +642,19 @@ function _renderSessionRows() {
     } else if (s.has_unread) {
       statusHtml = `<span class="session-row-status session-status-unread" title="New response ready">${icon('check-circle', { size: '12px' })}</span>`;
     }
+    const timeLabel = _formatRelativeTime(s.updated_at);
     row.innerHTML = `
       <span class="row-drag-handle" data-drag-handle title="Drag to reorder · hold to pin">${icon('grip-vertical', { size: '13px' })}</span>
       <span class="session-row-pin-icon">${icon('pin', { size: '12px' })}</span>
       ${statusHtml}
       <span class="session-row-title" title="Hold to rename">${_truncate(label, 28).replace(/</g, '&lt;')}</span>
+      <span class="session-row-time">${timeLabel}</span>
       <button class="session-row-delete" title="Delete session" data-id="${s.id}" data-state="trash">${icon('trash-2', { size: '14px' })}</button>
     `;
     menu.appendChild(row);
   }
   // Append "+ N more" row if there are unpinned sessions beyond what was returned
-  const unpinnedReturned = _sessionsCache.filter(s => !s.pinned).length;
+  const unpinnedReturned = sorted.filter(s => !s.pinned).length;
   const extra = _totalUnpinnedCount - unpinnedReturned;
   if (extra > 0) {
     const moreRow = document.createElement('div');
@@ -672,6 +704,7 @@ export async function populateSessionSelect(userId) {
       id: s.id,
       title: s.title || 'New Session',
       created_at: s.created_at,
+      updated_at: s.updated_at || s.created_at,
       pinned: !!s.pinned,
       run_status: s.run_status || null,
       has_unread: !!s.has_unread,
@@ -685,6 +718,7 @@ export async function populateSessionSelect(userId) {
         id: app.currentSessionId,
         title: 'New Session',
         created_at: null,
+        updated_at: null,
         pinned: false,
         run_status: null,
         has_unread: false,
