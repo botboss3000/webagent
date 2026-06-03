@@ -498,10 +498,11 @@ function _renderAgentCard(grid, agent, isExpanded) {
 
   const card = document.createElement('div');
   card.className = 'agent-card' + (isExpanded ? ' active' : '') + (isMock ? ' agent-card-mock' : '');
+  const iconSize = isExpanded ? '20px' : '24px';
   card.innerHTML = `
     <div class="agent-card-top">
       <div class="agent-card-icon-wrap ${isMock ? 'color-blue' : _iconColor(agent)}">
-        ${isMock ? icon('plus', { size: '20px' }) : (agent.icon || icon('bot', { size: '20px' }))}
+        ${isMock ? icon('plus', { size: iconSize }) : (agent.icon || icon('bot', { size: iconSize }))}
       </div>
       <div class="agent-card-meta">
         <div class="agent-card-name-row">
@@ -529,12 +530,15 @@ function _renderAgentCard(grid, agent, isExpanded) {
 
   // Each agent gets its own .agent-row; the detail panel lives inside it
   const row = document.createElement('div');
-  row.className = 'agent-row';
+  row.className = 'agent-row' + (isExpanded ? ' expanded' : '');
   row.dataset.agentId = agent.id;
   row.appendChild(card);
 
+  // Only build the detail panel when a specific tab is selected (not just expanded)
+  const state = _expandedAgents.get(agent.id);
+  const hasActiveTab = state && state.tab;
   let panel = null;
-  if (isExpanded) {
+  if (hasActiveTab) {
     panel = _buildDetailPanel(agent);
     row.appendChild(panel);
   }
@@ -553,7 +557,9 @@ function _selectAgent(agent) {
   if (_expandedAgents.has(agent.id)) {
     _expandedAgents.delete(agent.id);
   } else {
-    _expandedAgents.set(agent.id, { tab: 'config' });
+    // Expand to show the full card (with tabs) but no detail panel yet.
+    // User clicks a tab to open a specific panel.
+    _expandedAgents.set(agent.id, { tab: null });
   }
   _renderList();
   _saveViewState();
@@ -583,7 +589,8 @@ function _populateAgentTabBar(tabBar, agent, panel) {
   const isMock = _isMockAgent(agent);
   // Highlight a tab only when the card is open — a collapsed card has no
   // active content, so no tab should look selected.
-  const activeTab = state ? (state.tab || 'config') : null;
+  // When tab is null (card expanded but no tab selected), no tab is highlighted.
+  const activeTab = state ? state.tab : null;
   tabBar.innerHTML = '';
   const tabs = [['config','Config'],['tools','Tools'],['test','Agent Loop'],['connections','Abilities']];
   if (!isMock) {
@@ -5981,7 +5988,7 @@ function _saveViewState() {
     const expanded = {};
     for (const [agentId, state] of _expandedAgents) {
       if (agentId === MOCK_AGENT_ID) continue; // don't persist mock state
-      expanded[agentId] = { tab: state.tab || 'config' };
+      expanded[agentId] = { tab: state.tab };
     }
     localStorage.setItem(_STORAGE_KEY, JSON.stringify({ expanded }));
   } catch (_) {}
@@ -5997,7 +6004,7 @@ function _restoreViewState() {
     for (const [agentId, state] of Object.entries(expanded)) {
       // Only restore if the agent still exists
       if (_agents.find(a => a.id === agentId)) {
-        _expandedAgents.set(agentId, { tab: state.tab || 'config' });
+        _expandedAgents.set(agentId, { tab: state.tab || null });
         changed = true;
       }
     }
