@@ -754,6 +754,10 @@ async function sendMessage() {
   _updateInputRowState();
   _autoResizePill(app.chatInput);
   _clearDraft();
+  // Clear stale suggestion chips the moment the user sends.
+  if (typeof app.clearSuggestions === 'function') {
+    try { app.clearSuggestions(); } catch (_) { /* best-effort */ }
+  }
 
   // Advance the poll cursor so auto-poll doesn't re-render this message
   if (window.__chatPollLastAt !== undefined) {
@@ -951,6 +955,10 @@ function finalizeAgentResponse(content, turnId, isReplayed) {
   // Keep cache fresh — finalize the cached assistant message
   if (turnId && app.currentSessionId && content) {
     _cacheAppendMessage(app.currentSessionId, { role: 'assistant', content, id: turnId, _finalized: true });
+  }
+  // The agent just finished — offer fresh suggested replies in the pill chips.
+  if (typeof app.refreshSuggestions === 'function') {
+    try { app.refreshSuggestions(); } catch (_) { /* best-effort */ }
   }
 }
 

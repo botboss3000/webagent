@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="@dimen/space_l">
+
+        <TextView style="@style/FieldLabel" android:text="@string/dlg_label" />
+        <EditText
+            android:id="@+id/dlg_label"
+            style="@style/PanelInput"
+            android:inputType="text"
+            android:maxLines="1" />
+
+        <TextView style="@style/FieldLabel" android:text="@string/dlg_type" />
+        <Spinner
+            android:id="@+id/dlg_type"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_input"
+            android:layout_marginTop="4dp"
+            android:padding="@dimen/space_s" />
+
+        <!-- text / command / project-command payload -->
+        <LinearLayout
+            android:id="@+id/dlg_text_container"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView style="@style/FieldLabel" android:text="@string/dlg_text" />
+            <EditText
+                android:id="@+id/dlg_text"
+                style="@style/PanelInput"
+                android:inputType="textNoSuggestions"
+                android:maxLines="3" />
+        </LinearLayout>
+
+        <!-- multi-step script payload -->
+        <LinearLayout
+            android:id="@+id/dlg_script_container"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView style="@style/FieldLabel" android:text="@string/dlg_script" />
+            <EditText
+                android:id="@+id/dlg_script"
+                style="@style/PanelInput"
+                android:inputType="textMultiLine|textNoSuggestions"
+                android:minLines="3"
+                android:gravity="top" />
+        </LinearLayout>
+
+        <!-- special key payload -->
+        <LinearLayout
+            android:id="@+id/dlg_special_container"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView style="@style/FieldLabel" android:text="@string/dlg_special_key" />
+            <Spinner
+                android:id="@+id/dlg_special"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_input"
+                android:layout_marginTop="4dp"
+                android:padding="@dimen/space_s" />
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>

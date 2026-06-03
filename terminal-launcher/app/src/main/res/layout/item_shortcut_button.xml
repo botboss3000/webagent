@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A single footer shortcut button. Reused in the footer rows and (without
+     click handling) as a chip in the config editor. -->
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="@dimen/shortcut_height"
+    android:minWidth="@dimen/shortcut_min_width"
+    android:layout_marginEnd="6dp"
+    android:background="@drawable/bg_shortcut"
+    android:clickable="true"
+    android:focusable="true"
+    android:gravity="center"
+    android:paddingHorizontal="@dimen/space_m"
+    android:textColor="@color/fg_1"
+    android:textSize="13sp"
+    android:fontFamily="monospace"
+    android:maxLines="1" />

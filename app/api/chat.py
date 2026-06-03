@@ -305,6 +305,60 @@ async def self_heal_status():
     return {"watchdog": wd, "awaiting_manual_resume": manual}
 
 
+# ── Suggested replies (silent user-impersonator) ────────────────────────────
+# These power the tappable suggestion chips above the chat pill. They run a
+# single, hidden LLM call — never the agent loop, never persisted to the chat,
+# never streamed over the agent WebSocket. See app/agent/suggestions.py.
+
+class SuggestionsRequest(BaseModel):
+    user_id: str
+    session_id: Optional[str] = None
+    count: Optional[int] = None
+
+
+class SuggestionsConfigRequest(BaseModel):
+    mode: Optional[str] = None          # "off" | "on" | "scheduler"
+    count: Optional[int] = None
+    idle_seconds: Optional[int] = None
+
+
+@router.post("/suggestions")
+async def chat_suggestions(req: SuggestionsRequest):
+    """Return up to N suggested next user-messages for the chat pill chips.
+
+    Best-effort: returns an empty list (HTTP 200) when the engine is off,
+    credentials are missing, or generation fails — the UI just shows no chips."""
+    from app.agent.suggestions import generate_suggestions, load_runtime_config
+    cfg = load_runtime_config()
+    if cfg.get("mode") == "off":
+        return {"suggestions": [], "mode": "off"}
+    try:
+        db = get_db()
+        items = await generate_suggestions(
+            db, req.user_id, req.session_id, count=req.count
+        )
+    except Exception as e:
+        logger.warning("chat_suggestions failed: %s", e)
+        items = []
+    return {"suggestions": items, "mode": cfg.get("mode"), "idle_seconds": cfg.get("idle_seconds")}
+
+
+@router.get("/suggestions/config")
+async def get_suggestions_config():
+    """Read the Suggested-Replies runtime config (mode / count / idle seconds)."""
+    from app.agent.suggestions import load_runtime_config
+    return load_runtime_config()
+
+
+@router.put("/suggestions/config")
+async def update_suggestions_config(req: SuggestionsConfigRequest):
+    """Update the Suggested-Replies runtime config. Used by the impersonator
+    agent's config panel on the Agents page."""
+    from app.agent.suggestions import save_runtime_config
+    updates = {k: v for k, v in req.dict().items() if v is not None}
+    return save_runtime_config(updates)
+
+
 
 @router.post("", response_model=ChatResponse)
 async def chat(request: ChatRequest, fastapi_request: Request):

@@ -3,6 +3,7 @@
 import { app, bindDom } from './state.js';
 import { initStorageUi } from './storage.js';
 import { initChat } from './chat.js';
+import { initSuggestions } from './suggestions.js';
 import { initChatActivity } from './chat-activity.js';
 import { initReconnect } from './reconnect.js';
 import { ensureAttachmentsInit } from './attachments.js';
@@ -207,6 +208,7 @@ _bootReady.then(() => {
 
   _safeInit('initStorageUi',        initStorageUi);
   _safeInit('initChat',             initChat);
+  _safeInit('initSuggestions',      initSuggestions);
   _safeInit('initChatActivity',     initChatActivity);
   _safeInit('ensureAttachmentsInit', ensureAttachmentsInit);
   _safeInit('initReconnect',        initReconnect);

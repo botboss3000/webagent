@@ -125,6 +125,20 @@ class TestAgentRequest(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+# Built-in utility agents that should stay off the user's Agents page unless the
+# "Show system agents" toggle is on. They are still fully usable/configurable.
+_SYSTEM_UTILITY_IDS = {
+    "agent-builder",        # Agent Manager
+    "source-controller",    # GitHub agent
+    "user-impersonator",    # Suggested Replies (placeholder) agent
+    "admin-agent",
+    "diagnostic-agent",
+    "chat-panel-engineer",
+    "codebase-engineer",
+    "integration-admin-agent",
+}
+
+
 def _safe_agent(agent: dict) -> dict:
     """Strip locked/internal fields before returning to client.
 
@@ -166,6 +180,15 @@ def _safe_agent(agent: dict) -> dict:
         except Exception:
             meta = {}
     result["llm_config"] = meta.get("llm_config") if isinstance(meta, dict) else {"use_default": True}
+    # Derive a single ``system`` flag the agents page uses to keep utility agents
+    # (Suggested Replies / user-impersonator, source-controller, Agent Manager,
+    # etc.) off the user's list by default, behind a "Show system agents" toggle.
+    if agent.get("source") == "custom":
+        # A user's own agent is only "system" if it explicitly opts in via metadata.
+        result["system"] = bool(meta.get("system_agent") or meta.get("hidden_from_user")) if isinstance(meta, dict) else False
+    else:
+        tid = (agent.get("id") or agent.get("template_id") or "")
+        result["system"] = bool(agent.get("is_system")) or tid in _SYSTEM_UTILITY_IDS
     return result
 
 
@@ -281,19 +304,32 @@ async def list_agent_templates(
 
 
 @router.get("/agents")
-async def list_agents(user_id: str = Query(...)):
+async def list_agents(user_id: str = Query(...), include_system: bool = Query(False)):
     """
-    List agents from the agents table where the user is in admin_users.
-    System templates are excluded — only actual agent rows are returned.
-    Each entry includes a 'source' field: 'custom'.
+    List the user's own agents (the agents they added themselves).
+
+    By default only non-system agents the user administers are returned, so the
+    Agents page stays clean. Pass ``include_system=true`` to ALSO include the
+    built-in utility agents (Suggested Replies / user-impersonator, GitHub /
+    source-controller, Agent Manager / agent-builder, etc.) — used by the
+    "Show system agents" toggle. Each entry carries ``source`` ('custom' or
+    'template') and a derived ``system`` boolean.
     """
     db = get_db()
     is_admin = await db.is_user_admin(user_id)
     all_agents = await db.list_agents_for_user(user_id, include_admin=is_admin)
-    # Only return rows that came from the agents table (source='custom'),
-    # not system template entries.
-    user_agents = [a for a in all_agents if a.get("source") == "custom"]
-    return {"agents": [_safe_agent(a) for a in user_agents]}
+    out = []
+    for a in all_agents:
+        safe = _safe_agent(a)
+        if a.get("source") == "custom":
+            # The user's own agents — hide system-flagged ones unless asked for.
+            if safe.get("system") and not include_system:
+                continue
+            out.append(safe)
+        elif include_system and safe.get("system"):
+            # Built-in utility templates, only when the toggle is on.
+            out.append(safe)
+    return {"agents": out}
 
 
 @router.post("/agents/reorder")

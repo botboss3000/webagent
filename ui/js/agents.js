@@ -276,7 +276,23 @@ export async function initAgents() {
   await Promise.all([_loadProfile(), _loadAgents(), _loadAppSettings()]);
   _renderList();
   _bindCreateModal();
+  _bindSystemToggle();
   _restoreViewState();
+}
+
+// Wire the "Show system agents" checkbox below the grid. Toggling it re-fetches
+// the agent list with/without the built-in utility agents and re-renders.
+function _bindSystemToggle() {
+  const cb = document.getElementById('agents-show-system');
+  if (!cb || cb._bound) return;
+  cb._bound = true;
+  cb.checked = _showSystem;
+  cb.addEventListener('change', async () => {
+    _showSystem = cb.checked;
+    _renderSkeleton();
+    await _loadAgents();
+    _renderList();
+  });
 }
 
 // Placeholder cards shown while the agent list loads. Replaced by _renderList()
@@ -363,19 +379,30 @@ async function _loadProfile() {
   }
 }
 
+// Whether the "Show system agents" toggle is on. When off (default) the page
+// shows only the agents the user added themselves; when on, the built-in utility
+// agents are fetched and shown too (and stay configurable).
+let _showSystem = false;
+
 async function _loadAgents() {
   try {
-    // Use shared data from sessions.js if available — avoids a duplicate fetch.
-    const shared = window.__agentsSharedData;
-    if (shared && shared.agents) {
-      _agents = shared.agents;
-      return;
+    // Use shared data from sessions.js if available — but only for the default
+    // (user-own) view. The system view needs its own fetch with include_system.
+    if (!_showSystem) {
+      const shared = window.__agentsSharedData;
+      if (shared && shared.agents) {
+        _agents = shared.agents;
+        return;
+      }
     }
-    const res = await fetch(`/api/v1/agents?user_id=${encodeURIComponent(app.currentUserId)}`);
+    const params = new URLSearchParams({ user_id: app.currentUserId });
+    if (_showSystem) params.set('include_system', 'true');
+    const res = await fetch(`/api/v1/agents?${params.toString()}`);
     if (res.ok) {
       const data = await res.json();
       _agents = data.agents || [];
-      window.__agentsSharedData = data;
+      // Only cache the default view so other modules don't pick up system rows.
+      if (!_showSystem) window.__agentsSharedData = data;
     }
   } catch (e) {
     console.warn('agents: could not load agent list', e);
@@ -1529,10 +1556,97 @@ function _renderEventTriggerRow(agent, sub, channels, onRefresh) {
   return row;
 }
 
+// ── Suggested-Replies mode control (user-impersonator config) ───────────────
+// Reads/writes the silent suggestion engine's runtime config so the user can
+// switch between Off / On / On + idle refresh and pick how many chips to show.
+function _renderSuggestionModeControl(body) {
+  const group = document.createElement('div');
+  group.className = 'agents-field-group';
+
+  const intro = document.createElement('div');
+  intro.className = 'agents-field-label';
+  intro.textContent = 'Suggested replies';
+  group.appendChild(intro);
+
+  const hint = document.createElement('div');
+  hint.style.cssText = 'font-size:12px;color:var(--fg-4);margin:-2px 0 8px;';
+  hint.textContent = 'Grey suggestion chips above the chat box, written in your voice.';
+  group.appendChild(hint);
+
+  // Mode selector
+  const modeWrap = document.createElement('label');
+  modeWrap.style.cssText = 'display:block;font-size:12px;color:var(--fg-3);margin-bottom:8px;';
+  modeWrap.textContent = 'When to suggest';
+  const modeSel = document.createElement('select');
+  modeSel.className = 'agents-input';
+  [['on', 'On — after each reply'],
+   ['scheduler', 'On + refresh while idle'],
+   ['off', 'Off']].forEach(([v, t]) => {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = t; modeSel.appendChild(o);
+  });
+  modeWrap.appendChild(modeSel);
+  group.appendChild(modeWrap);
+
+  // Count selector
+  const countWrap = document.createElement('label');
+  countWrap.style.cssText = 'display:block;font-size:12px;color:var(--fg-3);margin-bottom:8px;';
+  countWrap.textContent = 'How many suggestions';
+  const countSel = document.createElement('select');
+  countSel.className = 'agents-input';
+  [1, 2, 3, 4, 5].forEach(n => {
+    const o = document.createElement('option');
+    o.value = String(n); o.textContent = String(n); countSel.appendChild(o);
+  });
+  countWrap.appendChild(countSel);
+  group.appendChild(countWrap);
+
+  const status = document.createElement('div');
+  status.style.cssText = 'font-size:11px;color:var(--fg-4);min-height:14px;';
+  group.appendChild(status);
+
+  body.appendChild(group);
+
+  // Load current values.
+  fetch('/api/v1/chat/suggestions/config')
+    .then(r => r.ok ? r.json() : null)
+    .then(cfg => {
+      if (!cfg) return;
+      if (cfg.mode) modeSel.value = cfg.mode;
+      if (cfg.count) countSel.value = String(cfg.count);
+    })
+    .catch(() => {});
+
+  async function _save() {
+    status.textContent = 'Saving…';
+    try {
+      const res = await fetch('/api/v1/chat/suggestions/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: modeSel.value, count: parseInt(countSel.value, 10) }),
+      });
+      status.textContent = res.ok ? 'Saved.' : 'Save failed.';
+    } catch (_) {
+      status.textContent = 'Save failed.';
+    }
+    setTimeout(() => { status.textContent = ''; }, 2000);
+  }
+  modeSel.addEventListener('change', _save);
+  countSel.addEventListener('change', _save);
+}
+
 // ── Config tab ────────────────────────────────────────────────────────────────
 
 function _renderConfigTab(body, agent, panelEl) {
   const isEditable = agent.source === 'custom';
+
+  // The Suggested Replies (user-impersonator) agent powers the grey suggestion
+  // chips above the chat pill. Its behaviour is tuned by a small runtime config
+  // (mode + count), not the normal agent-row fields — so give it a dedicated
+  // control here.
+  if (agent.id === 'user-impersonator') {
+    _renderSuggestionModeControl(body);
+  }
 
   // Name + description (editable for custom agents only)
   if (isEditable) {

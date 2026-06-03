@@ -137,6 +137,7 @@ Any file the **running app writes to** is per-machine runtime data and, as a rul
 | `data/uploads/` | User-uploaded files (runtime) |
 | `data/config/provider.json` | LLM + GitHub tokens (gitignored, shared cred store) |
 | `data/config/scheduler_config.json` | Scheduler runtime state |
+| `data/config/suggestions.json` | Suggested-Replies engine tunables (mode / chip count / idle seconds); defaults derive from `data/agents/user-impersonator.json` metadata when absent |
 | `data/config/remote_access.json` (+ `.bak`, `_pointers.json`) | Remote-access tunnel config (per-machine) |
 | `.env` | Local env vars |
 

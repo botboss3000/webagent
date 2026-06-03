@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="footer_button">44dp</dimen>
+    <dimen name="footer_icon">22dp</dimen>
+    <dimen name="footer_pad">6dp</dimen>
+    <dimen name="shortcut_height">36dp</dimen>
+    <dimen name="shortcut_min_width">44dp</dimen>
+    <dimen name="panel_width">300dp</dimen>
+    <dimen name="space_s">8dp</dimen>
+    <dimen name="space_m">12dp</dimen>
+    <dimen name="space_l">16dp</dimen>
+    <dimen name="radius">10dp</dimen>
+</resources>
