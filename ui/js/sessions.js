@@ -332,11 +332,16 @@ export function renderUserDropdown() {
   const active = getActive();
   const all = listAccounts();
 
-  // Current user row (large avatar + name + email)
+  // Current user row (large avatar + name + email) — or inline login form
   const cur = document.getElementById('dropdown-current-row');
   if (cur) {
     cur.innerHTML = '';
     if (active) {
+      // Reset any inline styles that the login form may have set
+      cur.style.padding = '';
+      cur.style.flexDirection = '';
+      cur.style.alignItems = '';
+      cur.style.gap = '';
       cur.appendChild(renderAvatar(active, 'lg'));
       const info = document.createElement('div');
       info.className = 'user-dropdown-current-info';
@@ -350,10 +355,83 @@ export function renderUserDropdown() {
       info.appendChild(emailEl);
       cur.appendChild(info);
     } else {
-      const info = document.createElement('div');
-      info.className = 'user-dropdown-current-info';
-      info.innerHTML = '<div class="user-dropdown-current-name">Signed out</div>';
-      cur.appendChild(info);
+      // Inline login form inside the dropdown — no full-page modal
+      cur.style.padding = '10px 14px 6px';
+      cur.style.flexDirection = 'column';
+      cur.style.alignItems = 'stretch';
+      cur.style.gap = '8px';
+      cur.innerHTML = `
+        <div style="font-size:13px;font-weight:600;color:#a9b1d6;margin-bottom:2px;">Sign in</div>
+        <input type="email" id="dd-login-email" placeholder="Email" autocomplete="username" style="
+          width:100%;padding:8px 10px;background:#0d0d1a;border:1px solid #2a2a4a;
+          border-radius:6px;color:#c0caf5;font-size:13px;font-family:inherit;
+          outline:none;box-sizing:border-box;
+        ">
+        <input type="password" id="dd-login-pass" placeholder="Password" autocomplete="current-password" style="
+          width:100%;padding:8px 10px;background:#0d0d1a;border:1px solid #2a2a4a;
+          border-radius:6px;color:#c0caf5;font-size:13px;font-family:inherit;
+          outline:none;box-sizing:border-box;
+        ">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <input type="checkbox" id="dd-login-remember" checked style="accent-color:#7dcfff;margin:0;">
+          <label for="dd-login-remember" style="font-size:12px;color:#565f89;cursor:pointer;">Remember me</label>
+        </div>
+        <button id="dd-login-btn" style="
+          width:100%;padding:8px;background:#7dcfff;border:none;border-radius:6px;
+          color:#0d0d1a;font-size:14px;font-weight:700;cursor:pointer;
+        ">Sign In</button>
+        <div id="dd-login-error" style="color:#fb4934;font-size:12px;display:none;"></div>
+        <div id="dd-login-loading" style="color:#565f89;font-size:12px;text-align:center;display:none;">Signing in…</div>
+      `;
+
+      // Wire up the inline login form
+      const emailInput = document.getElementById('dd-login-email');
+      const passInput = document.getElementById('dd-login-pass');
+      const loginBtn = document.getElementById('dd-login-btn');
+      const errorEl = document.getElementById('dd-login-error');
+      const loadingEl = document.getElementById('dd-login-loading');
+
+      async function doInlineLogin() {
+        const email = emailInput.value.trim();
+        const password = passInput.value;
+        const rememberMe = document.getElementById('dd-login-remember').checked;
+        errorEl.style.display = 'none';
+        loginBtn.disabled = true;
+        loadingEl.style.display = 'block';
+        try {
+          const res = await fetch('/api/v1/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password, remember_me: rememberMe }),
+          });
+          if (!res.ok) {
+            errorEl.style.display = 'block';
+            errorEl.textContent = res.status === 403 ? 'Account pending approval' : 'Invalid email or password';
+            loginBtn.disabled = false;
+            loadingEl.style.display = 'none';
+            return;
+          }
+          const data = await res.json();
+          const { upsertAccount } = await import('./accounts.js');
+          upsertAccount({
+            user_id: data.user_id,
+            username: data.username,
+            display_name: data.display_name,
+            access_token: data.access_token,
+            remember_token: data.remember_token || '',
+          });
+          window.location.reload();
+        } catch (err) {
+          errorEl.style.display = 'block';
+          errorEl.textContent = 'Connection error';
+          loginBtn.disabled = false;
+          loadingEl.style.display = 'none';
+        }
+      }
+
+      loginBtn.addEventListener('click', doInlineLogin);
+      passInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doInlineLogin(); });
+      emailInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') passInput.focus(); });
     }
   }
 
@@ -389,6 +467,26 @@ export function renderUserDropdown() {
       });
       list.appendChild(row);
     }
+  }
+
+  // Toggle visibility of signed-in-only elements
+  const manageBtn = document.getElementById('btn-manage-account');
+  const addBtn = document.getElementById('btn-add-account');
+  const signoutBtn = document.getElementById('btn-signout-header');
+  const dividers = document.querySelectorAll('#user-dropdown-menu > .user-dropdown-divider');
+  const otherAccounts = document.getElementById('dropdown-other-accounts');
+  if (active) {
+    if (manageBtn) manageBtn.style.display = '';
+    if (addBtn) addBtn.style.display = '';
+    if (signoutBtn) signoutBtn.style.display = '';
+    dividers.forEach(d => d.style.display = '');
+    if (otherAccounts) otherAccounts.style.display = '';
+  } else {
+    if (manageBtn) manageBtn.style.display = 'none';
+    if (addBtn) addBtn.style.display = 'none';
+    if (signoutBtn) signoutBtn.style.display = 'none';
+    dividers.forEach(d => d.style.display = 'none');
+    if (otherAccounts) otherAccounts.style.display = 'none';
   }
 
   // Refresh Lucide icons for any newly-inserted SVG containers
