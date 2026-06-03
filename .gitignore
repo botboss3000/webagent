@@ -24,6 +24,8 @@ MANIFEST
 .env
 provider.json
 scheduler_config.json
+suggestions.json
+data/config/suggestions.json
 app-settings.json
 .venv
 env/
@@ -102,16 +104,23 @@ remote_access_pointers.json
 app/db/.fuse_hidden*
 **/.fuse_hidden*
 
-# Visuals user-generated artifacts
-visuals/users/
+# Visuals user-generated artifacts (moved under data/)
+data/visuals/users/
 
 # Runtime backup files created by write_source tool
 *.bak
 
-# Uploads
-uploads/*
-!uploads/.gitkeep
-visuals/
+# Uploads + visuals (runtime artifacts now live under data/)
+data/uploads/*
+!data/uploads/.gitkeep
+data/visuals/
+
+# Scratch / backup / PID files — kept on disk, never tracked
+.source-backups/
+tmp/
+bg_pid.txt
+TUI/server.pid
+TUI/self-update/
 
 # Launcher build output: the single portable webagent.exe now lands at the
 # PROJECT ROOT (built from launcher/ via launcher/scripts/build_exe.py).

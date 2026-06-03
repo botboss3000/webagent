@@ -2,7 +2,7 @@
 
 import re
 
-VISUALS_DIR = "visuals"
+VISUALS_DIR = "data/visuals"
 USERS_DIR = f"{VISUALS_DIR}/users"
 
 

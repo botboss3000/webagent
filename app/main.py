@@ -372,11 +372,11 @@ async def restart_server():
 app.include_router(restart_router)
 
 # ── Static file mounts ──
-_SCREENSHOTS_DIR = _APP_DIR.parent / "screenshots"
+_SCREENSHOTS_DIR = _APP_DIR.parent / "data" / "screenshots"
 _SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/screenshots", StaticFiles(directory=str(_SCREENSHOTS_DIR)), name="screenshots")
 
-_UPLOAD_DIR = _APP_DIR.parent / "uploads"
+_UPLOAD_DIR = _APP_DIR.parent / "data" / "uploads"
 _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 try:
@@ -385,7 +385,7 @@ try:
 except Exception as e:
     logger.warning("Could not mount /uploads: %s", e)
 
-_VISUALS_DIR = _APP_DIR.parent / "visuals"
+_VISUALS_DIR = _APP_DIR.parent / "data" / "visuals"
 _VISUALS_DIR.mkdir(parents=True, exist_ok=True)
 try:
     app.mount("/visuals", StaticFiles(directory=str(_VISUALS_DIR)), name="visuals")

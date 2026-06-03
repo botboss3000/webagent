@@ -213,9 +213,12 @@ webAgent/
 │   ├── web-terminal/       # Self-contained terminal-styled chat page (Terminal tab); React+Babel single-file app, served at /web-terminal/ (see its README.md)
 │   └── db/
 │       └── attachments/    # File storage abstraction (store_file / read_file / delete_file)
-├── data/                   # Human-editable seed data + app config (relocated here for a tidy root)
+├── data/                   # All non-code data: seed templates, app config, and runtime artifacts (keeps the root tidy)
 │   ├── agents/             # Agent template JSON — seeded into agent_templates (reverse-export: scripts/export_agent_templates.py)
-│   └── config/             # App config JSON: provider.json, app-settings.json, scheduler_config.json, optimizer.json, remote_access.json
+│   ├── config/             # App config JSON: provider.json, app-settings.json, scheduler_config.json, optimizer.json, remote_access.json
+│   ├── uploads/            # User-uploaded files (mounted at /uploads; gitignored)
+│   ├── visuals/            # Generated per-user pages + images (mounted at /visuals; gitignored)
+│   └── screenshots/        # Browser-tool screenshots (mounted at /screenshots)
 ├── docs/                   # Operator docs: events-setup.md (Pub/Sub, Graph, Dropbox, Shopify)
 ├── tests/                  # e.g. test_session_history.py (unittest)
 ├── sw.js                   # PWA service worker (must be at root scope for coverage)
@@ -223,7 +226,6 @@ webAgent/
 │   ├── manifest.json       # PWA web app manifest
 │   ├── icons/              # PWA app icons (192×192, 512×512, maskable variants)
 │   └── generate_icons.py   # Script to re-generate PWA icons
-├── uploads/                # User-uploaded files (images, voice, docs; mounted at /uploads)
 ├── scripts/
 │   ├── start_webAgent.sh            # Unix: cd to repo root, background uvicorn (default :8080, PORT= overrides)
 │   ├── backfill_embeddings.py       # One-off: embed existing memory pages
@@ -232,7 +234,6 @@ webAgent/
 ├── export_agent_templates.bat  # Double-click: runs export_agent_templates.py (--dry-run supported)
 ├── migrations/             # Ad-hoc SQL snapshots (includes 007_channel_identities, 008_linking_codes, 009_multi_agent_system, 010_agent_name_backfill, 011_add_login_tracking, 014_data_sources, 018_agent_prompt_templates); see migrations/README.md
 ├── supabase/migrations/    # e.g. 005_memory_system.sql (Supabase CLI / team workflow)
-├── screenshots/            # Mounted at /screenshots
 ├── tasks/                  # Small Node helper (package.json, run-all.ts)
 ├── temp/                   # Scratch files incl. Markdown drafts (see agent.md); roadmap: temp/FUTURE_PLANS.md
 ├── kill_webagent.bat       # Windows: show + kill all webAgent server processes on port 8080
@@ -243,7 +244,6 @@ webAgent/
 ├── launcher_android/       # Termux + proot-distro Ubuntu TUI launcher for running webAgent on an Android phone. Launch / Restart / Kill / Browser + dependency Doctor with one-tap fixes for the common Android-ARM issues (Playwright Chromium, build-essential, missing .env). See launcher_android/README.md.
 ├── TUI/                    # Standalone server-manager TUI (Textual; inner package `webagent`). `/termux` serves TUI/install-termux.sh. See TUI/README.md.
 ├── run.py                  # Pre-opens port with SO_REUSEADDR for zombie-port resilience
-├── uploads/                # Uploaded attachments directory (auto-created, gitignored)
 ├── Dockerfile
 ├── docker-compose.postgres.yml  # Local Postgres+pgvector for dev (port 5433)
 ├── requirements.txt
