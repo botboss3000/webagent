@@ -13,6 +13,30 @@ import { fmtArgs, buildToolRow } from './chat-activity.js';
  *  away from the bottom. */
 let _scrollLocked = true;
 
+// ── Debounced helpers to avoid per-keystroke layout / I/O thrash ──
+let _draftTimer = null;
+let _resizeTimer = null;
+
+function _debouncedSaveDraft() {
+  if (_draftTimer) clearTimeout(_draftTimer);
+  _draftTimer = setTimeout(() => {
+    _draftTimer = null;
+    try {
+      const v = app.chatInput ? app.chatInput.value : '';
+      if (v) localStorage.setItem(_DRAFT_LS_KEY, v);
+      else localStorage.removeItem(_DRAFT_LS_KEY);
+    } catch (_) { /* quota / private mode — non-fatal */ }
+  }, 150);
+}
+
+function _debouncedAutoResizePill(el) {
+  if (_resizeTimer) clearTimeout(_resizeTimer);
+  _resizeTimer = setTimeout(() => {
+    _resizeTimer = null;
+    _autoResizePill(el);
+  }, 100);
+}
+
 /** The scroll-to-bottom chevron button, cached after init. */
 let _scrollBtn = null;
 
@@ -127,12 +151,13 @@ function _updateScrollIndicator(el) {
 
 // Delegated input listener resizes every chat-pill textarea (web chat, agents
 // builder, page agent, integration admin) without each module having to wire
-// its own handler. Programmatic value changes still need to dispatch 'input'
-// or call _autoResizePill directly — see _restoreDraft / sendMessage below.
+// its own handler. Uses a debounced call to avoid per-keystroke layout thrash.
+// Programmatic value changes still need to dispatch 'input' or call
+// _autoResizePill directly — see _restoreDraft / sendMessage below.
 document.addEventListener('input', (e) => {
   const t = e.target;
   if (t && t.classList && t.classList.contains('chat-pill-input')) {
-    _autoResizePill(t);
+    _debouncedAutoResizePill(t);
   }
 }, true);
 
@@ -296,13 +321,10 @@ _loadLastSessionSeq();
 // mirrors the in-memory pill, which is already global across session switches.
 const _DRAFT_LS_KEY = 'webagent.chatDraft.v1';
 function _saveDraft() {
-  try {
-    const v = app.chatInput ? app.chatInput.value : '';
-    if (v) localStorage.setItem(_DRAFT_LS_KEY, v);
-    else localStorage.removeItem(_DRAFT_LS_KEY);
-  } catch (_) { /* quota / private mode — non-fatal */ }
+  _debouncedSaveDraft();
 }
 function _clearDraft() {
+  if (_draftTimer) { clearTimeout(_draftTimer); _draftTimer = null; }
   try { localStorage.removeItem(_DRAFT_LS_KEY); } catch (_) { /* non-fatal */ }
 }
 function _restoreDraft() {
