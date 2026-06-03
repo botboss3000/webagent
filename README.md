@@ -401,10 +401,10 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 
 **Android (Termux + proot-distro Ubuntu):** the `launcher_android/` directory is the Android counterpart to `launcher/` — a Textual TUI with Launch / Restart / Kill / Browser buttons plus a dependency **Doctor** that surfaces venv / `.env` / apt build-deps / per-package pip status and offers one-tap fixes. The known Android-ARM blocker (Playwright Chromium download fails on ARM) is downgraded from fatal to skip-OK by writing `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` into `.env`; other optional deps that fail to install are listed as non-critical rather than blocking startup. Run it from Termux with `bash launcher_android/start.sh` — the shim handles installing `proot-distro`, the Ubuntu distro, and `textual` inside the proot on first run. See `launcher_android/README.md` for full setup steps and the Browser-bridge mechanism that forwards URLs to Android's `termux-open-url`.
 
-**Android (Termux, TUI manager only):** to install just the standalone **Server Manager TUI** (`webagent_tui/`) on a phone — not the full server — paste one line into Termux:
+**Android (Termux, TUI manager only):** to install just the standalone **Server Manager TUI** (`TUI/`) on a phone — not the full server — paste one line into Termux:
 
 ```
-cd ~ && pkg install -y git && git clone --depth 1 https://github.com/botboss3000/webagent ~/webagent && bash ~/webagent/webagent_tui/install-termux.sh
+cd ~ && pkg install -y git && git clone --depth 1 https://github.com/botboss3000/webagent ~/webagent && bash ~/webagent/TUI/install-termux.sh
 ```
 
 …or, using the short public URL the server itself hosts:
@@ -413,7 +413,7 @@ cd ~ && pkg install -y git && git clone --depth 1 https://github.com/botboss3000
 pkg install -y curl && curl -fsSL https://webagent.live/termux | bash
 ```
 
-The installer (`webagent_tui/install-termux.sh`) installs Python + git, the TUI and its two deps (clean editable install on Python 3.11/3.12, deps-only run-from-source fallback on newer), then drops a `webagent` command on PATH plus a Termux:Widget home-screen shortcut. The app serves that script verbatim (LF-normalised) at **`/termux`** (and `/termux.sh`). Unlike `launcher_android/` (which runs the whole server under proot), this is just the lightweight manager. See `webagent_tui/README.md`.
+The installer (`TUI/install-termux.sh`) installs Python + git, the TUI and its two deps (clean editable install on Python 3.11/3.12, deps-only run-from-source fallback on newer), then drops a `webagent` command on PATH plus a Termux:Widget home-screen shortcut. The app serves that script verbatim (LF-normalised) at **`/termux`** (and `/termux.sh`). Unlike `launcher_android/` (which runs the whole server under proot), this is just the lightweight manager. See `TUI/README.md`.
 
 **Useful URLs**
 
@@ -426,7 +426,7 @@ The installer (`webagent_tui/install-termux.sh`) installs Python + git, the TUI 
 | `http://localhost:8080/web-terminal/` | Terminal tab page (self-contained web-terminal app; also embedded in the main UI) |
 | `http://localhost:8080/privacy` | Privacy Policy page (`ui/privacy.html`, public, no auth) |
 | `http://localhost:8080/tos` | Terms of Service page (`ui/tos.html`, public, no auth) |
-| `https://webagent.live/termux` (also `/termux.sh`) | One-line Termux installer for the standalone webAgent TUI — serves `webagent_tui/install-termux.sh` (LF-normalised); `curl -fsSL https://webagent.live/termux \| bash` |
+| `https://webagent.live/termux` (also `/termux.sh`) | One-line Termux installer for the standalone webAgent TUI — serves `TUI/install-termux.sh` (LF-normalised); `curl -fsSL https://webagent.live/termux \| bash` |
 | `http://localhost:8080/uploads/` | Served uploaded files directory |
 | `http://localhost:8080/visuals/users/<uid>/<slug>.html` | Served AutoAgent page output (ephemeral) |
 | `http://localhost:8080/api/v1/pages?user_id=...` | AutoAgent pages REST API |
