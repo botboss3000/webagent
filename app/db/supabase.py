@@ -1082,7 +1082,7 @@ class SupabaseBackend(StorageBackend):
             if not tpl:
                 logger.warning(
                     "No 'default' agent template found after JSON seeding — "
-                    "check app/context/agents/default.json"
+                    "check data/agents/default.json"
                 )
                 raise ValueError("No default agent template available")
 
@@ -1144,7 +1144,7 @@ class SupabaseBackend(StorageBackend):
             if res.data:
                 return res.data[0]
             logger.warning(
-                "No 'default' agent template in DB — check app/context/agents/default.json"
+                "No 'default' agent template in DB — check data/agents/default.json"
             )
             # Fallback: minimal dict — JSON is the real source of truth
             return {

@@ -118,7 +118,52 @@ export function renderDiagnosticsSidebar() {
       });
     }));
   }
+  // Render-recorder on/off toggle (browser flight-recorder). Reads/writes the
+  // render_recording_enabled flag via the admin endpoint; mirrored in the TUI.
+  const recToggle = _qs('diag-recorder-toggle');
+  if (recToggle && !recToggle.dataset.wired) {
+    recToggle.dataset.wired = '1';
+    recToggle.addEventListener('change', () => _setRecorderEnabled(recToggle.checked));
+  }
+  _refreshRecorderToggle();
   state.wiredSidebar = true;
+}
+
+function _setRecorderHint(enabled) {
+  const hint = _qs('diag-recorder-hint');
+  if (hint) {
+    hint.textContent = enabled
+      ? 'On — recording browser snapshots, lag, JS errors + failed network calls.'
+      : 'Off — captures what the browser renders + feels, joined to logs by session.';
+  }
+}
+
+async function _refreshRecorderToggle() {
+  const t = _qs('diag-recorder-toggle');
+  if (!t) return;
+  try {
+    const res = await fetch(apiPath('/api/v1/recordings/enabled'), { headers: authHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    t.checked = !!data.enabled;
+    _setRecorderHint(t.checked);
+  } catch (_) { /* leave as-is on error */ }
+}
+
+async function _setRecorderEnabled(enabled) {
+  try {
+    const res = await fetch(apiPath('/api/v1/recordings/enabled'), {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+      body: JSON.stringify({ enabled }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const t = _qs('diag-recorder-toggle');
+      if (t) t.checked = !!data.enabled;
+      _setRecorderHint(!!data.enabled);
+    }
+  } catch (_) { _refreshRecorderToggle(); }
 }
 
 // Two-click confirm: first click arms the button (turns it red, relabels);

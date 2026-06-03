@@ -268,10 +268,36 @@ export async function initAgents() {
     return;
   }
 
+  // Show a shimmer skeleton immediately so the grid isn't blank while the
+  // profile/agents/settings fetches are in flight (the gap is most visible on
+  // a cold backend). Only on first load — a refresh already has cards to show.
+  if (_agents.length === 0) _renderSkeleton();
+
   await Promise.all([_loadProfile(), _loadAgents(), _loadAppSettings()]);
   _renderList();
   _bindCreateModal();
   _restoreViewState();
+}
+
+// Placeholder cards shown while the agent list loads. Replaced by _renderList()
+// as soon as the fetches resolve.
+function _renderSkeleton(count = 6) {
+  const grid = document.getElementById('agents-grid');
+  if (!grid) return;
+  let html = '';
+  for (let i = 0; i < count; i++) {
+    html += `
+      <div class="agent-row">
+        <div class="agent-skeleton" aria-hidden="true">
+          <div class="sk-icon sk-shimmer"></div>
+          <div class="sk-lines">
+            <div class="sk-line long sk-shimmer"></div>
+            <div class="sk-line short sk-shimmer"></div>
+          </div>
+        </div>
+      </div>`;
+  }
+  grid.innerHTML = html;
 }
 
 // Re-sync this page after the chat-header dropdown changes agent order or pins.

@@ -15,7 +15,7 @@ Three scanners:
    - Used to seed agent_templates.system_prompt only
 
 3. scan_agent_json_files()
-   - Reads app/context/agents/*.json (NEW, preferred)
+   - Reads data/agents/*.json (NEW, preferred)
    - Each JSON file provides FULL agent template schema:
      id, system_prompt, max_turn_count, model, provider,
      temperature, max_tokens, metadata
@@ -32,10 +32,13 @@ logger = logging.getLogger(__name__)
 
 # Directories relative to this file (app/context/md_seeder.py)
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+# Repo root is two levels up from app/context/ (app/context -> app -> root)
+_REPO_ROOT = os.path.dirname(os.path.dirname(_THIS_DIR))
 
 DEFAULT_CONTEXT_DIR = os.path.join(_THIS_DIR, "context_templates")
 DEFAULT_AGENT_SYSTEM_PROMPT_DIR = os.path.join(_THIS_DIR, "agent_system_prompt")
-DEFAULT_AGENTS_DIR = os.path.join(_THIS_DIR, "agents")
+# Agent template JSON source of truth lives at repo-root data/agents/.
+DEFAULT_AGENTS_DIR = os.path.join(_REPO_ROOT, "data", "agents")
 
 _FM_PATTERN = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)", re.DOTALL)
 
@@ -243,7 +246,7 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
       - misc_prompt (str, default "")   — miscellaneous context
 
     Args:
-        directory: Path to scan. Defaults to app/context/agents/.
+        directory: Path to scan. Defaults to data/agents/.
 
     Returns:
         List of dicts, each a full agent template row suitable for

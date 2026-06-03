@@ -1,0 +1,17 @@
+{
+  "_note": "Shipped defaults for the Server Manager's background watchdog. On first run these seed a live, per-machine copy at monitor.json in the manager's data dir; after that the agent (set_monitor_config) or the webapp admin panel edits the live copy and the watchdog picks changes up on its next tick.",
+  "enabled": true,
+  "interval_seconds": 20,
+  "autonomy": "auto_restart",
+  "channels": ["desktop"],
+  "auto_restart": true,
+  "restart_backoff_seconds": 15,
+  "max_restarts_per_hour": 5,
+  "error_rate_threshold": 10,
+  "disk_percent_threshold": 90,
+  "mem_percent_threshold": 90,
+  "cpu_percent_threshold": 0,
+  "notify_on_server_down": true,
+  "notify_on_recovery": true,
+  "digest_minutes": 60
+}

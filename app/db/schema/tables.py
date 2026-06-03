@@ -154,6 +154,34 @@ TABLES: List[Table] = [
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
 
+    # Client render recorder (see app/agent/render_recorder.py + ui/js/recorder.js).
+    # Rolling, auto-pruned record of what the BROWSER rendered and felt — HTML
+    # snapshots, DOM-mutation deltas, lag/long-task metrics, JS errors, console
+    # warnings and failed network calls. Every row carries session_seq, the same
+    # monotonic per-session counter on WS events / interactions, so a render
+    # moment joins exactly to the interaction / diagnostics row beside it.
+    Table("render_recordings", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("ts", "TEXT", nullable=False),
+        Column("recv_ts", "TEXT"),
+        Column("kind", "TEXT", nullable=False),
+        Column("session_id", "TEXT"),
+        Column("turn_id", "TEXT"),
+        Column("session_seq", "INTEGER"),
+        Column("user_id", "TEXT"),
+        Column("agent_id", "TEXT"),
+        Column("client_id", "TEXT"),
+        Column("seq", "INTEGER"),
+        Column("url", "TEXT"),
+        Column("level", "TEXT"),
+        Column("label", "TEXT"),
+        Column("value_num", "REAL"),
+        Column("detail", "TEXT"),
+        Column("html", "TEXT"),
+        Column("html_bytes", "INTEGER"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ]),
+
     Table("session_summaries", [
         Column("id", "TEXT", nullable=False, primary_key=True),
         Column("user_id", "TEXT", nullable=False),
@@ -231,7 +259,7 @@ TABLES: List[Table] = [
     ]),
 
     # Canonical prompt-slot templates. Source of truth for slot defaults.
-    # JSON files in app/context/agents/*.json seed this table; admin edits
+    # JSON files in data/agents/*.json seed this table; admin edits
     # promoted here are protected from JSON re-seed via source='admin'.
     # When a new agent is created from a template, rows here are cloned
     # into agent_prompts under that agent's id.
@@ -815,6 +843,10 @@ INDEXES: List[Index] = [
     Index("idx_diagnostics_level", "diagnostics", "level"),
     Index("idx_diagnostics_category", "diagnostics", "category"),
     Index("idx_diagnostics_session", "diagnostics", "session_id"),
+    Index("idx_render_rec_ts", "render_recordings", "ts"),
+    Index("idx_render_rec_session", "render_recordings", "session_id"),
+    Index("idx_render_rec_kind", "render_recordings", "kind"),
+    Index("idx_render_rec_seq", "render_recordings", "session_seq"),
     Index("idx_summaries_user", "session_summaries", "user_id"),
     Index("idx_agent_prompts_agent", "agent_prompts", "agent_id"),
     Index("idx_agent_prompts_user", "agent_prompts", "user_id"),

@@ -11,15 +11,23 @@ that window over CDP instead, so the agent drives the same window the user is
 watching. Close the window and it transparently reverts to headless.
 """
 
+# Defer annotation evaluation so the playwright type names (Browser /
+# BrowserContext / Page) used in the annotations below don't force an import at
+# module load. Playwright is a heavy import (lots of files to scan on a cold
+# disk) and is only needed when the browser tools actually run — async_playwright
+# is imported lazily inside _ensure_page. This keeps server startup fast.
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
 import socket
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+if TYPE_CHECKING:  # imported only for type checkers, never at runtime
+    from playwright.async_api import Browser, BrowserContext, Page
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +105,7 @@ async def _ensure_page(user_id: str, session_id: str) -> Page:
                 _browsers.pop(key, None)
 
     if _playwright_instance is None:
+        from playwright.async_api import async_playwright  # lazy: heavy import
         _playwright_instance = await async_playwright().start()
 
     # ── (2) Attach to a visible app window if the launcher opened one ─────────

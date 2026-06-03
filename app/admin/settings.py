@@ -514,6 +514,14 @@ class AppSettings(BaseModel):
     # Maximum consecutive identical tool calls before the loop halts (stall guard).
     # 0 = disabled. Overridable per-agent via max_identical_tool_calls.
     max_identical_tool_calls: int = 0
+    # ── Client render recorder (app/agent/render_recorder.py + ui/js/recorder.js) ──
+    # Master on/off for the browser-side flight recorder (HTML snapshots, lag,
+    # JS errors, console + failed network calls), correlated to interactions /
+    # diagnostics by session_seq. OFF by default — an investigation tool, flipped
+    # on while diagnosing a UI/lag problem and back off when done. Finer capture
+    # knobs (intervals, thresholds, per-signal toggles) live as raw
+    # render_recording_* keys in app-settings.json (see render_recorder.py).
+    render_recording_enabled: bool = False
 
 
 VALID_ACCESS_MODES = {"public_anonymous", "public_registered", "admin_approval", "private"}

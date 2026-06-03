@@ -1,0 +1,25 @@
+# build artifacts
+build/
+dist/
+*.spec
+webagent.exe
+
+# python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# generated at exe-build time (stamped into the bundle, then removed)
+webagent/_build.py
+
+# local runtime data — lives in THIS project folder when run from source
+# (the SQLite store, config, watchdog config/alarms, and image attachments)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+config.json
+monitor.json
+alarms.json
+attachments/

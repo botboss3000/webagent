@@ -24,6 +24,7 @@ MANIFEST
 .env
 provider.json
 scheduler_config.json
+app-settings.json
 .venv
 env/
 venv/

@@ -972,13 +972,21 @@ async def stream_agent_events(
             _STREAM_PERSIST_INTERVAL = float(os.environ.get("AGENT_STREAM_PERSIST_INTERVAL", "0.6"))
         except (ValueError, TypeError):
             _STREAM_PERSIST_INTERVAL = 0.6
+        # Global override from app-settings.json (supersedes env vars, subsumed by per-agent).
+        # Stored as a single dict to avoid cell-variable scoping issues on Python 3.14+.
+        _gs = None
+        try:
+            from app.admin.settings import _load_app_settings as _get_gs
+            _gs = _get_gs()
+        except Exception:
+            pass
         # Per-agent identical-tool-calls limit (0 = disabled/infinite).
         # Falls back to global app-settings > AGENT_MAX_IDENTICAL_TOOL_CALLS env var, then 0 (off).
         _raw_identical = _agent_rec.get("max_identical_tool_calls", 0) if _agent_rec else 0
         if _raw_identical is not None and int(_raw_identical) > 0:
             _MAX_IDENTICAL_CALLS = max(2, int(_raw_identical))
-        elif _gs_max_identical and int(_gs_max_identical) > 0:
-            _MAX_IDENTICAL_CALLS = max(2, int(_gs_max_identical))
+        elif _gs and _gs.get("max_identical_tool_calls") and int(_gs["max_identical_tool_calls"]) > 0:
+            _MAX_IDENTICAL_CALLS = max(2, int(_gs["max_identical_tool_calls"]))
         else:
             try:
                 _MAX_IDENTICAL_CALLS = int(os.environ.get("AGENT_MAX_IDENTICAL_TOOL_CALLS", "0"))
@@ -994,23 +1002,14 @@ async def stream_agent_events(
                 _MAX_STALL_STRIKES = int(os.environ.get("AGENT_MAX_STALL_STRIKES", "0"))
             except (ValueError, TypeError):
                 _MAX_STALL_STRIKES = 0
-        # Global override from app-settings.json (supersedes env vars, subsumed by per-agent).
-        try:
-            from app.admin.settings import _load_app_settings as _get_gs
-            _gs = _get_gs()
-            _gs_max_wall = _gs.get("max_wall_seconds") or 0
-            _gs_max_tool = _gs.get("max_tool_calls") or 0
-            _gs_max_identical = _gs.get("max_identical_tool_calls") or 0
-        except Exception:
-            _gs_max_wall = _gs_max_tool = _gs_max_identical = None
 
         try:
             _MAX_WALL_SECONDS = float(os.environ.get("AGENT_MAX_WALL_SECONDS", str(DEFAULT_MAX_WALL_SECONDS)))
         except (ValueError, TypeError):
             _MAX_WALL_SECONDS = DEFAULT_MAX_WALL_SECONDS
         # Global app-settings override
-        if _gs_max_wall and _gs_max_wall > 0:
-            _MAX_WALL_SECONDS = float(_gs_max_wall)
+        if _gs and _gs.get("max_wall_seconds") and _gs["max_wall_seconds"] > 0:
+            _MAX_WALL_SECONDS = float(_gs["max_wall_seconds"])
         # Per-agent override: if the agent record has max_wall_seconds set, it wins over global
         if _agent_rec and _agent_rec.get("max_wall_seconds") is not None:
             try:
@@ -1428,15 +1427,15 @@ async def stream_agent_events(
             # ── Tool-call limit per turn ──
             # Cap the number of tool calls the LLM can make in one turn.
             # 0 = unlimited. Controlled via app-settings.json max_tool_calls.
-            if _gs_max_tool and _gs_max_tool > 0 and len(collected_tool_calls) > _gs_max_tool:
-                extra_count = len(collected_tool_calls) - _gs_max_tool
+            if _gs and _gs.get("max_tool_calls") and _gs["max_tool_calls"] > 0 and len(collected_tool_calls) > _gs["max_tool_calls"]:
+                extra_count = len(collected_tool_calls) - _gs["max_tool_calls"]
                 # Keep only the first _gs_max_tool tool calls (by index order).
-                kept = dict(list(sorted(collected_tool_calls.items()))[:_gs_max_tool])
+                kept = dict(list(sorted(collected_tool_calls.items()))[:_gs["max_tool_calls"]])
                 dropped = len(collected_tool_calls) - len(kept)
                 collected_tool_calls = kept
                 yield {"type": "pipeline", "level": "pipeline",
                        "step": "tool_call_limit", "capped": True,
-                       "allowed": _gs_max_tool, "dropped": dropped}
+                       "allowed": _gs["max_tool_calls"], "dropped": dropped}
 
             # ── Handle tool calls ──
             if collected_tool_calls:
