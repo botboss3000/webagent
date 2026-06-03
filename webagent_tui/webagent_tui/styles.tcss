@@ -302,6 +302,7 @@ ConfirmModal { align: center middle; }
 #input-row #prompt {
     width: 1fr;
     height: auto;
+    min-width: 2;
     border: none;
     outline: none;
     background: $background;
