@@ -508,11 +508,11 @@ async def termux_installer():
 
     Enables `curl -fsSL https://webagent.live/termux | bash` to install the
     Server Manager TUI on Android. Served verbatim from
-    `webagent_tui/install-termux.sh`, with line endings forced to LF so a
+    `TUI/install-termux.sh`, with line endings forced to LF so a
     Windows checkout can never ship a CRLF script that bash refuses to run.
     Registered BEFORE the `/{agent_id}` catch-all below so it isn't shadowed."""
     from fastapi.responses import PlainTextResponse
-    script = _APP_DIR.parent / "webagent_tui" / "install-termux.sh"
+    script = _APP_DIR.parent / "TUI" / "install-termux.sh"
     if not script.is_file():
         return PlainTextResponse("# webAgent TUI installer not found\n", status_code=404)
     body = script.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
