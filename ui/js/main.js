@@ -10,17 +10,18 @@ import { connectAgent } from './agentWs.js';
 import { initTabs } from './tabs.js';
 import { initLoop } from './loop.js';
 import { initLoopVisual } from './loop-logic.js';
-import { initDbViewer } from './db/index.js';
 import { registerSessionApi, initSessions } from './sessions.js';
 import { initAutoAgent } from './autoagent.js';
-import { initAgents } from './agents.js';
 import { initBilling } from './billing.js';
-import { initAppConfig } from './app-config.js';
 import { initAccount } from './account.js';
-import { initFiles, relocateAdminToolsContainers } from './files.js';
-import { initDataManagement } from './data-management.js';
-import { initRemoteAccess } from './remote-access.js';
+import { relocateAdminToolsContainers } from './files.js';
+// The whole Admin Tools panel — the file manager (initFiles) and the sub-panels
+// (initDbViewer / initDataManagement / initRemoteAccess / initAppConfig) — is
+// initialised lazily on first Admin Tools open: initFiles via startAdminTools(),
+// the sub-panels via _ensureAdminInit() in tabs.js. None run at boot. initAgents
+// runs via startAgents() on Agents-tab activation.
 import { initChatResize } from './chatResize.js';
+import { initRecorder } from './recorder.js';
 import { initTutorial, startTutorial } from './tutorial.js';
 import { fetchAdminStatus, isAdmin, fetchAccessMode } from './left-login.js';
 import { installAuthRefresh, ensureFreshToken, startTokenAutoRefresh } from './auth-refresh.js';
@@ -221,20 +222,28 @@ _bootReady.then(() => {
   _safeInit('initLoop',        initLoop);
   _safeInit('initLoopVisual',  initLoopVisual);
   // Move parked Admin Tools markup (App Config + Database viewer) into the
-  // admin-tools layout BEFORE the db viewer initializes, so its
-  // getElementById() lookups hit the final DOM positions.
+  // admin-tools layout. Stays eager (cheap DOM reparent) so the markup is in
+  // its final position before the now-lazy db viewer / app config init bind
+  // to it on first Admin Tools open.
   _safeInit('relocateAdminToolsContainers', relocateAdminToolsContainers);
-  _safeInit('initDbViewer',    initDbViewer);
-  _safeInit('initDataManagement', initDataManagement);
-  _safeInit('initRemoteAccess', initRemoteAccess);
+  // ── Lazy main-panel init ──────────────────────────────────────────────
+  // The entire Admin Tools panel — file manager (initFiles, via
+  // startAdminTools) and the sub-panels (Database viewer, Data Management,
+  // Remote Access, App Config, via _ensureAdminInit() in tabs.js) — is now
+  // built only on first Admin Tools open, not at boot. This avoids building
+  // DOM/handlers for a panel that's rarely opened, especially on mobile where
+  // only one panel is ever visible. initAgents is covered by startAgents()
+  // when the Agents tab activates. Kept eager below:
+  //  • initAutoAgent — registers the live page/visualizer WebSocket handler
+  //    (app._autoAgentHandler), which must receive events even when the
+  //    Pages tab isn't showing.
+  //  • initBilling / initAccount — cheap, no tab-gated heavy work.
   _safeInit('initAutoAgent',   initAutoAgent);
-  _safeInit('initAgents',      initAgents);
   _safeInit('initBilling',     initBilling);
-  _safeInit('initAppConfig',   initAppConfig);
   _safeInit('initAccount',     initAccount);
-  _safeInit('initFiles',       initFiles);
   _safeInit('initSessions',    initSessions);
   _safeInit('initChatResize',  initChatResize);
+  _safeInit('initRecorder',    initRecorder);
   _safeInit('initTutorial',    initTutorial);
   // Defer startTutorial() so it doesn't block the critical path — it fetches
   // tutorial state from the server but isn't needed for first paint.

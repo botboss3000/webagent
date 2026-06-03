@@ -14,6 +14,7 @@ the active theme via ``theme_colors`` (refreshed whenever the theme changes).
 from __future__ import annotations
 
 import json
+import re
 import webbrowser
 from pathlib import Path
 from typing import Optional
@@ -23,11 +24,11 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.events import Click
+from textual.events import Click, Paste
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Collapsible, Input, Select, Static, TextArea
+from textual.widgets import Checkbox, Collapsible, Input, Select, Static, TextArea
 
 from .agent import AgentEvent, ServerManagerAgent
 from .ascii_anim import ANIM_LABELS, ANIM_STYLES
@@ -41,7 +42,8 @@ from .config import (
     resolve_provider,
 )
 from .appclient import WebAppClient, WebAppError
-from .clip import read_clipboard, write_clipboard
+from . import attach
+from .clip import read_clipboard, read_clipboard_image, write_clipboard
 from .db import Store
 from .env_probe import probe_machine, server_health
 from .glyphs import EMOJI, G
@@ -54,6 +56,19 @@ from .watchdog import Watchdog, set_active_watchdog
 from .palette import PRESETS, palette_from_theme
 from .theme_colors import chrome_colors
 from .themes import CUSTOM_VAR_DEFAULTS, DEFAULT_THEME, THEME_LABELS, THEME_ORDER, build_themes
+
+
+# Matches bare http(s) URLs so they can be turned into clickable terminal hyperlinks
+# (OSC 8). Trailing punctuation and markup/closing brackets are excluded.
+_URL_RE = re.compile(r'https?://[^\s\]\)>"\'`]+[^\s\]\)>"\'`.,;:!?]')
+
+
+def _linkify_text(text: Text) -> Text:
+    """Stylize bare URLs inside a Rich Text as clickable OSC-8 hyperlinks, in place."""
+    plain = text.plain
+    for m in _URL_RE.finditer(plain):
+        text.stylize(f"link {m.group(0)}", m.start(), m.end())
+    return text
 
 
 class PromptInput(TextArea):
@@ -89,15 +104,41 @@ class PromptInput(TextArea):
 
     def action_submit(self) -> None:
         text = self.text.strip()
-        if text:
+        # Submit on text, or on attachments alone (an image with no caption).
+        has_att = bool(getattr(self.app, "_attachments", None))
+        if text or has_att:
             self.text = ""
             self.post_message(self.Submitted(text))
 
     def action_paste(self) -> None:
+        # Image attachment only applies to the main chat input — config fields
+        # (API key, base URL, …) keep plain text paste.
+        if self.id == "prompt":
+            # Ctrl+V: an image on the clipboard becomes an attachment; otherwise
+            # the text is pasted — unless that text is itself a path to an image
+            # file (e.g. a file copied in the OS file manager), which also attaches.
+            img = read_clipboard_image()
+            if img is not None:
+                data, mime = img
+                if self.app._attach_image_bytes(data, mime):  # type: ignore[attr-defined]
+                    return
         text = read_clipboard() or self.app.clipboard
         if not text:
             return
+        if self.id == "prompt" and self.app._maybe_attach_paths(text):  # type: ignore[attr-defined]
+            return
         self.insert(text)
+
+    async def _on_paste(self, event: Paste) -> None:
+        # Bracketed paste / terminal drag-drop arrives here as text — usually the
+        # dropped file's path. On the main input, if every token is an image file,
+        # attach instead of inserting the raw path; otherwise normal text paste.
+        if (self.id == "prompt" and event.text
+                and self.app._maybe_attach_paths(event.text)):  # type: ignore[attr-defined]
+            event.stop()
+            event.prevent_default()
+            return
+        await super()._on_paste(event)
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Auto-grow up to MAX_ROWS lines."""
@@ -191,6 +232,42 @@ class ServerStatusWidget(Widget):
             return Text(f"{G.DOT_DEAD} stopped", style=f"bold {cc.get('error', '#ff5f56')}")
         spin = self.FRAMES[self._frame % len(self.FRAMES)]
         return Text(f"{spin} starting", style=f"bold {cc.get('tool', '#ff9d2f')}")
+
+
+class PanelGrip(Static):
+    """A 1-cell-wide vertical handle on the left edge of the side panel. Drag it
+    (mouse or touch) to resize the panel; the chat column to its left flexes to fill
+    the rest. Shown only while a panel is open."""
+
+    def __init__(self, id: str | None = None) -> None:
+        super().__init__("", id=id)
+        self._dragging = False
+
+    def on_mouse_down(self, event) -> None:
+        self._dragging = True
+        self.capture_mouse()
+        event.stop()
+
+    def on_mouse_up(self, event) -> None:
+        self._dragging = False
+        try:
+            self.release_mouse()
+        except Exception:
+            pass
+        event.stop()
+
+    def on_mouse_move(self, event) -> None:
+        if not self._dragging:
+            return
+        try:
+            total = self.app.size.width
+            panel = self.app.query_one("#side-panel", Vertical)
+            new_w = total - int(event.screen_x)
+            lo, hi = 24, max(28, int(total * 0.85))
+            panel.styles.width = max(lo, min(hi, new_w))
+        except Exception:
+            pass
+        event.stop()
 
 
 def _scene_rows(app) -> list[tuple[str, "Select"]]:
@@ -287,12 +364,16 @@ class ServerManagerApp(App):
         # Sidebar view state: confirmations + the connect/config views render IN the
         # panel (no pop-up modals). _confirm_state carries the active confirm dialog.
         self._confirm_state: Optional[dict] = None   # {title, body, label, on_yes}
+        self._reset_state: dict = {"db": True, "pages": True, "secrets": False,
+                                   "users": False, "env": False, "agents": False}
         self._connect_agents: list[dict] = []        # agents fetched for the Connect view
         self._connect_sessions: list[dict] = []      # sessions for the picked agent
         self._connect_agent: Optional[dict] = None   # the agent currently expanded
         self._cfg_settings: dict = {}                # last-fetched app settings (config view)
         self._cfg_provider: dict = {}                # last-fetched LLM provider (config view)
-        self._provider_pick: str = ""                # the highlighted provider pill (App view)
+        self._cfg_provider_pick: str = ""            # highlighted provider preset (App Config)
+        self._diag_text: str = ""                    # last diagnostics readout (sidebar view)
+        self._logs_text: str = ""                    # last server-logs readout (sidebar view)
         self.session_id = self.store.create_session(
             str(self.project_root) if self.project_root else "(onboarding)"
         )
@@ -308,6 +389,7 @@ class ServerManagerApp(App):
         self._stop_btn = None        # action-bar [Stop] pill
         self._cont_btn = None        # action-bar [Continue] pill
         self._busy = False           # an agent turn is currently running
+        self._attachments: list[dict] = []   # pending image attachments for the next message
         self._s_in = 0               # session token accumulators (HUD)
         self._s_out = 0
         self._ctx_tokens = 0         # latest prompt size = current context usage
@@ -369,6 +451,10 @@ class ServerManagerApp(App):
                 cta = Static(self._cta_label(), id="cta", markup=False)
                 cta.display = self.project_root is None   # onboarding-only call-to-action
                 yield cta
+                # Pending image attachments: one removable chip each. Hidden when empty.
+                attach_row = Horizontal(id="attach-row")
+                attach_row.display = False
+                yield attach_row
                 with Horizontal(id="input-row"):
                     yield PromptInput(
                         placeholder="Ask the Server Manager…",
@@ -376,8 +462,11 @@ class ServerManagerApp(App):
                         id="prompt",
                     )
                     yield Static(">>>", id="send-btn", markup=False)
-            # right after App) — not a separate edge strip.
-            # The docked side panel (Admin / Git / App / Server / Connect / Sessions / Config).
+            # The drag-to-resize handle sits between the chat column and the panel.
+            grip = PanelGrip(id="panel-grip")
+            grip.display = False
+            yield grip
+            # The docked side panel (Admin / Git / WEBAGENT / Server / Config / …).
             # Hidden by default; shown when a category button is clicked.
             panel = Vertical(id="side-panel")
             panel.display = False
@@ -547,13 +636,18 @@ class ServerManagerApp(App):
             pass
 
     def _log(self, markup: str) -> None:
-        """A single transcript line carrying Rich console markup (theme colours)."""
+        """A single transcript line carrying Rich console markup (theme colours).
+        Rendered as a markup STRING (Static handles it leniently) — pre-parsing to a
+        Text is unsafe here because ASCII glyph fallbacks like '[admin]' look like
+        markup tags. URL linkifying is done on the plain-text paths instead."""
         self._mount(Static(markup, classes="msg-line"))
 
     def _log_block(self, text: str) -> None:
         """Mount raw multi-line text (server logs / diagnostics) WITHOUT markup
-        parsing — they contain brackets and tracebacks that aren't Rich markup."""
-        self._mount(Static(Text(text, style=self.cc["dim"]), classes="msg-block", markup=False))
+        parsing — they contain brackets and tracebacks that aren't Rich markup.
+        URLs are still made clickable."""
+        self._mount(Static(_linkify_text(Text(text, style=self.cc["dim"])),
+                           classes="msg-block", markup=False))
 
     def _log_assistant(self, text: str) -> None:
         """Render the agent's reply as Markdown (so code fences, lists, and emphasis
@@ -603,8 +697,8 @@ class ServerManagerApp(App):
         cat("Admin", "admin", "panel_admin")
         if self.project_root:
             cat("Git", "git", "panel_git")   # source control: fetch / pull / push
-        cat("App", "app", "panel_app")
-        # The live server STATUS sits right after App (managed mode); click → server panel.
+        cat("WEBAGENT", "connect", "panel_connect")   # connect to a live web agent/session
+        # The live server STATUS sits right after WEBAGENT (managed mode); click → server panel.
         # Rebuilt each refresh, so keep self._dot pointing at the current widget.
         self._dot = None
         if self.project_root:
@@ -873,7 +967,7 @@ class ServerManagerApp(App):
         if self._panel_open():
             self._close_panel()
         else:
-            self._open_panel("app")
+            self._open_panel("admin")
 
     def action_quit_app(self) -> None:
         self.exit()
@@ -912,12 +1006,20 @@ class ServerManagerApp(App):
         except Exception:
             return
         await panel.remove_children()
+        try:
+            grip = self.query_one("#panel-grip", PanelGrip)
+        except Exception:
+            grip = None
         if kind is None:
             panel.display = False
+            if grip is not None:
+                grip.display = False
             return
         panel.set_class(self.cfg.side_expanded, "side-wide")
         await panel.mount(*self._panel_widgets(kind))
         panel.display = True
+        if grip is not None:
+            grip.display = True
 
     def _panel_btn(self, label: str, action: str, active: bool = False) -> Static:
         b = Static(label, classes="panel-btn panel-btn-active" if active else "panel-btn",
@@ -938,9 +1040,10 @@ class ServerManagerApp(App):
         expand/collapse toggle + a TITLE; then the view's content (category buttons,
         Scene/App controls, or the confirm / connect / config views)."""
         c = self.cc
-        title = {"admin": "ADMIN", "scene": "THEME", "app": "APP", "server": "SERVER",
-                 "git": "GIT", "connect": "CONNECT", "config": "APP CONFIG",
-                 "sessions": "ALL SESSIONS",
+        title = {"admin": "ADMIN", "scene": "THEME", "server": "SERVER",
+                 "git": "GIT", "connect": "WEBAGENT", "config": "APP CONFIG",
+                 "sessions": "ALL SESSIONS", "reset": "RESET",
+                 "diag": "DIAGNOSTICS", "logs": "SERVER LOGS",
                  "confirm": (self._confirm_state or {}).get("title", "CONFIRM")}.get(kind, kind.upper())
         # Top row in EVERY view: an expand/collapse toggle, then the title.
         exp_label = "[›‹ narrow]" if self.cfg.side_expanded else "[‹› wide]"
@@ -956,6 +1059,8 @@ class ServerManagerApp(App):
                 self._panel_btn(f"[{st.get('label', 'Confirm')}]", "confirm_yes"),
                 self._panel_btn("[Cancel]", "confirm_no"), classes="panel-row"))
             return out
+        if kind == "reset":
+            return out + self._reset_widgets()
         if kind == "git":
             return out + self._git_widgets()
         if kind == "connect":
@@ -968,50 +1073,10 @@ class ServerManagerApp(App):
             for label, sel in _scene_rows(self):
                 out.append(Horizontal(Static(label, classes="set-label"), sel, classes="set-row"))
             return out
-        if kind == "app":
-            # ── AI provider / key block ──────────────────────────────────
-            # Provider as PILL buttons (one per preset), not a Select — the dropdown's
-            # expand glyph rendered as a broken symbol. The active one is highlighted;
-            # clicking one fills Base URL + Model (Custom leaves them for manual entry).
-            names = [n for n, _, _ in PROVIDER_PRESETS]
-            prov_name = self.cfg.provider or provider_name_for_base(self.provider.base_url)
-            if prov_name not in names:
-                prov_name = "Custom"
-            self._provider_pick = prov_name
-            out.append(Static(Text("Provider", style=c["dim"]), classes="panel-sub"))
-            row: list[Widget] = []
-            for n in names:
-                active = " panel-btn-active" if n == prov_name else ""
-                row.append(self._value_btn(n, "provider_pick", "provider-pick" + active, n))
-                if len(row) == 2:
-                    out.append(Horizontal(*row, classes="panel-row"))
-                    row = []
-            if row:
-                out.append(Horizontal(*row, classes="panel-row"))
-            out.append(Static(Text("AI key", style=c["dim"]), classes="panel-sub"))
-            out.append(PromptInput(text=self.provider.api_key, id="key-input",
-                             placeholder="paste API key…"))
-            out.append(Static(Text("Base URL", style=c["dim"]), classes="panel-sub"))
-            out.append(PromptInput(text=self.provider.base_url, id="base-input",
-                             placeholder="https://…/v1"))
-            out.append(Static(Text("Model", style=c["dim"]), classes="panel-sub"))
-            out.append(PromptInput(text=self.provider.model, id="model-input", placeholder="model id"))
-            out.append(Horizontal(self._panel_btn("[Save]", "key_save"),
-                                  self._panel_btn("[Clear]", "key_clear"),
-                                  classes="panel-row"))
-            keynote = (f"✓ {self.provider.model}" if self.provider.configured else "not configured")
-            kcol = c["secondary"] if self.provider.configured else c["tool"]
-            out.append(Static(Text(keynote, style=kcol), id="key-status", classes="panel-sub"))
-            # ── write-gate ───────────────────────────────────────────────
-            cur = "auto" if self.cfg.autonomous else "write" if self.cfg.writes_enabled else "read"
-            out.append(Static(Text("Mode", style=c["dim"]), classes="panel-sub"))
-            out.append(self._panel_btn("[Read-only]", "mode_read", cur == "read"))
-            out.append(self._panel_btn("[Write]", "mode_write", cur == "write"))
-            out.append(self._panel_btn("[Autonomous]", "mode_auto", cur == "auto"))
-            out.append(self._panel_btn("[Open Browser]", "open_browser"))
-            return out
+        if kind in ("diag", "logs"):
+            return out + self._readout_widgets(kind)
         specs = {
-            "admin": [("[Connect]", "panel_connect"), ("[App Config]", "panel_config"),
+            "admin": [("[App Config]", "panel_config"),
                       ("[Commands]", "help"), ("[Update]", "admin_update"),
                       ("[Install]", "install"), ("[Reset]", "admin_reset"),
                       ("[Uninstall]", "admin_uninstall"),
@@ -1031,8 +1096,8 @@ class ServerManagerApp(App):
         c = self.cc
         out: list[Widget] = []
         out.append(Static(Text("GitHub token", style=c["dim"]), classes="panel-sub"))
-        out.append(PromptInput(text=self.cfg.git_token, id="git-token-input",
-                         placeholder="paste GitHub token…"))
+        out.append(Input(value=self.cfg.git_token, id="git-token-input",
+                         placeholder="paste GitHub token…", password=True))
         out.append(Horizontal(self._panel_btn("[Save]", "git_token_save"),
                               self._panel_btn("[Clear]", "git_token_clear"),
                               classes="panel-row"))
@@ -1042,10 +1107,12 @@ class ServerManagerApp(App):
         out.append(Static(Text("Actions", style=c["dim"]), classes="panel-sub"))
         out.append(self._panel_btn("[Fetch]", "git_fetch"))
         out.append(self._panel_btn("[Pull]", "git_pull"))
+        out.append(self._panel_btn("[Commit]", "git_commit"))
+        out.append(self._panel_btn("[Commit + Pull]", "git_commit_pull"))
         out.append(self._panel_btn("[Push]", "git_push"))
         return out
 
-    # ── Connect view (browse agents/sessions, set target, the two mutes) ──────
+    # ── WEBAGENT / Connect view (agent + session as DROPDOWNS, set target, mutes) ──
     def _connect_widgets(self) -> list[Widget]:
         c = self.cc
         out: list[Widget] = []
@@ -1058,23 +1125,47 @@ class ServerManagerApp(App):
             if not self._webagent_muted:
                 mlabel = "[Unmute Manager]" if self._manager_muted else "[Mute Manager]"
                 out.append(self._panel_btn(mlabel, "toggle_manager", self._manager_muted))
-            out.append(Static(Text("— pick a different target —", style=c["dim"]), classes="panel-sub"))
-        else:
-            out.append(Static(Text("Pick an agent, then a session.", style=c["dim"]), classes="panel-sub"))
+        # Agent dropdown.
+        out.append(Static(Text("Agent", style=c["dim"]), classes="panel-sub"))
         if not self._connect_agents:
             out.append(Static(Text("(no agents loaded — Refresh)", style=c["dim"]), classes="panel-sub"))
-        for a in self._connect_agents:
-            active = bool(self._connect_agent and self._connect_agent.get("id") == a.get("id"))
-            out.append(self._value_btn(f"▸ {a.get('name', '(agent)')}", "connect_agent",
-                                       "connect-agent" + (" panel-btn-active" if active else ""), a))
+        else:
+            a_opts = [(a.get("name", "(agent)"), a.get("id", "")) for a in self._connect_agents]
+            a_ids = [v for _, v in a_opts]
+            cur_a = self._connect_agent.get("id") if self._connect_agent else None
+            out.append(Select(a_opts,
+                              value=cur_a if cur_a in a_ids else Select.BLANK,
+                              prompt="Select an agent…",
+                              id="connect-agent-select", classes="connect-select"))
+        # Session dropdown — only once an agent is chosen.
         if self._connect_agent is not None:
-            out.append(Static(Text(f"sessions · {self._connect_agent.get('name', '')}",
+            out.append(Static(Text(f"Session · {self._connect_agent.get('name', '')}",
                                    style=c["dim"]), classes="panel-sub"))
-            out.append(self._value_btn("[+ New session]", "connect_new", "connect-new", {}))
+            s_opts: list[tuple[str, str]] = [("+ New session", "__new__")]
             for s in self._connect_sessions:
-                stitle = (s.get("title") or "(untitled)").strip()[:22]
-                out.append(self._value_btn(f"• {stitle}", "connect_session", "connect-session", s))
+                stitle = (s.get("title") or "(untitled)").strip()[:28]
+                s_opts.append((stitle, s.get("id", "")))
+            s_ids = [v for _, v in s_opts]
+            cur_s = t.get("session_id") if t else None
+            out.append(Select(s_opts,
+                              value=cur_s if (cur_s and cur_s in s_ids) else Select.BLANK,
+                              prompt="Select a session…",
+                              id="connect-session-select", classes="connect-select"))
         out.append(self._panel_btn("[Refresh]", "connect_refresh"))
+        return out
+
+    # ── Diagnostics / Logs readout (rendered IN the sidebar, wrapping) ─────────
+    def _readout_widgets(self, kind: str) -> list[Widget]:
+        """A read-only panel view for Diagnostics or Server Logs. The text wraps to
+        the panel width and the panel itself scrolls — so it reads as a half-screen
+        side view instead of dumping a wall of text into the transcript."""
+        c = self.cc
+        out: list[Widget] = []
+        text = (self._diag_text if kind == "diag" else self._logs_text)
+        out.append(self._panel_btn("[Refresh]", "diag_refresh" if kind == "diag" else "logs_refresh"))
+        body = text or "(loading…)"
+        out.append(Static(_linkify_text(Text(body, style=c["dim"])),
+                          classes="readout-body", markup=False))
         return out
 
     # ── Sessions view (resume a previous TUI session) ─────────────────────────
@@ -1131,35 +1222,54 @@ class ServerManagerApp(App):
             out.append(Select([("On", True), ("Off", False)],
                               value=bool(s.get("presentation_mode", False)),
                               allow_blank=False, id="cfg-present"))
+            out.append(Static(Text("Render recorder (browser capture)", style=c["dim"]), classes="panel-sub"))
+            out.append(Select([("On", True), ("Off", False)],
+                              value=bool(s.get("render_recording_enabled", False)),
+                              allow_blank=False, id="cfg-recorder"))
             out.append(Static(Text("Max tool calls/turn", style=c["dim"]), classes="panel-sub"))
-            out.append(PromptInput(text=str(s.get("max_tool_calls", 25)),
-                                   id="cfg-max-tool-calls", placeholder="25 (0 = unlimited)"))
+            out.append(Input(value=str(s.get("max_tool_calls", 25)),
+                             id="cfg-max-tool-calls", placeholder="25 (0 = unlimited)"))
             out.append(Static(Text("Max wall clock (seconds)", style=c["dim"]), classes="panel-sub"))
-            out.append(PromptInput(text=str(s.get("max_wall_seconds", 600)),
-                                   id="cfg-max-wall", placeholder="600 (0 = unlimited)"))
+            out.append(Input(value=str(s.get("max_wall_seconds", 600)),
+                             id="cfg-max-wall", placeholder="600 (0 = unlimited)"))
             out.append(Static(Text("Max identical tool calls", style=c["dim"]), classes="panel-sub"))
-            out.append(PromptInput(text=str(s.get("max_identical_tool_calls", 0)),
-                                   id="cfg-max-identical", placeholder="0 = disabled"))
+            out.append(Input(value=str(s.get("max_identical_tool_calls", 0)),
+                             id="cfg-max-identical", placeholder="0 = disabled"))
             out.append(Static(Text("Run resume attempts", style=c["dim"]), classes="panel-sub"))
-            out.append(PromptInput(text=str(s.get("run_max_resume_attempts", 3)),
-                                   id="cfg-max-resume", placeholder="3"))
+            out.append(Input(value=str(s.get("run_max_resume_attempts", 3)),
+                             id="cfg-max-resume", placeholder="3"))
             out.append(Static(Text("Frozen threshold (seconds)", style=c["dim"]), classes="panel-sub"))
-            out.append(PromptInput(text=str(s.get("run_frozen_threshold_seconds", 360)),
-                                   id="cfg-frozen", placeholder="360"))
+            out.append(Input(value=str(s.get("run_frozen_threshold_seconds", 360)),
+                             id="cfg-frozen", placeholder="360"))
             out.append(Static(Text("Stream buffer retention (s)", style=c["dim"]), classes="panel-sub"))
-            out.append(PromptInput(text=str(s.get("stream_buffer_retention_seconds", 60)),
-                                   id="cfg-buffer", placeholder="60"))
+            out.append(Input(value=str(s.get("stream_buffer_retention_seconds", 60)),
+                             id="cfg-buffer", placeholder="60"))
             out.append(self._panel_btn("[Save settings]", "cfg_save_settings"))
+        # ── LLM auth key ─────────────────────────────────────────────────
+        # Provider quick-pick pills (moved here from the old App panel): one tap
+        # fills Base URL + Model below; "Custom" leaves them for manual entry.
         out.append(Static(Text("LLM auth key", style=f"bold {c['accent']}"), classes="panel-sub"))
-        out.append(Static(Text("Provider", style=c["dim"]), classes="panel-sub"))
-        out.append(PromptInput(text=p.get("provider", ""), id="cfg-provider", placeholder="openrouter"))
-        out.append(Static(Text("Base URL", style=c["dim"]), classes="panel-sub"))
-        out.append(PromptInput(text=p.get("base_url", ""), id="cfg-baseurl", placeholder="https://…/v1"))
-        out.append(Static(Text("Model", style=c["dim"]), classes="panel-sub"))
-        out.append(PromptInput(text=p.get("model", ""), id="cfg-model", placeholder="model id"))
-        out.append(Static(Text("API key", style=c["dim"]), classes="panel-sub"))
-        out.append(PromptInput(text=p.get("api_key", ""), id="cfg-apikey",
-                               placeholder="paste API key… (blank = keep current)"))
+        names = [n for n, _, _ in PROVIDER_PRESETS]
+        cur_prov = p.get("provider", "") or ""
+        self._cfg_provider_pick = cur_prov if cur_prov in names else "Custom"
+        row: list[Widget] = []
+        for n in names:
+            active = " panel-btn-active" if n == self._cfg_provider_pick else ""
+            row.append(self._value_btn(n, "cfg_provider_pick", "cfg-provider-pick" + active, n))
+            if len(row) == 2:
+                out.append(Horizontal(*row, classes="panel-row"))
+                row = []
+        if row:
+            out.append(Horizontal(*row, classes="panel-row"))
+        # The four key fields as borderless lines sharing one tinted box (no labels —
+        # the placeholders name each line). ~8 lines tall: 4 inputs + a gap each.
+        out.append(Vertical(
+            Input(value=p.get("provider", ""), id="cfg-provider", placeholder="provider (e.g. openrouter)"),
+            Input(value=p.get("base_url", ""), id="cfg-baseurl", placeholder="base URL  https://…/v1"),
+            Input(value=p.get("model", ""), id="cfg-model", placeholder="model id"),
+            Input(value=p.get("api_key", ""), id="cfg-apikey",
+                  placeholder="API key  (blank = keep current)", password=True),
+            classes="keybox"))
         out.append(self._panel_btn("[Save auth key]", "cfg_save_auth"))
         out.append(self._panel_btn("[Refresh]", "cfg_refresh"))
         return out
@@ -1169,9 +1279,6 @@ class ServerManagerApp(App):
 
     def action_panel_scene(self) -> None:
         self._open_panel("scene")
-
-    def action_panel_app(self) -> None:
-        self._open_panel("app")
 
     def action_panel_server(self) -> None:
         if self.project_root is None:
@@ -1251,44 +1358,18 @@ class ServerManagerApp(App):
         self.set_manager_muted(not self._manager_muted)
         self._rebuild_panel()
 
-    @on(Click, ".provider-pick")
-    def _on_provider_pick(self, event: Click) -> None:
-        """Pick a provider pill: remember it, fill Base URL + Model from the preset
-        (Custom leaves them as typed), and move the highlight — without rebuilding the
-        panel, so a key/URL already typed isn't lost."""
+    @on(Click, ".cfg-provider-pick")
+    def _on_cfg_provider_pick(self, event: Click) -> None:
+        """Pick a provider preset in App Config: remember it, fill Base URL + Model from
+        the preset (Custom leaves them as typed), and move the highlight in place — so a
+        key already typed into the fields isn't lost to a rebuild."""
         name = getattr(event.widget, "_btn_value", None)
         if name is None:
             return
-        self._provider_pick = str(name)
-        self._apply_provider_preset(self._provider_pick)
-        for b in self.query(".provider-pick"):
+        self._cfg_provider_pick = str(name)
+        self._apply_provider_preset(self._cfg_provider_pick)
+        for b in self.query(".cfg-provider-pick"):
             b.set_class(getattr(b, "_btn_value", None) == name, "panel-btn-active")
-
-    @on(Click, ".connect-agent")
-    def _on_connect_agent(self, event: Click) -> None:
-        a = getattr(event.widget, "_btn_value", None)
-        if a:
-            self._connect_agent = a
-            self._connect_sessions = []
-            self.run_worker(self._load_connect_sessions(), group="connectload", exclusive=True)
-
-    @on(Click, ".connect-session")
-    def _on_connect_session(self, event: Click) -> None:
-        s = getattr(event.widget, "_btn_value", None)
-        a = self._connect_agent or {}
-        if s:
-            self.set_webapp_target(a.get("id", ""), a.get("name", "agent"),
-                                   s.get("id", ""), s.get("title", ""))
-            self._rebuild_panel()
-
-    @on(Click, ".connect-new")
-    def _on_connect_new(self, event: Click) -> None:
-        import uuid
-        a = self._connect_agent or {}
-        if a:
-            self.set_webapp_target(a.get("id", ""), a.get("name", "agent"),
-                                   f"tui-{uuid.uuid4().hex[:16]}", "(new)")
-            self._rebuild_panel()
 
     @on(Click, ".resume-session")
     def _on_resume_session(self, event: Click) -> None:
@@ -1318,7 +1399,14 @@ class ServerManagerApp(App):
             role = m.get("role", "")
             content = m.get("content", "")
             if role == "user":
-                self._log_user(content)
+                if m.get("content_kind") == "json":
+                    try:
+                        payload = json.loads(content) or {}
+                    except Exception:
+                        payload = {}
+                    self._log_user(payload.get("text") or "", payload.get("images") or [])
+                else:
+                    self._log_user(content)
             elif role == "assistant":
                 self._log_assistant(content)
             elif role == "tool" and m.get("tool_name"):
@@ -1363,6 +1451,7 @@ class ServerManagerApp(App):
         try:
             access = self.query_one("#cfg-access", Select).value
             present = self.query_one("#cfg-present", Select).value
+            recorder = self.query_one("#cfg-recorder", Select).value
             max_tc = self.query_one("#cfg-max-tool-calls", Input).value.strip()
             max_wall = self.query_one("#cfg-max-wall", Input).value.strip()
             max_iden = self.query_one("#cfg-max-identical", Input).value.strip()
@@ -1375,6 +1464,7 @@ class ServerManagerApp(App):
         if access is not Select.BLANK:
             patch["access_mode"] = access
         patch["presentation_mode"] = bool(present)
+        patch["render_recording_enabled"] = bool(recorder)
         if max_tc:
             patch["max_tool_calls"] = max(0, int(max_tc))
         if max_wall:
@@ -1429,11 +1519,13 @@ class ServerManagerApp(App):
 
     # ── panel interactions: button clicks, click-outside, settings, AI key ──
     # Buttons whose action should NOT close the panel (they edit it in place).
-    _KEEP_OPEN = {"key_save", "key_clear", "panel_expand",
+    _KEEP_OPEN = {"panel_expand",
                   "panel_connect", "panel_config",
                   "git_token_save", "git_token_clear",
                   "toggle_webagent", "toggle_manager", "connect_refresh",
-                  "cfg_save_settings", "cfg_save_auth", "cfg_refresh"}
+                  "cfg_save_settings", "cfg_save_auth", "cfg_refresh",
+                  "diag_refresh", "logs_refresh",
+                  "reset_do"}
 
     @on(Click, ".panel-btn")
     def _on_panel_btn(self, event: Click) -> None:
@@ -1458,7 +1550,11 @@ class ServerManagerApp(App):
             return
         node = event.widget
         while node is not None:
-            if getattr(node, "id", None) == "side-panel":
+            # Keep the panel open when interacting with the panel itself, the resize
+            # grip, the header/panel buttons, OR the chat input row (so typing or
+            # clicking into the prompt never dismisses an open panel).
+            if getattr(node, "id", None) in ("side-panel", "panel-grip",
+                                             "input-row", "prompt", "send-btn"):
                 return
             cls = getattr(node, "classes", ())
             if "hdr-btn" in cls or "panel-btn" in cls:
@@ -1468,71 +1564,57 @@ class ServerManagerApp(App):
 
     @on(Select.Changed)
     def _on_setting_change(self, event: Select.Changed) -> None:
+        sid = event.select.id or ""
+        # WEBAGENT/Connect dropdowns: pick an agent (loads its sessions), then a session.
+        if sid == "connect-agent-select":
+            if event.value is Select.BLANK:
+                return
+            aid = event.value
+            if self._connect_agent and self._connect_agent.get("id") == aid:
+                return   # programmatic re-set on rebuild — ignore
+            self._connect_agent = next(
+                (a for a in self._connect_agents if a.get("id") == aid), None)
+            self._connect_sessions = []
+            self.run_worker(self._load_connect_sessions(), group="connectload", exclusive=True)
+            return
+        if sid == "connect-session-select":
+            if event.value is Select.BLANK:
+                return
+            a = self._connect_agent or {}
+            if event.value == "__new__":
+                import uuid
+                self.set_webapp_target(a.get("id", ""), a.get("name", "agent"),
+                                       f"tui-{uuid.uuid4().hex[:16]}", "(new)")
+            else:
+                t = self._webapp_target
+                if t and t.get("session_id") == event.value:
+                    return   # programmatic re-set on rebuild — ignore
+                s = next((x for x in self._connect_sessions if x.get("id") == event.value), None)
+                if s:
+                    self.set_webapp_target(a.get("id", ""), a.get("name", "agent"),
+                                           s.get("id", ""), s.get("title", ""))
+            self._rebuild_panel()
+            return
         if event.value is Select.BLANK:
             return
         # Config-view selects (cfg-*) are read on [Save], not applied live.
-        if (event.select.id or "").startswith("cfg-"):
+        if sid.startswith("cfg-"):
             return
         # Scene controls apply live; the panel stays open so several can be tweaked.
-        self.apply_setting(event.select.id, event.value)
+        self.apply_setting(sid, event.value)
 
     def _apply_provider_preset(self, name: str) -> None:
+        """Fill the App Config Base URL + Model fields from a provider preset."""
         preset = next((p for p in PROVIDER_PRESETS if p[0] == name), None)
         if preset is None or name == "Custom":
             return
         _, base, model = preset
         try:
-            self.query_one("#base-input", Input).value = base
-            self.query_one("#model-input", Input).value = model
+            self.query_one("#cfg-provider", Input).value = name
+            self.query_one("#cfg-baseurl", Input).value = base
+            self.query_one("#cfg-model", Input).value = model
         except Exception:
             pass
-
-    @on(Input.Submitted, "#key-input")
-    def _key_enter(self, event: Input.Submitted) -> None:
-        self.action_key_save()   # Enter in the key field is a shortcut for [Save]
-
-    def action_key_save(self) -> None:
-        """Persist the App-panel provider/key/model as an explicit UI override (wins
-        over the repo's provider.json/.env) and rebuild the LLM client."""
-        try:
-            panel = self.query_one("#side-panel", Vertical)
-            key = panel.query_one("#key-input", Input).value.strip()
-            base = panel.query_one("#base-input", Input).value.strip()
-            model = panel.query_one("#model-input", Input).value.strip()
-        except Exception:
-            return
-        prov = self._provider_pick   # the highlighted provider pill
-        if key:
-            self.cfg.api_key = key
-        self.cfg.base_url = base
-        self.cfg.model = model
-        self.cfg.provider = prov if prov and prov != "Custom" else ""
-        self.cfg.provider_override = True
-        self.cfg.save()
-        self._apply_provider()
-        self._refresh_status()
-        if self.provider.configured:
-            self._log(f"[{self.cc['secondary']}]{G.OK} AI settings saved[/] "
-                      f"[{self.cc['dim']}]— {self.cfg.provider or 'custom'} · {self.provider.model}[/]")
-        else:
-            self._log(f"[{self.cc['tool']}]{G.WARN} saved, but no key is set yet — "
-                      f"paste a key and Save again.[/]")
-        self._rebuild_panel()
-
-    def action_key_clear(self) -> None:
-        """Forget the UI-set key/provider/override so resolution falls back to the
-        repo/env (or built-in defaults) again."""
-        self.cfg.api_key = ""
-        self.cfg.base_url = ""
-        self.cfg.model = ""
-        self.cfg.provider = ""
-        self.cfg.provider_override = False
-        self.cfg.save()
-        self._apply_provider()
-        self._refresh_status()
-        self._log(f"[{self.cc['dim']}]{G.BULLET} AI key cleared "
-                  f"(falling back to the repo/env key, if any).[/]")
-        self._rebuild_panel()
 
     # ── Git panel: store the GitHub token + run fetch / pull / push ────────
     @on(Input.Submitted, "#git-token-input")
@@ -1571,7 +1653,7 @@ class ServerManagerApp(App):
             return
         if not self.provider.configured:
             self._log(f"[{self.cc['tool']}]{G.WARN} No AI key configured.[/] "
-                      "Set a provider + key in the App panel first.")
+                      "Set a provider + key in Admin ▸ App Config first.")
             return
         if needs_writes and not (self.cfg.writes_enabled or self.cfg.autonomous):
             self.cfg.writes_enabled = True
@@ -1594,6 +1676,22 @@ class ServerManagerApp(App):
             "a merge conflict arises, stop and tell me before doing anything destructive. "
             "Summarize what changed.",
             "pull", needs_writes=True)
+
+    def action_git_commit(self) -> None:
+        self._git_request(
+            "Commit my current changes (git_tool). First run git status to see what's staged and "
+            "unstaged; stage all tracked changes, then commit with a concise, descriptive message "
+            "summarizing what changed. Do NOT push. If there's nothing to commit, tell me.",
+            "commit", needs_writes=True)
+
+    def action_git_commit_pull(self) -> None:
+        self._git_request(
+            "Commit my current changes, then pull the latest from the remote (git_tool). "
+            "Steps: 1) git status; 2) stage all tracked changes and commit with a concise, "
+            "descriptive message; 3) pull from the remote on the current branch. If a merge "
+            "conflict arises or the pull would be destructive, stop and tell me before continuing. "
+            "Do not push. Summarize what was committed and what came down from the remote.",
+            "commit + pull", needs_writes=True)
 
     def action_git_push(self) -> None:
         self._git_request(
@@ -1654,14 +1752,6 @@ class ServerManagerApp(App):
         if ok:
             self.action_get_started()
 
-    def action_open_browser(self) -> None:
-        url = "http://localhost:8080/index.html"
-        try:
-            webbrowser.open(url)
-            self._log(f"[{self.cc['dim']}]opened {url} in your browser[/]")
-        except Exception as e:
-            self._log(f"[{self.cc['error']}]{G.ERR} couldn't open a browser: {e}[/]")
-
     def action_server_restart(self) -> None:
         if self.project_root is None:
             self._log(f"[{self.cc['dim']}]no server to restart in onboarding mode[/]")
@@ -1684,23 +1774,45 @@ class ServerManagerApp(App):
         if self.project_root is None:
             self._log(f"[{self.cc['dim']}]no server logs in onboarding mode (link a checkout first)[/]")
             return
+        # Open Logs as a wide, scrolling sidebar half-view (not a transcript dump).
+        self._logs_text = ""
+        self.cfg.side_expanded = True
+        self._open_panel("logs")
+        self.run_worker(self._show_logs(), group="diag", exclusive=True)
+
+    def action_logs_refresh(self) -> None:
         self.run_worker(self._show_logs(), group="diag", exclusive=True)
 
     async def _show_logs(self) -> None:
         from .tools import server as srv
         msg = await srv.server_logs(self._server_ctx(), lines=60)
-        self._log_block(msg)
+        self._logs_text = msg
+        if self._panel_kind == "logs":
+            self._rebuild_panel()
+        else:
+            self._log_block(msg)
 
     def action_diagnostics(self) -> None:
         if self.project_root is None:
             self._log(f"[{self.cc['dim']}]no diagnostics in onboarding mode (link a checkout first)[/]")
             return
+        # Open Diagnostics as a wide, scrolling sidebar half-view.
+        self._diag_text = ""
+        self.cfg.side_expanded = True
+        self._open_panel("diag")
+        self.run_worker(self._show_diagnostics(), group="diag", exclusive=True)
+
+    def action_diag_refresh(self) -> None:
         self.run_worker(self._show_diagnostics(), group="diag", exclusive=True)
 
     async def _show_diagnostics(self) -> None:
         from .tools import diagnostics as diag
         msg = await diag.read_diagnostics(self._server_ctx(), limit=20)
-        self._log_block(msg)
+        self._diag_text = msg
+        if self._panel_kind == "diag":
+            self._rebuild_panel()
+        else:
+            self._log_block(msg)
 
     # ── admin panel: Commands (a user-facing reference, printed to the transcript) ──
     def action_help(self) -> None:
@@ -1718,9 +1830,11 @@ class ServerManagerApp(App):
         self._log(f"\n[b {c['primary']}]{G.ADMIN} webAgent — command reference[/]")
 
         head("On-screen controls")
-        line("Admin", "Commands · Update · Install · Reset · Uninstall · Diagnostics · Logs")
-        line("Git", "GitHub token (Save/Clear), then Fetch · Pull · Push")
-        line("App", "AI provider + key (Save/Clear), Read/Write/Auto, Open Browser")
+        line("Admin", "App Config · Commands · Update · Install · Reset · Uninstall · Diagnostics · Logs")
+        line("Git", "GitHub token (Save/Clear), then Fetch · Pull · Commit · Commit+Pull · Push")
+        line("WEBAGENT", "connect to a live web agent + session (dropdowns), mute/unmute")
+        line("App Config", "AI provider + key, plus the app's server settings (in Admin)")
+        line("mode pill", "far-left header word — click to cycle Read → Write → Auto")
         line("theme", "Ctrl+T cycles the 23 colour themes (no header button)")
         line("status pill", "click the live/stopped status → Start · Restart · Kill")
         line("Stop / Continue", "above the input — cancel a turn / resume it")
@@ -1836,54 +1950,85 @@ class ServerManagerApp(App):
             self.set_timer(2.0, self.exit)
 
     # ── admin panel: Reset (wipe the app's data back to a clean state) ──
-    def _reset_info(self) -> str:
+    def _reset_widgets(self) -> list[Widget]:
+        """Build the reset panel: checkboxes for each wipe group + a Reset button."""
+        c = self.cc
         from .tools.reset import _PG_PROVIDERS, _active_provider
         is_pg = (self.project_root is not None
                  and _active_provider(self.project_root) in _PG_PROVIDERS)
-        if is_pg:
-            db_line = "  • database  (active Postgres backend — its schema is dropped & recreated)"
-        else:
-            db_line = "  • database  (app/db/local.db + its journal/wal/shm sidecars)"
-        backup_lines = (
-            ["The Postgres wipe is NOT backed up — dropping the schema is irreversible. The other "
-             "removed files are backed up to temp/reset-backup-<timestamp>/. The server is stopped "
-             "before the wipe."]
-            if is_pg else
-            ["Everything removed is backed up first to temp/reset-backup-<timestamp>/, so this is "
-             "reversible. The server is stopped before the wipe."]
-        )
-        return "\n".join([
-            "Resets this webAgent install to a clean state. The app's data is wiped:",
-            db_line,
-            "  • generated pages  (visuals/users/)",
-            "  • app secrets  (AI keys, OAuth tokens, integration creds, scheduler/db-mode config)",
-            "  • local accounts  (passwords + remember-me tokens)",
-            "",
-            "Kept: your .env and the agent template JSONs, so the app still boots — the "
-            "database, the default admin/admin login, and the agents are recreated on next start.",
-            "",
-            *backup_lines,
-            "",
-            "(For a deeper or lighter wipe — e.g. keep secrets, or also delete .env / the agent "
-            "templates — ask the agent to run reset_app with the flags you want.)",
-        ])
+
+        db_label = ("  database  (Postgres — schema dropped & recreated, NOT backed up)"
+                    if is_pg else
+                    "  database  (local.db + journal/wal/shm sidecars)")
+        pages_label = "  generated pages  (visuals/users/)"
+        secrets_label = "  app secrets  (AI keys, OAuth tokens, integration creds, scheduler/db-mode config)"
+        users_label = "  local accounts  (passwords + remember-me tokens)"
+        env_label = "  .env file  (environment config — app won't boot without it)"
+        agents_label = "  agent templates  (data/agents/*.json — zero agents after)"
+
+        # Default state: database + pages always checked (always wiped).
+        st = self._reset_state
+        out: list[Widget] = [
+            Static(Text("What to reset:", style=c["dim"]), classes="panel-sub"),
+            Checkbox(db_label, id="reset-db", value=st.get("db", True)),
+            Checkbox(pages_label, id="reset-pages", value=st.get("pages", True)),
+            Checkbox(secrets_label, id="reset-secrets", value=st.get("secrets", False)),
+            Checkbox(users_label, id="reset-users", value=st.get("users", False)),
+            Checkbox(env_label, id="reset-env", value=st.get("env", False)),
+            Checkbox(agents_label, id="reset-agents", value=st.get("agents", False)),
+            Static(Text("", id="reset-note", style=c["tool"]), classes="panel-sub"),
+            Horizontal(
+                self._panel_btn("[Reset now]", "reset_do"),
+                self._panel_btn("[Cancel]", "confirm_no"),
+                classes="panel-row"),
+        ]
+        return out
 
     def action_admin_reset(self) -> None:
         if self.project_root is None:
             self._log(f"[{self.cc['dim']}]nothing to reset in onboarding mode (link a checkout first)[/]")
             return
-        self._open_sidebar_confirm("Reset webAgent", self._reset_info(), "Reset now",
-                                   lambda: self._after_reset_confirm(True))
+        self._reset_state = {"db": True, "pages": True, "secrets": False,
+                             "users": False, "env": False, "agents": False}
+        self._panel_kind = "reset"
+        self._refresh_status()
+        self.run_worker(self._render_panel("reset"), group="panel", exclusive=True)
 
-    def _after_reset_confirm(self, ok: bool | None) -> None:
-        if ok:
-            self.run_worker(self._do_reset(), group="admin", exclusive=True)
+    def action_reset_do(self) -> None:
+        """Read the checkboxes, run the reset, close the panel."""
+        self.run_worker(self._do_reset(), group="admin", exclusive=True)
 
     async def _do_reset(self) -> None:
         from .tools import reset
+        # Read checkbox states from the panel widgets.
+        try:
+            db = self.query_one("#reset-db", Checkbox).value
+            pages = self.query_one("#reset-pages", Checkbox).value
+            secrets = self.query_one("#reset-secrets", Checkbox).value
+            users = self.query_one("#reset-users", Checkbox).value
+            env = self.query_one("#reset-env", Checkbox).value
+            agents = self.query_one("#reset-agents", Checkbox).value
+        except Exception:
+            self._log(f"[{self.cc['error']}]{G.ERR} could not read reset checkboxes[/]")
+            self._close_panel()
+            return
+
+        # Save state so re-opening the panel restores the same choices.
+        self._reset_state = {"db": db, "pages": pages, "secrets": secrets,
+                             "users": users, "env": env, "agents": agents}
+
+        if not any([db, pages, secrets, users, env, agents]):
+            self._log(f"[{self.cc['tool']}]{G.WARN} nothing selected — no reset performed[/]")
+            self._close_panel()
+            return
+
+        self._close_panel()
         self._log(f"[{self.cc['tool']}]{G.BULLET} resetting — stopping the server, backing up, and wiping data…[/]")
-        msg = await reset.reset_app(self._admin_ctx(), backup=True,
-                                    clear_secrets=True, clear_users=True)
+        msg = await reset.reset_app(
+            self._admin_ctx(), backup=True,
+            clear_secrets=secrets, clear_users=users,
+            delete_env=env, delete_agents=agents,
+        )
         self._log_block(msg)
         self._server_state = await server_health() if self.project_root else "n/a"
         self._refresh_status()
@@ -1986,7 +2131,7 @@ class ServerManagerApp(App):
         self._do_submit(text)
 
     def _do_submit(self, text: str) -> None:
-        if not text:
+        if not text and not self._attachments:
             return
         # Clear the input so the same text isn't resent on accident.
         try:
@@ -2031,8 +2176,12 @@ class ServerManagerApp(App):
             self._log(f"[{self.cc['tool']}]{G.WARN} No AI key configured.[/] "
                       "Set LLM_API_KEY (the app key), or link a repo that has one.")
             return
-        self._log_user(text)
-        self._run_turn(text)
+        # Consume any pending image attachments for this turn, then clear the row.
+        images = self._attachments
+        self._attachments = []
+        self._refresh_attach_row()
+        self._log_user(text, images)
+        self._run_turn(text, images)
 
     # ── activity spinner + Stop / Continue ─────────────────────────────────
     def _set_busy(self, busy: bool) -> None:
@@ -2071,11 +2220,89 @@ class ServerManagerApp(App):
         self._log_user("Continue.")
         self._run_turn("Please continue from where you left off.")
 
-    def _log_user(self, text: str) -> None:
+    def _log_user(self, text: str, images: Optional[list[dict]] = None) -> None:
         """Render a user message as a bordered bubble that matches the input pill —
-        the main background with a bright outline — so it reads as 'yours'."""
+        the main background with a bright outline — so it reads as 'yours'. Any
+        attached images are listed by name on a dim trailing line."""
         self._end_tool_group()
-        self._mount(Static(Text(text, style=self.cc["fg"]), classes="msg-user", markup=False))
+        body = Text(text, style=self.cc["fg"])
+        if images:
+            names = ", ".join(i.get("name", "image") for i in images)
+            if text:
+                body.append("\n")
+            body.append(f"attached: {names}", style=self.cc["dim"])
+        self._mount(Static(body, classes="msg-user", markup=False))
+
+    # ── image attachments (pasted / dragged-in) ────────────────────────────
+    def _attach_image_bytes(self, data: bytes, mime: str) -> bool:
+        """Save clipboard image bytes as a pending attachment. Returns True on
+        success (so the caller skips inserting text)."""
+        att = attach.save_bytes(data, mime, self.session_id)
+        if att is None:
+            self._log(f"[{self.cc['tool']}]{G.WARN} couldn't read that image "
+                      f"(empty or over {attach.MAX_BYTES // (1024 * 1024)} MB).[/]")
+            return False
+        self._attachments.append(att)
+        self._refresh_attach_row()
+        return True
+
+    def _maybe_attach_paths(self, text: str) -> bool:
+        """If ``text`` is one or more whitespace-separated image file paths (a
+        drag-drop / file-manager copy), attach them and return True. Mixed or
+        non-image text returns False so it pastes normally."""
+        raw = (text or "").strip()
+        if not raw:
+            return False
+        # Split on newlines first (multi-file drops), then fall back to the whole
+        # line as a single (possibly space-containing, quoted) path.
+        candidates = [c.strip().strip('"').strip("'") for c in raw.splitlines() if c.strip()]
+        if not candidates:
+            return False
+        # Strip a file:// scheme some terminals prepend on drop.
+        norm = [c[7:] if c.startswith("file://") else c for c in candidates]
+        if not all(attach.is_image_path(c) for c in norm):
+            return False
+        added = 0
+        for c in norm:
+            att = attach.save_path(c, self.session_id)
+            if att is not None:
+                self._attachments.append(att)
+                added += 1
+        if added:
+            self._refresh_attach_row()
+        return added > 0
+
+    def _refresh_attach_row(self) -> None:
+        """Rebuild the chip row from ``self._attachments``; hide it when empty."""
+        try:
+            row = self.query_one("#attach-row", Horizontal)
+        except Exception:
+            return
+        row.remove_children()
+        if not self._attachments:
+            row.display = False
+            return
+        row.display = True
+        for att in self._attachments:
+            label = Static(Text(att.get("name", "image"), style=self.cc["fg"]),
+                           classes="attach-name", markup=False)
+            x = Static("[x]", classes="attach-x", markup=False)
+            x._att_id = att["id"]  # type: ignore[attr-defined]
+            # Pass children at construction so they compose when the chip mounts
+            # (Textual forbids mounting into a not-yet-mounted container).
+            row.mount(Horizontal(label, x, classes="attach-chip"))
+
+    @on(Click, ".attach-x")
+    def _attach_remove(self, event: Click) -> None:
+        aid = getattr(event.widget, "_att_id", None)
+        if aid is None:
+            return
+        self._attachments = [a for a in self._attachments if a["id"] != aid]
+        self._refresh_attach_row()
+
+    def _clear_attachments(self) -> None:
+        self._attachments = []
+        self._refresh_attach_row()
 
     # ── expandable tool-call blocks (nested collapsibles, like the launcher) ──
     @staticmethod
@@ -2178,7 +2405,7 @@ class ServerManagerApp(App):
         self._tool_pending = [e for e in self._tool_pending if not e["done"]]
 
     @work(exclusive=True, group="agent")
-    async def _run_turn(self, text: str) -> None:
+    async def _run_turn(self, text: str, images: Optional[list[dict]] = None) -> None:
         assert self.agent is not None
         c = self.cc
         self._dismiss_banner()
@@ -2208,7 +2435,8 @@ class ServerManagerApp(App):
 
         try:
             situation = await self._build_situation()
-            await self.agent.run_turn(self.session_id, text, on_event, situation=situation)
+            await self.agent.run_turn(self.session_id, text, on_event, situation=situation,
+                                      images=images)
         except Exception as e:  # surface, never crash the UI
             self._log(f"[{c['error']}]{G.ERR} agent error: {type(e).__name__}: {e}[/]")
         finally:

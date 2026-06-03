@@ -48,6 +48,7 @@ from app.api.browser_stream import router as browser_stream_router
 from app.api.uploads import router as uploads_router
 from app.api.db_viewer import router as db_viewer_router
 from app.api.diagnostics import router as diagnostics_router
+from app.api.recordings import router as recordings_router
 from app.admin.review import router as admin_router
 from app.admin.db_mode import router as admin_db_router
 from app.admin.storage import router as admin_storage_router
@@ -275,6 +276,7 @@ app.include_router(browser_stream_router)
 app.include_router(uploads_router)
 app.include_router(db_viewer_router)
 app.include_router(diagnostics_router)
+app.include_router(recordings_router)
 app.include_router(admin_router)
 app.include_router(admin_db_router)
 app.include_router(admin_storage_router)
@@ -549,6 +551,14 @@ async def startup():
         _diag_record("info", "server", "Server starting up", source="startup")
     except Exception as _diag_err:
         logger.warning("Diagnostic recorder failed to start: %s", _diag_err)
+
+    # Start the client render recorder's background batch-writer + pruner. It is
+    # idle (accepts nothing) until render_recording_enabled is turned on.
+    try:
+        from app.agent.render_recorder import start_render_recorder
+        start_render_recorder()
+    except Exception as _rr_err:
+        logger.warning("Render recorder failed to start: %s", _rr_err)
 
     # Launch the terminal idle-session GC. Reaps PTYs whose WebSocket has
     # been detached longer than TERMINAL_IDLE_TIMEOUT_HOURS (default 24h).

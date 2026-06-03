@@ -82,14 +82,24 @@ Screen {
  * variables only — legible in light AND dark. Width is capped at 60% so the chat stays
  * visible even on a small phone; button labels stack and wrap so they stay readable. */
 #side-panel {
-    width: 34; max-width: 60%;
+    width: 34; max-width: 85%;
     height: 100%;
     background: $panel;
-    border-left: thick $primary;
     padding: 1 1;
     overflow-y: auto; overflow-x: hidden;
     scrollbar-size-vertical: 1;
+    scrollbar-corner-color: $panel;
 }
+
+/* Drag handle on the panel's left edge — grab + drag to resize the panel.
+ * A thin vertical strip; widens its tint on hover so it's discoverable. */
+#panel-grip {
+    width: 1; height: 100%;
+    background: $primary;
+    color: $background;
+    content-align: center middle;
+}
+#panel-grip:hover { background: $secondary; }
 #side-panel #panel-title { text-style: bold; color: $bar-accent; margin-bottom: 1; }
 #side-panel .panel-sub { width: 100%; height: auto; color: $dim; margin-top: 1; }
 /* Panel text fields use the same rounded PILL as the chat input + buttons
@@ -101,6 +111,36 @@ Screen {
     color: $foreground;
 }
 #side-panel Input:focus { border: round $primary; }
+
+/* LLM key block: 4 borderless input LINES sharing one background panel, with a
+ * one-line gap between each (so the whole block is ~8 lines tall). No per-field
+ * boxes — just clean lines on a tinted surface. */
+#side-panel .keybox {
+    width: 100%; height: auto;
+    background: $boost;
+    border: round $border-dim;
+    padding: 0 1; margin-bottom: 1;
+}
+#side-panel .keybox Input {
+    width: 100%; height: 1;
+    border: none; background: $boost;
+    margin: 0 0 1 0; padding: 0;
+    color: $foreground;
+}
+#side-panel .keybox Input:focus { border: none; background: $background; }
+
+/* Connect (WEBAGENT) dropdowns — full width, spaced; the Select draws its own pill. */
+#side-panel .connect-select { width: 100%; margin-bottom: 1; }
+
+/* Diagnostics / Logs readout — wrapping monospace text on a tinted surface that
+ * fills the (widened) panel and scrolls with it. */
+#side-panel .readout-body {
+    width: 100%; height: auto;
+    background: $boost;
+    border: round $border-dim;
+    padding: 0 1; margin-top: 1;
+    color: $foreground;
+}
 /* Side-panel PILL buttons — rounded, full-width, centred; big tap targets for phones. */
 #side-panel .panel-btn {
     width: 100%; height: 3;
@@ -162,6 +202,7 @@ ConfirmModal { align: center middle; }
     width: 100%;
     background: $background;
     padding: 0 1;
+    overflow-x: hidden;
     overflow-y: auto;
     scrollbar-gutter: stable;
     scrollbar-size-vertical: 1;
@@ -169,6 +210,7 @@ ConfirmModal { align: center middle; }
     scrollbar-color-hover: $primary-lighten-2 $background;
     scrollbar-color-active: $primary-lighten-2 $background;
     scrollbar-background: $background;
+    scrollbar-corner-color: $background;
 }
 
 /* Transcript message kinds. */
@@ -179,7 +221,7 @@ ConfirmModal { align: center middle; }
 .msg-notify {
     width: 100%; height: auto;
     background: $boost;
-    border: wide $accent; padding: 0 1; margin: 1 0 0 0;
+    border: round $accent; padding: 0 1; margin: 1 0 0 0;
     color: $accent;
 }
 .msg-user {
@@ -192,7 +234,7 @@ ConfirmModal { align: center middle; }
 .msg-session-new {
     width: 100%; height: auto;
     background: $accent;
-    border: wide $accent;
+    border: round $accent;
     padding: 0 1; margin: 1 0 0 0;
     color: $background;
 }
@@ -206,7 +248,7 @@ ConfirmModal { align: center middle; }
 .msg-webagent {
     width: 100%; height: auto;
     color: $foreground; background: $boost;
-    border-left: thick $secondary; padding: 0 1; margin: 1 0 0 0;
+    border: round $secondary; padding: 0 1; margin: 1 0 0 0;
 }
 .msg-webuser {
     width: 100%; height: auto;
@@ -229,7 +271,7 @@ ConfirmModal { align: center middle; }
     width: 1fr; height: auto;
     background: $background;
     border: none;
-    border-top: hkey $border-dim;
+    margin-top: 1;
     padding-bottom: 0;
 }
 .tool-block CollapsibleTitle { color: $tool; }
@@ -278,6 +320,40 @@ ConfirmModal { align: center middle; }
 #input-row #send-btn:hover {
     color: $secondary;
     text-style: bold underline;
+}
+
+/* Pending image attachments: a wrapping row of removable chips above the input.
+ * Each chip is the filename plus a clickable [x]. Theme variables only (so it
+ * reads correctly in both dark and light themes). */
+#attach-row {
+    layout: horizontal;
+    width: 100%;
+    height: auto;
+    margin: 1 0 0 0;
+}
+#attach-row .attach-chip {
+    width: auto;
+    height: 1;
+    margin: 0 1 0 0;
+    padding: 0 1;
+    background: $boost;
+    border-left: thick $accent;
+}
+#attach-row .attach-name {
+    width: auto;
+    height: 1;
+    content-align: left middle;
+    color: $foreground;
+}
+#attach-row .attach-x {
+    width: auto;
+    height: 1;
+    margin: 0 0 0 1;
+    color: $dim;
+    text-style: bold;
+}
+#attach-row .attach-x:hover {
+    color: $error;
 }
 
 

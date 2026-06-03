@@ -91,7 +91,7 @@ Neither layout is derived from the other. A node missing from one view simply wo
 7. `ui/loop-nodes.json` — add entries to `NODE_STATIC_ITEMS` and `NODE_PANEL_INFO`
 8. `ui/js/agents.js` `_INFO_NODES` set — add node ID if it should show info-only panel (no edit bar)
 9. `app/agent/loop_executor.py` `DEFAULT_NODE_ORDER` list — add node in the correct position
-10. All agent JSON templates in `app/context/agents/` — add node ID to each `loop_logic` array
+10. All agent JSON templates in `data/agents/` — add node ID to each `loop_logic` array
 11. Any existing agents' `loop_logic` DB field — update via migration or seed script
 
 ## Production deployment

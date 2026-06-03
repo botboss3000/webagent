@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS messages (
     seq         INTEGER NOT NULL,
     role        TEXT NOT NULL,            -- system | user | assistant | tool
     content     TEXT NOT NULL DEFAULT '',
+    content_kind TEXT NOT NULL DEFAULT '', -- '' = plain text | 'json' = structured (text + image refs)
     tool_name   TEXT NOT NULL DEFAULT '',
     tool_calls  TEXT NOT NULL DEFAULT '', -- JSON (assistant tool_calls)
     tool_call_id TEXT NOT NULL DEFAULT '',
@@ -62,7 +63,16 @@ class Store:
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a store was first created (older DBs)."""
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(messages)")}
+        if "content_kind" not in cols:
+            self._conn.execute(
+                "ALTER TABLE messages ADD COLUMN content_kind TEXT NOT NULL DEFAULT ''"
+            )
 
     def close(self) -> None:
         try:
@@ -108,19 +118,22 @@ class Store:
         role: str,
         content: str = "",
         *,
+        content_kind: str = "",
         tool_name: str = "",
         tool_calls: Optional[list] = None,
         tool_call_id: str = "",
     ) -> None:
         self._conn.execute(
-            "INSERT INTO messages (id, session_id, seq, role, content, tool_name, "
-            "tool_calls, tool_call_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO messages (id, session_id, seq, role, content, content_kind, "
+            "tool_name, tool_calls, tool_call_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 uuid.uuid4().hex,
                 session_id,
                 self._next_seq(session_id),
                 role,
                 content,
+                content_kind,
                 tool_name,
                 json.dumps(tool_calls) if tool_calls else "",
                 tool_call_id,
