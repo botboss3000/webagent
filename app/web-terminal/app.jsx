@@ -418,6 +418,7 @@ function App() {
         <GameModal id={activeGame} onClose={() => setActiveGame(null)} />
       )}
       {designerOpen && (
+        <div className="ds-scrim" onClick={() => setDesignerOpen(false)}>
         <DesignerChat
           onClose={() => setDesignerOpen(false)}
           api={{
@@ -428,6 +429,7 @@ function App() {
             openGame: (id) => { setGamesOpen(false); setActiveGame(id); },
           }}
         />
+        </div>
       )}
     </div>
   );

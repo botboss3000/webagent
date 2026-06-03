@@ -305,6 +305,7 @@ body{font-family:var(--mono);font-size:15px;line-height:1.5;color:var(--fg);
 
 /* ─── designer chat (floating) ─── */
 .bt-designer.on{color:var(--barAccent);text-decoration:underline;text-underline-offset:3px;}
+.ds-scrim{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:90;}
 .designer-pop{position:absolute;top:38px;right:14px;width:384px;max-width:calc(100vw - 28px);
   max-height:min(470px,calc(100vh - 96px));background:var(--panel);border:1px solid var(--primary);
   border-radius:14px;box-shadow:0 18px 54px rgba(0,0,0,.5),0 0 0 1px var(--bg);z-index:95;
@@ -344,6 +345,7 @@ body{font-family:var(--mono);font-size:15px;line-height:1.5;color:var(--fg);
   transition:transform .26s cubic-bezier(.4,0,.2,1);background:var(--panel);border-left:1px solid var(--primary);
   z-index:60;display:flex;flex-direction:column;box-shadow:-14px 0 44px rgba(0,0,0,.38);}
 .sidebar.open{transform:none;}
+.sb-scrim{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:55;}
 .bt-notes.on{color:var(--barAccent);text-decoration:underline;text-underline-offset:3px;}
 .bt-crew.on{color:var(--barAccent);text-decoration:underline;text-underline-offset:3px;}
 

@@ -26,7 +26,9 @@ function Sidebar({ open, onClose }) {
   const done = todos.filter((t) => t.done).length;
 
   return (
-    <aside className={"sidebar" + (open ? " open" : "")} aria-hidden={!open}>
+    <>
+      {open && <div className="sb-scrim" onClick={onClose} />}
+      <aside className={"sidebar" + (open ? " open" : "")} aria-hidden={!open}>
       <div className="sb-top">
         <span className="sb-title">▤ notes &amp; todos</span>
         <button className="menu-x" onClick={onClose}>[esc]</button>
@@ -63,7 +65,7 @@ function Sidebar({ open, onClose }) {
         </div>
       </div>
       <div className="sb-foot">saved locally · persists across reloads</div>
-    </aside>
+    </aside></>
   );
 }
 

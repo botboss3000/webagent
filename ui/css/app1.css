@@ -2062,6 +2062,16 @@ body.light-mode .session-status-unread { color: #73a64a; }
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+.session-row-time {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: #6b7397;
+    padding: 0 4px;
+    min-width: 36px;
+    text-align: right;
+    white-space: nowrap;
+  }
+body.light-mode .session-row-time { color: #8e7878; }
 /* ── Drag-to-reorder grip (agent + session dropdown rows) ── */
 .row-drag-handle {
     display: inline-flex;
