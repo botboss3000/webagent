@@ -117,7 +117,7 @@ def _load_provider_json(project_dir: Path) -> dict[str, str]:
     checkouts won't have one — or unreadable, so resolution falls back cleanly.
     """
     try:
-        data = json.loads((project_dir / "provider.json").read_text(encoding="utf-8"))
+        data = json.loads((project_dir / "data" / "config" / "provider.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
         return {}
     if not isinstance(data, dict):

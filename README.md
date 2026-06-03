@@ -213,6 +213,9 @@ webAgent/
 │   ├── web-terminal/       # Self-contained terminal-styled chat page (Terminal tab); React+Babel single-file app, served at /web-terminal/ (see its README.md)
 │   └── db/
 │       └── attachments/    # File storage abstraction (store_file / read_file / delete_file)
+├── data/                   # Human-editable seed data + app config (relocated here for a tidy root)
+│   ├── agents/             # Agent template JSON — seeded into agent_templates (reverse-export: scripts/export_agent_templates.py)
+│   └── config/             # App config JSON: provider.json, app-settings.json, scheduler_config.json, optimizer.json, remote_access.json
 ├── docs/                   # Operator docs: events-setup.md (Pub/Sub, Graph, Dropbox, Shopify)
 ├── tests/                  # e.g. test_session_history.py (unittest)
 ├── sw.js                   # PWA service worker (must be at root scope for coverage)
@@ -238,6 +241,7 @@ webAgent/
 ├── webagent.exe            # Built launcher + self-bootstrapping installer (gitignored). Produced at the project ROOT by launcher/scripts/build_exe.py.
 ├── launcher/               # Polished Textual TUI launcher + self-bootstrapping installer; builds to a single portable webagent.exe at the PROJECT ROOT (../webagent.exe). FIRST RUN can install webAgent from nothing — downloads the public repo (git if present, else ZIP), fetches the self-contained uv toolchain (which installs its own private Python), uv-syncs all deps, and downloads the Playwright Chromium browser (~150MB) for browser_action; the end user needs only the .exe (or it can point at an existing folder). Server controls (Launch / Restart / Stop / Browser / Clear DB / Reset Python / Full Reset / Update = re-pull code + re-sync deps) + watchdogs that relaunch the server if it crashes (auto_restart_server) OR goes unresponsive on a health probe (health_check_restart) — shared exponential backoff + 5-strike crash-loop guard; both default ON, toggle in launcher.json + animated procedural ASCII background, AND an embedded keyboard-driven chat client (default view): agent/session scrolling pickers, live token streaming, expandable tool-call blocks, per-turn token/cost stats, image drag-to-attach, talks to the local server's chat/stream + db APIs (can drive the admin coding agent — shell/grep/file-edit). Emoji when the terminal supports it (auto-relaunches into Windows Terminal). See launcher/README.md.
 ├── launcher_android/       # Termux + proot-distro Ubuntu TUI launcher for running webAgent on an Android phone. Launch / Restart / Kill / Browser + dependency Doctor with one-tap fixes for the common Android-ARM issues (Playwright Chromium, build-essential, missing .env). See launcher_android/README.md.
+├── TUI/                    # Standalone server-manager TUI (Textual; inner package `webagent`). `/termux` serves TUI/install-termux.sh. See TUI/README.md.
 ├── run.py                  # Pre-opens port with SO_REUSEADDR for zombie-port resilience
 ├── uploads/                # Uploaded attachments directory (auto-created, gitignored)
 ├── Dockerfile
@@ -334,7 +338,7 @@ cp .env.example .env          # Windows (cmd): copy .env.example .env
 
 In **local** mode, Supabase vars are not required for storage; you still need **`OPENROUTER_API_KEY`** (and usually **`OPENROUTER_MODEL`**) for LLM calls.
 
-Provider, API key, and model can **also** be configured at runtime via the ⚙️ **Settings** modal in the UI (gear icon next to Cloud/Local toggle). Changes are saved to **`provider.json`** in the project root and applied on next server start. The API key is masked in the UI after saving.
+Provider, API key, and model can **also** be configured at runtime via the ⚙️ **Settings** modal in the UI (gear icon next to Cloud/Local toggle). Changes are saved to **`data/config/provider.json`** and applied on next server start. The API key is masked in the UI after saving.
 
 **Multi-provider parallel mode:** When `parallel_mode: true` and 2+ entries in `multi_providers`, the agent fans out each LLM call to all configured providers in parallel and uses the first complete response. Configured via `POST /admin/settings/multi-providers` or directly in `provider.json`. Fallback: single-provider path is unchanged when parallel mode is off or < 2 providers.
 
@@ -652,7 +656,7 @@ Use **`reset_webagent.bat`** (repo root, Windows) to wipe webAgent back to a cle
 | # | Prompt | Default | Targets when "yes" |
 |---|--------|---------|---------------------|
 | 1 | Back up files to `temp\reset-backup-<timestamp>\` before deleting? | **Yes** | Every targeted file/folder is `move`d into a timestamped folder under `temp\` mirroring its original path (reversible). On "No", everything is hard-deleted via `del /F /Q` or `rmdir /S /Q`. |
-| 2 | Clear app secrets (LLM API keys, OAuth tokens, integration creds, scheduler config)? | No | `provider.json`, `app-settings.json`, `scheduler_config.json`, `app\db_mode.json`, `app\pages_mode.json`, `app\db_connection.json`, `app\secrets_mode.json`. App falls back to local defaults when these are missing. |
+| 2 | Clear app secrets (LLM API keys, OAuth tokens, integration creds, scheduler config)? | No | `data/config/provider.json`, `data/config/app-settings.json`, `data/config/scheduler_config.json`, `app\db_mode.json`, `app\pages_mode.json`, `app\db_connection.json`, `app\secrets_mode.json`. App falls back to local defaults when these are missing. |
 | 3 | Clear local user accounts (passwords, remember-me tokens)? | No | `app\auth\users.json`, `app\auth\users.json.bak`. `admin / admin` is re-created on next start. |
 | 4 | Delete `.env`? | **No** | `.env` at repo root. Default No — most installs (Supabase, OAuth client IDs) need this file to start. |
 | 5 | Delete agent template JSON files in `app\context\agents\`? | No | All `*.json` under `app\context\agents\`. **Warning:** there is no fallback — the next start will boot with zero agents until you restore templates. |

@@ -59,9 +59,9 @@ _USERBASE_DIRS = ["visuals/users"]
 # Opt-in groups (mirrors reset_webagent.bat). These are filesystem files,
 # independent of which database backend is active.
 _SECRETS_FILES = [
-    "provider.json",
-    "app-settings.json",
-    "scheduler_config.json",
+    "data/config/provider.json",
+    "data/config/app-settings.json",
+    "data/config/scheduler_config.json",
     "app/db_mode.json",
     "app/pages_mode.json",
     "app/db_connection.json",
