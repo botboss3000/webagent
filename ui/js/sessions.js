@@ -1210,6 +1210,18 @@ function _createBubble(role, text, extraClass, imageUrl, turnId, msgId) {
   return bubble;
 }
 
+/**
+ * Show a debug bubble with agentId + sessionId for admin users.
+ * Only shown when the user is authenticated (not anonymous).
+ */
+function _showDebugBubble(sessionId) {
+  const token = localStorage.getItem('auth_token');
+  if (!token) return; // only for authenticated users
+  const agentId = app.currentAgentId || '—';
+  const text = `🔍 **Debug** — Agent: \`${agentId}\` · Session: \`${sessionId}\``;
+  app.addChatBubble('agent', text, 'debug-info');
+}
+
 export async function loadSessionChat(sessionId) {
   try {
     // Check cache first
@@ -1226,6 +1238,9 @@ export async function loadSessionChat(sessionId) {
       // Remove any stale load-earlier button
       const oldBtn = document.getElementById(`load-earlier-${sessionId}`);
       if (oldBtn) oldBtn.remove();
+
+      // Debug bubble: show agentId + sessionId for admin users
+      _showDebugBubble(sessionId);
 
       for (const msg of cached.messages) {
         if (msg.role === 'user') {
@@ -1286,6 +1301,9 @@ export async function loadSessionChat(sessionId) {
       app.chatMessages.innerHTML = '';
     }
     app._lastLoadedSessionId = sessionId;
+
+    // Debug bubble: show agentId + sessionId for admin users
+    _showDebugBubble(sessionId);
 
     if (data.restricted) {
       // Not a participant — silently switch to a fresh session

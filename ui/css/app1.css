@@ -313,6 +313,18 @@ body.light-mode .chat-mode-btn:hover {
     color: #f7768e;
     align-self: flex-start;
   }
+.chat-bubble.debug-info {
+    background: #1a1a2e;
+    border: 1px dashed #565f89;
+    color: #565f89;
+    align-self: flex-start;
+    font-size: 11px;
+    padding: 6px 10px;
+    border-bottom-left-radius: 4px;
+  }
+.chat-bubble.debug-info .md-body {
+    font-family: monospace;
+  }
 .chat-bubble .label {
     font-size: 11px;
     font-weight: 600;
