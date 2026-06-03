@@ -804,6 +804,24 @@ class ServerManagerApp(App):
         if fn is not None:
             fn()
 
+    def on_paste(self, event: Paste) -> None:
+        """Paste OS clipboard text into side-panel Input widgets (API keys, tokens,
+        URLs, etc.) — Textual's built-in paste uses its internal clipboard, which is
+        often empty on Windows terminals, so config fields need the real system clipboard."""
+        # PromptInput extends TextArea and handles its own paste (with image support).
+        if isinstance(event.widget, TextArea):
+            return
+        text = read_clipboard()
+        if not text:
+            return
+        # Only handle paste for standard Input widgets (side panel fields etc.).
+        # Let other pasteable widgets use their own handlers.
+        if not isinstance(event.widget, Input):
+            return
+        event.prevent_default()
+        event.stop()
+        event.widget.insert_text_at_cursor(text)
+
     @on(Click, ".act-btn")
     def _on_act_click(self, event: Click) -> None:
         action = getattr(event.widget, "_btn_action", None)
@@ -1133,10 +1151,11 @@ class ServerManagerApp(App):
             a_opts = [(a.get("name", "(agent)"), a.get("id", "")) for a in self._connect_agents]
             a_ids = [v for _, v in a_opts]
             cur_a = self._connect_agent.get("id") if self._connect_agent else None
-            out.append(Select(a_opts,
-                              value=cur_a if cur_a in a_ids else Select.BLANK,
-                              prompt="Select an agent…",
-                              id="connect-agent-select", classes="connect-select"))
+            # NOTE: never pass value=Select.BLANK — Textual rejects it. Omit the value
+            # entirely for "no selection" (the prompt shows instead).
+            a_kw = {"value": cur_a} if cur_a in a_ids else {}
+            out.append(Select(a_opts, prompt="Select an agent…",
+                              id="connect-agent-select", classes="connect-select", **a_kw))
         # Session dropdown — only once an agent is chosen.
         if self._connect_agent is not None:
             out.append(Static(Text(f"Session · {self._connect_agent.get('name', '')}",
@@ -1147,10 +1166,9 @@ class ServerManagerApp(App):
                 s_opts.append((stitle, s.get("id", "")))
             s_ids = [v for _, v in s_opts]
             cur_s = t.get("session_id") if t else None
-            out.append(Select(s_opts,
-                              value=cur_s if (cur_s and cur_s in s_ids) else Select.BLANK,
-                              prompt="Select a session…",
-                              id="connect-session-select", classes="connect-select"))
+            s_kw = {"value": cur_s} if (cur_s and cur_s in s_ids) else {}
+            out.append(Select(s_opts, prompt="Select a session…",
+                              id="connect-session-select", classes="connect-select", **s_kw))
         out.append(self._panel_btn("[Refresh]", "connect_refresh"))
         return out
 
@@ -1336,6 +1354,9 @@ class ServerManagerApp(App):
         except WebAppError as e:
             self._connect_agents = []
             self._log(f"[{self.cc['tool']}]{G.WARN} {e}[/]")
+        except Exception as e:   # never let a load error crash the app
+            self._connect_agents = []
+            self._log(f"[{self.cc['tool']}]{G.WARN} couldn't list agents: {e}[/]")
         self._rebuild_panel()
 
     async def _load_connect_sessions(self) -> None:
@@ -1345,6 +1366,9 @@ class ServerManagerApp(App):
         except WebAppError as e:
             self._connect_sessions = []
             self._log(f"[{self.cc['tool']}]{G.WARN} {e}[/]")
+        except Exception as e:
+            self._connect_sessions = []
+            self._log(f"[{self.cc['tool']}]{G.WARN} couldn't list sessions: {e}[/]")
         self._rebuild_panel()
 
     def action_connect_refresh(self) -> None:
@@ -1437,9 +1461,15 @@ class ServerManagerApp(App):
         except WebAppError as e:
             self._cfg_settings = {}
             self._log(f"[{self.cc['tool']}]{G.WARN} settings: {e}[/]")
+        except Exception as e:
+            self._cfg_settings = {}
+            self._log(f"[{self.cc['tool']}]{G.WARN} settings: {e}[/]")
         try:
             self._cfg_provider = await self._webapp.get_provider()
         except WebAppError as e:
+            self._cfg_provider = {}
+            self._log(f"[{self.cc['tool']}]{G.WARN} provider: {e}[/]")
+        except Exception as e:
             self._cfg_provider = {}
             self._log(f"[{self.cc['tool']}]{G.WARN} provider: {e}[/]")
         self._rebuild_panel()
@@ -1976,7 +2006,7 @@ class ServerManagerApp(App):
             Checkbox(users_label, id="reset-users", value=st.get("users", False)),
             Checkbox(env_label, id="reset-env", value=st.get("env", False)),
             Checkbox(agents_label, id="reset-agents", value=st.get("agents", False)),
-            Static(Text("", id="reset-note", style=c["tool"]), classes="panel-sub"),
+            Static(Text("", style=c["tool"]), id="reset-note", classes="panel-sub"),
             Horizontal(
                 self._panel_btn("[Reset now]", "reset_do"),
                 self._panel_btn("[Cancel]", "confirm_no"),

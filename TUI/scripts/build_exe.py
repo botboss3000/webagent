@@ -1,8 +1,8 @@
-"""Build a single-file ``webagent-tui`` executable via PyInstaller.
+"""Build a single-file ``webagent`` executable via PyInstaller.
 
-    cd webagent_tui
+    cd webagent
     uv run --extra build python scripts/build_exe.py
-    # → webagent-tui(.exe) at the webagent_tui/ root
+    # → webagent(.exe) at the webagent/ root
 
 The TUI's own data (external DB + config) lives in the per-user data dir (see
 config.py), NOT next to the exe, so the binary stays a pure, relocatable
@@ -18,9 +18,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent       # webagent_tui/
-PKG = ROOT / "webagent_tui"
-NAME = "webagent-tui"
+ROOT = Path(__file__).resolve().parent.parent       # webagent/
+PKG = ROOT / "webagent"
+NAME = "webagent"
 BUILD_STAMP = PKG / "_build.py"                      # generated; bundled then removed
 
 
@@ -64,12 +64,12 @@ def main() -> int:
 
     # Textual ships a CSS file we must bundle; '.tcss' next to the package.
     sep = ";" if os.name == "nt" else ":"
-    add_data = f"{PKG / 'styles.tcss'}{sep}webagent_tui"
+    add_data = f"{PKG / 'styles.tcss'}{sep}webagent"
     # The manager's human-readable config (system prompt, tool list, monitor
     # defaults) lives under manager/ and is loaded at runtime (resources.py), so
     # the whole folder must ride along in the frozen bundle, landing at
-    # webagent_tui/manager/ where Path(__file__).parent/'manager' resolves it.
-    manager_data = f"{PKG / 'manager'}{sep}webagent_tui/manager"
+    # webagent/manager/ where Path(__file__).parent/'manager' resolves it.
+    manager_data = f"{PKG / 'manager'}{sep}webagent/manager"
 
     cmd = [
         sys.executable, "-m", "PyInstaller",

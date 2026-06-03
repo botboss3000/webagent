@@ -972,6 +972,19 @@ async def stream_agent_events(
             _STREAM_PERSIST_INTERVAL = float(os.environ.get("AGENT_STREAM_PERSIST_INTERVAL", "0.6"))
         except (ValueError, TypeError):
             _STREAM_PERSIST_INTERVAL = 0.6
+        # Global override from app-settings.json (supersedes env vars, subsumed by per-agent).
+        # Pre-initialise all three so they're DEFINED as local variables regardless
+        # of which path the try/except takes (avoids "cannot access local variable"
+        # on Python 3.14+ whose scoping analysis is stricter here).
+        _gs_max_wall = _gs_max_tool = _gs_max_identical = None
+        try:
+            from app.admin.settings import _load_app_settings as _get_gs
+            _gs = _get_gs()
+            _gs_max_wall = _gs.get("max_wall_seconds") or 0
+            _gs_max_tool = _gs.get("max_tool_calls") or 0
+            _gs_max_identical = _gs.get("max_identical_tool_calls") or 0
+        except Exception:
+            pass
         # Per-agent identical-tool-calls limit (0 = disabled/infinite).
         # Falls back to global app-settings > AGENT_MAX_IDENTICAL_TOOL_CALLS env var, then 0 (off).
         _raw_identical = _agent_rec.get("max_identical_tool_calls", 0) if _agent_rec else 0
@@ -994,15 +1007,6 @@ async def stream_agent_events(
                 _MAX_STALL_STRIKES = int(os.environ.get("AGENT_MAX_STALL_STRIKES", "0"))
             except (ValueError, TypeError):
                 _MAX_STALL_STRIKES = 0
-        # Global override from app-settings.json (supersedes env vars, subsumed by per-agent).
-        try:
-            from app.admin.settings import _load_app_settings as _get_gs
-            _gs = _get_gs()
-            _gs_max_wall = _gs.get("max_wall_seconds") or 0
-            _gs_max_tool = _gs.get("max_tool_calls") or 0
-            _gs_max_identical = _gs.get("max_identical_tool_calls") or 0
-        except Exception:
-            _gs_max_wall = _gs_max_tool = _gs_max_identical = None
 
         try:
             _MAX_WALL_SECONDS = float(os.environ.get("AGENT_MAX_WALL_SECONDS", str(DEFAULT_MAX_WALL_SECONDS)))

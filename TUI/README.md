@@ -8,6 +8,13 @@ Its agent talks **directly to the LLM API** (never through the webAgent server),
 so it can inspect, edit, and source-control a webAgent checkout **even when the
 server is down**.
 
+> **mk2 — event-driven build.** This copy (under `webagent/TUI`) upgrades the agent
+> loop from strictly synchronous to **event-driven**: the agent can delegate work to
+> background **subagents**, accept **steering** while it's mid-turn, **auto-continue**
+> when delegated results arrive, and react to **watchdog alerts** as events. When run
+> from source it keeps its data **in this project folder** (see **External database**),
+> so the install is self-contained. See **Subagents & the event-driven loop** below.
+
 ### Modes
 
 The manager runs even with **no checkout linked** — it's an onboarding guide
@@ -74,22 +81,40 @@ errors, docs, solutions, and current information.
 
 ## External database
 
-The server manager keeps its **own** SQLite store (conversation history + a full audit
-trail of every mutating action) in the per-user data dir — **separate from the
-web app's `app/db/local.db`** — so resetting the web app never wipes the
-server manager's memory:
+The server manager keeps its **own** SQLite store (conversation history + a full
+audit trail of every mutating action) — **separate from the web app's
+`app/db/local.db`**, so resetting the web app never wipes the manager's memory.
 
-| OS | Location |
-|----|----------|
-| Windows | `%APPDATA%\webagent-tui\webagent_tui.db` |
-| macOS | `~/Library/Application Support/webagent-tui/webagent_tui.db` |
-| Linux | `$XDG_DATA_HOME/webagent-tui/webagent_tui.db` (or `~/.local/share/...`) |
+When you **run from source**, it lives **right here in the project folder** (this
+`TUI` directory), so the whole install is self-contained — `webagent.db`,
+`config.json`, the watchdog's `monitor.json` / `alarms.json`, and per-subagent
+session transcripts all sit next to the code, and these runtime files are
+`.gitignore`d:
 
-Override with `WEBAGENT_TUI_DB=/path/to.db`.
+```
+TUI/
+├── webagent/            ← the package (source)
+├── webagent.db          ← sessions + audit trail   (gitignored)
+├── config.json          ← settings                 (gitignored)
+├── monitor.json         ← watchdog config          (gitignored)
+├── alarms.json          ← watchdog alarms          (gitignored)
+└── attachments/         ← pasted images            (gitignored)
+```
+
+Each delegated **subagent runs in its own session** inside `webagent.db`, so you
+can open it from the session list (`/resume`) and watch its progress.
+
+A packaged **`.exe`** has no stable source folder, so it falls back to the per-user
+app-data dir instead (`%APPDATA%\webagent` on Windows,
+`~/Library/Application Support/webagent` on macOS, `$XDG_DATA_HOME/webagent` or
+`~/.local/share/webagent` on Linux).
+
+Override the location with `WEBAGENT_DATA_DIR=/path/to/dir` (or point just the DB
+elsewhere with `WEBAGENT_DB=/path/to.db`).
 
 ## Monitoring & alarms (autonomous watchdog)
 
-Alongside the chat, a background **watchdog** ([`webagent_tui/watchdog.py`](webagent_tui/watchdog.py))
+Alongside the chat, a background **watchdog** ([`webagent/watchdog.py`](webagent/watchdog.py))
 runs on a fixed interval (managed mode, when enabled). Each tick it:
 
 1. probes the server's health (`/health`) + PID-alive,
@@ -113,7 +138,7 @@ runs on a fixed interval (managed mode, when enabled). Each tick it:
   instance the manager didn't start, and a **zombie** holding port 8080 without
   serving `/health` (which blocks a clean restart — the orphaned-LISTENER case
   `run.py` fights). Built dependency-free in
-  [`webagent_tui/sysmetrics.py`](webagent_tui/sysmetrics.py).
+  [`webagent/sysmetrics.py`](webagent/sysmetrics.py).
 
 **Resource health** (`sysmetrics.py`, no `psutil`): host **disk** (`shutil`),
 **memory** (Windows `GlobalMemoryStatusEx` / Linux `/proc/meminfo`), **CPU** (a
@@ -134,7 +159,7 @@ as `n/a`.
 
 **Notifications** go to the channels in `monitor.json` (`channels`). v1 ships the
 **`desktop`** channel — a native OS toast (Windows tray balloon, macOS
-`osascript`, Linux `notify-send`) via [`webagent_tui/notify.py`](webagent_tui/notify.py),
+`osascript`, Linux `notify-send`) via [`webagent/notify.py`](webagent/notify.py),
 which always **also** echoes the alert into the chat transcript. The notifier is
 channel-based so Telegram / email / an in-webapp banner can be added later.
 
@@ -149,19 +174,56 @@ The live files are per-machine and **gitignored**: `monitor.json` (config, seede
 from the shipped defaults) and `alarms.json` (the watch list), both in the data
 dir. The watchdog re-reads them every tick, so edits apply with no restart.
 
+## Subagents & the event-driven loop (mk2)
+
+The agent loop ([`webagent/agent.py`](webagent/agent.py)) is **event-driven and
+re-entrant**. A turn can be triggered by any of three events:
+
+| Event | Source | What the agent does |
+|-------|--------|---------------------|
+| **User message** | you type | a full turn — think, call tools, respond |
+| **Subagent completed** | a background worker finishes | the result is folded in as a synthetic message; the agent reacts |
+| **Watchdog alert** | the monitor (under `self_heal`) | a crash-loop / error-spike becomes a turn — diagnose + remediate |
+
+**Idle vs busy.** The agent is either idle (ready) or busy (mid-turn). While busy it keeps
+accumulating subagent results in a buffer; at the top of every loop iteration it drains the
+buffer and any **steering** message, so background work and mid-turn steers fold into the
+same conversation. If a result lands while the model is answering, the loop **auto-continues**
+instead of ending, so nothing is stranded.
+
+**Delegation tools** (the agent's interface to subagents):
+
+| Tool | Behaviour |
+|------|-----------|
+| `delegate_async(task, tools, mode, group_id)` | launch a subagent and keep working; returns a task id. `mode="notify"` delivers its result on its own; `mode="gather"` + a shared `group_id` delivers a whole group **once all members finish** |
+| `delegate_background(task, tools)` | fire-and-forget; result is stored but never auto-triggers a turn — pull it with `check_task` |
+| `check_task(task_id)` | running / completed / error + summary |
+
+**Caller-scoped tools.** A subagent only ever gets the exact tool names passed in `tools`
+(no inherited default) and cannot spawn its own subagents — so a fan-out worker can be made
+read-only or granted write/run access deliberately, per call.
+
+The mechanics live in [`webagent/subagents.py`](webagent/subagents.py) (a Textual-free,
+unit-tested registry + result buffer + delivery logic) and
+[`webagent/tools/delegate.py`](webagent/tools/delegate.py) (the three tools). The
+Textual app ([`webagent/app.py`](webagent/app.py)) hosts the workers: `_spawn_subagent`
+creates the sub-session and launches a worker; `_run_subagent` runs it and reports back; steering
+is queued on submit while busy; `_after_turn_settle` handles auto-continue. Tests live in
+[`tests/`](tests/) (`test_subagents.py`, `test_delegate.py`, `test_event_loop.py`).
+
 ## Configuration files (human-readable)
 
 The agent's **prose and settings** live in files, not Python, so its behaviour can
 be read and changed without editing code or rebuilding the `.exe`. See
-[`webagent_tui/manager/README.md`](webagent_tui/manager/README.md):
+[`webagent/manager/README.md`](webagent/manager/README.md):
 
 | File | Holds |
 |------|-------|
-| `webagent_tui/manager/prompt.md` | The system prompt (loaded at startup; restart to apply). |
-| `webagent_tui/manager/tools.json` | Each tool's description + `enabled` + category (the code only binds names → handlers + schemas). |
-| `webagent_tui/manager/monitor.defaults.json` | Shipped watchdog defaults; seeds the live `monitor.json`. |
+| `webagent/manager/prompt.md` | The system prompt (loaded at startup; restart to apply). |
+| `webagent/manager/tools.json` | Each tool's description + `enabled` + category (the code only binds names → handlers + schemas). |
+| `webagent/manager/monitor.defaults.json` | Shipped watchdog defaults; seeds the live `monitor.json`. |
 
-Loaded by [`webagent_tui/resources.py`](webagent_tui/resources.py) with a
+Loaded by [`webagent/resources.py`](webagent/resources.py) with a
 **user-override → packaged-default → built-in-fallback** order, and bundled into
 the frozen build by `scripts/build_exe.py`.
 
@@ -174,20 +236,20 @@ it always reflects the latest code, no `.exe` rebuild needed).
 **By hand** (needs Python 3.11 or 3.12):
 
 ```bash
-cd webagent_tui
+cd webagent
 pip install -e .
-WEBAGENT_TUI_PROJECT=/path/to/webagent python -m webagent_tui
+WEBAGENT_PROJECT=/path/to/webagent python -m webagent
 ```
 
 Already have the `.venv` from a previous run? Just launch with it directly —
-`.venv\Scripts\python.exe -m webagent_tui` (Windows) or
-`.venv/bin/python -m webagent_tui` (macOS/Linux) — no reinstall needed.
+`.venv\Scripts\python.exe -m webagent` (Windows) or
+`.venv/bin/python -m webagent` (macOS/Linux) — no reinstall needed.
 
 - **Target project** — the webAgent checkout to operate on. Auto-detected from
   the working directory if it contains `run.py` + `app/`; otherwise set
-  `WEBAGENT_TUI_PROJECT`.
+  `WEBAGENT_PROJECT`.
 - **LLM provider** — resolved (highest priority first) from an explicit
-  `WEBAGENT_TUI_*` override → the **linked repo's `provider.json`** (the same
+  `WEBAGENT_*` override → the **linked repo's `provider.json`** (the same
   credential store the webAgent server itself uses; `admin_default` profile
   preferred) → generic/legacy `LLM_*` / `OPENROUTER_*` env / the project's `.env`
   (the **app key**, used during onboarding) → saved config → built-in defaults.
@@ -204,7 +266,7 @@ Install the manager straight into Termux — no proot, no full server — with a
 single paste:
 
 ```bash
-cd ~ && pkg install -y git && git clone --depth 1 https://github.com/botboss3000/webagent ~/webagent && bash ~/webagent/webagent_tui/install-termux.sh
+cd ~ && pkg install -y git && git clone --depth 1 https://github.com/botboss3000/webagent ~/webagent && bash ~/webagent/webagent/install-termux.sh
 ```
 
 …or via the short URL the webAgent server hosts (it serves `/termux` → this same
@@ -254,12 +316,12 @@ Remove the four things the installer created:
 
 ```bash
 rm -f "$PREFIX/bin/webagent" "$HOME/.shortcuts/webagent.sh"   # launcher + home-screen shortcut
-pip uninstall -y webagent-tui 2>/dev/null                      # the package (if pip-installed)
+pip uninstall -y webagent 2>/dev/null                      # the package (if pip-installed)
 rm -rf ~/webagent                                              # the cloned repo + its venv
-rm -rf ~/.local/share/webagent-tui                             # the manager's data (history, config, cached guide)
+rm -rf ~/.local/share/webagent                             # the manager's data (history, config, cached guide)
 ```
 
-The data folder honours `XDG_DATA_HOME` / `WEBAGENT_TUI_DB` overrides; `textual`,
+The data folder honours `XDG_DATA_HOME` / `WEBAGENT_DB` overrides; `textual`,
 `httpx`, and `websockets` are left in place since other tools may use them. The agent can also do this
 for you on request — the uninstall steps live in its onboarding guide too.
 
@@ -277,13 +339,13 @@ for you on request — the uninstall steps live in its onboarding guide too.
 ## Build the single executable
 
 ```bash
-cd webagent_tui
+cd webagent
 pip install -e ".[build]"
-python scripts/build_exe.py      # → ./webagent-tui  (or webagent-tui.exe)
+python scripts/build_exe.py      # → ./webagent  (or webagent.exe)
 ```
 
 The build **stamps the source commit + timestamp** into the bundle (a generated,
-gitignored `webagent_tui/_build.py`, removed from the tree right after) so a
+gitignored `webagent/_build.py`, removed from the tree right after) so a
 frozen exe can tell whether it's behind upstream — the input to self-update.
 
 ## Updating itself
@@ -297,9 +359,9 @@ which via `self_status`):
 | Running as… | `self_update` does | Applied by `self_restart` |
 |-------------|--------------------|----------------------------|
 | **source** (`run.bat` / `python -m`) | backs up the manager's source (timestamped), then `git pull --ff-only` the repo it lives in | relaunches so Python loads the new code |
-| **frozen `.exe`** | fetches fresh source, rebuilds the exe with PyInstaller, **backs up the current exe** (`webagent-tui.<timestamp>.bak.exe`), and stages the new one beside it | a detached helper waits for exit, swaps the new exe in, and relaunches |
+| **frozen `.exe`** | fetches fresh source, rebuilds the exe with PyInstaller, **backs up the current exe** (`webagent.<timestamp>.bak.exe`), and stages the new one beside it | a detached helper waits for exit, swaps the new exe in, and relaunches |
 
-- **Backups.** Source backups go to `…/webagent-tui/self-backups/source-<timestamp>/`
+- **Backups.** Source backups go to `…/webagent/self-backups/source-<timestamp>/`
   in the data dir; the exe backup is written next to the running exe (timestamped),
   falling back to the data dir if that folder isn't writable.
 - **Safety.** Gated behind *Allow writes* like any mutation, fully audited, and
@@ -309,7 +371,7 @@ which via `self_status`):
 - **Restart ends the session.** `self_restart` closes the manager so the swap /
   reload can finish, then relaunches it in a new window. A source `git pull` updates
   the **whole repository**, so a managed checkout living in the same repo is updated
-  too. Work (clone + build venv) is cached under `…/webagent-tui/self-update/`.
+  too. Work (clone + build venv) is cached under `…/webagent/self-update/`.
 
 ## Header toolbar + side panels (clickable)
 
@@ -388,7 +450,7 @@ supervisor) is never touched.
 Pick your **Provider** (it sets the matching **Base URL** and a default **Model**),
 paste your **AI key**, and press **`[Save]`** (or Enter in the key field). **`[Clear]`**
 forgets it. A key saved here is an **explicit override that wins over the linked repo's
-`provider.json` / `.env`** (only a `WEBAGENT_TUI_*` env var outranks it), so you can fix
+`provider.json` / `.env`** (only a `WEBAGENT_*` env var outranks it), so you can fix
 a bad or mismatched key straight from the manager. Everything persists to the manager's
 config.
 
@@ -495,4 +557,4 @@ self-contained). The active theme persists to config. Force emoji on/off with
   prompt** (ask-and-seed a key when a context has none), general-coding in any
   folder, live **progress streaming** for long installs (incl. the self-update
   rebuild), and opt-in autonomous self-repair. See
-  `temp/webagent-tui-onboarding-design.md` for the full design.
+  `temp/webagent-onboarding-design.md` for the full design.

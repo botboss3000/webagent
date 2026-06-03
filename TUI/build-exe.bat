@@ -3,9 +3,9 @@ title webAgent Server Manager - Build .exe
 cd /d "%~dp0"
 setlocal enabledelayedexpansion
 
-:: One-click: build the portable webagent-tui.exe (the Server Manager TUI) from
-:: source. Output: webagent-tui.exe in THIS folder (webagent_tui\).
-:: A RUNNING webagent-tui.exe locks the output file, so close any open one first.
+:: One-click: build the portable webagent.exe (the Server Manager TUI) from
+:: source. Output: webagent.exe in THIS folder (webagent\).
+:: A RUNNING webagent.exe locks the output file, so close any open one first.
 
 :: -- Ensure uv is installed (Astral's Python + venv manager) --
 where uv >nul 2>&1
@@ -31,17 +31,17 @@ if !ERRORLEVEL! neq 0 (
 )
 
 :: -- Build the single-file exe --
-echo [build] building webagent-tui.exe ^(this can take a few minutes^)...
+echo [build] building webagent.exe ^(this can take a few minutes^)...
 uv run python scripts/build_exe.py
 set "EXITCODE=!ERRORLEVEL!"
 
 echo.
 if "!EXITCODE!"=="0" (
     echo [build] Done. The Server Manager exe is here:
-    echo         "%~dp0webagent-tui.exe"
+    echo         "%~dp0webagent.exe"
 ) else (
     echo [build] Build FAILED with code !EXITCODE!. See the messages above.
-    echo [build] Tip: if it says the exe is in use, close any running webagent-tui window and retry.
+    echo [build] Tip: if it says the exe is in use, close any running webagent window and retry.
 )
 echo.
 pause
