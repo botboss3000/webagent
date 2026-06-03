@@ -2,6 +2,8 @@
 
 **WARNING: The files in this directory grant the webAgent broad filesystem read/write/delete capabilities and shell command execution. These are debug/development tools, NOT normal user-facing features.**
 
+**Removable by design.** This whole directory is optional. Boot no longer hard-depends on it — `app/main.py` imports the startup provider-config applier from `app/provider_boot.py` (not from here), and every admin router is imported + registered behind an `ImportError` guard. Delete `app/admin/` and the app still starts cleanly; the admin tools and `/admin/*` endpoints simply disappear.
+
 ## What's here
 
 | File | Purpose |

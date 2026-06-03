@@ -116,11 +116,11 @@ The app runs on a **Google Cloud Compute Engine VM** (project `webagent-495517`,
 
 **Status dots in the chat header:** green = WS subscribed (`agentWs.js` got the `subscribed` event); yellow = WS opening or no subscribe reply yet; red = WS closed or `currentUserId` missing. Yellow that never goes green almost always means a JS exception during init prevented `currentUserId` from being set, or the WS handshake never completed — check the browser console first.
 
-## Runtime state files — gitignored (one deliberate exception: `app/db/local.db`)
+## Runtime state files — gitignored
 
 Any file the **running app writes to** is per-machine runtime data and, as a rule, must never be tracked by git. Tracking such files causes `error: Your local changes to the following files would be overwritten by merge` on `git pull` on the production VM, blocking deploys.
 
-**The one deliberate exception — `app/db/local.db` is intentionally TRACKED and shared.** The local SQLite DB carries the seeded context/agents (including the diagnostics schema) we want shipped with the repo, so it lives in git on purpose. This was an explicit, owner-approved decision — **do not generalize from it** to other runtime files. Its **transient sidecars** (`-journal`, `-wal`, `-shm`, `.preprompt-bak`) and the **stray root `local.db`** stay gitignored: never commit a live write-ahead log or shared-memory file. Because the base DB is tracked, the production VM must **not** keep a diverging working copy — see the deploy note under **Production deployment** (clear/reset the VM's runtime DB so `git pull` fast-forwards onto the committed copy).
+**`app/db/local.db` is gitignored** — it was previously tracked, but is now treated as a per-machine runtime artifact (the `.gitignore` says so explicitly). On a fresh checkout the app recreates it on first run via the migration/seed logic, pulling agent templates from `data/agents/`. Its **transient sidecars** (`-journal`, `-wal`, `-shm`, `.preprompt-bak`) and any **stray root `local.db`** are gitignored too: never commit a live write-ahead log or shared-memory file.
 
 **Rule (every other runtime file):** before introducing a new file the backend writes during normal operation (auth blobs, caches, per-machine config, runtime backups, user-generated artifacts), add it to `.gitignore` in the same commit. If you discover one already tracked, untrack it: `git rm --cached <path>` + add to `.gitignore` + commit.
 
@@ -128,19 +128,20 @@ Any file the **running app writes to** is per-machine runtime data and, as a rul
 
 | Path | What it is |
 |------|-----------|
-| `app/db/local.db` **sidecars** (`-journal`, `-wal`, `-shm`, `.preprompt-bak`) | Transient SQLite write logs — ignored. The base `app/db/local.db` itself is **tracked** (see exception above). |
+| `app/db/local.db` (+ sidecars `-journal`, `-wal`, `-shm`, `.preprompt-bak`) | Runtime SQLite DB + transient write logs — all gitignored; recreated on first run via the seed/migration logic. |
 | `local.db` (root) | Stray runtime SQLite |
 | `app/auth/users.json` (+ `.bak`) | Password hashes, remember tokens |
 | `app/db_mode.json` | Per-machine DB target switch |
 | `app/db/.fuse_hidden*`, `**/.fuse_hidden*` | FUSE/SSHFS temp leftovers |
 | `visuals/users/` | Per-user generated pages and artifacts |
-| `provider.json` | LLM + GitHub tokens (already gitignored, shared cred store) |
-| `scheduler_config.json` | Scheduler runtime state |
+| `data/config/provider.json` | LLM + GitHub tokens (gitignored, shared cred store) |
+| `data/config/scheduler_config.json` | Scheduler runtime state |
+| `data/config/remote_access.json` (+ `.bak`, `_pointers.json`) | Remote-access tunnel config (per-machine) |
 | `.env` | Local env vars |
 
 **Checklist when adding a new backend write target:**
 
-1. Is the file written by the app at runtime (not committed by a human)? → must be gitignored. (The `app/db/local.db` exception was a one-off explicit call; new files do not inherit it.)
+1. Is the file written by the app at runtime (not committed by a human)? → must be gitignored.
 2. Does it contain secrets, hashes, tokens, or per-user state? → must be gitignored.
 3. Does the test fixture or seed flow need a default? → ship a `*.example` or `*.template` variant that IS tracked, and have the app copy/derive from it on first boot.
 
