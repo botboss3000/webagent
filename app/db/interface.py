@@ -429,7 +429,7 @@ class StorageBackend(ABC):
     @abstractmethod
     async def seed_agent_templates(self, force: bool = False) -> dict:
         """
-        Re-seed agent_templates + agent_prompt_templates from app/context/agents/*.json.
+        Re-seed agent_templates + agent_prompt_templates from data/agents/*.json.
 
         Behavior:
           - Computes a manifest hash over the JSON files.
@@ -579,6 +579,28 @@ class StorageBackend(ABC):
     async def clear_diagnostics(self, **kwargs):
         """Purge diagnostic rows by scope (or all). Default: no-op."""
         return 0
+
+    # ── Client render recorder (default no-ops → recordings dropped on this backend) ──
+
+    async def insert_render_recordings_batch(self, rows):
+        """Persist client render-recorder rows. Default: no-op."""
+        return 0
+
+    async def query_render_recordings(self, **kwargs):
+        """Query durable render-recorder rows. Default: empty."""
+        return []
+
+    async def prune_render_recordings(self, **kwargs):
+        """Trim the render_recordings table. Default: no-op."""
+        return 0
+
+    async def clear_render_recordings(self, **kwargs):
+        """Purge render-recorder rows by scope (or all). Default: no-op."""
+        return 0
+
+    async def render_recordings_stats(self):
+        """Row/byte stats for the recorder table. Default: zeros."""
+        return {"rows": 0, "html_bytes": 0, "by_kind": {}}
 
     async def run_state_list_active_all(self):
         """Every session with a 'running' turn (all users). Default: empty list."""

@@ -2522,6 +2522,13 @@ input.fg-token-input-inline {
   cursor: pointer;
 }
 
+.diag-recorder-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg-4);
+}
+
 #diag-container { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 #diag-toolbar {
   display: flex;

@@ -16,7 +16,19 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-import numpy as np
+# numpy is a heavy import (~0.8s and hundreds of files to scan on a cold
+# disk) but is ONLY needed for local vector search. Load it lazily on first
+# use so it never slows down server startup / the agents page load.
+np = None
+
+
+def _ensure_np():
+    """Import numpy on first vector-search use, caching it as the module global."""
+    global np
+    if np is None:
+        import numpy as _numpy
+        np = _numpy
+    return np
 
 from app.models.schemas import InteractionRecord
 from app.db.interface import StorageBackend
@@ -178,6 +190,44 @@ CREATE INDEX IF NOT EXISTS idx_diagnostics_level ON diagnostics(level);
 CREATE INDEX IF NOT EXISTS idx_diagnostics_category ON diagnostics(category);
 CREATE INDEX IF NOT EXISTS idx_diagnostics_session ON diagnostics(session_id);
 
+-- Client render recorder (see app/agent/render_recorder.py + ui/js/recorder.js).
+-- A rolling, auto-pruned record of what the BROWSER actually rendered and felt:
+-- HTML snapshots, DOM-mutation deltas, lag/long-task metrics, JS errors,
+-- console warnings and failed network calls — the client-side blind spot the
+-- server logs (diagnostics) can never see. Every row carries `session_seq`, the
+-- same monotonic per-session counter stamped on WS events and interactions, so
+-- a render moment joins exactly to the interaction / diagnostics row beside it.
+-- `kind` discriminates the payload; `html` holds a full snapshot today (Level 1)
+-- and is designed to also hold serialized mutation deltas for full replay later
+-- (Level 2). session_id / agent_id are free TEXT (NOT foreign keys) so a record
+-- outlives the row it referenced.
+CREATE TABLE IF NOT EXISTS render_recordings (
+    id TEXT PRIMARY KEY,
+    ts TEXT NOT NULL,                 -- ISO-8601 UTC: browser capture time
+    recv_ts TEXT,                     -- ISO-8601 UTC: server receive time (clock-skew check)
+    kind TEXT NOT NULL,               -- snapshot | mutation | lag | js_error | console | network | nav | meta
+    session_id TEXT,
+    turn_id TEXT,
+    session_seq INTEGER,              -- correlation key → interactions / WS events / diagnostics
+    user_id TEXT,
+    agent_id TEXT,
+    client_id TEXT,                   -- per-tab browser instance id (distinguishes open tabs)
+    seq INTEGER,                      -- per-client monotonic record number (ordering / replay)
+    url TEXT,                         -- page URL / path at capture time
+    level TEXT,                       -- info | warning | error (for js_error / console)
+    label TEXT,                       -- short tag: error message, event name, selector, method+status
+    value_num REAL,                   -- numeric metric: lag ms, render ms, duration ms, byte size
+    detail TEXT,                      -- JSON blob: stack trace, network detail, perf entry
+    html TEXT,                        -- L1: full HTML snapshot; L2: serialized mutation delta(s)
+    html_bytes INTEGER,               -- size of the html payload (quota / stats)
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_render_rec_ts ON render_recordings(ts);
+CREATE INDEX IF NOT EXISTS idx_render_rec_session ON render_recordings(session_id);
+CREATE INDEX IF NOT EXISTS idx_render_rec_kind ON render_recordings(kind);
+CREATE INDEX IF NOT EXISTS idx_render_rec_seq ON render_recordings(session_seq);
+
 CREATE TABLE IF NOT EXISTS session_summaries (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -206,7 +256,7 @@ CREATE TABLE IF NOT EXISTS agent_templates (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Agent templates seeded from app/context/agents/*.json — no hardcoded defaults
+-- Agent templates seeded from data/agents/*.json — no hardcoded defaults
 
 CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY,
@@ -267,7 +317,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_prompts_user  ON agent_prompts(user_id);
 
 -- ============================================================
 -- Agent Prompt Templates: canonical slot defaults per template.
--- JSON files in app/context/agents/*.json seed this table; admin edits
+-- JSON files in data/agents/*.json seed this table; admin edits
 -- promoted here are protected from re-seed via source='admin'.
 -- When a new agent is created, rows here are cloned into agent_prompts
 -- under the new agent's id (with template_version stamped on each row).
@@ -2152,7 +2202,7 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Added sessions.read_at column")
 
-            # ── Seed: agent templates from app/context/agents/*.json (full schema) ──
+            # ── Seed: agent templates from data/agents/*.json (full schema) ──
             if getattr(self, "_seed_on_init", True):
                 self._seed_agent_templates_from_json_files(conn)
 
@@ -2511,6 +2561,202 @@ class LocalBackend(StorageBackend):
             finally:
                 conn.close()
 
+    # ── Client render recorder (see app/agent/render_recorder.py) ──────────────
+
+    async def insert_render_recordings_batch(self, rows: List[Dict[str, Any]]) -> int:
+        """Bulk-insert client render-recorder rows. Idempotent on id.
+
+        ``detail`` is expected to already be a JSON string. Returns rows written."""
+        if not rows:
+            return 0
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                values = [(
+                    r.get("id") or _uuid(),
+                    r.get("ts") or _now_iso(),
+                    r.get("recv_ts"),
+                    (r.get("kind") or "meta"),
+                    r.get("session_id"),
+                    r.get("turn_id"),
+                    r.get("session_seq"),
+                    r.get("user_id"),
+                    r.get("agent_id"),
+                    r.get("client_id"),
+                    r.get("seq"),
+                    r.get("url"),
+                    r.get("level"),
+                    r.get("label"),
+                    r.get("value_num"),
+                    r.get("detail"),
+                    r.get("html"),
+                    r.get("html_bytes"),
+                ) for r in rows]
+                conn.executemany(
+                    "INSERT OR IGNORE INTO render_recordings "
+                    "(id, ts, recv_ts, kind, session_id, turn_id, session_seq, user_id, "
+                    " agent_id, client_id, seq, url, level, label, value_num, detail, html, html_bytes) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    values,
+                )
+                conn.commit()
+                return len(values)
+            except Exception as e:
+                logger.error("Error in insert_render_recordings_batch: %s", e)
+                return 0
+            finally:
+                conn.close()
+
+    async def query_render_recordings(
+        self,
+        *,
+        rec_id: Optional[str] = None,
+        kinds: Optional[List[str]] = None,
+        levels: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
+        client_id: Optional[str] = None,
+        session_seq: Optional[int] = None,
+        since: Optional[str] = None,
+        search: Optional[str] = None,
+        include_html: bool = False,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """Query durable render-recorder rows, newest first.
+
+        ``include_html=False`` omits the (potentially large) ``html`` column from
+        the result so list views stay light — fetch a single row by ``rec_id``
+        with ``include_html=True`` on demand instead."""
+        where: List[str] = []
+        params: List[Any] = []
+        if rec_id:
+            where.append("id = ?")
+            params.append(rec_id)
+        if kinds:
+            where.append("kind IN (%s)" % ",".join("?" * len(kinds)))
+            params.extend([str(x).lower() for x in kinds])
+        if levels:
+            where.append("level IN (%s)" % ",".join("?" * len(levels)))
+            params.extend([str(x).lower() for x in levels])
+        if session_id:
+            where.append("session_id = ?")
+            params.append(session_id)
+        if client_id:
+            where.append("client_id = ?")
+            params.append(client_id)
+        if session_seq is not None:
+            where.append("session_seq = ?")
+            params.append(int(session_seq))
+        if since:
+            where.append("ts >= ?")
+            params.append(since)
+        if search:
+            where.append("(label LIKE ? OR detail LIKE ? OR url LIKE ?)")
+            like = f"%{search}%"
+            params.extend([like, like, like])
+        cols = ("id, ts, recv_ts, kind, session_id, turn_id, session_seq, user_id, "
+                "agent_id, client_id, seq, url, level, label, value_num, detail, html_bytes")
+        if include_html:
+            cols += ", html"
+        sql = f"SELECT {cols} FROM render_recordings"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY ts DESC LIMIT ?"
+        params.append(max(1, min(int(limit or 200), 2000)))
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(sql, params).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def prune_render_recordings(
+        self, *, max_rows: int = 8000, max_age_seconds: Optional[float] = None
+    ) -> int:
+        """Delete render recordings older than the age cap and beyond the row cap."""
+        deleted = 0
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                if max_age_seconds:
+                    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)).isoformat()
+                    cur = conn.execute("DELETE FROM render_recordings WHERE ts < ?", (cutoff,))
+                    deleted += cur.rowcount or 0
+                if max_rows and max_rows > 0:
+                    cur = conn.execute(
+                        "DELETE FROM render_recordings WHERE id NOT IN "
+                        "(SELECT id FROM render_recordings ORDER BY ts DESC LIMIT ?)",
+                        (int(max_rows),),
+                    )
+                    deleted += cur.rowcount or 0
+                conn.commit()
+                return deleted
+            except Exception as e:
+                logger.error("Error in prune_render_recordings: %s", e)
+                return deleted
+            finally:
+                conn.close()
+
+    async def clear_render_recordings(
+        self,
+        *,
+        older_than_seconds: Optional[float] = None,
+        kinds: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
+        search: Optional[str] = None,
+    ) -> int:
+        """Delete render-recorder rows matching the scope. No scope → delete all."""
+        where: List[str] = []
+        params: List[Any] = []
+        if older_than_seconds is not None:
+            cutoff = (datetime.now(timezone.utc) - timedelta(seconds=older_than_seconds)).isoformat()
+            where.append("ts < ?")
+            params.append(cutoff)
+        if kinds:
+            where.append("kind IN (%s)" % ",".join("?" * len(kinds)))
+            params.extend([str(x).lower() for x in kinds])
+        if session_id:
+            where.append("session_id = ?")
+            params.append(session_id)
+        if search:
+            where.append("(label LIKE ? OR detail LIKE ? OR url LIKE ?)")
+            like = f"%{search}%"
+            params.extend([like, like, like])
+        sql = "DELETE FROM render_recordings"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(sql, params)
+                conn.commit()
+                return cur.rowcount or 0
+            except Exception as e:
+                logger.error("Error in clear_render_recordings: %s", e)
+                return 0
+            finally:
+                conn.close()
+
+    async def render_recordings_stats(self) -> Dict[str, Any]:
+        """Row count, total bytes and per-kind breakdown for the recorder table."""
+        conn = self._get_conn()
+        try:
+            total, by_kind = 0, {}
+            row = conn.execute(
+                "SELECT COUNT(*) c, COALESCE(SUM(html_bytes),0) b FROM render_recordings"
+            ).fetchone()
+            total = row["c"] if row else 0
+            total_bytes = row["b"] if row else 0
+            for r in conn.execute(
+                "SELECT kind, COUNT(*) c FROM render_recordings GROUP BY kind"
+            ).fetchall():
+                by_kind[r["kind"]] = r["c"]
+            return {"rows": total, "html_bytes": total_bytes, "by_kind": by_kind}
+        except Exception as e:
+            logger.error("Error in render_recordings_stats: %s", e)
+            return {"rows": 0, "html_bytes": 0, "by_kind": {}}
+        finally:
+            conn.close()
+
     async def copy_defaults_to_agent(self, agent_id: str, template_id: Optional[str] = None) -> int:
         """
         Copy admin-base prompt slots from the 'default' template into this agent.
@@ -2575,7 +2821,7 @@ class LocalBackend(StorageBackend):
         """
         Manifest-gated, non-destructive seeder.
 
-        Source of truth = app/context/agents/*.json. Writes:
+        Source of truth = data/agents/*.json. Writes:
           - agent_templates row (config only) — full upsert
           - agent_prompt_templates rows (one per slot) — version-aware:
               * missing row              → INSERT (source='json')
@@ -2583,9 +2829,10 @@ class LocalBackend(StorageBackend):
               * existing source='admin'  → SKIP (admin edits are protected)
               * force=True               → overwrite admin rows too (bumps version)
 
-        Short-circuit: hash app/context/agents/* into a manifest digest. If it
-        matches app_meta['last_agent_manifest_hash'] AND force is False, return
-        immediately with {"changed": 0, "skipped_admin": 0, "cached": True}.
+        Short-circuit: hash data/agents/* into a manifest digest. If it matches
+        app_meta['last_agent_manifest_hash'], force is False, AND the
+        agent_templates table is non-empty, return immediately with
+        {"changed": 0, "skipped_admin": 0, "cached": True}.
 
         Returns summary dict:
             {
@@ -2604,11 +2851,17 @@ class LocalBackend(StorageBackend):
         manifest_hash = compute_agent_manifest_hash()
 
         # Short-circuit: if hash matches what's already applied, nothing to do.
+        # Guard: only trust the hash if the table is actually populated. A stale
+        # hash with an empty table (after a wipe, a fresh/diverged DB, or a
+        # backend switch) would otherwise leave the app with 0 templates forever.
         if not force:
             row = conn.execute(
                 "SELECT value FROM app_meta WHERE key = 'last_agent_manifest_hash'"
             ).fetchone()
-            if row and row["value"] == manifest_hash:
+            existing_count = conn.execute(
+                "SELECT COUNT(*) FROM agent_templates"
+            ).fetchone()[0]
+            if row and row["value"] == manifest_hash and existing_count > 0:
                 return {
                     "changed": 0,
                     "skipped_admin": 0,
@@ -3415,6 +3668,7 @@ class LocalBackend(StorageBackend):
         self, user_id: str, query_text: str, limit: int = 10
     ) -> List[dict]:
         """Search memory pages by embedding cosine similarity."""
+        _ensure_np()
         conn = self._get_conn()
         try:
             rows = conn.execute(
@@ -4009,7 +4263,7 @@ class LocalBackend(StorageBackend):
             if not tpl:
                 logger.warning(
                     "No 'default' agent template found after JSON seeding — "
-                    "check app/context/agents/default.json"
+                    "check data/agents/default.json"
                 )
                 raise ValueError("No default agent template available")
 
@@ -4100,7 +4354,7 @@ class LocalBackend(StorageBackend):
             if row:
                 return dict(row)
             logger.warning(
-                "No 'default' agent template in DB — check app/context/agents/default.json"
+                "No 'default' agent template in DB — check data/agents/default.json"
             )
             # Fallback: minimal dict — JSON is the real source of truth
             return {
@@ -6597,6 +6851,7 @@ class LocalBackend(StorageBackend):
     async def _doc_vector_search(
         self, data_source_id: str, query_text: str, limit: int
     ) -> List[dict]:
+        _ensure_np()
         conn = self._get_conn()
         try:
             rows = conn.execute(

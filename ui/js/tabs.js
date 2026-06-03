@@ -7,6 +7,26 @@ import { startAccount } from './account.js';
 import { startAdminTools, stopAdminTools } from './files.js';
 import { startWeb, stopWeb } from './web.js';
 import { refreshTutorial } from './tutorial.js';
+import { initAppConfig } from './app-config.js';
+import { initDbViewer } from './db/index.js';
+import { initDataManagement } from './data-management.js';
+import { initRemoteAccess } from './remote-access.js';
+
+// ── Lazy Admin Tools init ───────────────────────────────────────────────────
+// The Admin Tools sub-panels (App Config, Database viewer, Data Management,
+// Remote Access) are NOT built at boot anymore — they're wired the first time
+// the user actually opens the Admin Tools tab. This keeps startup light,
+// especially on mobile where only one panel is ever on screen. All four inits
+// are null-safe + idempotent; initFiles() is run by startAdminTools() itself.
+let _adminInited = false;
+function _ensureAdminInit() {
+  if (_adminInited) return;
+  _adminInited = true;
+  try { initDbViewer(); }       catch (e) { console.error('initDbViewer failed', e); }
+  try { initDataManagement(); }  catch (e) { console.error('initDataManagement failed', e); }
+  try { initRemoteAccess(); }    catch (e) { console.error('initRemoteAccess failed', e); }
+  try { initAppConfig(); }       catch (e) { console.error('initAppConfig failed', e); }
+}
 
 function setChatPanelVisible(visible) {
   const chatPanel = document.getElementById('chat-panel');
@@ -94,6 +114,7 @@ export function initTabs() {
       stopAutoAgent();
       stopAgents();
       stopWeb();
+      _ensureAdminInit();   // build the Admin Tools sub-panels on first open
       startAdminTools();
     } else if (tabValue === 'web') {
       stopAutoAgent();

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
+from . import attach
 from .config import ProviderConfig, TuiConfig
 from .db import Store
 from .llm import LLMClient, LLMError
@@ -106,15 +107,40 @@ class ServerManagerAgent:
             elif role == "tool":
                 msgs.append({"role": "tool", "tool_call_id": row["tool_call_id"],
                              "content": row["content"]})
+            elif role == "user" and row.get("content_kind") == "json":
+                # A user message with image attachments — stored as
+                # {"text": …, "images": [{path, mime, name}, …]} and replayed as
+                # an OpenAI-compatible multimodal content list (text + image parts).
+                try:
+                    payload = json.loads(row["content"]) or {}
+                except (json.JSONDecodeError, TypeError):
+                    payload = {}
+                content = attach.to_content_parts(
+                    payload.get("text") or "", payload.get("images") or []
+                )
+                msgs.append({"role": "user", "content": content})
             else:
                 msgs.append({"role": role, "content": row["content"]})
         return msgs
 
     async def run_turn(
-        self, session_id: str, user_text: str, on_event: EventCB, situation: str = ""
+        self, session_id: str, user_text: str, on_event: EventCB, situation: str = "",
+        images: Optional[list[dict[str, Any]]] = None,
     ) -> None:
-        """Process one user message to completion (text answer or turn cap)."""
-        self.store.add_message(session_id, "user", user_text)
+        """Process one user message to completion (text answer or turn cap).
+
+        ``images`` is an optional list of attachment dicts ({path, mime, name});
+        when present the user message is stored in structured form so the images
+        ride along on this turn and every replay of the history afterwards."""
+        if images:
+            payload = json.dumps({
+                "text": user_text,
+                "images": [{"path": i["path"], "mime": i["mime"], "name": i.get("name", "")}
+                           for i in images],
+            })
+            self.store.add_message(session_id, "user", payload, content_kind="json")
+        else:
+            self.store.add_message(session_id, "user", user_text)
         self.store.touch_session(session_id)
 
         # In onboarding mode, fetch the live guide from the repo once per session

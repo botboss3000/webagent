@@ -18,7 +18,7 @@ body
 │   │   │   ├── #user-dropdown     (account avatar + menu; first item, left of tabs)
 │   │   │   │   ├── #top-user-id          (trigger)
 │   │   │   │   └── #user-dropdown-menu   (position:fixed — see note below)
-│   │   │   ├── #admin-tools-group        (#header-refresh-btn + Admin Tools tab)
+│   │   │   ├── #admin-tools-group        (Admin Tools tab)
 │   │   │   └── .main-tab          (Pages / Agent Manager / Web / …)
 │   │   └── #main-tabs-chev-right
 │   └── #status-right              (right side)

@@ -678,3 +678,28 @@ body.light-mode #agents-list-header { border-bottom-color: rgba(180,140,90,0.12)
 	body { padding: 0; gap: 0; }
 	#main-panel { border-radius: 0; }
 	}
+
+/* ── Boot spinner ─────────────────────────────────────────────────
+   The pre-paint script in index.html adds body.is-booting; tabs.js
+   removes it once the tab content is mounted. This draws a small
+   centered spinner so the brief JS-init window isn't a blank screen.
+   Theme-aware (design-system vars), disabled under reduced motion. */
+body.is-booting::after {
+  content: "";
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  border: 3px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: bootSpin 0.8s linear infinite;
+  z-index: 9000;
+  pointer-events: none;
+}
+@keyframes bootSpin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  body.is-booting::after { animation: none; }
+}
