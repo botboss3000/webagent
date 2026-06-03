@@ -32,7 +32,7 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-CONFIG_FILE = PROJECT_ROOT / "scheduler_config.json"
+CONFIG_FILE = PROJECT_ROOT / "data" / "config" / "scheduler_config.json"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "provider": "local",
