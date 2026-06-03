@@ -16,9 +16,11 @@ _DOTENV_PATH = _APP_DIR.parent / ".env"
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=_DOTENV_PATH)
 
-# Apply saved provider config (model, API key) from provider.json
-# so environment vars are set before any imports that need them
-from app.admin.settings import apply_provider_config
+# Apply saved provider config (model, API key) from data/config/provider.json
+# so environment vars are set before any imports that need them. Imported from
+# app.provider_boot (NOT app.admin.settings) so the boot path doesn't hard-depend
+# on the admin package — removing app/admin/ must not break the core LLM.
+from app.provider_boot import apply_provider_config
 apply_provider_config()
 
 import traceback
@@ -49,14 +51,20 @@ from app.api.uploads import router as uploads_router
 from app.api.db_viewer import router as db_viewer_router
 from app.api.diagnostics import router as diagnostics_router
 from app.api.recordings import router as recordings_router
-from app.admin.review import router as admin_router
-from app.admin.db_mode import router as admin_db_router
-from app.admin.storage import router as admin_storage_router
+try:
+    from app.admin.review import router as admin_router
+    from app.admin.db_mode import router as admin_db_router
+    from app.admin.storage import router as admin_storage_router
+except ImportError:
+    admin_router = admin_db_router = admin_storage_router = None
 from app.api.webhooks import router as webhooks_router
 from app.api.webhooks_generic import router as webhooks_generic_router
 from app.api.events import router as events_router
 from app.api.remote_access import router as remote_access_router
-from app.admin.remote_access import router as admin_remote_access_router
+try:
+    from app.admin.remote_access import router as admin_remote_access_router
+except ImportError:
+    admin_remote_access_router = None
 try:
     from app.admin.source import router as admin_source_router
     _HAS_SOURCE_TOOLS = True
@@ -71,14 +79,20 @@ except ImportError:
     _HAS_SETTINGS = False
     admin_settings_router = None
 
-from app.admin.communications import router as admin_communications_router
-from app.admin.webhooks_admin import router as admin_webhooks_router
-from app.admin.events_admin import router as admin_events_router
-from app.admin.scheduler_config import router as scheduler_admin_router
+try:
+    from app.admin.communications import router as admin_communications_router
+    from app.admin.webhooks_admin import router as admin_webhooks_router
+    from app.admin.events_admin import router as admin_events_router
+    from app.admin.scheduler_config import router as scheduler_admin_router
+except ImportError:
+    admin_communications_router = admin_webhooks_router = admin_events_router = scheduler_admin_router = None
 from app.api.agents import router as agents_router, agent_pages_router
 from app.api.data_sources import router as data_sources_router
 from app.api.files import router as files_router
-from app.admin.users import router as admin_users_router
+try:
+    from app.admin.users import router as admin_users_router
+except ImportError:
+    admin_users_router = None
 from app.api.billing import router as billing_router
 
 # ── Auth ──
@@ -91,13 +105,19 @@ from app.api.github import router as github_router
 from app.api.feedback import router as feedback_router
 
 # ── Integrations & OAuth ──
-from app.admin.integrations import router as integrations_router
+try:
+    from app.admin.integrations import router as integrations_router
+except ImportError:
+    integrations_router = None
 from app.api.oauth import router as oauth_router
 
 # ── Optimizer ──
-from app.admin.optimizer import router as optimizer_router
+try:
+    from app.admin.optimizer import router as optimizer_router
+    optimizer_router.prefix = "/api/v1"
+except ImportError:
+    optimizer_router = None
 from app.api.pages import router as pages_router
-optimizer_router.prefix="/api/v1"
 
 # Configure logging
 logging.basicConfig(
@@ -277,28 +297,25 @@ app.include_router(uploads_router)
 app.include_router(db_viewer_router)
 app.include_router(diagnostics_router)
 app.include_router(recordings_router)
-app.include_router(admin_router)
-app.include_router(admin_db_router)
-app.include_router(admin_storage_router)
+for _admin_r in (admin_router, admin_db_router, admin_storage_router):
+    if _admin_r is not None:
+        app.include_router(_admin_r)
 if _HAS_SOURCE_TOOLS and admin_source_router is not None:
     app.include_router(admin_source_router)
 
 if _HAS_SETTINGS and admin_settings_router is not None:
     app.include_router(admin_settings_router)
 
-# Register communications admin router
-app.include_router(admin_communications_router)
-
-# Register generic webhook admin router
-app.include_router(admin_webhooks_router)
-# Register event-trigger admin router
-app.include_router(admin_events_router)
-app.include_router(scheduler_admin_router)
+# Register communications / webhook / event / scheduler admin routers (skipped if app/admin/ removed)
+for _admin_r in (admin_communications_router, admin_webhooks_router, admin_events_router, scheduler_admin_router):
+    if _admin_r is not None:
+        app.include_router(_admin_r)
 app.include_router(agents_router)
 app.include_router(agent_pages_router)
 app.include_router(data_sources_router)
 app.include_router(files_router)
-app.include_router(admin_users_router)
+if admin_users_router is not None:
+    app.include_router(admin_users_router)
 app.include_router(billing_router)
 app.include_router(feedback_router)
 
@@ -316,17 +333,20 @@ app.include_router(events_router)
 
 # Register Remote Access (signpost endpoints + admin config API)
 app.include_router(remote_access_router)
-app.include_router(admin_remote_access_router)
+if admin_remote_access_router is not None:
+    app.include_router(admin_remote_access_router)
 
 # Register integrations & OAuth routers
-app.include_router(integrations_router)
+if integrations_router is not None:
+    app.include_router(integrations_router)
 app.include_router(oauth_router)
 
 # Register GitHub router
 app.include_router(github_router)
 
 # Register optimizer admin router
-app.include_router(optimizer_router)
+if optimizer_router is not None:
+    app.include_router(optimizer_router)
 
 # Register AutoAgent pages router
 app.include_router(pages_router)
