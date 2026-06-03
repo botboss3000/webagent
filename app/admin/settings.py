@@ -30,8 +30,8 @@ router = APIRouter(prefix="/admin/settings", tags=["admin"])
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 METADATA_FLAG = PROJECT_ROOT / ".metadata-enabled"
-PROVIDER_FILE = PROJECT_ROOT / "provider.json"
-APP_SETTINGS_FILE = PROJECT_ROOT / "app-settings.json"
+PROVIDER_FILE = PROJECT_ROOT / "data" / "config" / "provider.json"
+APP_SETTINGS_FILE = PROJECT_ROOT / "data" / "config" / "app-settings.json"
 
 ANONYMOUS_KEY = "__anonymous__"
 

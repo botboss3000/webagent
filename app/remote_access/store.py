@@ -27,8 +27,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-CONFIG_FILE = PROJECT_ROOT / "remote_access.json"
-POINTERS_FILE = PROJECT_ROOT / "remote_access_pointers.json"
+CONFIG_FILE = PROJECT_ROOT / "data" / "config" / "remote_access.json"
+POINTERS_FILE = PROJECT_ROOT / "data" / "config" / "remote_access_pointers.json"
 
 _lock = threading.Lock()
 

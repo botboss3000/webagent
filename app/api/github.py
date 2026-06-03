@@ -29,7 +29,7 @@ router = APIRouter(prefix="/api/v1/github")
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # ── Token storage (single shared token in provider.json) ──
-_TOKEN_FILE = _PROJECT_ROOT / "provider.json"
+_TOKEN_FILE = _PROJECT_ROOT / "data" / "config" / "provider.json"
 
 
 def _get_token() -> str:
@@ -604,12 +604,11 @@ def _is_backend_file(path: str) -> bool:
     if not path:
         return False
     p = path.strip()
-    backend_dirs = ("app/", "scripts/", "migrations/", "supabase/", "tests/")
+    backend_dirs = ("app/", "data/", "scripts/", "migrations/", "supabase/", "tests/")
     if p.startswith(backend_dirs):
         return True
     backend_root_files = (
         "run.py", "pyproject.toml", "uv.lock", "requirements.txt",
-        "app-settings.json", "optimizer.json", "provider.json",
     )
     return p in backend_root_files
 
