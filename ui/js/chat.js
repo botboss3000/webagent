@@ -1140,9 +1140,9 @@ export function initChat() {
   });
 
   // ── Execution mode toggle (single cycle button) ────────────────────
-  const MODE_CYCLE = ['read', 'ask', 'auto'];
-  const MODE_LABELS = { read: 'Read', ask: 'Ask', auto: 'Auto' };
-  app.executionMode = 'ask'; // default
+  const MODE_CYCLE = ['read', 'write', 'auto'];
+  const MODE_LABELS = { read: 'Read', write: 'Write', auto: 'Auto' };
+  app.executionMode = 'write'; // default
   const modeBtn = document.getElementById('chat-mode-btn');
   if (modeBtn) {
     // Restore saved preference
@@ -1150,7 +1150,7 @@ export function initChat() {
       const saved = localStorage.getItem('chat_execution_mode');
       if (saved && MODE_CYCLE.includes(saved)) app.executionMode = saved;
     } catch (_) {}
-    modeBtn.textContent = MODE_LABELS[app.executionMode] || 'Ask';
+    modeBtn.textContent = MODE_LABELS[app.executionMode] || 'Write';
     modeBtn.addEventListener('click', () => {
       const idx = MODE_CYCLE.indexOf(app.executionMode);
       app.executionMode = MODE_CYCLE[(idx + 1) % MODE_CYCLE.length];

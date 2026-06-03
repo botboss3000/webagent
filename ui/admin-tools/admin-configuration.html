@@ -17,8 +17,8 @@
             <button type="button" class="ac-tab" data-section="app-settings" role="tab">
               <i data-lucide="settings-2" class="lucide-icon ac-tab-icon"></i>App Settings
             </button>
-            <button type="button" class="ac-tab" data-section="integrations" role="tab">
-              <i data-lucide="puzzle" class="lucide-icon ac-tab-icon"></i>Agent Abilities
+            <button type="button" class="ac-tab" data-section="agent-settings" role="tab">
+              <i data-lucide="bot" class="lucide-icon ac-tab-icon"></i>Agent Settings
             </button>
             <button type="button" class="ac-tab" data-section="user-management" role="tab">
               <i data-lucide="users" class="lucide-icon ac-tab-icon"></i>Users
@@ -120,13 +120,13 @@
           </section>
 
 
-	          <!-- ── User Management ── -->
-	          <section id="ac-section-user-management" class="ac-section">
-	            <div class="ac-section-header">
-	              <i data-lucide="users" class="lucide-icon ac-section-icon"></i>
-	              <div>
-	                <h2 class="ac-section-title">User Management</h2>
-	                <p class="ac-section-desc">Control who can sign up and use the app.</p>
+<!-- ── Agent Settings ── -->
+          <section id="ac-section-agent-settings" class="ac-section">
+            <div class="ac-section-header">
+              <i data-lucide="bot" class="lucide-icon ac-section-icon"></i>
+              <div>
+                <h2 class="ac-section-title">Agent Settings</h2>
+                <p class="ac-section-desc">Configure agent tools, integrations, channels, and provider credentials.</p>
               </div>
             </div>
 
@@ -158,180 +158,84 @@
               </div>
             </div>
 
-            <!-- Codebase Admin -->
-            <div class="ac-card" id="ac-int-codebase_admin-card">
-              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                <i data-lucide="folder-cog" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#bb9af7;"></i>
-                <div style="flex:1;">
-                  <div style="font-weight:600;font-size:14px;">Codebase Admin</div>
-                  <div class="ac-hint" style="margin:0;">Lets the agent read, write, edit, delete files, and run shell commands on the host.</div>
-                </div>
-                <span id="ac-int-codebase_admin-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
-              </div>
-
-              <div id="ac-int-codebase_admin-configured" style="display:none;font-size:12px;">
-                <div class="ac-hint" style="margin:0;">Codebase Admin is available on the agent's <strong>Abilities</strong> tab. Only agents that turn it on receive the source tools.</div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-codebase_admin-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
-                </div>
-              </div>
-
-              <div id="ac-int-codebase_admin-form" style="display:block;">
-                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Codebase Admin as a toggle to agent admins. Destructive operations still require the user to confirm at chat time.</div>
-                <button id="ac-int-codebase_admin-save" class="ac-btn ac-btn-primary">Enable Codebase Admin</button>
-              </div>
-              <span id="ac-int-codebase_admin-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+            <!-- Agent Tools — compact row layout with toggle -->
+            <div class="ac-abilities-compact" id="ac-abilities-compact">
+              <!-- Each ability is a single row with icon, name, desc, toggle.
+                   Simple abilities toggle directly. Complex abilities (need config)
+                   expand to show a config panel when toggled. -->
             </div>
+            <span id="ac-abilities-compact-status" class="ac-status" style="display:none;"></span>
 
-            <!-- Create Tools -->
-            <div class="ac-card" id="ac-int-create_tools-card">
-              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                <i data-lucide="wrench" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#7dcfff;"></i>
-                <div style="flex:1;">
-                  <div style="font-weight:600;font-size:14px;">Create Tools</div>
-                  <div class="ac-hint" style="margin:0;">Lets the agent define new tools in the database. Useful for cloud / ephemeral deployments where the codebase resets but the tools table persists.</div>
+            <!-- ── Complex ability config panels (hidden by default, shown on expand) ── -->
+            <div id="ac-ability-config-panels" style="margin-top:8px;display:flex;flex-direction:column;gap:8px;">
+
+              <!-- Image Generation config -->
+              <div class="ac-card" id="ac-int-image_generation-card" style="display:none;">
+                <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                  <i data-lucide="image" class="lucide-icon" style="width:20px;height:20px;flex-shrink:0;color:#bb9af7;"></i>
+                  <div style="flex:1;">
+                    <div style="font-weight:600;font-size:13px;">Image Generation — Configuration</div>
+                    <div class="ac-hint" style="margin:0;">Configure a provider + model for image generation before enabling the toggle above.</div>
+                  </div>
                 </div>
-                <span id="ac-int-create_tools-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
-              </div>
-
-              <div id="ac-int-create_tools-configured" style="display:none;font-size:12px;">
-                <div class="ac-hint" style="margin:0;">Create Tools is available on the agent's <strong>Abilities</strong> tab. The agent's <code>create_tool</code> handler writes to the <code>tools</code> table.</div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-create_tools-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                <div id="ac-int-image_generation-configured" style="display:none;font-size:12px;">
+                  <div class="ac-hint" style="margin:0;">Image Generation is available on the agent's <strong>Abilities</strong> tab.</div>
+                  <div style="margin-top:12px;display:flex;gap:8px;">
+                    <button id="ac-int-image_generation-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                  </div>
                 </div>
-              </div>
-
-              <div id="ac-int-create_tools-form" style="display:block;">
-                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Create Tools as a toggle to agent admins. Tool code is sandboxed by a safety scanner that blocks filesystem and shell imports.</div>
-                <button id="ac-int-create_tools-save" class="ac-btn ac-btn-primary">Enable Create Tools</button>
-              </div>
-              <span id="ac-int-create_tools-status" class="ac-status" style="display:none;margin-top:8px;"></span>
-            </div>
-
-            <!-- Web Access -->
-            <div class="ac-card" id="ac-int-web_access-card">
-              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                <i data-lucide="globe" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#7aa2f7;"></i>
-                <div style="flex:1;">
-                  <div style="font-weight:600;font-size:14px;">Web Access</div>
-                  <div class="ac-hint" style="margin:0;">Lets the agent search the web (DuckDuckGo), look up weather, and geocode addresses via OpenStreetMap. No API keys needed.</div>
+                <div id="ac-int-image_generation-form" style="display:block;">
+                  <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Image Generation as a toggle to agent admins. The agent's <code>generate_image</code> tool uses whichever provider you configured under Image Generation.</div>
+                  <button id="ac-int-image_generation-save" class="ac-btn ac-btn-primary">Enable Image Generation</button>
                 </div>
-                <span id="ac-int-web_access-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
+                <span id="ac-int-image_generation-status" class="ac-status" style="display:none;margin-top:8px;"></span>
               </div>
 
-              <div id="ac-int-web_access-configured" style="display:none;font-size:12px;">
-                <div class="ac-hint" style="margin:0;">Web Access is available on the agent's <strong>Abilities</strong> tab. Bundles <code>web_search</code>, <code>get_weather</code>, and <code>maps_geocode</code>.</div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-web_access-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+              <!-- Automation config -->
+              <div class="ac-card" id="ac-int-automation-card" style="display:none;">
+                <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                  <i data-lucide="clock" class="lucide-icon" style="width:20px;height:20px;flex-shrink:0;color:#e0af68;"></i>
+                  <div style="flex:1;">
+                    <div style="font-weight:600;font-size:13px;">Automation — Configuration</div>
+                    <div class="ac-hint" style="margin:0;">Configure automation settings before enabling the toggle above.</div>
+                  </div>
                 </div>
-              </div>
-
-              <div id="ac-int-web_access-form" style="display:block;">
-                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Web Access as a toggle to agent admins. Uses free public endpoints (DuckDuckGo, Open-Meteo, Nominatim) — no platform credentials required.</div>
-                <button id="ac-int-web_access-save" class="ac-btn ac-btn-primary">Enable Web Access</button>
-              </div>
-              <span id="ac-int-web_access-status" class="ac-status" style="display:none;margin-top:8px;"></span>
-            </div>
-
-            <!-- Browser Control -->
-            <div class="ac-card" id="ac-int-browser_control-card">
-              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                <i data-lucide="mouse-pointer-2" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#9ece6a;"></i>
-                <div style="flex:1;">
-                  <div style="font-weight:600;font-size:14px;">Browser Control</div>
-                  <div class="ac-hint" style="margin:0;">Lets the agent drive a real headless Chromium browser (navigate, click, type, screenshot, JS eval) and make arbitrary outbound HTTP requests.</div>
+                <div id="ac-int-automation-configured" style="display:none;font-size:12px;">
+                  <div class="ac-hint" style="margin:0;">Automation is available on each agent's <strong>Abilities</strong> tab.</div>
+                  <div class="ac-hint" style="margin:8px 0 0;color:#f7768e;"><strong>Warning:</strong> Disabling will permanently delete every agent's scheduled tasks and event subscriptions.</div>
+                  <div style="margin-top:12px;display:flex;gap:8px;">
+                    <button id="ac-int-automation-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                  </div>
                 </div>
-                <span id="ac-int-browser_control-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
-              </div>
-
-              <div id="ac-int-browser_control-configured" style="display:none;font-size:12px;">
-                <div class="ac-hint" style="margin:0;">Browser Control is available on the agent's <strong>Abilities</strong> tab. Bundles <code>browser_action</code> (Playwright) and <code>http_request</code>.</div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-browser_control-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                <div id="ac-int-automation-form" style="display:block;">
+                  <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Automation as a per-agent toggle. Agents with the toggle off see no Automation tab.</div>
+                  <button id="ac-int-automation-save" class="ac-btn ac-btn-primary">Enable Automation</button>
                 </div>
+                <span id="ac-int-automation-status" class="ac-status" style="display:none;margin-top:8px;"></span>
               </div>
 
-              <div id="ac-int-browser_control-form" style="display:block;">
-                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Browser Control as a toggle to agent admins. Each session gets its own persistent Chromium instance.</div>
-                <button id="ac-int-browser_control-save" class="ac-btn ac-btn-primary">Enable Browser Control</button>
-              </div>
-              <span id="ac-int-browser_control-status" class="ac-status" style="display:none;margin-top:8px;"></span>
-            </div>
-
-            <!-- Image Generation -->
-            <div class="ac-card" id="ac-int-image_generation-card">
-              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                <i data-lucide="image" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#bb9af7;"></i>
-                <div style="flex:1;">
-                  <div style="font-weight:600;font-size:14px;">Image Generation</div>
-                  <div class="ac-hint" style="margin:0;">Lets the agent generate images from text prompts. Pick a provider + model in the <strong>Image Generation</strong> card just above the Agent Abilities section first.</div>
+              <!-- Visualizer config -->
+              <div class="ac-card" id="ac-int-visualizer-card" style="display:none;">
+                <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                  <i data-lucide="layout" class="lucide-icon" style="width:20px;height:20px;flex-shrink:0;color:#7aa2f7;"></i>
+                  <div style="flex:1;">
+                    <div style="font-weight:600;font-size:13px;">Visualizer — Configuration</div>
+                    <div class="ac-hint" style="margin:0;">Configure visualizer settings before enabling the toggle above.</div>
+                  </div>
                 </div>
-                <span id="ac-int-image_generation-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
-              </div>
-
-              <div id="ac-int-image_generation-configured" style="display:none;font-size:12px;">
-                <div class="ac-hint" style="margin:0;">Image Generation is available on the agent's <strong>Abilities</strong> tab. Generated images are saved under <code>visuals/users/&lt;user_id&gt;/</code>.</div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-image_generation-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                <div id="ac-int-visualizer-configured" style="display:none;font-size:12px;">
+                  <div class="ac-hint" style="margin:0;">Visualizer is available on the agent's <strong>Abilities</strong> tab.</div>
+                  <div style="margin-top:12px;display:flex;gap:8px;">
+                    <button id="ac-int-visualizer-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                  </div>
                 </div>
-              </div>
-
-              <div id="ac-int-image_generation-form" style="display:block;">
-                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Image Generation as a toggle to agent admins. The agent's <code>generate_image</code> tool uses whichever provider you configured under Image Generation.</div>
-                <button id="ac-int-image_generation-save" class="ac-btn ac-btn-primary">Enable Image Generation</button>
-              </div>
-              <span id="ac-int-image_generation-status" class="ac-status" style="display:none;margin-top:8px;"></span>
-            </div>
-
-            <!-- Automation -->
-            <div class="ac-card" id="ac-int-automation-card">
-              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                <i data-lucide="clock" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#e0af68;"></i>
-                <div style="flex:1;">
-                  <div style="font-weight:600;font-size:14px;">Automation</div>
-                  <div class="ac-hint" style="margin:0;">Exposes the per-agent <strong>Automation</strong> tab — scheduled tasks and event-triggered jobs that can call integrations.</div>
+                <div id="ac-int-visualizer-form" style="display:block;">
+                  <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Visualizer as a per-agent toggle. With the toggle off, an agent cannot see <code>render_visual</code>, <code>create_page</code>, or any other page-authoring tool.</div>
+                  <button id="ac-int-visualizer-save" class="ac-btn ac-btn-primary">Enable Visualizer</button>
                 </div>
-                <span id="ac-int-automation-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
+                <span id="ac-int-visualizer-status" class="ac-status" style="display:none;margin-top:8px;"></span>
               </div>
 
-              <div id="ac-int-automation-configured" style="display:none;font-size:12px;">
-                <div class="ac-hint" style="margin:0;">Automation is available on each agent's <strong>Abilities</strong> tab. Agent admins must toggle it on per agent before the Automation tab appears.</div>
-                <div class="ac-hint" style="margin:8px 0 0;color:#f7768e;"><strong>Warning:</strong> Disabling will permanently delete every agent's scheduled tasks and event subscriptions.</div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-automation-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
-                </div>
-              </div>
-
-              <div id="ac-int-automation-form" style="display:block;">
-                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Automation as a per-agent toggle. Agents with the toggle off see no Automation tab.</div>
-                <button id="ac-int-automation-save" class="ac-btn ac-btn-primary">Enable Automation</button>
-              </div>
-              <span id="ac-int-automation-status" class="ac-status" style="display:none;margin-top:8px;"></span>
-            </div>
-
-            <!-- Visualizer -->
-            <div class="ac-card" id="ac-int-visualizer-card">
-              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                <i data-lucide="layout" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#7aa2f7;"></i>
-                <div style="flex:1;">
-                  <div style="font-weight:600;font-size:14px;">Visualizer</div>
-                  <div class="ac-hint" style="margin:0;">Lets the agent create, edit, rename, and delete pages in the user's <strong>Pages</strong> workspace. Typically only the Page Builder / Visualizer agent needs this on.</div>
-                </div>
-                <span id="ac-int-visualizer-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
-              </div>
-
-              <div id="ac-int-visualizer-configured" style="display:none;font-size:12px;">
-                <div class="ac-hint" style="margin:0;">Visualizer is available on the agent's <strong>Abilities</strong> tab. Agent admins must toggle it on per agent before the page-authoring tools are exposed.</div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-visualizer-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
-                </div>
-              </div>
-
-              <div id="ac-int-visualizer-form" style="display:block;">
-                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Visualizer as a per-agent toggle. With the toggle off, an agent cannot see <code>render_visual</code>, <code>create_page</code>, or any other page-authoring tool.</div>
-                <button id="ac-int-visualizer-save" class="ac-btn ac-btn-primary">Enable Visualizer</button>
-              </div>
-              <span id="ac-int-visualizer-status" class="ac-status" style="display:none;margin-top:8px;"></span>
             </div>
 
             <!-- ── Channels ── -->
@@ -2113,6 +2017,19 @@
                 <span id="ac-app-settings-status" class="ac-status" style="display:none;"></span>
               </div>
             </div>
+
+            <!-- ── Main Panel Pages (tab visibility + order) ── -->
+            <details class="ac-card" id="ac-main-panel-card" open style="margin-top:14px;">
+              <summary class="ac-card-label">
+                <i data-lucide="layout" class="lucide-icon" style="width:14px;height:14px;color:var(--accent);"></i>
+                Main Panel Pages
+                <span style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">Drag to reorder, toggle visibility</span>
+              </summary>
+              <div class="ac-hint" style="margin-top:8px;">
+                Choose which pages appear in the header and in what order. Admin Tools is always visible.
+              </div>
+              <div id="ac-main-panel-list" class="ac-main-panel-list" style="margin-top:10px;display:flex;flex-direction:column;gap:4px;"></div>
+            </details>
 
             <div class="ac-card" style="margin-top:14px;">
               <div class="ac-field">

@@ -418,6 +418,7 @@ class ServerManagerApp(App):
         self._stop_btn = None        # action-bar [Stop] pill
         self._cont_btn = None        # action-bar [Continue] pill
         self._busy = False           # an agent turn is currently running
+        self._bridge_port = 0        # TUI bridge server port (0 = not started)
         self._attachments: list[dict] = []   # pending image attachments for the next message
         self._s_in = 0               # session token accumulators (HUD)
         self._s_out = 0
@@ -548,6 +549,11 @@ class ServerManagerApp(App):
         )
         set_active_watchdog(self._watchdog)
         self.run_worker(self._watchdog.run(), group="watchdog", exclusive=True)
+        # Start the TUI bridge server so the web app can forward messages to us.
+        if self.cfg.bridge_enabled:
+            self.run_worker(self._start_bridge(), group="bridge", exclusive=True)
+            # Keep the bridge registration alive with a periodic heartbeat
+            self.set_interval(15.0, self._bridge_heartbeat)
 
     # ── welcome / situation ───────────────────────────────────────────────
     def _recommended_install_path(self) -> str:
@@ -2707,6 +2713,88 @@ class ServerManagerApp(App):
         word = "muted — you're talking to the app agent directly" if muted else "unmuted"
         self._log(f"[{self.cc['dim']}]{G.BULLET} Manager {word}.[/]")
         self._refresh_status()
+
+    # ── TUI bridge server (web app → TUI agent forwarding) ────────────────
+    async def _bridge_heartbeat(self) -> None:
+        """Periodically re-register the bridge port so the web app knows we're alive."""
+        if self._bridge_port and self._webapp.token:
+            try:
+                await self._webapp._post("/api/v1/chat/tui-bridge/register", {
+                    "port": self._bridge_port,
+                    "user_id": self._webapp.user_id,
+                })
+            except Exception:
+                pass  # will retry on next interval
+
+    async def _start_bridge(self) -> None:
+        """Start the bridge server so the web app can forward messages to the TUI."""
+        from .bridge_server import start as start_bridge, set_handler, get_port
+
+        async def bridge_handler(session_id: str, message: str, user_id: str) -> dict:
+            """Handle an incoming message from the web app via the bridge.
+            
+            Processes it through the TUI's agent loop and returns the reply.
+            Uses the web app's session ID so sessions are shared.
+            """
+            if not self.provider.configured:
+                return {"reply": "Error: TUI agent has no AI provider configured."}
+
+            # Switch to the web app's session ID for this turn
+            original_session = self.session_id
+            self.session_id = session_id
+
+            # Ensure the session exists in the TUI's store
+            existing = self.store.history(session_id)
+            if not existing:
+                self.store.create_session(
+                    str(self.project_root) if self.project_root else "(bridge)",
+                    title=f"Bridge session {session_id[:12]}",
+                )
+
+            reply_text = ""
+
+            async def on_event(ev):
+                nonlocal reply_text
+                if ev.kind == "assistant" and ev.text:
+                    reply_text += ev.text
+                elif ev.kind == "error":
+                    if not reply_text:
+                        reply_text = f"Error: {ev.text}"
+                elif ev.kind == "final":
+                    if ev.text:
+                        reply_text = ev.text
+
+            try:
+                situation = await self._build_situation()
+                await self.agent.run_turn(
+                    session_id, message, on_event,
+                    situation=situation, synthetic=False,
+                )
+            except Exception as e:
+                reply_text = f"Error: {type(e).__name__}: {e}"
+            finally:
+                self.session_id = original_session
+
+            return {"reply": reply_text or "(no response)"}
+
+        set_handler(bridge_handler)
+        port = await start_bridge(bridge_handler)
+        if port:
+            self._bridge_port = port
+            self._log(f"[{self.cc['secondary']}]{G.OK} TUI bridge started on port {port}[/] "
+                      f"[{self.cc['dim']}]— web app can forward messages here[/]")
+            # Register the bridge port with the web app so it knows where to forward
+            try:
+                await self._webapp.ensure_login()
+                await self._webapp._post("/api/v1/tui-bridge/register", {
+                    "port": port,
+                    "user_id": self._webapp.user_id,
+                })
+                self._log(f"[{self.cc['dim']}]{G.BULLET} bridge registered with web app[/]")
+            except Exception as e:
+                self._log(f"[{self.cc['tool']}]{G.WARN} bridge registration: {e}[/]")
+        else:
+            self._log(f"[{self.cc['error']}]{G.ERR} TUI bridge failed to start[/]")
 
     @work(exclusive=True, group="agent")
     async def _send_to_webapp(self, text: str) -> None:

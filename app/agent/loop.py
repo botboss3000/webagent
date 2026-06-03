@@ -741,16 +741,16 @@ async def stream_agent_events(
     agent_template_id: Optional[str] = None,
     allowed_tools: Optional[List[str]] = None,
     loop_config: Optional[LoopConfig] = None,
-    execution_mode: str = 'ask',
+    execution_mode: str = 'write',
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Run the unified agent loop and yield structured events.
     agent_template_id is used to gate admin-only tools (e.g. 'admin-agent').
     allowed_tools is the list of Tier-2 tool names DISABLED for this agent.
     execution_mode controls tool execution permission:
-      'read' — only read-only tools allowed, all write tools blocked
-      'ask'  — write tools require user confirmation (default guardrail behavior)
-      'auto' — all tools allowed without confirmation
+      'read'  — only read-only tools allowed, all write tools blocked
+      'write' — write tools require user confirmation (default guardrail behavior)
+      'auto'  — all tools allowed without confirmation
     """
     # Normalize the turn ceiling up front: 0 means UNLIMITED. Guard against a
     # NULL in the DB (which makes agent.get("max_turn_count", 0) return None, not
@@ -1015,12 +1015,16 @@ async def stream_agent_events(
         # Global app-settings override
         if _gs and _gs.get("max_wall_seconds") and _gs["max_wall_seconds"] > 0:
             _MAX_WALL_SECONDS = float(_gs["max_wall_seconds"])
-        # Per-agent override: if the agent record has max_wall_seconds set, it wins over global
+        # Per-agent override: if the agent record has max_wall_seconds set, it wins over global.
+        # A value of 0 or None means "no limit" (opt out of the cap entirely).
         if _agent_rec and _agent_rec.get("max_wall_seconds") is not None:
             try:
                 _MAX_WALL_SECONDS = float(_agent_rec["max_wall_seconds"])
             except (ValueError, TypeError):
                 pass
+        elif _agent_rec and _agent_rec.get("max_wall_seconds") is None:
+            # Explicitly None on the agent record means opt out — disable the cap.
+            _MAX_WALL_SECONDS = 0.0
         # Liveness heartbeat cadence — how often the loop proves it is alive by
         # advancing session_runs.heartbeat_at. The watchdog's "frozen" threshold
         # must be several multiples of this. Best-effort + throttled.
@@ -1660,14 +1664,19 @@ async def stream_agent_events(
                         # auto_confirm skips the gate (useful for automation agents).
                         # execution_mode controls the overall policy:
                         #   'read' — block ALL destructive tools unconditionally
-                        #   'ask'  — require user confirmation (existing behavior)
+                        #   'write' — require user confirmation for destructive tools
                         #   'auto' — allow all, no gate
+                        # In 'read' mode, check the tool's own destructive flag (from metadata)
+                        # rather than just effective_destructive, so write_source/edit_source
+                        # etc. are blocked even though they're not in DESTRUCTIVE_TOOLS.
+                        ti = tools.get(tool_name)
                         is_destructive = tool_name in effective_destructive
-                        if execution_mode == 'auto':
+                        if execution_mode == 'read':
+                            # Block if the tool is flagged destructive in its metadata
+                            gate_required = bool(ti and ti.destructive) or is_destructive
+                        elif execution_mode == 'auto':
                             gate_required = False
-                        elif execution_mode == 'read':
-                            gate_required = is_destructive
-                        else:  # 'ask' (default)
+                        else:  # 'write' (default, formerly 'ask')
                             gate_required = (
                                 loop_config.is_enabled("guardrails")
                                 and is_destructive

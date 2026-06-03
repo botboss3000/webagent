@@ -156,6 +156,31 @@ function _setAgentTriggerLabel() {
       statusEl.title = '';
     }
   }
+  // TUI bridge indicator: show when the selected agent is the TUI bridge agent
+  const tuiIndicator = document.getElementById('tui-bridge-indicator');
+  if (tuiIndicator) {
+    const isTuiAgent = found && (found.template_id === 'web-agent-tui' || found.trigger_type === 'tui_bridge');
+    if (isTuiAgent) {
+      // Check if the bridge is alive
+      fetch('/api/v1/chat/tui-bridge/status')
+        .then(r => r.json())
+        .then(data => {
+          tuiIndicator.style.display = 'inline';
+          tuiIndicator.title = data.alive
+            ? 'TUI agent bridge active (port ' + data.port + ')'
+            : 'TUI agent bridge not connected — start the Server Manager (TUI)';
+          tuiIndicator.style.opacity = data.alive ? '1' : '0.4';
+        })
+        .catch(() => {
+          tuiIndicator.style.display = 'inline';
+          tuiIndicator.style.opacity = '0.4';
+          tuiIndicator.title = 'TUI agent bridge unavailable';
+        });
+    } else {
+      tuiIndicator.style.display = 'none';
+    }
+  }
+  _updateHeaderSessionCounter();
 }
 
 function _renderAgentRows() {
@@ -587,6 +612,7 @@ function _setTriggerLabel() {
       statusEl.title = '';
     }
   }
+  _updateHeaderSessionCounter();
 }
 
 function _formatRelativeTime(dateStr) {
@@ -728,8 +754,47 @@ export async function populateSessionSelect(userId) {
     _setTriggerLabel();
     _setAgentTriggerLabel();  // refresh agent status icon based on session states
     _fetchAgentRunningStatuses();  // refresh running-status sprites in agent dropdown
+    _updateHeaderSessionCounter();
   } catch (e) {
     console.warn('Failed to load sessions:', e);
+  }
+}
+
+/**
+ * Update the header notification badge with counts of sessions needing attention.
+ * Shows a warning triangle + count for interrupted/errored sessions,
+ * and a running count for in-progress sessions.
+ */
+function _updateHeaderSessionCounter() {
+  const badge = document.getElementById('header-session-counter');
+  const countEl = document.getElementById('header-session-count');
+  if (!badge || !countEl) return;
+
+  const needingAttention = _sessionsCache.filter(
+    s => s.run_status === 'interrupted' || s.run_status === 'error'
+  ).length;
+  const running = _sessionsCache.filter(
+    s => s.run_status === 'running'
+  ).length;
+
+  if (needingAttention > 0) {
+    countEl.textContent = needingAttention;
+    badge.style.display = 'inline-flex';
+    badge.title = needingAttention === 1
+      ? '1 session needs attention'
+      : `${needingAttention} sessions need attention`;
+  } else if (running > 0) {
+    countEl.textContent = running;
+    badge.style.display = 'inline-flex';
+    badge.title = running === 1
+      ? '1 session running'
+      : `${running} sessions running`;
+    // Use a different icon/color for running vs attention
+    const iconEl = badge.querySelector('[data-lucide]');
+    if (iconEl) iconEl.setAttribute('data-lucide', 'loader-2');
+    badge.className = 'header-notif-badge header-notif-running';
+  } else {
+    badge.style.display = 'none';
   }
 }
 
@@ -2280,4 +2345,27 @@ export function initSessions() {
       loadSessionChat(app.currentSessionId);
     }
   });
+
+  // ── TUI bridge status poll ──
+  // Refresh the TUI bridge indicator every 15 seconds so it stays in sync.
+  setInterval(() => {
+    const tuiIndicator = document.getElementById('tui-bridge-indicator');
+    if (!tuiIndicator || tuiIndicator.style.display === 'none') return;
+    fetch('/api/v1/chat/tui-bridge/status')
+      .then(r => r.json())
+      .then(data => {
+        tuiIndicator.title = data.alive
+          ? 'TUI agent bridge active (port ' + data.port + ')'
+          : 'TUI agent bridge not connected — start the Server Manager (TUI)';
+        tuiIndicator.style.opacity = data.alive ? '1' : '0.4';
+      })
+      .catch(() => {});
+  }, 15000);
+
+  // ── Session counter poll ──
+  // Refresh the header notification badge every 10 seconds so it stays in sync
+  // with session status changes (runs completing, erroring, etc.).
+  setInterval(() => {
+    _updateHeaderSessionCounter();
+  }, 10000);
 }
