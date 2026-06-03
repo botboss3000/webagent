@@ -24,6 +24,11 @@
 #   turn_permission_request_example   — Example of what the agent should say when asking
 #   user_response_example             — Example of a user approving a turn extension.
 #   turn_permission_granted_template  — Template for the agent's confirmation reply.
+#
+#   in_process_execution_rule  — Injected when the agent carries in-process execution
+#                                or HTTP tools (run_command, run_python, http_request,
+#                                write/edit/patch_source). Warns against loopback HTTP
+#                                self-deadlock and the blocked-tool retry trap.
 
 ## Brain context intro
 
@@ -108,3 +113,30 @@ Meta has no public Messenger API, so route everything through `web_session_*`. T
 If any call returns `{"status": "session_expired"}`, surface that to the user verbatim and ask them to refresh cookies in App Config → Browser Session. Do not loop or retry — cookies do not auto-refresh.
 
 This pathway is unofficial and may break when Meta updates its internal API. Fail loudly rather than guess.
+
+## In process execution rule
+
+You run **inside** the web server process — the same event loop that serves the API on port 8080. Two rules follow from this:
+
+1. **Never call this server over HTTP.** Do not use `http_request`, `run_command` with `curl`/`wget`, or `run_python` with `urllib`/`httpx`/`requests` to reach `http://127.0.0.1:8080`, `http://localhost:8080`, or any `/api/...` path on this host. A loopback call self-deadlocks: the event loop is busy running you, so it can never answer the request — the socket connects but the response hangs and times out. (If you see `/health` returning 200 in the logs, that is an *external* watchdog, not proof that you can reach the API from here.)
+
+   To perform an API or database action, call the underlying function **in-process** with `run_python`. The database handle is `get_db()`:
+
+   ```python
+   import asyncio
+   from app.db import get_db
+
+   async def main():
+       db = get_db()
+       agent = await db.create_custom_agent(
+           user_id="admin_default", name="My Agent",
+           description="…", template_id="codebase-engineer",
+       )
+       print(agent["id"], agent["name"])
+
+   asyncio.run(main())
+   ```
+
+   The full database API lives in `app/db/local.py` (e.g. `list_agents_for_user`, `get_agent_by_id`, `update_agent_fields`, `delete_custom_agent`); read it with `read_source` if you need a method you don't know.
+
+2. **If a tool returns `{"status": "blocked", …}` (confirmation required), do not retry the identical call.** Repeating the call will not grant confirmation. Either ask the user to authorize it explicitly, or switch to an approach that doesn't need confirmation — a read-only command, `run_python`, or a direct in-process call.

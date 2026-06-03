@@ -2648,7 +2648,10 @@ async function _renderToolsTab(body, agent, panelEl) {
   const sp0 = (agent.safety_policy && typeof agent.safety_policy === 'object') ? agent.safety_policy : {};
   const blockedSet = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
   const dtSet      = new Set(Array.isArray(sp0.destructive_tools) ? sp0.destructive_tools : []);
-  let autoConfirmAll = Boolean(sp0.auto_confirm);
+  const _modeRaw = (sp0.permission_mode || '').toLowerCase();
+  let permMode   = (_modeRaw === 'read' || _modeRaw === 'write' || _modeRaw === 'auto')
+    ? _modeRaw
+    : (sp0.auto_confirm ? 'auto' : 'write');
   let maxConcVal     = sp0.max_concurrent_tools || '';
 
   // Loop-logic state for the guardrail master toggle
@@ -2702,19 +2705,42 @@ async function _renderToolsTab(body, agent, panelEl) {
   execLabel.textContent = 'Execution Settings';
   execGroup.appendChild(execLabel);
 
-  // Auto-confirm all
-  const autoRow = document.createElement('label');
-  autoRow.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px;';
-  const autoCb = document.createElement('input');
-  autoCb.type    = 'checkbox';
-  autoCb.checked = autoConfirmAll;
-  autoCb.addEventListener('change', () => { autoConfirmAll = autoCb.checked; });
-  const autoTxt = document.createElement('span');
-  autoTxt.style.cssText = 'font-size:13px;color:var(--fg-1);';
-  autoTxt.textContent = 'Auto-confirm all tools (bypass guardrail for this agent — useful for automation)';
-  autoRow.appendChild(autoCb);
-  autoRow.appendChild(autoTxt);
-  execGroup.appendChild(autoRow);
+  // Permission mode: read / write / auto
+  const modeRow = document.createElement('div');
+  modeRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:10px;';
+  const modeLbl = document.createElement('span');
+  modeLbl.style.cssText = 'font-size:13px;color:var(--fg-1);white-space:nowrap;';
+  modeLbl.textContent = 'Permission mode:';
+  const modeSel = document.createElement('select');
+  modeSel.className   = 'agents-input';
+  modeSel.style.width = 'auto';
+  [['read', 'Read — confirm every change'],
+   ['write', 'Write — confirm shell/restart (default)'],
+   ['auto', 'Auto — allow everything']].forEach(([val, label]) => {
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = label;
+    if (val === permMode) opt.selected = true;
+    modeSel.appendChild(opt);
+  });
+  modeRow.appendChild(modeLbl);
+  modeRow.appendChild(modeSel);
+  execGroup.appendChild(modeRow);
+
+  const MODE_HINTS = {
+    read:  'Read: the agent can read and run read-only commands, but every codebase-mutating tool (write/edit/delete, shell, restart, git) asks for confirmation.',
+    write: 'Write (default): read-only ops run freely; shell commands and server restart ask for confirmation; file writes are trusted.',
+    auto:  'Auto: the confirmation gate is skipped entirely — the agent runs every tool without asking. Use for trusted automation.',
+  };
+  const modeHint = document.createElement('span');
+  modeHint.className = 'agents-field-hint';
+  modeHint.style.cssText = 'display:block;margin-top:6px;';
+  modeHint.textContent = MODE_HINTS[permMode];
+  modeSel.addEventListener('change', () => {
+    permMode = modeSel.value;
+    modeHint.textContent = MODE_HINTS[permMode];
+  });
+  execGroup.appendChild(modeHint);
 
   // Max concurrent
   const maxRow = document.createElement('div');
@@ -2775,7 +2801,8 @@ async function _renderToolsTab(body, agent, panelEl) {
     const newSp = {
       ...sp0,
       destructive_tools: [...dtSet],
-      auto_confirm:      autoConfirmAll,
+      permission_mode:   permMode,
+      auto_confirm:      permMode === 'auto',  // keep legacy flag in sync
     };
     const mv = parseInt(maxConcVal, 10);
     if (mv > 0) newSp.max_concurrent_tools = mv;

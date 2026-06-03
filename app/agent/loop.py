@@ -94,6 +94,27 @@ _current_api_key = None
 # and server restart.
 DESTRUCTIVE_TOOLS = frozenset({"run_command", "restart_server"})
 
+# ── Permission mode: read / write / auto ──
+# A coarse, per-agent safety dial stored at safety_policy.permission_mode:
+#   "write" (default) — current behavior: read-only ops run freely, the
+#       destructive baseline (shell/restart) needs confirmation, file writes are
+#       trusted to the agent.
+#   "read"  — strictest: every codebase-mutating tool also needs confirmation,
+#       so the agent can explore and run read-only commands but cannot change
+#       anything without the user's OK.
+#   "auto"  — allow everything: the confirmation gate is skipped entirely
+#       (equivalent to the legacy safety_policy.auto_confirm flag).
+PERMISSION_MODE_READ = "read"
+PERMISSION_MODE_WRITE = "write"
+PERMISSION_MODE_AUTO = "auto"
+
+# Codebase/system-mutating tools. These are gated for confirmation ONLY in
+# "read" mode; in "write" (default) and "auto" they follow the normal baseline.
+WRITE_MODE_GATED_TOOLS = frozenset({
+    "write_source", "edit_source", "patch_source", "delete_source",
+    "run_command", "restart_server", "git_tool", "resolve_conflict",
+})
+
 # ── run_command per-arg exemption: read-only shell commands skip the gate ──
 # `run_command` is destructive by default (it can do anything), but inspect-only
 # invocations like `git status`, `ls`, `cat`, `grep` are routine and pointless
@@ -191,6 +212,10 @@ def _build_effective_destructive_set(
     if isinstance(extra, list):
         result.update(extra)
 
+    # In "read" mode, every codebase-mutating tool also requires confirmation.
+    if _permission_mode(agent_rec) == PERMISSION_MODE_READ:
+        result.update(WRITE_MODE_GATED_TOOLS)
+
     for name, info in tools.items():
         if getattr(info, "requires_confirmation", False):
             result.add(name)
@@ -198,10 +223,24 @@ def _build_effective_destructive_set(
     return frozenset(result)
 
 
-def _is_auto_confirm(agent_rec: Optional[Dict[str, Any]]) -> bool:
-    """Return True when safety_policy.auto_confirm is set — skips the confirmation gate."""
+def _permission_mode(agent_rec: Optional[Dict[str, Any]]) -> str:
+    """Resolve the agent's permission mode: 'read', 'write' (default), or 'auto'.
+
+    Reads safety_policy.permission_mode. For backward compatibility, the legacy
+    safety_policy.auto_confirm flag maps to 'auto'.
+    """
     sp = _parse_safety_policy(agent_rec)
-    return bool(sp.get("auto_confirm", False))
+    mode = str(sp.get("permission_mode") or "").strip().lower()
+    if mode in (PERMISSION_MODE_READ, PERMISSION_MODE_WRITE, PERMISSION_MODE_AUTO):
+        return mode
+    if bool(sp.get("auto_confirm", False)):
+        return PERMISSION_MODE_AUTO
+    return PERMISSION_MODE_WRITE
+
+
+def _is_auto_confirm(agent_rec: Optional[Dict[str, Any]]) -> bool:
+    """Return True in 'auto' permission mode (or legacy auto_confirm) — skips the confirmation gate."""
+    return _permission_mode(agent_rec) == PERMISSION_MODE_AUTO
 
 
 def _max_concurrent_tools(agent_rec: Optional[Dict[str, Any]]) -> Optional[int]:
@@ -906,6 +945,20 @@ async def stream_agent_events(
                 _recipes = ""
             if _recipes:
                 system_prompt = (system_prompt or "") + "\n\n## Web automation recipes\n" + _recipes
+
+    # If the agent carries in-process execution / HTTP tools, remind it never to
+    # call the server over loopback HTTP (that self-deadlocks) and to act
+    # in-process instead. Injected only when such a tool is actually loaded.
+    _INPROC_TOOLS = ("run_command", "run_python", "http_request",
+                     "write_source", "edit_source", "patch_source")
+    if any(_t in tools for _t in _INPROC_TOOLS):
+        try:
+            from app.db.system_prompt_fragments import get_prompt_fragments as _gpf_ipx
+            _inproc_rule = (_gpf_ipx().get("in_process_execution_rule") or "").strip()
+        except Exception:
+            _inproc_rule = ""
+        if _inproc_rule:
+            system_prompt = (system_prompt or "") + "\n\n## In-process execution\n" + _inproc_rule
 
     yield {"type": "pipeline", "level": "pipeline",
            "step": "integration_status",

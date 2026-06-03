@@ -16,11 +16,11 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from fastapi import HTTPException
+
 from app.tools.loader import ToolInfo
 
 logger = logging.getLogger(__name__)
-
-BASE = "http://localhost:8080"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -88,21 +88,12 @@ def _write_file_direct(path: Path, content: str) -> str:
         return f"Error writing {path}: {e}"
 
 
-# ── HTTP helpers (existing tools) ─────────────────────────────────────────────
-
-async def _api_get(path: str, params: dict = None):
-    import httpx
-    async with httpx.AsyncClient(base_url=BASE, timeout=15) as c:
-        r = await c.get(path, params=params or {})
-        r.raise_for_status()
-        return r.json()
-
-
-async def _api_post(path: str, json_data: dict):
-    import httpx
-    async with httpx.AsyncClient(base_url=BASE, timeout=30) as c:
-        r = await c.post(path, json=json_data)
-        return r
+# ── In-process endpoint calls ─────────────────────────────────────────────────
+# These tools run INSIDE the server's own event loop. They must NOT make loopback
+# HTTP calls back to the server: the loop is busy running the agent, so a request
+# to 127.0.0.1:8080 can never be serviced — the socket connects but the response
+# hangs and times out (a self-deadlock). Instead, each mutating tool below calls
+# the matching app.admin.source route handler directly, in-process.
 
 
 # ── Main injection entry point ────────────────────────────────────────────────
@@ -175,12 +166,14 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
     # ── write_source: no permission needed (just write) ──
     async def _write_source(path: str, content: str) -> str:
         """Overwrite a file with new content. Backup created automatically."""
-        resp = await _api_post("/admin/source/write", {
-            "path": path, "content": content, "create_backup": True,
-        })
-        if resp.status_code != 200:
-            return f"Error: {resp.json().get('detail', 'unknown error')}"
-        return resp.json()["message"]
+        from app.admin.source import write_file as _ep_write, WriteRequest as _WriteReq
+        try:
+            resp = await _ep_write(_WriteReq(path=path, content=content, create_backup=True))
+        except HTTPException as e:
+            return f"Error: {e.detail}"
+        except Exception as e:
+            return f"Error: {e}"
+        return resp.message
 
     tools["write_source"] = ToolInfo(
         name="write_source",
@@ -198,9 +191,14 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
     # ── edit_source: exact find-and-replace (kept for backward compat) ──
     async def _edit_source(path: str, old_text: str, new_text: str) -> str:
         """Edit a file by replacing exact text. For fuzzy matching, use patch_source."""
+        from app.admin.source import (
+            read_file as _ep_read, write_file as _ep_write, WriteRequest as _WriteReq,
+        )
         try:
-            data = await _api_get("/admin/source/read", {"path": path})
-            current = data["content"]
+            data = await _ep_read(path=path)
+            current = data.content
+        except HTTPException as e:
+            return f"Error: could not read {path}: {e.detail}"
         except Exception:
             return f"Error: could not read {path}. Does it exist?"
 
@@ -211,14 +209,14 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
         if new_content == current:
             return f"Error: replacement produced no change"
 
-        resp = await _api_post("/admin/source/write", {
-            "path": path, "content": new_content, "create_backup": True,
-        })
-        if resp.status_code != 200:
-            return f"Error: {resp.json().get('detail', 'unknown error')}"
-        result = resp.json()
-        bkp = result.get("backup_path", "none")
-        return f"{result['message']}. Backup: {bkp}"
+        try:
+            result = await _ep_write(_WriteReq(path=path, content=new_content, create_backup=True))
+        except HTTPException as e:
+            return f"Error: {e.detail}"
+        except Exception as e:
+            return f"Error: {e}"
+        bkp = result.backup_path or "none"
+        return f"{result.message}. Backup: {bkp}"
 
     tools["edit_source"] = ToolInfo(
         name="edit_source",
@@ -341,12 +339,14 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
     # ── delete_source: user commands → do it; own initiative → ask ──
     async def _delete_source(path: str, recursive: bool = False) -> str:
         """Delete a file or directory. Call directly when user commands it; ask first when deciding on your own."""
-        resp = await _api_post("/admin/source/delete", {
-            "path": path, "recursive": recursive,
-        })
-        if resp.status_code != 200:
-            return f"Error: {resp.json().get('detail', 'unknown error')}"
-        return resp.json()["message"]
+        from app.admin.source import delete_file as _ep_delete, DeleteRequest as _DelReq
+        try:
+            resp = await _ep_delete(_DelReq(path=path, recursive=recursive))
+        except HTTPException as e:
+            return f"Error: {e.detail}"
+        except Exception as e:
+            return f"Error: {e}"
+        return resp.message
 
     tools["delete_source"] = ToolInfo(
         name="delete_source",
@@ -368,10 +368,15 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
     # ── run_command: read-only safe, mutating needs permission ──
     async def _run_command(command: str, timeout: int = 30) -> dict:
         """Execute a shell command. Read-only commands run freely. Mutating commands explained first."""
-        resp = await _api_post("/admin/source/exec", {
-            "command": command, "timeout": timeout,
-        })
-        return resp.json()
+        from app.admin.source import run_command as _ep_exec, CommandRequest as _CmdReq
+        try:
+            resp = await _ep_exec(_CmdReq(command=command, timeout=timeout))
+        except HTTPException as e:
+            return {"exit_code": -1, "stdout": "", "stderr": f"Error: {e.detail}", "timed_out": False}
+        except Exception as e:
+            return {"exit_code": -1, "stdout": "", "stderr": f"Error: {e}", "timed_out": False}
+        return {"exit_code": resp.exit_code, "stdout": resp.stdout,
+                "stderr": resp.stderr, "timed_out": resp.timed_out}
 
     tools["run_command"] = ToolInfo(
         name="run_command",
@@ -436,13 +441,19 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
     # ── restart_server: always needs confirmation ──
     async def _restart_server() -> str:
         """Restart the web agent server. Ask the user before calling."""
-        import httpx
-        async with httpx.AsyncClient(base_url=BASE, timeout=5) as c:
-            try:
-                resp = await c.post("/api/v1/restart")
-                return f"Server restarting: {resp.json().get('message', 'ok')}"
-            except Exception as e:
-                return f"Restart signal sent: {e}"
+        # In-process restart: schedule the same process-exit the /api/v1/restart
+        # endpoint performs (the supervising launcher loop relaunches the server).
+        # No loopback HTTP — that would self-deadlock.
+        import threading
+        import time as _time
+        logger.warning("Restart requested via restart_server tool — shutting down...")
+
+        def _die():
+            _time.sleep(0.5)
+            os._exit(0)
+
+        threading.Thread(target=_die, daemon=True).start()
+        return "Server is shutting down. The launcher loop will restart it automatically."
 
     tools["restart_server"] = ToolInfo(
         name="restart_server",
