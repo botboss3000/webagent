@@ -741,11 +741,16 @@ async def stream_agent_events(
     agent_template_id: Optional[str] = None,
     allowed_tools: Optional[List[str]] = None,
     loop_config: Optional[LoopConfig] = None,
+    execution_mode: str = 'ask',
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Run the unified agent loop and yield structured events.
     agent_template_id is used to gate admin-only tools (e.g. 'admin-agent').
     allowed_tools is the list of Tier-2 tool names DISABLED for this agent.
+    execution_mode controls tool execution permission:
+      'read' — only read-only tools allowed, all write tools blocked
+      'ask'  — write tools require user confirmation (default guardrail behavior)
+      'auto' — all tools allowed without confirmation
     """
     # Normalize the turn ceiling up front: 0 means UNLIMITED. Guard against a
     # NULL in the DB (which makes agent.get("max_turn_count", 0) return None, not
@@ -1649,15 +1654,25 @@ async def stream_agent_events(
                                    "tool_name": tool_name, "id": inter_id, "ms": 0}
                             continue
 
-                        # ── Guardrail: confirmation required for destructive tools ──
+                        # ── Guardrail: execution mode + confirmation for destructive tools ──
                         # effective_destructive merges the hardcoded baseline with the
                         # agent's safety_policy.destructive_tools and per-tool flags.
                         # auto_confirm skips the gate (useful for automation agents).
-                        gate_required = (
-                            loop_config.is_enabled("guardrails")
-                            and tool_name in effective_destructive
-                            and not auto_confirm
-                        )
+                        # execution_mode controls the overall policy:
+                        #   'read' — block ALL destructive tools unconditionally
+                        #   'ask'  — require user confirmation (existing behavior)
+                        #   'auto' — allow all, no gate
+                        is_destructive = tool_name in effective_destructive
+                        if execution_mode == 'auto':
+                            gate_required = False
+                        elif execution_mode == 'read':
+                            gate_required = is_destructive
+                        else:  # 'ask' (default)
+                            gate_required = (
+                                loop_config.is_enabled("guardrails")
+                                and is_destructive
+                                and not auto_confirm
+                            )
                         # Per-arg exemption: read-only shell commands via run_command
                         # (git status, ls, cat, ...) bypass the confirmation gate.
                         if gate_required and tool_name == "run_command" and _is_safe_shell_command(tool_args.get("command", "")):

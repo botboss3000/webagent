@@ -1161,12 +1161,14 @@ async def _run_turn_background(
                 _raw_at = []
 
         assistant_reply = ""
+        _exec_mode = getattr(request, 'execution_mode', 'ask') or 'ask'
         async for event in stream_agent_events(
             user_id=request.user_id, session_id=request.session_id,
             user_message=user_message_content, system_prompt=system_prompt,
             agent_id=agent["id"], history=history, parent_interaction_id=parent_id,
             max_turns=agent.get("max_turn_count", 0), channel=channel, db=db,
             agent_template_id=agent.get("template_id"), allowed_tools=_raw_at or None,
+            execution_mode=_exec_mode,
         ):
             await event_callback(event)
             if event["type"] == "response":

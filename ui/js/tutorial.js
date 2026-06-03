@@ -48,9 +48,9 @@ const TOUR = [
     title: 'Browse and customize agents',
     body: 'Each card is one agent. Click to expand it — tabs across the top let you edit the system prompt, toggle which tools the agent can call, pick its model, and connect channels like Telegram.' },
 
-  { tab: 'agents', selector: '#btn-new-agent',
+  { tab: 'agents', selector: '.agent-card-mock',
     title: 'Create your own',
-    body: '+ New agent starts one. Pick a template for a known-good config or start blank for full control.' },
+    body: 'The first card is a blank agent. Click it, give it a name, pick a template, then click "Create Agent" to save it.' },
 
   { tab: 'agents', selector: '#agent-builder-bar-row',
     title: 'Or describe what you want',

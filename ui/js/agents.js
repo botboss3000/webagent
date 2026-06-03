@@ -34,6 +34,37 @@ let _expandedAgents = new Map(); // Map<agentId, { tab: string }>
 let _userIsAdmin    = false;
 let _extendLlmToAgents = true; // mirrors app-settings.json extend_llm_to_agents
 
+// ── Mock agent (create-in-place) ─────────────────────────────────────────────
+const MOCK_AGENT_ID = '__new__';
+
+function _createMockAgent() {
+  return {
+    id: MOCK_AGENT_ID,
+    name: '',
+    description: '',
+    source: 'custom',
+    icon: null,
+    access_level: 'user',
+    llm_config: { use_default: true },
+    allowed_tools: null, // all tools allowed
+    loop_logic: null,
+    trigger_type: null,
+    trigger_key: null,
+    max_turn_count: 0,
+    max_wall_seconds: null,
+    max_identical_tool_calls: 0,
+    max_stall_strikes: 0,
+    user_mode: 'user',
+    slots: [],
+    discoverable: false,
+    is_mock: true,
+  };
+}
+
+function _isMockAgent(agent) {
+  return agent && agent.id === MOCK_AGENT_ID;
+}
+
 // ── Agent Manager (per-detail-panel chat bar) ────────────────────────────────
 const AGENT_BUILDER_TEMPLATE_ID = 'agent-builder';
 const _agentBuilderAgentCache = new Map(); // userId → agentId
@@ -275,7 +306,6 @@ export async function initAgents() {
 
   await Promise.all([_loadProfile(), _loadAgents(), _loadAppSettings()]);
   _renderList();
-  _bindCreateModal();
   _restoreViewState();
 }
 
@@ -431,11 +461,14 @@ function _renderList() {
 
   grid.innerHTML = '';
 
+  // ── Mock card (always first) ──────────────────────────────────────────────
+  const mockAgent = _createMockAgent();
+  const mockExpanded = _expandedAgents.has(MOCK_AGENT_ID);
+  _renderAgentCard(grid, mockAgent, mockExpanded);
+
+  // ── Real agents ───────────────────────────────────────────────────────────
   if (_agents.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'agents-empty';
-    empty.textContent = 'No agents assigned to this user yet.';
-    grid.appendChild(empty);
+    // No agents yet — just the mock card is fine
     return;
   }
 
@@ -445,65 +478,73 @@ function _renderList() {
   const ordered = sortAgentsForDisplay(_agents, app.currentUserId);
   for (const agent of ordered) {
     const isExpanded = _expandedAgents.has(agent.id);
-
-    const badgeType  = agent.access_level === 'admin_only' ? 'admin'
-                     : agent.source === 'custom'            ? 'custom'
-                     : 'system';
-    const badgeLabel = agent.access_level === 'admin_only' ? 'Admin'
-                     : agent.source === 'custom'            ? 'Custom'
-                     : 'System';
-
-    const isCustom = agent.source === 'custom';
-
-    const card = document.createElement('div');
-    card.className = 'agent-card' + (isExpanded ? ' active' : '');
-    card.innerHTML = `
-      <div class="agent-card-top">
-        <div class="agent-card-icon-wrap ${_iconColor(agent)}">
-          ${agent.icon || icon('bot', { size: '20px' })}
-        </div>
-        <div class="agent-card-meta">
-          <div class="agent-card-name-row">
-            <span class="agent-card-name">${_esc(_displayName(agent))}</span>
-            <span class="agent-status-dot"></span>
-          </div>
-          ${agent.description ? `<div class="agent-card-desc">${_esc(agent.description)}</div>` : ''}
-        </div>
-        <div class="agent-card-badge-wrap">
-          <span class="agent-badge ${badgeType}">${badgeLabel}</span>
-          ${isCustom ? '<button class="agent-card-action-btn delete-btn">Delete</button>' : ''}
-        </div>
-      </div>
-      <div class="agent-card-tabs" role="tablist"></div>
-    `;
-
-    // Wire inline action buttons — stopPropagation so click doesn't toggle the panel
-    const deleteBtn = card.querySelector('.delete-btn');
-    if (deleteBtn) {
-      deleteBtn.addEventListener('click', e => { e.stopPropagation(); _deleteAgent(agent); });
-    }
-
-    card.addEventListener('click', () => _selectAgent(agent));
-
-    // Each agent gets its own .agent-row; the detail panel lives inside it
-    const row = document.createElement('div');
-    row.className = 'agent-row';
-    row.dataset.agentId = agent.id;
-    row.appendChild(card);
-
-    let panel = null;
-    if (isExpanded) {
-      panel = _buildDetailPanel(agent);
-      row.appendChild(panel);
-    }
-
-    // Tabs render in both collapsed and expanded states; clicking a tab on a
-    // collapsed card expands it to that tab.
-    const cardTabBar = card.querySelector('.agent-card-tabs');
-    if (cardTabBar) _populateAgentTabBar(cardTabBar, agent, panel);
-
-    grid.appendChild(row);
+    _renderAgentCard(grid, agent, isExpanded);
   }
+}
+
+function _renderAgentCard(grid, agent, isExpanded) {
+  const isMock = _isMockAgent(agent);
+
+  const badgeType  = isMock ? 'custom'
+                   : agent.access_level === 'admin_only' ? 'admin'
+                   : agent.source === 'custom'            ? 'custom'
+                   : 'system';
+  const badgeLabel = isMock ? 'New'
+                   : agent.access_level === 'admin_only' ? 'Admin'
+                   : agent.source === 'custom'            ? 'Custom'
+                   : 'System';
+
+  const isCustom = agent.source === 'custom' || isMock;
+
+  const card = document.createElement('div');
+  card.className = 'agent-card' + (isExpanded ? ' active' : '') + (isMock ? ' agent-card-mock' : '');
+  card.innerHTML = `
+    <div class="agent-card-top">
+      <div class="agent-card-icon-wrap ${isMock ? 'color-blue' : _iconColor(agent)}">
+        ${isMock ? icon('plus', { size: '20px' }) : (agent.icon || icon('bot', { size: '20px' }))}
+      </div>
+      <div class="agent-card-meta">
+        <div class="agent-card-name-row">
+          <span class="agent-card-name">${isMock ? 'Create a new agent' : _esc(_displayName(agent))}</span>
+          <span class="agent-status-dot ${isMock ? 'inactive' : ''}"></span>
+        </div>
+        ${!isMock && agent.description ? `<div class="agent-card-desc">${_esc(agent.description)}</div>` : ''}
+        ${isMock ? '<div class="agent-card-desc agent-card-mock-hint">Click to configure, then save</div>' : ''}
+      </div>
+      <div class="agent-card-badge-wrap">
+        <span class="agent-badge ${badgeType}">${badgeLabel}</span>
+        ${isCustom && !isMock ? '<button class="agent-card-action-btn delete-btn">Delete</button>' : ''}
+      </div>
+    </div>
+    <div class="agent-card-tabs" role="tablist"></div>
+  `;
+
+  // Wire inline action buttons — stopPropagation so click doesn't toggle the panel
+  const deleteBtn = card.querySelector('.delete-btn');
+  if (deleteBtn) {
+    deleteBtn.addEventListener('click', e => { e.stopPropagation(); _deleteAgent(agent); });
+  }
+
+  card.addEventListener('click', () => _selectAgent(agent));
+
+  // Each agent gets its own .agent-row; the detail panel lives inside it
+  const row = document.createElement('div');
+  row.className = 'agent-row';
+  row.dataset.agentId = agent.id;
+  row.appendChild(card);
+
+  let panel = null;
+  if (isExpanded) {
+    panel = _buildDetailPanel(agent);
+    row.appendChild(panel);
+  }
+
+  // Tabs render in both collapsed and expanded states; clicking a tab on a
+  // collapsed card expands it to that tab.
+  const cardTabBar = card.querySelector('.agent-card-tabs');
+  if (cardTabBar) _populateAgentTabBar(cardTabBar, agent, panel);
+
+  grid.appendChild(row);
 }
 
 // ── Selection / toggle ────────────────────────────────────────────────────────
@@ -518,18 +559,38 @@ function _selectAgent(agent) {
   _saveViewState();
 }
 
+// ── Mock agent helpers ────────────────────────────────────────────────────────
+
+function _getMockAgent() {
+  // Return the live mock agent from the expanded state, or create a fresh one
+  const existing = _agents.find(a => a.id === MOCK_AGENT_ID);
+  if (existing) return existing;
+  // The mock agent isn't in _agents — it's rendered separately in _renderList
+  return _createMockAgent();
+}
+
+function _mockAgentName() {
+  const row = document.querySelector(`.agent-row[data-agent-id="${MOCK_AGENT_ID}"]`);
+  if (!row) return '';
+  const nameEl = row.querySelector('[data-field="name"]');
+  return nameEl ? nameEl.value.trim() : '';
+}
+
 // ── Per-row detail panel ──────────────────────────────────────────────────────
 
 function _populateAgentTabBar(tabBar, agent, panel) {
   const state = _expandedAgents.get(agent.id);
+  const isMock = _isMockAgent(agent);
   // Highlight a tab only when the card is open — a collapsed card has no
   // active content, so no tab should look selected.
   const activeTab = state ? (state.tab || 'config') : null;
   tabBar.innerHTML = '';
   const tabs = [['config','Config'],['tools','Tools'],['test','Agent Loop'],['connections','Abilities']];
-  if (state?.automationEnabled) tabs.push(['automation','Automation']);
-  if (_userIsAdmin) tabs.push(['members','Members']);
-  tabs.push(['monetization','Monetization']);
+  if (!isMock) {
+    if (state?.automationEnabled) tabs.push(['automation','Automation']);
+    if (_userIsAdmin) tabs.push(['members','Members']);
+    tabs.push(['monetization','Monetization']);
+  }
 
   // ── Compute synchronous counts (base tools, no abilities yet) ──
   const baseToolCount = _toolsForAgent(agent).length;
@@ -563,6 +624,8 @@ function _populateAgentTabBar(tabBar, agent, panel) {
     });
     tabBar.appendChild(btn);
   }
+
+  if (isMock) return; // no async fetches for mock agent
 
   // ── Async: fetch abilities + compute tool count ──
   _fetchAbilitiesAndTools(agent).then(({ toolCount, abilitiesCount }) => {
@@ -695,6 +758,21 @@ function _buildDetailPanel(agent) {
   content.className = 'agent-detail-content';
   panel.appendChild(content);
 
+  // For the mock agent, add a create button bar at the top of the panel
+  if (_isMockAgent(agent)) {
+    const createBar = document.createElement('div');
+    createBar.className = 'agent-mock-create-bar';
+    const createBtn = document.createElement('button');
+    createBtn.className = 'agent-mock-create-btn';
+    createBtn.innerHTML = icon('plus', { size: '16px' }) + ' Create Agent';
+    createBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      _createAgentFromMock(panel);
+    });
+    createBar.appendChild(createBtn);
+    content.appendChild(createBar);
+  }
+
   // Scrollable body (the tab carousel now lives in the card header above)
   const body = document.createElement('div');
   body.className = 'agent-detail-body';
@@ -704,7 +782,9 @@ function _buildDetailPanel(agent) {
   _renderPanelBody(agent, panel);
 
   // Asynchronously discover whether the Automation tab should be visible.
-  _detectAgentAbilities(agent, panel);
+  if (!_isMockAgent(agent)) {
+    _detectAgentAbilities(agent, panel);
+  }
 
   return panel;
 }
@@ -932,6 +1012,10 @@ function _renderPanelBody(agent, panelEl) {
 // ── Automation tab ────────────────────────────────────────────────────────────
 
 async function _renderAutomationTab(body, agent, panelEl) {
+  if (_isMockAgent(agent)) {
+    body.innerHTML = '<div style="padding:20px;color:var(--fg-3);font-size:13px;text-align:center;">Save this agent first to configure automation.</div>';
+    return;
+  }
   body.innerHTML = '<div style="font-size:12px;color:var(--fg-3);padding:8px;">Loading automation…</div>';
 
   let slotContent = '';
@@ -1533,13 +1617,50 @@ function _renderEventTriggerRow(agent, sub, channels, onRefresh) {
 
 function _renderConfigTab(body, agent, panelEl) {
   const isEditable = agent.source === 'custom';
+  const isMock = _isMockAgent(agent);
 
   // Name + description (editable for custom agents only)
   if (isEditable) {
     _addField(body, 'Name', 'agents-input', 'name',
-      agent.name || (agent.source === 'custom' ? 'autoAgent' : ''), false);
+      agent.name || '', false);
     _addField(body, 'Description', 'agents-textarea', 'desc',
       agent.description || '', false, 2);
+  }
+
+  // ── Template selector (mock agent only) ────────────────────────────────────
+  if (isMock) {
+    const tplGroup = document.createElement('div');
+    tplGroup.className = 'agents-field-group';
+    const tplLabel = document.createElement('label');
+    tplLabel.className = 'agents-field-label';
+    tplLabel.textContent = 'Template';
+    const tplSelect = document.createElement('select');
+    tplSelect.className = 'agents-input';
+    tplSelect.dataset.field = 'template';
+    tplSelect.innerHTML = '<option value="">— No template —</option>';
+    tplGroup.appendChild(tplLabel);
+    tplGroup.appendChild(tplSelect);
+    body.appendChild(tplGroup);
+
+    // Fetch templates
+    (async () => {
+      try {
+        const url = `/api/v1/agents/templates?user_id=${encodeURIComponent(app.currentUserId)}&discoverable_only=true${_userIsAdmin ? '&include_admin=true' : ''}`;
+        const res = await fetch(url);
+        if (res.ok) {
+          const data = await res.json();
+          (data.templates || []).forEach(t => {
+            const opt = document.createElement('option');
+            opt.value = t.id;
+            opt.textContent = t.name || t.id;
+            if (t.id === 'default') opt.selected = true;
+            tplSelect.appendChild(opt);
+          });
+        }
+      } catch (e) {
+        console.warn('agents: failed to load templates for mock', e);
+      }
+    })();
   }
 
   // ── Per-agent LLM card ───────────────────────────────────────────────────
@@ -2118,7 +2239,7 @@ function _renderConfigTab(body, agent, panelEl) {
   }
 
   // ── External Data Sources (per-agent) ───────────────────────────────────────
-  if (isEditable) {
+  if (isEditable && !isMock) {
     const dsHost = document.createElement('div');
     dsHost.className = 'agents-field-group';
     dsHost.dataset.role = 'agent-data-sources';
@@ -2140,7 +2261,8 @@ function _renderConfigTab(body, agent, panelEl) {
   }
 
   // Save bar (sticky at bottom of content — outside the scrollable body)
-  if (isEditable) {
+  // Skip for mock agent — the create button in the panel header handles saving.
+  if (isEditable && !isMock) {
     const content = panelEl.querySelector('.agent-detail-content');
     const bar = document.createElement('div');
     bar.className = 'agents-save-bar';
@@ -2289,6 +2411,13 @@ function _openSaveAsTemplateModal(agent, hostBar) {
 async function _loadAndRenderSlots(panelEl, agent, _isEditable) {
   const listEl = panelEl.querySelector('[data-role="slots-list"]');
   if (!listEl) return;
+
+  // Mock agent: show placeholder
+  if (_isMockAgent(agent)) {
+    listEl.innerHTML = '<div style="font-size:12px;color:var(--fg-muted,#565f89);padding:12px;text-align:center;">Save this agent first to configure prompt slots.</div>';
+    return;
+  }
+
   listEl.innerHTML = '<div style="font-size:12px;color:var(--fg-muted,#565f89);">Loading slots…</div>';
   let data = null;
   try {
@@ -2549,6 +2678,10 @@ function _localLoopLogicObjs(agent) {
 }
 
 async function _renderToolsTab(body, agent, panelEl) {
+  if (_isMockAgent(agent)) {
+    body.innerHTML = '<div style="padding:20px;color:var(--fg-3);font-size:13px;text-align:center;">Save this agent first to configure tools.</div>';
+    return;
+  }
   const isEditable = agent.source === 'custom';
 
   // ── Fetch enabled abilities to include ability-gated tools ──────────────
@@ -3035,6 +3168,10 @@ const _CONN_ICONS = {
 };
 
 async function _renderConnectionsTab(body, agent) {
+  if (_isMockAgent(agent)) {
+    body.innerHTML = '<div style="padding:20px;color:var(--fg-3);font-size:13px;text-align:center;">Save this agent first to configure abilities.</div>';
+    return;
+  }
   body.innerHTML = '<div class="conn-loading">Loading abilities…</div>';
 
   let connections = [];
@@ -3786,6 +3923,10 @@ async function _saveConnection(agent, conn, cardEl, enabled) {
 // ── Members tab (admin only) ──────────────────────────────────────────────────
 
 async function _renderMembersTab(body, agent) {
+  if (_isMockAgent(agent)) {
+    body.innerHTML = '<div style="padding:20px;color:var(--fg-3);font-size:13px;text-align:center;">Save this agent first to manage members.</div>';
+    return;
+  }
   body.innerHTML = '<div class="members-loading">Loading members…</div>';
 
   let admins = [], members = [], userMode = agent.user_mode || 'anonymous';
@@ -3974,6 +4115,10 @@ function _buildMembersSection(agent, title, rows, kind, panelBody) {
 // ── Agent Loop (Test) tab ─────────────────────────────────────────────────────
 
 function _renderTestTab(body, agent) {
+  if (_isMockAgent(agent)) {
+    body.innerHTML = '<div style="padding:20px;color:var(--fg-3);font-size:13px;text-align:center;">Save this agent first to test it in the loop.</div>';
+    return;
+  }
   const area = document.createElement('div');
   area.className = 'agents-test-area';
   area.innerHTML = `
@@ -5762,95 +5907,70 @@ async function _deleteAgent(agent) {
   }
 }
 
-// ── Create modal ──────────────────────────────────────────────────────────────
+// ── Create agent from mock card ───────────────────────────────────────────────
 
-function _bindCreateModal() {
-  // initAgents may run multiple times (page load + tab switch). Replace each
-  // button with a clone to drop any prior listeners, then bind fresh.
-  let newBtn    = document.getElementById('btn-new-agent');
-  const modal   = document.getElementById('agents-create-modal');
-  let cancelBtn = document.getElementById('btn-create-cancel');
-  let createBtn = document.getElementById('btn-create-confirm');
-  if (newBtn)    { const c = newBtn.cloneNode(true);    newBtn.replaceWith(c);    newBtn    = c; }
-  if (cancelBtn) { const c = cancelBtn.cloneNode(true); cancelBtn.replaceWith(c); cancelBtn = c; }
-  if (createBtn) { const c = createBtn.cloneNode(true); createBtn.replaceWith(c); createBtn = c; }
-  if (newBtn) newBtn.addEventListener('click', async () => {
-    if (!modal) return;
-    modal.classList.remove('hidden');
-    // Populate template dropdown
-    const tplSelect = document.getElementById('agents-create-template');
-    if (tplSelect) {
-      tplSelect.innerHTML = '<option value="">— No template —</option>';
-      try {
-        const url = `/api/v1/agents/templates?user_id=${encodeURIComponent(app.currentUserId)}&discoverable_only=true${_userIsAdmin ? '&include_admin=true' : ''}`;
-        const res = await fetch(url);
-        if (res.ok) {
-          const data = await res.json();
-          (data.templates || []).forEach(t => {
-            const opt = document.createElement('option');
-            opt.value = t.id;
-            opt.textContent = t.name || t.id;
-            if (t.id === 'default') opt.selected = true;
-            tplSelect.appendChild(opt);
-          });
-        }
-      } catch (e) {
-        console.warn('agents: failed to load templates', e);
-      }
-    }
-  });
-  if (cancelBtn) cancelBtn.addEventListener('click', () => modal && modal.classList.add('hidden'));
+async function _createAgentFromMock(panelEl) {
+  // Gather the name from the config tab
+  const nameEl = panelEl.querySelector('[data-field="name"]');
+  const descEl = panelEl.querySelector('[data-field="desc"]');
+  const tplEl = panelEl.querySelector('[data-field="template"]');
+  const name = nameEl ? nameEl.value.trim() : '';
+  if (!name) {
+    if (nameEl) nameEl.focus();
+    return;
+  }
 
-  if (createBtn) {
-    createBtn.addEventListener('click', async () => {
-      const nameEl = document.getElementById('agents-create-name');
-      const descEl = document.getElementById('agents-create-desc');
-      const name   = nameEl ? nameEl.value.trim() : '';
-      if (!name) { nameEl && nameEl.focus(); return; }
+  const templateId = tplEl ? tplEl.value : 'default';
 
-      try {
-        const tplSelect = document.getElementById('agents-create-template');
-        const templateId = tplSelect ? tplSelect.value : 'default';
-        const res = await fetch('/api/v1/agents', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            user_id: app.currentUserId,
-            name,
-            description: descEl ? descEl.value.trim() : '',
-            template_id: templateId || 'default',
-          }),
-        });
-        const data = await res.json();
-        if (res.ok) {
-          modal && modal.classList.add('hidden');
-          if (nameEl) nameEl.value = '';
-          if (descEl) descEl.value = '';
-          if (tplSelect) tplSelect.value = '';
-          await _loadAgents();
-          // Auto-expand the new agent
-          const newAgent = _agents.find(a => a.id === data.agent?.id);
-          if (newAgent) {
-            _expandedAgents.set(newAgent.id, { tab: 'config' });
-            _saveViewState();
-          }
-          _renderList();
-          // Make the new agent the active one so chat picks it up on next send.
-          const newId = data.agent && data.agent.id;
-          if (newId) {
-            app.currentAgentId = newId;
-            try { localStorage.setItem('selectedAgentId', newId); } catch (_) {}
-            if (typeof app.populateAgentSelect === 'function') {
-              try { await app.populateAgentSelect(app.currentUserId); } catch (_) {}
-            }
-          }
-        }
-      } catch (e) {
-        console.warn('agents: create failed', e);
-      }
+  // Gather LLM config from panel state
+  const llmConfig = panelEl._llmState || { use_default: true };
+
+  try {
+    const res = await fetch('/api/v1/agents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        user_id: app.currentUserId,
+        name,
+        description: descEl ? descEl.value.trim() : '',
+        template_id: templateId || 'default',
+        llm_config: llmConfig,
+      }),
     });
+    const data = await res.json();
+    if (res.ok) {
+      // Close the mock card
+      _expandedAgents.delete(MOCK_AGENT_ID);
+      // Reload agents list
+      await _loadAgents();
+      _renderList();
+      _saveViewState();
+      // Auto-expand the new agent
+      const newAgent = _agents.find(a => a.id === data.agent?.id);
+      if (newAgent) {
+        _expandedAgents.set(newAgent.id, { tab: 'config' });
+        _saveViewState();
+        _renderList();
+      }
+      // Make the new agent the active one so chat picks it up on next send.
+      const newId = data.agent && data.agent.id;
+      if (newId) {
+        app.currentAgentId = newId;
+        try { localStorage.setItem('selectedAgentId', newId); } catch (_) {}
+        if (typeof app.populateAgentSelect === 'function') {
+          try { await app.populateAgentSelect(app.currentUserId); } catch (_) {}
+        }
+      }
+    } else {
+      alert(data.detail || 'Failed to create agent');
+    }
+  } catch (e) {
+    console.warn('agents: create from mock failed', e);
+    alert('Error creating agent: ' + e.message);
   }
 }
+
+// ── Create modal (removed — replaced by mock card) ───────────────────────────
 
 // ── Persisted view state ──────────────────────────────────────────────────────
 
@@ -5860,6 +5980,7 @@ function _saveViewState() {
   try {
     const expanded = {};
     for (const [agentId, state] of _expandedAgents) {
+      if (agentId === MOCK_AGENT_ID) continue; // don't persist mock state
       expanded[agentId] = { tab: state.tab || 'config' };
     }
     localStorage.setItem(_STORAGE_KEY, JSON.stringify({ expanded }));

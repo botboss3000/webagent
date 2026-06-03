@@ -131,6 +131,43 @@ body {
     min-height: 0;
   }
 
+/* ── Execution mode button (single cycle: Read → Ask → Auto → Read) ─────
+   Sits above the chat pill, right-aligned alongside continue/stop buttons.
+   Styled identically to .chat-continue-btn for visual consistency. */
+.chat-mode-btn {
+    display: inline-flex;
+    align-self: center;
+    background: #7dcfff15;
+    border: 1px solid #7dcfff30;
+    color: #7dcfff;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 14px;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    line-height: 1.4;
+    user-select: none;
+    -webkit-user-select: none;
+    font-family: inherit;
+  }
+.chat-mode-btn:hover {
+    background: #7dcfff25;
+    border-color: #7dcfff60;
+  }
+.chat-mode-btn:active {
+    background: #7dcfff35;
+  }
+body.light-mode .chat-mode-btn {
+    background: #ff8c4215;
+    border-color: #ff8c4230;
+    color: #ff8c42;
+  }
+body.light-mode .chat-mode-btn:hover {
+    background: #ff8c4225;
+    border-color: #ff8c4260;
+  }
+
 /* Chat messages container — drop target with overlay */
   #chat-messages {
     flex: 1;

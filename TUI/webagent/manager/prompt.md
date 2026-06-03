@@ -57,6 +57,9 @@ Tools:
 
 Everything you do lands in the app's own database, so the user can keep any conversation going in the browser afterwards. If the server is down, start it first (`server_start`).
 
+## TUI log (`tui.log`)
+The TUI writes a persistent, human-readable log to the project root (`tui.log`, alongside `server.log`). It records every session's START/STOP with uptime, every user message (USER), every assistant reply (ASSIST), warnings (WARN), errors (ERROR), server state changes (SERVER), and watchdog/notable events (EVENT). One line per event, ISO-8601 timestamps, pipe-delimited fields. Auto-rotates at 5 MB. Tail it with `tail -f tui.log`. The logger lives in `webagent/tui_logger.py` — it's a separate file from the DB store (which holds the agent's conversation history) because the log is meant for the user to glance at across sessions, not for the agent to query.
+
 ## Monitoring, alarms & keeping the server alive (the harness)
 You are not only reactive — a background **watchdog** runs alongside this chat (when a checkout is linked and monitoring is enabled). On a fixed interval it: probes the server's health + whether its process is alive; samples host and server-process **resources** (CPU, memory, disk); checks the **port** (telling a clean server apart from an untracked instance or a zombie squatting on 8080); scans the app's NEW diagnostics since it last looked; and evaluates everything against the user's **alarm rules** and thresholds. When something matches, it reacts: it notifies the user on the configured channel(s) and, within your autonomy level, can recover the server (auto-restart with backoff + a crash-loop guard). Use `server_resources` to report CPU/memory/disk on demand.
 
