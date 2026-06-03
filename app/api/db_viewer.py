@@ -573,7 +573,7 @@ async def list_sessions(
             has_sort_order = "sort_order" in sess_cols
             has_read_at = "read_at" in sess_cols
 
-            select_cols = 's.id, s.title, s.created_at, s.user_id, s.participants, s.agent_id'
+            select_cols = 's.id, s.title, s.created_at, s.user_id, s.participants, s.agent_id, s.updated_at'
             if has_pinned:
                 select_cols += ', s.pinned'
             if has_read_at:
@@ -585,15 +585,15 @@ async def list_sessions(
                 where_clause = 's.agent_id = ?'
                 params.append(agent_id)
 
-            # Manual drag order (sort_order, NULLS LAST) takes precedence within
-            # each pinned/unpinned group; un-ordered rows fall back to newest-first.
+            # Sort by last active time (updated_at), newest first.
+            # Pinned sessions come first, then the rest sorted by last active.
             order_parts = []
             if has_pinned:
                 order_parts.append('s.pinned DESC')
             if has_sort_order:
                 order_parts.append('(s.sort_order IS NULL)')
                 order_parts.append('s.sort_order ASC')
-            order_parts.append('s.created_at DESC')
+            order_parts.append('s.updated_at DESC NULLS LAST')
             order_clause = ', '.join(order_parts)
 
             # Pre-fetch run statuses for all sessions in one query
@@ -653,9 +653,9 @@ async def list_sessions(
                 participant_ids = {p.get("id") for p in participants if isinstance(p, dict)}
                 all_ids = ({owner_id} | participant_ids) - {None}
                 if requester_identities & all_ids:
-                    pinned_val = bool(row[6]) if has_pinned else False
-                    sid = row[0]
-                    read_at = row[7] if has_read_at else None
+                    sid = row["id"]
+                    pinned_val = bool(row["pinned"]) if has_pinned else False
+                    read_at = row["read_at"] if has_read_at else None
                     run = run_statuses.get(sid)
                     run_status = run["status"] if run else None
                     run_updated_at = run["updated_at"] if run else None
@@ -666,9 +666,10 @@ async def list_sessions(
                             has_unread = True
                     sessions.append({
                         "id": sid,
-                        "title": row[1] or sid[:12],
-                        "created_at": row[2],
-                        "agent_id": row[5],
+                        "title": row["title"] or sid[:12],
+                        "created_at": row["created_at"],
+                        "updated_at": row["updated_at"],
+                        "agent_id": row["agent_id"],
                         "pinned": pinned_val,
                         "run_status": run_status,
                         "has_unread": has_unread,
