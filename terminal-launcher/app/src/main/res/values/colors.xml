@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- LIGHT palette (values/). Dark palette lives in values-night/colors.xml.
+     The app defaults to dark via AppCompatDelegate; light is an opt-in toggle. -->
+<resources>
+    <color name="bg_0">#FAFAF7</color>          <!-- terminal / window background -->
+    <color name="bg_1">#FFFFFF</color>          <!-- footer background -->
+    <color name="bg_2">#F2F3F5</color>          <!-- panels -->
+    <color name="bg_elev">#FFFFFF</color>        <!-- buttons / cards -->
+    <color name="bg_elev_2">#E7E9ED</color>      <!-- pressed / inputs -->
+
+    <color name="fg_1">#1A1D24</color>
+    <color name="fg_2">#41485A</color>
+    <color name="fg_3">#6B7488</color>
+    <color name="fg_muted">#8B93A6</color>
+
+    <color name="border">#D8DCE4</color>
+    <color name="border_soft">#E6E9EF</color>
+
+    <color name="accent_green">#1FAF63</color>
+    <color name="accent_cyan">#1399C4</color>
+    <color name="accent_amber">#C9851E</color>
+    <color name="accent_magenta">#B83F9C</color>
+
+    <color name="danger">#D23B47</color>
+    <color name="scrim">#66000000</color>
+
+    <color name="recording">#E03244</color>
+</resources>

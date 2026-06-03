@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Root is a FrameLayout so panels and the scrim can be drawn OVER the
+     terminal/footer without ever resizing them. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg_0">
+
+    <!-- ===== Base content: terminal fills everything above the footer ===== -->
+    <LinearLayout
+        android:id="@+id/content"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+        <com.termux.view.TerminalView
+            android:id="@+id/terminal_view"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:background="@color/bg_0"
+            android:focusable="true"
+            android:focusableInTouchMode="true" />
+
+        <!-- ===== Footer (no top app bar anywhere in this app) ===== -->
+        <LinearLayout
+            android:id="@+id/footer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@color/bg_1"
+            android:paddingHorizontal="@dimen/space_s"
+            android:paddingVertical="@dimen/footer_pad"
+            android:elevation="8dp">
+
+            <!-- Extra shortcut rows stack here, above the main footer row. -->
+            <LinearLayout
+                android:id="@+id/stacked_rows"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+
+            <!-- Main footer row -->
+            <LinearLayout
+                android:id="@+id/main_footer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <ImageButton
+                    android:id="@+id/btn_config"
+                    style="@style/FooterIconButton"
+                    android:src="@drawable/ic_settings"
+                    android:contentDescription="@string/cd_config" />
+
+                <ImageButton
+                    android:id="@+id/btn_sessions"
+                    style="@style/FooterIconButton"
+                    android:layout_marginStart="2dp"
+                    android:src="@drawable/ic_sessions"
+                    android:contentDescription="@string/cd_sessions" />
+
+                <!-- Default (row 0) shortcuts live here, horizontally scrollable. -->
+                <HorizontalScrollView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginHorizontal="4dp"
+                    android:scrollbars="none"
+                    android:fillViewport="true">
+
+                    <LinearLayout
+                        android:id="@+id/row0_container"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical" />
+                </HorizontalScrollView>
+
+                <ImageButton
+                    android:id="@+id/btn_voice"
+                    style="@style/FooterIconButton"
+                    android:src="@drawable/ic_mic"
+                    android:contentDescription="@string/cd_voice" />
+
+                <ImageButton
+                    android:id="@+id/btn_keyboard"
+                    style="@style/FooterIconButton"
+                    android:layout_marginStart="2dp"
+                    android:src="@drawable/ic_keyboard"
+                    android:contentDescription="@string/cd_keyboard" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- ===== Shared scrim (dims terminal while a panel is open) ===== -->
+    <View
+        android:id="@+id/scrim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/scrim"
+        android:visibility="gone" />
+
+    <!-- ===== Slide-over panels (drawn over the terminal, gravity start) ===== -->
+    <include
+        android:id="@+id/config_panel"
+        layout="@layout/panel_config"
+        android:layout_width="@dimen/panel_width"
+        android:layout_height="match_parent"
+        android:layout_gravity="start" />
+
+    <include
+        android:id="@+id/session_panel"
+        layout="@layout/panel_session"
+        android:layout_width="@dimen/panel_width"
+        android:layout_height="match_parent"
+        android:layout_gravity="start" />
+
+    <!-- ===== Setup/help screen (shown only when Termux is unavailable) ===== -->
+    <include
+        android:id="@+id/setup_screen"
+        layout="@layout/screen_setup"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        tools:visibility="gone" />
+
+</FrameLayout>

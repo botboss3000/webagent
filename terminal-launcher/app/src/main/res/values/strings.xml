@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Terminal Launcher</string>
+
+    <!-- Footer button content descriptions -->
+    <string name="cd_config">Settings</string>
+    <string name="cd_sessions">Sessions</string>
+    <string name="cd_voice">Voice input</string>
+    <string name="cd_keyboard">Show or hide keyboard</string>
+
+    <!-- First-run environment setup screen -->
+    <string name="setup_title">Set up the Linux environment</string>
+    <string name="setup_body">This app includes a full Termux Linux environment. The first time you open it, it downloads and installs that environment (roughly 30–50 MB). This happens once; after that it opens straight into the terminal.</string>
+    <string name="setup_ready">Ready to install. Make sure you\'re on Wi-Fi if you can.</string>
+    <string name="setup_install">Set up now</string>
+    <string name="setup_retry">Retry</string>
+
+    <!-- Config panel -->
+    <string name="cfg_title">Settings</string>
+    <string name="cfg_startup">Startup</string>
+    <string name="cfg_default_dir">Default project folder</string>
+    <string name="cfg_default_dir_hint">/data/data/com.termux/files/home</string>
+    <string name="cfg_startup_cmd">Startup command (optional)</string>
+    <string name="cfg_startup_cmd_hint">e.g. claude</string>
+    <string name="cfg_appearance">Appearance</string>
+    <string name="cfg_accent">Accent colour</string>
+    <string name="cfg_font_size">Terminal font size</string>
+    <string name="cfg_light_mode">Light mode</string>
+    <string name="cfg_shortcuts">Footer shortcuts</string>
+    <string name="cfg_add_row">Add row</string>
+    <string name="cfg_add_shortcut">Add shortcut</string>
+
+    <!-- Sessions panel -->
+    <string name="sess_title">Sessions</string>
+    <string name="sess_new">New session</string>
+    <string name="sess_running">running</string>
+    <string name="sess_idle">idle</string>
+
+    <!-- Shortcut editor dialog -->
+    <string name="dlg_label">Button label</string>
+    <string name="dlg_type">Action type</string>
+    <string name="dlg_text">Text / command</string>
+    <string name="dlg_script">Script lines (one per line)</string>
+    <string name="dlg_special_key">Special key</string>
+    <string name="dlg_save">Save</string>
+    <string name="dlg_cancel">Cancel</string>
+    <string name="dlg_delete">Delete</string>
+</resources>

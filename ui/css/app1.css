@@ -473,6 +473,47 @@ body.light-mode .chat-stop-btn:hover {
     border-color: #e6455360;
   }
 
+/* ── Suggested-reply chips (above the chat pill) ────────────────────────────
+   Populated by ui/js/suggestions.js from the silent user-impersonator agent.
+   Tapping a chip fills the pill. Theme-safe via design-system variables. */
+.chat-suggest-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    align-self: stretch;
+    margin-bottom: 3px;
+    padding: 0 6px;
+  }
+.chat-suggest-row:empty {
+    display: none;
+  }
+/* Rendered as low-emphasis grey "ghost" text — a quiet hint of what the user
+   might say next, not a prominent button. Tappable; brightens on hover. */
+.chat-suggest-chip {
+    max-width: 100%;
+    background: none;
+    border: none;
+    padding: 2px 0;
+    color: var(--fg-4);
+    font-size: 12.5px;
+    line-height: 1.35;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: color 0.15s;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+.chat-suggest-chip:hover {
+    color: var(--fg-2);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+.chat-suggest-chip:active {
+    color: var(--fg-1);
+  }
+
 /* ── Chat-pill ─────────────────────────────────────────────────────────────
    CHAT-PILL-SYNC: single source of truth for every chat-style "pill" input
    in the app. Apply these classes to opt in:
