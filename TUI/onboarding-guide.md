@@ -102,11 +102,11 @@ and warn that the repo folder and data folder are unrecoverable once removed. Wi
 writes enabled you may do this via `run_command`; otherwise give the user these to paste:
 
 - launcher + home-screen shortcut: `$PREFIX/bin/webagent` and `~/.shortcuts/webagent.sh`
-- the Python package (if it was pip-installed): `pip uninstall -y webagent-tui`
+- the Python package (if it was pip-installed): `pip uninstall -y webagent`
 - the cloned repo + its venv: `~/webagent`
 - the manager's own data (history, config, this cached guide):
-  `~/.local/share/webagent-tui` (or `$XDG_DATA_HOME/webagent-tui`, or a custom
-  `WEBAGENT_TUI_DB` path)
+  `~/.local/share/webagent` (or `$XDG_DATA_HOME/webagent`, or a custom
+  `WEBAGENT_DB` path)
 
 `textual` and `httpx` can be left in place since other tools may use them.
 

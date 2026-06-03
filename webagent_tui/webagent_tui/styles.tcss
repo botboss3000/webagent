@@ -132,6 +132,12 @@ Screen {
 /* Connect (WEBAGENT) dropdowns — full width, spaced; the Select draws its own pill. */
 #side-panel .connect-select { width: 100%; margin-bottom: 1; }
 
+/* All side-panel dropdowns (Select): replace Textual's heavy 'tall' border — which
+ * this terminal renders as garbage — with the same round pill as everything else. */
+#side-panel Select > SelectCurrent { border: round $border-dim; background: $background; }
+#side-panel Select:focus > SelectCurrent { border: round $primary; }
+#side-panel Select > SelectOverlay { border: round $border-dim; background: $panel; }
+
 /* Diagnostics / Logs readout — wrapping monospace text on a tinted surface that
  * fills the (widened) panel and scrolls with it. */
 #side-panel .readout-body {

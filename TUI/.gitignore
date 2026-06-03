@@ -2,8 +2,7 @@
 build/
 dist/
 *.spec
-webagent-tui
-webagent-tui.exe
+webagent.exe
 
 # python
 __pycache__/
@@ -12,11 +11,15 @@ __pycache__/
 *.egg-info/
 
 # generated at exe-build time (stamped into the bundle, then removed)
-webagent_tui/_build.py
+webagent/_build.py
 
-# local data (the external DB lives in the per-user data dir, not here — but
-# guard against accidental local copies)
+# local runtime data — lives in THIS project folder when run from source
+# (the SQLite store, config, watchdog config/alarms, and image attachments)
 *.db
 *.db-journal
 *.db-wal
+*.db-shm
 config.json
+monitor.json
+alarms.json
+attachments/
