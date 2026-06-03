@@ -734,8 +734,7 @@ async function sendMessage() {
   const text = app.chatInput.value.trim();
   if (!text) return;
 
-  // No agent selected — open the new-agent modal instead of sending. Keep the
-  // typed text so the user can resend after picking a template + creating.
+  // No agent selected — open the agents tab and expand the mock card.
   if (!app.currentAgentId) {
     const sel = document.getElementById('main-tab-select');
     if (sel) {
@@ -743,8 +742,10 @@ async function sendMessage() {
       sel.dispatchEvent(new Event('change'));
     }
     setTimeout(() => {
-      const newBtn = document.getElementById('btn-new-agent');
-      if (newBtn) newBtn.click();
+      // Expand the mock create card
+      if (window.expandAgent) {
+        window.expandAgent('__new__');
+      }
     }, 50);
     return;
   }
@@ -774,6 +775,7 @@ async function sendMessage() {
     message: text,
     session_id: app.currentSessionId,
     user_id: app.currentUserId,
+    execution_mode: app.executionMode || 'ask',
   };
   if (app.currentAgentId) base.agent_id = app.currentAgentId;
   const payload = addAttachmentsToMessage(base);
@@ -1144,6 +1146,26 @@ export function initChat() {
     _updateInputRowState();
     _saveDraft();
   });
+
+  // ── Execution mode toggle (single cycle button) ────────────────────
+  const MODE_CYCLE = ['read', 'write', 'auto'];
+  const MODE_LABELS = { read: 'Read', write: 'Write', auto: 'Auto' };
+  app.executionMode = 'write'; // default
+  const modeBtn = document.getElementById('chat-mode-btn');
+  if (modeBtn) {
+    // Restore saved preference
+    try {
+      const saved = localStorage.getItem('chat_execution_mode');
+      if (saved && MODE_CYCLE.includes(saved)) app.executionMode = saved;
+    } catch (_) {}
+    modeBtn.textContent = MODE_LABELS[app.executionMode] || 'Write';
+    modeBtn.addEventListener('click', () => {
+      const idx = MODE_CYCLE.indexOf(app.executionMode);
+      app.executionMode = MODE_CYCLE[(idx + 1) % MODE_CYCLE.length];
+      modeBtn.textContent = MODE_LABELS[app.executionMode];
+      try { localStorage.setItem('chat_execution_mode', app.executionMode); } catch (_) {}
+    });
+  }
 
   // ── Continue button ──────────────────────────────────────────────
   // Sends a "continue" message — a shortcut for the common case where

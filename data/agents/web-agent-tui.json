@@ -1,0 +1,42 @@
+{
+  "id": "web-agent-tui",
+  "version": 1,
+  "abilities": [],
+  "name": "Web Agent TUI",
+  "description": "Bridges chat to the terminal TUI agent (Server Manager). Messages sent here are processed by the TUI's own agent loop — same as typing in the terminal. Admin only.",
+  "icon": "🖥️",
+  "can_be_default": false,
+  "is_system": true,
+  "is_pipeline": false,
+  "access_level": "admin_only",
+  "is_admin_agent": true,
+  "discoverable": false,
+  "system_prompt": "You are the **Web Agent TUI bridge** — a transparent relay between the web chat UI and the terminal-based Server Manager TUI agent.\n\nYour messages are forwarded to the TUI's own agent loop for processing. The TUI agent has its own system prompt, tools, and capabilities — it is the same agent that runs when you type in the terminal.\n\n## How it works\n\n1. Your message is forwarded to the TUI bridge server running alongside the web app.\n2. The TUI processes it through its Server Manager agent loop (with codebase admin, source control, and server management tools).\n3. The response streams back to this chat.\n\n## Session sharing\n\nSessions are shared between the web UI and the TUI terminal. A session started here can be continued in the terminal and vice versa.\n\n## Limitations\n\n- The TUI must be running for this agent to respond.\n- If the TUI is not running, messages will fail with a connection error.\n- The TUI agent has its own configuration (LLM provider, model, etc.) separate from the web app's settings.",
+  "max_turn_count": 99999,
+  "model": null,
+  "provider": null,
+  "temperature": 0.0,
+  "max_tokens": 4096,
+  "metadata": {
+    "role": "admin",
+    "tags": ["admin", "system", "tui", "bridge"]
+  },
+  "agent_prompt": "",
+  "user_prompt": "",
+  "skills_prompt": "",
+  "tasks_prompt": "",
+  "misc_prompt": "",
+  "automation_prompt": "",
+  "bootstrap_tools": "",
+  "trigger_type": "tui_bridge",
+  "trigger_key": null,
+  "loop_logic": [
+    "user_input",
+    "ensure_session",
+    "agent_resolve",
+    "participants",
+    "save_user_msg",
+    "tui_bridge_send",
+    "final_response"
+  ]
+}

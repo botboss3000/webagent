@@ -741,11 +741,16 @@ async def stream_agent_events(
     agent_template_id: Optional[str] = None,
     allowed_tools: Optional[List[str]] = None,
     loop_config: Optional[LoopConfig] = None,
+    execution_mode: str = 'write',
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Run the unified agent loop and yield structured events.
     agent_template_id is used to gate admin-only tools (e.g. 'admin-agent').
     allowed_tools is the list of Tier-2 tool names DISABLED for this agent.
+    execution_mode controls tool execution permission:
+      'read'  — only read-only tools allowed, all write tools blocked
+      'write' — write tools require user confirmation (default guardrail behavior)
+      'auto'  — all tools allowed without confirmation
     """
     # Normalize the turn ceiling up front: 0 means UNLIMITED. Guard against a
     # NULL in the DB (which makes agent.get("max_turn_count", 0) return None, not
@@ -1010,12 +1015,16 @@ async def stream_agent_events(
         # Global app-settings override
         if _gs and _gs.get("max_wall_seconds") and _gs["max_wall_seconds"] > 0:
             _MAX_WALL_SECONDS = float(_gs["max_wall_seconds"])
-        # Per-agent override: if the agent record has max_wall_seconds set, it wins over global
+        # Per-agent override: if the agent record has max_wall_seconds set, it wins over global.
+        # A value of 0 or None means "no limit" (opt out of the cap entirely).
         if _agent_rec and _agent_rec.get("max_wall_seconds") is not None:
             try:
                 _MAX_WALL_SECONDS = float(_agent_rec["max_wall_seconds"])
             except (ValueError, TypeError):
                 pass
+        elif _agent_rec and _agent_rec.get("max_wall_seconds") is None:
+            # Explicitly None on the agent record means opt out — disable the cap.
+            _MAX_WALL_SECONDS = 0.0
         # Liveness heartbeat cadence — how often the loop proves it is alive by
         # advancing session_runs.heartbeat_at. The watchdog's "frozen" threshold
         # must be several multiples of this. Best-effort + throttled.
@@ -1649,15 +1658,30 @@ async def stream_agent_events(
                                    "tool_name": tool_name, "id": inter_id, "ms": 0}
                             continue
 
-                        # ── Guardrail: confirmation required for destructive tools ──
+                        # ── Guardrail: execution mode + confirmation for destructive tools ──
                         # effective_destructive merges the hardcoded baseline with the
                         # agent's safety_policy.destructive_tools and per-tool flags.
                         # auto_confirm skips the gate (useful for automation agents).
-                        gate_required = (
-                            loop_config.is_enabled("guardrails")
-                            and tool_name in effective_destructive
-                            and not auto_confirm
-                        )
+                        # execution_mode controls the overall policy:
+                        #   'read' — block ALL destructive tools unconditionally
+                        #   'write' — require user confirmation for destructive tools
+                        #   'auto' — allow all, no gate
+                        # In 'read' mode, check the tool's own destructive flag (from metadata)
+                        # rather than just effective_destructive, so write_source/edit_source
+                        # etc. are blocked even though they're not in DESTRUCTIVE_TOOLS.
+                        ti = tools.get(tool_name)
+                        is_destructive = tool_name in effective_destructive
+                        if execution_mode == 'read':
+                            # Block if the tool is flagged destructive in its metadata
+                            gate_required = bool(ti and ti.destructive) or is_destructive
+                        elif execution_mode == 'auto':
+                            gate_required = False
+                        else:  # 'write' (default, formerly 'ask')
+                            gate_required = (
+                                loop_config.is_enabled("guardrails")
+                                and is_destructive
+                                and not auto_confirm
+                            )
                         # Per-arg exemption: read-only shell commands via run_command
                         # (git status, ls, cat, ...) bypass the confirmation gate.
                         if gate_required and tool_name == "run_command" and _is_safe_shell_command(tool_args.get("command", "")):

@@ -4,7 +4,6 @@
     <span id="agents-toolbar-title">Agents</span>
     <span id="agents-toolbar-sub"> &middot; Agent templates &middot; system prompts &middot; model assignments</span>
   </div>
-  <button id="btn-new-agent">+ New agent</button>
 </div>
 
 <!-- Agent Manager chat bar — page-level assistant for creating and modifying agents -->
@@ -43,26 +42,3 @@
 </div>
 
 <!-- Per-agent inline panels are generated dynamically by agents.js -->
-<div id="agents-create-modal" class="hidden">
-  <div id="agents-create-box">
-    <h3>New Agent</h3>
-    <div class="agents-create-row">
-      <label for="agents-create-name">Name</label>
-      <input type="text" id="agents-create-name" class="agents-input" placeholder="My Custom Agent" maxlength="60" autocomplete="off" data-lpignore="true" data-1p-ignore="true">
-    </div>
-    <div class="agents-create-row">
-      <label for="agents-create-desc">Description</label>
-      <input type="text" id="agents-create-desc" class="agents-input" placeholder="Optional description" maxlength="200" autocomplete="off" data-lpignore="true" data-1p-ignore="true">
-    </div>
-    <div class="agents-create-row">
-      <label for="agents-create-template">Template</label>
-      <select id="agents-create-template" class="agents-input">
-        <option value="">— No template —</option>
-      </select>
-    </div>
-    <div id="agents-create-actions">
-      <button class="agents-btn" id="btn-create-cancel">Cancel</button>
-      <button class="agents-btn primary" id="btn-create-confirm">Create</button>
-    </div>
-  </div>
-</div>

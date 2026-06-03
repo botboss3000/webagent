@@ -26,6 +26,14 @@ let barEl = null;    // #chat-activity-bar (clickable header chip)
 let textEl = null;   // .chat-activity-text (the ticking note)
 let panelEl = null;  // #chat-activity-panel (tool-call list)
 
+// ── Token bar elements ──
+let tokenBarEl = null;   // #chat-token-bar
+let tokensInEl = null;   // #chat-tokens-in
+let tokensOutEl = null;  // #chat-tokens-out
+let tokenSpinnerEl = null; // #chat-token-spinner
+let cumulativeIn = 0;
+let cumulativeOut = 0;
+
 let active = false;     // a turn is in progress
 let resting = false;    // turn ended but tool calls remain to inspect
 let expanded = false;   // panel open
@@ -74,6 +82,25 @@ function _animateText() {
   } catch (_) { /* Web Animations API unavailable — non-fatal */ }
 }
 
+function _updateTokenBar() {
+  if (tokensInEl) tokensInEl.textContent = cumulativeIn;
+  if (tokensOutEl) tokensOutEl.textContent = cumulativeOut;
+  if (tokenBarEl) tokenBarEl.classList.toggle('active', active || cumulativeIn > 0 || cumulativeOut > 0);
+  if (tokenSpinnerEl) tokenSpinnerEl.classList.toggle('spinning', active);
+}
+
+function addTokens(inputTokens, outputTokens) {
+  if (typeof inputTokens === 'number') cumulativeIn += inputTokens;
+  if (typeof outputTokens === 'number') cumulativeOut += outputTokens;
+  _updateTokenBar();
+}
+
+function resetTokens() {
+  cumulativeIn = 0;
+  cumulativeOut = 0;
+  _updateTokenBar();
+}
+
 function setNote(text) {
   // Dedupe identical notes — this also tames the per-chunk spam from `stream`
   // events, which would otherwise re-fire on every token.
@@ -110,6 +137,7 @@ function _activate() {
   resting = false;
   if (rootEl) { rootEl.classList.remove('resting'); rootEl.classList.add('visible'); }
   if (pillEl) pillEl.classList.add('thinking');
+  _updateTokenBar();
 }
 
 function start(initialNote) {
@@ -143,6 +171,7 @@ function stop() {
   _clearTextTimer();
   clearTimer = setTimeout(() => { if (textEl) textEl.textContent = ''; }, 260);
   _updateBarAffordance();
+  _updateTokenBar();
 }
 
 // Show a final note (Error / Stopped) briefly, then settle.
@@ -169,6 +198,7 @@ export function chatActivitySessionChanged() {
   if (pillEl) pillEl.classList.remove('thinking');
   if (rootEl) rootEl.classList.remove('visible', 'resting');
   if (textEl) textEl.textContent = '';
+  resetTokens();
 }
 
 // ── Tool-call accumulation ──────────────────────────────────────────────────
@@ -542,6 +572,13 @@ function handleEvent(event) {
     return;
   }
 
+  // Capture token usage from pipeline llm_call_end events
+  if (type === 'pipeline' && event.step === 'llm_call_end') {
+    if (typeof event.input_tokens === 'number' || typeof event.output_tokens === 'number') {
+      addTokens(event.input_tokens || 0, event.output_tokens || 0);
+    }
+  }
+
   const note = eventToNote(event);
   if (note == null) {
     if (active) _armWatchdog(); // sign of life — keep the watchdog from firing
@@ -562,6 +599,10 @@ export function initChatActivity() {
   barEl = document.getElementById('chat-activity-bar');
   textEl = rootEl ? rootEl.querySelector('.chat-activity-text') : null;
   panelEl = document.getElementById('chat-activity-panel');
+  tokenBarEl = document.getElementById('chat-token-bar');
+  tokensInEl = document.getElementById('chat-tokens-in');
+  tokensOutEl = document.getElementById('chat-tokens-out');
+  tokenSpinnerEl = document.getElementById('chat-token-spinner');
 
   if (barEl) barEl.addEventListener('click', togglePanel);
 

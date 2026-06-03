@@ -111,6 +111,55 @@ body {
   }
 #chat-header button:hover { color: #7dcfff; }
 
+/* ── Header notification badge ── */
+#header-notifications {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.header-notif-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: default;
+  color: #f7768e;
+  background: rgba(247, 118, 142, 0.12);
+  border: 1px solid rgba(247, 118, 142, 0.2);
+  transition: opacity 0.2s, background 0.2s;
+}
+.header-notif-badge:hover {
+  background: rgba(247, 118, 142, 0.2);
+}
+body.light-mode .header-notif-badge {
+  color: #c04050;
+  background: rgba(192, 64, 80, 0.1);
+  border-color: rgba(192, 64, 80, 0.2);
+}
+body.light-mode .header-notif-badge:hover {
+  background: rgba(192, 64, 80, 0.18);
+}
+.header-notif-badge.header-notif-running {
+  color: #7dcfff;
+  background: rgba(125, 207, 255, 0.1);
+  border-color: rgba(125, 207, 255, 0.2);
+}
+.header-notif-badge.header-notif-running:hover {
+  background: rgba(125, 207, 255, 0.18);
+}
+body.light-mode .header-notif-badge.header-notif-running {
+  color: #3a8bbf;
+  background: rgba(58, 139, 191, 0.1);
+  border-color: rgba(58, 139, 191, 0.2);
+}
+body.light-mode .header-notif-badge.header-notif-running:hover {
+  background: rgba(58, 139, 191, 0.18);
+}
+
 /* ── Chat input area ── */
 /* Bottom aligns with #main-panel (which has 8px margin), so the pill
    sits level with the pages card instead of pushed to the bottom of the
@@ -129,6 +178,110 @@ body {
     bottom: 8px;
     z-index: 5;
     min-height: 0;
+  }
+
+/* ── Chat footer row (token bar + mode button) ───────────────────────────
+   A single flex row below the pill that holds the token counter on the left
+   and the execution-mode button on the right. */
+.chat-footer-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 8px;
+    min-height: 0;
+  }
+
+/* ── Chat token bar ──────────────────────────────────────────────────────
+   Sits below the chat pill, left-aligned. Shows tokens-in, a spinning shape
+   during activity, and tokens-out. The spinner animates while the agent is
+   working (chat-activity.visible is set). */
+.chat-token-bar {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 0;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: #565f89;
+    pointer-events: none;
+    user-select: none;
+    opacity: 0.6;
+    transition: opacity 0.2s ease;
+    flex-shrink: 0;
+  }
+.chat-token-bar.active {
+    opacity: 1;
+  }
+.chat-token-label {
+    color: #3b4261;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-size: 9px;
+  }
+.chat-token-value {
+    color: #565f89;
+    min-width: 20px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+/* Spinning shape — a diamond that rotates. While the agent is active
+   (.chat-activity.visible on the sibling #chat-activity) it spins;
+   otherwise it sits still as a small dot. */
+.chat-token-spinner {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border: 1.5px solid #565f89;
+    border-radius: 2px;
+    transform: rotate(45deg);
+    transition: border-color 0.3s ease, opacity 0.3s ease;
+    opacity: 0.4;
+  }
+.chat-token-bar.spinning .chat-token-spinner {
+    animation: tokenSpinnerSpin 1.2s linear infinite;
+    border-color: #7dcfff;
+    opacity: 1;
+  }
+@keyframes tokenSpinnerSpin {
+    0%   { transform: rotate(45deg); }
+    100% { transform: rotate(405deg); }
+  }
+
+/* ── Execution mode button (single cycle: Read → Ask → Auto → Read) ─────
+   Sits above the chat pill, right-aligned alongside continue/stop buttons.
+   Styled identically to .chat-continue-btn for visual consistency. */
+.chat-mode-btn {
+    display: inline-flex;
+    align-self: center;
+    background: #7dcfff15;
+    border: 1px solid #7dcfff30;
+    color: #7dcfff;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 14px;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    line-height: 1.4;
+    user-select: none;
+    -webkit-user-select: none;
+    font-family: inherit;
+  }
+.chat-mode-btn:hover {
+    background: #7dcfff25;
+    border-color: #7dcfff60;
+  }
+.chat-mode-btn:active {
+    background: #7dcfff35;
+  }
+body.light-mode .chat-mode-btn {
+    background: #ff8c4215;
+    border-color: #ff8c4230;
+    color: #ff8c42;
+  }
+body.light-mode .chat-mode-btn:hover {
+    background: #ff8c4225;
+    border-color: #ff8c4260;
   }
 
 /* Chat messages container — drop target with overlay */
@@ -275,6 +428,18 @@ body {
     border: 1px solid #f7768e40;
     color: #f7768e;
     align-self: flex-start;
+  }
+.chat-bubble.debug-info {
+    background: #1a1a2e;
+    border: 1px dashed #565f89;
+    color: #565f89;
+    align-self: flex-start;
+    font-size: 11px;
+    padding: 6px 10px;
+    border-bottom-left-radius: 4px;
+  }
+.chat-bubble.debug-info .md-body {
+    font-family: monospace;
   }
 .chat-bubble .label {
     font-size: 11px;
@@ -1917,6 +2082,18 @@ body.light-mode .xterm-viewport {
     margin-left: auto;
   }
 .header-plus-btn:hover { color: #7dcfff; }
+
+/* TUI bridge indicator — shows a small icon when the TUI bridge agent is selected */
+.tui-bridge-indicator {
+    font-size: 13px;
+    margin-left: 4px;
+    cursor: help;
+    vertical-align: middle;
+    display: inline-flex;
+    align-items: center;
+    transition: opacity 0.3s ease;
+    flex-shrink: 0;
+}
 
 /* Header delete button — sits to the right of the picker, before the + button */
 .header-delete-btn {

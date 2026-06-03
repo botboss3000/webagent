@@ -16,6 +16,36 @@ function setRestartStatus(msg) {
   }
 }
 
+/* ── Server health dot ─────────────────────────────────────── */
+function setHealthDot(state) {
+  const dot = document.getElementById('admin-health-dot');
+  if (!dot) return;
+  dot.className = 'health-dot';
+  if (state === 'green') {
+    dot.classList.add('health-dot-green');
+    dot.title = 'Server healthy';
+  } else if (state === 'red') {
+    dot.classList.add('health-dot-red');
+    dot.title = 'Server unreachable';
+  } else if (state === 'orange') {
+    dot.classList.add('health-dot-orange');
+    dot.title = 'Server restarting…';
+  }
+}
+
+let healthPollInterval = null;
+
+function startHealthPoll() {
+  if (healthPollInterval) clearInterval(healthPollInterval);
+  const poll = () => {
+    fetch(apiPath('/health'))
+      .then(r => { setHealthDot(r.ok ? 'green' : 'red'); })
+      .catch(() => { setHealthDot('red'); });
+  };
+  poll();
+  healthPollInterval = setInterval(poll, 10000);
+}
+
 export function initReconnect() {
   const reconnectBtn = document.getElementById('btn-reconnect');
   if (reconnectBtn) {
@@ -30,6 +60,7 @@ export function initReconnect() {
     restartBtn.addEventListener('click', async () => {
       restartBtn.classList.add('restarting');
       setRestartStatus('Restarting server...');
+      setHealthDot('orange');
       try {
         await fetch(apiPath('/api/v1/restart'), { method: 'POST' });
       } catch {
@@ -41,6 +72,7 @@ export function initReconnect() {
           if (r.ok) {
             clearInterval(poll);
             restartBtn.classList.remove('restarting');
+            setHealthDot('green');
             setRestartStatus('Reconnecting...');
             reconnectAllTerminals();
             connectAgent();
@@ -52,4 +84,7 @@ export function initReconnect() {
       }, 2000);
     });
   }
+
+  // Start health polling
+  startHealthPoll();
 }

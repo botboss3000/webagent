@@ -34,6 +34,7 @@ class ChatRequest(BaseModel):
     attachment_ids: Optional[List[str]] = None
     agent_template_id: Optional[str] = None  # request a specific agent template for this session
     agent_id: Optional[str] = None  # request a specific custom agent by ID for this session
+    execution_mode: Optional[str] = 'write'  # 'read' | 'write' | 'auto' — controls tool execution permission
 
 
 class ChatResponse(BaseModel):

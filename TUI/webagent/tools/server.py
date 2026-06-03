@@ -109,7 +109,11 @@ def _proot_venv_activate(project_root: Path) -> Optional[str]:
 
 
 def _spawn_detached_proot(project_root: Path, log_path: Path) -> int:
-    """Launch the server inside a proot-distro container (Android/Termux)."""
+    """Launch the server inside a proot-distro container (Android/Termux).
+
+    Binds the host project to /root/webagent inside the proot so that venv
+    symlinks (which point to the proot's own python3.11) resolve correctly.
+    """
     distro = _proot_distro()
     if distro is None:
         raise RuntimeError("No proot-distro container found (expected 'ubuntu').")
@@ -121,11 +125,12 @@ def _spawn_detached_proot(project_root: Path, log_path: Path) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     logf = open(log_path, "ab")
     proot_bin = "/data/data/com.termux/files/usr/bin/proot-distro"
-    proot_root = _proot_project_path(project_root)
+    in_proot_root = "/root/webagent"
     args = [
         proot_bin, "login", distro,
+        "--bind", f"{project_root}:{in_proot_root}",
         "--", "bash", "-c",
-        f"cd '{proot_root}' && source {act} && exec python run.py"
+        f"cd '{in_proot_root}' && source {act} && exec python run.py"
     ]
     try:
         proc = subprocess.Popen(
