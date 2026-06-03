@@ -2370,33 +2370,13 @@ export function initFiles() {
   initSettingsToggle();
   initSidebarMaximize();
   initFilesTerminalButton();
-  initHeaderRefreshButton();
   renderTabs();
   renderEditorPanes();
 }
 
-// Header "restart server & reload" button — mirrors the refresh button
-// in the terminal launcher sidebar (#ft-refresh) so it's reachable from
-// every view, not just the terminal tab.
-function initHeaderRefreshButton() {
-  const btn = document.getElementById('header-refresh-btn');
-  if (!btn || btn.dataset.wired) return;
-  btn.dataset.wired = '1';
-  btn.addEventListener('click', async () => {
-    if (btn.dataset.busy === '1') return;
-    btn.dataset.busy = '1';
-    const origTitle = btn.title;
-    btn.title = 'Restarting server…';
-    btn.classList.add('is-spinning');
-    const ok = await restartServerAndReload();
-    if (!ok) {
-      btn.dataset.busy = '';
-      btn.title = origTitle;
-      btn.classList.remove('is-spinning');
-      alert('Server did not come back within 60s. Check `journalctl -u webagent -f`.');
-    }
-  });
-}
+// (The global header "restart & reload" button was removed — restart is still
+// available via #btn-restart in the chat header and #ft-refresh in the terminal
+// sidebar. Removing it lets initFiles() be deferred to first Admin Tools open.)
 
 // ── In-page terminal tabs ──────────────────────────────────────────
 //

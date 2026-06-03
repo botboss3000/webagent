@@ -50,7 +50,7 @@ The core workflow when an agent misbehaves:
 UPDATE agent_prompts SET content = '<new_prompt>' WHERE agent_id = '<id>' AND slot_name = 'system';
 ```
 
-The JSON template file (`app/context/agents/*.json`) is only read by the seeder at boot. Editing it alone does NOT affect running agents.
+The JSON template file (`data/agents/*.json`) is only read by the seeder at boot. Editing it alone does NOT affect running agents.
 
 ### What worked (progressive tightening)
 
@@ -79,7 +79,7 @@ curl -X PUT "/api/v1/agents/<id>/connections/codebase_admin?user_id=admin_defaul
 
 | Step | What Happens | How to Re-seed |
 |------|-------------|----------------|
-| 1 | JSON template edited in `app/context/agents/` | Edit the JSON file |
+| 1 | JSON template edited in `data/agents/` | Edit the JSON file |
 | 2 | Server start → `_seed_agent_templates_from_json_files()` imports JSON into DB | Restart server (uvicorn) |
 | 3 | Manifest hash check — if JSON files unchanged, short-circuits | Force re-seed by bumping `version` field or calling the admin "Re-Seed" button |
 | 4 | User creates agent from template → DB copy | Use the API `POST /api/v1/agents` with `template_id` |
@@ -210,7 +210,7 @@ The seeder updates `agent_templates` and `agent_prompt_templates` tables. It doe
 | `app/admin/` | Admin tools (read_source, write_source, etc.) |
 | `app/tools/` | Non-admin tool implementations |
 | `app/integrations/` | OAuth integration tools + `inject_integration_tools()` |
-| `app/context/agents/` | Agent JSON templates seeded into DB on startup |
+| `data/agents/` | Agent JSON templates seeded into DB on startup |
 | `app/db/` | Database setup, models, migrations. `local.py` for SQLite. |
 
 ### Agent Template Prompt Slots

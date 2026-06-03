@@ -341,7 +341,7 @@ the header.
 | Button | Action |
 |--------|--------|
 | `[Connect]` | Open the **Connect** view — browse the admin's agents, pick one, then pick (or start) a session to set the **target**, and flip the two mute toggles (see [Driving the running app](#driving-the-running-app-the-two-mutes)) |
-| `[App Config]` | Open the **App Config** view — edit `app-settings.json` (access mode, presentation mode) and the app's **LLM auth key** (provider / base URL / model / API key), saved over the admin API |
+| `[App Config]` | Open the **App Config** view — edit `app-settings.json` (access mode, presentation mode, **render recorder** on/off — the browser flight-recorder that captures HTML snapshots / lag / JS errors) and the app's **LLM auth key** (provider / base URL / model / API key), saved over the admin API |
 | `[Commands]` | Print a user reference to the transcript — on-screen controls, keyboard shortcuts, plain-language things to ask the agent, and the terminal commands for install / launch / proot-Python / uninstall (tailored to Termux vs desktop) |
 | `[Update]` | Update the manager/repo — backs up, pulls (source) or rebuilds the exe (frozen), and restarts |
 | `[Install]` | Run the guided install (onboarding mode); in managed mode it points you at `[Update]` instead |
@@ -436,7 +436,7 @@ to a few short words (Admin · Git · App), it fits a narrow terminal.
 | `Esc` | Open the side menu (the **App** panel) — or close it if one is already open |
 | `Ctrl+Q` | Quit the manager |
 | `Ctrl+A` | Select all text in the input field |
-| `Ctrl+C` / `Ctrl+V` / `Ctrl+X` | Copy / paste / cut — wired to the **real OS clipboard** (Ctrl+V reads it, Ctrl+C/X write it), so pasting a key/token from a browser or password manager works. (Textual's defaults only use an internal buffer + OSC 52, which don't reach the OS clipboard on Windows/many terminals.) |
+| `Ctrl+C` / `Ctrl+V` / `Ctrl+X` | Copy / paste / cut — wired to the **real OS clipboard** (Ctrl+V reads it, Ctrl+C/X write it), so pasting a key/token from a browser or password manager works. (Textual's defaults only use an internal buffer + OSC 52, which don't reach the OS clipboard on Windows/many terminals.) **Ctrl+V also pastes an _image_** on the clipboard as an attachment — see [Image attachments](#image-attachments). |
 | `Ctrl+T` | Cycle theme (23 shared with the launcher; not shown in the footer) |
 
 The **footer** is minimal: a left `Esc menu` hint and a right-aligned **⌨ Keyboard**
@@ -451,6 +451,26 @@ keyboard on desktop and most platforms.
 **Copying transcript text.** The footer's `Ctrl+C` copies the input field. To copy
 text from the **transcript**, hold **Shift** while dragging to use your terminal's
 own native selection/copy (works anywhere on screen).
+
+### Image attachments
+
+The chat sends images to the model as a **multimodal message** (the OpenAI-compatible
+`image_url` part), so you can paste a screenshot and ask about it. **This needs a
+vision-capable model** (e.g. a GPT-4o / Claude-via-OpenRouter vision model); a
+text-only model will reject the image.
+
+- **Add an image two ways:** press **Ctrl+V** with an image on the clipboard
+  (screenshot tools, browsers — Windows reads the clipboard's PNG/bitmap natively, with
+  Pillow used automatically if it happens to be installed; macOS via `osascript`; Linux
+  via `wl-paste`/`xclip`), **or drag an image file onto the terminal** — most terminals
+  deliver a drop as a pasted file path, which the input recognises and attaches.
+- **Multiple per message:** each attached image becomes a small **chip** above the input
+  showing its filename with a **`[x]`** to remove it. Send with text, or on its own.
+- **Where they live:** images are copied into the manager's data dir under
+  `attachments/<session>/` and the conversation history stores only the **path + type**
+  (re-read and base64-encoded at send time), so the SQLite store stays small and the
+  attachment still rides along on later turns when the history is replayed. Terminals
+  can't render the picture inline — the transcript shows `attached: <names>`.
 
 The UI shares the launcher's **23 themes** and emoji/ASCII **glyph** set (the
 relevant assets are vendored alongside this package, so the `.exe` stays

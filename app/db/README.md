@@ -18,7 +18,7 @@ Copy data with `python -m app.db.migrate_sqlite_to_pg` (see `migrate_sqlite_to_p
 
 | Table | Job |
 |-------|-----|
-| **`agent_templates`** | Per-template config (model, temperature, loop_logic, trigger). Seeded from `app/context/agents/*.json`. |
+| **`agent_templates`** | Per-template config (model, temperature, loop_logic, trigger). Seeded from `data/agents/*.json`. |
 | **`agent_prompt_templates`** | Canonical slot content per template. Each row keyed by `(template_id, slot_name)`. Carries `version` (int, declared in JSON) + `source` (`'json'` \| `'admin'`). JSON re-seed never overwrites `source='admin'` rows. |
 | **`agents`** | Per-user agent instances. References a `template_id`. |
 | **`agent_prompts`** | Per-agent runtime slot rows: admin-base rows cloned from `agent_prompt_templates` at agent creation, plus optional per-user overrides (`user_id` set). Each cloned row stamps `template_version`. |
