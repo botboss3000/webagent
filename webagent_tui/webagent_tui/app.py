@@ -28,6 +28,7 @@ from textual.events import Click, Paste
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widget import Widget
+from textual.strip import Strip
 from textual.widgets import Checkbox, Collapsible, Input, Select, Static, TextArea
 
 from .agent import AgentEvent, ServerManagerAgent
@@ -139,6 +140,13 @@ class PromptInput(TextArea):
             event.prevent_default()
             return
         await super()._on_paste(event)
+
+    def render_line(self, y: int) -> Strip:
+        """Render a line, guarding against zero-width content (crashes rich's
+        chop_cells / divide_line with ValueError: range() arg 3 must not be zero)."""
+        if self.content_size.width <= 0:
+            return Strip.blank(self.size.width, self.get_visual_style("text-area"))
+        return super().render_line(y)
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Auto-grow up to MAX_ROWS lines."""
@@ -808,19 +816,22 @@ class ServerManagerApp(App):
         """Paste OS clipboard text into side-panel Input widgets (API keys, tokens,
         URLs, etc.) — Textual's built-in paste uses its internal clipboard, which is
         often empty on Windows terminals, so config fields need the real system clipboard."""
+        focused = self.focused
+        if focused is None:
+            return
         # PromptInput extends TextArea and handles its own paste (with image support).
-        if isinstance(event.widget, TextArea):
+        if isinstance(focused, TextArea):
             return
         text = read_clipboard()
         if not text:
             return
         # Only handle paste for standard Input widgets (side panel fields etc.).
         # Let other pasteable widgets use their own handlers.
-        if not isinstance(event.widget, Input):
+        if not isinstance(focused, Input):
             return
         event.prevent_default()
         event.stop()
-        event.widget.insert_text_at_cursor(text)
+        focused.insert_text_at_cursor(text)
 
     @on(Click, ".act-btn")
     def _on_act_click(self, event: Click) -> None:
