@@ -6,6 +6,20 @@
   </div>
 </div>
 
+<!-- Card grid -->
+<div id="agents-grid"></div>
+
+<!-- Show/hide the built-in utility agents (Suggested Replies, GitHub agent,
+     Agent Manager, etc.). Off by default so the page shows only the agents the
+     user added themselves. -->
+<div id="agents-system-toggle-row">
+  <label id="agents-system-toggle-label">
+    <input type="checkbox" id="agents-show-system">
+    <span>Show system agents</span>
+  </label>
+  <span id="agents-system-toggle-hint">Built-in helpers like Suggested Replies, GitHub, and Agent Manager.</span>
+</div>
+
 <!-- Agent Manager chat bar — page-level assistant for creating and modifying agents -->
 <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #chat-input-row,
      #ac-int-admin-chat-input-row, #autoagent-prompt-row. Style rules live
@@ -25,20 +39,6 @@
       <i data-lucide="send" style="width:16px;height:16px;"></i>
     </button>
   </div>
-</div>
-
-<!-- Card grid -->
-<div id="agents-grid"></div>
-
-<!-- Show/hide the built-in utility agents (Suggested Replies, GitHub agent,
-     Agent Manager, etc.). Off by default so the page shows only the agents the
-     user added themselves. -->
-<div id="agents-system-toggle-row">
-  <label id="agents-system-toggle-label">
-    <input type="checkbox" id="agents-show-system">
-    <span>Show system agents</span>
-  </label>
-  <span id="agents-system-toggle-hint">Built-in helpers like Suggested Replies, GitHub, and Agent Manager.</span>
 </div>
 
 <!-- Per-agent inline panels are generated dynamically by agents.js -->

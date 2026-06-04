@@ -668,13 +668,11 @@ function _renderSessionRows() {
     } else if (s.has_unread) {
       statusHtml = `<span class="session-row-status session-status-unread" title="New response ready">${icon('check-circle', { size: '12px' })}</span>`;
     }
-    const timeLabel = _formatRelativeTime(s.updated_at);
     row.innerHTML = `
       <span class="row-drag-handle" data-drag-handle title="Drag to reorder · hold to pin">${icon('grip-vertical', { size: '13px' })}</span>
       <span class="session-row-pin-icon">${icon('pin', { size: '12px' })}</span>
       ${statusHtml}
       <span class="session-row-title" title="Hold to rename">${_truncate(label, 28).replace(/</g, '&lt;')}</span>
-      <span class="session-row-time">${timeLabel}</span>
       <button class="session-row-delete" title="Delete session" data-id="${s.id}" data-state="trash">${icon('trash-2', { size: '14px' })}</button>
     `;
     menu.appendChild(row);
@@ -776,6 +774,9 @@ function _updateHeaderSessionCounter() {
   const running = _sessionsCache.filter(
     s => s.run_status === 'running'
   ).length;
+  const unread = _sessionsCache.filter(
+    s => s.has_unread && s.run_status !== 'running'
+  ).length;
 
   if (needingAttention > 0) {
     countEl.textContent = needingAttention;
@@ -783,16 +784,28 @@ function _updateHeaderSessionCounter() {
     badge.title = needingAttention === 1
       ? '1 session needs attention'
       : `${needingAttention} sessions need attention`;
+    // Reset to warning icon
+    const iconEl = badge.querySelector('[data-lucide]');
+    if (iconEl) iconEl.setAttribute('data-lucide', 'alert-triangle');
+    badge.className = 'header-notif-badge';
   } else if (running > 0) {
     countEl.textContent = running;
     badge.style.display = 'inline-flex';
     badge.title = running === 1
       ? '1 session running'
       : `${running} sessions running`;
-    // Use a different icon/color for running vs attention
     const iconEl = badge.querySelector('[data-lucide]');
     if (iconEl) iconEl.setAttribute('data-lucide', 'loader-2');
     badge.className = 'header-notif-badge header-notif-running';
+  } else if (unread > 0) {
+    countEl.textContent = unread;
+    badge.style.display = 'inline-flex';
+    badge.title = unread === 1
+      ? '1 session with new response'
+      : `${unread} sessions with new responses`;
+    const iconEl = badge.querySelector('[data-lucide]');
+    if (iconEl) iconEl.setAttribute('data-lucide', 'check-circle');
+    badge.className = 'header-notif-badge header-notif-unread';
   } else {
     badge.style.display = 'none';
   }

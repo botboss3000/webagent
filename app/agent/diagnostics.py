@@ -5,15 +5,19 @@ Captures the server's and agent loop's internal activity into a rolling
 window so an operator — or a diagnostic AI agent — can inspect what has been
 happening and what went wrong, *after the fact*, without tailing the console.
 
-Four capture categories:
+Capture categories:
 
-  • ``server`` — WARNING/ERROR log records (with tracebacks) from the stdlib
-                 ``logging`` system, fed in by :class:`DiagnosticLogHandler`.
-  • ``loop``   — agent-loop pipeline events (provider race, tool calls,
-                 guardrail trips, stalls) tapped from ``_emit_to_visualizers``.
-  • ``run``    — run lifecycle (start / complete / interrupted / error /
-                 resume) tapped from the Run Manager / runner.
-  • ``tool``   — tool execution errors surfaced during a turn.
+  • ``server``   — WARNING/ERROR log records (with tracebacks) from the stdlib
+                   ``logging`` system, fed in by :class:`DiagnosticLogHandler`.
+  • ``http``     — 4xx/5xx HTTP responses and their cause.
+  • ``loop``     — agent-loop pipeline events (provider race, tool calls,
+                   guardrail trips) tapped from ``_emit_to_visualizers``.
+  • ``run``      — run lifecycle (start / complete / interrupted / error) for
+                   ordinary turns, tapped from the Run Manager / runner.
+  • ``recovery`` — self-recovery: stream stalls, watchdog frozen/zombie
+                   detections, resume (re-trigger) attempts, and the outcome of
+                   a run that was resumed.
+  • ``tool``     — tool execution errors surfaced during a turn.
 
 Storage is two-tier, mirroring the chat stream's "RAM buffer in front of the
 DB" design (see :mod:`app.agent.run_buffer`):
@@ -192,7 +196,7 @@ class DiagnosticRecorder:
             self._counts[lvl] = self._counts.get(lvl, 0) + 1
             self._write_file(rec)
             if persist is None:
-                persist = LEVELS[lvl] >= LEVELS["warning"] or (category == "run")
+                persist = LEVELS[lvl] >= LEVELS["warning"] or category in ("run", "recovery")
             if persist:
                 self._pending.append(rec)
                 self._ensure_task()
@@ -690,7 +694,11 @@ def record_run_lifecycle(
         d = dict(detail or {})
         d.update({"phase": phase, "status": status, "stop_cause": stop_cause,
                   "origin": origin, "error": _truncate(error, MAX_DETAIL_LEN)})
-        get_recorder().record(level, "run", msg, source=phase, detail=d,
+        # Self-recovery transitions get their own category so the diagnostics UI
+        # can show/hide them apart from routine run lifecycle: every resume (a
+        # re-trigger) plus the finish that ends a run which had been resumed.
+        category = "recovery" if (phase == "resume" or d.get("was_resume")) else "run"
+        get_recorder().record(level, category, msg, source=phase, detail=d,
                               session_id=session_id, agent_id=agent_id,
                               user_id=user_id, persist=True)
     except Exception:

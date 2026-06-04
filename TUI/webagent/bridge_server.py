@@ -39,8 +39,9 @@ def find_free_port() -> int:
 def set_handler(handler: Callable) -> None:
     """Set the async handler function that processes incoming bridge messages.
     
-    The handler receives (session_id: str, message: str, user_id: str) and
-    returns a dict with at least {"reply": str}.
+    The handler receives (session_id: str, message: str, user_id: str,
+    execution_mode: str = "write") and returns a dict with at least
+    {"reply": str}.
     """
     global _handler
     _handler = handler
@@ -79,6 +80,7 @@ async def _app(scope: dict, receive: Callable, send: Callable) -> None:
             session_id = body.get("session_id", "")
             message = body.get("message", "")
             user_id = body.get("user_id", "")
+            execution_mode = body.get("execution_mode", "write")
 
             if not session_id or not message:
                 await _send_json(send, 400, {"error": "session_id and message are required"})
@@ -88,7 +90,7 @@ async def _app(scope: dict, receive: Callable, send: Callable) -> None:
                 await _send_json(send, 503, {"error": "TUI bridge handler not ready"})
                 return
 
-            result = await _handler(session_id, message, user_id)
+            result = await _handler(session_id, message, user_id, execution_mode)
             await _send_json(send, 200, result)
             return
         except json.JSONDecodeError:
