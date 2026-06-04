@@ -608,6 +608,16 @@ async def startup():
     except Exception as _seed_err:
         logger.warning("Agent template seed at startup failed: %s", _seed_err)
 
+    # First-boot: enable all admin Agent Tools so the app ships ready to "do
+    # everything". Runs once (marker-guarded) so later admin disables persist.
+    try:
+        from app.admin.integrations import seed_default_abilities
+        _ab_seed = await seed_default_abilities()
+        if _ab_seed.get("seeded"):
+            logger.info("Default admin abilities seeded ON: %s", _ab_seed.get("enabled"))
+    except Exception as _ab_err:
+        logger.warning("Default ability seed at startup failed: %s", _ab_err)
+
     # Build trigger routing index from agent_templates
     try:
         from app.agent import trigger_index

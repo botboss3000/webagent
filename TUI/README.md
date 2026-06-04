@@ -449,6 +449,20 @@ conversation. The panel appears only while a category is open. **Every panel vie
 an expand/collapse toggle at the top** (`[‹› wide]` / `[›‹ narrow]`) that widens the
 panel for the busier views (Connect, App Config) and is remembered across sessions.
 
+Directly below the category toolbar is a **second header row — the session tab bar**.
+It always shows three controls on the left, then one pill per **open session**:
+
+| Tab-row item | Action |
+|--------------|--------|
+| **✕** (far left, always visible) | **Closes the window** (quits the manager). It no longer closes the side panel — panels toggle shut by clicking their own category again. |
+| **+** | **Starts a new session** in a fresh tab and switches to it (the transcript clears to an empty conversation). |
+| **SESSIONS** | Opens the **ALL SESSIONS** panel — the list of every stored session. Clicking a session there **opens it as a new tab** (or just switches to it if already open). |
+| **session tabs** | One pill per open session, the active one highlighted. **Click a tab** to switch the transcript + agent context to that session. Tabs are named by the same auto-summary the Sessions list uses, updating after each turn. |
+
+So a session is either **started fresh** (the **+** button or `/new`) or **resumed** from the
+SESSIONS list — either way it becomes a tab you can click between. Switching is instant: the
+agent re-reads each session's history by id, so its context follows the active tab.
+
 | Header item | Action |
 |-------------|--------|
 | **mode** (far left) — a **one-word** write-gate (`read` / `write` / `auto`) | **Click to cycle** read → write → auto (colour signals the mode). Same gate as the App panel's Read/Write/Auto. |
@@ -458,8 +472,8 @@ panel for the busier views (Connect, App Config) and is remembered across sessio
 | **App** | the **AI provider** block — **Provider** as a grid of **pill buttons** (OpenRouter / OpenAI / DeepSeek / Groq / Together / Mistral / xAI / Custom); clicking one highlights it and fills the **Base URL** + **Model** to match (Custom leaves them as typed). Then a plain-text **AI key** field, `[Save]` / `[Clear]`; plus the write-gate `[Read-only]` / `[Write]` / `[Autonomous]` (current one highlighted) and `[Open Browser]` (opens `http://localhost:8080/index.html`). **Keys are shown in clear text** (not masked) so you can verify what you pasted. |
 | **server status** (right after **App**, managed mode) | the live `live` / `stopped` pill (spins `…starting` while booting). **Click it** to open the **Server** view (`[Start]` · `[Restart]` · `[Kill]`). |
 
-**Closing a panel:** click anywhere **outside** it (e.g. in the chat), press **Esc**,
-or click the same category again to toggle it shut. The open category is highlighted in
+**Closing a panel:** click the **same category again** to toggle it shut. (Esc no longer
+closes the panel — it now stops the running agent turn.) The open category is highlighted in
 the header.
 
 **Admin panel actions:**
@@ -479,7 +493,7 @@ the header.
 
 Install, Update, Reset and Uninstall each open a **confirmation right inside the
 sidebar** (the panel switches from its buttons to an info + `[…]` / `[Cancel]` view —
-no pop-up modal); Esc or Cancel returns to the buttons. Uninstall is irreversible.
+no pop-up modal); `[Cancel]` returns to the buttons. Uninstall is irreversible.
 Reset of a **SQLite** install is reversible via its backup; Reset of a **Postgres**
 install drops the schema and is **not** reversible.
 
@@ -545,7 +559,8 @@ to a few short words (Admin · Git · App), it fits a narrow terminal.
   it's blank at rest.
 - **Stop / Continue** — small bracketed **text** (`[Stop]` `[Continue]`) on the right of
   the action bar (above the input): **Stop** cancels the running turn (enabled only while
-  busy); **Continue** asks the agent to pick up where it left off (enabled only when idle).
+  busy; **Esc** does the same from the keyboard); **Continue** asks the agent to pick up
+  where it left off (enabled only when idle).
 - **Messages** — your messages render in a bordered **bubble** that matches the input pill
   (the main background with a bright outline); the agent's replies render as **Markdown**
   (lists, emphasis). Every **fenced code block** in a reply becomes its own framed
@@ -573,13 +588,14 @@ to a few short words (Admin · Git · App), it fits a narrow terminal.
 |-----|--------|
 | `Enter` | Send. A **bare** Enter submits in every terminal spelling (`Ctrl+M` / `Ctrl+J` / numpad Enter all count), so it's reliable regardless of keyboard protocol |
 | `Shift+Enter` / `Ctrl+Enter` / `Alt+Enter` | Insert a newline in the input without sending — *when your terminal reports the modifier distinctly* (some terminals collapse all Enters into one keystroke; on those, only plain Enter exists and these send too) |
-| `Esc` | Open the side menu (the **App** panel) — or close it if one is already open |
+| `↑` / `↓` | **Recall previous messages** — when the input pill is **empty**, `↑` loads your last message; keep pressing `↑` / `↓` to scroll older / newer through this session's history (shell-style). Any other key ends recall. With text already in the pill, the arrows move the cursor as usual |
+| `Esc` | **Stop the running agent turn** (its sole job now). When idle it does nothing; the side menu opens from the header pills instead. (A confirm dialog still cancels on Esc.) |
 | `Ctrl+Q` | Quit the manager |
 | `Ctrl+A` | Select all text in the input field |
 | `Ctrl+C` / `Ctrl+V` / `Ctrl+X` | Copy / paste / cut — wired to the **real OS clipboard** (Ctrl+V reads it, Ctrl+C/X write it), so pasting a key/token from a browser or password manager works. (Textual's defaults only use an internal buffer + OSC 52, which don't reach the OS clipboard on Windows/many terminals.) **Ctrl+V also pastes an _image_** on the clipboard as an attachment — see [Image attachments](#image-attachments). |
 | `Ctrl+T` | Cycle theme (23 shared with the launcher; not shown in the footer) |
 
-The **footer** is minimal: a left `Esc menu` hint and a right-aligned **⌨ Keyboard**
+The **footer** is minimal: a left `Esc stop` hint and a right-aligned **⌨ Keyboard**
 shortcut. Tapping **⌨ Keyboard** focuses the input — the standard way to raise the soft
 keyboard on desktop and most platforms.
 

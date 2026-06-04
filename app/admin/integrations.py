@@ -2500,6 +2500,64 @@ async def get_channel_enabled_map() -> dict[str, bool]:
     return out
 
 
+# One-time first-boot seed: turn every admin Agent Tool ON so the app ships
+# ready to "do everything" out of the box. A marker `auth_elements` row records
+# that the seed ran, so an admin who later DISABLES an ability is never silently
+# re-enabled on the next restart.
+_ABILITY_SEED_MARKER_KEY = "ability_defaults_seeded"
+_ABILITY_SEED_VERSION = "v1"
+
+
+async def seed_default_abilities() -> dict:
+    """Enable all admin Agent Tools on first boot (idempotent, runs once).
+
+    Mirrors `enable_ability` for each key in `_ABILITY_CONFIG_KEY`, then writes
+    a version marker. If the marker already exists the seed is skipped, so admin
+    disables persist across restarts.
+    """
+    try:
+        from app.db import get_db
+        db = get_db()
+    except Exception as e:
+        logger.debug("seed_default_abilities: db unavailable: %s", e)
+        return {"seeded": False, "reason": "no-db"}
+
+    try:
+        marker = await db.auth_element_get(_ADMIN_USER, _ABILITY_SEED_MARKER_KEY, "default")
+        if marker and marker.get("secret_ref"):
+            return {"seeded": False, "reason": "already-seeded"}
+    except Exception as e:
+        logger.debug("seed_default_abilities: marker read failed (continuing): %s", e)
+
+    enabled: list[str] = []
+    for ability, service_key in _ABILITY_CONFIG_KEY.items():
+        try:
+            await db.auth_element_set(
+                user_id=_ADMIN_USER,
+                service=service_key,
+                config={"enabled": True},
+                secret_ref="enabled",
+                label="default",
+            )
+            enabled.append(ability)
+        except Exception as e:
+            logger.warning("seed_default_abilities: failed to enable %s: %s", ability, e)
+
+    try:
+        await db.auth_element_set(
+            user_id=_ADMIN_USER,
+            service=_ABILITY_SEED_MARKER_KEY,
+            config={"version": _ABILITY_SEED_VERSION},
+            secret_ref=_ABILITY_SEED_VERSION,
+            label="default",
+        )
+    except Exception as e:
+        logger.warning("seed_default_abilities: failed to write seed marker: %s", e)
+
+    logger.info("Seeded default admin abilities ON (enabled=%s)", enabled)
+    return {"seeded": True, "enabled": enabled}
+
+
 async def get_ability_enabled_map() -> dict[str, bool]:
     """Return {ability_name: enabled} for every entry in `_ABILITY_CONFIG_KEY`."""
     try:

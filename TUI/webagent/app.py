@@ -207,7 +207,37 @@ class PromptInput(TextArea):
                 event.prevent_default()
                 self.action_submit()
                 return
+            # Shell-style history recall (main chat pill only): when the pill is
+            # EMPTY, Up loads the last message; once navigating, Up/Down step through
+            # older/newer messages. Any other key cancels navigation.
+            if self.id == "prompt" and kl in ("up", "down"):
+                app = self.app
+                navigating = getattr(app, "_hist_idx", None) is not None
+                if kl == "up" and (not self.text or navigating):
+                    recalled = app.history_prev()  # type: ignore[attr-defined]
+                    if recalled is not None:
+                        event.stop()
+                        event.prevent_default()
+                        self._load_history_text(recalled)
+                        return
+                elif kl == "down" and navigating:
+                    event.stop()
+                    event.prevent_default()
+                    self._load_history_text(app.history_next() or "")  # type: ignore[attr-defined]
+                    return
+            elif self.id == "prompt" and getattr(self.app, "_hist_idx", None) is not None:
+                # Any non-navigation key ends history recall, so further edits stick.
+                self.app.history_reset()  # type: ignore[attr-defined]
         await super()._on_key(event)
+
+    def _load_history_text(self, text: str) -> None:
+        """Replace the pill's contents with a recalled message and park the cursor
+        at the end (so the next Up/Down keeps navigating, not moving within text)."""
+        self.text = text
+        try:
+            self.move_cursor(self.document.end)
+        except Exception:
+            pass
 
     def action_new_line(self) -> None:
         """Insert a newline at the cursor without submitting (Shift/Ctrl/Alt+Enter)."""
@@ -440,11 +470,11 @@ class ServerManagerApp(App):
     CSS_PATH = "styles.tcss"
     TITLE = "webAgent Server Manager"
 
-    # Esc opens/closes the side menu (a panel); Ctrl+Q quits the app. The editing
+    # Esc stops the running agent turn; Ctrl+Q quits the app. The editing
     # keys (Ctrl+A/C/V) are handled by the focused input. Theme stays on Ctrl+T (not
     # advertised). priority=True so these fire even while the input is focused.
     BINDINGS = [
-        Binding("escape", "exit", "Menu", priority=True),
+        Binding("escape", "exit", "Stop", priority=True),
         Binding("ctrl+q", "quit_app", "Quit", priority=True),
         Binding("ctrl+t", "cycle_theme", "Theme", priority=True),
     ]
@@ -505,6 +535,14 @@ class ServerManagerApp(App):
         self.session_id = self.store.create_session(
             str(self.project_root) if self.project_root else "(onboarding)"
         )
+        # ── Open-session TABS (the second header row) ──
+        # Each open session is a tab {id, title}; the active one is self.session_id.
+        # The + button opens a fresh tab; the SESSIONS button lists every stored
+        # session and clicking one opens it as a tab. Tabs only switch on click.
+        self._open_tabs: list[dict] = [{"id": self.session_id, "title": "New session"}]
+        # ── Input history (shell-style Up/Down recall when the pill is empty) ──
+        self._input_history: list[str] = []   # this session's user messages, oldest→newest
+        self._hist_idx: Optional[int] = None  # cursor into _input_history (None = not navigating)
         self._self_info = gather()            # how THIS manager runs (source/exe); static, cached
         self._self_update_state = "manager update: checking…"  # refreshed by a startup probe
         self._server_state = "n/a"   # cached server health for the status-bar dot
@@ -563,6 +601,7 @@ class ServerManagerApp(App):
         # always visible) and a thin side panel (right) that appears only when a
         # category is opened — so opening a menu never hides the conversation.
         yield Horizontal(id="status")      # header: clickable category toolbar
+        yield Horizontal(id="tabbar")      # second header row: ✕ / + / SESSIONS + open-session tabs
         with Horizontal(id="body"):
             with Vertical(id="main"):      # the chat column (stays visible)
                 self._anim = None                  # (the animated logo banner was removed)
@@ -624,6 +663,7 @@ class ServerManagerApp(App):
         self._tui_log.start(self._self_info.version, project=proj, model=model)
         self._refresh_title()
         self._refresh_status()
+        self._refresh_tabs()
         self._update_hud()
         # Anchor the transcript to the bottom: it auto-follows new content while the
         # user is at the bottom, but RELEASES the moment they scroll up (wheel or
@@ -898,9 +938,8 @@ class ServerManagerApp(App):
             if self._panel_kind == kind:
                 w.add_class("hdr-on")
 
-        # Far-left = ✕ close button (shown only while a panel is open) + write-gate toggle.
-        close_btn = self._add_hdr(bar, Text(f"{G.CROSS} ", style=f"bold {c['accent']}"), "close_panel")
-        close_btn.display = self._panel_open()
+        # Far-left = write-gate toggle. (The ✕ close button moved to the tab row below,
+        # where it now closes the WINDOW and is always visible.)
         mode = "auto" if self.cfg.autonomous else "write" if self.cfg.writes_enabled else "read"
         mcol = {"read": c["dim"], "write": c["secondary"], "auto": c["tool"]}[mode]
         self._add_hdr(bar, Text(mode, style=f"bold {mcol}"), "mode_cycle")
@@ -921,6 +960,41 @@ class ServerManagerApp(App):
             self._dot.set_state(self._server_state)
         else:
             self._add_hdr(bar, Text("onboarding", style=c["secondary"]), None)
+
+    # ── second header row: window-close ✕ · + new session · SESSIONS · open tabs ──
+    def _refresh_tabs(self) -> None:
+        """(Re)build the tab row below the category toolbar: a window-close ✕, a +
+        that opens a fresh session, a SESSIONS button that lists every stored session,
+        then one pill per OPEN session (the active one highlighted). Clicking a tab
+        switches the transcript + agent context to that session."""
+        c = self.cc
+        try:
+            bar = self.query_one("#tabbar", Horizontal)
+        except Exception:
+            return
+        bar.remove_children()
+
+        # ✕ — always visible; closes the whole window.
+        self._add_hdr(bar, Text(f"{G.CROSS}", style=f"bold {c['accent']}"), "quit_app")
+        # + — start a new session in a fresh tab.
+        self._add_hdr(bar, Text("+", style=f"bold {c['accent']}"), "new_session_tab")
+        # SESSIONS — open the all-sessions list (click one to open it as a tab).
+        sess_btn = self._add_hdr(bar, Text("SESSIONS", style=f"bold {c['accent']}"), "panel_sessions")
+        if self._panel_kind == "sessions":
+            sess_btn.add_class("hdr-on")
+
+        # One pill per open session tab.
+        for tab in self._open_tabs:
+            sid = tab.get("id", "")
+            title = (tab.get("title") or "Session").strip() or "Session"
+            if len(title) > 18:
+                title = title[:17] + "…"
+            active = sid == self.session_id
+            label = Text(title, style=f"bold {c['secondary']}" if active else c["dim"])
+            t = Static(label, classes="tab-btn" + (" tab-btn-active" if active else ""),
+                       markup=False)
+            t._btn_value = sid  # type: ignore[attr-defined]
+            bar.mount(t)
 
     def _title_text(self) -> Text:
         """The plain-text app header showing 'WEBAGENT Manager' and, when connected,
@@ -1029,6 +1103,13 @@ class ServerManagerApp(App):
         fn = getattr(self, f"action_{action}", None) if action else None
         if fn is not None:
             fn()
+
+    @on(Click, ".tab-btn")
+    def _on_tab_click(self, event: Click) -> None:
+        """Click an open-session tab → switch the transcript + agent context to it."""
+        sid = getattr(event.widget, "_btn_value", None)
+        if sid and sid != self.session_id:
+            self._switch_session(sid)
 
     # ── onboarding call-to-action (the tappable "get started" button) ──────
     def _cta_label(self) -> str:
@@ -1222,15 +1303,14 @@ class ServerManagerApp(App):
 
     # ── actions ──────────────────────────────────────────────────────────
     def action_exit(self) -> None:
-        # Esc toggles the side MENU: it closes an open confirm dialog or panel, and
-        # otherwise OPENS the App panel (the keyboard way in). Quitting is Ctrl+Q.
+        # Esc now STOPS the running agent turn (its sole job). A confirm dialog still
+        # cancels on Esc; otherwise, when idle, Esc does nothing. The side menu opens
+        # from the header pills (or Ctrl+Q to quit).
         if isinstance(self.screen, ConfirmModal):
             self.screen.dismiss(False)
             return
-        if self._panel_open():
-            self._close_panel()
-        else:
-            self._open_panel("admin")
+        if self._busy:
+            self.action_stop()
 
     def action_close_panel(self) -> None:
         """Close the side panel. Triggered by the ✕ header button — always closes
@@ -1248,6 +1328,7 @@ class ServerManagerApp(App):
     def _close_panel(self) -> None:
         self._panel_kind = None
         self._refresh_status()
+        self._refresh_tabs()
         self.run_worker(self._render_panel(None), group="panel", exclusive=True)
 
     def _open_panel(self, kind: str) -> None:
@@ -1259,6 +1340,7 @@ class ServerManagerApp(App):
             return
         self._panel_kind = kind
         self._refresh_status()
+        self._refresh_tabs()
         self.run_worker(self._render_panel(kind), group="panel", exclusive=True)
 
     def _rebuild_panel(self) -> None:
@@ -1826,28 +1908,64 @@ class ServerManagerApp(App):
 
     @on(Click, ".resume-session")
     def _on_resume_session(self, event: Click) -> None:
+        """Clicking a row in the ALL SESSIONS panel opens that session as a tab
+        (or just switches to it if it's already open), then closes the panel."""
         s = getattr(event.widget, "_btn_value", None)
         if not s or not s.get("id"):
             return
-        sid = s["id"]
-        if sid == self.session_id:
-            self._log(f"[{self.cc['dim']}]{G.BULLET} already on that session.[/]")
-            self._close_panel()
-            return
-        # Switch to the chosen session — rebuild the transcript from its history
-        import asyncio
+        self._open_session_as_tab(s["id"], s.get("title") or "")
+        self._close_panel()
+
+    # ── session tabs: open / switch / new ──────────────────────────────────
+    def _tab_for(self, sid: str) -> Optional[dict]:
+        return next((t for t in self._open_tabs if t.get("id") == sid), None)
+
+    def _open_session_as_tab(self, sid: str, title: str = "") -> None:
+        """Open an existing stored session as a tab. If it's already an open tab,
+        just switch to it; otherwise register a new tab first."""
+        if self._tab_for(sid) is None:
+            self._open_tabs.append({"id": sid, "title": title or "Session"})
+        if sid != self.session_id:
+            self._switch_session(sid)
+        else:
+            self._refresh_tabs()
+
+    def action_new_session_tab(self) -> None:
+        """The + button: start a brand-new session in its own tab and switch to it
+        (the transcript clears to an empty conversation)."""
+        sid = self.store.create_session(
+            str(self.project_root) if self.project_root else "(onboarding)"
+        )
+        self._open_tabs.append({"id": sid, "title": "New session"})
+        self._switch_session(sid)
+
+    def action_panel_sessions(self) -> None:
+        """The SESSIONS button: open the all-sessions list panel."""
+        self._open_panel("sessions")
+
+    def _switch_session(self, sid: str) -> None:
+        """Make ``sid`` the active session: rebuild the transcript from its stored
+        history and re-point the agent (the agent re-reads history by session_id each
+        turn, so swapping the id is all that's needed). Also reloads the Up/Down
+        input-recall history for that session."""
         self._end_tool_group()
-        # Clear the transcript and load the selected session's messages
         try:
             log = self.query_one("#log", VerticalScroll)
             log.remove_children()
         except Exception:
             pass
-        old_sid = self.session_id[:12]
         self.session_id = sid
         self._dismiss_banner()
-        # Reload all messages from DB into the transcript
-        msgs = self.store.history(sid)
+        self._rebuild_transcript(sid)
+        self._load_input_history(sid)
+        self._refresh_tabs()
+
+    def _rebuild_transcript(self, sid: str) -> None:
+        """Replay a session's stored messages into the (already-cleared) transcript."""
+        try:
+            msgs = self.store.history(sid)
+        except Exception:
+            msgs = []
         for m in msgs:
             role = m.get("role", "")
             content = m.get("content", "")
@@ -1873,15 +1991,45 @@ class ServerManagerApp(App):
                     self._fill_tool_result(tool_name, content)
                 except Exception:
                     pass
-        # Notice banner
-        title = s.get("title") or "(untitled)"
-        self._mount(Static(
-            Text(f" {G.OK} Resumed session: {title} [{sid}]",
-                 style=f"bold {self.cc['secondary']}"),
-            classes="msg-line",
-            markup=False,
-        ))
-        self._close_panel()
+
+    # ── input history (shell-style Up/Down recall) ─────────────────────────
+    def _load_input_history(self, sid: str) -> None:
+        """Populate the Up/Down recall list with this session's user messages."""
+        hist: list[str] = []
+        try:
+            for m in self.store.history(sid):
+                if m.get("role") == "user":
+                    txt = self._msg_text(m)
+                    if txt:
+                        hist.append(txt)
+        except Exception:
+            pass
+        self._input_history = hist
+        self._hist_idx = None
+
+    def history_prev(self) -> Optional[str]:
+        """Older message (Up). Returns text to load, or None if there's no history."""
+        if not self._input_history:
+            return None
+        if self._hist_idx is None:
+            self._hist_idx = len(self._input_history) - 1
+        else:
+            self._hist_idx = max(0, self._hist_idx - 1)
+        return self._input_history[self._hist_idx]
+
+    def history_next(self) -> Optional[str]:
+        """Newer message (Down). Returns text, "" when stepping past the newest
+        (clears the pill), or None if not currently navigating."""
+        if self._hist_idx is None:
+            return None
+        self._hist_idx += 1
+        if self._hist_idx >= len(self._input_history):
+            self._hist_idx = None
+            return ""
+        return self._input_history[self._hist_idx]
+
+    def history_reset(self) -> None:
+        self._hist_idx = None
 
     # ── config view: app-settings + LLM auth key ──────────────────────────────
     async def _load_config(self) -> None:
@@ -2000,8 +2148,8 @@ class ServerManagerApp(App):
                 fn()
 
     def on_click(self, event: Click) -> None:
-        # Click-outside no longer closes the panel — only Esc or the ✕ header
-        # button close it. This ensures clicking in the main/chat area never
+        # Click-outside does not close the panel — re-clicking its own category
+        # toggles it shut. This ensures clicking in the main/chat area never
         # dismisses an open side panel. Stay no-op here.
         pass
 
@@ -2282,11 +2430,13 @@ class ServerManagerApp(App):
         line("theme", "Ctrl+T cycles the 23 colour themes (no header button)")
         line("status pill", "click the live/stopped status → Start · Restart · Kill")
         line("Stop / Continue", "above the input — cancel a turn / resume it")
-        line("click a pill", "opens its menu; click outside or Esc to close it")
+        line("click a pill", "opens its menu; click it again to close it")
+        line("tab row", "✕ closes the window · + opens a new session · SESSIONS lists all sessions · tabs switch session")
 
         head("Keyboard")
         line("Enter", "send your message")
-        line("Esc", "open the side menu (or close it)")
+        line("Esc", "stop the running agent turn")
+        line("Up / Down", "recall previous messages when the input is empty")
         line("Ctrl+Q", "quit the manager")
         line("Ctrl+T", "cycle theme")
         line("Ctrl+A / C / V / X", "select-all / copy / paste / cut (input field)")
@@ -2551,6 +2701,7 @@ class ServerManagerApp(App):
         self.cfg.theme_name = name
         self.cfg.save()
         self._refresh_status()
+        self._refresh_tabs()
         self._refresh_title()
         self._update_hud()
         self._log(f"[{self.cc['accent']}]theme: {THEME_LABELS.get(name, name)}[/]")
@@ -2583,20 +2734,27 @@ class ServerManagerApp(App):
     def _do_submit(self, text: str) -> None:
         if not text and not self._attachments:
             return
-        # Clear the input so the same text isn't resent on accident.
+        # Clear the input so the same text isn't resent on accident; end history recall.
         try:
             self.query_one("#prompt", PromptInput).text = ""
         except Exception:
             pass
+        self._hist_idx = None
+        if text and (not self._input_history or self._input_history[-1] != text):
+            self._input_history.append(text)
         # ── /new: start a fresh session (context reset) ──
         # Keeps the transcript visible but inserts a notice marking the reset,
         # and creates a brand-new session so the agent starts with empty context.
         # The notice includes a clickable [Clear] pill to wipe the old transcript.
+        # The new session also becomes a tab in the second header row.
         if text.strip() == "/new":
             old_id = self.session_id[:12]
             self.session_id = self.store.create_session(
                 str(self.project_root) if self.project_root else "(onboarding)"
             )
+            self._open_tabs.append({"id": self.session_id, "title": "New session"})
+            self._input_history = []
+            self._refresh_tabs()
             self._end_tool_group()
             clear_btn = Static(
                 Text(" [Clear]", style=f"bold {self.cc['accent']}"),
@@ -3169,6 +3327,11 @@ class ServerManagerApp(App):
             await asyncio.to_thread(self.store.set_session_title, session_id, final)
         except Exception:
             return
+        # Reflect the new name on its open tab (if any) and in the live tab row.
+        tab = self._tab_for(session_id)
+        if tab is not None:
+            tab["title"] = final
+            self._refresh_tabs()
         # If the Sessions panel is open, reflect the new name immediately.
         if self._panel_kind == "sessions":
             self.run_worker(self._render_panel("sessions"), group="panel", exclusive=True)

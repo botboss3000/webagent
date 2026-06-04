@@ -152,6 +152,21 @@ function interruptSession(sessionId) {
 // Cache of last-fetched agents (templates + customs, in display order)
 let _agentsCache = [];
 
+// The header "+" new-session button starts as a spinner and only becomes a
+// clickable plus once the agent list has loaded, so early clicks during the
+// cold-start window (before the handler/agents are ready) don't half-fire.
+// Flipped on by _setNewSessionBtnReady() at the end of populateAgentSelect.
+let _newSessionBtnReady = false;
+function _setNewSessionBtnReady() {
+  _newSessionBtnReady = true;
+  const btn = document.getElementById('session-new');
+  if (!btn || !btn.classList.contains('loading')) return;
+  btn.classList.remove('loading');
+  btn.disabled = false;
+  btn.title = 'New session';
+  btn.innerHTML = icon('plus', { size: '14px' });
+}
+
 function _toggleAgentPin(agentId) {
   const pinnedNow = _toggleAgentPinStore(app.currentUserId, agentId);
   // Refresh agents cache (pinned flag) and re-render. sortAgentsForDisplay
@@ -381,6 +396,9 @@ export async function populateAgentSelect(userId) {
     _fetchAgentRunningStatuses();
   } catch (e) {
     console.warn('Failed to load agents for selector:', e);
+  } finally {
+    // Agents are loaded (or failed) — turn the spinner into a clickable +.
+    _setNewSessionBtnReady();
   }
 }
 
@@ -2110,7 +2128,6 @@ export function initSessions() {
   function _onAgentPickerEsc(e) { if (e.key === 'Escape') _closeAgentPicker(); }
 
   function _openAgentPicker() {
-    console.log('[new-session] _openAgentPicker called, rendering', _agentsCache.length, 'rows');
     _closeAgentPicker();
     const picker = document.createElement('div');
     picker.className = 'agent-dropdown-menu new-session-agent-picker';
@@ -2140,7 +2157,6 @@ export function initSessions() {
     if (left < 8) left = 8;
     picker.style.left = Math.round(left) + 'px';
     _agentPickerEl = picker;
-    console.log('[new-session] picker appended at top=', picker.style.top, 'left=', picker.style.left, 'w=', w, 'inDOM=', document.body.contains(picker));
     // Defer listener attach so this same click doesn't immediately close it.
     setTimeout(() => {
       document.addEventListener('click', _onAgentPickerOutside, true);
@@ -2149,25 +2165,24 @@ export function initSessions() {
     }, 0);
   }
 
-  console.log('[new-session] wiring + button (delegated), found now?', !!sessionNewBtn);
   // Delegated on document (capture) so it fires even if the #session-new button
   // is re-rendered/replaced after init or sits under another element — we just
   // need the click to land anywhere on (or inside) #session-new.
   document.addEventListener('click', (e) => {
     const btn = e.target.closest && e.target.closest('#session-new');
     if (!btn) return;
-    console.log('[new-session] + clicked. agentsCache.length =', _agentsCache.length, 'pickerOpen =', !!_agentPickerEl, _agentsCache.map(a => a.name));
+    // Ignore clicks until the agent list has loaded — the button is a spinner
+    // until then (see _setNewSessionBtnReady), so it isn't really clickable yet.
+    if (!_newSessionBtnReady) return;
     e.stopPropagation();
     e.preventDefault();
     closeMenu();           // close the session list if it's open
-    if (_agentPickerEl) { console.log('[new-session] toggling picker off'); _closeAgentPicker(); return; }  // toggle off
+    if (_agentPickerEl) { _closeAgentPicker(); return; }  // toggle off
     if (_agentsCache.length > 1) {
-      console.log('[new-session] opening agent picker');
       _openAgentPicker();
       return;
     }
     // 0 agents → keep current (empty) agent; 1 agent → use it.
-    console.log('[new-session] starting session directly, agent =', _agentsCache.length === 1 ? _agentsCache[0].name : '(none)');
     _startNewSession(_agentsCache.length === 1 ? _agentsCache[0].id : null);
   }, true);
 

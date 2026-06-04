@@ -40,6 +40,39 @@ Screen {
 #status .hdr-btn.hdr-on { border: round $primary; color: $primary; background: $background; }
 #status .hdr-note { width: auto; height: 3; margin: 0; padding: 0 2; content-align: center middle; }
 
+/* Second header row: window-close ✕ · + new session · SESSIONS button · open-session
+ * tabs. Same flat look as the category bar; tabs share the main background and the
+ * active one is highlighted by outline + text colour (never an inverted fill). */
+#tabbar {
+    layout: horizontal;
+    height: 3;
+    width: 100%;
+    background: $background;
+    color: $bar-fg;
+    padding: 0 1;
+    align: left middle;
+}
+#tabbar .hdr-btn {
+    width: auto; height: 3;
+    margin: 0; padding: 0 2;
+    border: round $border-dim;
+    background: $background;
+    color: $bar-accent;
+    content-align: center middle;
+}
+#tabbar .hdr-btn:hover { border: round $primary; color: $primary; }
+#tabbar .hdr-btn.hdr-on { border: round $primary; color: $primary; background: $background; }
+#tabbar .tab-btn {
+    width: auto; height: 3;
+    margin: 0; padding: 0 2;
+    border: round $border-dim;
+    background: $background;
+    color: $dim;
+    content-align: center middle;
+}
+#tabbar .tab-btn:hover { border: round $primary; color: $primary; }
+#tabbar .tab-btn.tab-btn-active { border: round $secondary; color: $secondary; }
+
 /* Plain-text app header (WEBAGENT / Server Manager) — replaces the old logo banner. */
 #title { height: 3; width: 100%; content-align: center middle; padding: 1 0 0 0; }
 

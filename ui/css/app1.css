@@ -2082,6 +2082,16 @@ body.light-mode .xterm-viewport {
     margin-left: auto;
   }
 .header-plus-btn:hover { color: #7dcfff; }
+/* Loading state: the + is a spinner (not a plus) until the agent list is ready
+   to be clicked. Reuses the session-status-spin keyframes. */
+.header-plus-btn.loading {
+    cursor: default;
+    opacity: 0.6;
+  }
+.header-plus-btn.loading:hover { color: #565f89; }
+.header-plus-btn.loading svg {
+    animation: session-status-spin 1s linear infinite;
+  }
 
 /* TUI bridge indicator — shows a small icon when the TUI bridge agent is selected */
 .tui-bridge-indicator {
