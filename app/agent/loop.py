@@ -1411,6 +1411,22 @@ async def stream_agent_events(
                             await stream.close()
                         except Exception:
                             pass
+                        # Durable, structured signal on the diagnostics page so
+                        # stalls can be counted/correlated. The raise below alone
+                        # would only leave a generic 'turn failed' server error.
+                        try:
+                            from app.agent.diagnostics import record as _diag
+                            _diag("warning", "run",
+                                  f"LLM stream stalled — no token for {_stall_s:.0f}s",
+                                  source="stream_stall",
+                                  detail={"model": model_name,
+                                          "stall_seconds": _stall_s,
+                                          "chars_streamed": len(collected_content),
+                                          "turn": turn_count},
+                                  session_id=session_id, agent_id=agent_id,
+                                  user_id=user_id)
+                        except Exception:
+                            pass
                         raise RuntimeError(
                             f"LLM stream stalled — no token for {_stall_s:.0f}s "
                             f"(model={model_name}); aborting so the run can recover"
