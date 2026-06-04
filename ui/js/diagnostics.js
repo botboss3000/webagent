@@ -18,6 +18,7 @@ const CATEGORIES = [
   { key: 'http', label: 'HTTP' },
   { key: 'loop', label: 'Loop' },
   { key: 'run', label: 'Runs' },
+  { key: 'recovery', label: 'Self Recovery' },
   { key: 'tool', label: 'Tools' },
 ];
 

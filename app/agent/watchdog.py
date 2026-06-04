@@ -157,6 +157,12 @@ class RunWatchdog:
                     logger.warning(
                         "Watchdog: run %s FROZEN (no heartbeat for %.0fs) — cancel + resume",
                         sid[:12], hb_age)
+                    self._record_recovery(
+                        "warning", "frozen",
+                        f"run frozen — no heartbeat for {hb_age:.0f}s; cancel + resume",
+                        sid, row,
+                        detail={"heartbeat_age_seconds": round(hb_age, 1),
+                                "frozen_threshold_seconds": frozen_th})
                     try:
                         await db.run_state_set_cause(sid, "frozen")
                     except Exception:
@@ -183,6 +189,13 @@ class RunWatchdog:
                 logger.warning(
                     "Watchdog: run %s ZOMBIE (running row, no live task, idle %s) — resume",
                     sid[:12], f"{upd_age:.0f}s" if upd_age is not None else "unknown")
+                self._record_recovery(
+                    "warning", "zombie",
+                    "run zombie — running row, no live task, idle "
+                    f"{('%.0fs' % upd_age) if upd_age is not None else 'unknown'}; resume",
+                    sid, row,
+                    detail={"idle_seconds": round(upd_age, 1) if upd_age is not None else None,
+                            "zombie_grace_seconds": zombie_grace})
                 # Flip the 'running' row terminal with the zombie cause so the
                 # atomic claim (which requires status != 'running') can take it.
                 try:
@@ -193,6 +206,22 @@ class RunWatchdog:
                 await self._try_resume(runner, sid, "zombie")
 
         return poll
+
+    def _record_recovery(self, level: str, source: str, message: str,
+                         session_id: str, row: dict,
+                         detail: Optional[dict] = None) -> None:
+        """Structured 'recovery'-category record for the diagnostics page, in
+        addition to the logger.warning above (which also lands under 'server').
+        Never raises — diagnostics must not break the watchdog sweep."""
+        try:
+            from app.agent.diagnostics import record as _diag
+            d = dict(detail or {})
+            d.setdefault("stop_cause", source)
+            _diag(level, "recovery", message, source=source, detail=d,
+                  session_id=session_id, agent_id=(row or {}).get("agent_id"),
+                  user_id=(row or {}).get("user_id"))
+        except Exception:
+            pass
 
     async def _try_resume(self, runner, sid: str, reason: str) -> None:
         try:

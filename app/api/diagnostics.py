@@ -36,7 +36,7 @@ def _split_csv(v: Optional[str]) -> Optional[list]:
 @router.get("")
 async def list_diagnostics(
     levels: Optional[str] = Query(None, description="Comma list: debug,info,warning,error,critical"),
-    categories: Optional[str] = Query(None, description="Comma list: server,loop,run,tool,http"),
+    categories: Optional[str] = Query(None, description="Comma list: server,http,loop,run,recovery,tool"),
     session_id: Optional[str] = Query(None),
     agent_id: Optional[str] = Query(None),
     search: Optional[str] = Query(None, description="Substring match on message/source/detail"),

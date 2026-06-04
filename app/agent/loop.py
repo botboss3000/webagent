@@ -237,6 +237,23 @@ def _get_client():
     return _client
 
 
+def _stream_stall_seconds() -> float:
+    """Max seconds to wait for the *next* streaming chunk before treating the
+    LLM stream as stalled.
+
+    A provider can hold the HTTP stream open while emitting nothing (the read
+    timeout only fires on a dead socket, not a silent-but-alive one). When that
+    happens the per-token heartbeat ``_beat()`` never fires, so the turn would
+    hang until the liveness watchdog's frozen threshold (~60s+). Bounding each
+    chunk read turns a silent stall into a fast, *resumable* error instead.
+
+    0 disables the guard. Kept below the typical client request timeout."""
+    try:
+        return float(os.environ.get("AGENT_STREAM_STALL_SECONDS", "45"))
+    except (TypeError, ValueError):
+        return 45.0
+
+
 _active_race_tasks = set()
 
 async def _race_llm_calls(
@@ -1372,7 +1389,48 @@ async def stream_agent_events(
                     yield {"type": "error", "level": "agent", "message": f"LLM call failed: {e}"}
                     return
 
-                async for chunk in stream:
+                # Per-chunk inactivity guard: if the provider keeps the stream
+                # open but stops emitting tokens, _beat() never fires and the
+                # turn would hang until the watchdog's frozen threshold (~60s+).
+                # Bounding each read makes a silent stall raise here, where the
+                # outer handler records status='error' / stop_cause='crash' — a
+                # resumable cause the self-healing layer re-ignites in seconds.
+                _stall_s = _stream_stall_seconds()
+                _stream_iter = stream.__aiter__()
+                while True:
+                    try:
+                        if _stall_s > 0:
+                            chunk = await asyncio.wait_for(
+                                _stream_iter.__anext__(), timeout=_stall_s)
+                        else:
+                            chunk = await _stream_iter.__anext__()
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.TimeoutError:
+                        try:
+                            await stream.close()
+                        except Exception:
+                            pass
+                        # Durable, structured signal on the diagnostics page so
+                        # stalls can be counted/correlated. The raise below alone
+                        # would only leave a generic 'turn failed' server error.
+                        try:
+                            from app.agent.diagnostics import record as _diag
+                            _diag("warning", "recovery",
+                                  f"LLM stream stalled — no token for {_stall_s:.0f}s",
+                                  source="stream_stall",
+                                  detail={"model": model_name,
+                                          "stall_seconds": _stall_s,
+                                          "chars_streamed": len(collected_content),
+                                          "turn": turn_count},
+                                  session_id=session_id, agent_id=agent_id,
+                                  user_id=user_id)
+                        except Exception:
+                            pass
+                        raise RuntimeError(
+                            f"LLM stream stalled — no token for {_stall_s:.0f}s "
+                            f"(model={model_name}); aborting so the run can recover"
+                        )
 
                     if chunk.usage:
                         input_tokens = chunk.usage.prompt_tokens

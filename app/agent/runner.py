@@ -293,12 +293,16 @@ async def _finish_run(db, session_id: str, outcome: RunOutcome) -> None:
         _row = None
     try:
         from app.agent.diagnostics import record_run_lifecycle
+        _attempts = (_row or {}).get("resume_attempts") or 0
         record_run_lifecycle(
             "finish", session_id,
             status=outcome.status, stop_cause=cause, error=outcome.error,
             agent_id=(_row or {}).get("agent_id"),
             user_id=(_row or {}).get("user_id"),
             origin=(_row or {}).get("origin"),
+            # Ties re-trigger success together: a 'finish' with status=complete and
+            # resume_attempts>0 is a recovered run; the attempt count is the depth.
+            detail={"resume_attempts": _attempts, "was_resume": _attempts > 0},
         )
     except Exception:
         pass
@@ -408,6 +412,20 @@ async def resume_one(session_id: str, *, reason: Optional[str] = None) -> bool:
     logger.info("Resuming run %s (origin=%s cause=%s attempt=%d/%d reason=%s)",
                 session_id[:12], origin, row.get("stop_cause"),
                 attempts + 1, effective_max, reason or "watchdog")
+    # Durable record of the re-trigger itself (the matching 'finish' record then
+    # tells you whether this attempt succeeded). logger.info above is below the
+    # diagnostics WARNING bridge, so without this a resume never reaches the page.
+    try:
+        from app.agent.diagnostics import record_run_lifecycle
+        record_run_lifecycle(
+            "resume", session_id, status="running",
+            stop_cause=row.get("stop_cause"), origin=origin,
+            agent_id=row.get("agent_id"), user_id=row.get("user_id"),
+            detail={"attempt": attempts + 1, "max": effective_max,
+                    "reason": reason or "watchdog"},
+        )
+    except Exception:
+        pass
 
     await run_supervised_turn(
         session_id=session_id, user_id=row.get("user_id"), agent_id=row.get("agent_id"),
