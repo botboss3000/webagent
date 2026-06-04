@@ -27,7 +27,9 @@ TOOL_PARAMETERS: Dict[str, Any] = {
             "type": "string",
             "description": "Comma-separated categories: server (log errors/tracebacks), http "
                            "(4xx/5xx HTTP responses + their cause), loop (agent-loop pipeline "
-                           "problems), run (run outcomes), tool (tool errors). Default: all.",
+                           "problems), run (run outcomes), recovery (self-recovery: stream "
+                           "stalls, frozen/zombie detections, resume attempts + outcomes), "
+                           "tool (tool errors). Default: all.",
         },
         "session_id": {
             "type": "string",

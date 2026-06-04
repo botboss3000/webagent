@@ -1416,7 +1416,7 @@ async def stream_agent_events(
                         # would only leave a generic 'turn failed' server error.
                         try:
                             from app.agent.diagnostics import record as _diag
-                            _diag("warning", "run",
+                            _diag("warning", "recovery",
                                   f"LLM stream stalled — no token for {_stall_s:.0f}s",
                                   source="stream_stall",
                                   detail={"model": model_name,
