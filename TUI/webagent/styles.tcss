@@ -300,6 +300,44 @@ ConfirmModal { align: center middle; }
     padding: 0 1; margin: 0 0 1 0;
 }
 
+/* Framed "code card" — a header row (dim label + [Copy] button) above a code body.
+ * Used for tool-call args/results AND for fenced code blocks in the agent's replies,
+ * so every code/tool view has a one-click copy. Theme variables only (dark + light).
+ *   • .code-card        the frame (border + raised surface)
+ *   • .code-card-head   the title/Copy row
+ *   • .copy-btn         the bracketed [Copy] / [Copied] text button */
+.code-card {
+    width: 100%; height: auto;
+    background: $panel;
+    border: round $border-dim;
+    margin: 0 0 1 0;
+    padding: 0 1;
+}
+.code-card .code-card-head {
+    layout: horizontal;
+    width: 100%; height: 1;
+    margin: 0;
+}
+.code-card .code-card-title {
+    width: 1fr; height: 1;
+    content-align: left middle;
+    color: $dim;
+}
+.code-card .copy-btn {
+    width: auto; height: 1;
+    margin: 0 0 0 1;
+    content-align: right middle;
+    color: $bar-accent;
+}
+.code-card .copy-btn:hover { color: $primary; text-style: bold; }
+/* The body inside a card drops its own border + margin — the card frames it. */
+.code-card .code-block {
+    width: 100%; height: auto;
+    background: $panel; color: $foreground;
+    border: none;
+    padding: 0; margin: 0;
+}
+
 #input-row {
     layout: horizontal;
     width: 100%;

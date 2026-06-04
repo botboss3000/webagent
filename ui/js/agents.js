@@ -65,9 +65,9 @@ function _isMockAgent(agent) {
   return agent && agent.id === MOCK_AGENT_ID;
 }
 
-// ── Agent Manager (per-detail-panel chat bar) ────────────────────────────────
-const AGENT_BUILDER_TEMPLATE_ID = 'agent-builder';
-const _agentBuilderAgentCache = new Map(); // userId → agentId
+// ── Agents-page chat bar ─────────────────────────────────────────────────────
+// The pill on the Agents page hands off to the shared webAgent (see
+// _sendAgentBuilderPrompt → app.startWebagentSession in ui/js/sessions.js).
 
 // Tool descriptions for the Tools tab (matches BUILTIN_TOOL_METADATA keys)
 const TOOL_DESCRIPTIONS = {
@@ -826,59 +826,10 @@ function _buildDetailPanel(agent) {
 // ── Agent Manager chat bar ────────────────────────────────────────────────────
 //
 // Persistent textarea + send button at the top of every agent detail body.
-// Submitting a prompt hands the conversation off to the built-in `agent-builder`
-// system agent (find-or-created on first send), then injects the message into
-// the main chat composer. Mirrors the Pages tab Visualizer pattern in
-// ui/js/autoagent.js:129-232.
-
-async function _findAgentBuilderAgent(userId) {
-  const cached = _agentBuilderAgentCache.get(userId);
-  if (cached) return cached;
-  try {
-    const res = await fetch(apiPath(`/api/v1/agents?user_id=${encodeURIComponent(userId)}`));
-    if (!res.ok) return null;
-    const data = await res.json();
-    const match = (data.agents || []).find(a => a.template_id === AGENT_BUILDER_TEMPLATE_ID);
-    if (match) {
-      _agentBuilderAgentCache.set(userId, match.id);
-      return match.id;
-    }
-  } catch (e) {
-    console.warn('[AgentMgr] find failed:', e);
-  }
-  return null;
-}
-
-async function _createAgentBuilderAgent(userId) {
-  const res = await fetch(apiPath('/api/v1/agents'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      user_id: userId,
-      name: 'Agent Manager',
-      description: 'Guides agent configuration — templates, prompt slots, abilities, model settings.',
-      template_id: AGENT_BUILDER_TEMPLATE_ID,
-    }),
-  });
-  if (!res.ok) {
-    // Try to read error detail from the response
-    let detail = `agent create failed (${res.status})`;
-    try { const errBody = await res.json(); detail = errBody.detail || detail; } catch (_) {}
-    throw new Error(detail);
-  }
-  const data = await res.json();
-  const id = data.agent && data.agent.id;
-  if (!id) throw new Error('agent create returned no id');
-  _agentBuilderAgentCache.set(userId, id);
-  if (typeof app.populateAgentSelect === 'function') {
-    try { await app.populateAgentSelect(userId); } catch (_) {}
-  }
-  return id;
-}
-
-async function _ensureAgentBuilderAgent(userId) {
-  return (await _findAgentBuilderAgent(userId)) || (await _createAgentBuilderAgent(userId));
-}
+// Submitting a prompt hands the conversation off to the shared webAgent in a
+// fresh session (app.startWebagentSession), then injects the message into the
+// main chat composer. The Pages, Source Control, and Agent Settings pills do
+// the same.
 
 async function _sendAgentBuilderPrompt() {
   const input = document.getElementById('agent-builder-bar-input');
@@ -892,22 +843,16 @@ async function _sendAgentBuilderPrompt() {
     return;
   }
 
-  const tagged = `[Agent Manager Request | Source: Agents Page]: ${text}`;
+  const tagged = `[webAgent Request | Source: Agents Page]: ${text}`;
 
+  // All page pills hand off to the one do-it-all webAgent in a fresh session.
   let builderAgentId;
   try {
-    builderAgentId = await _ensureAgentBuilderAgent(app.currentUserId);
+    builderAgentId = await app.startWebagentSession();
   } catch (e) {
-    console.error('[AgentMgr] _ensureAgentBuilderAgent failed:', e);
-    app.addChatBubble('agent', '❌ Agent Manager unavailable: ' + (e.message || e), 'error');
+    console.error('[AgentMgr] startWebagentSession failed:', e);
+    app.addChatBubble('agent', '❌ webAgent unavailable: ' + (e.message || e), 'error');
     return;
-  }
-
-  if (typeof app.switchToAgent === 'function') {
-    app.switchToAgent(builderAgentId);
-  } else {
-    app.currentAgentId = builderAgentId;
-    try { localStorage.setItem('selectedAgentId', builderAgentId); } catch (_) {}
   }
 
   input.value = '';

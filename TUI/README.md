@@ -110,6 +110,13 @@ TUI/
 Each delegated **subagent runs in its own session** inside `webagent.db`, so you
 can open it from the session list (`/resume`) and watch its progress.
 
+A session's **id is its creation timestamp** (`YYYYMMDD-HHMMSS-…`), so the list
+sorts and reads chronologically. Its **name** is generated after each turn — by
+default a short LLM summary of the last ~10 messages, falling back to the latest
+user message when no summary is available (e.g. no API key yet). The naming
+behaviour is adjustable in **Admin ▸ App Config ▸ Session naming**
+(Summary (AI) · Latest message · Off).
+
 A packaged **`.exe`** has no stable source folder, so it falls back to the per-user
 app-data dir instead (`%APPDATA%\webagent` on Windows,
 `~/Library/Application Support/webagent` on macOS, `$XDG_DATA_HOME/webagent` or
@@ -445,7 +452,7 @@ panel for the busier views (Connect, App Config) and is remembered across sessio
 | Header item | Action |
 |-------------|--------|
 | **mode** (far left) — a **one-word** write-gate (`read` / `write` / `auto`) | **Click to cycle** read → write → auto (colour signals the mode). Same gate as the App panel's Read/Write/Auto. |
-| **Admin** | opens `[Connect]` · `[App Config]` · `[Commands]` · `[Update]` · `[Install]` · `[Reset]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` |
+| **Admin** | opens `[Connect]` · `[App Config]` · `[Model Settings]` · `[Commands]` · `[Update]` · `[Install]` · `[Reset]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` |
 | **Git** (managed mode only) | source control: a **GitHub token** field with `[Save]` / `[Clear]` (used to authenticate network ops; stored in the TUI's own config, never written into the repo's `.git/config`), then `[Fetch]` · `[Pull]` · `[Push]`. Each button hands the agent a plain-language request so it runs the matching `git_tool` op under the usual op-safety rules (force-push blocked); Pull/Push arm writes first since the click is the consent. |
 | **Playbook** (managed mode only) | the self-healing **issue knowledge base**: a **remediation-mode** selector (`[Document]` / `[Safe-auto]` / `[Autonomous]`), then the list of learned issues (occurrences, status, best remedy + confidence). Click an issue to drill in: its remedies with helped/didn't stats, recent incidents, and `[Approve]` / `[Disable]` / `[Forget]` controls. See [The Playbook](#the-playbook-self-healing-issue-knowledge-base). |
 | **App** | the **AI provider** block — **Provider** as a grid of **pill buttons** (OpenRouter / OpenAI / DeepSeek / Groq / Together / Mistral / xAI / Custom); clicking one highlights it and fills the **Base URL** + **Model** to match (Custom leaves them as typed). Then a plain-text **AI key** field, `[Save]` / `[Clear]`; plus the write-gate `[Read-only]` / `[Write]` / `[Autonomous]` (current one highlighted) and `[Open Browser]` (opens `http://localhost:8080/index.html`). **Keys are shown in clear text** (not masked) so you can verify what you pasted. |
@@ -460,7 +467,8 @@ the header.
 | Button | Action |
 |--------|--------|
 | `[Connect]` | Open the **Connect** view — browse the admin's agents, pick one, then pick (or start) a session to set the **target**, and flip the two mute toggles (see [Driving the running app](#driving-the-running-app-the-two-mutes)) |
-| `[App Config]` | Open the **App Config** view — edit `app-settings.json` (access mode, presentation mode, **render recorder** on/off — the browser flight-recorder that captures HTML snapshots / lag / JS errors) and the app's **LLM auth key** (provider / base URL / model / API key), saved over the admin API |
+| `[App Config]` | Open the **App Config** view — edit `app-settings.json` (access mode, presentation mode, **render recorder** on/off — the browser flight-recorder that captures HTML snapshots / lag / JS errors), saved over the admin API; plus **Session naming** (TUI-local) — how the Sessions list names each conversation: **Summary (AI)** (LLM summary of the last ~10 messages, falling back to the latest user message), **Latest message**, or **Off** |
+| `[Model Settings]` | Open the **Model Settings** view — the app's **LLM provider + auth key** (provider quick-pick pills that fill base URL + model, then provider / base URL / model / API key), saved over the admin API. (Moved here out of App Config.) |
 | `[Commands]` | Print a user reference to the transcript — on-screen controls, keyboard shortcuts, plain-language things to ask the agent, and the terminal commands for install / launch / proot-Python / uninstall (tailored to Termux vs desktop) |
 | `[Update]` | Update the manager/repo — backs up, pulls (source) or rebuilds the exe (frozen), and restarts |
 | `[Install]` | Run the guided install (onboarding mode); in managed mode it points you at `[Update]` instead |
@@ -540,10 +548,22 @@ to a few short words (Admin · Git · App), it fits a narrow terminal.
   busy); **Continue** asks the agent to pick up where it left off (enabled only when idle).
 - **Messages** — your messages render in a bordered **bubble** that matches the input pill
   (the main background with a bright outline); the agent's replies render as **Markdown**
-  (code fences, lists, emphasis). No user/agent emoji prefixes.
+  (lists, emphasis). Every **fenced code block** in a reply becomes its own framed
+  **code card** with a one-click **`[Copy]`** button (copies the raw code to the OS
+  clipboard, flashes `[Copied]`) and a `~N tok` size estimate. No user/agent emoji prefixes.
 - **Expandable tool calls** — a turn's tool calls collapse to a single **"N tool calls"**
-  row; expand it to list each call, and expand a call to see its **arguments and result,
-  each in a code block** (nested collapsibles, like the launcher).
+  row; expand it to list each call. The collapsed call row shows the tool name, an
+  **ok/error** mark, the call's **wall time** (e.g. `717ms` / `1.2s`), and an output
+  **`~N tok`** estimate. Expand a call to see its **arguments** and **result** as
+  framed **code cards**, each with its own **`[Copy]`** button. Results that are
+  **file diffs** (from `edit_source` / `patch_source`) are **colour-coded** — additions
+  in the success colour, removals in the error colour, hunk headers in the accent —
+  and error results show their first line in red. (All theme variables, so it reads in
+  light AND dark.)
+- **Transcript scrolling** — the chat pane is **anchored to the bottom**: it auto-follows
+  new output while you're at the bottom, but the moment you scroll up (wheel or scrollbar)
+  it **stays put** so you can read history without being yanked down. Sending a message
+  (or **Continue**) snaps back to the bottom and re-arms the follow.
 - **Session HUD** — a tight line: tokens in/out this session and a compact context
   reading **`ctx N%`** (green → amber → red) when the model's window is known.
 
@@ -551,7 +571,8 @@ to a few short words (Admin · Git · App), it fits a narrow terminal.
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Send |
+| `Enter` | Send. A **bare** Enter submits in every terminal spelling (`Ctrl+M` / `Ctrl+J` / numpad Enter all count), so it's reliable regardless of keyboard protocol |
+| `Shift+Enter` / `Ctrl+Enter` / `Alt+Enter` | Insert a newline in the input without sending — *when your terminal reports the modifier distinctly* (some terminals collapse all Enters into one keystroke; on those, only plain Enter exists and these send too) |
 | `Esc` | Open the side menu (the **App** panel) — or close it if one is already open |
 | `Ctrl+Q` | Quit the manager |
 | `Ctrl+A` | Select all text in the input field |
@@ -567,8 +588,10 @@ keyboard on desktop and most platforms.
 > from the **Termux left-edge drawer ▸ KEYBOARD** toggle (or Vol-Up + K). The manager
 > flashes this reminder on Termux.
 
-**Copying transcript text.** The footer's `Ctrl+C` copies the input field. To copy
-text from the **transcript**, hold **Shift** while dragging to use your terminal's
+**Copying transcript text.** Code blocks in replies and a tool call's arguments/result
+each carry a **`[Copy]`** button that writes straight to the OS clipboard — the easiest
+way to grab code or output. The footer's `Ctrl+C` copies the input field. To copy any
+other text from the **transcript**, hold **Shift** while dragging to use your terminal's
 own native selection/copy (works anywhere on screen).
 
 ### Image attachments

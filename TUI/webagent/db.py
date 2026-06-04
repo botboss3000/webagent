@@ -127,9 +127,27 @@ class Store:
             pass
 
     # ── sessions ─────────────────────────────────────────────────────────
+    @staticmethod
+    def _timestamp_id(now: float) -> str:
+        """Human-readable, sortable session id derived from the creation time:
+        ``YYYYMMDD-HHMMSS-ffffff`` (local time + microseconds). Microsecond
+        precision makes a collision between two real session creations effectively
+        impossible; ``create_session`` still guards the PRIMARY KEY just in case."""
+        lt = time.localtime(now)
+        micros = int(round((now - int(now)) * 1_000_000)) % 1_000_000
+        return time.strftime("%Y%m%d-%H%M%S", lt) + f"-{micros:06d}"
+
     def create_session(self, project_dir: str, title: str = "") -> str:
-        sid = uuid.uuid4().hex
         now = time.time()
+        sid = self._timestamp_id(now)
+        # Guard the PRIMARY KEY: on the astronomically rare same-microsecond clash,
+        # nudge forward a microsecond at a time until the id is free.
+        bump = now
+        while self._conn.execute(
+            "SELECT 1 FROM sessions WHERE id = ?", (sid,)
+        ).fetchone() is not None:
+            bump += 0.000001
+            sid = self._timestamp_id(bump)
         self._conn.execute(
             "INSERT INTO sessions (id, title, project_dir, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?)",
@@ -141,6 +159,14 @@ class Store:
     def touch_session(self, session_id: str) -> None:
         self._conn.execute(
             "UPDATE sessions SET updated_at = ? WHERE id = ?", (time.time(), session_id)
+        )
+        self._conn.commit()
+
+    def set_session_title(self, session_id: str, title: str) -> None:
+        """Update a session's display name (the summary shown in the Sessions list)."""
+        self._conn.execute(
+            "UPDATE sessions SET title = ? WHERE id = ?",
+            (title.strip()[:120], session_id),
         )
         self._conn.commit()
 

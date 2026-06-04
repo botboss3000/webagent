@@ -1609,28 +1609,47 @@ body.light-mode .ac-ability-desc {
   color: #9a7c65;
 }
 
-/* ── Agent Settings — collapsible category groups ── */
+/* ╔══════════════════════════════════════════════════════════════════════╗
+   ║  SHARED COLLAPSIBLE SECTION PATTERN  —  KEEP IN SYNC ACROSS PAGES      ║
+   ╠══════════════════════════════════════════════════════════════════════╣
+   ║  `.ac-category-group` is the ONE collapsible-section look used by every ║
+   ║  Admin Config page: Agent Settings (Agent Tools / Channels / Providers ║
+   ║  groups) AND App Settings (Agent LLM Defaults / Main Panel Pages /      ║
+   ║  Startup & Boot / Remote Access), and any pages added later.            ║
+   ║                                                                        ║
+   ║  The group is a PLAIN TEXT HEADER (chevron + icon + title), collapsed   ║
+   ║  by default, that opens to reveal ONE full-width `.ac-card` (or         ║
+   ║  `.ac-abilities-compact`) of options below — never a card-within-a-     ║
+   ║  card. Page margins come from the parent panel, not these rows.         ║
+   ║                                                                        ║
+   ║  >>> If you restyle these groups, change them HERE only. Do not fork    ║
+   ║  >>> per-page copies — every page reads from this single block so the   ║
+   ║  >>> whole app stays visually coherent. The matching markup contract    ║
+   ║  >>> is documented in ui/admin-tools/admin-configuration.html (search   ║
+   ║  >>> "COLLAPSIBLE SECTION PATTERN").                                    ║
+   ╚══════════════════════════════════════════════════════════════════════╝ */
 .ac-category-group {
-  margin-top: 8px;
-  border: 1px solid var(--border, #2a2a4a);
-  border-radius: 10px;
-  background: var(--bg-elev, #1a1a2e);
-  overflow: hidden;
+  margin-top: 14px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
 }
 .ac-category-group[open] {
-  background: var(--bg-elev, #1a1a2e);
+  background: transparent;
 }
 .ac-category-summary {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 14px;
+  padding: 8px 2px;
   cursor: pointer;
   user-select: none;
   list-style: none;
   font-size: 13px;
   font-weight: 600;
   color: var(--fg-1, #c0caf5);
+  border-radius: 8px;
   transition: background 0.15s;
 }
 .ac-category-summary::-webkit-details-marker {
@@ -1662,18 +1681,18 @@ body.light-mode .ac-ability-desc {
   font-weight: 400;
 }
 .ac-category-body {
-  padding: 0 14px 14px;
-  border-top: 1px solid var(--border, #2a2a4a);
+  padding: 4px 0 0;
+  border-top: none;
 }
 .ac-category-desc {
   font-size: 11px;
   color: var(--fg-muted, #565f89);
-  margin: 10px 0 12px;
+  margin: 0 2px 12px;
   line-height: 1.5;
 }
 body.light-mode .ac-category-group {
-  background: #ffffff;
-  border-color: #e8ddd0;
+  background: transparent;
+  border-color: transparent;
 }
 body.light-mode .ac-category-summary {
   color: #2d1f14;
@@ -1683,9 +1702,6 @@ body.light-mode .ac-category-summary:hover {
 }
 body.light-mode .ac-category-chevron {
   color: #9a7c65;
-}
-body.light-mode .ac-category-body {
-  border-top-color: #e8ddd0;
 }
 body.light-mode .ac-category-desc {
   color: #9a7c65;

@@ -78,6 +78,7 @@ function _showSection(section) {
   _setNavActive(section);
   if (section === 'monetization') _renderPlatformBillingPanel();
   if (section === 'app-settings' && typeof window.__refreshRemoteAccess === 'function') window.__refreshRemoteAccess();
+  if (section === 'agent-settings') _intAdminResetSession();
 }
 
 function _renderPlatformBillingPanel() {
@@ -1170,6 +1171,16 @@ function _intAdminGetSession() {
   return fresh;
 }
 
+// Each visit to the Agent Settings section starts a brand-new webAgent session,
+// so the chat there is a fresh conversation (matching the page chat pills).
+// Clears the cached session id + the inline transcript.
+function _intAdminResetSession() {
+  _intAdminSessionId = null;
+  try { localStorage.removeItem(_intAdminStorageKey()); } catch (_) {}
+  const box = _qs('ac-int-admin-chat-messages');
+  if (box) { box.innerHTML = ''; box.style.display = 'none'; }
+}
+
 function _intAdminAppendBubble(role, text) {
   const box = _qs('ac-int-admin-chat-messages');
   if (!box) return null;
@@ -1220,6 +1231,17 @@ async function _intAdminSend() {
     return;
   }
   _intAdminShowError('');
+
+  // This chat targets the shared webAgent (the `default` template), same as the
+  // Agents / Pages / Source Control pills. Resolve (or create) that agent first.
+  let agentId;
+  try {
+    agentId = await app.ensureWebagentAgent(app.currentUserId);
+  } catch (e) {
+    _intAdminShowError('Could not start webAgent: ' + (e.message || e));
+    return;
+  }
+
   input.value = '';
   _intAdminSetBusy(true);
   _intAdminAppendBubble('user', text);
@@ -1230,7 +1252,7 @@ async function _intAdminSend() {
     message: text,
     session_id: _intAdminGetSession(),
     user_id: app.currentUserId,
-    agent_template_id: 'integration-admin-agent',
+    agent_id: agentId,
   };
   if (_intAdminPending.length > 0) {
     payload.attachment_ids = _intAdminPending.map(a => a.attachment_id);
@@ -2405,28 +2427,28 @@ function _applyMainPanelOrder() {
     if (accountOpt) nativeSelect.appendChild(accountOpt);
   }
 
-  // Update the visible tab buttons in the header
+  // Reorder + show/hide the header tab buttons. Nodes are KEPT in the DOM
+  // (display toggled, not removed) so a later un-hide restores them live
+  // without a reload. This mirrors the pre-paint block in index.html that
+  // applies the same preference before first paint to avoid a flash.
   const tabBar = document.getElementById('main-tabs');
   if (!tabBar) return;
 
-  const tabButtons = {};
-  tabBar.querySelectorAll('.main-tab').forEach(btn => {
-    tabButtons[btn.dataset.value] = btn;
-  });
-
   const adminGroup = document.getElementById('admin-tools-group');
-  const adminBtn = adminGroup ? adminGroup.querySelector('.main-tab') : null;
-  if (adminBtn) tabButtons['admin-tools'] = adminGroup;
-
-  const allTabs = order.map(id => tabButtons[id]).filter(Boolean);
-  allTabs.forEach(tab => {
-    if (tab.parentNode === tabBar) tabBar.removeChild(tab);
+  const tabButtons = {};
+  if (adminGroup) tabButtons['admin-tools'] = adminGroup;
+  tabBar.querySelectorAll('.main-tab').forEach(btn => {
+    const id = btn.dataset.value;
+    if (!id) return;
+    tabButtons[id] = (adminGroup && adminGroup.contains(btn)) ? adminGroup : btn;
   });
 
   order.forEach(id => {
-    if (hidden.includes(id)) return;
     const tab = tabButtons[id];
-    if (tab) tabBar.appendChild(tab);
+    if (!tab) return;
+    const hide = id !== 'admin-tools' && hidden.includes(id);
+    tab.style.display = hide ? 'none' : '';
+    tabBar.appendChild(tab);   // reorder
   });
 }
 

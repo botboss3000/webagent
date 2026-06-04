@@ -2227,6 +2227,23 @@ body.light-mode .agent-dropdown-menu {
     border-color: #ffdec4;
     box-shadow: 0 8px 24px rgba(0,0,0,0.1);
   }
+/* New-session agent picker: a small floating menu anchored under the + button.
+   Reuses .agent-dropdown-menu chrome but is body-mounted + fixed-positioned. */
+.new-session-agent-picker {
+    position: fixed;
+    top: auto;
+    left: auto;
+    width: auto;
+    min-width: 180px;
+    max-width: 280px;
+    z-index: 4000;
+  }
+.new-session-picker-head {
+    padding: 4px 8px 6px;
+    font-size: 11px;
+    color: var(--fg-3);
+  }
+
 .session-row,
 .agent-row-item {
     position: relative;
@@ -2280,6 +2297,9 @@ body.light-mode .session-status-unread { color: #73a64a; }
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+/* Muted agent-name prefix on each unified session row: "Agent — Title". */
+.session-row-agent { color: var(--fg-3); }
+.session-row-sep { color: var(--fg-3); }
 .session-row-time {
     flex-shrink: 0;
     font-size: 11px;

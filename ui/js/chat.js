@@ -734,20 +734,21 @@ async function sendMessage() {
   const text = app.chatInput.value.trim();
   if (!text) return;
 
-  // No agent selected — open the agents tab and expand the mock card.
+  // No agent yet — don't push the user into a "create an agent" flow. Spin up
+  // (or reuse) their shared webAgent in a fresh session and carry on sending.
   if (!app.currentAgentId) {
-    const sel = document.getElementById('main-tab-select');
-    if (sel) {
-      sel.value = 'agents';
-      sel.dispatchEvent(new Event('change'));
-    }
-    setTimeout(() => {
-      // Expand the mock create card
-      if (window.expandAgent) {
-        window.expandAgent('__new__');
+    if (!app.currentUserId) { applyChatGate(); return; }
+    try {
+      if (typeof app.startWebagentSession === 'function') {
+        await app.startWebagentSession();
       }
-    }, 50);
-    return;
+    } catch (e) {
+      addChatBubble('agent', '❌ Could not start webAgent: ' + (e.message || e), 'error');
+      return;
+    }
+    // startWebagentSession may not have resolved an id (edge cases) — bail
+    // rather than send an agent-less message the backend would reject.
+    if (!app.currentAgentId) return;
   }
 
   app.chatInput.value = '';
@@ -1222,12 +1223,11 @@ export function initChat() {
   if (inputArea && messagesInner && typeof ResizeObserver !== 'undefined') {
     const syncPad = () => {
       const h = inputArea.offsetHeight;
-      // Publish the input-area height so the bottom fade mask (index.html)
-      // covers exactly the input zone.
+      // Publish the input-area height (consumed by index.html for layout sizing).
       if (messagesEl) messagesEl.style.setProperty('--chat-input-h', h + 'px');
-      // Reserve that height PLUS the mask's 24px fade ramp, so the newest
-      // message rests right at the opaque edge of the fade — fully visible,
-      // never tucked under the pill or clipped mid-fade.
+      // Reserve the input-area height plus a 24px gap so the newest message
+      // rests just above the floating pill at scroll-bottom — fully visible,
+      // never tucked under it. Older bubbles scroll behind the glass pill.
       messagesInner.style.paddingBottom = (h + 24) + 'px';
     };
     new ResizeObserver(syncPad).observe(inputArea);

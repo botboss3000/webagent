@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import uuid
 import webbrowser
 from pathlib import Path
@@ -108,13 +109,27 @@ def _linkify_text(text: Text) -> Text:
 
 class PromptInput(TextArea):
     """Multi-line input pill. Starts at 3 rows tall; expands up to 5 rows as text
-    is added; submits on Enter. Ctrl+Enter and Shift+Enter start a new line.
-    Border stays coloured always (never dims). Inherits clipboard-aware Ctrl+V
-    paste (multi-line now allowed) and Ctrl+A select-all from TextArea."""
+    is added; **Enter sends**, **Alt+Enter** inserts a newline. Border stays coloured
+    always (never dims). Inherits clipboard-aware Ctrl+V paste (multi-line now allowed)
+    and Ctrl+A select-all from TextArea."""
 
     DEFAULT_CSS = """
     PromptInput { height: 3; }
     """
+
+    # Enter routing. A *bare* Enter SENDS (in every terminal spelling — see _is_enter).
+    # A MODIFIED Enter (Shift / Ctrl / Alt / Meta + Enter) inserts a NEWLINE instead.
+    #
+    # The catch: many terminals can't distinguish a modified Enter from a plain one —
+    # they all arrive as the same carriage-return ("enter" / "ctrl+m"). On those, only
+    # plain Enter exists, so Shift/Ctrl+Enter simply send too (there's nothing to split).
+    # On terminals that DO report e.g. "shift+enter" / "ctrl+enter" distinctly, those go
+    # to newline. Either way plain Enter always sends — _NEWLINE_KEYS only ever matches a
+    # spelling that carries an explicit modifier, so it can't swallow a bare Enter.
+    _NEWLINE_KEYS = frozenset({
+        "shift+enter", "ctrl+enter", "ctrl+shift+enter", "shift+ctrl+enter",
+        "alt+enter", "meta+enter", "escape+enter",
+    })
 
     def on_mount(self) -> None:
         """Lock in the initial 3-row height so the widget doesn't start at 1 line."""
@@ -133,26 +148,69 @@ class PromptInput(TextArea):
     MAX_ROWS = 5
 
     BINDINGS = [
-        Binding("ctrl+enter", "new_line", "New line", show=False),
-        Binding("shift+enter", "new_line", "New line", show=False),
         Binding("ctrl+a", "select_all", "Select all", show=False),
     ]
 
-    async def _on_key(self, event):
-        """Intercept Enter before TextArea's own handler inserts a newline.
+    @staticmethod
+    def _is_enter(key: str, character) -> bool:
+        """Is this key an Enter in ANY terminal spelling? Exhaustive on purpose:
+        any key name containing 'enter', the return/newline aliases, ctrl+m / ctrl+j
+        (CR / LF), the numpad enter, or a literal carriage-return / line-feed
+        character. Broad enough that no terminal's Enter can slip through."""
+        kl = (key or "").lower()
+        return (
+            "enter" in kl
+            or kl in ("return", "newline", "ctrl+m", "ctrl+j", "kp_enter",
+                      "numpad_enter", "kp_begin")
+            or character in ("\r", "\n", "\r\n")
+        )
 
-        TextArea._on_key handles 'enter' directly (inserts \\n, stops the event),
-        so key_enter on a subclass never fires.  Override _on_key here to catch
-        Enter ourselves; delegate everything else to the parent."""
-        if isinstance(event, Key) and event.key == "enter":
-            event.stop()
-            event.prevent_default()
-            self.action_submit()
-            return
+    def _keylog(self, key: str, character, printable: bool) -> None:
+        """Append the raw attributes of a keypress to a small diagnostic file, so we
+        can see EXACTLY what the terminal sends for Enter when it misbehaves. Best
+        effort and silent on failure — purely a debugging aid."""
+        try:
+            from pathlib import Path as _P
+            p = _P(__file__).resolve().parent.parent / "temp" / "webagent-keylog.txt"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            line = f"key={key!r} char={character!r} printable={printable}\n"
+            existing = p.read_text(encoding="utf-8").splitlines()[-40:] if p.exists() else []
+            p.write_text("\n".join(existing + [line.rstrip()]) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
+    async def _on_key(self, event):
+        """Decide Enter ourselves, BEFORE TextArea's handler inserts a newline and
+        before any binding can fire. A bare Enter (in every terminal spelling) sends;
+        a MODIFIED Enter (Shift/Ctrl/Alt/Meta+Enter, when the terminal reports it
+        distinctly) inserts a newline; everything else goes to the parent.
+
+        TextArea._on_key handles 'enter' directly, so a key_enter method on a subclass
+        never fires — overriding _on_key is the only reliable hook. We stop +
+        prevent_default so neither the parent insert NOR a stray new_line binding runs."""
+        if isinstance(event, Key):
+            k = event.key
+            ch = event.character
+            # TEMP DIAGNOSTIC (always on while we chase the Enter-key bug): record the
+            # real attributes of every keypress so we can see EXACTLY what this terminal
+            # sends for Enter. Writes TUI/temp/webagent-keylog.txt, trimmed to 40 lines.
+            # Remove this line once the Enter issue is confirmed fixed.
+            self._keylog(k, ch, getattr(event, "is_printable", False))
+            kl = (k or "").lower()
+            if kl in self._NEWLINE_KEYS or "alt+enter" in kl or "meta+enter" in kl:
+                event.stop()
+                event.prevent_default()
+                self.action_new_line()
+                return
+            if self._is_enter(k, ch):
+                event.stop()
+                event.prevent_default()
+                self.action_submit()
+                return
         await super()._on_key(event)
 
     def action_new_line(self) -> None:
-        """Insert a newline at the cursor without submitting."""
+        """Insert a newline at the cursor without submitting (Shift/Ctrl/Alt+Enter)."""
         self.insert("\n")
 
     def action_submit(self) -> None:
@@ -567,6 +625,14 @@ class ServerManagerApp(App):
         self._refresh_title()
         self._refresh_status()
         self._update_hud()
+        # Anchor the transcript to the bottom: it auto-follows new content while the
+        # user is at the bottom, but RELEASES the moment they scroll up (wheel or
+        # scrollbar) so reading history is never yanked back down. Replaces the old
+        # unconditional scroll-to-end on every event (which broke manual scrolling).
+        try:
+            self.query_one("#log", VerticalScroll).anchor()
+        except Exception:
+            pass
         self.query_one("#prompt", PromptInput).focus()
         # Keep the server dot live in managed mode (cheap localhost /health poll).
         self.set_interval(3.0, self._poll_server)
@@ -712,16 +778,19 @@ class ServerManagerApp(App):
 
     # ── transcript: mounted widgets in a scrolling column ─────────────────
     def _mount(self, widget: Widget) -> None:
-        """Mount a widget at the end of the transcript and keep it scrolled to the
-        bottom. Fire-and-forget mount (Textual processes it on the next cycle)."""
+        """Mount a widget at the end of the transcript. The transcript is *anchored*
+        (see on_mount), so it follows new content automatically while the user is at
+        the bottom and stays put if they've scrolled up — so we do NOT force a
+        scroll here (that was what broke manual scrolling in the chat view)."""
         try:
-            log = self.query_one("#log", VerticalScroll)
-            log.mount(widget)
-            log.scroll_end(animate=False)
+            self.query_one("#log", VerticalScroll).mount(widget)
         except Exception:
             pass
 
     def _scroll_end(self) -> None:
+        """Explicitly jump to the bottom and re-arm the anchor. Used only for
+        user-initiated moments (sending a message / Continue) — never on passive
+        streaming, so scrolling up to read is never interrupted."""
         try:
             self.query_one("#log", VerticalScroll).scroll_end(animate=False)
         except Exception:
@@ -751,17 +820,55 @@ class ServerManagerApp(App):
         self._mount(Static(_linkify_text(Text(text, style=self.cc["dim"])),
                            classes="msg-block", markup=False))
 
+    @staticmethod
+    def _split_code(text: str) -> list[tuple[str, str, str]]:
+        """Split an assistant reply into ('text', '', prose) and ('code', lang, body)
+        segments by parsing ``` fenced blocks, so each code block can render as its
+        own copyable card while prose stays Markdown."""
+        segs: list[tuple[str, str, str]] = []
+        fence = re.compile(r"^[ \t]*```([^\n`]*)\n(.*?)(?:\n[ \t]*```|\Z)",
+                           re.DOTALL | re.MULTILINE)
+        pos = 0
+        for m in fence.finditer(text):
+            if m.start() > pos:
+                segs.append(("text", "", text[pos:m.start()]))
+            lang = (m.group(1) or "").strip()
+            segs.append(("code", lang, m.group(2)))
+            pos = m.end()
+        if pos < len(text):
+            segs.append(("text", "", text[pos:]))
+        return segs
+
     def _log_assistant(self, text: str) -> None:
-        """Render the agent's reply as Markdown (so code fences, lists, and emphasis
-        format nicely) — markup is off, so the model's text can't break parsing."""
+        """Render the agent's reply: prose as Markdown (lists, emphasis), and each
+        fenced code block as its own framed card with a [Copy] button. Markup is off,
+        so the model's text can't break parsing."""
         self._end_tool_group()
         self._tui_log.assistant(text)
+        if not text.strip():
+            self._mount(Static(Text("(no reply)", style=self.cc["dim"]),
+                               classes="msg-agent", markup=False))
+            return
         try:
             from rich.markdown import Markdown
-            renderable = Markdown(text) if text.strip() else Text("(no reply)", style=self.cc["dim"])
         except Exception:
-            renderable = Text(text, style=self.cc["fg"])
-        self._mount(Static(renderable, classes="msg-agent", markup=False))
+            Markdown = None  # type: ignore[assignment]
+        # No fenced code (or Markdown unavailable) → render the whole reply at once.
+        if Markdown is None or "```" not in text:
+            renderable = Markdown(text) if Markdown is not None else Text(text, style=self.cc["fg"])
+            self._mount(Static(renderable, classes="msg-agent", markup=False))
+            return
+        for kind, lang, body in self._split_code(text):
+            if kind == "text":
+                if body.strip():
+                    self._mount(Static(Markdown(body), classes="msg-agent", markup=False))
+            else:
+                code = body.rstrip("\n")
+                code_body = Static(self._colorize(code), classes="code-block", markup=False)
+                card, _, _ = self._code_card(
+                    code_body, title=f"{lang or 'code'} · ~{self._token_est(code)} tok",
+                    copy_text=code)
+                self._mount(card)
 
     # ── custom chrome: status bar (header) + hint bar (footer) ────────────
     def _add_hdr(self, bar: Horizontal, content, action: str | None) -> Static:
@@ -1204,6 +1311,7 @@ class ServerManagerApp(App):
         c = self.cc
         title = {"admin": "ADMIN", "scene": "THEME", "server": "SERVER",
                  "git": "GIT", "connect": "WEBAGENT", "config": "APP CONFIG",
+                 "model": "MODEL SETTINGS",
                  "sessions": "ALL SESSIONS", "reset": "RESET",
                  "diag": "DIAGNOSTICS", "logs": "SERVER LOGS", "playbook": "PLAYBOOK",
                  "confirm": (self._confirm_state or {}).get("title", "CONFIRM")}.get(kind, kind.upper())
@@ -1231,6 +1339,8 @@ class ServerManagerApp(App):
             return out + self._sessions_widgets()
         if kind == "config":
             return out + self._config_widgets()
+        if kind == "model":
+            return out + self._model_widgets()
         if kind == "scene":
             for label, sel in _scene_rows(self):
                 out.append(Horizontal(Static(label, classes="set-label"), sel, classes="set-row"))
@@ -1241,6 +1351,7 @@ class ServerManagerApp(App):
             return out + self._playbook_widgets()
         specs = {
             "admin": [("[App Config]", "panel_config"),
+                      ("[Model Settings]", "panel_model"),
                       ("[Commands]", "help"), ("[Update]", "admin_update"),
                       ("[Install]", "install"), ("[Reset]", "admin_reset"),
                       ("[Uninstall]", "admin_uninstall"),
@@ -1443,7 +1554,8 @@ class ServerManagerApp(App):
         for s in sessions:
             sid = s["id"]
             title = s.get("title") or "(untitled)"
-            short_id = sid[:12]
+            # The id is the creation timestamp (YYYYMMDD-HHMMSS-…); show it in full.
+            short_id = sid
             when = ""
             if s.get("updated_at"):
                 import time as _time
@@ -1469,7 +1581,7 @@ class ServerManagerApp(App):
     # ── Config view (app-settings.json + the LLM auth key) ────────────────────
     def _config_widgets(self) -> list[Widget]:
         c = self.cc
-        s, p = self._cfg_settings, self._cfg_provider
+        s = self._cfg_settings
         out: list[Widget] = [Static(Text("App settings", style=f"bold {c['accent']}"), classes="panel-sub")]
         if not s:
             out.append(Static(Text("(loading… or Refresh)", style=c["dim"]), classes="panel-sub"))
@@ -1507,10 +1619,31 @@ class ServerManagerApp(App):
             out.append(Input(value=str(s.get("stream_buffer_retention_seconds", 60)),
                              id="cfg-buffer", placeholder="60"))
             out.append(self._panel_btn("[Save settings]", "cfg_save_settings"))
-        # ── LLM auth key ─────────────────────────────────────────────────
-        # Provider quick-pick pills (moved here from the old App panel): one tap
-        # fills Base URL + Model below; "Custom" leaves them for manual entry.
-        out.append(Static(Text("LLM auth key", style=f"bold {c['accent']}"), classes="panel-sub"))
+        # ── Session naming (TUI-local; the LLM provider lives in Model Settings) ──
+        # How the Sessions list names each conversation. Applied live + saved to the
+        # TUI's own config — independent of the web app's settings above.
+        name_modes = [("Summary (AI)", "summary"),
+                      ("Latest message", "message"),
+                      ("Off (untitled)", "off")]
+        cur_mode = (self.cfg.session_name_mode or "summary").lower()
+        if cur_mode not in {v for _, v in name_modes}:
+            cur_mode = "summary"
+        out.append(Static(Text("Session naming", style=f"bold {c['accent']}"), classes="panel-sub"))
+        out.append(Select(name_modes, value=cur_mode, allow_blank=False, id="set-session-name"))
+        out.append(self._panel_btn("[Refresh]", "cfg_refresh"))
+        return out
+
+    # ── Model Settings view (the LLM provider + auth key) ─────────────────────
+    def _model_widgets(self) -> list[Widget]:
+        """The LLM provider/auth-key editor — moved out of App Config into its own
+        Admin ▸ Model Settings panel. Provider quick-pick pills fill Base URL +
+        Model below; 'Custom' leaves them for manual entry."""
+        c = self.cc
+        p = self._cfg_provider
+        out: list[Widget] = [Static(Text("LLM provider + auth key",
+                                         style=f"bold {c['accent']}"), classes="panel-sub")]
+        if not p:
+            out.append(Static(Text("(loading… or Refresh)", style=c["dim"]), classes="panel-sub"))
         names = [n for n, _, _ in PROVIDER_PRESETS]
         cur_prov = p.get("provider", "") or ""
         self._cfg_provider_pick = cur_prov if cur_prov in names else "Custom"
@@ -1560,6 +1693,11 @@ class ServerManagerApp(App):
     def action_panel_config(self) -> None:
         self._open_panel("config")
         if self._panel_kind == "config":
+            self.run_worker(self._load_config(), group="cfgload", exclusive=True)
+
+    def action_panel_model(self) -> None:
+        self._open_panel("model")
+        if self._panel_kind == "model":
             self.run_worker(self._load_config(), group="cfgload", exclusive=True)
 
     def action_panel_playbook(self) -> None:
@@ -1675,7 +1813,7 @@ class ServerManagerApp(App):
 
     @on(Click, ".cfg-provider-pick")
     def _on_cfg_provider_pick(self, event: Click) -> None:
-        """Pick a provider preset in App Config: remember it, fill Base URL + Model from
+        """Pick a provider preset in Model Settings: remember it, fill Base URL + Model from
         the preset (Custom leaves them as typed), and move the highlight in place — so a
         key already typed into the fields isn't lost to a rebuild."""
         name = getattr(event.widget, "_btn_value", None)
@@ -1738,7 +1876,7 @@ class ServerManagerApp(App):
         # Notice banner
         title = s.get("title") or "(untitled)"
         self._mount(Static(
-            Text(f" {G.OK} Resumed session: {title} [{sid[:12]}]",
+            Text(f" {G.OK} Resumed session: {title} [{sid}]",
                  style=f"bold {self.cc['secondary']}"),
             classes="msg-line",
             markup=False,
@@ -1835,7 +1973,7 @@ class ServerManagerApp(App):
     # ── panel interactions: button clicks, click-outside, settings, AI key ──
     # Buttons whose action should NOT close the panel (they edit it in place).
     _KEEP_OPEN = {"panel_expand",
-                  "panel_connect", "panel_config",
+                  "panel_connect", "panel_config", "panel_model",
                   "git_token_save", "git_token_clear",
                   "toggle_webagent", "toggle_manager", "connect_refresh",
                   "cfg_save_settings", "cfg_save_auth", "cfg_refresh",
@@ -1909,7 +2047,7 @@ class ServerManagerApp(App):
         self.apply_setting(sid, event.value)
 
     def _apply_provider_preset(self, name: str) -> None:
-        """Fill the App Config Base URL + Model fields from a provider preset."""
+        """Fill the Model Settings Base URL + Model fields from a provider preset."""
         preset = next((p for p in PROVIDER_PRESETS if p[0] == name), None)
         if preset is None or name == "Custom":
             return
@@ -1958,7 +2096,7 @@ class ServerManagerApp(App):
             return
         if not self.provider.configured:
             self._log(f"[{self.cc['tool']}]{G.WARN} No AI key configured.[/] "
-                      "Set a provider + key in Admin ▸ App Config first.")
+                      "Set a provider + key in Admin ▸ Model Settings first.")
             return
         if needs_writes and not (self.cfg.writes_enabled or self.cfg.autonomous):
             self.cfg.writes_enabled = True
@@ -2135,10 +2273,11 @@ class ServerManagerApp(App):
         self._log(f"\n[b {c['primary']}]{G.ADMIN} webAgent — command reference[/]")
 
         head("On-screen controls")
-        line("Admin", "App Config · Commands · Update · Install · Reset · Uninstall · Diagnostics · Logs")
+        line("Admin", "App Config · Model Settings · Commands · Update · Install · Reset · Uninstall · Diagnostics · Logs")
         line("Git", "GitHub token (Save/Clear), then Fetch · Pull · Commit · Commit+Pull · Push")
         line("WEBAGENT", "connect to a live web agent + session (dropdowns), mute/unmute")
-        line("App Config", "AI provider + key, plus the app's server settings (in Admin)")
+        line("App Config", "the app's server settings + session naming (in Admin)")
+        line("Model Settings", "the AI provider, model, and auth key (in Admin)")
         line("mode pill", "far-left header word — click to cycle Read → Write → Auto")
         line("theme", "Ctrl+T cycles the 23 colour themes (no header button)")
         line("status pill", "click the live/stopped status → Start · Restart · Kill")
@@ -2371,6 +2510,12 @@ class ServerManagerApp(App):
             return
         if key == "set-theme":
             self._apply_theme(value)
+            return
+        if key == "set-session-name":
+            mode = str(value)
+            if mode != cfg.session_name_mode:
+                cfg.session_name_mode = mode
+                cfg.save()
             return
         changed = True
         if key == "set-anim" and value != cfg.anim_style:
@@ -2620,6 +2765,9 @@ class ServerManagerApp(App):
                 body.append("\n")
             body.append(f"attached: {names}", style=self.cc["dim"])
         self._mount(Static(body, classes="msg-user", markup=False))
+        # Sending is a deliberate action: snap to the bottom and re-arm the anchor
+        # even if the user had scrolled up to read history.
+        self._scroll_end()
 
     # ── image attachments (pasted / dragged-in) ────────────────────────────
     def _attach_image_bytes(self, data: bytes, mime: str) -> bool:
@@ -2729,22 +2877,117 @@ class ServerManagerApp(App):
                     return head + v
         return self._fmt_args(args)
 
-    def _build_inner(self, tool: str, args) -> tuple[Collapsible, Static]:
-        """One call's collapsible: arguments code block + a result code block that
-        gets filled in place when the tool returns. Returns (collapsible, result)."""
+    # ── copy buttons + framed "code cards" (shared by tool calls and replies) ──
+    @staticmethod
+    def _token_est(text: str) -> int:
+        """Rough token estimate (~4 chars/token) for a block's size — shown on tool
+        calls and code blocks so the cost of a call is visible without expanding it."""
+        return max(1, round(len(text or "") / 4))
+
+    @staticmethod
+    def _fmt_elapsed(seconds: float) -> str:
+        """Human-readable wall time for a tool call (ms / s / m:ss)."""
+        if seconds < 1:
+            return f"{int(seconds * 1000)}ms"
+        if seconds < 60:
+            return f"{seconds:.1f}s"
+        m, s = divmod(int(seconds), 60)
+        return f"{m}m{s:02d}s"
+
+    @staticmethod
+    def _looks_like_diff(text: str) -> bool:
+        t = text or ""
+        return (t.startswith(("@@", "--- ", "Edited ", "Patched "))
+                or "\n@@" in t or "\n--- " in t)
+
+    def _colorize(self, text: str) -> Text:
+        """Render a tool result / code body as Rich Text. Unified diffs get per-line
+        colour (additions = success, removals = error, hunk headers = accent); a
+        plain error line goes red; everything else is normal foreground. Theme
+        variables only, so it stays legible in light AND dark mode."""
         c = self.cc
-        call_code = Static(Text(self._args_code(args), style=c["fg"]),
-                           classes="code-block", markup=False)
-        result = Static(Text("running…", style=c["dim"]), classes="code-block", markup=False)
-        inner = Collapsible(call_code, result,
+        if not text.strip():
+            return Text("(no output)", style=c["dim"])
+        is_diff = self._looks_like_diff(text)
+        err = text.lstrip().startswith(("Error", "Refused", "[exit 1"))
+        out = Text()
+        lines = text.splitlines()
+        for i, ln in enumerate(lines):
+            style = c["fg"]
+            if is_diff:
+                if ln.startswith(("+++", "---")):
+                    style = f"bold {c['dim']}"
+                elif ln.startswith("@@"):
+                    style = c["accent"]
+                elif ln.startswith("+"):
+                    style = c["success"]
+                elif ln.startswith("-"):
+                    style = c["error"]
+            elif err and i == 0:
+                style = c["error"]
+            out.append(ln, style=style)
+            if i < len(lines) - 1:
+                out.append("\n")
+        return out
+
+    def _copy_btn(self, payload: str) -> Static:
+        """A bracketed [Copy] text button that copies ``payload`` to the OS clipboard
+        when clicked (handled by _on_copy). The payload rides on the widget."""
+        btn = Static("[Copy]", classes="copy-btn", markup=False)
+        btn._copy_text = payload  # type: ignore[attr-defined]
+        return btn
+
+    def _code_card(self, body: Widget, *, title: str, copy_text: str):
+        """A framed code block: a header row (dim label on the left, [Copy] on the
+        right) above the body. Returns (card, title_widget, copy_btn) so callers can
+        update the label / payload after the fact (e.g. when a tool result lands)."""
+        c = self.cc
+        title_w = Static(Text(title, style=c["dim"]), classes="code-card-title", markup=False)
+        copy = self._copy_btn(copy_text)
+        head = Horizontal(title_w, copy, classes="code-card-head")
+        card = Vertical(head, body, classes="code-card")
+        return card, title_w, copy
+
+    @on(Click, ".copy-btn")
+    def _on_copy(self, event: Click) -> None:
+        """Copy a code/tool block to the OS clipboard and flash the button to
+        [Copied] for a moment. Stops the event so it never toggles the collapsible."""
+        event.stop()
+        btn = event.widget
+        if btn is None:
+            return
+        try:
+            write_clipboard(getattr(btn, "_copy_text", "") or "")
+        except Exception:
+            pass
+        try:
+            btn.update("[Copied]")
+            self.set_timer(1.2, lambda b=btn: b.update("[Copy]"))
+        except Exception:
+            pass
+
+    def _build_inner(self, tool: str, args) -> tuple[Collapsible, dict]:
+        """One call's collapsible: an 'args' code card + a 'result' code card filled
+        in place when the tool returns. Both carry a [Copy] button; the result is
+        diff-coloured. Returns (collapsible, refs) where refs lets the result land."""
+        c = self.cc
+        args_text = self._args_code(args)
+        args_body = Static(Text(args_text, style=c["fg"]), classes="code-block", markup=False)
+        args_card, _, _ = self._code_card(
+            args_body, title=f"args · ~{self._token_est(args_text)} tok", copy_text=args_text)
+        result_body = Static(Text("running…", style=c["dim"]), classes="code-block", markup=False)
+        result_card, result_title, result_copy = self._code_card(
+            result_body, title="result", copy_text="")
+        inner = Collapsible(args_card, result_card,
                             title=f"{G.TOOL} {tool}  {self._preview(args)}",
                             collapsed=True, classes="tool-block")
-        return inner, result
+        refs = {"body": result_body, "title": result_title, "copy": result_copy}
+        return inner, refs
 
     def _add_tool_call(self, tool: str, args) -> None:
         """Add a call to the current group (creating the group on the first call).
         The group title tracks the count: '1 tool call' → 'N tool calls'."""
-        inner, result = self._build_inner(tool, args)
+        inner, refs = self._build_inner(tool, args)
         if self._tool_group is None:
             self._tool_n = 1
             self._tool_group = Collapsible(inner, title="1 tool call",
@@ -2758,11 +3001,13 @@ class ServerManagerApp(App):
             except Exception:
                 # Group not fully mounted yet (rare) — queue into its contents list.
                 self._tool_group._contents_list.append(inner)
-            self._scroll_end()
-        self._tool_pending.append({"tool": tool, "inner": inner, "result": result, "done": False})
+        self._tool_pending.append({"tool": tool, "inner": inner, "refs": refs,
+                                   "t0": time.monotonic(), "done": False})
 
     def _fill_tool_result(self, tool: str, text: str) -> None:
-        """Fill the first still-open call of this name with its result + an ok/err mark."""
+        """Fill the first still-open call of this name with its result: diff-coloured
+        body, the full text on its [Copy] button, an ok/err mark, plus the call's
+        wall time and an output-token estimate in the collapsed title."""
         entry = next((e for e in self._tool_pending
                       if e["tool"] == tool and not e["done"]), None)
         if entry is None:
@@ -2772,16 +3017,23 @@ class ServerManagerApp(App):
         lines = out.splitlines()
         head = lines[0] if lines else ""
         ok = not head.startswith(("Error", "Refused", "[exit 1"))
+        elapsed = max(0.0, time.monotonic() - entry.get("t0", time.monotonic()))
+        toks = self._token_est(out)
         shown = out[:4000] + ("\n… (truncated)" if len(out) > 4000 else "")
+        refs = entry["refs"]
         try:
-            entry["result"].update(Text(shown if shown.strip() else "(no output)",
-                                        style=self.cc["fg"]))
+            refs["body"].update(self._colorize(shown))
+        except Exception:
+            pass
+        try:
+            refs["copy"]._copy_text = out   # copy the FULL result, not the truncated view
+            refs["title"].update(Text(f"result · ~{toks} tok", style=self.cc["dim"]))
         except Exception:
             pass
         mark = G.OK if ok else G.ERR
-        extra = f"  (+{len(lines) - 1} lines)" if len(lines) > 1 else ""
         try:
-            entry["inner"].title = f"{G.TOOL} {tool}  {mark}{extra}"
+            entry["inner"].title = (f"{G.TOOL} {tool}  {mark}  "
+                                    f"{self._fmt_elapsed(elapsed)}  ~{toks} tok")
         except Exception:
             pass
 
@@ -2831,6 +3083,95 @@ class ServerManagerApp(App):
         finally:
             self._set_busy(False)
             self._after_turn_settle()
+            # Name the session after its content: a short summary of the last ~10
+            # messages (falls back to the latest user message). Runs in the
+            # background so it never blocks the UI or the next turn.
+            self.run_worker(self._refresh_session_title(self.session_id),
+                            group="titlegen", exclusive=True)
+
+    # ── session naming (summary of the conversation so far) ────────────────
+    @staticmethod
+    def _msg_text(m: dict) -> str:
+        """Readable plain text for a stored message (unwraps JSON user payloads)."""
+        content = m.get("content") or ""
+        if m.get("content_kind") == "json":
+            try:
+                payload = json.loads(content) or {}
+                return (payload.get("text") or "").strip()
+            except Exception:
+                return ""
+        return content.strip()
+
+    async def _refresh_session_title(self, session_id: str) -> None:
+        """Generate the Sessions-list name for ``session_id``. Behaviour is set by
+        the App Config ``Session naming`` knob (``cfg.session_name_mode``):
+          • ``summary`` — ask the LLM for a concise summary of the last 10 messages,
+            falling back to the latest user message when unavailable.
+          • ``message`` — always use the latest user message text (no LLM call).
+          • ``off``     — don't auto-name (leave the session untitled)."""
+        mode = (self.cfg.session_name_mode or "summary").lower()
+        if mode == "off":
+            return
+        import asyncio
+        try:
+            msgs = await asyncio.to_thread(self.store.history, session_id)
+        except Exception:
+            return
+        # Conversation turns only (skip system + empty), newest 10.
+        convo = [m for m in msgs if m.get("role") in ("user", "assistant", "tool")]
+        if not convo:
+            return
+        recent = convo[-10:]
+
+        # Fallback: the latest user message's text, trimmed to one line.
+        fallback = ""
+        for m in reversed(convo):
+            if m.get("role") == "user":
+                fallback = " ".join(self._msg_text(m).split())[:80]
+                if fallback:
+                    break
+
+        title = ""
+        if mode == "summary" and self.llm is not None and getattr(self.provider, "configured", False):
+            lines = []
+            for m in recent:
+                role = m.get("role", "")
+                if role == "tool":
+                    txt = (m.get("tool_name") or "tool") + " result"
+                else:
+                    txt = self._msg_text(m)
+                txt = " ".join(txt.split())[:300]
+                if txt:
+                    lines.append(f"{role}: {txt}")
+            transcript = "\n".join(lines)
+            if transcript:
+                try:
+                    comp = await self.llm.complete(
+                        [
+                            {"role": "system", "content":
+                                "You name chat sessions. Given a conversation excerpt, reply "
+                                "with a concise 3-7 word title summarizing what it is about. "
+                                "Reply with ONLY the title — no quotes, no trailing punctuation, "
+                                "no preamble."},
+                            {"role": "user", "content": transcript},
+                        ],
+                        temperature=0.0,
+                        max_tokens=24,
+                    )
+                    title = " ".join((comp.content or "").split()).strip(' "\'.')[:80]
+                except Exception:
+                    title = ""
+
+        final = title or fallback
+        if not final:
+            return
+        try:
+            await asyncio.to_thread(self.store.set_session_title, session_id, final)
+        except Exception:
+            return
+        # If the Sessions panel is open, reflect the new name immediately.
+        if self._panel_kind == "sessions":
+            self.run_worker(self._render_panel("sessions"), group="panel", exclusive=True)
 
     # ── open-time PID / stale-instance manager ─────────────────────────────
     async def _scan_pids_on_open(self) -> None:
@@ -3110,8 +3451,9 @@ class ServerManagerApp(App):
             self._mount(self._ws_bubble)
         self._ws_bubble_text += delta
         try:
+            # No forced scroll: the anchored transcript follows while the user is at
+            # the bottom and leaves them be if they've scrolled up to read.
             self._ws_bubble.update(Text(f"{name}: {self._ws_bubble_text}", style=self.cc["fg"]))
-            self._scroll_end()
         except Exception:
             pass
 
@@ -3128,7 +3470,6 @@ class ServerManagerApp(App):
                                classes="msg-webagent", markup=False))
         self._ws_bubble = None
         self._ws_bubble_text = ""
-        self._scroll_end()
 
     def _flush_ws_bubble(self) -> None:
         """Finalize any in-progress streaming bubble before a new event type."""
@@ -3153,5 +3494,21 @@ class ServerManagerApp(App):
 
 
 def run() -> int:
+    # Harden Ctrl+C so it can ONLY ever copy, never quit. Textual reads Ctrl+C as a
+    # key event (→ copy selection) while it owns the console. But the manager shells
+    # out to short helper commands constantly (netstat/git/health probes, the 3-second
+    # server poll, the watchdog, the PID scan). While such a child is briefly attached
+    # to the console, Windows reverts to default handling and turns Ctrl+C into a real
+    # OS interrupt (SIGINT/CTRL_C_EVENT) delivered to the whole process group — which
+    # would raise KeyboardInterrupt in our process and tear the app down. A Ctrl+C that
+    # lands inside one of those sub-second windows is the intermittent "Ctrl+C quit the
+    # app" bug. Ignoring SIGINT closes that race for good; the only intended quit path
+    # is Ctrl+Q (a normal key binding, not a signal), so this never blocks a real quit.
+    try:
+        import signal
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    except (ValueError, OSError, AttributeError):
+        # Not on the main thread, or the platform won't allow it — non-fatal.
+        pass
     ServerManagerApp().run()
     return 0

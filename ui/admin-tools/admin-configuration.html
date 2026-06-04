@@ -1451,13 +1451,16 @@
               Configuration is locked to environment variables. UI changes are disabled. Edit the deployment to modify storage settings.
             </div>
 
-            <!-- ── Application Data ── -->
-            <details class="ac-card" open>
-              <summary class="ac-card-label">
-                <i data-lucide="server" class="lucide-icon" style="width:14px;height:14px;color:var(--accent);"></i>
-                Application Data
-                <span id="ac-storage-active-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+            <!-- ── Application Data — shared collapsible pattern (see CSS .ac-category-group) ── -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="server" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+                <span class="ac-category-title">Application Data</span>
+                <span id="ac-storage-active-badge" class="ac-category-count">loading…</span>
               </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
 
               <label class="ac-label" style="margin-top:10px;">Provider</label>
               <select id="ac-storage-db-provider" class="ac-input">
@@ -1492,15 +1495,20 @@
                 <div id="ac-db-current-mode" class="ac-hint" style="margin-top:6px;"></div>
                 <div id="ac-db-status" class="ac-hint" style="margin-top:4px;"></div>
               </details>
+                </div><!-- /.ac-card -->
+              </div><!-- /.ac-category-body -->
             </details>
 
-            <!-- ── Secrets Vault ── -->
-            <details class="ac-card" open>
-              <summary class="ac-card-label">
-                <i data-lucide="key-round" class="lucide-icon" style="width:14px;height:14px;color:#bb9af7;"></i>
-                Secrets Vault
-                <span id="ac-storage-secrets-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+            <!-- ── Secrets Vault — shared collapsible pattern ── -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="key-round" class="lucide-icon" style="width:16px;height:16px;color:#bb9af7;"></i>
+                <span class="ac-category-title">Secrets Vault</span>
+                <span id="ac-storage-secrets-badge" class="ac-category-count">loading…</span>
               </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
 
               <label class="ac-label" style="margin-top:10px;">Provider</label>
               <select id="ac-storage-secrets-provider" class="ac-input">
@@ -1522,15 +1530,20 @@
                 <button id="ac-storage-secrets-save" class="ac-btn ac-btn-primary">Activate</button>
               </div>
               <pre id="ac-storage-secrets-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;display:none;"></pre>
+                </div><!-- /.ac-card -->
+              </div><!-- /.ac-category-body -->
             </details>
 
-            <!-- ── Page Storage ── -->
-            <details class="ac-card" open>
-              <summary class="ac-card-label">
-                <i data-lucide="layout-template" class="lucide-icon" style="width:14px;height:14px;color:#9ece6a;"></i>
-                Page Storage
-                <span id="ac-storage-pages-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+            <!-- ── Page Storage — shared collapsible pattern ── -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="layout-template" class="lucide-icon" style="width:16px;height:16px;color:#9ece6a;"></i>
+                <span class="ac-category-title">Page Storage</span>
+                <span id="ac-storage-pages-badge" class="ac-category-count">loading…</span>
               </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
 
               <label class="ac-label" style="margin-top:10px;">Mode</label>
               <select id="ac-storage-pages-mode" class="ac-input">
@@ -1545,15 +1558,20 @@
                 <button id="ac-storage-pages-save" class="ac-btn ac-btn-primary">Activate</button>
               </div>
               <pre id="ac-storage-pages-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;display:none;"></pre>
+                </div><!-- /.ac-card -->
+              </div><!-- /.ac-category-body -->
             </details>
 
-            <!-- ── Chat Attachments (per-row storage backend) ── -->
-            <details class="ac-card" open>
-              <summary class="ac-card-label">
-                <i data-lucide="paperclip" class="lucide-icon" style="width:14px;height:14px;color:#bb9af7;"></i>
-                Chat Attachments
-                <span id="ac-attach-active-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+            <!-- ── Chat Attachments (per-row storage backend) — shared collapsible pattern ── -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="paperclip" class="lucide-icon" style="width:16px;height:16px;color:#bb9af7;"></i>
+                <span class="ac-category-title">Chat Attachments</span>
+                <span id="ac-attach-active-badge" class="ac-category-count">loading…</span>
               </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
 
               <div class="ac-hint" style="margin-top:8px;">
                 Where chat attachments (images, voice, dropped files) are stored. Switch any time — existing files keep working because each attachment row remembers which backend wrote it.
@@ -1578,15 +1596,20 @@
               </div>
 
               <div id="ac-attach-counts" class="ac-hint" style="margin-top:8px;font-size:11px;"></div>
+                </div><!-- /.ac-card -->
+              </div><!-- /.ac-category-body -->
             </details>
 
-            <!-- ── Encryption ── -->
-            <details class="ac-card" open>
-              <summary class="ac-card-label">
-                <i data-lucide="lock" class="lucide-icon" style="width:14px;height:14px;color:#7dcfff;"></i>
-                Encryption
-                <span id="ac-storage-enc-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+            <!-- ── Encryption — shared collapsible pattern ── -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="lock" class="lucide-icon" style="width:16px;height:16px;color:#7dcfff;"></i>
+                <span class="ac-category-title">Encryption</span>
+                <span id="ac-storage-enc-badge" class="ac-category-count">loading…</span>
               </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
 
               <div id="ac-storage-enc-vault-warning" class="ac-info-banner" style="display:none;margin-top:10px;border-left-color:#f7768e;color:#f7768e;font-size:11px;">
                 Secrets vault is set to <strong>inline_db</strong> while the database backend is remote. Encryption keys would live in the same DB they protect. Switch the Secrets Vault provider above before enabling per-tenant encryption.
@@ -1617,15 +1640,20 @@
               </div>
 
               <pre id="ac-storage-enc-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;display:none;"></pre>
+                </div><!-- /.ac-card -->
+              </div><!-- /.ac-category-body -->
             </details>
 
-            <!-- ── Stream Buffer (in-memory per-turn event log for WS replay) ── -->
-            <details class="ac-card" open>
-              <summary class="ac-card-label">
-                <i data-lucide="activity" class="lucide-icon" style="width:14px;height:14px;color:#7dcfff;"></i>
-                Stream Buffer
-                <span id="ac-storage-sbuf-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;"></span>
+            <!-- ── Stream Buffer (in-memory per-turn event log for WS replay) — shared collapsible pattern ── -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="activity" class="lucide-icon" style="width:16px;height:16px;color:#7dcfff;"></i>
+                <span class="ac-category-title">Stream Buffer</span>
+                <span id="ac-storage-sbuf-badge" class="ac-category-count"></span>
               </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
               <div class="ac-hint" style="margin-top:8px;">
                 Each chat turn keeps its events (stream tokens, tool calls, results) in memory so a refresh or session switch can replay what was missed. Buffer is dropped this many seconds after the turn finishes. 0 = drop immediately. Max 3600.
               </div>
@@ -1635,15 +1663,20 @@
                 <button id="ac-storage-sbuf-save" class="ac-btn ac-btn-primary">Save</button>
                 <span id="ac-storage-sbuf-status" class="ac-hint" style="margin-left:6px;"></span>
               </div>
+                </div><!-- /.ac-card -->
+              </div><!-- /.ac-category-body -->
             </details>
 
-            <!-- ── Agent Prompt Templates ── -->
-            <details class="ac-card" open>
-              <summary class="ac-card-label">
-                <i data-lucide="file-stack" class="lucide-icon" style="width:14px;height:14px;color:#9ece6a;"></i>
-                Agent Prompt Templates
-                <span id="ac-tpl-sync-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+            <!-- ── Agent Prompt Templates — shared collapsible pattern ── -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="file-stack" class="lucide-icon" style="width:16px;height:16px;color:#9ece6a;"></i>
+                <span class="ac-category-title">Agent Prompt Templates</span>
+                <span id="ac-tpl-sync-badge" class="ac-category-count">loading…</span>
               </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
               <div class="ac-hint" style="margin-top:8px;">
                 Templates seed from <code>data/agents/*.json</code> at boot. Re-seed never overwrites slots edited from the admin UI (<code>source = admin</code>) unless you click <strong>Force Re-Seed</strong>.
               </div>
@@ -1655,14 +1688,19 @@
               <div id="ac-tpl-hash-row" class="ac-hint" style="margin-top:8px;font-family:var(--mono,monospace);font-size:10px;word-break:break-all;"></div>
               <div id="ac-tpl-list" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;"></div>
               <pre id="ac-tpl-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:240px;overflow-y:auto;display:none;"></pre>
+                </div><!-- /.ac-card -->
+              </div><!-- /.ac-category-body -->
             </details>
 
-            <!-- ── Data Migration ── -->
-            <details class="ac-card">
-              <summary class="ac-card-label">
-                <i data-lucide="arrow-right-left" class="lucide-icon" style="width:14px;height:14px;color:#9ece6a;"></i>
-                Data Migration
+            <!-- ── Data Migration — shared collapsible pattern ── -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="arrow-right-left" class="lucide-icon" style="width:16px;height:16px;color:#9ece6a;"></i>
+                <span class="ac-category-title">Data Migration</span>
               </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
               <div class="ac-hint" style="margin-top:10px;">
                 Export current backend data to JSON, switch active backend, then import the file. Heavy tables may take a while.
               </div>
@@ -1674,6 +1712,8 @@
                 </label>
               </div>
               <pre id="ac-storage-migrate-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:240px;overflow-y:auto;display:none;"></pre>
+                </div><!-- /.ac-card -->
+              </div><!-- /.ac-category-body -->
             </details>
 
           </section>
@@ -2018,63 +2058,103 @@
                 <p class="ac-section-desc">Global behavior toggles for this application.</p>
               </div>
             </div>
-            <div class="ac-card">
-              <div class="ac-field">
-                <label class="ac-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-                  <input type="checkbox" id="ac-extend-llm-to-agents" checked style="width:15px;height:15px;accent-color:#7aa2f7;cursor:pointer;">
-                  Extend default LLM to agents
-                </label>
-                <div class="ac-hint">When enabled, agents can select "Use app default" for their LLM. When disabled, each agent must configure its own LLM.</div>
-                <div style="margin-top:10px;padding:10px 12px;background:rgba(224,175,104,0.12);border:1px solid rgba(224,175,104,0.4);border-radius:6px;color:#e0af68;font-size:13px;line-height:1.5;">
-                  <strong>Warning:</strong> Any agents currently configured to use the app default LLM will have their LLM disconnected. They will stop working until an admin assigns them a custom LLM.
+            <!-- ════════════════════════════════════════════════════════════════
+                 COLLAPSIBLE SECTION PATTERN — SHARED ACROSS ADMIN CONFIG PAGES
+                 Each setting group is a `<details class="ac-category-group">`:
+                 a plain text heading (chevron + icon + title), collapsed by
+                 default, that opens to reveal ONE full-width `.ac-card` of
+                 options. NOT a card-within-a-card. The same pattern is used by
+                 Agent Settings (the Agent Tools / Channels / Providers groups).
+                 STYLING IS SYNCED: the look lives in `.ac-category-group` /
+                 `.ac-category-summary` / `.ac-category-body` in ui/css/app3.css.
+                 If you restyle one page's groups, update the shared CSS so every
+                 page (App Settings, Agent Settings, and future pages) stays in
+                 sync — do NOT fork per-page styles.
+                 ════════════════════════════════════════════════════════════════ -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="cpu" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+                <span class="ac-category-title">Agent LLM Defaults</span>
+              </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
+                  <div class="ac-field">
+                    <label class="ac-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                      <input type="checkbox" id="ac-extend-llm-to-agents" checked style="width:15px;height:15px;accent-color:#7aa2f7;cursor:pointer;">
+                      Extend default LLM to agents
+                    </label>
+                    <div class="ac-hint">When enabled, agents can select "Use app default" for their LLM. When disabled, each agent must configure its own LLM.</div>
+                    <div style="margin-top:10px;padding:10px 12px;background:rgba(224,175,104,0.12);border:1px solid rgba(224,175,104,0.4);border-radius:6px;color:#e0af68;font-size:13px;line-height:1.5;">
+                      <strong>Warning:</strong> Any agents currently configured to use the app default LLM will have their LLM disconnected. They will stop working until an admin assigns them a custom LLM.
+                    </div>
+                  </div>
+                  <div class="ac-actions">
+                    <button id="ac-app-settings-save" class="ac-btn ac-btn-primary">Save</button>
+                    <span id="ac-app-settings-status" class="ac-status" style="display:none;"></span>
+                  </div>
                 </div>
               </div>
-              <div class="ac-actions">
-                <button id="ac-app-settings-save" class="ac-btn ac-btn-primary">Save</button>
-                <span id="ac-app-settings-status" class="ac-status" style="display:none;"></span>
-              </div>
-            </div>
-
-            <!-- ── Main Panel Pages (tab visibility + order) ── -->
-            <details class="ac-card" id="ac-main-panel-card" open style="margin-top:14px;">
-              <summary class="ac-card-label">
-                <i data-lucide="layout" class="lucide-icon" style="width:14px;height:14px;color:var(--accent);"></i>
-                Main Panel Pages
-                <span style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">Drag to reorder, toggle visibility</span>
-              </summary>
-              <div class="ac-hint" style="margin-top:8px;">
-                Choose which pages appear in the header and in what order. Admin Tools is always visible.
-              </div>
-              <div id="ac-main-panel-list" class="ac-main-panel-list" style="margin-top:10px;display:flex;flex-direction:column;gap:4px;"></div>
             </details>
 
-            <div class="ac-card" style="margin-top:14px;">
-              <div class="ac-field">
-                <label class="ac-label" for="ac-boot-animation">Boot animation</label>
-                <select id="ac-boot-animation" class="ac-input">
-                  <option value="chat-slide-right">Chat slides right, page reveals on left</option>
-                  <option value="page-slide-in">Page slides in from the right</option>
-                  <option value="crossfade">Crossfade</option>
-                </select>
-                <div class="ac-hint">Picks how the chat shrinks and the saved page appears when the app first loads. Saved per browser; applied on the next reload.</div>
-              </div>
-              <div class="ac-field" style="margin-top:14px;">
-                <label class="ac-label" for="ac-boot-mobile-mode">Mobile boot</label>
-                <select id="ac-boot-mobile-mode" class="ac-input">
-                  <option value="chat-first">Always start with chat full-screen</option>
-                  <option value="memory">Remember last view (chat or page)</option>
-                </select>
-                <div class="ac-hint">Mobile only. "Always" forces the chat-first boot then animates to the saved view. "Remember" skips the animation and goes straight to whichever panel you had open last.</div>
-              </div>
-            </div>
-
-            <!-- ── Remote Access (reach this server from a phone / other device) ── -->
-            <details class="ac-card" id="ac-ra-card" open style="margin-top:14px;">
-              <summary class="ac-card-label">
-                <i data-lucide="radio-tower" class="lucide-icon" style="width:14px;height:14px;color:var(--accent);"></i>
-                Remote Access
-                <span id="ac-ra-active-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+            <!-- ── Main Panel Pages (tab visibility + order) — shared collapsible pattern ── -->
+            <details class="ac-category-group" id="ac-main-panel-card">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="layout" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+                <span class="ac-category-title">Main Panel Pages</span>
+                <span class="ac-category-count">Drag to reorder, toggle visibility</span>
               </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
+                  <div class="ac-hint">
+                    Choose which pages appear in the header and in what order. Admin Tools is always visible.
+                  </div>
+                  <div id="ac-main-panel-list" class="ac-main-panel-list" style="margin-top:10px;display:flex;flex-direction:column;gap:4px;"></div>
+                </div>
+              </div>
+            </details>
+
+            <!-- ── Startup & Boot — shared collapsible pattern ── -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="power" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+                <span class="ac-category-title">Startup &amp; Boot</span>
+              </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
+                  <div class="ac-field">
+                    <label class="ac-label" for="ac-boot-animation">Boot animation</label>
+                    <select id="ac-boot-animation" class="ac-input">
+                      <option value="chat-slide-right">Chat slides right, page reveals on left</option>
+                      <option value="page-slide-in">Page slides in from the right</option>
+                      <option value="crossfade">Crossfade</option>
+                    </select>
+                    <div class="ac-hint">Picks how the chat shrinks and the saved page appears when the app first loads. Saved per browser; applied on the next reload.</div>
+                  </div>
+                  <div class="ac-field" style="margin-top:14px;">
+                    <label class="ac-label" for="ac-boot-mobile-mode">Mobile boot</label>
+                    <select id="ac-boot-mobile-mode" class="ac-input">
+                      <option value="chat-first">Always start with chat full-screen</option>
+                      <option value="memory">Remember last view (chat or page)</option>
+                    </select>
+                    <div class="ac-hint">Mobile only. "Always" forces the chat-first boot then animates to the saved view. "Remember" skips the animation and goes straight to whichever panel you had open last.</div>
+                  </div>
+                </div>
+              </div>
+            </details>
+
+            <!-- ── Remote Access (reach this server from a phone / other device) — shared collapsible pattern ── -->
+            <details class="ac-category-group" id="ac-ra-card">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="radio-tower" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+                <span class="ac-category-title">Remote Access</span>
+                <span id="ac-ra-active-badge" class="ac-category-count">loading…</span>
+              </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
 
               <div class="ac-hint" style="margin-top:8px;">
                 Reach this server from your phone or another device. The same-network address always works on your Wi-Fi; pick a method below to reach it from anywhere.
@@ -2159,6 +2239,8 @@
                   </div>
                 </details>
               </div>
+                </div><!-- /.ac-card -->
+              </div><!-- /.ac-category-body -->
             </details>
           </section>
 

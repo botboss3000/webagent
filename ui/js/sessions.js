@@ -78,6 +78,59 @@ export function generateUUID() {
   return randomUUID();
 }
 
+// ── webAgent (the do-it-all agent) ───────────────────────────────────────────
+// All page chat pills (Agents / Pages / Source Control / Agent Settings) and the
+// "no agent yet" chat fallback target one agent: the user's instance of the
+// `default` template (named "webAgent"). We find-or-create exactly one per user
+// so there is a single shared do-it-all agent, then start a fresh session on it.
+const WEBAGENT_TEMPLATE_ID = 'default';
+const _webagentIdCache = new Map(); // userId → agentId
+
+async function findWebagentAgent(userId) {
+  if (_webagentIdCache.has(userId)) return _webagentIdCache.get(userId);
+  try {
+    const res = await fetch(apiPath(`/api/v1/agents?user_id=${encodeURIComponent(userId)}`));
+    if (!res.ok) return null;
+    const data = await res.json();
+    const match = (data.agents || []).find(a => a.template_id === WEBAGENT_TEMPLATE_ID);
+    if (match) { _webagentIdCache.set(userId, match.id); return match.id; }
+  } catch (e) {
+    console.warn('[webAgent] find failed:', e);
+  }
+  return null;
+}
+
+async function createWebagentAgent(userId) {
+  const res = await fetch(apiPath('/api/v1/agents'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: userId,
+      name: 'webAgent',
+      description: 'Your all-purpose webAgent — chat, tools, web, browser, code, pages, and source control.',
+      template_id: WEBAGENT_TEMPLATE_ID,
+    }),
+  });
+  if (!res.ok) {
+    let detail = `agent create failed (${res.status})`;
+    try { const e = await res.json(); detail = e.detail || detail; } catch (_) {}
+    throw new Error(detail);
+  }
+  const data = await res.json();
+  const id = data.agent && data.agent.id;
+  if (!id) throw new Error('agent create returned no id');
+  _webagentIdCache.set(userId, id);
+  if (typeof app.populateAgentSelect === 'function') {
+    try { await app.populateAgentSelect(userId); } catch (_) {}
+  }
+  return id;
+}
+
+export async function ensureWebagentAgent(userId) {
+  if (!userId) throw new Error('not signed in');
+  return (await findWebagentAgent(userId)) || (await createWebagentAgent(userId));
+}
+
 /**
  * Interrupt the backend agent loop for a session (best-effort, fire-and-forget).
  * Tells the server to gracefully stop an in-flight run. NOTE: this is now only
@@ -309,6 +362,14 @@ export async function populateAgentSelect(userId) {
 
     _renderAgentRows();
     _setAgentTriggerLabel();
+
+    // Agent names just became available — the unified session dropdown prefixes
+    // every row with its agent's name, so refresh any already-rendered rows so
+    // they show real names instead of the id fallback.
+    if (_sessionsCache.length) {
+      _renderSessionRows();
+      _setTriggerLabel();
+    }
 
     // Sessions are scoped to an agent — refresh the session list now that
     // currentAgentId is settled. Deferred: sessions are fetched lazily when
@@ -569,6 +630,19 @@ function _truncate(s, n) {
   return (s && s.length > n) ? s.slice(0, n) + '…' : (s || '');
 }
 
+/**
+ * Resolve an agent id to its display name using the cached agent list.
+ * The header session dropdown spans every agent, so each row is prefixed
+ * with the owning agent's name. Falls back to a short id slice (or "Agent")
+ * when the agent isn't in the cache (e.g. orphaned/legacy sessions).
+ */
+function _agentNameFor(agentId) {
+  if (!agentId) return 'Agent';
+  const found = _agentsCache.find(a => a.id === agentId);
+  if (found && found.name) return found.name;
+  return agentId.slice(0, 8);
+}
+
 function _setTriggerLabel() {
   let labelEl = document.getElementById('session-dropdown-label');
   const trigger = document.getElementById('session-dropdown-trigger');
@@ -585,8 +659,12 @@ function _setTriggerLabel() {
   const sid = app.currentSessionId;
   const found = _sessionsCache.find(s => s.id === sid);
   const title = (found && found.title) || 'New Session';
-  labelEl.textContent = _truncate(title, 20);
-  labelEl.title = (found && found.id) || sid || '';
+  // Show "Agent name — Session title" so the single dropdown makes clear which
+  // agent the active session belongs to.
+  const agentId = (found && found.agent_id) || app.currentAgentId;
+  const agentName = _agentNameFor(agentId);
+  labelEl.textContent = _truncate(agentName, 14) + ' — ' + _truncate(title, 18);
+  labelEl.title = ((found && found.id) || sid || '');
   // Click the label to re-enter rename mode
   labelEl.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -660,7 +738,11 @@ function _renderSessionRows() {
     const row = document.createElement('div');
     row.className = 'session-row' + (s.pinned ? ' pinned' : '') + (s.id === app.currentSessionId ? ' selected' : '');
     row.dataset.id = s.id;
+    if (s.agent_id) row.dataset.agent = s.agent_id;
     const label = s.title || 'New Session';
+    // Each row spans the whole agent list, so prefix the title with the owning
+    // agent's name: "Agent name — Session title".
+    const agentName = _agentNameFor(s.agent_id);
     // Status indicator: spinning loader for running, checkmark for completed-unread, dot for read
     let statusHtml = '';
     if (s.run_status === 'running') {
@@ -672,7 +754,7 @@ function _renderSessionRows() {
       <span class="row-drag-handle" data-drag-handle title="Drag to reorder · hold to pin">${icon('grip-vertical', { size: '13px' })}</span>
       <span class="session-row-pin-icon">${icon('pin', { size: '12px' })}</span>
       ${statusHtml}
-      <span class="session-row-title" title="Hold to rename">${_truncate(label, 28).replace(/</g, '&lt;')}</span>
+      <span class="session-row-title" title="Hold to rename"><span class="session-row-agent">${_truncate(agentName, 18).replace(/</g, '&lt;')}</span><span class="session-row-sep"> — </span>${_truncate(label, 28).replace(/</g, '&lt;')}</span>
       <button class="session-row-delete" title="Delete session" data-id="${s.id}" data-state="trash">${icon('trash-2', { size: '14px' })}</button>
     `;
     menu.appendChild(row);
@@ -717,9 +799,10 @@ export async function populateSessionSelect(userId) {
   const mySeq = ++_sessionFetchSeq;
   try {
     const token = localStorage.getItem('auth_token');
-    const agentId = app.currentAgentId || '';
-    let url = `/api/v1/db/sessions?db=local.db&user_id=${encodeURIComponent(userId)}&limit=20`;
-    if (agentId) url += `&agent_id=${encodeURIComponent(agentId)}`;
+    // The header dropdown now lists sessions for EVERY agent, so we deliberately
+    // omit the agent_id filter — the server returns the user's sessions across
+    // all agents, newest-active first, pinned on top.
+    let url = `/api/v1/db/sessions?db=local.db&user_id=${encodeURIComponent(userId)}&limit=50`;
     if (token) url += `&token=${encodeURIComponent(token)}`;
     const res = await fetch(apiPath(url));
     const data = await res.json();
@@ -727,6 +810,7 @@ export async function populateSessionSelect(userId) {
     _sessionsCache = (data.sessions || []).map(s => ({
       id: s.id,
       title: s.title || 'New Session',
+      agent_id: s.agent_id || null,
       created_at: s.created_at,
       updated_at: s.updated_at || s.created_at,
       pinned: !!s.pinned,
@@ -741,6 +825,7 @@ export async function populateSessionSelect(userId) {
       _sessionsCache.unshift({
         id: app.currentSessionId,
         title: 'New Session',
+        agent_id: app.currentAgentId || null,
         created_at: null,
         updated_at: null,
         pinned: false,
@@ -1692,9 +1777,18 @@ export function initSessions() {
 
   async function switchToSession(sid) {
     if (!sid || sid === app.currentSessionId) { closeMenu(); return; }
-    // Record this session as the last active for the current agent
-    if (app.currentAgentId) {
-      _lastSessionPerAgent.set(app.currentAgentId, sid);
+    // The dropdown spans every agent, so the picked session may belong to a
+    // different agent than the one currently active. Switch the agent to match
+    // before loading the session, so chat sends and agent-scoped UI line up.
+    const targetSess = _sessionsCache.find(s => s.id === sid);
+    const targetAgentId = (targetSess && targetSess.agent_id) || app.currentAgentId;
+    if (targetAgentId && targetAgentId !== app.currentAgentId) {
+      app.currentAgentId = targetAgentId;
+      try { localStorage.setItem('selectedAgentId', targetAgentId); } catch (_) {}
+    }
+    // Record this session as the last active for its owning agent
+    if (targetAgentId) {
+      _lastSessionPerAgent.set(targetAgentId, sid);
       _saveLastSessionMap();
     }
     // Leaving a session does NOT stop its run — it keeps going server-side and
@@ -1711,6 +1805,7 @@ export function initSessions() {
     chatActivitySessionChanged();
     _renderSessionRows();
     _setTriggerLabel();
+    _setAgentTriggerLabel();  // refresh TUI-bridge indicator for the new agent
     closeMenu();
 
     // Drain any WS-replayed events that arrived BEFORE we navigated here
@@ -1974,24 +2069,107 @@ export function initSessions() {
     if (e.key === 'Escape' && menu && !menu.hidden) closeMenu();
   });
 
-  // New session button — creates a fresh session for the current agent
+  // New session button — start a fresh session. When the user owns more than
+  // one agent, clicking + opens a small picker so they choose which agent the
+  // new session belongs to; with a single agent (or none) it starts directly.
   const sessionNewBtn = document.getElementById('session-new');
-  if (sessionNewBtn) {
-    sessionNewBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      abortChatStream();
-      app.currentSessionId = generateUUID();
-      localStorage.setItem('terminalSessionId', app.currentSessionId);
-      _teardownVirtualScroll();
-      app.chatMessages.innerHTML = '';
-      app.addChatBubble('agent', 'New session. Start typing below.');
-      populateSessionSelect(app.currentUserId);
-      loopSessionChanged();
-      loopVisualSessionChanged();
-      autoAgentSessionChanged();
-      chatActivitySessionChanged();
-    });
+
+  /** Create a fresh session, optionally switching to a chosen agent first. */
+  function _startNewSession(agentId) {
+    abortChatStream();
+    if (agentId && agentId !== app.currentAgentId) {
+      app.currentAgentId = agentId;
+      try { localStorage.setItem('selectedAgentId', agentId); } catch (_) {}
+    }
+    app.currentSessionId = generateUUID();
+    localStorage.setItem('terminalSessionId', app.currentSessionId);
+    _teardownVirtualScroll();
+    app.chatMessages.innerHTML = '';
+    app.addChatBubble('agent', 'New session. Start typing below.');
+    populateSessionSelect(app.currentUserId);
+    loopSessionChanged();
+    loopVisualSessionChanged();
+    autoAgentSessionChanged();
+    chatActivitySessionChanged();
+    _setAgentTriggerLabel();
   }
+
+  // ── New-session agent picker (only shown when >1 agent) ──
+  let _agentPickerEl = null;
+  function _closeAgentPicker() {
+    if (_agentPickerEl) { _agentPickerEl.remove(); _agentPickerEl = null; }
+    document.removeEventListener('click', _onAgentPickerOutside, true);
+    document.removeEventListener('keydown', _onAgentPickerEsc, true);
+    window.removeEventListener('resize', _closeAgentPicker);
+  }
+  function _onAgentPickerOutside(e) {
+    if (_agentPickerEl && !_agentPickerEl.contains(e.target) && !e.target.closest('#session-new')) {
+      _closeAgentPicker();
+    }
+  }
+  function _onAgentPickerEsc(e) { if (e.key === 'Escape') _closeAgentPicker(); }
+
+  function _openAgentPicker() {
+    console.log('[new-session] _openAgentPicker called, rendering', _agentsCache.length, 'rows');
+    _closeAgentPicker();
+    const picker = document.createElement('div');
+    picker.className = 'agent-dropdown-menu new-session-agent-picker';
+    const head = document.createElement('div');
+    head.className = 'new-session-picker-head';
+    head.textContent = 'New session with…';
+    picker.appendChild(head);
+    for (const a of _agentsCache) {
+      const row = document.createElement('div');
+      row.className = 'agent-row-item';
+      row.innerHTML = `<span class="agent-row-title">${_truncate(a.name || a.id.slice(0, 12), 28).replace(/</g, '&lt;')}</span>`;
+      row.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        _closeAgentPicker();
+        _startNewSession(a.id);
+      });
+      picker.appendChild(row);
+    }
+    document.body.appendChild(picker);
+    // Anchor under the + button (re-query fresh in case it was re-rendered),
+    // right-aligned so it doesn't spill off-screen.
+    const anchorBtn = document.getElementById('session-new') || sessionNewBtn;
+    const r = anchorBtn.getBoundingClientRect();
+    picker.style.top = Math.round(r.bottom + 6) + 'px';
+    const w = picker.offsetWidth || 200;
+    let left = r.right - w;
+    if (left < 8) left = 8;
+    picker.style.left = Math.round(left) + 'px';
+    _agentPickerEl = picker;
+    console.log('[new-session] picker appended at top=', picker.style.top, 'left=', picker.style.left, 'w=', w, 'inDOM=', document.body.contains(picker));
+    // Defer listener attach so this same click doesn't immediately close it.
+    setTimeout(() => {
+      document.addEventListener('click', _onAgentPickerOutside, true);
+      document.addEventListener('keydown', _onAgentPickerEsc, true);
+      window.addEventListener('resize', _closeAgentPicker);
+    }, 0);
+  }
+
+  console.log('[new-session] wiring + button (delegated), found now?', !!sessionNewBtn);
+  // Delegated on document (capture) so it fires even if the #session-new button
+  // is re-rendered/replaced after init or sits under another element — we just
+  // need the click to land anywhere on (or inside) #session-new.
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest && e.target.closest('#session-new');
+    if (!btn) return;
+    console.log('[new-session] + clicked. agentsCache.length =', _agentsCache.length, 'pickerOpen =', !!_agentPickerEl, _agentsCache.map(a => a.name));
+    e.stopPropagation();
+    e.preventDefault();
+    closeMenu();           // close the session list if it's open
+    if (_agentPickerEl) { console.log('[new-session] toggling picker off'); _closeAgentPicker(); return; }  // toggle off
+    if (_agentsCache.length > 1) {
+      console.log('[new-session] opening agent picker');
+      _openAgentPicker();
+      return;
+    }
+    // 0 agents → keep current (empty) agent; 1 agent → use it.
+    console.log('[new-session] starting session directly, agent =', _agentsCache.length === 1 ? _agentsCache[0].name : '(none)');
+    _startNewSession(_agentsCache.length === 1 ? _agentsCache[0].id : null);
+  }, true);
 
   // Header delete button — two-click confirm (same pattern as dropdown rows)
   const sessionDelHeader = document.getElementById('session-delete-header');
@@ -2071,8 +2249,18 @@ export function initSessions() {
     agentDropdown.classList.remove('open');
   }
 
-  function switchToAgent(aid) {
-    if (!aid || aid === app.currentAgentId) { closeAgentMenu(); return; }
+  function switchToAgent(aid, opts) {
+    opts = opts || {};
+    // forceNewSession: always begin a brand-new session, even if this agent
+    //   already has a prior session or is already the current agent. Used by
+    //   the page chat pills (Agents / Pages / Source Control / Agent Settings)
+    //   so every hand-off to the webAgent starts a fresh conversation.
+    // silent: skip the "Switched agent. New session started." info bubble —
+    //   the caller is about to inject the user's own message immediately.
+    const forceNew = !!opts.forceNewSession;
+    const silent   = !!opts.silent;
+    if (!aid) { closeAgentMenu(); return; }
+    if (aid === app.currentAgentId && !forceNew) { closeAgentMenu(); return; }
     // Save the current session under the PREVIOUS agent before switching
     const prevAgentId = app.currentAgentId;
     if (prevAgentId && app.currentSessionId) {
@@ -2084,8 +2272,8 @@ export function initSessions() {
     abortChatStream();
     app.currentAgentId = aid;
     localStorage.setItem('selectedAgentId', aid);
-    // Look up the last session for this agent
-    const lastSid = _lastSessionPerAgent.get(aid);
+    // Look up the last session for this agent (skipped when forcing a new one)
+    const lastSid = forceNew ? null : _lastSessionPerAgent.get(aid);
     if (lastSid) {
       app.currentSessionId = lastSid;
       localStorage.setItem('terminalSessionId', app.currentSessionId);
@@ -2100,7 +2288,7 @@ export function initSessions() {
       localStorage.setItem('terminalSessionId', app.currentSessionId);
       _teardownVirtualScroll();
       app.chatMessages.innerHTML = '';
-      app.addChatBubble('agent', 'Switched agent. New session started.');
+      if (!silent) app.addChatBubble('agent', 'Switched agent. New session started.');
     }
     populateSessionSelect(app.currentUserId);
     loopSessionChanged();
@@ -2115,6 +2303,18 @@ export function initSessions() {
   // Expose so other modules (e.g. the Pages prompt bar) can drive the
   // right-side chat agent without duplicating session/teardown logic.
   app.switchToAgent = switchToAgent;
+
+  // Ensure the user's webAgent (the `default` template) exists, switch the
+  // chat to it, and start a brand-new session. This is the single entry point
+  // for every page chat pill — Agents, Pages, Source Control, Agent Settings —
+  // and for the "no agent yet" fallback in chat.js. Returns the agent id.
+  async function startWebagentSession() {
+    const id = await ensureWebagentAgent(app.currentUserId);
+    switchToAgent(id, { forceNewSession: true, silent: true });
+    return id;
+  }
+  app.startWebagentSession = startWebagentSession;
+  app.ensureWebagentAgent = ensureWebagentAgent;
 
   function startAgentRename(aid, row) {
     const titleEl = row.querySelector('.agent-row-title');

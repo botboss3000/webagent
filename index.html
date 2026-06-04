@@ -136,25 +136,15 @@
   #chat-header {
     border-bottom: 1px solid color-mix(in oklab, currentColor 8%, transparent) !important;
   }
-  /* Fade messages out as they scroll into the input zone, so nothing shows
-     below the pill or through its rounded corners. --chat-input-h tracks the
-     floating input area height (set by chat.js; 56px until JS runs). The band
-     is fully transparent across the whole input area and fades to opaque over
-     a 24px ramp just above it. chat.js reserves --chat-input-h + 24px of bottom
-     padding, so the newest message rests right at the opaque edge — crisp, not
-     cut off too high — while older messages dissolve before reaching the pill. */
-  #chat-messages {
-    -webkit-mask-image: linear-gradient(to bottom,
-      #000 0,
-      #000 calc(100% - var(--chat-input-h, 56px) - 24px),
-      transparent calc(100% - var(--chat-input-h, 56px)),
-      transparent 100%);
-            mask-image: linear-gradient(to bottom,
-      #000 0,
-      #000 calc(100% - var(--chat-input-h, 56px) - 24px),
-      transparent calc(100% - var(--chat-input-h, 56px)),
-      transparent 100%);
-  }
+  /* Messages stay fully visible all the way to the bottom of the panel and
+     scroll *behind* the floating input area, which has a transparent footer
+     and a translucent glass pill — so the pill and its buttons read as
+     floating on top of the message bubbles. chat.js still reserves
+     --chat-input-h + 24px of bottom padding so the newest message rests just
+     above the pill at scroll-bottom (visible, never tucked under it); older
+     bubbles pass behind the glass as you scroll. No fade mask: a mask would
+     dissolve the bubbles before they reached the pill, which is the opposite
+     of the floating-on-top effect we want here. */
 /* Message bubbles get their own glass surface */
 	  #chat-panel .chat-bubble {
 	    background: color-mix(in oklab, currentColor 7%, transparent) !important;
@@ -560,6 +550,61 @@
     <button type="button" id="main-tabs-chev-right" class="main-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
   </div>
 
+  <!-- Pre-paint header-tab visibility/order.
+       The header tab buttons above are authored statically, but which ones a
+       user actually wants (and in what order) is an admin preference saved in
+       localStorage by App Settings → Main Panel Pages. This block applies that
+       preference synchronously BEFORE first paint, so pages the admin turned
+       off never flash into view. The page list + storage keys are the source
+       of truth in ui/js/app-config.js (_MAIN_PANEL_PAGES) — keep them in sync.
+       Admin Tools is locked-visible and never hidden here. -->
+  <script>
+  (function () {
+    try {
+      var DEFAULT_ORDER = ['admin-tools', 'agents', 'autoagent', 'web', 'terminal'];
+      var bar = document.getElementById('main-tabs');
+      if (!bar) return;
+
+      var order = DEFAULT_ORDER.slice();
+      try {
+        var savedOrder = JSON.parse(localStorage.getItem('mainPanelOrder') || 'null');
+        if (Array.isArray(savedOrder)
+            && savedOrder.length === DEFAULT_ORDER.length
+            && DEFAULT_ORDER.every(function (id) { return savedOrder.indexOf(id) >= 0; })) {
+          order = savedOrder;
+        }
+      } catch (e) {}
+
+      var hidden = [];
+      try {
+        var savedHidden = JSON.parse(localStorage.getItem('mainPanelHidden') || 'null');
+        if (Array.isArray(savedHidden)) hidden = savedHidden;
+      } catch (e) {}
+
+      // Map each page id to its header element. Admin Tools lives inside a
+      // wrapper group (so it can carry the health dot), so map to the group.
+      var adminGroup = document.getElementById('admin-tools-group');
+      var byId = {};
+      if (adminGroup) byId['admin-tools'] = adminGroup;
+      bar.querySelectorAll('.main-tab').forEach(function (btn) {
+        var id = btn.dataset.value;
+        if (!id) return;
+        byId[id] = (adminGroup && adminGroup.contains(btn)) ? adminGroup : btn;
+      });
+
+      // Reorder + show/hide. Nodes stay in the DOM (display toggled) so a later
+      // un-hide in App Settings restores them live without a reload.
+      order.forEach(function (id) {
+        var el = byId[id];
+        if (!el) return;
+        var hide = id !== 'admin-tools' && hidden.indexOf(id) >= 0;
+        el.style.display = hide ? 'none' : '';
+        bar.appendChild(el);
+      });
+    } catch (e) {}
+  })();
+  </script>
+
   <!-- User menu (right side) -->
   <span id="status-right">
     <button id="chat-toggle-btn" class="chat-toggle-btn active" title="Toggle chat panel">
@@ -594,20 +639,7 @@
   <div id="chat-panel">
     <div id="chat-header">
       <span id="header-user-session">
-        <span id="agent-label">Agent:
-          <div id="agent-dropdown" class="agent-dropdown">
-            <button id="agent-dropdown-trigger" type="button" class="status-select agent-dropdown-trigger">
-              <span id="agent-dropdown-status" class="agent-dropdown-status"></span>
-              <span id="agent-dropdown-label">—</span>
-              <i data-lucide="chevron-down" style="width:12px;height:12px;flex-shrink:0;"></i>
-            </button>
-            <div id="agent-dropdown-menu" class="agent-dropdown-menu" hidden></div>
-          </div>
-          <span id="tui-bridge-indicator" class="tui-bridge-indicator" style="display:none;" title="TUI agent bridge active">🖥️</span>
-          <button id="agent-delete-header" title="Delete agent" class="header-delete-btn" data-state="trash"><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>
-          <button id="agent-new" title="New agent" class="header-plus-btn"><i data-lucide="plus" style="width:14px;height:14px;"></i></button>
-        </span>
-        <span id="session-label">Session:
+        <span id="session-label">
           <div id="session-dropdown" class="session-dropdown">
             <button id="session-dropdown-trigger" type="button" class="status-select session-dropdown-trigger">
               <span id="session-dropdown-status" class="session-dropdown-status"></span>
@@ -616,6 +648,7 @@
             </button>
             <div id="session-dropdown-menu" class="session-dropdown-menu" hidden></div>
           </div>
+          <span id="tui-bridge-indicator" class="tui-bridge-indicator" style="display:none;" title="TUI agent bridge active">🖥️</span>
           <button id="session-delete-header" title="Delete session" class="header-delete-btn" data-state="trash"><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>
           <button id="session-new" title="New session" class="header-plus-btn"><i data-lucide="plus" style="width:14px;height:14px;"></i></button>
         </span>

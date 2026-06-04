@@ -814,34 +814,17 @@ async function refreshTokenStatus(rootEl) {
   }
 }
 
-// ── Source Controller handoff (the ⭐ button) ──────────────────────
+// ── Source-control handoff (the ⭐ button) ──────────────────────
 //
-// Clicking the star hands the whole commit+push job to a dedicated
-// "Source Controller" agent (cloned from the `source-controller` system
-// template). We find-or-create that agent for the user, make sure its
-// source-control ability (codebase_admin → git_tool) is on, switch the
-// chat to it in a fresh session, reveal the chat, and submit a ready-made
-// message that already carries the remote URL + author email so the agent
-// doesn't have to look anything up. Mirrors the Dashboard→chat handoff in
-// autoagent.js.
-
-const SOURCE_CONTROLLER_TEMPLATE_ID = 'source-controller';
-let _scAgentId = null;  // per-page cache: userId-scoped agent id
+// Clicking the star hands the whole commit+push job to the shared webAgent.
+// We start a fresh webAgent session (app.startWebagentSession), make sure its
+// source-control ability (codebase_admin → git_tool) is on, reveal the chat,
+// and submit a ready-made message that already carries the remote URL + author
+// email so the agent doesn't have to look anything up. The Agents, Pages, and
+// Agent Settings pills do the same handoff.
 
 function _currentUserId() {
   return (app && app.currentUserId) || localStorage.getItem('webagent_active_user_id') || '';
-}
-
-async function _findSourceControllerAgent(userId) {
-  try {
-    const res = await fetch(apiPath(`/api/v1/agents?user_id=${encodeURIComponent(userId)}`));
-    if (!res.ok) return null;
-    const data = await res.json();
-    const match = (data.agents || []).find(a => a.template_id === SOURCE_CONTROLLER_TEMPLATE_ID);
-    return match ? match.id : null;
-  } catch (_) {
-    return null;
-  }
 }
 
 // Turn on the source-control ability so git_tool loads for this agent.
@@ -854,41 +837,6 @@ async function _enableSourceControlAbility(userId, agentId) {
       body: JSON.stringify({ user_id: userId, enabled: true }),
     });
   } catch (_) { /* if this fails the agent will report it lacks git access */ }
-}
-
-async function _createSourceControllerAgent(userId) {
-  const res = await fetch(apiPath('/api/v1/agents'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      user_id: userId,
-      name: 'Source Controller',
-      description: 'Reviews the changes, writes a commit note, then commits and pushes.',
-      template_id: SOURCE_CONTROLLER_TEMPLATE_ID,
-    }),
-  });
-  if (!res.ok) throw new Error(`agent create failed (${res.status})`);
-  const data = await res.json();
-  const id = data.agent && data.agent.id;
-  if (!id) throw new Error('agent create returned no id');
-  await _enableSourceControlAbility(userId, id);
-  // Refresh the chat header's agent dropdown so the new agent is selectable.
-  if (app && typeof app.populateAgentSelect === 'function') {
-    try { await app.populateAgentSelect(userId); } catch (_) {}
-  }
-  return id;
-}
-
-async function _ensureSourceControllerAgent(userId) {
-  if (_scAgentId) return _scAgentId;
-  let id = await _findSourceControllerAgent(userId);
-  if (id) {
-    await _enableSourceControlAbility(userId, id);  // guarantee git is on
-  } else {
-    id = await _createSourceControllerAgent(userId);
-  }
-  _scAgentId = id;
-  return id;
 }
 
 function _buildSourceControlMessage(rootEl) {
@@ -922,22 +870,20 @@ async function handoffToSourceController(rootEl) {
   const message = _buildSourceControlMessage(rootEl);
 
   if (starBtn) starBtn.disabled = true;
-  showResult(result, 'Starting Source Controller…', 'info');
+  showResult(result, 'Starting webAgent…', 'info');
 
+  // Hand off to the shared webAgent in a fresh session, then make sure its
+  // source-control ability (codebase_admin → git_tool) is on so it can commit.
   let agentId;
   try {
-    agentId = await _ensureSourceControllerAgent(userId);
+    agentId = await app.startWebagentSession();
+    await _enableSourceControlAbility(userId, agentId);
   } catch (e) {
     if (starBtn) starBtn.disabled = false;
-    showResult(result, `Could not start Source Controller: ${e.message}`, 'error');
+    showResult(result, `Could not start webAgent: ${e.message}`, 'error');
     return;
   }
 
-  // Switch the chat to the Source Controller (starts a fresh session), make
-  // sure the chat panel is visible, then drop in the message and send it.
-  if (app && typeof app.switchToAgent === 'function') {
-    app.switchToAgent(agentId);
-  }
   if (typeof window.__applyChatVisible === 'function') {
     try { window.__applyChatVisible(true); } catch (_) {}
   }
@@ -948,7 +894,7 @@ async function handoffToSourceController(rootEl) {
   }
 
   if (starBtn) starBtn.disabled = false;
-  showResult(result, 'Source Controller is on the chat →', 'success');
+  showResult(result, 'webAgent is on the chat →', 'success');
 }
 
 // ── Refresh / open hooks ───────────────────────────────────────────

@@ -267,6 +267,7 @@ class TuiConfig:
     max_turns: int = 50
     temperature: float = 0.0
     side_expanded: bool = False    # sidebar width: narrow (default) ↔ wide, toggled in-panel
+    session_name_mode: str = "summary"  # how sessions are auto-named: summary | message | off
     bridge_enabled: bool = True    # auto-start the TUI bridge server on launch
     bridge_port: int = 0           # 0 = pick a free port automatically
 
