@@ -95,21 +95,31 @@ body {
 #chat-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     padding: 8px 12px;
     border-bottom: 1px solid #2a2a4a;
     font-size: 13px;
     font-weight: 600;
     color: #c0caf5;
     flex-shrink: 0;
+    gap: 8px;
   }
-#header-user-session { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; }
+#header-user-session { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; flex: 1 1 auto; min-width: 0; }
 #chat-header .sub { color: #565f89; font-weight: 400; font-size: 11px; }
 #chat-header .actions { display: flex; gap: 8px; }
 #chat-header button {
     background: none; border: none; color: #565f89; cursor: pointer; font-size: 13px;
   }
 #chat-header button:hover { color: #7dcfff; }
+
+/* Header action buttons — pinned to the right edge */
+#chat-header .header-actions {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
 
 /* ── Header notification badge ── */
 #header-notifications {
@@ -2063,7 +2073,7 @@ body.light-mode .xterm-viewport {
   }
 
 /* ── Chat header label rows: dropdown flex-fills,
-+ button pinned right ── */
+buttons pinned right via .header-actions ── */
   #agent-label,
 #session-label { display: flex; align-items: center; width: 100%; gap: 4px; }
 #agent-label .agent-dropdown,
@@ -2073,13 +2083,13 @@ body.light-mode .xterm-viewport {
     border: none;
     color: #565f89;
     cursor: pointer;
-    font-size: 14px;
-    padding: 0 4px;
+    font-size: 18px;
+    padding: 4px 6px;
     vertical-align: middle;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     flex-shrink: 0;
-    margin-left: auto;
   }
 .header-plus-btn:hover { color: #7dcfff; }
 /* Loading state: the + is a spinner (not a plus) until the agent list is ready
@@ -2105,17 +2115,18 @@ body.light-mode .xterm-viewport {
     flex-shrink: 0;
 }
 
-/* Header delete button — sits to the right of the picker, before the + button */
+/* Header delete button — sits in .header-actions, right-pinned */
 .header-delete-btn {
     background: none;
     border: none;
     color: #565f89;
     cursor: pointer;
-    font-size: 14px;
-    padding: 0 4px;
+    font-size: 18px;
+    padding: 4px 6px;
     vertical-align: middle;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     flex-shrink: 0;
   }
 .header-delete-btn:hover { color: #f7768e; }

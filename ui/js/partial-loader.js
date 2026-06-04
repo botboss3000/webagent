@@ -16,6 +16,7 @@ const TOP_LEVEL = [
   { url: './ui/agents.html', mount: '#tab-agents' },
   { url: './ui/web.html', mount: '#tab-web' },
   { url: './ui/admin-tools.html', mount: '#tab-admin-tools' },
+  { url: './ui/chat.html', mount: '#chat-panel' },
 ];
 
 const ADMIN_SUB_PAGES = [

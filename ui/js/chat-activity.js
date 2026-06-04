@@ -456,6 +456,9 @@ function openPanel() {
   panelEl.hidden = false;
   if (rootEl) rootEl.classList.add('expanded');
   if (barEl) barEl.setAttribute('aria-expanded', 'true');
+  // Hide suggested replies while the tool-call panel is open
+  const suggestRow = document.getElementById('chat-suggest-row');
+  if (suggestRow) suggestRow.style.display = 'none';
 
   _outsideHandler = (e) => { if (rootEl && !rootEl.contains(e.target)) closePanel(); };
   _keyHandler = (e) => { if (e.key === 'Escape') closePanel(); };
@@ -472,6 +475,9 @@ function closePanel() {
   if (panelEl) panelEl.hidden = true;
   if (rootEl) rootEl.classList.remove('expanded');
   if (barEl) barEl.setAttribute('aria-expanded', 'false');
+  // Restore suggested replies when panel closes
+  const suggestRow = document.getElementById('chat-suggest-row');
+  if (suggestRow) suggestRow.style.display = '';
   if (_outsideHandler) { document.removeEventListener('mousedown', _outsideHandler); _outsideHandler = null; }
   if (_keyHandler) { document.removeEventListener('keydown', _keyHandler); _keyHandler = null; }
 }

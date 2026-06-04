@@ -308,6 +308,52 @@ async def get_oauth_ability_config(ability_id: str) -> dict:
     return cfg
 
 
+async def get_all_oauth_ability_configs() -> dict[str, dict]:
+    """Fetch admin policies for every registered ability in a single DB query.
+
+    Returns {ability_id: {mode, platform_scopes, max_byo_scopes}} — same shape
+    as `get_oauth_ability_config` output, but batched so the agents UI doesn't
+    run 58+ sequential queries when rendering the abilities tab.
+    """
+    from app.integrations.ability_registry import ABILITIES
+    from app.db import get_db
+    db = get_db()
+    prefix = OAUTH_ABILITY_SERVICE_PREFIX
+
+    # Pre-populate defaults for every ability in the registry
+    configs: dict[str, dict] = {
+        aid: {
+            "mode": "platform_only",
+            "platform_scopes": list(ab.scopes),
+            "max_byo_scopes": list(ab.scopes),
+        }
+        for aid, ab in ABILITIES.items()
+    }
+
+    try:
+        # One query — fetch all auth_elements for the admin user, then filter
+        # by prefix so we only pay for the rows we care about.
+        elements = await db.auth_element_list(_ADMIN_USER)
+        for elem in elements:
+            service = elem.get("service", "")
+            if not service.startswith(prefix):
+                continue
+            ability_id = service[len(prefix):]
+            cfg = configs.get(ability_id)
+            if cfg is None:
+                continue
+            if elem.get("config"):
+                stored = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
+                if isinstance(stored, dict):
+                    cfg.update({k: v for k, v in stored.items() if k in cfg})
+            if cfg["mode"] not in _OAUTH_ABILITY_MODES:
+                cfg["mode"] = "platform_only"
+    except Exception:
+        pass
+
+    return configs
+
+
 async def compute_required_scopes(
     agent_id: str,
     provider: str,

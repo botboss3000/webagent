@@ -164,7 +164,7 @@ function _setNewSessionBtnReady() {
   btn.classList.remove('loading');
   btn.disabled = false;
   btn.title = 'New session';
-  btn.innerHTML = icon('plus', { size: '14px' });
+  btn.innerHTML = icon('plus', { size: '24px' });
 }
 
 function _toggleAgentPin(agentId) {
@@ -1955,6 +1955,16 @@ export function initSessions() {
       else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
     });
     input.addEventListener('blur', () => finish(true));
+    // Clicking outside the input (on the sessionTrigger but outside the input,
+    // or anywhere else on the page) should blur → commit the rename.
+    const _docHandler = (e) => {
+      if (input && !input.contains(e.target)) {
+        document.removeEventListener('pointerdown', _docHandler, true);
+        input.blur();
+      }
+    };
+    // Use capture phase so we catch clicks before the trigger's own handlers.
+    document.addEventListener('pointerdown', _docHandler, true);
   }
 
   async function deleteSession(sid) {
@@ -1964,13 +1974,21 @@ export function initSessions() {
       const res = await fetch(apiPath('/api/v1/db/sessions/' + encodeURIComponent(sid) + '?db=local.db'), { method: 'DELETE' });
       if (res.ok) {
         if (sid === app.currentSessionId) {
-          app.currentSessionId = generateUUID();
-          localStorage.setItem('terminalSessionId', app.currentSessionId);
-          _teardownVirtualScroll();
-          app.chatMessages.innerHTML = '';
-          app.addChatBubble('agent', 'Session deleted. New session created.');
+          // Refresh cache then switch to most recent session, or create new if none
+          await populateSessionSelect(app.currentUserId);
+          const others = _sessionsCache.filter(s => s.id !== sid);
+          if (others.length > 0) {
+            await switchToSession(others[0].id);
+          } else {
+            app.currentSessionId = generateUUID();
+            localStorage.setItem('terminalSessionId', app.currentSessionId);
+            _teardownVirtualScroll();
+            app.chatMessages.innerHTML = '';
+            app.addChatBubble('agent', 'Session deleted. New session created.');
+          }
+        } else {
+          await populateSessionSelect(app.currentUserId);
         }
-        await populateSessionSelect(app.currentUserId);
       }
     } catch (e) {
       console.warn('Failed to delete session:', e);
@@ -2012,6 +2030,14 @@ export function initSessions() {
       else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
     });
     input.addEventListener('blur', () => finish(true));
+    // Clicking outside the input should blur → commit the rename.
+    const _docHandler = (e) => {
+      if (input && !input.contains(e.target)) {
+        document.removeEventListener('pointerdown', _docHandler, true);
+        input.blur();
+      }
+    };
+    document.addEventListener('pointerdown', _docHandler, true);
   }
 
   if (sessionTrigger) {

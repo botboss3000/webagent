@@ -1,0 +1,72 @@
+<div id="chat-header">
+  <span id="header-user-session">
+    <span id="session-label">
+      <div id="session-dropdown" class="session-dropdown">
+        <button id="session-dropdown-trigger" type="button" class="status-select session-dropdown-trigger">
+          <span id="session-dropdown-status" class="session-dropdown-status"></span>
+          <span id="session-dropdown-label">—</span>
+          <i data-lucide="chevron-down" style="width:18px;height:18px;flex-shrink:0;"></i>
+        </button>
+        <div id="session-dropdown-menu" class="session-dropdown-menu" hidden></div>
+      </div>
+      <span id="tui-bridge-indicator" class="tui-bridge-indicator" style="display:none;" title="TUI agent bridge active">🖥️</span>
+    </span>
+  </span>
+  <span class="header-actions">
+    <button id="session-delete-header" title="Delete session" class="header-delete-btn" data-state="trash"><i data-lucide="trash-2" style="width:18px;height:18px;"></i></button>
+    <button id="session-new" title="Loading…" class="header-plus-btn loading" disabled><i data-lucide="loader-2" style="width:24px;height:24px;"></i></button>
+  </span>
+</div>
+<div id="chat-messages">
+  <div id="chat-messages-inner">
+    <div class="chat-bubble agent">
+      <span class="label">Assistant</span>
+      Terminal agent ready. Ask me anything — I'll show tool calls in the terminal log.
+    </div>
+  </div>
+</div>
+<div id="chat-input-area">
+  <button id="chat-scroll-bottom-btn" class="chat-scroll-bottom-btn" title="Scroll to latest message" aria-label="Scroll to latest message" hidden>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="7 13 12 18 17 13"/><polyline points="7 6 12 11 17 6"/></svg>
+  </button>
+  <div id="chat-preview-bar" style="display:none;"></div>
+  <!-- Suggested-reply chips — populated by ui/js/suggestions.js from the
+       silent user-impersonator agent. Tapping a chip fills the pill.
+       Positioned above the continue/stop buttons and the tool-call panel. -->
+  <div id="chat-suggest-row" class="chat-suggest-row" aria-label="Suggested replies"></div>
+  <button id="chat-continue-btn" class="chat-continue-btn" title="Send 'continue' to resume the agent" style="display:none;">Continue</button>
+  <button id="chat-stop-btn" class="chat-stop-btn" title="Stop generation" style="display:none;">🛑 Stop</button>
+  <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #ac-int-admin-chat-input-row,
+       #agent-builder-bar-row, #autoagent-prompt-row. Style rules live in
+       ui/css/app1.css under the "Chat-pill" block. -->
+  <div id="chat-input-row" class="chat-pill">
+    <!-- Activity ("thinking") indicator — floats just above the pill while
+         the agent works; the bar ticks through each interaction, and is
+         clickable to expand the panel listing every tool call this turn,
+         each independently expandable. Driven by ui/js/chat-activity.js.
+         Absolutely positioned, so it never affects the pill's grid layout. -->
+    <div id="chat-activity" class="chat-activity">
+      <div id="chat-activity-panel" class="chat-activity-panel" role="region" aria-label="Tool calls this turn" hidden></div>
+      <button type="button" id="chat-activity-bar" class="chat-activity-bar" aria-expanded="false" aria-controls="chat-activity-panel" title="Show tool calls from this turn">
+        <span class="chat-activity-dot" aria-hidden="true"></span>
+        <span class="chat-activity-text" aria-live="polite" aria-atomic="true"></span>
+        <span class="chat-activity-chevron" aria-hidden="true">›</span>
+      </button>
+    </div>
+    <button id="chat-attach-btn" class="chat-pill-attach" title="Attach files (or paste / drop onto the chat pill)"><i data-lucide="plus" style="width:18px;height:18px;"></i></button>
+    <textarea id="chat-input" class="chat-pill-input" rows="1" placeholder="Chat with the agent" autocomplete="off"></textarea>
+    <button id="chat-voice-btn" class="chat-pill-voice" title="Record voice"><i data-lucide="mic" style="width:18px;height:18px;"></i></button>
+    <button id="chat-send" class="chat-pill-send" title="Send message" disabled><i data-lucide="send" style="width:18px;height:18px;"></i></button>
+    <input type="file" id="chat-file-input" multiple accept="image/*,audio/*,video/*,.pdf,.txt,.md,.csv,.json" hidden>
+  </div>
+  <div id="chat-footer-row" class="chat-footer-row">
+    <div id="chat-token-bar" class="chat-token-bar">
+      <span class="chat-token-label">in</span>
+      <span id="chat-tokens-in" class="chat-token-value">0</span>
+      <span id="chat-token-spinner" class="chat-token-spinner"></span>
+      <span id="chat-tokens-out" class="chat-token-value">0</span>
+      <span class="chat-token-label">out</span>
+    </div>
+    <button id="chat-mode-btn" class="chat-mode-btn" title="Click to toggle execution mode: Read → Write → Auto → Read">Write</button>
+  </div>
+</div>

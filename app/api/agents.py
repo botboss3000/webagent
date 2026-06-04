@@ -1983,15 +1983,23 @@ async def list_agent_abilities(agent_id: str, user_id: str = Query(...)):
     in on the PUT endpoints below.
     """
     from app.integrations.ability_registry import ABILITIES
-    from app.admin.integrations import get_oauth_ability_config
+    from app.admin.integrations import get_all_oauth_ability_configs
     db = get_db()
     rows = (await db.get_agent_abilities(agent_id)) if hasattr(db, "get_agent_abilities") else []
     by_id = {r["ability_id"]: r for r in rows}
 
+    # Batch-fetch all ability admin policies in a single query instead of
+    # calling get_oauth_ability_config N times (N = ~58 abilities).
+    all_configs = await get_all_oauth_ability_configs()
+
     out: list[dict] = []
     for ab in ABILITIES.values():
         row = by_id.get(ab.id) or {}
-        policy = await get_oauth_ability_config(ab.id)
+        policy = all_configs.get(ab.id, {
+            "mode": "platform_only",
+            "platform_scopes": list(ab.scopes),
+            "max_byo_scopes": list(ab.scopes),
+        })
         byo_cid = row.get("byo_client_id", "") or ""
         # Mask BYO client_id to last 6 chars so members never see real values.
         masked_cid = ("•" * max(0, len(byo_cid) - 6) + byo_cid[-6:]) if byo_cid else ""

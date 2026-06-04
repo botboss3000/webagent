@@ -529,7 +529,7 @@ function _renderAgentCard(grid, agent, isExpanded) {
   card.innerHTML = `
     <div class="agent-card-top">
       <div class="agent-card-icon-wrap ${isMock ? 'color-blue' : _iconColor(agent)}">
-        ${isMock ? icon('plus', { size: iconSize }) : (agent.icon || icon('bot', { size: iconSize }))}
+        ${isMock ? icon('plus', { size: iconSize }) : _renderAgentIcon(agent, iconSize)}
       </div>
       <div class="agent-card-meta">
         <div class="agent-card-name-row">
@@ -551,6 +551,18 @@ function _renderAgentCard(grid, agent, isExpanded) {
   const deleteBtn = card.querySelector('.delete-btn');
   if (deleteBtn) {
     deleteBtn.addEventListener('click', e => { e.stopPropagation(); _deleteAgent(agent); });
+  }
+
+  // Clicking the icon when expanded opens the icon picker popover
+  const iconWrap = card.querySelector('.agent-card-icon-wrap');
+  if (iconWrap && !isMock) {
+    iconWrap.addEventListener('click', e => {
+      if (isExpanded) {
+        e.stopPropagation();
+        _openIconPicker(iconWrap, agent, null);
+      }
+      // When collapsed, click bubbles up to card → _selectAgent toggles expansion
+    });
   }
 
   card.addEventListener('click', () => _selectAgent(agent));
@@ -2014,89 +2026,179 @@ function _renderConfigTab(body, agent, panelEl) {
     })();
   }
 
-  // Turn count + wall clock (side-by-side)
-  const limitsRow = document.createElement('div');
-  limitsRow.style = 'display:flex;gap:16px;flex-wrap:wrap;';
+  // ── Limits (compact table with popover descriptions) ────────────────────────
+  const L = [
+    {
+      field: 'max_turn_count',
+      label: 'Max Turn Count',
+      value: agent.max_turn_count != null ? agent.max_turn_count : 9999,
+      placeholder: '9999',
+      min: 0, max: 99999,
+      hint: 'Caps the LLM → tool → LLM cycles per response — catches loops where the agent repeats tool calls without resolving. 0 = unlimited (a wall-clock safety limit still ends a stuck run gracefully). New agents start at 9999 — effectively unlimited but bounded.',
+    },
+    {
+      field: 'max_wall_seconds',
+      label: 'Wall Clock (seconds)',
+      value: agent.max_wall_seconds != null ? agent.max_wall_seconds : '',
+      placeholder: '0 (off)',
+      min: 0, max: 86400, step: 1,
+      hint: 'Limits total real time (in seconds) for one response, across all turns. Catches hanging tool calls, slow models, and long-running operations. Wall clock is about real-world duration. Set e.g. 300 for 5 min.',
+    },
+    {
+      field: 'max_identical_tool_calls',
+      label: 'Identical Tool Calls',
+      value: agent.max_identical_tool_calls != null ? agent.max_identical_tool_calls : '',
+      placeholder: '0 (off)',
+      min: 0, max: 9999, step: 1,
+      hint: 'Limits how many times the agent can call the same tool with the same arguments. Prevents infinite loops (e.g. running the same search 20 times). Also limits how many consecutive calls to the same tool (different args) are allowed. Set to 0 for no limit.',
+    },
+    {
+      field: 'max_stall_strikes',
+      label: 'Stall Strikes',
+      value: agent.max_stall_strikes != null ? agent.max_stall_strikes : '',
+      placeholder: '0 (off)',
+      min: 0, max: 99, step: 1,
+      hint: 'After this many stall guard strikes (tool-call loop detections), the agent stops and asks the user for clarification. Set to 0 for no limit — the agent can keep looping as long as max-turn-count allows.',
+    },
+  ];
 
-  // Turn count
-  const tcGroup = document.createElement('div');
-  tcGroup.className = 'agents-field-group';
-  tcGroup.style = 'flex:1;min-width:200px;';
-  const tcVal = agent.max_turn_count != null ? agent.max_turn_count : 9999;
-  tcGroup.innerHTML = `
-    <label class="agents-field-label">Max Turn Count <span style="font-weight:normal;color:var(--fg-3);">(0 = unlimited)</span></label>
-    <span class="agents-field-hint">Caps the LLM → tool → LLM cycles per response — catches loops where the agent repeats tool calls without resolving. 0 = unlimited (a wall-clock safety limit still ends a stuck run gracefully). New agents start at 9999 — effectively unlimited but bounded.</span>
-    <input type="number" class="agents-input" data-field="max_turn_count"
-      value="${tcVal}" min="0" max="99999"
-      ${!isEditable ? 'readonly' : ''} style="width:100px" placeholder="9999">
-  `;
-  limitsRow.appendChild(tcGroup);
+  const limitsGroup = document.createElement('div');
+  limitsGroup.className = 'agents-field-group';
 
-  // Wall clock safety cap
-  const wcGroup = document.createElement('div');
-  wcGroup.className = 'agents-field-group';
-  wcGroup.style = 'flex:1;min-width:200px;';
-  const wcVal = agent.max_wall_seconds != null ? agent.max_wall_seconds : '';
-  wcGroup.innerHTML = `
-    <label class="agents-field-label">Wall Clock Safety Cap (seconds) <span style="font-weight:normal;color:var(--fg-muted,#565f89);">(0 = off)</span></label>
-    <span class="agents-field-hint">Limits total real time (in seconds) for one response, across all turns. Catches hanging tool calls, slow models, and long-running operations. Wall clock is about <em>real-world duration</em>. Set e.g. 300 for 5 min.</span>
-    <input type="number" class="agents-input" data-field="max_wall_seconds"
-      value="${wcVal}" min="0" max="86400" step="1"
-      ${!isEditable ? 'readonly' : ''} style="width:100px" placeholder="0 (off)">
-  `;
-  limitsRow.appendChild(wcGroup);
+  const limitsLabel = document.createElement('label');
+  limitsLabel.className = 'agents-field-label';
+  limitsLabel.textContent = 'Limits';
+  limitsGroup.appendChild(limitsLabel);
 
-  // Max identical tool calls (stall guard)
-  const icGroup = document.createElement('div');
-  icGroup.className = 'agents-field-group';
-  icGroup.style = 'flex:1;min-width:200px;';
-  const icVal = agent.max_identical_tool_calls != null ? agent.max_identical_tool_calls : '';
-  icGroup.innerHTML = `
-    <label class="agents-field-label">Max Identical Tool Calls <span style="font-weight:normal;color:var(--fg-3);">(0 = off)</span></label>
-    <span class="agents-field-hint">Limits how many times the agent can call the <strong>same tool with the same arguments</strong>. Prevents infinite loops (e.g. running the same search 20 times). Also limits how many consecutive calls to the same tool (different args) are allowed. Set to 0 for no limit.</span>
-    <input type="number" class="agents-input" data-field="max_identical_tool_calls"
-      value="${icVal}" min="0" max="9999" step="1"
-      ${!isEditable ? 'readonly' : ''} style="width:100px" placeholder="0 (off)">
-  `;
-  limitsRow.appendChild(icGroup);
+  const limitsTable = document.createElement('div');
+  limitsTable.className = 'limits-table';
 
-  // Max stall strikes (loop strikes before hard stop)
-  const ssGroup = document.createElement('div');
-  ssGroup.className = 'agents-field-group';
-  ssGroup.style = 'flex:1;min-width:200px;';
-  const ssVal = agent.max_stall_strikes != null ? agent.max_stall_strikes : '';
-  ssGroup.innerHTML = `
-    <label class="agents-field-label">Max Stall Strikes <span style="font-weight:normal;color:var(--fg-3);">(0 = off)</span></label>
-    <span class="agents-field-hint">After this many stall guard strikes (tool-call loop detections), the agent stops and asks the user for clarification. Set to 0 for no limit — the agent can keep looping as long as max-turn-count allows.</span>
-    <input type="number" class="agents-input" data-field="max_stall_strikes"
-      value="${ssVal}" min="0" max="99" step="1"
-      ${!isEditable ? 'readonly' : ''} style="width:100px" placeholder="0 (off)">
-  `;
-  limitsRow.appendChild(ssGroup);
+  // Shared popover element and dismiss handler.
+  const _popover = document.createElement('div');
+  _popover.className = 'limits-popover';
+  _popover.style.display = 'none';
+  document.body.appendChild(_popover);
+  function _hidePopover() { _popover.style.display = 'none'; }
+  function _showPopover(anchorEl, text) {
+    _popover.textContent = text;
+    _popover.style.display = 'block';
+    const rect = anchorEl.getBoundingClientRect();
+    const popH = _popover.offsetHeight || 0;
+    // Position below the name, or above if not enough room.
+    let top = rect.bottom + 6;
+    if (top + popH > window.innerHeight - 10) {
+      top = rect.top - popH - 6;
+    }
+    _popover.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 280)) + 'px';
+    _popover.style.top = top + 'px';
+  }
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.limits-name')) _hidePopover();
+  });
+  window.addEventListener('scroll', _hidePopover, true);
 
-  body.appendChild(limitsRow);
+  L.forEach(cfg => {
+    const row = document.createElement('div');
+    row.className = 'limits-row';
 
-  // ── Memory (per-agent save + recall switches) ───────────────────────────────
-  // Sits with the Max Turn Count / Wall Clock limits. Surfaces the same two
-  // controls the Agent Loop diagram exposes (memory_search / memory_save); both
-  // switches drive loop_logic + allowed_tools so the Config tab and the loop
-  // diagram always agree.
+    const nameEl = document.createElement('span');
+    nameEl.className = 'limits-name';
+    nameEl.textContent = cfg.label;
+    nameEl.dataset.field = cfg.field + '_desc';
+    nameEl.addEventListener('click', e => {
+      e.stopPropagation();
+      if (_popover.style.display === 'block' && _popover._activeField === cfg.field) {
+        _hidePopover();
+      } else {
+        _popover._activeField = cfg.field;
+        _showPopover(nameEl, cfg.hint);
+      }
+    });
+
+    const inputEl = document.createElement('input');
+    inputEl.type = 'number';
+    inputEl.className = 'agents-input limits-input';
+    inputEl.dataset.field = cfg.field;
+    inputEl.value = cfg.value;
+    inputEl.placeholder = cfg.placeholder;
+    inputEl.min = cfg.min;
+    inputEl.max = cfg.max;
+    if (cfg.step) inputEl.step = cfg.step;
+    if (!isEditable) inputEl.readOnly = true;
+
+    row.appendChild(nameEl);
+    row.appendChild(inputEl);
+    limitsTable.appendChild(row);
+  });
+
+  limitsGroup.appendChild(limitsTable);
+  body.appendChild(limitsGroup);
+
+  // ── Memory (compact table with toggle switches) ────────────────────────────
   if (isEditable) {
     const mem = _memoryStateFromAgent(agent);
     const memGroup = document.createElement('div');
     memGroup.className = 'agents-field-group';
-    memGroup.innerHTML = `
-      <label class="agents-field-label">Memory</label>
-      <span class="agents-field-hint">This agent's long-term memory — a private knowledge store kept per user and shared across that user's agents. When on, the agent automatically pulls relevant past information into its context before replying, and/or files a short note of each exchange afterward. Trivial messages (greetings, "ok") skip recall automatically.</span>
-      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;margin-top:8px;">
-        <input type="checkbox" data-field="memory_recall" ${mem.recall ? 'checked' : ''} style="margin-top:2px;">
-        <span style="font-size:13px;color:var(--fg-2);"><strong>Recall past info</strong> — search memory before answering, and let the agent read or write it on demand.</span>
-      </label>
-      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;margin-top:8px;">
-        <input type="checkbox" data-field="memory_save" ${mem.save ? 'checked' : ''} style="margin-top:2px;">
-        <span style="font-size:13px;color:var(--fg-2);"><strong>Remember conversations</strong> — automatically save a short note of each exchange afterward.</span>
-      </label>
-    `;
+
+    const memLabel = document.createElement('label');
+    memLabel.className = 'agents-field-label';
+    memLabel.textContent = 'Memory';
+    memGroup.appendChild(memLabel);
+
+    const memTable = document.createElement('div');
+    memTable.className = 'limits-table';
+
+    const memItems = [
+      {
+        field: 'memory_recall',
+        label: 'Recall Past Info',
+        checked: mem.recall,
+        hint: 'Search memory before answering, and let the agent read or write it on demand. When on, the agent automatically pulls relevant past information into its context before replying. Trivial messages (greetings, "ok") skip recall automatically.',
+      },
+      {
+        field: 'memory_save',
+        label: 'Remember Conversations',
+        checked: mem.save,
+        hint: 'Automatically save a short note of each exchange afterward. The agent files a summary of each conversation for future recall. This is a private knowledge store kept per user and shared across that user\'s agents.',
+      },
+    ];
+
+    memItems.forEach(item => {
+      const row = document.createElement('div');
+      row.className = 'limits-row';
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'limits-name';
+      nameEl.textContent = item.label;
+      nameEl.dataset.field = item.field + '_desc';
+      nameEl.addEventListener('click', e => {
+        e.stopPropagation();
+        if (_popover.style.display === 'block' && _popover._activeField === item.field) {
+          _hidePopover();
+        } else {
+          _popover._activeField = item.field;
+          _showPopover(nameEl, item.hint);
+        }
+      });
+
+      const tog = document.createElement('button');
+      tog.className = 'limits-toggle';
+      tog.dataset.field = item.field;
+      tog.dataset.on = item.checked ? '1' : '0';
+      tog.textContent = item.checked ? 'ON' : 'OFF';
+      tog.addEventListener('click', e => {
+        e.stopPropagation();
+        const nowOn = tog.dataset.on !== '1';
+        tog.dataset.on = nowOn ? '1' : '0';
+        tog.textContent = nowOn ? 'ON' : 'OFF';
+      });
+
+      row.appendChild(nameEl);
+      row.appendChild(tog);
+      memTable.appendChild(row);
+    });
+
+    memGroup.appendChild(memTable);
     body.appendChild(memGroup);
   }
 
@@ -5848,6 +5950,10 @@ async function _saveChanges(agent, barEl, panelEl) {
   const fv = key => { const el = panelEl.querySelector(`[data-field="${key}"]`); return el ? el.value : undefined; };
   const nameVal = fv('name');        if (nameVal !== undefined) updates.name          = nameVal.trim();
   const descVal = fv('desc');        if (descVal !== undefined) updates.description   = descVal;
+  // Icon may have been set via the icon picker popover — capture from agent object
+  if (agent.icon !== undefined && agent.icon !== null) {
+    updates.icon = agent.icon;
+  }
   const tcVal   = fv('max_turn_count'); if (tcVal !== undefined) updates.max_turn_count = parseInt(tcVal, 10) || 0;
   const wcVal   = fv('max_wall_seconds');
   if (wcVal !== undefined && wcVal !== '') {
@@ -5874,12 +5980,12 @@ async function _saveChanges(agent, barEl, panelEl) {
   if (umChecked) updates.user_mode = umChecked.value;
 
   // Memory switches → same loop_logic + allowed_tools the Agent Loop diagram uses.
-  const memRecallCb = panelEl.querySelector('[data-field="memory_recall"]');
-  const memSaveCb   = panelEl.querySelector('[data-field="memory_save"]');
-  if (memRecallCb || memSaveCb) {
+  const memRecallBtn = panelEl.querySelector('[data-field="memory_recall"]');
+  const memSaveBtn   = panelEl.querySelector('[data-field="memory_save"]');
+  if (memRecallBtn || memSaveBtn) {
     const cur    = _memoryStateFromAgent(agent);
-    const recall = memRecallCb ? memRecallCb.checked : cur.recall;
-    const save   = memSaveCb   ? memSaveCb.checked   : cur.save;
+    const recall = memRecallBtn ? memRecallBtn.dataset.on === '1' : cur.recall;
+    const save   = memSaveBtn   ? memSaveBtn.dataset.on === '1'   : cur.save;
     const mu = _memoryUpdatesFor(agent, recall, save);
     updates.loop_logic    = mu.loop_logic;
     updates.allowed_tools = mu.allowed_tools;
@@ -6071,7 +6177,171 @@ function _restoreViewState() {
   } catch (_) {}
 }
 
-// ── Utilities ─────────────────────────────────────────────────────────────────
+// ── Icon picker popover ─────────────────────────────────────────────────────
+
+const _ICON_PICKER_ICONS = [
+  // Bot & AI
+  'bot', 'bot-message-square', 'brain', 'sparkles', 'cpu', 'zap',
+  'radio', 'antenna', 'satellite', 'telescope',
+  // Communication
+  'message-square', 'message-circle', 'chat', 'send', 'mail',
+  'phone', 'megaphone', 'bell', 'bell-ring',
+  // Code & Tools
+  'code', 'terminal', 'wrench', 'hammer', 'settings-2',
+  'sliders', 'cog', 'scroll', 'book-open',
+  // Actions
+  'play', 'square-play', 'forward', 'rotate-cw', 'refresh-cw',
+  'repeat', 'loop', 'shuffle', 'arrow-right-left',
+  // Data
+  'database', 'hard-drive', 'folder', 'folder-open', 'file-text',
+  'globe', 'search', 'eye', 'scan-search',
+  // Security
+  'shield', 'shield-check', 'lock', 'key-round', 'fingerprint',
+  'user-check', 'users', 'user-plus',
+  // Design
+  'palette', 'paintbrush', 'image', 'camera', 'layout-dashboard',
+  'layout-grid', 'panel-top', 'panel-left',
+  // Network
+  'network', 'share-2', 'link', 'git-branch', 'git-merge',
+  'workflow', 'tree-pine', 'layers',
+  // Math / Logic
+  'calculator', 'divide', 'equal', 'variable', 'function-square',
+  'sigma', 'pi', 'infinity',
+  // Status
+  'check-circle', 'alert-circle', 'info', 'help-circle',
+  'loader-2', 'activity', 'signal', 'wifi',
+  // Arrows
+  'arrow-up', 'arrow-down', 'arrow-left', 'arrow-right',
+  'chevrons-left-right', 'chevrons-up-down', 'expand', 'minimize-2',
+  // Documents
+  'notepad-text', 'clipboard-list', 'list-checks', 'check-square',
+  'pen-square', 'edit-3', 'bookmark', 'tags',
+  // Misc
+  'star', 'heart', 'award', 'target', 'crosshair',
+  'compass', 'map', 'map-pin', 'clock', 'timer',
+  'cloud', 'sun', 'moon', 'feather', 'lightbulb',
+  'briefcase', 'shopping-cart', 'credit-card', 'coins', 'piggy-bank',
+];
+
+function _openIconPicker(anchorEl, agent, panelEl) {
+  // Remove any existing picker
+  const old = document.getElementById('agent-icon-picker');
+  if (old) old.remove();
+
+  const backdrop = document.createElement('div');
+  backdrop.id = 'agent-icon-picker';
+  backdrop.className = 'icon-picker-backdrop';
+
+  const popover = document.createElement('div');
+  popover.className = 'icon-picker-popover';
+
+  popover.innerHTML = `
+    <div class="icon-picker-header">
+      <span class="icon-picker-title">Choose an icon</span>
+      <button class="icon-picker-close" title="Close">✕</button>
+    </div>
+    <div class="icon-picker-search-wrap">
+      <input type="text" class="icon-picker-search" placeholder="Search icons…" autofocus>
+    </div>
+    <div class="icon-picker-grid"></div>
+    <div class="icon-picker-footer">
+      <button class="icon-picker-clear agents-btn">Clear (use emoji)</button>
+      <span class="icon-picker-selected"></span>
+    </div>
+  `;
+
+  backdrop.appendChild(popover);
+  document.body.appendChild(backdrop);
+
+  const grid = popover.querySelector('.icon-picker-grid');
+  const search = popover.querySelector('.icon-picker-search');
+  const closeBtn = popover.querySelector('.icon-picker-close');
+  const clearBtn = popover.querySelector('.icon-picker-clear');
+  const selectedEl = popover.querySelector('.icon-picker-selected');
+
+  let currentIcon = agent.icon || '';
+
+  function renderIcons(filter) {
+    grid.innerHTML = '';
+    const list = filter
+      ? _ICON_PICKER_ICONS.filter(name => name.includes(filter.toLowerCase()))
+      : _ICON_PICKER_ICONS;
+
+    if (list.length === 0) {
+      grid.innerHTML = '<div class="icon-picker-empty">No icons match</div>';
+      return;
+    }
+
+    for (const name of list) {
+      const item = document.createElement('div');
+      item.className = 'icon-picker-item' + (name === currentIcon ? ' selected' : '');
+      item.title = name;
+      item.innerHTML = icon(name, { size: '22px' });
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Remove selected class from all
+        grid.querySelectorAll('.icon-picker-item.selected').forEach(el => el.classList.remove('selected'));
+        item.classList.add('selected');
+        currentIcon = name;
+        selectedEl.innerHTML = icon(name, { size: '18px' }) + ` <span style="font-size:12px;color:var(--fg-3);">${name}</span>`;
+      });
+      grid.appendChild(item);
+    }
+  }
+
+  search.addEventListener('input', () => renderIcons(search.value));
+  renderIcons('');
+
+  // Show currently selected if any
+  if (currentIcon && _ICON_PICKER_ICONS.includes(currentIcon)) {
+    selectedEl.innerHTML = icon(currentIcon, { size: '18px' }) + ` <span style="font-size:12px;color:var(--fg-3);">${currentIcon}</span>`;
+  }
+
+  function applyIcon(iconName) {
+    agent.icon = iconName;
+    // Re-render just the icon in the card
+    const row = document.querySelector(`.agent-row[data-agent-id="${agent.id}"]`);
+    if (row) {
+      const iconWrap = row.querySelector('.agent-card-icon-wrap');
+      if (iconWrap) {
+        const iconSize = row.querySelector('.agent-card.active') ? '20px' : '24px';
+        iconWrap.innerHTML = _renderAgentIcon({ icon: iconName }, iconSize);
+      }
+    }
+    backdrop.remove();
+  }
+
+  closeBtn.addEventListener('click', () => backdrop.remove());
+  clearBtn.addEventListener('click', () => {
+    currentIcon = '';
+    selectedEl.innerHTML = '<span style="font-size:12px;color:var(--fg-3);">Emoji (drag text input)</span>';
+    applyIcon('');
+  });
+  backdrop.addEventListener('click', (e) => {
+    if (e.target === backdrop) backdrop.remove();
+  });
+
+  // Enter applies the selected icon (but not while typing in the search field)
+  document.addEventListener('keydown', function _onKey(e) {
+    if (e.key === 'Enter' && currentIcon && e.target !== search) {
+      applyIcon(currentIcon);
+      document.removeEventListener('keydown', _onKey);
+    }
+    if (e.key === 'Escape') {
+      backdrop.remove();
+      document.removeEventListener('keydown', _onKey);
+    }
+  });
+}
+
+function _renderAgentIcon(agent, size) {
+  const name = agent.icon || '';
+  if (!name) return icon('bot', { size });
+  // If it's one of our known Lucide icons, render as SVG
+  if (_ICON_PICKER_ICONS.includes(name)) return icon(name, { size });
+  // Otherwise treat as emoji (or raw text)
+  return _esc(name);
+}────────────────────────────────────────
 
 function _btn(label, cls) {
   const b = document.createElement('button');

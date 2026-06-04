@@ -23,9 +23,6 @@
             <button type="button" class="ac-tab" data-section="user-management" role="tab">
               <i data-lucide="users" class="lucide-icon ac-tab-icon"></i>Users
             </button>
-            <button type="button" class="ac-tab active" data-section="llm" role="tab">
-              <i data-lucide="bot" class="lucide-icon ac-tab-icon"></i>Models
-            </button>
             <button type="button" class="ac-tab" data-section="database" role="tab">
               <i data-lucide="database" class="lucide-icon ac-tab-icon"></i>Data Management
             </button>
@@ -51,77 +48,8 @@
         <!-- Scrollable content -->
         <div id="app-config-content">
 
-          <!-- ── Default LLM ── -->
-          <section id="ac-section-llm" class="ac-section">
-            <div class="ac-section-header">
-              <i data-lucide="bot" class="lucide-icon ac-section-icon"></i>
-              <div>
-                <h2 class="ac-section-title">Models</h2>
-                <p class="ac-section-desc">Add the models your agents use and tick what each one is for — answering (Text), reading images (Image-in), or creating images (Image-out). Capabilities are auto-detected.</p>
-              </div>
-            </div>
-            <div class="ac-card">
-              <div class="ac-field">
-                <label class="ac-label">Provider</label>
-                <select id="ac-settings-provider" class="ac-input"></select>
-              </div>
-              <div class="ac-field">
-                <label class="ac-label">Base URL</label>
-                <input type="text" id="ac-settings-base-url" class="ac-input" placeholder="https://openrouter.ai/api/v1" autocomplete="off">
-                <div class="ac-hint">Auto-filled when you pick a provider. Edit for custom endpoints.</div>
-              </div>
-              <div class="ac-field">
-                <label class="ac-label">API Key</label>
-                <input type="text" id="ac-settings-api-key" class="ac-input" placeholder="sk-..." autocomplete="off">
-                <div class="ac-hint">Stored on this device only. Never sent elsewhere.</div>
-              </div>
-              <div class="ac-field" id="ac-settings-model-group">
-                <label class="ac-label">Model</label>
-                <div style="position:relative;">
-                  <input type="text" id="ac-settings-model-search" class="ac-input" placeholder="Search models…" autocomplete="off">
-                  <div id="ac-settings-model-dropdown" class="ac-model-dropdown" style="display:none;"></div>
-                </div>
-                <div id="ac-settings-model-status" class="ac-hint"></div>
-              </div>
-              <div class="ac-field" id="ac-settings-cap-group">
-                <label class="ac-label">Capabilities</label>
-                <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap;">
-                  <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-2);cursor:pointer;">
-                    <input type="checkbox" id="ac-settings-cap-text" checked style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer;">
-                    Text
-                  </label>
-                  <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-2);cursor:pointer;">
-                    <input type="checkbox" id="ac-settings-cap-image" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer;">
-                    Image-in (vision)
-                  </label>
-                  <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-2);cursor:pointer;">
-                    <input type="checkbox" id="ac-settings-cap-image-out" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer;">
-                    Image-out (generate)
-                  </label>
-                </div>
-                <div class="ac-hint">Auto-detected when you pick a model. <strong>Image-in</strong> = can read attached images; <strong>Image-out</strong> = can create images. Override if detection is wrong.</div>
-              </div>
-              <div class="ac-actions">
-                <button id="ac-settings-save" class="ac-btn ac-btn-primary">Save</button>
-                <button id="ac-settings-clear" class="ac-btn ac-btn-ghost">Clear</button>
-                <span id="ac-settings-status" class="ac-status" style="display:none;"></span>
-              </div>
-
-              <!-- Saved models — same panel as the chooser above -->
-              <div id="ac-settings-saved-wrap" style="display:none;border-top:1px solid var(--border-soft);margin-top:16px;padding-top:14px;">
-                <div class="ac-card-label">Saved Models</div>
-                <div class="ac-card-sublabel">Tick how to use each model. Two or more ticked for <strong>Text</strong> race in parallel — fastest response wins.</div>
-                <div id="ac-settings-saved-list" style="margin-top:12px;"></div>
-                <div id="ac-settings-parallel-count" class="ac-hint" style="margin-top:6px;text-align:right;"></div>
-                <div id="ac-settings-describer-hint" class="ac-hint" style="margin-top:4px;"></div>
-                <div id="ac-settings-imagegen-hint" class="ac-hint" style="margin-top:2px;"></div>
-              </div>
-            </div>
-          </section>
-
-
-<!-- ── Agent Settings ── -->
-          <section id="ac-section-agent-settings" class="ac-section">
+          <!-- ── Agent Settings ── -->
+          <section id="ac-section-agent-settings" class="ac-section active">
             <div class="ac-section-header">
               <i data-lucide="bot" class="lucide-icon ac-section-icon"></i>
               <div>
@@ -148,6 +76,75 @@
               </div>
               <div id="ac-int-admin-chat-error" class="ac-hint" style="display:none;margin-top:6px;color:#f7768e;"></div>
             </div>
+
+            <!-- ── Models (collapsible, collapsed by default) ── -->
+            <details class="ac-category-group" id="ac-cat-models">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="bot" class="lucide-icon" style="width:16px;height:16px;color:#7aa2f7;"></i>
+                <span class="ac-category-title">Models</span>
+              </summary>
+              <div class="ac-category-body">
+                <p class="ac-category-desc">Add the models your agents use and tick what each one is for — answering (Text), reading images (Image-in), or creating images (Image-out). Capabilities are auto-detected.</p>
+                <div class="ac-card">
+                  <div class="ac-field">
+                    <label class="ac-label">Provider</label>
+                    <select id="ac-settings-provider" class="ac-input"></select>
+                  </div>
+                  <div class="ac-field">
+                    <label class="ac-label">Base URL</label>
+                    <input type="text" id="ac-settings-base-url" class="ac-input" placeholder="https://openrouter.ai/api/v1" autocomplete="off">
+                    <div class="ac-hint">Auto-filled when you pick a provider. Edit for custom endpoints.</div>
+                  </div>
+                  <div class="ac-field">
+                    <label class="ac-label">API Key</label>
+                    <input type="text" id="ac-settings-api-key" class="ac-input" placeholder="sk-..." autocomplete="off">
+                    <div class="ac-hint">Stored on this device only. Never sent elsewhere.</div>
+                  </div>
+                  <div class="ac-field" id="ac-settings-model-group">
+                    <label class="ac-label">Model</label>
+                    <div style="position:relative;">
+                      <input type="text" id="ac-settings-model-search" class="ac-input" placeholder="Search models…" autocomplete="off">
+                      <div id="ac-settings-model-dropdown" class="ac-model-dropdown" style="display:none;"></div>
+                    </div>
+                    <div id="ac-settings-model-status" class="ac-hint"></div>
+                  </div>
+                  <div class="ac-field" id="ac-settings-cap-group">
+                    <label class="ac-label">Capabilities</label>
+                    <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap;">
+                      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-2);cursor:pointer;">
+                        <input type="checkbox" id="ac-settings-cap-text" checked style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer;">
+                        Text
+                      </label>
+                      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-2);cursor:pointer;">
+                        <input type="checkbox" id="ac-settings-cap-image" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer;">
+                        Image-in (vision)
+                      </label>
+                      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-2);cursor:pointer;">
+                        <input type="checkbox" id="ac-settings-cap-image-out" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer;">
+                        Image-out (generate)
+                      </label>
+                    </div>
+                    <div class="ac-hint">Auto-detected when you pick a model. <strong>Image-in</strong> = can read attached images; <strong>Image-out</strong> = can create images. Override if detection is wrong.</div>
+                  </div>
+                  <div class="ac-actions">
+                    <button id="ac-settings-save" class="ac-btn ac-btn-primary">Save</button>
+                    <button id="ac-settings-clear" class="ac-btn ac-btn-ghost">Clear</button>
+                    <span id="ac-settings-status" class="ac-status" style="display:none;"></span>
+                  </div>
+
+                  <!-- Saved models — same panel as the chooser above -->
+                  <div id="ac-settings-saved-wrap" style="display:none;border-top:1px solid var(--border-soft);margin-top:16px;padding-top:14px;">
+                    <div class="ac-card-label">Saved Models</div>
+                    <div class="ac-card-sublabel">Tick how to use each model. Two or more ticked for <strong>Text</strong> race in parallel — fastest response wins.</div>
+                    <div id="ac-settings-saved-list" style="margin-top:12px;"></div>
+                    <div id="ac-settings-parallel-count" class="ac-hint" style="margin-top:6px;text-align:right;"></div>
+                    <div id="ac-settings-describer-hint" class="ac-hint" style="margin-top:4px;"></div>
+                    <div id="ac-settings-imagegen-hint" class="ac-hint" style="margin-top:2px;"></div>
+                  </div>
+                </div>
+              </div>
+            </details>
 
             <!-- ── Agent Tools (collapsible, collapsed by default) ── -->
             <details class="ac-category-group" id="ac-cat-agent-tools">

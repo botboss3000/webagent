@@ -65,8 +65,8 @@ let _intAdminWired = false;
 // ── Sidebar nav + scroll highlighting ────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────
 const _SECTION_KEY = 'appConfig_activeSection';
-	const _VALID_SECTIONS = ['app-settings', 'agent-settings', 'user-management', 'llm', 'database', 'optimizer', 'git', 'automation', 'events', 'monetization'];
-let _activeSection = localStorage.getItem(_SECTION_KEY) || 'llm';
+const _VALID_SECTIONS = ['app-settings', 'agent-settings', 'user-management', 'database', 'optimizer', 'git', 'automation', 'events', 'monetization'];
+	let _activeSection = localStorage.getItem(_SECTION_KEY) || 'agent-settings';
 
 function _showSection(section) {
   _VALID_SECTIONS.forEach(id => {
@@ -2750,8 +2750,8 @@ export function initAppConfig() {
 /** Called when the App Config tab becomes active — loads fresh data. */
 export async function startAppConfig() {
   _active = true;
-  // Show the last-active section (or default to llm)
-  _showSection(_activeSection || 'llm');
+  // Show the last-active section (or default to agent-settings)
+  _showSection(_activeSection || 'agent-settings');
 
   // Load all sections in parallel (non-blocking)
   _loadLLM();

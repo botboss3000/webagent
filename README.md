@@ -2,6 +2,18 @@
 
 A **FastAPI** service with a **tool-calling** LLM agent (OpenRouter), optional **Supabase** or **local SQLite** persistence, and a **vanilla JS** UI at **`/index.html`** (static assets under `/ui/`).
 
+## Development note — Service Worker bypass
+
+The page boot sequence in `index.html` currently includes an **inline script** that unregisters any previously-installed service worker and clears all caches on every hard reload. This was added to work around stale SW caches that served old JS files after code changes, causing the UI to hang on a spinner (the JS boot sequence was fetching HTML partials from cache while the server had changed).
+
+**This bypass is meant for development only.** Remove it before production:
+
+1. Open `index.html`
+2. Delete the block between `<!-- ╔══════════════════════════════════ ... ╗ -->` and `<!-- ╚════════════════════════════ ... ╝ -->` (it sits right after the `<title>` / `<link rel="icon">` lines and before the manifest link)
+3. Keep the manifest + SW registration code at the bottom of `<head>` — that's the normal PWA path used in production.
+
+When the bypass is removed, bump the `CACHE` constant in `sw.js` (e.g. `webagent-v12`) on each deploy so the activate handler drops stale caches.
+
 ## Features
 
 - **Chat (connection-independent runs)** — **`POST /api/v1/chat/send`** is the primary path: it saves the user message, starts the agent turn as a **supervised background run**, and returns immediately (`{status: "running", turn_id}`). The run is owned by the **Run Manager** (`app/agent/run_manager.py`) and is **not tied to any client connection** — leaving the page, closing the browser, switching sessions, or switching devices does **not** stop it. Only finishing, an explicit interrupt, or a server restart ends a run. **`POST /api/v1/chat/stream`** (SSE) is a thin fallback that starts the same run and tails its events; a disconnect there never cancels the run. `POST /api/v1/chat` (buffered, inline) is retained for non-UI callers. All turns go to **`interactions`**; prior turns for the same **`session_id`** are reloaded from the DB into the model context.
