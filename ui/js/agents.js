@@ -6341,7 +6341,7 @@ function _renderAgentIcon(agent, size) {
   if (_ICON_PICKER_ICONS.includes(name)) return icon(name, { size });
   // Otherwise treat as emoji (or raw text)
   return _esc(name);
-}────────────────────────────────────────
+}
 
 function _btn(label, cls) {
   const b = document.createElement('button');
