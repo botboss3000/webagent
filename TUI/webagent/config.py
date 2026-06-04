@@ -115,29 +115,37 @@ def _load_provider_json(project_dir: Path) -> dict[str, str]:
     profile that carries a key. Also handles the legacy flat format (config at the
     root). Returns ``{}`` when the file is absent — it's gitignored, so fresh
     checkouts won't have one — or unreadable, so resolution falls back cleanly.
+
+    Checks both ``data/config/provider.json`` (the canonical app path) and
+    ``provider.json`` at the project root (an older layout still in use).
     """
-    try:
-        data = json.loads((project_dir / "data" / "config" / "provider.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    if "api_key" in data and "base_url" in data:      # legacy flat format
-        cfg: Any = data
-    else:
-        cfg = data.get("admin_default") or data.get("__anonymous__")
+    for candidate in (
+        project_dir / "data" / "config" / "provider.json",
+        project_dir / "provider.json",
+    ):
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if "api_key" in data and "base_url" in data:      # legacy flat format
+            cfg: Any = data
+        else:
+            cfg = data.get("admin_default") or data.get("__anonymous__")
+            if not isinstance(cfg, dict):
+                cfg = next(
+                    (v for v in data.values() if isinstance(v, dict) and v.get("api_key")),
+                    None,
+                )
         if not isinstance(cfg, dict):
-            cfg = next(
-                (v for v in data.values() if isinstance(v, dict) and v.get("api_key")),
-                None,
-            )
-    if not isinstance(cfg, dict):
-        return {}
-    return {
-        "api_key": str(cfg.get("api_key") or "").strip(),
-        "base_url": str(cfg.get("base_url") or "").strip().rstrip("/"),
-        "model": str(cfg.get("model") or "").strip(),
-    }
+            continue
+        return {
+            "api_key": str(cfg.get("api_key") or "").strip(),
+            "base_url": str(cfg.get("base_url") or "").strip().rstrip("/"),
+            "model": str(cfg.get("model") or "").strip(),
+        }
+    return {}
 
 
 @dataclass
