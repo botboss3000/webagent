@@ -103,6 +103,7 @@ class ServerManagerAgent:
             spawn_subagent=spawn,
             subagents=self.subagents,
             available_tools=self.registry.names(has_project=self.project_root is not None),
+            store=self.store,
         )
 
     def _build_messages(self, session_id: str, situation: str = "") -> list[dict[str, Any]]:

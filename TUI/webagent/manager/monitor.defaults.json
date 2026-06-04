@@ -13,5 +13,8 @@
   "cpu_percent_threshold": 0,
   "notify_on_server_down": true,
   "notify_on_recovery": true,
-  "digest_minutes": 60
+  "digest_minutes": 60,
+  "remediation_mode": "safe_auto",
+  "remediation_confidence_threshold": 0.6,
+  "program_trigger_after": 3
 }

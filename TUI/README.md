@@ -70,6 +70,10 @@ errors, docs, solutions, and current information.
   `add_alarm`, `remove_alarm`, `set_monitor_config`, `notify_test`. Configure the
   autonomous **watchdog** by talking to the agent (see
   [Monitoring & alarms](#monitoring--alarms-autonomous-watchdog)).
+- **Playbook (self-healing)** — `playbook_list`, `playbook_show`,
+  `playbook_record_remedy`, `playbook_set_remedy`, `playbook_forget`. The learned
+  issue knowledge base that remembers what fixes what and gets smarter over time
+  (see [The Playbook](#the-playbook-self-healing-issue-knowledge-base)).
 - **Codebase Admin** — `read_source`, `write_source`, `edit_source`,
   `patch_source`, `delete_source`, `search_source`, `read_directory`,
   `run_command`, `run_python`.
@@ -81,9 +85,11 @@ errors, docs, solutions, and current information.
 
 ## External database
 
-The server manager keeps its **own** SQLite store (conversation history + a full
-audit trail of every mutating action) — **separate from the web app's
-`app/db/local.db`**, so resetting the web app never wipes the manager's memory.
+The server manager keeps its **own** SQLite store (conversation history, a full
+audit trail of every mutating action, and the **Playbook** knowledge base —
+`playbook_issues` / `playbook_remedies` / `playbook_incidents`) — **separate from
+the web app's `app/db/local.db`**, so resetting the web app never wipes the
+manager's memory of what fixes what.
 
 When you **run from source**, it lives **right here in the project folder** (this
 `TUI` directory), so the whole install is self-contained — `webagent.db`,
@@ -173,6 +179,56 @@ with `monitor_status`.
 The live files are per-machine and **gitignored**: `monitor.json` (config, seeded
 from the shipped defaults) and `alarms.json` (the watch list), both in the data
 dir. The watchdog re-reads them every tick, so edits apply with no restart.
+
+## The Playbook (self-healing issue knowledge base)
+
+The watchdog doesn't just react — it **learns**. The Playbook
+([`webagent/playbook.py`](webagent/playbook.py) pure logic +
+[`webagent/pb_coordinator.py`](webagent/pb_coordinator.py) persistence) turns every
+detected problem into a closed feedback loop:
+
+1. **Detect → Fingerprint.** Each condition (server down, zombie port, crash-loop,
+   error spike, resource pressure) and each error diagnostic is reduced to a stable
+   **issue key** — diagnostics are normalised (paths/numbers/hex/UUIDs stripped) so
+   near-identical errors cluster into one issue.
+2. **Pick & apply a remedy.** The issue's remedies are ranked by **confidence**
+   (Laplace-smoothed success rate). The best one runs — if the policy allows.
+3. **Verify.** Over a short window the watchdog re-checks whether the condition
+   actually cleared (health back up, error didn't recur, metric under threshold).
+4. **Learn.** Cleared → the remedy is credited (`helped`); didn't → `didn't-help`
+   and, under `self_heal`, the agent is asked to dig in. Confidence re-ranks.
+5. **Program a trigger onto itself.** After a diagnostic issue recurs
+   `program_trigger_after` times, the system auto-writes a standing **alarm rule**
+   for it, so it's loudly + explicitly detected from then on.
+
+The knowledge lives in the manager's own `webagent.db` (`playbook_issues` /
+`playbook_remedies` / `playbook_incidents`) and **survives restarts** — it
+accumulates over time.
+
+**Remediation mode** (in `monitor.json`, set via `set_monitor_config` or the
+Playbook screen) governs how autonomous it is — it composes with the autonomy
+level (a remedy runs only if both allow it):
+
+| `remediation_mode` | Behaviour |
+|--------------------|-----------|
+| `document` | Records issues + ranks remedies, but never acts on its own. |
+| `safe_auto` *(default)* | Auto-runs only the built-in safe remedies (restart, clear-port, escalate). |
+| `autonomous` | Also auto-runs **approved** learned shell-command remedies once they prove themselves. |
+
+**Remedy catalog:** built-in safe actions (`restart_server`, `clear_port`,
+`escalate_to_agent`, `notify_only`) plus agent-authored **`command`** (a shell
+command — starts *suggested*, must be approved before it auto-runs) and **`note`**
+(a written instruction, never auto-run).
+
+**Agent tools:** `playbook_list`, `playbook_show`, `playbook_record_remedy`,
+`playbook_set_remedy` (approve / disable / prioritise), `playbook_forget`. The
+agent consults the Playbook before guessing and records a remedy after it diagnoses
+a recurring problem — that's how triggers get programmed onto the system over time.
+
+**Playbook screen:** the **Playbook** header pill (managed mode) opens a side panel
+listing every learned issue with its best remedy + confidence; click an issue to
+see its remedies (helped/didn't stats), recent incidents, and approve/disable/forget
+controls, plus the remediation-mode selector.
 
 ## Subagents & the event-driven loop (mk2)
 
@@ -391,6 +447,7 @@ panel for the busier views (Connect, App Config) and is remembered across sessio
 | **mode** (far left) — a **one-word** write-gate (`read` / `write` / `auto`) | **Click to cycle** read → write → auto (colour signals the mode). Same gate as the App panel's Read/Write/Auto. |
 | **Admin** | opens `[Connect]` · `[App Config]` · `[Commands]` · `[Update]` · `[Install]` · `[Reset]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` |
 | **Git** (managed mode only) | source control: a **GitHub token** field with `[Save]` / `[Clear]` (used to authenticate network ops; stored in the TUI's own config, never written into the repo's `.git/config`), then `[Fetch]` · `[Pull]` · `[Push]`. Each button hands the agent a plain-language request so it runs the matching `git_tool` op under the usual op-safety rules (force-push blocked); Pull/Push arm writes first since the click is the consent. |
+| **Playbook** (managed mode only) | the self-healing **issue knowledge base**: a **remediation-mode** selector (`[Document]` / `[Safe-auto]` / `[Autonomous]`), then the list of learned issues (occurrences, status, best remedy + confidence). Click an issue to drill in: its remedies with helped/didn't stats, recent incidents, and `[Approve]` / `[Disable]` / `[Forget]` controls. See [The Playbook](#the-playbook-self-healing-issue-knowledge-base). |
 | **App** | the **AI provider** block — **Provider** as a grid of **pill buttons** (OpenRouter / OpenAI / DeepSeek / Groq / Together / Mistral / xAI / Custom); clicking one highlights it and fills the **Base URL** + **Model** to match (Custom leaves them as typed). Then a plain-text **AI key** field, `[Save]` / `[Clear]`; plus the write-gate `[Read-only]` / `[Write]` / `[Autonomous]` (current one highlighted) and `[Open Browser]` (opens `http://localhost:8080/index.html`). **Keys are shown in clear text** (not masked) so you can verify what you pasted. |
 | **server status** (right after **App**, managed mode) | the live `live` / `stopped` pill (spins `…starting` while booting). **Click it** to open the **Server** view (`[Start]` · `[Restart]` · `[Kill]`). |
 

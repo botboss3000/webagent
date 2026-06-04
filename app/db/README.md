@@ -2,6 +2,15 @@ the system_prompt is hardcoded to use the system_prompt.md as fallback. the prio
 
 `local.db` is SQLite and is the **zero-config default** (and the shipped seed DB). The backend is pluggable: `get_db()` returns a `LocalBackend` (SQLite), a `SupabaseBackend` (Postgres over REST), or a **`PostgresBackend`** (raw Postgres via `psycopg`). All three implement the same `StorageBackend` interface.
 
+## SQLite write concurrency (tuned for parallel agent writes)
+
+SQLite allows only **one writer at a time** for the whole file, so the design serialises writes two ways and then makes each write commit as fast as possible:
+
+1. **In-process serialisation** — every write method takes `LocalBackend._write_lock` (an `asyncio.Lock`). The app is single-process / single-event-loop, so this funnels all writes through one queue instead of letting many connections collide and throw `database is locked`.
+2. **Fast commits** — `_get_conn()` opens each connection with a tuned PRAGMA set: `journal_mode=WAL` (readers never block the writer), **`synchronous=NORMAL`** (the big throughput win — no fsync per commit; crash-safe in WAL, only a hard power-loss can drop the last not-yet-checkpointed transactions), `busy_timeout=30000`, `temp_store=MEMORY`, `cache_size=-16000` (~16 MB), `mmap_size=256MB`, `wal_autocheckpoint=2000`. See the docstring on `_get_conn()` for the rationale per pragma.
+
+Durability trade-off: with `synchronous=NORMAL`, a sudden power loss / OS crash can lose the **last few committed transactions** that hadn't been checkpointed yet — but the database is **never corrupted**. Acceptable for the agent harness (interactions / diagnostics / stream chunks); revisit if a table ever needs hard durability.
+
 ## Pluggable backends + the Postgres translation layer
 
 `PostgresBackend` (in `postgres_backend.py`) is a **subclass of `LocalBackend`** that overrides only the connection and schema bootstrap. Every data method is inherited and runs through **`pg_portable.py`** — a `sqlite3`-compatible facade over a pooled `psycopg` connection that translates SQLite-dialect SQL to Postgres on the fly (`?`→`%s`, `INSERT OR IGNORE/REPLACE`→`ON CONFLICT`, `datetime('now')`→text timestamp, `IFNULL`→`COALESCE`, `json_each(col)`→`json_array_elements_text(...)`). This means **one codebase serves both stores** — when writing new backend code, keep using `self._get_conn()` + SQLite-dialect SQL and it works on both. Avoid Postgres-only or SQLite-only SQL in shared methods; if a method genuinely needs native features (FTS, embeddings), override it in `PostgresBackend` (see `_fts5_search`, `_vector_search`, `doc_chunk_upsert`).

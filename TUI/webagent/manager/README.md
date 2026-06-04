@@ -10,7 +10,7 @@ editing Python or rebuilding the `.exe`. They are loaded at runtime by
 |------|-----------|-----------|
 | `prompt.md` | The agent's **system prompt** (its whole instruction sheet). | You, or the agent (`edit_source`). Loaded at startup → **restart to apply**. |
 | `tools.json` | The **tool list**: each tool's human-readable `description`, whether it's `enabled`, and its `category`. The code binds names → handlers + parameter schemas; the prose lives here. | You, or the agent. Restart to apply. |
-| `monitor.defaults.json` | Shipped **defaults** for the background watchdog (interval, autonomy, channels, thresholds). | Maintainers. Seeds the live copy on first run. |
+| `monitor.defaults.json` | Shipped **defaults** for the background watchdog (interval, autonomy, channels, thresholds) **and the self-healing Playbook policy** (`remediation_mode`, `remediation_confidence_threshold`, `program_trigger_after`). | Maintainers. Seeds the live copy on first run. |
 
 ## Resolution order (see `resources.py`)
 
@@ -28,10 +28,14 @@ The watchdog's **live** state lives in the data dir and is gitignored:
 - `monitor.json` — the active watchdog config (seeded from `monitor.defaults.json`
   on first run; then edited by the `set_monitor_config` tool or the admin panel).
 - `alarms.json` — the live alarm watch list (grown by the `add_alarm` tool when
-  the user says "tell me every time X happens").
+  the user says "tell me every time X happens", and **auto-programmed** by the
+  Playbook when a diagnostic issue recurs `program_trigger_after` times).
 
 The watchdog ([`../watchdog.py`](../watchdog.py)) re-reads both **every tick**, so
-changes apply live with no restart.
+changes apply live with no restart. The **Playbook** knowledge base itself
+(learned issues / remedies / incidents) is persisted in the manager's `webagent.db`
+— see [`../playbook.py`](../playbook.py) (pure logic) and
+[`../pb_coordinator.py`](../pb_coordinator.py) (storage + auto-programming).
 
 ## Editing notes
 

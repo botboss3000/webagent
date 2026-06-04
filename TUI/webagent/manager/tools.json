@@ -149,7 +149,7 @@
     "set_monitor_config": {
       "category": "monitoring",
       "enabled": true,
-      "description": "Change the watchdog configuration: enable/disable, interval_seconds, autonomy (notify|auto_restart|self_heal), channels, auto_restart, and thresholds (error_rate_threshold, disk_percent_threshold, mem_percent_threshold, cpu_percent_threshold — a percent of 0 disables that resource check). Mutating (edits monitor.json, picked up live)."
+      "description": "Change the watchdog configuration: enable/disable, interval_seconds, autonomy (notify|auto_restart|self_heal), channels, auto_restart, thresholds (error_rate_threshold, disk_percent_threshold, mem_percent_threshold, cpu_percent_threshold — a percent of 0 disables that resource check), and the Playbook's self-healing policy: remediation_mode (document|safe_auto|autonomous), remediation_confidence_threshold (0–1), program_trigger_after (occurrences before a recurring issue gets an auto-programmed alarm). Mutating (edits monitor.json, picked up live)."
     },
     "server_resources": {
       "category": "monitoring",
@@ -160,6 +160,31 @@
       "category": "monitoring",
       "enabled": true,
       "description": "Send a test notification on the configured channel(s) so the user can confirm alerts reach them. Read-only side effect (just a notification)."
+    },
+    "playbook_list": {
+      "category": "monitoring",
+      "enabled": true,
+      "description": "List every issue the self-healing Playbook has learned: how often each fired, its status, and its best-known remedy + confidence. Read-only. Check this before guessing at a recurring problem."
+    },
+    "playbook_show": {
+      "category": "monitoring",
+      "enabled": true,
+      "description": "Show one Playbook issue in full (key from playbook_list): every remedy with its helped/didn't-help record, and the recent incidents (how it was triggered + how each was resolved). Read-only."
+    },
+    "playbook_record_remedy": {
+      "category": "monitoring",
+      "enabled": true,
+      "description": "After you diagnose a recurring issue, record the fix so the watchdog can reuse it next time. kind ∈ restart_server|clear_port|escalate_to_agent|notify_only|command|note ('command' = a shell command in payload, 'note' = a written instruction). Custom commands are stored as 'suggested' and won't auto-run until approved (approved=true, or the user approves it on the Playbook screen). This is how the system gets smarter over time."
+    },
+    "playbook_set_remedy": {
+      "category": "monitoring",
+      "enabled": true,
+      "description": "Approve, disable, or re-prioritise a Playbook remedy (status ∈ approved|suggested|disabled; higher priority breaks confidence ties). Mutating (manager state)."
+    },
+    "playbook_forget": {
+      "category": "monitoring",
+      "enabled": true,
+      "description": "Delete a whole Playbook issue (key=...) and its history, or a single remedy (remedy_id=...). Use when something was learned wrong. Mutating (manager state)."
     },
     "web_search": {
       "category": "web",

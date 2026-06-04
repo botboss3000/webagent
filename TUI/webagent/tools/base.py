@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 if TYPE_CHECKING:
     from ..config import ProviderConfig
+    from ..db import Store
     from ..subagents import SubagentRegistry
 
 
@@ -59,6 +60,10 @@ class ToolContext:
     # The full set of tool names that exist, so delegate_* can validate the
     # caller-scoped ``tools`` list and reject unknown names early.
     available_tools: list[str] = field(default_factory=list)
+    # The manager's own SQLite store, so the playbook_* tools can read/write the
+    # self-healing knowledge base (issues / remedies / incidents). None on a bare
+    # context that doesn't wire it.
+    store: Optional["Store"] = None
 
 
 @dataclass

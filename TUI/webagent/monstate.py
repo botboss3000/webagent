@@ -25,6 +25,7 @@ from .resources import load_monitor_defaults
 _VALID_AUTONOMY = ("notify", "auto_restart", "self_heal")
 _VALID_ACTION = ("notify", "auto_restart")
 _VALID_LOUDNESS = ("every", "once", "digest")
+_VALID_REMEDIATION_MODE = ("document", "safe_auto", "autonomous")
 
 
 def monitor_path() -> Path:
@@ -75,6 +76,22 @@ def update_monitor_config(**changes: Any) -> dict[str, Any]:
         if val is None or key not in cfg:
             continue
         if key == "autonomy" and val not in _VALID_AUTONOMY:
+            continue
+        if key == "remediation_mode":
+            if val in _VALID_REMEDIATION_MODE:
+                cfg[key] = val
+            continue
+        if key == "remediation_confidence_threshold":
+            try:
+                cfg[key] = max(0.0, min(1.0, float(val)))
+            except (TypeError, ValueError):
+                pass
+            continue
+        if key == "program_trigger_after":
+            try:
+                cfg[key] = max(1, int(val))
+            except (TypeError, ValueError):
+                pass
             continue
         if key == "channels":
             if isinstance(val, list):

@@ -13,8 +13,12 @@ the active theme via ``theme_colors`` (refreshed whenever the theme changes).
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import re
+import subprocess
+import sys
 import uuid
 import webbrowser
 from pathlib import Path
@@ -25,7 +29,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.events import Click, Paste
+from textual.events import Click, Key, Paste
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widget import Widget
@@ -57,6 +61,7 @@ from .selfinfo import check_self_update, gather
 from .notify import Notifier
 from .procscan import scan_webagent_processes
 from .watchdog import Watchdog, set_active_watchdog
+from .pb_coordinator import PlaybookCoordinator
 from .palette import PRESETS, palette_from_theme
 from .theme_colors import chrome_colors
 from .themes import CUSTOM_VAR_DEFAULTS, DEFAULT_THEME, THEME_LABELS, THEME_ORDER, build_themes
@@ -65,6 +70,32 @@ from .themes import CUSTOM_VAR_DEFAULTS, DEFAULT_THEME, THEME_LABELS, THEME_ORDE
 # Matches bare http(s) URLs so they can be turned into clickable terminal hyperlinks
 # (OSC 8). Trailing punctuation and markup/closing brackets are excluded.
 _URL_RE = re.compile(r'https?://[^\s\]\)>"\'`]+[^\s\]\)>"\'`.,;:!?]')
+
+
+def _pids_on_port(port: int = 8080) -> set[int]:
+    """Best-effort: the PIDs LISTENING on ``port`` (netstat on Windows, lsof on
+    POSIX). Used by the Playbook 'clear_port' remedy to evict a zombie. Returns an
+    empty set on any failure rather than raising."""
+    pids: set[int] = set()
+    try:
+        if sys.platform.startswith("win"):
+            out = subprocess.run(["netstat", "-ano", "-p", "tcp"],
+                                 capture_output=True, text=True,
+                                 creationflags=0x08000000).stdout  # CREATE_NO_WINDOW
+            for line in out.splitlines():
+                if f":{port}" in line and "LISTENING" in line:
+                    parts = line.split()
+                    if parts and parts[-1].isdigit():
+                        pids.add(int(parts[-1]))
+        else:
+            out = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+                                 capture_output=True, text=True).stdout
+            for tok in out.split():
+                if tok.isdigit():
+                    pids.add(int(tok))
+    except Exception:
+        pass
+    return pids
 
 
 def _linkify_text(text: Text) -> Text:
@@ -107,9 +138,18 @@ class PromptInput(TextArea):
         Binding("ctrl+a", "select_all", "Select all", show=False),
     ]
 
-    def key_enter(self) -> None:
-        """Intercept Enter before TextArea's own handler inserts a newline."""
-        self.action_submit()
+    async def _on_key(self, event):
+        """Intercept Enter before TextArea's own handler inserts a newline.
+
+        TextArea._on_key handles 'enter' directly (inserts \\n, stops the event),
+        so key_enter on a subclass never fires.  Override _on_key here to catch
+        Enter ourselves; delegate everything else to the parent."""
+        if isinstance(event, Key) and event.key == "enter":
+            event.stop()
+            event.prevent_default()
+            self.action_submit()
+            return
+        await super()._on_key(event)
 
     def action_new_line(self) -> None:
         """Insert a newline at the cursor without submitting."""
@@ -403,6 +443,7 @@ class ServerManagerApp(App):
         self._cfg_provider_pick: str = ""            # highlighted provider preset (App Config)
         self._diag_text: str = ""                    # last diagnostics readout (sidebar view)
         self._logs_text: str = ""                    # last server-logs readout (sidebar view)
+        self._playbook_key: str = ""                 # issue currently expanded in the Playbook view
         self.session_id = self.store.create_session(
             str(self.project_root) if self.project_root else "(onboarding)"
         )
@@ -540,12 +581,16 @@ class ServerManagerApp(App):
         # (re-read each tick) and picks up a checkout linked mid-session, so we can
         # start it unconditionally. It notifies via desktop toast + the transcript
         # and can auto-restart the server within the configured autonomy level.
+        self._playbook = PlaybookCoordinator(self.store, log=self._log_watchdog)
         self._watchdog = Watchdog(
             get_project_root=lambda: self.project_root,
             restart_server=self._watchdog_restart,
             notifier=Notifier(log=self._log_watchdog),
             log=self._log_watchdog,
             inject_event=self._watchdog_inject,
+            coordinator=self._playbook,
+            clear_port=self._watchdog_clear_port,
+            run_command=self._watchdog_run_command,
         )
         set_active_watchdog(self._watchdog)
         self.run_worker(self._watchdog.run(), group="watchdog", exclusive=True)
@@ -756,6 +801,7 @@ class ServerManagerApp(App):
         cat("Admin", "admin", "panel_admin")
         if self.project_root:
             cat("Git", "git", "panel_git")   # source control: fetch / pull / push
+            cat("Playbook", "playbook", "panel_playbook")   # self-healing issue knowledge base
         cat("WEBAGENT", "connect", "panel_connect")   # connect to a live web agent/session
         # The live server STATUS sits right after WEBAGENT (managed mode); click → server panel.
         # Rebuilt each refresh, so keep self._dot pointing at the current widget.
@@ -770,12 +816,19 @@ class ServerManagerApp(App):
             self._add_hdr(bar, Text("onboarding", style=c["secondary"]), None)
 
     def _title_text(self) -> Text:
-        """The plain-text app header (replaces the animated logo banner):
-        'WEBAGENT' on top, 'Server Manager' beneath, coloured from the theme."""
+        """The plain-text app header showing 'WEBAGENT Manager' and, when connected,
+        the session name on the second line."""
         c = self.cc
         t = Text(justify="center", no_wrap=True, overflow="crop")
-        t.append("WEBAGENT\n", style=f"bold {c['accent']}")
-        t.append("Server Manager", style=c["dim"])
+        
+        # First line: WEBAGENT Manager in accent color
+        t.append("WEBAGENT Manager", style=f"bold {c['accent']}")
+        
+        # Second line: Session name in secondary color if connected
+        if self._webapp_target and self._webapp_target.get("session_title"):
+            t.append(f"\n[{self._webapp_target['session_title']}]", 
+                     style=f"bold {c['secondary']}")
+            
         return t
 
     def _refresh_title(self) -> None:
@@ -923,6 +976,7 @@ class ServerManagerApp(App):
             audit=lambda tool, args, ok, detail: self.store.log_action(
                 self.session_id, tool, args, ok, detail),
             session_id=self.session_id,
+            store=self.store,
         )
 
     def _admin_ctx(self):
@@ -941,6 +995,7 @@ class ServerManagerApp(App):
             set_project=self._link_project,
             app_provider=self.provider,
             request_exit=self._request_exit,
+            store=self.store,
         )
 
     async def _do_server(self, which: str) -> None:
@@ -995,6 +1050,31 @@ class ServerManagerApp(App):
             self._steer_queue.append(msg)
         else:
             self._run_turn(msg, synthetic=True)
+
+    async def _watchdog_clear_port(self) -> str:
+        """Playbook 'clear_port' remedy actuator: kill whatever process is squatting
+        on port 8080 (the manager-tracked server first, then any untracked zombie),
+        never this manager itself. Refreshes the header pill afterward."""
+        from .tools.server import _read_pidinfo, _pid_alive, _terminate
+        killed: list[int] = []
+        info = _read_pidinfo()
+        if info and info.get("pid") and _pid_alive(int(info["pid"])):
+            if _terminate(int(info["pid"])):
+                killed.append(int(info["pid"]))
+        my_pid = os.getpid()
+        for pid in await asyncio.to_thread(_pids_on_port, 8080):
+            if pid != my_pid and _terminate(pid):
+                killed.append(pid)
+        self._server_state = await server_health() if self.project_root else "n/a"
+        self._refresh_status()
+        return (f"cleared port 8080 (terminated {sorted(set(killed))})"
+                if killed else "no process found holding port 8080")
+
+    async def _watchdog_run_command(self, command: str) -> str:
+        """Playbook 'command' remedy actuator: run a saved recovery command in the
+        project root (only reached for an approved remedy under autonomous mode)."""
+        from .tools import shell
+        return await shell.run_command(self._server_ctx(), command=command, timeout=60)
 
     async def _autostart_server(self) -> None:
         """Start the managed server on open if it isn't already up — so a manual
@@ -1125,7 +1205,7 @@ class ServerManagerApp(App):
         title = {"admin": "ADMIN", "scene": "THEME", "server": "SERVER",
                  "git": "GIT", "connect": "WEBAGENT", "config": "APP CONFIG",
                  "sessions": "ALL SESSIONS", "reset": "RESET",
-                 "diag": "DIAGNOSTICS", "logs": "SERVER LOGS",
+                 "diag": "DIAGNOSTICS", "logs": "SERVER LOGS", "playbook": "PLAYBOOK",
                  "confirm": (self._confirm_state or {}).get("title", "CONFIRM")}.get(kind, kind.upper())
         # Top row in EVERY view: an expand/collapse toggle, then the title.
         exp_label = "[›‹ narrow]" if self.cfg.side_expanded else "[‹› wide]"
@@ -1157,6 +1237,8 @@ class ServerManagerApp(App):
             return out
         if kind in ("diag", "logs"):
             return out + self._readout_widgets(kind)
+        if kind == "playbook":
+            return out + self._playbook_widgets()
         specs = {
             "admin": [("[App Config]", "panel_config"),
                       ("[Commands]", "help"), ("[Update]", "admin_update"),
@@ -1248,6 +1330,104 @@ class ServerManagerApp(App):
         body = text or "(loading…)"
         out.append(Static(_linkify_text(Text(body, style=c["dim"])),
                           classes="readout-body", markup=False))
+        return out
+
+    # ── Playbook view (the self-healing issue knowledge base) ─────────────────
+    _PB_MODE_DESC = {
+        "document": "records issues + ranks remedies, but never acts on its own.",
+        "safe_auto": "auto-runs only the built-in safe remedies (restart / clear-port / escalate).",
+        "autonomous": "also auto-runs approved custom commands once they prove themselves.",
+    }
+
+    def _playbook_widgets(self) -> list[Widget]:
+        """The Playbook panel: the remediation-mode selector, then either the list of
+        learned issues or — when one is expanded — its remedies + incident history."""
+        from . import monstate, playbook as pbl
+        c = self.cc
+        out: list[Widget] = []
+        cfg = monstate.load_monitor_config()
+        mode = cfg.get("remediation_mode") or "safe_auto"
+        out.append(Static(Text("Remediation mode", style=c["dim"]), classes="panel-sub"))
+        out.append(Horizontal(
+            self._panel_btn("[Document]", "pb_mode_document", mode == "document"),
+            self._panel_btn("[Safe-auto]", "pb_mode_safe", mode == "safe_auto"),
+            self._panel_btn("[Autonomous]", "pb_mode_auto", mode == "autonomous"),
+            classes="panel-row"))
+        out.append(Static(Text(self._PB_MODE_DESC.get(mode, ""), style=c["dim"]),
+                          classes="panel-sub", markup=False))
+        out.append(self._panel_btn("[Refresh]", "pb_refresh"))
+        if self._playbook_key:
+            return out + self._playbook_detail_widgets(self._playbook_key)
+        issues = self.store.pb_list_issues()
+        if not issues:
+            out.append(Static(Text("No issues recorded yet. As the watchdog detects "
+                                   "problems they'll be logged here with what helped.",
+                                   style=c["dim"]), classes="panel-sub", markup=False))
+            return out
+        out.append(Static(Text(f"{len(issues)} issue(s) — click to inspect", style=c["dim"]),
+                          classes="panel-sub"))
+        for iss in issues:
+            best = pbl.best_remedy(self.store.pb_remedies_for(iss["key"]))
+            if best and int(best.get("times_tried") or 0):
+                tag = f"{int(round(pbl.confidence(best) * 100))}%"
+            elif best:
+                tag = "new"
+            else:
+                tag = "—"
+            label = (f"{iss.get('label')}  ·{iss.get('occurrences')}×  "
+                     f"[{iss.get('status')}]  fix:{tag}")
+            out.append(self._value_btn(label, "pb_open_issue", "pb-issue", iss["key"]))
+        return out
+
+    def _playbook_detail_widgets(self, key: str) -> list[Widget]:
+        from . import playbook as pbl
+        c = self.cc
+        out: list[Widget] = [self._panel_btn("[‹ Back to issues]", "playbook_back")]
+        iss = self.store.pb_get_issue(key)
+        if not iss:
+            self._playbook_key = ""
+            out.append(Static(Text("(issue no longer exists)", style=c["dim"]), classes="panel-sub"))
+            return out
+        out.append(Static(Text(iss.get("label", key), style=f"bold {c['accent']}"),
+                          classes="panel-sub", markup=False))
+        meta = (f"{iss.get('kind')} · seen {iss.get('occurrences')}× · {iss.get('status')}"
+                + (" · trigger programmed" if iss.get("programmed") else ""))
+        out.append(Static(Text(meta, style=c["dim"]), classes="panel-sub", markup=False))
+        out.append(Static(Text("Remedies — what helps, what doesn't", style=c["dim"]),
+                          classes="panel-sub"))
+        remedies = pbl.rank_remedies(self.store.pb_remedies_for(key))
+        if not remedies:
+            out.append(Static(Text("none recorded yet — ask the manager to record one "
+                                   "after it diagnoses this.", style=c["dim"]),
+                              classes="panel-sub", markup=False))
+        for r in remedies:
+            human = pbl.REMEDY_HUMAN.get(r.get("kind"), r.get("kind"))
+            tried = int(r.get("times_tried") or 0)
+            stat = (f"{int(round(pbl.confidence(r) * 100))}% "
+                    f"({r.get('times_helped', 0)}✓/{r.get('times_didnt_help', 0)}✗)"
+                    if tried else "untried")
+            line = f"{human}  [{r.get('status')}]  {stat}"
+            if r.get("payload"):
+                line += f"\n   {r['payload'][:80]}"
+            out.append(Static(Text(line, style=c["fg"]), classes="panel-sub", markup=False))
+            row: list[Widget] = []
+            if r.get("status") != "approved":
+                row.append(self._value_btn("[Approve]", "pb_remedy", "pb-remedy",
+                                           {"id": r["id"], "act": "approve"}))
+            if r.get("status") != "disabled":
+                row.append(self._value_btn("[Disable]", "pb_remedy", "pb-remedy",
+                                           {"id": r["id"], "act": "disable"}))
+            row.append(self._value_btn("[Forget]", "pb_remedy", "pb-remedy",
+                                       {"id": r["id"], "act": "forget"}))
+            out.append(Horizontal(*row, classes="panel-row"))
+        incs = self.store.pb_recent_incidents(key, limit=6)
+        if incs:
+            out.append(Static(Text("Recent incidents", style=c["dim"]), classes="panel-sub"))
+            for inc in incs:
+                out.append(Static(Text(f"{inc.get('outcome')} — {(inc.get('trigger') or '')[:70]}",
+                                       style=c["dim"]), classes="panel-sub", markup=False))
+        out.append(self._value_btn("[Forget this whole issue]", "pb_remedy", "pb-remedy",
+                                   {"id": "", "act": "forget_issue", "key": key}))
         return out
 
     # ── Sessions view (resume a previous TUI session) ─────────────────────────
@@ -1381,6 +1561,59 @@ class ServerManagerApp(App):
         self._open_panel("config")
         if self._panel_kind == "config":
             self.run_worker(self._load_config(), group="cfgload", exclusive=True)
+
+    def action_panel_playbook(self) -> None:
+        if self.project_root is None:
+            return
+        self._playbook_key = ""          # always open on the issue list
+        self._open_panel("playbook")
+
+    def action_playbook_back(self) -> None:
+        self._playbook_key = ""
+        self._rebuild_panel()
+
+    def action_pb_refresh(self) -> None:
+        self._rebuild_panel()
+
+    def action_pb_mode_document(self) -> None:
+        self._pb_set_mode("document")
+
+    def action_pb_mode_safe(self) -> None:
+        self._pb_set_mode("safe_auto")
+
+    def action_pb_mode_auto(self) -> None:
+        self._pb_set_mode("autonomous")
+
+    def _pb_set_mode(self, mode: str) -> None:
+        from . import monstate
+        monstate.update_monitor_config(remediation_mode=mode)
+        self._log(f"[{self.cc['secondary']}]{G.OK} remediation mode → {mode}[/]")
+        self._rebuild_panel()
+
+    @on(Click, ".pb-issue")
+    def _on_pb_issue(self, event: Click) -> None:
+        key = getattr(event.widget, "_btn_value", None)
+        if key:
+            self._playbook_key = key
+            self._rebuild_panel()
+
+    @on(Click, ".pb-remedy")
+    def _on_pb_remedy(self, event: Click) -> None:
+        v = getattr(event.widget, "_btn_value", None) or {}
+        act = v.get("act")
+        try:
+            if act == "approve":
+                self.store.pb_set_remedy(v["id"], status="approved")
+            elif act == "disable":
+                self.store.pb_set_remedy(v["id"], status="disabled")
+            elif act == "forget":
+                self.store.pb_remove_remedy(v["id"])
+            elif act == "forget_issue":
+                self.store.pb_forget(v.get("key") or self._playbook_key)
+                self._playbook_key = ""
+        except Exception:
+            pass
+        self._rebuild_panel()
 
     def action_panel_expand(self) -> None:
         """Toggle the sidebar width (narrow ↔ wide); persists and applies live."""
@@ -1607,6 +1840,8 @@ class ServerManagerApp(App):
                   "toggle_webagent", "toggle_manager", "connect_refresh",
                   "cfg_save_settings", "cfg_save_auth", "cfg_refresh",
                   "diag_refresh", "logs_refresh",
+                  "playbook_back", "pb_refresh",
+                  "pb_mode_document", "pb_mode_safe", "pb_mode_auto",
                   "reset_do"}
 
     @on(Click, ".panel-btn")

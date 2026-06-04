@@ -23,6 +23,7 @@ from . import (
     install,
     manage,
     monitor,
+    playbook,
     reset,
     selfupdate,
     webapp,
@@ -311,6 +312,46 @@ def _base_specs() -> list[ToolSpec]:
                  "memory, disk, and the webAgent process's memory. Read-only.",
                  {"type": "object", "properties": {}},
                  monitor.server_resources),
+        # ── Playbook (self-healing issue knowledge base) ───────────────────
+        ToolSpec("playbook_list",
+                 "List every issue the watchdog has learned (how often each fired, its "
+                 "status, and its best-known remedy + confidence). Read-only.",
+                 {"type": "object", "properties": {}},
+                 playbook.playbook_list, needs_project=False),
+        ToolSpec("playbook_show",
+                 "Show one issue in full: its remedies with helped/didn't-help stats and "
+                 "the recent incidents (triggers + outcomes). Read-only.",
+                 {"type": "object", "properties": {"key": _STR}, "required": ["key"]},
+                 playbook.playbook_show, needs_project=False),
+        ToolSpec("playbook_record_remedy",
+                 "Record a remedy for an issue after diagnosing it so the watchdog can try "
+                 "it next time. kind ∈ restart_server|clear_port|escalate_to_agent|"
+                 "notify_only|command|note; for 'command' put the shell command in payload. "
+                 "Custom commands start 'suggested' and need approval (approved=true) before "
+                 "they auto-run.",
+                 {"type": "object",
+                  "properties": {"issue_key": _STR,
+                                 "kind": {**_STR, "enum": list(playbook.CATALOG_KINDS)},
+                                 "payload": {**_STR, "default": ""},
+                                 "approved": {"type": "boolean", "default": False}},
+                  "required": ["issue_key", "kind"]},
+                 playbook.playbook_record_remedy, needs_project=False),
+        ToolSpec("playbook_set_remedy",
+                 "Approve, disable, or re-prioritise a remedy (status ∈ approved|suggested|"
+                 "disabled; higher priority breaks ties).",
+                 {"type": "object",
+                  "properties": {"remedy_id": _STR,
+                                 "status": {**_STR, "default": ""},
+                                 "priority": _INT},
+                  "required": ["remedy_id"]},
+                 playbook.playbook_set_remedy, needs_project=False),
+        ToolSpec("playbook_forget",
+                 "Delete a whole issue (key=...) and its history, or a single remedy "
+                 "(remedy_id=...). Use when something was learned wrong.",
+                 {"type": "object",
+                  "properties": {"key": {**_STR, "default": ""},
+                                 "remedy_id": {**_STR, "default": ""}}},
+                 playbook.playbook_forget, needs_project=False),
         # ── Web search (any mode) ──────────────────────────────────────────
         ToolSpec("web_search", (
             "Search the web via DuckDuckGo. Returns titles, URLs, and snippets "

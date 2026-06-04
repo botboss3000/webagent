@@ -52,6 +52,10 @@ _FALLBACK_MONITOR_DEFAULTS: dict[str, Any] = {
     "notify_on_server_down": True,
     "notify_on_recovery": True,
     "digest_minutes": 60,
+    # ── Self-healing Playbook policy ──
+    "remediation_mode": "safe_auto",            # document | safe_auto | autonomous
+    "remediation_confidence_threshold": 0.6,    # a learned command must clear this to keep auto-running
+    "program_trigger_after": 3,                 # recurrences before a diagnostic issue auto-programs an alarm
 }
 
 

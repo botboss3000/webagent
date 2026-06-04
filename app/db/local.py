@@ -1198,12 +1198,43 @@ class LocalBackend(StorageBackend):
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
-        """Get a new connection (thread-safe: each call gets its own)."""
+        """Get a new connection (thread-safe: each call gets its own).
+
+        Tuned for many parallel agent writes. SQLite still allows only one writer
+        at a time (the app already serialises writes through self._write_lock), so
+        the goal here is to make each write *commit fast* and hold that single
+        writer slot for as little time as possible:
+
+          - journal_mode=WAL    Readers never block the writer (persistent, but
+                                re-asserted cheaply on every connection).
+          - synchronous=NORMAL  Biggest write-throughput win. In WAL mode this is
+                                crash-SAFE (no corruption); the only cost is that a
+                                hard power loss / OS crash can drop the last few
+                                not-yet-checkpointed transactions. With FULL (the
+                                default) every commit fsyncs to disk, which under a
+                                burst of parallel writes serialises everyone behind
+                                disk-sync latency.
+          - busy_timeout=30000  A write that finds the file momentarily locked
+                                waits up to 30s instead of erroring "database is
+                                locked".
+          - temp_store=MEMORY   Sorts / temp B-trees stay in RAM, off the hot path.
+          - cache_size=-16000   ~16 MB page cache (negative = KiB) to cut re-reads
+                                within a multi-statement transaction.
+          - mmap_size=256MB     Memory-mapped reads reduce syscall overhead.
+          - wal_autocheckpoint  Larger WAL before an (in-line) checkpoint, so heavy
+                                write bursts aren't interrupted by frequent
+                                checkpoint stalls.
+        """
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA cache_size=-16000")
+        conn.execute("PRAGMA mmap_size=268435456")
+        conn.execute("PRAGMA wal_autocheckpoint=2000")
         return conn
 
     def _init_db(self) -> None:

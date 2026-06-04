@@ -650,12 +650,12 @@ body.light-mode *::-webkit-scrollbar-thumb:hover {
 .main-tabs-chev.left {
 	  left: 0;
 	  justify-content: flex-start;
-	  background: linear-gradient(to right, #07070c 55%, #07070c 100%);
+	  background: linear-gradient(to right, #07070c 50%, transparent 100%);
 	}
 	.main-tabs-chev.right {
 	  right: 0;
 	  justify-content: flex-end;
-	  background: linear-gradient(to left, #07070c 55%, #07070c 100%);
+	  background: linear-gradient(to left, #07070c 50%, transparent 100%);
 	}
 .main-tabs-chev.visible { display: flex; }
 .main-tabs-chev:hover { color: var(--fg-1); }
@@ -685,10 +685,10 @@ body.light-mode .main-tab.active { background: var(--accent-soft); color: var(--
 body.light-mode .main-tabs-chev { color: var(--fg-2); }
 body.light-mode .main-tabs-chev:hover { color: var(--accent); }
 body.light-mode .main-tabs-chev.left {
-	  background: linear-gradient(to right, #faf5ee 55%, #faf5ee 100%);
+	  background: linear-gradient(to right, #faf5ee 50%, transparent 100%);
 	}
 	body.light-mode .main-tabs-chev.right {
-	  background: linear-gradient(to left, #faf5ee 55%, #faf5ee 100%);
+	  background: linear-gradient(to left, #faf5ee 50%, transparent 100%);
 	}
 
 /* ── Agents tab — transparent bg,
