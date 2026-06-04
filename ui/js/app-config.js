@@ -1351,10 +1351,19 @@ function _initIntegrationsSearch(providers) {
   const apply = () => {
     const q = input.value.trim().toLowerCase();
     let visible = 0;
+
+    // Track which categories have visible items
+    const catVisibility = {};
+
     for (const { card, haystack } of cards) {
       const match = !q || haystack.includes(q);
       card.style.display = match ? '' : 'none';
-      if (match) visible++;
+      if (match) {
+        visible++;
+        // Mark parent category
+        const cat = card.closest('.ac-category-group');
+        if (cat) catVisibility[cat.id] = true;
+      }
     }
     // Filter compact rows
     for (const row of compactRows) {
@@ -1363,7 +1372,12 @@ function _initIntegrationsSearch(providers) {
       const haystack = (name + ' ' + desc).toLowerCase();
       const match = !q || haystack.includes(q);
       row.style.display = match ? '' : 'none';
-      if (match) visible++;
+      if (match) {
+        visible++;
+        // Parent is the agent-tools category
+        const cat = _qs('ac-cat-agent-tools');
+        if (cat) catVisibility[cat.id] = true;
+      }
     }
     // Also filter config panels
     const configPanels = _qs('ac-ability-config-panels');
@@ -1373,9 +1387,23 @@ function _initIntegrationsSearch(providers) {
         const text = (panel.textContent || '').toLowerCase();
         const match = !q || text.includes(q);
         panel.style.display = match ? '' : 'none';
-        if (match) visible++;
+        if (match) {
+          visible++;
+          const cat = _qs('ac-cat-agent-tools');
+          if (cat) catVisibility[cat.id] = true;
+        }
       }
     }
+
+    // When searching, auto-open categories with matches; when cleared, close all
+    for (const cat of document.querySelectorAll('.ac-category-group')) {
+      if (q) {
+        cat.open = !!catVisibility[cat.id];
+      } else {
+        cat.open = false;
+      }
+    }
+
     if (emptyEl) emptyEl.style.display = (q && visible === 0) ? 'block' : 'none';
   };
   input.addEventListener('input', apply);
@@ -2203,6 +2231,208 @@ function _initAppSettings() {
   if (saveBtn) saveBtn.addEventListener('click', _saveAppSettings);
   _initBootAnimation();
   _initBootMobileMode();
+  _initMainPanelPages();
+}
+
+// ── Main Panel Pages (tab visibility + order) ──────────────────────────────
+
+const _MAIN_PANEL_PAGES = [
+  { id: 'admin-tools', label: 'Admin Tools', icon: 'wrench', locked: true },
+  { id: 'agents',      label: 'Agents',      icon: 'bot' },
+  { id: 'autoagent',   label: 'Pages',       icon: 'files' },
+  { id: 'web',         label: 'Web',         icon: 'globe' },
+  { id: 'terminal',    label: 'Terminal',    icon: 'terminal' },
+];
+
+const _LS_MAIN_PANEL_ORDER = 'mainPanelOrder';
+const _LS_MAIN_PANEL_HIDDEN = 'mainPanelHidden';
+
+function _getMainPanelOrder() {
+  try {
+    const saved = localStorage.getItem(_LS_MAIN_PANEL_ORDER);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      const allIds = _MAIN_PANEL_PAGES.map(p => p.id);
+      const hasAll = allIds.every(id => parsed.includes(id));
+      if (hasAll && parsed.length === allIds.length) return parsed;
+    }
+  } catch (_) {}
+  return ['admin-tools', 'agents', 'autoagent', 'web', 'terminal'];
+}
+
+function _getMainPanelHidden() {
+  try {
+    const saved = localStorage.getItem(_LS_MAIN_PANEL_HIDDEN);
+    if (saved) return JSON.parse(saved);
+  } catch (_) {}
+  return [];
+}
+
+function _saveMainPanelOrder(order) {
+  try { localStorage.setItem(_LS_MAIN_PANEL_ORDER, JSON.stringify(order)); } catch (_) {}
+}
+
+function _saveMainPanelHidden(hidden) {
+  try { localStorage.setItem(_LS_MAIN_PANEL_HIDDEN, JSON.stringify(hidden)); } catch (_) {}
+}
+
+function _renderMainPanelList() {
+  const list = _qs('ac-main-panel-list');
+  if (!list) return;
+
+  const order = _getMainPanelOrder();
+  const hidden = _getMainPanelHidden();
+
+  list.innerHTML = '';
+
+  order.forEach((id, index) => {
+    const page = _MAIN_PANEL_PAGES.find(p => p.id === id);
+    if (!page) return;
+
+    const isHidden = hidden.includes(id);
+    const isLocked = page.locked;
+
+    const item = document.createElement('div');
+    item.className = 'ac-main-panel-item' + (isLocked ? ' ac-mp-locked' : '');
+    item.draggable = true;
+    item.dataset.pageId = id;
+    item.dataset.index = index;
+
+    const handle = document.createElement('span');
+    handle.className = 'ac-mp-drag-handle';
+    handle.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="18" x2="16" y2="18"/></svg>';
+
+    const label = document.createElement('span');
+    label.className = 'ac-mp-label';
+    label.innerHTML = `<i data-lucide="${page.icon}" class="lucide-icon" style="width:15px;height:15px;"></i>${_esc(page.label)}`;
+
+    const toggle = document.createElement('button');
+    toggle.className = 'ac-mp-toggle' + (isHidden ? '' : ' active');
+    toggle.type = 'button';
+    toggle.title = isLocked ? 'Admin Tools is always visible' : (isHidden ? 'Show in header' : 'Hide from header');
+    toggle.disabled = isLocked;
+    toggle.addEventListener('click', () => {
+      if (isLocked) return;
+      const currentHidden = _getMainPanelHidden();
+      const idx = currentHidden.indexOf(id);
+      if (idx >= 0) {
+        currentHidden.splice(idx, 1);
+        toggle.classList.add('active');
+        toggle.title = 'Hide from header';
+      } else {
+        currentHidden.push(id);
+        toggle.classList.remove('active');
+        toggle.title = 'Show in header';
+      }
+      _saveMainPanelHidden(currentHidden);
+      _applyMainPanelOrder();
+    });
+
+    item.appendChild(handle);
+    item.appendChild(label);
+    item.appendChild(toggle);
+
+    // Drag events
+    item.addEventListener('dragstart', (e) => {
+      item.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', id);
+    });
+
+    item.addEventListener('dragend', () => {
+      item.classList.remove('dragging');
+      list.querySelectorAll('.ac-main-panel-item').forEach(el => el.classList.remove('drag-over'));
+    });
+
+    item.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      list.querySelectorAll('.ac-main-panel-item').forEach(el => el.classList.remove('drag-over'));
+      item.classList.add('drag-over');
+    });
+
+    item.addEventListener('dragleave', () => {
+      item.classList.remove('drag-over');
+    });
+
+    item.addEventListener('drop', (e) => {
+      e.preventDefault();
+      item.classList.remove('drag-over');
+      const fromId = e.dataTransfer.getData('text/plain');
+      const toId = id;
+      if (fromId === toId) return;
+
+      const currentOrder = _getMainPanelOrder();
+      const fromIdx = currentOrder.indexOf(fromId);
+      const toIdx = currentOrder.indexOf(toId);
+      if (fromIdx < 0 || toIdx < 0) return;
+
+      currentOrder.splice(fromIdx, 1);
+      const newToIdx = currentOrder.indexOf(toId);
+      currentOrder.splice(newToIdx + (fromIdx < toIdx ? 0 : 0), 0, fromId);
+
+      _saveMainPanelOrder(currentOrder);
+      _renderMainPanelList();
+      _applyMainPanelOrder();
+    });
+
+    list.appendChild(item);
+  });
+
+  if (window.lucide) {
+    try { lucide.createIcons(); } catch (_) {}
+  }
+}
+
+function _applyMainPanelOrder() {
+  const order = _getMainPanelOrder();
+  const hidden = _getMainPanelHidden();
+
+  // Update the hidden <select> options order
+  const nativeSelect = document.getElementById('main-tab-select');
+  if (nativeSelect) {
+    const options = Array.from(nativeSelect.options);
+    const accountOpt = options.find(o => o.value === 'account');
+    const otherOpts = options.filter(o => o.value !== 'account');
+
+    otherOpts.sort((a, b) => {
+      const ai = order.indexOf(a.value);
+      const bi = order.indexOf(b.value);
+      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+    });
+
+    otherOpts.forEach(opt => nativeSelect.appendChild(opt));
+    if (accountOpt) nativeSelect.appendChild(accountOpt);
+  }
+
+  // Update the visible tab buttons in the header
+  const tabBar = document.getElementById('main-tabs');
+  if (!tabBar) return;
+
+  const tabButtons = {};
+  tabBar.querySelectorAll('.main-tab').forEach(btn => {
+    tabButtons[btn.dataset.value] = btn;
+  });
+
+  const adminGroup = document.getElementById('admin-tools-group');
+  const adminBtn = adminGroup ? adminGroup.querySelector('.main-tab') : null;
+  if (adminBtn) tabButtons['admin-tools'] = adminGroup;
+
+  const allTabs = order.map(id => tabButtons[id]).filter(Boolean);
+  allTabs.forEach(tab => {
+    if (tab.parentNode === tabBar) tabBar.removeChild(tab);
+  });
+
+  order.forEach(id => {
+    if (hidden.includes(id)) return;
+    const tab = tabButtons[id];
+    if (tab) tabBar.appendChild(tab);
+  });
+}
+
+function _initMainPanelPages() {
+  _renderMainPanelList();
+  _applyMainPanelOrder();
 }
 
 const _BOOT_ANIM_ALLOWED = ['chat-slide-right', 'page-slide-in', 'crossfade'];

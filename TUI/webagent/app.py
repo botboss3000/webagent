@@ -2730,14 +2730,37 @@ class ServerManagerApp(App):
         """Start the bridge server so the web app can forward messages to the TUI."""
         from .bridge_server import start as start_bridge, set_handler, get_port
 
-        async def bridge_handler(session_id: str, message: str, user_id: str) -> dict:
+        async def bridge_handler(session_id: str, message: str, user_id: str,
+                                 execution_mode: str = "write") -> dict:
             """Handle an incoming message from the web app via the bridge.
             
             Processes it through the TUI's agent loop and returns the reply.
             Uses the web app's session ID so sessions are shared.
+            
+            ``execution_mode`` maps to the TUI's own guardrails:
+              'read'  → writes_enabled=False, autonomous=False
+              'write' → writes_enabled=True,  autonomous=False (confirms destructive)
+              'auto'  → writes_enabled=True,  autonomous=True  (no confirmation)
+            The web app's guardrails do NOT apply — the TUI handles its own.
             """
             if not self.provider.configured:
                 return {"reply": "Error: TUI agent has no AI provider configured."}
+
+            # Map execution_mode to the TUI's config
+            original_writes = self.cfg.writes_enabled
+            original_auto = self.cfg.autonomous
+            if execution_mode == "read":
+                self.cfg.writes_enabled = False
+                self.cfg.autonomous = False
+            elif execution_mode == "auto":
+                self.cfg.writes_enabled = True
+                self.cfg.autonomous = True
+            else:  # "write" (default)
+                self.cfg.writes_enabled = True
+                self.cfg.autonomous = False
+
+            # Rebuild the agent's ToolContext to pick up the new config
+            self.agent.cfg = self.cfg
 
             # Switch to the web app's session ID for this turn
             original_session = self.session_id
@@ -2774,6 +2797,9 @@ class ServerManagerApp(App):
                 reply_text = f"Error: {type(e).__name__}: {e}"
             finally:
                 self.session_id = original_session
+                self.cfg.writes_enabled = original_writes
+                self.cfg.autonomous = original_auto
+                self.agent.cfg = self.cfg
 
             return {"reply": reply_text or "(no response)"}
 

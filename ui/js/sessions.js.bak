@@ -18,6 +18,7 @@ import {
   onChange as onAccountsChange,
 } from './accounts.js';
 import { showLeftOverlay, authHeaders } from './left-login.js';
+import { ensureFreshToken } from './auth-refresh.js';
 import { randomUUID } from './uuid.js';
 import {
   getPinnedAgents,
@@ -38,7 +39,7 @@ let _scrollListener = null; // the active scroll listener (one at a time)
 
 // ── Virtual-scroll state ────────────────────────────────────────────────────
 // WeakMap<msgId, offsetHeight> — measured after first render of each bubble
-const _bubbleHeights = new WeakMap();
+const _bubbleHeights = new Map();
 // Set of msgIds currently rendered as placeholders (not real bubbles)
 const _placeholderIds = new Set();
 // The virtual-scroll scroll handler (bound once per session load)
@@ -49,6 +50,29 @@ const _VS_BUFFER = 400;
 let _origAddChatBubble = null;
 let _origCreateBubble = null;
 let _totalUnpinnedCount = 0; // total unpinned sessions on the server (for "+ N more" row)
+
+// ── Last-active session per agent ──────────────────────────────────────────
+// Map<agentId, sessionId> — persisted in localStorage so switching back to an
+// agent resumes the session you were last using with it.
+const _lastSessionPerAgent = new Map();
+
+function _loadLastSessionMap() {
+  try {
+    const raw = localStorage.getItem('lastSessionPerAgent');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      for (const [k, v] of Object.entries(parsed)) _lastSessionPerAgent.set(k, v);
+    }
+  } catch (_) { /* ignore corrupt data */ }
+}
+
+function _saveLastSessionMap() {
+  try {
+    const obj = {};
+    for (const [k, v] of _lastSessionPerAgent.entries()) obj[k] = v;
+    localStorage.setItem('lastSessionPerAgent', JSON.stringify(obj));
+  } catch (_) { /* storage may be full */ }
+}
 
 export function generateUUID() {
   return randomUUID();
@@ -105,6 +129,14 @@ function _setAgentTriggerLabel() {
   const title = (found && found.name) || (window.__agentName) || aid || 'No agent';
   labelEl.textContent = _truncate(title, 20);
   labelEl.title = (found && found.name) || title || '';
+  // Click the label to re-enter rename mode
+  labelEl.addEventListener('click', (e) => {
+    e.stopPropagation();
+    _headerRenameAgent();
+  });
+  // Mark the agent dropdown as loaded (removes shimmer + re-enables trigger)
+  const agentDropdown = document.getElementById('agent-dropdown');
+  if (agentDropdown) agentDropdown.dataset.loaded = 'true';
   // Status icon: check if any session for this agent is running or has unread
   const statusEl = document.getElementById('agent-dropdown-status');
   if (statusEl) {
@@ -124,6 +156,31 @@ function _setAgentTriggerLabel() {
       statusEl.title = '';
     }
   }
+  // TUI bridge indicator: show when the selected agent is the TUI bridge agent
+  const tuiIndicator = document.getElementById('tui-bridge-indicator');
+  if (tuiIndicator) {
+    const isTuiAgent = found && (found.template_id === 'web-agent-tui' || found.trigger_type === 'tui_bridge');
+    if (isTuiAgent) {
+      // Check if the bridge is alive
+      fetch('/api/v1/chat/tui-bridge/status')
+        .then(r => r.json())
+        .then(data => {
+          tuiIndicator.style.display = 'inline';
+          tuiIndicator.title = data.alive
+            ? 'TUI agent bridge active (port ' + data.port + ')'
+            : 'TUI agent bridge not connected — start the Server Manager (TUI)';
+          tuiIndicator.style.opacity = data.alive ? '1' : '0.4';
+        })
+        .catch(() => {
+          tuiIndicator.style.display = 'inline';
+          tuiIndicator.style.opacity = '0.4';
+          tuiIndicator.title = 'TUI agent bridge unavailable';
+        });
+    } else {
+      tuiIndicator.style.display = 'none';
+    }
+  }
+  _updateHeaderSessionCounter();
 }
 
 function _renderAgentRows() {
@@ -154,26 +211,21 @@ function _renderAgentRows() {
     const configBtn = a.type === 'custom'
       ? `<button class="agent-row-config" title="Configure agent" data-id="${a.id}">${icon('settings', { size: '14px' })}</button>`
       : '';
+    const hasRunning = !!_agentRunningStatus[a.id];
+    const statusHtml = hasRunning
+      ? `<span class="session-row-status session-status-running" title="Agent is thinking…">${icon('loader-2', { size: '12px' })}</span>`
+      : '';
     row.innerHTML = `
       <span class="row-drag-handle" data-drag-handle title="Drag to reorder · hold to pin">${icon('grip-vertical', { size: '13px' })}</span>
       <span class="agent-row-pin-icon">${icon('pin', { size: '12px' })}</span>
+      ${statusHtml}
       <span class="agent-row-title" title="Hold to rename">${_truncate(label, 28).replace(/</g, '&lt;')}</span>
       ${configBtn}
       <button class="agent-row-delete" title="Delete agent" data-id="${a.id}">${icon('trash-2', { size: '14px' })}</button>
     `;
-	    menu.appendChild(row);
-	  }
-	  // Show "+ N more" row if there are additional unpinned sessions not shown
-	  const shownUnpinned = _sessionsCache.filter(s => !s.pinned).length;
-	  const remaining = Math.max(0, _totalUnpinnedCount - shownUnpinned);
-	  if (remaining > 0) {
-	    const moreRow = document.createElement('div');
-	    moreRow.className = 'session-row-more';
-	    moreRow.textContent = `+ ${remaining} more session${remaining !== 1 ? 's' : ''}`;
-	    moreRow.title = 'Only the most recent sessions are shown';
-	    menu.appendChild(moreRow);
-	  }
-	}
+    menu.appendChild(row);
+  }
+}
 
 /**
  * Apply a drag-to-reorder result for the agent dropdown: reorder the cache to
@@ -196,8 +248,13 @@ export async function populateAgentSelect(userId) {
   if (!userId) return;
 
   try {
-    const agentsRes = await fetch(apiPath(`/api/v1/agents?user_id=${encodeURIComponent(userId)}`));
-    const agentsData = agentsRes.ok ? await agentsRes.json() : { agents: [] };
+    // Share the agent data with agents.js so it doesn't re-fetch.
+    let agentsData = window.__agentsSharedData;
+    if (!agentsData) {
+      const agentsRes = await fetch(apiPath(`/api/v1/agents?user_id=${encodeURIComponent(userId)}`));
+      agentsData = agentsRes.ok ? await agentsRes.json() : { agents: [] };
+      window.__agentsSharedData = agentsData;
+    }
 
     const saved = localStorage.getItem('selectedAgentId');
     const pinned = getPinnedAgents(userId);
@@ -254,8 +311,13 @@ export async function populateAgentSelect(userId) {
     _setAgentTriggerLabel();
 
     // Sessions are scoped to an agent — refresh the session list now that
-    // currentAgentId is settled.
-    populateSessionSelect(userId);
+    // currentAgentId is settled. Deferred: sessions are fetched lazily when
+    // the user first opens the session dropdown (see openMenu below).
+    // populateSessionSelect(userId);
+
+    // Fetch running status for all agents so the dropdown shows spinners
+    // next to agents that are currently thinking.
+    _fetchAgentRunningStatuses();
   } catch (e) {
     console.warn('Failed to load agents for selector:', e);
   }
@@ -277,13 +339,10 @@ export async function populateUserSelect() {
   }
   // Re-render the dropdown contents so the current-row + other accounts stay fresh
   renderUserDropdown();
-  // Refresh the agent list, which in turn refreshes sessions filtered by the
-  // resolved agent. Going through populateAgentSelect (rather than calling
-  // populateSessionSelect directly here) guarantees currentAgentId is set
-  // before the session query fires — otherwise the first fetch would have
-  // no agent_id filter and could clobber the filtered result on slow
-  // networks. Skipped while the session menu is open so the user doesn't
-  // lose their place mid-click.
+  // Refresh the agent list, which sets currentAgentId. Sessions are now
+  // loaded lazily when the user first opens the session dropdown (see
+  // openMenu in initSessions). Skipped while the session menu is open so
+  // the user doesn't lose their place mid-click.
   if (app.currentUserId) {
     const menu = document.getElementById('session-dropdown-menu');
     const isOpen = menu && !menu.hidden;
@@ -298,11 +357,16 @@ export function renderUserDropdown() {
   const active = getActive();
   const all = listAccounts();
 
-  // Current user row (large avatar + name + email)
+  // Current user row (large avatar + name + email) — or inline login form
   const cur = document.getElementById('dropdown-current-row');
   if (cur) {
     cur.innerHTML = '';
     if (active) {
+      // Reset any inline styles that the login form may have set
+      cur.style.padding = '';
+      cur.style.flexDirection = '';
+      cur.style.alignItems = '';
+      cur.style.gap = '';
       cur.appendChild(renderAvatar(active, 'lg'));
       const info = document.createElement('div');
       info.className = 'user-dropdown-current-info';
@@ -316,10 +380,83 @@ export function renderUserDropdown() {
       info.appendChild(emailEl);
       cur.appendChild(info);
     } else {
-      const info = document.createElement('div');
-      info.className = 'user-dropdown-current-info';
-      info.innerHTML = '<div class="user-dropdown-current-name">Signed out</div>';
-      cur.appendChild(info);
+      // Inline login form inside the dropdown — no full-page modal
+      cur.style.padding = '10px 14px 6px';
+      cur.style.flexDirection = 'column';
+      cur.style.alignItems = 'stretch';
+      cur.style.gap = '8px';
+      cur.innerHTML = `
+        <div style="font-size:13px;font-weight:600;color:#a9b1d6;margin-bottom:2px;">Sign in</div>
+        <input type="email" id="dd-login-email" placeholder="Email" autocomplete="username" style="
+          width:100%;padding:8px 10px;background:#0d0d1a;border:1px solid #2a2a4a;
+          border-radius:6px;color:#c0caf5;font-size:13px;font-family:inherit;
+          outline:none;box-sizing:border-box;
+        ">
+        <input type="password" id="dd-login-pass" placeholder="Password" autocomplete="current-password" style="
+          width:100%;padding:8px 10px;background:#0d0d1a;border:1px solid #2a2a4a;
+          border-radius:6px;color:#c0caf5;font-size:13px;font-family:inherit;
+          outline:none;box-sizing:border-box;
+        ">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <input type="checkbox" id="dd-login-remember" checked style="accent-color:#7dcfff;margin:0;">
+          <label for="dd-login-remember" style="font-size:12px;color:#565f89;cursor:pointer;">Remember me</label>
+        </div>
+        <button id="dd-login-btn" style="
+          width:100%;padding:8px;background:#7dcfff;border:none;border-radius:6px;
+          color:#0d0d1a;font-size:14px;font-weight:700;cursor:pointer;
+        ">Sign In</button>
+        <div id="dd-login-error" style="color:#fb4934;font-size:12px;display:none;"></div>
+        <div id="dd-login-loading" style="color:#565f89;font-size:12px;text-align:center;display:none;">Signing in…</div>
+      `;
+
+      // Wire up the inline login form
+      const emailInput = document.getElementById('dd-login-email');
+      const passInput = document.getElementById('dd-login-pass');
+      const loginBtn = document.getElementById('dd-login-btn');
+      const errorEl = document.getElementById('dd-login-error');
+      const loadingEl = document.getElementById('dd-login-loading');
+
+      async function doInlineLogin() {
+        const email = emailInput.value.trim();
+        const password = passInput.value;
+        const rememberMe = document.getElementById('dd-login-remember').checked;
+        errorEl.style.display = 'none';
+        loginBtn.disabled = true;
+        loadingEl.style.display = 'block';
+        try {
+          const res = await fetch('/api/v1/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password, remember_me: rememberMe }),
+          });
+          if (!res.ok) {
+            errorEl.style.display = 'block';
+            errorEl.textContent = res.status === 403 ? 'Account pending approval' : 'Invalid email or password';
+            loginBtn.disabled = false;
+            loadingEl.style.display = 'none';
+            return;
+          }
+          const data = await res.json();
+          const { upsertAccount } = await import('./accounts.js');
+          upsertAccount({
+            user_id: data.user_id,
+            username: data.username,
+            display_name: data.display_name,
+            access_token: data.access_token,
+            remember_token: data.remember_token || '',
+          });
+          window.location.reload();
+        } catch (err) {
+          errorEl.style.display = 'block';
+          errorEl.textContent = 'Connection error';
+          loginBtn.disabled = false;
+          loadingEl.style.display = 'none';
+        }
+      }
+
+      loginBtn.addEventListener('click', doInlineLogin);
+      passInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doInlineLogin(); });
+      emailInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') passInput.focus(); });
     }
   }
 
@@ -357,6 +494,26 @@ export function renderUserDropdown() {
     }
   }
 
+  // Toggle visibility of signed-in-only elements
+  const manageBtn = document.getElementById('btn-manage-account');
+  const addBtn = document.getElementById('btn-add-account');
+  const signoutBtn = document.getElementById('btn-signout-header');
+  const dividers = document.querySelectorAll('#user-dropdown-menu > .user-dropdown-divider');
+  const otherAccounts = document.getElementById('dropdown-other-accounts');
+  if (active) {
+    if (manageBtn) manageBtn.style.display = '';
+    if (addBtn) addBtn.style.display = '';
+    if (signoutBtn) signoutBtn.style.display = '';
+    dividers.forEach(d => d.style.display = '');
+    if (otherAccounts) otherAccounts.style.display = '';
+  } else {
+    if (manageBtn) manageBtn.style.display = 'none';
+    if (addBtn) addBtn.style.display = 'none';
+    if (signoutBtn) signoutBtn.style.display = 'none';
+    dividers.forEach(d => d.style.display = 'none');
+    if (otherAccounts) otherAccounts.style.display = 'none';
+  }
+
   // Refresh Lucide icons for any newly-inserted SVG containers
   try {
     if (window.lucide && typeof window.lucide.createIcons === 'function') {
@@ -368,11 +525,45 @@ export function renderUserDropdown() {
 // Cache of last-fetched sessions (used when rendering rows without refetch)
 let _sessionsCache = [];
 
+// Map of agentId → boolean indicating whether that agent has running sessions.
+// Populated by _fetchAgentRunningStatuses() and used by _renderAgentRows() to
+// show a spinner next to agents that are currently thinking.
+let _agentRunningStatus = {};
+
 // Monotonic counter — on init we fire one fetch from populateUserSelect (no
 // agent filter yet) and another from populateAgentSelect (filtered once the
 // agent is resolved). Whichever resolves last would otherwise win, so we
 // tag each call and drop responses from stale calls.
 let _sessionFetchSeq = 0;
+
+/**
+ * Fetch running session statuses for all agents the user owns, building a
+ * map of agentId → hasRunning. Called after the agent list is populated so
+ * _renderAgentRows() can show a spinner next to agents with active runs.
+ */
+async function _fetchAgentRunningStatuses() {
+  const userId = app.currentUserId;
+  if (!userId) return;
+  try {
+    const token = localStorage.getItem('auth_token');
+    let url = `/api/v1/db/sessions?db=local.db&user_id=${encodeURIComponent(userId)}&limit=50`;
+    if (token) url += `&token=${encodeURIComponent(token)}`;
+    const res = await fetch(apiPath(url));
+    if (!res.ok) return;
+    const data = await res.json();
+    const map = {};
+    for (const s of (data.sessions || [])) {
+      if (s.run_status === 'running' && s.agent_id) {
+        map[s.agent_id] = true;
+      }
+    }
+    _agentRunningStatus = map;
+    // Re-render agent rows so the status sprites appear
+    _renderAgentRows();
+  } catch (e) {
+    // Silently fail — the spinner is a nice-to-have, not critical
+  }
+}
 
 function _truncate(s, n) {
   return (s && s.length > n) ? s.slice(0, n) + '…' : (s || '');
@@ -396,6 +587,14 @@ function _setTriggerLabel() {
   const title = (found && found.title) || 'New Session';
   labelEl.textContent = _truncate(title, 20);
   labelEl.title = (found && found.id) || sid || '';
+  // Click the label to re-enter rename mode
+  labelEl.addEventListener('click', (e) => {
+    e.stopPropagation();
+    _headerRenameSession();
+  });
+  // Mark the session dropdown as loaded (removes shimmer + re-enables trigger)
+  const sessionDropdown = document.getElementById('session-dropdown');
+  if (sessionDropdown) sessionDropdown.dataset.loaded = 'true';
   // Status icon in the trigger button
   const statusEl = document.getElementById('session-dropdown-status');
   if (statusEl) {
@@ -413,20 +612,51 @@ function _setTriggerLabel() {
       statusEl.title = '';
     }
   }
+  _updateHeaderSessionCounter();
+}
+
+function _formatRelativeTime(dateStr) {
+  if (!dateStr) return '';
+  const now = Date.now();
+  const d = new Date(dateStr.endsWith('Z') ? dateStr : dateStr + 'Z');
+  const diffMs = now - d.getTime();
+  if (diffMs < 0) return 'just now';
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 60) return 'just now';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hrs = Math.floor(min / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 4) return `${weeks}w ago`;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 function _renderSessionRows() {
   const menu = document.getElementById('session-dropdown-menu');
   if (!menu) return;
   menu.innerHTML = '';
-  if (!_sessionsCache.length) {
+
+  // Sort by last active (updated_at), newest first
+  // Pinned sessions float to the top in their existing pinned order
+  const sorted = [..._sessionsCache].sort((a, b) => {
+    if (a.pinned && !b.pinned) return -1;
+    if (!a.pinned && b.pinned) return 1;
+    const aTime = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+    const bTime = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+    return bTime - aTime;
+  });
+
+  if (!sorted.length) {
     const empty = document.createElement('div');
     empty.className = 'session-dropdown-empty';
     empty.textContent = 'No sessions yet';
     menu.appendChild(empty);
     return;
   }
-  for (const s of _sessionsCache) {
+  for (const s of sorted) {
     const row = document.createElement('div');
     row.className = 'session-row' + (s.pinned ? ' pinned' : '') + (s.id === app.currentSessionId ? ' selected' : '');
     row.dataset.id = s.id;
@@ -438,7 +668,7 @@ function _renderSessionRows() {
     } else if (s.has_unread) {
       statusHtml = `<span class="session-row-status session-status-unread" title="New response ready">${icon('check-circle', { size: '12px' })}</span>`;
     }
-    row.innerHTML = `
+row.innerHTML = `
       <span class="row-drag-handle" data-drag-handle title="Drag to reorder · hold to pin">${icon('grip-vertical', { size: '13px' })}</span>
       <span class="session-row-pin-icon">${icon('pin', { size: '12px' })}</span>
       ${statusHtml}
@@ -448,7 +678,7 @@ function _renderSessionRows() {
     menu.appendChild(row);
   }
   // Append "+ N more" row if there are unpinned sessions beyond what was returned
-  const unpinnedReturned = _sessionsCache.filter(s => !s.pinned).length;
+  const unpinnedReturned = sorted.filter(s => !s.pinned).length;
   const extra = _totalUnpinnedCount - unpinnedReturned;
   if (extra > 0) {
     const moreRow = document.createElement('div');
@@ -498,6 +728,7 @@ export async function populateSessionSelect(userId) {
       id: s.id,
       title: s.title || 'New Session',
       created_at: s.created_at,
+      updated_at: s.updated_at || s.created_at,
       pinned: !!s.pinned,
       run_status: s.run_status || null,
       has_unread: !!s.has_unread,
@@ -511,6 +742,7 @@ export async function populateSessionSelect(userId) {
         id: app.currentSessionId,
         title: 'New Session',
         created_at: null,
+        updated_at: null,
         pinned: false,
         run_status: null,
         has_unread: false,
@@ -519,9 +751,131 @@ export async function populateSessionSelect(userId) {
     _renderSessionRows();
     _setTriggerLabel();
     _setAgentTriggerLabel();  // refresh agent status icon based on session states
+    _fetchAgentRunningStatuses();  // refresh running-status sprites in agent dropdown
+    _updateHeaderSessionCounter();
   } catch (e) {
     console.warn('Failed to load sessions:', e);
   }
+}
+
+/**
+ * Update the header notification badge with counts of sessions needing attention.
+ * Shows a warning triangle + count for interrupted/errored sessions,
+ * and a running count for in-progress sessions.
+ */
+function _updateHeaderSessionCounter() {
+  const badge = document.getElementById('header-session-counter');
+  const countEl = document.getElementById('header-session-count');
+  if (!badge || !countEl) return;
+
+  const needingAttention = _sessionsCache.filter(
+    s => s.run_status === 'interrupted' || s.run_status === 'error'
+  ).length;
+  const running = _sessionsCache.filter(
+    s => s.run_status === 'running'
+  ).length;
+  const unread = _sessionsCache.filter(
+    s => s.has_unread && s.run_status !== 'running'
+  ).length;
+
+  if (needingAttention > 0) {
+    countEl.textContent = needingAttention;
+    badge.style.display = 'inline-flex';
+    badge.title = needingAttention === 1
+      ? '1 session needs attention'
+      : `${needingAttention} sessions need attention`;
+    // Reset to warning icon
+    const iconEl = badge.querySelector('[data-lucide]');
+    if (iconEl) iconEl.setAttribute('data-lucide', 'alert-triangle');
+    badge.className = 'header-notif-badge';
+  } else if (running > 0) {
+    countEl.textContent = running;
+    badge.style.display = 'inline-flex';
+    badge.title = running === 1
+      ? '1 session running'
+      : `${running} sessions running`;
+    const iconEl = badge.querySelector('[data-lucide]');
+    if (iconEl) iconEl.setAttribute('data-lucide', 'loader-2');
+    badge.className = 'header-notif-badge header-notif-running';
+  } else if (unread > 0) {
+    countEl.textContent = unread;
+    badge.style.display = 'inline-flex';
+    badge.title = unread === 1
+      ? '1 session with new response'
+      : `${unread} sessions with new responses`;
+    const iconEl = badge.querySelector('[data-lucide]');
+    if (iconEl) iconEl.setAttribute('data-lucide', 'check-circle');
+    badge.className = 'header-notif-badge header-notif-unread';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+/**
+ * After all bubbles are rendered, walk the message list and attach tool-call
+ * panels to assistant bubbles that have tool call data in their `output` field.
+ * Tool results are stored as separate `role="tool"` interactions with a
+ * `parent_id` linking back to the assistant interaction that made the call.
+ * Also attaches the full saved `input` (messages sent to LLM) and `output`
+ * (LLM response) to each bubble for inspection.
+ */
+function _attachToolCallsFromMessages(messages) {
+  if (!app.attachToolCallsToLastBubble) return;
+  // Collect tool results keyed by parent_id
+  const toolResultsByParent = {};
+  for (const msg of messages) {
+    if (msg.role === 'tool' && msg.parent_id) {
+      if (!toolResultsByParent[msg.parent_id]) toolResultsByParent[msg.parent_id] = [];
+      toolResultsByParent[msg.parent_id].push(msg);
+    }
+  }
+
+  // Walk assistant messages and attach tool calls
+  for (const msg of messages) {
+    if (msg.role !== 'assistant') continue;
+    if (!msg.output) continue;
+    let outputData;
+    try { outputData = JSON.parse(msg.output); } catch (_) { continue; }
+    const toolCalls = outputData.tool_calls;
+    if (!toolCalls || toolCalls.length === 0) continue;
+
+    // Reconstruct tool call entries matching the format chat-activity.js expects
+    const calls = toolCalls.map((tc, idx) => {
+      let args = {};
+      try { args = JSON.parse(tc.function.arguments); } catch (_) {}
+      const toolName = tc.function.name;
+      // Find matching tool result by tool_call_id
+      const results = toolResultsByParent[msg.id] || [];
+      const resultEntry = results.find(r => r.tool_name === toolName);
+      return {
+        tool: toolName,
+        args: args,
+        status: resultEntry ? 'done' : 'done',
+        result: resultEntry ? resultEntry.content : null,
+        durationMs: resultEntry ? _parseDuration(resultEntry.metadata) : null,
+        errorType: null,
+        turn: 0,
+        open: false,
+        // Full saved data for inspection
+        _savedInput: msg.input || null,
+        _savedOutput: msg.output || null,
+        _savedToolOutput: resultEntry ? resultEntry.output : null,
+        _savedToolMetadata: resultEntry ? resultEntry.metadata : null,
+      };
+    });
+
+    if (calls.length > 0) {
+      app.attachToolCallsToLastBubble(calls);
+    }
+  }
+}
+
+function _parseDuration(metadataStr) {
+  if (!metadataStr) return null;
+  try {
+    const meta = JSON.parse(metadataStr);
+    return meta.duration_ms != null ? meta.duration_ms : null;
+  } catch (_) { return null; }
 }
 
 /**
@@ -577,6 +931,11 @@ function _renderMessages(messages, sessionId, run, prepend) {
     app.lastSessionSeq[sessionId] = Math.max(app.lastSessionSeq[sessionId] || 0, floor);
   } else if (!run || !run.active) {
     if (!prepend) app.isProcessing = false;
+  }
+
+  // Attach tool-call panels from persisted data (only on initial load, not pagination)
+  if (!prepend) {
+    _attachToolCallsFromMessages(messages);
   }
 
   return count;
@@ -929,6 +1288,18 @@ function _createBubble(role, text, extraClass, imageUrl, turnId, msgId) {
   return bubble;
 }
 
+/**
+ * Show a debug bubble with agentId + sessionId for admin users.
+ * Only shown when the user is authenticated (not anonymous).
+ */
+function _showDebugBubble(sessionId) {
+  const token = localStorage.getItem('auth_token');
+  if (!token) return; // only for authenticated users
+  const agentId = app.currentAgentId || '—';
+  const text = `🔍 **Debug** — Agent: \`${agentId}\` · Session: \`${sessionId}\``;
+  app.addChatBubble('agent', text, 'debug-info');
+}
+
 export async function loadSessionChat(sessionId) {
   try {
     // Check cache first
@@ -945,6 +1316,9 @@ export async function loadSessionChat(sessionId) {
       // Remove any stale load-earlier button
       const oldBtn = document.getElementById(`load-earlier-${sessionId}`);
       if (oldBtn) oldBtn.remove();
+
+      // Debug bubble: show agentId + sessionId for admin users
+      _showDebugBubble(sessionId);
 
       for (const msg of cached.messages) {
         if (msg.role === 'user') {
@@ -972,6 +1346,9 @@ export async function loadSessionChat(sessionId) {
         }
       }
 
+      // Attach tool-call panels from cached data
+      _attachToolCallsFromMessages(cached.messages);
+
       if (cached.hasMore) {
         _prependLoadEarlierBtn(sessionId);
       }
@@ -983,7 +1360,18 @@ export async function loadSessionChat(sessionId) {
     }
 
     // Cache miss or stale — fetch from API
-    const data = await _fetchMessages(sessionId, 100);
+    let data = await _fetchMessages(sessionId, 100);
+
+    // A `restricted` response almost always means our access token expired, so
+    // the server's participant check can't see who we are and the session looks
+    // off-limits — which is what made switching sessions silently bounce us into
+    // a new empty one. If we hold a persistent credential, refresh the token and
+    // retry once before giving up. (The keep-fresh timer in auth-refresh.js
+    // normally prevents ever reaching this; this is the boundary safety net.)
+    if (data.restricted && getActive() && getActive().remember_token) {
+      await ensureFreshToken();
+      data = await _fetchMessages(sessionId, 100);
+    }
 
     // Clear DOM when switching to a new session
     if (sessionId !== app._lastLoadedSessionId) {
@@ -991,6 +1379,9 @@ export async function loadSessionChat(sessionId) {
       app.chatMessages.innerHTML = '';
     }
     app._lastLoadedSessionId = sessionId;
+
+    // Debug bubble: show agentId + sessionId for admin users
+    _showDebugBubble(sessionId);
 
     if (data.restricted) {
       // Not a participant — silently switch to a fresh session
@@ -1149,32 +1540,59 @@ export function initSessions() {
   });
 
   // ── User dropdown toggle ──
+  // The trigger lives inside #main-tabs, a horizontally-scrolling carousel
+  // whose overflow clips any absolutely-positioned descendant. The menu is
+  // therefore position:fixed (see app1.css) and anchored under the trigger by
+  // JS each time it opens, so it escapes the carousel's clip region.
   const userDropdown = document.getElementById('user-dropdown');
   const dropdownMenu = document.getElementById('user-dropdown-menu');
   const trigger = document.querySelector('.user-dropdown-trigger');
 
+  function positionUserMenu() {
+    if (!trigger || !dropdownMenu) return;
+    const r = trigger.getBoundingClientRect();
+    dropdownMenu.style.marginTop = '0';
+    dropdownMenu.style.top = Math.round(r.bottom + 6) + 'px';
+    // Clamp horizontally so the menu never spills past the viewport edges.
+    const w = dropdownMenu.offsetWidth || 280;
+    let left = r.left;
+    const maxLeft = window.innerWidth - w - 8;
+    if (left > maxLeft) left = maxLeft;
+    if (left < 8) left = 8;
+    dropdownMenu.style.left = Math.round(left) + 'px';
+  }
+
+  function openUserMenu() {
+    dropdownMenu.style.display = 'block';
+    userDropdown.classList.add('open');
+    positionUserMenu();
+  }
+
+  function closeUserMenu() {
+    dropdownMenu.style.display = 'none';
+    userDropdown.classList.remove('open');
+  }
+
   if (trigger && dropdownMenu) {
     trigger.addEventListener('click', (e) => {
       e.stopPropagation();
-      const isOpen = dropdownMenu.style.display === 'block';
-      dropdownMenu.style.display = isOpen ? 'none' : 'block';
-      userDropdown.classList.toggle('open', !isOpen);
+      if (dropdownMenu.style.display === 'block') closeUserMenu();
+      else openUserMenu();
     });
 
     // Close dropdown on outside click
     document.addEventListener('click', (e) => {
-      if (!userDropdown.contains(e.target)) {
-        dropdownMenu.style.display = 'none';
-        userDropdown.classList.remove('open');
-      }
+      if (!userDropdown.contains(e.target)) closeUserMenu();
     });
 
     // Close on Escape
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && dropdownMenu.style.display === 'block') {
-        dropdownMenu.style.display = 'none';
-        userDropdown.classList.remove('open');
-      }
+      if (e.key === 'Escape' && dropdownMenu.style.display === 'block') closeUserMenu();
+    });
+
+    // Re-anchor the fixed menu to the trigger if the viewport changes size.
+    window.addEventListener('resize', () => {
+      if (dropdownMenu.style.display === 'block') positionUserMenu();
     });
   }
 
@@ -1249,6 +1667,7 @@ export function initSessions() {
   const sessionTrigger = document.getElementById('session-dropdown-trigger');
   const menu = document.getElementById('session-dropdown-menu');
 
+  let _sessionsLoaded = false;
   function openMenu() {
     if (!menu) return;
     // Opening one header dropdown closes the other — treat the gesture as
@@ -1257,6 +1676,11 @@ export function initSessions() {
     menu.hidden = false;
     dropdown.classList.add('open');
     _resetAllDeleteButtons();
+    // Lazy-load sessions on first open instead of fetching eagerly on page load.
+    if (!_sessionsLoaded && app.currentUserId) {
+      _sessionsLoaded = true;
+      populateSessionSelect(app.currentUserId);
+    }
   }
 
   function closeMenu() {
@@ -1268,6 +1692,11 @@ export function initSessions() {
 
   async function switchToSession(sid) {
     if (!sid || sid === app.currentSessionId) { closeMenu(); return; }
+    // Record this session as the last active for the current agent
+    if (app.currentAgentId) {
+      _lastSessionPerAgent.set(app.currentAgentId, sid);
+      _saveLastSessionMap();
+    }
     // Leaving a session does NOT stop its run — it keeps going server-side and
     // we can view it again later from any device. Only tear down LOCAL UI state.
     abortChatStream();
@@ -1449,6 +1878,9 @@ export function initSessions() {
     input.value = current;
     input.style.width = '140px';
     labelEl.replaceWith(input);
+    // Override the trigger's pointer-events:none on direct children so clicks
+    // reach the input and the cursor can be placed at the click location.
+    input.style.pointerEvents = 'auto';
     input.focus();
     input.select();
     let done = false;
@@ -1542,15 +1974,11 @@ export function initSessions() {
     if (e.key === 'Escape' && menu && !menu.hidden) closeMenu();
   });
 
+  // New session button — creates a fresh session for the current agent
   const sessionNewBtn = document.getElementById('session-new');
   if (sessionNewBtn) {
-    // Use pointerdown — lucide replaces the inner SVG paths between mousedown
-    // and mouseup, which prevents the browser from synthesising a click event.
-    sessionNewBtn.addEventListener('pointerdown', (ev) => {
-      ev.preventDefault();
-      closeMenu();
-      // Starting a new session leaves the current one running in the background —
-      // do NOT interrupt it. Only reset local UI state.
+    sessionNewBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
       abortChatStream();
       app.currentSessionId = generateUUID();
       localStorage.setItem('terminalSessionId', app.currentSessionId);
@@ -1645,17 +2073,35 @@ export function initSessions() {
 
   function switchToAgent(aid) {
     if (!aid || aid === app.currentAgentId) { closeAgentMenu(); return; }
-    // Switching agent starts a fresh session but leaves the current session's
-    // run going in the background — do NOT interrupt it. Reset local UI only.
+    // Save the current session under the PREVIOUS agent before switching
+    const prevAgentId = app.currentAgentId;
+    if (prevAgentId && app.currentSessionId) {
+      _lastSessionPerAgent.set(prevAgentId, app.currentSessionId);
+      _saveLastSessionMap();
+    }
+    // Switching agent leaves the current session's run going in the
+    // background — do NOT interrupt it. Reset local UI only.
     abortChatStream();
     app.currentAgentId = aid;
     localStorage.setItem('selectedAgentId', aid);
-    // Sessions are bound to agents — start a fresh session
-    app.currentSessionId = generateUUID();
-    localStorage.setItem('terminalSessionId', app.currentSessionId);
-    _teardownVirtualScroll();
-    app.chatMessages.innerHTML = '';
-    app.addChatBubble('agent', 'Switched agent. New session started.');
+    // Look up the last session for this agent
+    const lastSid = _lastSessionPerAgent.get(aid);
+    if (lastSid) {
+      app.currentSessionId = lastSid;
+      localStorage.setItem('terminalSessionId', app.currentSessionId);
+      _teardownVirtualScroll();
+      app.chatMessages.innerHTML = '';
+      // loadSessionChat will render messages; if the session was deleted
+      // (restricted response) it auto-creates a fresh one.
+      loadSessionChat(lastSid);
+    } else {
+      // No prior session for this agent — start a fresh one
+      app.currentSessionId = generateUUID();
+      localStorage.setItem('terminalSessionId', app.currentSessionId);
+      _teardownVirtualScroll();
+      app.chatMessages.innerHTML = '';
+      app.addChatBubble('agent', 'Switched agent. New session started.');
+    }
     populateSessionSelect(app.currentUserId);
     loopSessionChanged();
     loopVisualSessionChanged();
@@ -1770,6 +2216,9 @@ export function initSessions() {
     input.value = current;
     input.style.width = '140px';
     labelEl.replaceWith(input);
+    // Override the trigger's pointer-events:none on direct children so clicks
+    // reach the input and the cursor can be placed at the click location.
+    input.style.pointerEvents = 'auto';
     input.focus();
     input.select();
     let done = false;
@@ -1884,20 +2333,52 @@ export function initSessions() {
         sel.value = 'agents';
         sel.dispatchEvent(new Event('change'));
       }
-      // Defer to let startAgents() bind the create modal button before clicking
+      // Defer to let the agents tab render, then expand the mock card
       setTimeout(() => {
-        const btn = document.getElementById('btn-new-agent');
-        if (btn) btn.click();
+        if (window.expandAgent) {
+          window.expandAgent('__new__');
+        }
       }, 50);
     });
   }
 
-  // populateUserSelect now drives populateAgentSelect, which in turn drives
-  // populateSessionSelect — see the comment in populateUserSelect for why we
-  // funnel through that chain instead of starting two fetches in parallel.
+  // Restore the last-session-per-agent map from localStorage
+  _loadLastSessionMap();
+
+  // populateUserSelect drives populateAgentSelect, which sets currentAgentId.
+  // Phase 1: agents (eagerly fetched in populateUserSelect).
+  // Phase 2: sessions (eagerly fetched right after agents resolve).
+  // Phase 3: messages (loaded after both are settled).
   populateUserSelect().then(function () {
+    if (app.currentUserId) {
+      _sessionsLoaded = true;
+      populateSessionSelect(app.currentUserId);
+    }
     if (app.currentSessionId) {
       loadSessionChat(app.currentSessionId);
     }
   });
+
+  // ── TUI bridge status poll ──
+  // Refresh the TUI bridge indicator every 15 seconds so it stays in sync.
+  setInterval(() => {
+    const tuiIndicator = document.getElementById('tui-bridge-indicator');
+    if (!tuiIndicator || tuiIndicator.style.display === 'none') return;
+    fetch('/api/v1/chat/tui-bridge/status')
+      .then(r => r.json())
+      .then(data => {
+        tuiIndicator.title = data.alive
+          ? 'TUI agent bridge active (port ' + data.port + ')'
+          : 'TUI agent bridge not connected — start the Server Manager (TUI)';
+        tuiIndicator.style.opacity = data.alive ? '1' : '0.4';
+      })
+      .catch(() => {});
+  }, 15000);
+
+  // ── Session counter poll ──
+  // Refresh the header notification badge every 10 seconds so it stays in sync
+  // with session status changes (runs completing, erroring, etc.).
+  setInterval(() => {
+    _updateHeaderSessionCounter();
+  }, 10000);
 }

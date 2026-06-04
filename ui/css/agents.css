@@ -39,11 +39,7 @@
   gap: 12px;
   scrollbar-width: thin;
   scrollbar-color: #2a2a4a transparent;
-  /* Soft fade at the top so cards melt into the page background as they
-     scroll up under the Agent Manager bar — no hard seam between the bar
-     and the first card. */
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 20px, #000 100%);
-          mask-image: linear-gradient(to bottom, transparent 0, #000 20px, #000 100%);
+  padding-bottom: 120px;
 }
 #agents-grid::-webkit-scrollbar { width: 5px; }
 #agents-grid::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
@@ -54,8 +50,8 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 6px 12px;
-  padding: 10px 20px 16px;
-  border-top: 1px solid var(--border-soft);
+  padding: 10px 20px 100px;
+  border-top: none;
 }
 #agents-system-toggle-label {
   display: inline-flex;
@@ -484,13 +480,24 @@ body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; co
 .agent-detail-body::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
 
 /* ── Agent Manager page-level chat bar ──
-   Sits between #agents-toolbar and #agents-grid, page-wide chat entry that
-   hands off to the built-in agent-builder system agent.
+   Sits at the bottom of the agents page (below the grid and system toggle),
+   page-wide chat entry that hands off to the built-in agent-builder system agent.
    CHAT-PILL-SYNC: pill geometry, focus state, attach/voice/send buttons,
    has-text swap, and light-mode colors all come from the shared .chat-pill*
    block in ui/css/app1.css. Only wrapper-specific rules belong here. */
 #agent-builder-bar {
-  margin: 0 20px;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  padding: 0;
+  pointer-events: none;
+}
+#agent-builder-bar > .chat-pill {
+  pointer-events: auto;
+  margin: 0 12px 12px;
+  width: calc(100% - 24px);
 }
 /* Two-line tall textarea for the page-level builder bar (taller than the
    web chat default). */
@@ -618,20 +625,16 @@ body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; co
 .agents-tool-badge.safe        { background: #1a2a1a; color: #9ece6a; border: 1px solid #2a4a2a; }
 
 /* ── Tool categories (collapsible accordions) ── */
-.agents-tool-category { margin-bottom: 8px; }
+.agents-tool-category { margin-bottom: 12px; }
 .agents-tool-category-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: 6px;
   cursor: pointer;
-  border-radius: 5px;
-  background: #1a1a2e;
-  border: 1px solid #2a2a4a;
   user-select: none;
-  transition: background 0.15s;
+  padding: 4px 2px;
 }
-.agents-tool-category-header:hover { background: #1f1f3a; }
+.agents-tool-category-header:hover { opacity: 0.8; }
 .agents-tool-category-chevron {
   font-size: 10px;
   color: #565f89;
@@ -652,9 +655,12 @@ body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; co
 .agents-tool-category-body {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  margin-top: 4px;
-  padding-left: 4px;
+  gap: 2px;
+  margin-top: 6px;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  background: #16162a;
+  padding: 6px;
 }
 .agents-tool-category-body.collapsed { display: none; }
 .agents-tool-always-on {
@@ -792,11 +798,12 @@ body.light-mode .agent-card-icon-wrap.color-blue    { background: #e4eefb; }
 body.light-mode .agent-card-icon-wrap.color-gray    { background: #f0ece8; }
 
 /* Tool category accordion */
-body.light-mode .agents-tool-category-header        { background: #fff2e6; border-color: #ffdec4; }
-body.light-mode .agents-tool-category-header:hover   { background: #ffeee0; }
+body.light-mode .agents-tool-category-header        { background: transparent; border-color: transparent; }
+body.light-mode .agents-tool-category-header:hover   { background: transparent; }
 body.light-mode .agents-tool-category-chevron        { color: #b09580; }
 body.light-mode .agents-tool-category-label          { color: #3d2c2e; }
 body.light-mode .agents-tool-category-count          { background: #ffeee0; color: #7a5a4a; }
+body.light-mode .agents-tool-category-body           { background: #fff7f0; border-color: #ffdec4; }
 body.light-mode .agents-tool-always-on               { background: #ffeee0; color: #7a5a4a; }
 
 /* Tool badges */

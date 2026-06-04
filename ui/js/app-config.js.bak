@@ -18,8 +18,7 @@
 
 import { apiPath } from './config.js';
 import { app } from './state.js';
-// ── PRESENTATION-MODE: `isPresentationMode` is the only new import; drop it to remove the demo gate.
-import { isAdmin, showRestrictedModal, isPresentationMode } from './left-login.js';
+import { isAdmin } from './left-login.js';
 import { icon } from './icons.js';
 import { loadSessionChat, populateSessionSelect } from './sessions.js';
 import { loopSessionChanged } from './loop.js';
@@ -66,7 +65,7 @@ let _intAdminWired = false;
 // ── Sidebar nav + scroll highlighting ────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────
 const _SECTION_KEY = 'appConfig_activeSection';
-	const _VALID_SECTIONS = ['app-settings', 'integrations', 'user-management', 'llm', 'database', 'optimizer', 'git', 'automation', 'events', 'monetization'];
+	const _VALID_SECTIONS = ['app-settings', 'agent-settings', 'user-management', 'llm', 'database', 'optimizer', 'git', 'automation', 'events', 'monetization'];
 let _activeSection = localStorage.getItem(_SECTION_KEY) || 'llm';
 
 function _showSection(section) {
@@ -78,6 +77,7 @@ function _showSection(section) {
   localStorage.setItem(_SECTION_KEY, section);
   _setNavActive(section);
   if (section === 'monetization') _renderPlatformBillingPanel();
+  if (section === 'app-settings' && typeof window.__refreshRemoteAccess === 'function') window.__refreshRemoteAccess();
 }
 
 function _renderPlatformBillingPanel() {
@@ -874,6 +874,197 @@ function _getSelectedScopes(provider) {
   return checked;
 }
 
+// ── Agent Tools — compact ability rows ─────────────────────────────────────
+//
+// Each ability is rendered as a single row (icon + name + desc + toggle).
+// Simple abilities (no config needed) toggle directly.
+// Complex abilities (need credentials/config) show a warning when toggled
+// and expand to reveal the config panel. The toggle only activates once
+// all required fields are filled.
+
+const _ABILITY_META = {
+  codebase_admin:   { icon: 'folder-cog',   color: '#bb9af7', simple: true,  desc: 'Lets the agent read, write, edit, delete files, and run shell commands on the host.' },
+  create_tools:     { icon: 'wrench',       color: '#7dcfff', simple: true,  desc: 'Lets the agent define new tools in the database.' },
+  web_access:       { icon: 'globe',        color: '#7aa2f7', simple: true,  desc: 'Lets the agent search the web, look up weather, and geocode addresses. No API keys needed.' },
+  browser_control:  { icon: 'mouse-pointer-2', color: '#9ece6a', simple: true, desc: 'Lets the agent drive a headless Chromium browser and make HTTP requests.' },
+  image_generation: { icon: 'image',        color: '#bb9af7', simple: false, desc: 'Lets the agent generate images from text prompts. Requires a provider + model config.' },
+  automation:       { icon: 'clock',        color: '#e0af68', simple: false, desc: 'Scheduled tasks and event-triggered jobs that can call integrations.' },
+  visualizer:       { icon: 'layout',       color: '#7aa2f7', simple: false, desc: 'Lets the agent create, edit, rename, and delete pages in the Pages workspace.' },
+};
+
+let _abilityStates = {}; // { [ability]: boolean }
+
+function _initAbilitiesCompact() {
+  const container = _qs('ac-abilities-compact');
+  if (!container) return;
+  container.innerHTML = '';
+
+  for (const [id, meta] of Object.entries(_ABILITY_META)) {
+    const row = document.createElement('div');
+    row.className = 'ac-ability-row';
+    row.id = `ac-ability-row-${id}`;
+    row.dataset.ability = id;
+
+    // Icon
+    const iconWrap = document.createElement('div');
+    iconWrap.className = 'ac-ability-icon';
+    iconWrap.style.color = meta.color;
+    iconWrap.innerHTML = `<i data-lucide="${meta.icon}" style="width:18px;height:18px;"></i>`;
+
+    // Label
+    const label = document.createElement('div');
+    label.className = 'ac-ability-label';
+    const nameMap = {
+      codebase_admin: 'Codebase Admin',
+      create_tools: 'Create Tools',
+      web_access: 'Web Access',
+      browser_control: 'Browser Control',
+      image_generation: 'Image Generation',
+      automation: 'Automation',
+      visualizer: 'Visualizer',
+    };
+    label.innerHTML = `<div class="ac-ability-name">${nameMap[id] || id}</div>
+      <div class="ac-ability-desc">${meta.desc}</div>`;
+
+    // Toggle
+    const toggleWrap = document.createElement('label');
+    toggleWrap.className = 'conn-toggle-wrap ac-ability-toggle-wrap';
+    toggleWrap.title = 'Enable';
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    toggle.className = 'conn-toggle ac-ability-toggle';
+    toggle.id = `ac-ability-toggle-${id}`;
+    toggle.dataset.ability = id;
+    const track = document.createElement('span');
+    track.className = 'conn-toggle-track';
+    toggleWrap.appendChild(toggle);
+    toggleWrap.appendChild(track);
+
+    // Status message
+    const statusEl = document.createElement('span');
+    statusEl.className = 'ac-status ac-ability-status';
+    statusEl.id = `ac-ability-status-${id}`;
+    statusEl.style.display = 'none';
+
+    row.appendChild(iconWrap);
+    row.appendChild(label);
+    row.appendChild(statusEl);
+    row.appendChild(toggleWrap);
+    container.appendChild(row);
+
+    // ── Toggle click handler ──
+    toggle.addEventListener('change', () => {
+      const enabled = toggle.checked;
+      if (meta.simple) {
+        // Simple ability — toggle directly
+        _toggleAbility(id, enabled, row);
+      } else {
+        // Complex ability — need config first
+        if (enabled && !_abilityStates[id]) {
+          // Not yet configured — show warning + expand
+          toggle.checked = false;
+          _showAbilityConfigWarning(id, row);
+          _expandAbilityConfig(id);
+        } else if (enabled && _abilityStates[id]) {
+          // Already configured — enable
+          _toggleAbility(id, true, row);
+        } else {
+          // Disabling
+          _toggleAbility(id, false, row);
+        }
+      }
+    });
+  }
+
+  // Wire up save/unconfigure buttons for complex ability config panels
+  const complexAbilities = ['image_generation', 'automation', 'visualizer'];
+  for (const a of complexAbilities) {
+    _qs(`ac-int-${a}-save`)?.addEventListener('click', () => _enableAbility(a));
+    _qs(`ac-int-${a}-unconfigure`)?.addEventListener('click', () => _disableAbility(a));
+  }
+
+  // Render Lucide icons
+  if (typeof lucide !== 'undefined' && lucide.createIcons) {
+    lucide.createIcons();
+  }
+}
+
+function _showAbilityConfigWarning(ability, row) {
+  const statusEl = _qs(`ac-ability-status-${ability}`);
+  if (!statusEl) return;
+  statusEl.textContent = '⚠ Configure details below first';
+  statusEl.style.color = '#e0af68';
+  statusEl.style.display = 'inline';
+  setTimeout(() => { statusEl.style.display = 'none'; }, 4000);
+}
+
+function _expandAbilityConfig(ability) {
+  // Find the existing card for this ability and expand it
+  const card = _qs(`ac-int-${ability}-card`);
+  if (card) {
+    card.style.display = 'block';
+    // Init collapsible if not already done
+    if (!card.dataset.collapsibleInited) {
+      _initCollapsible(ability);
+      card.dataset.collapsibleInited = '1';
+    }
+    _expandCard(ability);
+    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+}
+
+async function _toggleAbility(ability, enabled, row) {
+  const statusEl = _qs(`ac-ability-status-${ability}`);
+  if (statusEl) statusEl.style.display = 'none';
+  try {
+    if (enabled) {
+      const res = await _fetch(apiPath(`/admin/integrations/abilities/${ability}`), { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } else {
+      if (ability === 'automation') {
+        const ok = confirm(
+          'Disable Automation?\n\n'
+          + 'This will permanently delete every agent\'s scheduled tasks and event subscriptions. '
+          + 'This cannot be undone.'
+        );
+        if (!ok) {
+          // Revert toggle
+          const toggle = _qs(`ac-ability-toggle-${ability}`);
+          if (toggle) toggle.checked = true;
+          return;
+        }
+      }
+      const res = await _fetch(apiPath(`/admin/integrations/abilities/${ability}`), { method: 'DELETE' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    }
+    _abilityStates[ability] = enabled;
+    _applyAbilityRowStatus(ability, enabled);
+    if (statusEl) {
+      statusEl.textContent = enabled ? '✓ Enabled' : '✓ Disabled';
+      statusEl.style.color = '#9ece6a';
+      statusEl.style.display = 'inline';
+      setTimeout(() => { statusEl.style.display = 'none'; }, 2000);
+    }
+  } catch (e) {
+    // Revert toggle
+    const toggle = _qs(`ac-ability-toggle-${ability}`);
+    if (toggle) toggle.checked = !enabled;
+    if (statusEl) {
+      statusEl.textContent = `Error: ${e.message}`;
+      statusEl.style.color = '#f7768e';
+      statusEl.style.display = 'inline';
+    }
+  }
+}
+
+function _applyAbilityRowStatus(ability, enabled) {
+  _abilityStates[ability] = enabled;
+  const toggle = _qs(`ac-ability-toggle-${ability}`);
+  if (toggle) toggle.checked = !!enabled;
+  const row = _qs(`ac-ability-row-${ability}`);
+  if (row) row.classList.toggle('ac-ability-enabled', !!enabled);
+}
+
 function _initCollapsible(provider) {
   const card = document.getElementById(`ac-int-${provider}-card`);
   if (!card) return;
@@ -954,14 +1145,10 @@ function _initIntegrations() {
   const comingSoonChannels = ['whatsapp', 'slack', 'discord', 'email', 'twilio'];
 
   // Agent Tools (admin enable/disable; per-agent toggles in the Abilities tab)
-  const abilities = ['codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer'];
-  for (const a of abilities) {
-    _initCollapsible(a);
-    _qs(`ac-int-${a}-save`)?.addEventListener('click', () => _enableAbility(a));
-    _qs(`ac-int-${a}-unconfigure`)?.addEventListener('click', () => _disableAbility(a));
-  }
+  // Rendered as compact rows with toggle — see _renderAbilitiesCompact()
+  _initAbilitiesCompact();
 
-  _initIntegrationsSearch([...providers, ...genericProviders, ...channels, ...comingSoonChannels, ...abilities]);
+  _initIntegrationsSearch([...providers, ...genericProviders, ...channels, ...comingSoonChannels, 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer']);
   _initIntegrationAdminChat();
 }
 
@@ -1155,6 +1342,12 @@ function _initIntegrationsSearch(providers) {
     })
     .filter(Boolean);
 
+  // Also include compact ability rows in search
+  const compactContainer = _qs('ac-abilities-compact');
+  const compactRows = compactContainer
+    ? [...compactContainer.querySelectorAll('.ac-ability-row')]
+    : [];
+
   const apply = () => {
     const q = input.value.trim().toLowerCase();
     let visible = 0;
@@ -1162,6 +1355,26 @@ function _initIntegrationsSearch(providers) {
       const match = !q || haystack.includes(q);
       card.style.display = match ? '' : 'none';
       if (match) visible++;
+    }
+    // Filter compact rows
+    for (const row of compactRows) {
+      const name = row.querySelector('.ac-ability-name')?.textContent || '';
+      const desc = row.querySelector('.ac-ability-desc')?.textContent || '';
+      const haystack = (name + ' ' + desc).toLowerCase();
+      const match = !q || haystack.includes(q);
+      row.style.display = match ? '' : 'none';
+      if (match) visible++;
+    }
+    // Also filter config panels
+    const configPanels = _qs('ac-ability-config-panels');
+    if (configPanels) {
+      const panels = configPanels.querySelectorAll('.ac-card');
+      for (const panel of panels) {
+        const text = (panel.textContent || '').toLowerCase();
+        const match = !q || text.includes(q);
+        panel.style.display = match ? '' : 'none';
+        if (match) visible++;
+      }
     }
     if (emptyEl) emptyEl.style.display = (q && visible === 0) ? 'block' : 'none';
   };
@@ -1275,6 +1488,13 @@ async function _disableChannel(channel) {
 function _applyAbilityStatus(ability, enabled) {
   // Same DOM contract as channel cards (badge / configured / form).
   _applyChannelStatus(ability, enabled);
+  // Also update the compact row if it exists
+  _applyAbilityRowStatus(ability, enabled);
+  // Hide the config panel when disabled
+  if (!enabled) {
+    const card = _qs(`ac-int-${ability}-card`);
+    if (card) card.style.display = 'none';
+  }
 }
 
 async function _enableAbility(ability) {
@@ -2020,10 +2240,6 @@ async function _loadAppSettings() {
     const data = await res.json();
     const cb = _qs('ac-extend-llm-to-agents');
     if (cb) cb.checked = data.extend_llm_to_agents !== false;
-    // ── PRESENTATION-MODE START ── (delete to remove the demo toggle load)
-    const presCb = _qs('ac-presentation-mode');
-    if (presCb) presCb.checked = !!data.presentation_mode;
-    // ── PRESENTATION-MODE END ──
   } catch (e) {
     console.warn('app-config: could not load app settings', e);
   }
@@ -2032,18 +2248,12 @@ async function _loadAppSettings() {
 async function _saveAppSettings() {
   const cb = _qs('ac-extend-llm-to-agents');
   const statusEl = _qs('ac-app-settings-status');
-  // ── PRESENTATION-MODE START ── (delete these 2 lines to remove the demo toggle save)
-  const presCb = _qs('ac-presentation-mode');
-  const presentation = !!(presCb && presCb.checked);
-  // ── PRESENTATION-MODE END ──
   try {
     const res = await _fetch(apiPath('/admin/settings/app'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         extend_llm_to_agents: cb ? cb.checked : true,
-        // ── PRESENTATION-MODE: delete the next line to drop the demo toggle from save
-        presentation_mode: presentation,
       }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -2053,13 +2263,7 @@ async function _saveAppSettings() {
       statusEl.style.display = 'block';
       setTimeout(() => { statusEl.style.display = 'none'; }, 3000);
     }
-    // ── PRESENTATION-MODE START ── (delete to drop the broadcast; harmless otherwise)
-    try {
-      window.dispatchEvent(new CustomEvent('access-mode-changed', {
-        detail: { presentation_mode: presentation },
-      }));
-    } catch {}
-    // ── PRESENTATION-MODE END ──
+
   } catch (e) {
     if (statusEl) {
       statusEl.textContent = `Error: ${e.message}`;
@@ -2102,71 +2306,13 @@ async function _loadUserManagement() {
     console.warn('user-management: could not load access mode', e);
   }
 
-  // 2. Users list — only if admin
+  // 2. Users list
   if (isAdmin()) {
     await _loadUsersList();
-  } else {
-    // ── PRESENTATION-MODE START ── (delete this block to restore "admin only" empty state)
-    if (isPresentationMode()) {
-      await _renderSelfOnlyUsersList();
-      return;
-    }
-    // ── PRESENTATION-MODE END ──
-    const tbody = _qs('ac-um-users-tbody');
-    if (tbody) tbody.innerHTML = `<tr><td colspan="8" class="ac-table-empty">Admin access required to view users.</td></tr>`;
-    const sum = _qs('ac-um-users-summary');
-    if (sum) sum.textContent = 'Admin only';
   }
 }
 
-// ── PRESENTATION-MODE START ── (delete this function to remove demo self-row rendering)
-async function _renderSelfOnlyUsersList() {
-  const tbody = _qs('ac-um-users-tbody');
-  const summary = _qs('ac-um-users-summary');
-  if (!tbody) return;
-  const userId = localStorage.getItem('auth_user_id') || '';
-  const token = localStorage.getItem('auth_token') || '';
-  if (!userId || !token) {
-    tbody.innerHTML = `<tr><td colspan="8" class="ac-table-empty">Sign in to see your own row in this demo.</td></tr>`;
-    if (summary) summary.textContent = 'Other users are hidden in presentation mode';
-    return;
-  }
-  let profile = null;
-  try {
-    const res = await fetch(`/api/v1/user/profile?user_id=${encodeURIComponent(userId)}`, {
-      headers: { 'Authorization': `Bearer ${token}` },
-    });
-    if (res.ok) profile = await res.json();
-  } catch (_) {}
-  const username = localStorage.getItem('auth_username') || userId;
-  const displayName = localStorage.getItem('auth_display_name') || username;
-  const isUserAdmin = !!(profile && profile.is_admin);
-  const role = isUserAdmin
-    ? `<span class="ac-um-badge ac-um-badge-admin">admin</span>`
-    : `<span class="ac-um-badge ac-um-badge-member">member</span>`;
-  const status = `<span class="ac-um-badge ac-um-badge-approved">active</span>`;
-  tbody.innerHTML = `
-    <tr>
-      <td>
-        <div style="font-weight:600;color:var(--fg-1);">${_esc(displayName)}</div>
-        <div style="font-size:10px;color:var(--fg-muted);">${_esc(username)}</div>
-      </td>
-      <td style="text-align:center;">${role}</td>
-      <td style="text-align:center;">${status}</td>
-      <td style="text-align:right;">—</td>
-      <td style="text-align:right;">—</td>
-      <td style="font-size:10px;color:var(--fg-muted);">—</td>
-      <td style="font-size:10px;color:var(--fg-muted);">—</td>
-      <td style="text-align:center;color:var(--fg-muted);font-size:11px;">read-only</td>
-    </tr>
-    <tr>
-      <td colspan="8" style="text-align:center;color:var(--fg-muted);font-size:11px;padding:10px;font-style:italic;background:rgba(125,207,255,0.05);">
-        Other user details are hidden in presentation mode.
-      </td>
-    </tr>`;
-  if (summary) summary.textContent = 'Showing your own row only (presentation mode)';
-}
-// ── PRESENTATION-MODE END ──
+
 
 async function _saveUserManagement() {
   if (!isAdmin()) { showRestrictedModal(); return; }
@@ -2457,6 +2603,21 @@ async function _loadAutomation() {
   await _loadAutomationConfig();
   _renderSchedFields();
   await _loadAutomationStatus();
+  _loadAutomationCount();
+}
+
+async function _loadAutomationCount() {
+  const badge = _qs('ac-automation-count-badge');
+  if (!badge) return;
+  try {
+    const r = await _fetch(apiPath('/admin/automations/count'));
+    if (r.ok) {
+      const d = await r.json();
+      badge.textContent = d.count ?? 0;
+    }
+  } catch (_) {
+    // leave badge as-is
+  }
 }
 
 async function _loadAutomationProviders() {

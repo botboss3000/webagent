@@ -1421,11 +1421,36 @@ async def tui_bridge_register(request: TuiBridgeRegisterRequest, fastapi_request
     Called by the TUI app when it starts its bridge server. The web app uses
     this to forward messages to the TUI agent when the user chats with the
     "Web Agent TUI" agent.
+    
+    Side effect: ensures the admin user has a materialized "web-agent-tui"
+    agents row so it appears in the frontend agent dropdown as a selectable
+    agent.
     """
     from app.auth.identity import assert_caller_is
     user_id = await assert_caller_is(fastapi_request, request.user_id)
     from app.tui_bridge import register_bridge
     register_bridge(user_id, request.port)
+
+    # Ensure the admin has a materialized web-agent-tui agent
+    try:
+        db = get_db()
+        agent = await db.get_or_resolve_session_agent(
+            session_id=f"tui-init-{request.port}",
+            user_id=user_id,
+            template_id="web-agent-tui",
+        )
+        # Clean up the init session — it was just a vehicle for materialization
+        try:
+            conn = db._get_conn()
+            conn.execute("DELETE FROM sessions WHERE id = ?", (f"tui-init-{request.port}",))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+        logger.info("TUI bridge agent ready for user %s (agent_id=%s)", user_id[:12], agent.get("id", "?")[:12] if agent else "?")
+    except Exception as e:
+        logger.warning("Could not materialize web-agent-tui agent: %s", e)
+
     return {"status": "ok", "port": request.port}
 
 
@@ -1471,12 +1496,17 @@ async def chat_send(request: ChatRequest, fastapi_request: Request):
     # ── TUI bridge path: forward to the TUI agent instead of running the
     # normal agent loop. The TUI processes the message and streams the reply
     # back. This is synchronous (the TUI bridge returns the full reply).
+    # The web app does NOT apply its guardrails (tool gates, turn limits,
+    # billing enforcement, memory save, context loading) — the TUI handles
+    # all of that internally. Only execution_mode is passed through so the
+    # frontend's read/write/auto toggle still works.
     if prep.get("is_tui_bridge"):
         from app.tui_bridge import forward_to_bridge, is_bridge_alive
 
         if is_bridge_alive(request.user_id):
             reply = await forward_to_bridge(
                 request.user_id, request.session_id, request.message or "",
+                execution_mode=getattr(request, 'execution_mode', 'write') or 'write',
             )
             if reply is not None:
                 # Persist the assistant reply
@@ -1563,6 +1593,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             if is_bridge_alive(request.user_id):
                 reply = await forward_to_bridge(
                     request.user_id, request.session_id, request.message or "",
+                    execution_mode=getattr(request, 'execution_mode', 'write') or 'write',
                 )
                 if reply is not None:
                     # Persist the assistant reply

@@ -66,8 +66,14 @@ async def forward_to_bridge(
     user_id: str,
     session_id: str,
     message: str,
+    execution_mode: str = "write",
 ) -> Optional[str]:
     """Forward a message to the TUI bridge and return the reply.
+    
+    ``execution_mode`` is passed through so the TUI can apply the
+    frontend's read/write/auto selection. The web app's own guardrails
+    (destructive tool gates, turn limits, etc.) are NOT applied — the
+    TUI handles its own guardrails internally.
     
     Returns None if the bridge is not available.
     """
@@ -83,6 +89,7 @@ async def forward_to_bridge(
                     "session_id": session_id,
                     "message": message,
                     "user_id": user_id,
+                    "execution_mode": execution_mode,
                 },
             )
             if r.status_code == 200:
