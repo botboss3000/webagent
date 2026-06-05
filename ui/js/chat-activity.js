@@ -33,6 +33,9 @@ let tokensOutEl = null;  // #chat-tokens-out
 let tokenSpinnerEl = null; // #chat-token-spinner
 let cumulativeIn = 0;
 let cumulativeOut = 0;
+let _streamCharCount = 0;     // chars streamed in current ongoing LLM call
+let _pendingOutEstimate = 0;  // estimated output tokens for current streaming call
+let _thinkingRamp = null;     // interval handle for the pre-stream thinking ramp
 
 let active = false;     // a turn is in progress
 let resting = false;    // turn ended but tool calls remain to inspect
@@ -82,22 +85,119 @@ function _animateText() {
   } catch (_) { /* Web Animations API unavailable — non-fatal */ }
 }
 
+/** Start a gentle ramp that makes the output counter tick up while the agent
+ *  is thinking (no stream content yet). Increments by ~2-4 tokens every ~800ms
+ *  so the user sees movement right away.
+ */
+function _startThinkingRamp() {
+  _stopThinkingRamp();
+  // If we already have real stream data or real tokens, don't fake it
+  if (_streamCharCount > 0 || cumulativeOut > 0) return;
+  _setSpinnerDir('out');
+  _thinkingRamp = setInterval(() => {
+    // Ramp grows slightly faster over time
+    const bump = Math.min(8, 2 + Math.floor(_pendingOutEstimate / 50));
+    _pendingOutEstimate += bump;
+    _updateOutDisplay();
+  }, 800);
+}
+
+function _stopThinkingRamp() {
+  if (_thinkingRamp) {
+    clearInterval(_thinkingRamp);
+    _thinkingRamp = null;
+  }
+}
+
+function _displayedOut() {
+  // What the user sees for output tokens = cumulative real + streaming estimate
+  return cumulativeOut + _pendingOutEstimate;
+}
+
+function _animateCountUp(el, target, durationMs = 300) {
+  if (!el) return;
+  const from = parseInt(el.textContent.replace(/,/g, ''), 10) || 0;
+  if (from === target) return;
+  const diff = target - from;
+  const start = performance.now();
+
+  function step(now) {
+    const elapsed = now - start;
+    const progress = Math.min(elapsed / durationMs, 1);
+    // ease-out quadratic
+    const eased = 1 - (1 - progress) * (1 - progress);
+    const current = Math.round(from + diff * eased);
+    el.textContent = current;
+    if (progress < 1) {
+      requestAnimationFrame(step);
+    } else {
+      el.textContent = target; // ensure exact final value
+    }
+  }
+
+  requestAnimationFrame(step);
+}
+
+function _setSpinnerDir(dir) {
+  if (!tokenSpinnerEl) return;
+  tokenSpinnerEl.classList.remove('spinning-out', 'spinning-in');
+  if (dir === 'out') tokenSpinnerEl.classList.add('spinning-out');
+  else if (dir === 'in') tokenSpinnerEl.classList.add('spinning-in');
+}
+
 function _updateTokenBar() {
-  if (tokensInEl) tokensInEl.textContent = cumulativeIn;
-  if (tokensOutEl) tokensOutEl.textContent = cumulativeOut;
   if (tokenBarEl) tokenBarEl.classList.toggle('active', active || cumulativeIn > 0 || cumulativeOut > 0);
-  if (tokenSpinnerEl) tokenSpinnerEl.classList.toggle('spinning', active);
+}
+
+function _updateOutDisplay() {
+  _animateCountUp(tokensOutEl, _displayedOut());
+}
+
+/** Called on each stream chunk to update the live token estimate */
+function _onStreamContent(content) {
+  if (!content) return;
+  // First stream content — stop the thinking ramp, switch to real estimates
+  if (_streamCharCount === 0) {
+    _stopThinkingRamp();
+    _setSpinnerDir('out');
+  }
+  _streamCharCount += content.length;
+  const newEstimate = Math.round(_streamCharCount / 4);
+  if (newEstimate !== _pendingOutEstimate) {
+    _pendingOutEstimate = newEstimate;
+    _updateOutDisplay();
+  }
 }
 
 function addTokens(inputTokens, outputTokens) {
-  if (typeof inputTokens === 'number') cumulativeIn += inputTokens;
-  if (typeof outputTokens === 'number') cumulativeOut += outputTokens;
+  // Real tokens arrived — stop the thinking ramp
+  _stopThinkingRamp();
+  if (typeof inputTokens === 'number' && inputTokens > 0) {
+    cumulativeIn += inputTokens;
+    _setSpinnerDir('in');
+    _animateCountUp(tokensInEl, cumulativeIn);
+  }
+  // Real output tokens arrived — always clear the streaming estimate
+  if (typeof outputTokens === 'number') {
+    _pendingOutEstimate = 0;
+    _streamCharCount = 0;
+    if (outputTokens > 0) {
+      cumulativeOut += outputTokens;
+      _setSpinnerDir('out');
+      _animateCountUp(tokensOutEl, cumulativeOut);
+    }
+  }
   _updateTokenBar();
 }
 
 function resetTokens() {
   cumulativeIn = 0;
   cumulativeOut = 0;
+  _pendingOutEstimate = 0;
+  _streamCharCount = 0;
+  _setSpinnerDir(null);
+  if (tokensInEl) tokensInEl.textContent = '0';
+  if (tokensOutEl) tokensOutEl.textContent = '0';
   _updateTokenBar();
 }
 
@@ -137,6 +237,7 @@ function _activate() {
   resting = false;
   if (rootEl) { rootEl.classList.remove('resting'); rootEl.classList.add('visible'); }
   if (pillEl) pillEl.classList.add('thinking');
+  _startThinkingRamp();
   _updateTokenBar();
 }
 
@@ -151,9 +252,11 @@ function start(initialNote) {
 function stop() {
   _disarmWatchdog();
   _clearEndTimer();
+  _stopThinkingRamp();
   if (!active && !resting) return;
   active = false;
   if (pillEl) pillEl.classList.remove('thinking');
+  _setSpinnerDir(null);
 
   // Attach any remaining tool calls from the last turn (if not already
   // attached by a turn_start boundary). Each turn's calls are attached
@@ -185,6 +288,7 @@ function _endSoon() {
 // previous session must not linger on the shared pill.
 export function chatActivitySessionChanged() {
   _disarmWatchdog();
+  _stopThinkingRamp();
   _clearTextTimer();
   _clearEndTimer();
   active = false;
@@ -576,6 +680,11 @@ function handleEvent(event) {
     _ensureActive(_turnPrefix() + (event.error ? 'Error ' : 'Done ') + (event.tool || 'tool'));
     resolveToolResult(event.tool, event.result, event.duration_ms, !!event.error, event.error_type);
     return;
+  }
+
+  // Live estimate: while the LLM streams content, count output tokens in real-time
+  if (type === 'stream' && typeof event.content === 'string') {
+    _onStreamContent(event.content);
   }
 
   // Capture token usage from pipeline llm_call_end events

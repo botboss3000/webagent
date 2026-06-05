@@ -315,6 +315,250 @@ function _loadLastSessionSeq() {
 }
 _loadLastSessionSeq();
 
+// ── Outgoing message queue (outbox) ─────────────────────────────────
+// Holds messages the user has sent but that haven't been confirmed by the
+// server yet (network error / server reloading). Survives page refresh.
+// Key invariant: NEVER render a bubble from the retry path — the WebSocket
+// replay (+ dedup) is the only source of truth for what appears in chat.
+// The outbox only adds pending-style bubbles when the user is sitting on
+// the page during a failure, and removes them on retry success.
+const _OUTBOX_LS_KEY = 'webagent.pendingMessages.v1';
+let _outboxIdCounter = 0;
+
+function _readOutbox() {
+  try {
+    const raw = localStorage.getItem(_OUTBOX_LS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (_) { return []; }
+}
+
+function _writeOutbox(queue) {
+  try {
+    if (!queue || queue.length === 0) {
+      localStorage.removeItem(_OUTBOX_LS_KEY);
+    } else {
+      localStorage.setItem(_OUTBOX_LS_KEY, JSON.stringify(queue));
+    }
+  } catch (_) { /* quota / private mode — non-fatal */ }
+}
+
+function _addToOutbox(entry) {
+  const q = _readOutbox();
+  q.push(entry);
+  _writeOutbox(q);
+  _startOutboxPoll();
+}
+
+function _removeFromOutbox(id) {
+  const q = _readOutbox().filter(e => e.id !== id);
+  _writeOutbox(q);
+  if (q.length === 0) _stopOutboxPoll();
+}
+
+function _outboxHasPending() {
+  const q = _readOutbox();
+  return q.length > 0;
+}
+
+// Silently retry a single pending message against the server.
+// NEVER renders bubbles on its own — converts existing pending DOM bubbles
+// back to normal on success, or removes them if WS already caught up.
+// Returns true if the server accepted it (entry removed from outbox).
+async function _retryEntry(entry) {
+  try {
+    // Dedup: if a normal (non-pending) user bubble with this text already
+    // exists in the DOM, the WS replay already caught it — just clean up
+    // the outbox entry and remove any stale pending bubble.
+    const allUserBodies = document.querySelectorAll('.chat-bubble.user:not(.pending) .bubble-body');
+    let alreadyDelivered = false;
+    for (const b of allUserBodies) {
+      if (b.textContent.trim() === entry.text) {
+        alreadyDelivered = true;
+        break;
+      }
+    }
+    if (alreadyDelivered) {
+      _removeFromOutbox(entry.id);
+      document.querySelectorAll(`.chat-bubble.user.pending[data-pending-id="${CSS.escape(entry.id)}"]`)
+        .forEach(el => el.remove());
+      return true;
+    }
+
+    const payload = {
+      message: entry.text,
+      session_id: entry.session_id || app.currentSessionId,
+      user_id: entry.user_id || app.currentUserId,
+      execution_mode: app.executionMode || 'write',
+    };
+    if (entry.agent_id || app.currentAgentId) {
+      payload.agent_id = entry.agent_id || app.currentAgentId;
+    }
+    const resp = await fetch(apiPath('/api/v1/chat/send'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(payload),
+    });
+    if (resp.ok) {
+      _removeFromOutbox(entry.id);
+      const data = await resp.json().catch(() => ({}));
+      // Convert any pending DOM bubble back to a normal user bubble
+      document.querySelectorAll(`.chat-bubble.user.pending[data-pending-id="${CSS.escape(entry.id)}"]`)
+        .forEach(el => {
+          el.className = 'chat-bubble user';
+          el.removeAttribute('data-pending-id');
+          const label = el.querySelector('.label');
+          if (label) label.textContent = 'You';
+          el.querySelectorAll('.bubble-actions').forEach(a => a.remove());
+          if (data && data.turn_id) {
+            el.setAttribute('data-msg-id', data.turn_id);
+            _addBubbleActions(el);
+          }
+        });
+      if (typeof app.populateSessionSelect === 'function') {
+        app.populateSessionSelect(app.currentUserId);
+      }
+      return true;
+    }
+  } catch (_) { /* server still down */ }
+  return false;
+}
+
+// Retry ALL pending messages silently. Returns count of successes.
+async function _flushOutbox() {
+  const queue = _readOutbox();
+  if (queue.length === 0) return 0;
+  if (!app.currentUserId) return 0;
+  let ok = 0;
+  for (const entry of queue) {
+    if (await _retryEntry(entry)) ok++;
+  }
+  return ok;
+}
+
+// Render a single pending bubble — only called from sendMessage's catch
+// (i.e. the user is on the page right now and the send just failed).
+function _renderPendingBubble(entry) {
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble user pending';
+  bubble.setAttribute('data-pending-id', entry.id);
+  const label = document.createElement('span');
+  label.className = 'label';
+  label.textContent = 'You (pending)';
+  bubble.appendChild(label);
+  const body = document.createElement('div');
+  body.className = 'bubble-body';
+  body.textContent = entry.text;
+  bubble.appendChild(body);
+  _appendPendingActions(bubble, entry);
+  if (window.lucide && typeof window.lucide.createIcons === 'function') {
+    try { window.lucide.createIcons({ nodes: Array.from(bubble.querySelectorAll('[data-lucide]:not(.lucide)')) }); } catch (_) {}
+  }
+  if (app.chatMessages) {
+    app.chatMessages.appendChild(bubble);
+    _scrollToBottomIfNear(app.chatMessages);
+  }
+  return bubble;
+}
+
+// Convert an existing normal user bubble INTO a pending bubble in-place.
+// This avoids the "two bubbles" problem (one normal + one pending).
+function _convertBubbleToPending(bubble, entry) {
+  // Label: change "You" to "You (pending)"
+  let label = bubble.querySelector('.label');
+  if (!label) {
+    label = document.createElement('span');
+    label.className = 'label';
+    bubble.insertBefore(label, bubble.firstChild);
+  }
+  label.textContent = 'You (pending)';
+  // Class
+  bubble.className = 'chat-bubble user pending';
+  bubble.setAttribute('data-pending-id', entry.id);
+  // Remove any existing actions so we re-append fresh ones
+  bubble.querySelectorAll('.bubble-actions').forEach(el => el.remove());
+  // Remove any existing data-msg-id so WS dedup won't skip it but the
+  // outbox retry path won't create a duplicate.
+  bubble.removeAttribute('data-msg-id');
+  bubble.removeAttribute('data-turn-id');
+  _appendPendingActions(bubble, entry);
+  if (window.lucide && typeof window.lucide.createIcons === 'function') {
+    try { window.lucide.createIcons({ nodes: Array.from(bubble.querySelectorAll('[data-lucide]:not(.lucide)')) }); } catch (_) {}
+  }
+}
+
+// Shared: appends retry + dismiss buttons to a pending bubble
+function _appendPendingActions(bubble, entry) {
+  const actions = document.createElement('div');
+  actions.className = 'bubble-actions pending-actions';
+  // Retry button
+  const retryBtn = document.createElement('button');
+  retryBtn.type = 'button';
+  retryBtn.className = 'bubble-action-btn pending-retry';
+  retryBtn.innerHTML = '<i data-lucide="refresh-cw" style="width:14px;height:14px;"></i>';
+  retryBtn.title = 'Retry sending';
+  retryBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    retryBtn.disabled = true;
+    retryBtn.innerHTML = '<span style="font-size:12px;">↻</span>';
+    const ok = await _retryEntry(entry);
+    if (!ok) {
+      retryBtn.disabled = false;
+      retryBtn.innerHTML = '<i data-lucide="refresh-cw" style="width:14px;height:14px;"></i>';
+      if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        try { window.lucide.createIcons({ nodes: [retryBtn.querySelector('[data-lucide]')] }); } catch (_) {}
+      }
+    }
+  });
+  actions.appendChild(retryBtn);
+  // Dismiss button
+  const dismissBtn = document.createElement('button');
+  dismissBtn.type = 'button';
+  dismissBtn.className = 'bubble-action-btn pending-dismiss';
+  dismissBtn.innerHTML = '<i data-lucide="x" style="width:14px;height:14px;"></i>';
+  dismissBtn.title = 'Dismiss (remove from queue)';
+  dismissBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    _removeFromOutbox(entry.id);
+    bubble.remove();
+  });
+  actions.appendChild(dismissBtn);
+  bubble.appendChild(actions);
+}
+
+// Periodic auto-retry — polls every 5s while the queue is non-empty.
+let _outboxPollTimer = null;
+function _startOutboxPoll() {
+  if (_outboxPollTimer) return;
+  _outboxPollTimer = setInterval(async () => {
+    const n = await _flushOutbox();
+    if (n > 0) {
+      // Re-render remaining pending bubbles if any are still stuck
+      const remaining = _readOutbox();
+      if (remaining.length === 0) {
+        document.querySelectorAll('.chat-bubble.user.pending').forEach(el => el.remove());
+      } else {
+        _renderPendingBubbles();
+      }
+    }
+  }, 5000);
+}
+function _stopOutboxPoll() {
+  if (_outboxPollTimer) {
+    clearInterval(_outboxPollTimer);
+    _outboxPollTimer = null;
+  }
+}
+
+// Re-render any pending outbox entries as bubbles (used on init when the
+// server is still down and the flush couldn't deliver them).
+function _renderPendingBubbles() {
+  document.querySelectorAll('.chat-bubble.user.pending').forEach(el => el.remove());
+  const queue = _readOutbox();
+  for (const entry of queue) {
+    _renderPendingBubble(entry);
+  }
+}
+
 // ── chat draft persistence ──
 // Keep whatever the user has typed (but not yet sent) in the chat pill so a
 // page refresh doesn't lose it. Stored as plain text in localStorage; this
@@ -751,6 +995,17 @@ async function sendMessage() {
     if (!app.currentAgentId) return;
   }
 
+  // ── Save to outbox BEFORE clearing the input ──────────────────────
+  const outboxEntry = {
+    id: 'msg_' + Date.now() + '_' + (++_outboxIdCounter),
+    text: text,
+    session_id: app.currentSessionId,
+    user_id: app.currentUserId,
+    agent_id: app.currentAgentId,
+    timestamp: new Date().toISOString(),
+  };
+  _addToOutbox(outboxEntry);
+
   app.chatInput.value = '';
   app.chatSend.disabled = true;
   _updateInputRowState();
@@ -794,7 +1049,9 @@ async function sendMessage() {
     });
 
     if (!resp.ok) {
-      addChatBubble('agent', 'Server error: ' + resp.status, 'error');
+      // Server responded with an error — keep in outbox for retry.
+      // Convert the normal user bubble to a pending bubble (no duplicates).
+      if (_userBubble) _convertBubbleToPending(_userBubble, outboxEntry);
       app.isProcessing = false;
       app.chatSend.disabled = false;
       if (app.chatActivityStop) app.chatActivityStop();
@@ -805,6 +1062,7 @@ async function sendMessage() {
 
     // Slash command handled synchronously — render its reply directly.
     if (data.status === 'ok' && data.reply) {
+      _removeFromOutbox(outboxEntry.id);
       addChatBubble('agent', data.reply);
       app.isProcessing = false;
       app.chatSend.disabled = false;
@@ -817,6 +1075,7 @@ async function sendMessage() {
 
     // status is 'running' (fresh) or 'replacing' (interrupted a prior run to
     // start this one). Either way the run is going server-side.
+    _removeFromOutbox(outboxEntry.id);
 
     // Tag our local user bubble with its interaction id so the user_message
     // broadcast we just triggered dedups against it (other devices, which have
@@ -836,7 +1095,9 @@ async function sendMessage() {
     // reconnect-replay catch up from the DB.
   } catch (e) {
     console.warn('[chat/send] failed', e);
-    addChatBubble('agent', 'Request failed: ' + ((e && e.message) || e), 'error');
+    // Network error (server down, reloading) — keep in outbox for retry.
+    // Convert the normal user bubble to a pending bubble (no duplicates).
+    if (_userBubble) _convertBubbleToPending(_userBubble, outboxEntry);
     app.isProcessing = false;
     app.chatSend.disabled = false;
     if (app.chatActivityStop) app.chatActivityStop();
@@ -1138,6 +1399,8 @@ export function initChat() {
   app.markAgentInterrupted = markAgentInterrupted;
   app.attachToolCallsToLastBubble = attachToolCallsToLastBubble;
   app.autoResizeChatInput = () => _autoResizePill(app.chatInput);
+  // Helper: focus the chat input. Used when switching/starting sessions.
+  app.focusChatInput = () => { if (app.chatInput) app.chatInput.focus(); };
   // Expose for virtual-scroll recycling in sessions.js
   app._linkifyText = linkifyText;
   app._renderMarkdownBody = _renderMarkdownBody;
@@ -1217,7 +1480,17 @@ export function initChat() {
 
   // Apply gating immediately with cached value, then re-apply once mode is loaded
   applyChatGate();
-  fetchAccessMode().then(() => { applyChatGate(); _restoreDraft(); });
+  fetchAccessMode().then(() => {
+    applyChatGate();
+    _restoreDraft();
+    // Pending messages from a previous browsing session (before a refresh)
+    // show up as pending bubbles but are NOT force-flushed. The periodic
+    // poll + _retryEntry's dedup logic will handle them automatically.
+    if (_outboxHasPending()) {
+      _renderPendingBubbles();
+      _startOutboxPoll();
+    }
+  });
 
   // Restore any unsent draft from a previous page load so a refresh keeps it.
   // Runs again above once the access mode resolves, in case this first attempt
@@ -1264,6 +1537,20 @@ export function initChat() {
     _scrollLocked = true;
     _scrollBtn.classList.remove('visible');
   }
+
+  // ── Mobile focus-on-first-tap ────────────────────────────────────
+  // Mobile browsers (Chrome, Firefox, Safari) block programmatic .focus()
+  // unless it runs inside a user-gesture handler.  We capture the FIRST
+  // touch/click on the page and re-focus the chat input so the cursor and
+  // keyboard appear without requiring a second tap.
+  let _focused = false;
+  const _firstTap = () => {
+    if (_focused) return;
+    _focused = true;
+    if (app.chatInput) app.chatInput.focus();
+  };
+  document.addEventListener('touchstart', _firstTap, { once: true, passive: true });
+  document.addEventListener('click', _firstTap, { once: true, passive: true });
 }
 
 export { escapeHtml };

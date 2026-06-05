@@ -351,15 +351,19 @@ export async function initAgents() {
   _restoreViewState();
 }
 
-// Wire the "Show system agents" checkbox below the grid. Toggling it re-fetches
-// the agent list with/without the built-in utility agents and re-renders.
+// Wire the eye-icon toggle in the footer row below the builder pill.
+// Clicking it toggles system-level agent visibility, re-fetches, and renders.
 function _bindSystemToggle() {
-  const cb = document.getElementById('agents-show-system');
-  if (!cb || cb._bound) return;
-  cb._bound = true;
-  cb.checked = _showSystem;
-  cb.addEventListener('change', async () => {
-    _showSystem = cb.checked;
+  const btn = document.querySelector('.agent-builder-eye-btn');
+  if (!btn || btn._bound) return;
+  btn._bound = true;
+  btn.classList.toggle('active', _showSystem);
+  btn.addEventListener('click', async () => {
+    _showSystem = !_showSystem;
+    btn.classList.toggle('active', _showSystem);
+    // Replace the icon element outright — inject a fresh <i> placeholder,
+    // and the central MutationObserver in icons.js converts it automatically.
+    btn.innerHTML = `<i data-lucide="${_showSystem ? 'eye' : 'eye-off'}" style="width:16px;height:16px;"></i>`;
     _renderSkeleton();
     await _loadAgents();
     _renderList();
@@ -384,12 +388,9 @@ function _renderSkeleton(count = 6) {
         </div>
       </div>`;
   }
-  // Preserve the show-system toggle node (with its bound listener) across the
-  // innerHTML reset — it lives inside the scroller, not as a flow sibling.
-  const toggleRow = document.getElementById('agents-system-toggle-row');
+  // No toggle-row to preserve — the eye button lives in the builder pill.
   grid.classList.remove('carousel');
   grid.innerHTML = `<div class="agents-squares">${html}</div>`;
-  if (toggleRow) grid.querySelector('.agents-squares').appendChild(toggleRow);
 }
 
 // Re-sync this page after the chat-header dropdown changes agent order or pins.
@@ -531,11 +532,6 @@ function _renderList() {
   const grid = document.getElementById('agents-grid');
   if (!grid) return;
 
-  // Preserve the show-system toggle node (with its bound listener) across the
-  // innerHTML reset — it's re-mounted inside the scroller below, not left as a
-  // flow sibling, so the grid fills the panel's full height.
-  const toggleRow = document.getElementById('agents-system-toggle-row');
-
   const activeId = _activeId();
   grid.classList.toggle('carousel', !!activeId);
   grid.innerHTML = '';
@@ -581,16 +577,6 @@ function _renderList() {
   if (activeAgent) {
     region.classList.add('open');
     _renderAgentCard(region, activeAgent);
-  }
-
-  // Mount the show-system toggle inside the scroll content so the grid fills the
-  // panel's full height and the floating builder pill hovers over it — mirroring
-  // the chat panel, where one scroller fills the panel and the pill floats. In
-  // grid mode it's a trailing full-width line in the squares scroller; in
-  // carousel mode it rides the shared #agents-grid scroller below the open card.
-  if (toggleRow) {
-    if (activeId) grid.appendChild(toggleRow);
-    else squares.appendChild(toggleRow);
   }
 
   // Wire the carousel edge-fades + chevrons (no-op visually until the row
@@ -689,6 +675,183 @@ function _renderSquare(container, agent, isActive) {
   row.dataset.agentId = agent.id;
   row.appendChild(card);
   container.appendChild(row);
+}
+
+// ── Surgical DOM updates (no full grid re-render) ────────────────────────────
+
+/** Find the .agents-squares container (the scroller holding all squares). */
+function _squaresContainer() {
+  return document.querySelector('.agents-squares');
+}
+
+/** Find a specific agent's .agent-row in the squares container by id. */
+function _squareRow(agentId) {
+  return document.querySelector(`.agents-squares > .agent-row[data-agent-id="${agentId}"]`);
+}
+
+/**
+ * Remove a single agent's square from the grid with a fade-out animation.
+ * Also removes it from _agents. If it was the active (open) agent, closes it.
+ * Returns a promise that resolves once the animation completes and the DOM
+ * is cleaned up (or immediately if the row wasn't found).
+ */
+async function _surgicalRemoveSquare(agentId) {
+  // Remove from the data array first
+  _agents = _agents.filter(a => a.id !== agentId);
+
+  // If this agent was the open one, close it
+  if (_activeId() === agentId) {
+    _expandedAgents.delete(agentId);
+  }
+
+  const row = _squareRow(agentId);
+  if (!row) return;
+
+  // If the detail region had this agent open, rebuild it too
+  const region = document.getElementById('agents-detail-region');
+
+  // Animate exit
+  row.classList.add('agent-exit');
+  await new Promise(resolve => { row.addEventListener('animationend', resolve, { once: true }); });
+  row.remove();
+
+  // If the detail region was showing this agent — rebuild it for whatever is
+  // now the active agent (or clear it if nothing is open).
+  _rebuildDetailRegion();
+
+  // Re-sync grid carousel state (may need to exit carousel mode)
+  _syncCarouselState();
+}
+
+/**
+ * Add a single agent's square to the grid with a fade-in animation.
+ * The new row is appended at the end (sortAgentsForDisplay will position
+ * pinned agents appropriately — a full re-order isn't needed here).
+ */
+function _surgicalAddSquare(agent, opts = {}) {
+  const container = _squaresContainer();
+  if (!container) return;
+
+  // Don't duplicate
+  if (_squareRow(agent.id)) return;
+
+  // Append to the data array
+  _agents.push(agent);
+
+  // Render the row and prepend the enter animation class.
+  // Pass the correct active state so the activated class is right from the start.
+  _renderSquare(container, agent, _activeId() === agent.id);
+  const newRow = container.lastElementChild;
+  if (newRow) {
+    // If insertBefore is given, move the row to the right position
+    if (opts.insertBefore && opts.insertBefore !== newRow) {
+      container.insertBefore(newRow, opts.insertBefore);
+    }
+    newRow.classList.add('agent-enter');
+    newRow.addEventListener('animationend', () => {
+      newRow.classList.remove('agent-enter');
+    }, { once: true });
+  }
+
+  _syncCarouselState();
+}
+
+/**
+ * Update a single square's displayed name (and icon, color) in-place
+ * with a subtle pulse flash so the user sees something changed.
+ * Patches the agent data in _agents too.
+ */
+function _surgicalUpdateSquare(agent) {
+  // Update data in-place
+  const idx = _agents.findIndex(a => a.id === agent.id);
+  if (idx !== -1) _agents[idx] = agent;
+
+  // Re-render the square in-place (swap the card element)
+  const row = _squareRow(agent.id);
+  if (!row) return;
+
+  // Build a fresh square in a throwaway fragment
+  const fragment = document.createElement('div');
+  _renderSquare(fragment, agent, _activeId() === agent.id);
+  // _renderSquare creates an .agent-row with a .agent-card inside; extract the card
+  const newRow = fragment.firstElementChild;
+  const newCard = newRow ? newRow.querySelector('.agent-card') : null;
+  if (!newCard) return;
+
+  // Replace the old card while keeping the row
+  const oldCard = row.querySelector('.agent-card');
+  if (oldCard) {
+    oldCard.replaceWith(newCard);
+  } else {
+    row.prepend(newCard);
+  }
+
+  // Pulse flash for visual feedback
+  row.classList.remove('agent-pulse'); // re-trigger
+  void row.offsetWidth; // force reflow
+  row.classList.add('agent-pulse');
+  row.addEventListener('animationend', () => {
+    row.classList.remove('agent-pulse');
+  }, { once: true });
+
+  // If the agent's open card is showing, we need to update the detail region too
+  const region = document.getElementById('agents-detail-region');
+  if (_activeId() === agent.id && region) {
+    // Rebuild the card with updated data
+    _rebuildAgentCard(agent);
+  }
+}
+
+/** Rebuild the detail region card for the currently open agent. */
+function _rebuildDetailRegion() {
+  const region = document.getElementById('agents-detail-region');
+  if (!region) return;
+  region.innerHTML = '';
+  const activeId = _activeId();
+  if (!activeId) {
+    region.classList.remove('open');
+    _syncSquareActivation();
+    return;
+  }
+  region.classList.add('open');
+  if (activeId === MOCK_AGENT_ID) {
+    _renderAgentCard(region, _createMockAgent());
+  } else {
+    const agent = _agents.find(a => a.id === activeId);
+    if (agent) _renderAgentCard(region, agent);
+  }
+  _syncSquareActivation();
+}
+
+/** Sync the .activated class on every square based on the active agent id. */
+function _syncSquareActivation() {
+  const activeId = _activeId();
+  document.querySelectorAll('.agents-squares .agent-row').forEach(row => {
+    const card = row.querySelector('.agent-card');
+    if (!card) return;
+    const aid = row.dataset.agentId;
+    card.classList.toggle('activated', aid === activeId);
+  });
+}
+
+/** Rebuild just the agent card in the detail region (not the whole region). */
+function _rebuildAgentCard(agent) {
+  const region = document.getElementById('agents-detail-region');
+  if (!region) return;
+  region.innerHTML = '';
+  region.classList.add('open');
+  _renderAgentCard(region, agent);
+  _syncSquareActivation();
+}
+
+/** Sync the carousel CSS class + wire affordances after surgical changes. */
+function _syncCarouselState() {
+  const grid = document.getElementById('agents-grid');
+  if (!grid) return;
+  const activeId = _activeId();
+  grid.classList.toggle('carousel', !!activeId);
+  const wrap = grid.querySelector('.agents-squares-wrap');
+  if (wrap) _wireSquaresCarousel(wrap);
 }
 
 // Renders the EXPANDED (open) agent's full card + tab bar + detail panel into
@@ -2190,6 +2353,8 @@ async function _putAgentField(agent, updates, indicator) {
       const idx = _agents.findIndex(a => a.id === agent.id);
       if (idx !== -1) Object.assign(_agents[idx], data.agent);
       Object.assign(agent, data.agent);
+      // Surgically update the square (name, description, icon changes)
+      _surgicalUpdateSquare(agent);
       _flashSaved(indicator, true);
       return true;
     }
@@ -7000,10 +7165,14 @@ async function _deleteAgent(agent) {
       { method: 'DELETE' }
     );
     if (res.ok) {
-      _expandedAgents.delete(agent.id);
-      await _loadAgents();
-      _renderList();
+      // Surgical: remove the square with fade-out, then clean up state
+      await _surgicalRemoveSquare(agent.id);
       _saveViewState();
+      // Bust the shared agent cache so the chat-header dropdown re-fetches
+      window.__agentsSharedData = null;
+      if (typeof app.populateAgentSelect === 'function') {
+        try { await app.populateAgentSelect(app.currentUserId); } catch (_) {}
+      }
     }
   } catch (e) {
     console.warn('agents: delete failed', e);
@@ -7034,32 +7203,36 @@ async function _postNewAgent({ name, description = '', templateId = 'default', l
     alert(data.detail || 'Failed to create agent');
     return null;
   }
-  // Close the mock card and reload the list. Bust the shared agent cache first
-  // so _loadAgents() refetches and the new agent actually appears in the grid
-  // (and the chat-header dropdown) instead of reusing the pre-create snapshot.
+  const newAgent = data.agent;
+  if (!newAgent) return null;
+
+  // Don't remove the mock "New Agent" square — it's a permanent UI element.
+  // Just close it (deselect) and reset its icon for next time.
   _expandedAgents.delete(MOCK_AGENT_ID);
   _mockIconName = null;  // re-randomize the icon for the next "create" card
+
+  // Bust the shared agent cache so the chat-header dropdown re-fetches
   window.__agentsSharedData = null;
-  await _loadAgents();
-  _renderList();
+
+  // Set the new agent as active BEFORE adding its square so the carousel
+  // state and activated class are correct from the start.
+  _setActive(newAgent.id, 'config');
   _saveViewState();
-  const newId = data.agent && data.agent.id;
-  if (newId) {
-    // Leave the freshly-created agent open (as the single active agent) on its
-    // Config tab, so creating from the form lands the user straight in it.
-    if (_agents.find(a => a.id === newId)) {
-      _setActive(newId, 'config');
-      _saveViewState();
-      _renderList();
-    }
-    // Make the new agent the active one so chat picks it up on next send.
-    app.currentAgentId = newId;
-    try { localStorage.setItem('selectedAgentId', newId); } catch (_) {}
-    if (typeof app.populateAgentSelect === 'function') {
-      try { await app.populateAgentSelect(app.currentUserId); } catch (_) {}
-    }
+
+  // Add the new agent surgically with fade-in.
+  // Appends at the end — the "New Agent" square is always first (far left).
+  _surgicalAddSquare(newAgent);
+
+  // Rebuild detail region for the newly active agent
+  _rebuildDetailRegion();
+
+  // Make the new agent the active one so chat picks it up on next send.
+  app.currentAgentId = newAgent.id;
+  try { localStorage.setItem('selectedAgentId', newAgent.id); } catch (_) {}
+  if (typeof app.populateAgentSelect === 'function') {
+    try { await app.populateAgentSelect(app.currentUserId); } catch (_) {}
   }
-  return data.agent;
+  return newAgent;
 }
 
 async function _createAgentFromMock(panelEl) {

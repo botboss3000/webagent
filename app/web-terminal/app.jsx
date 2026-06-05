@@ -86,8 +86,23 @@ function App() {
   const removeCtx = (i) => setCtx((c) => c.filter((_, k) => k !== i));
 
   useEffect(() => { applyTheme(theme); }, [theme]);
-  useEffect(() => { if (window.AgentBridge) window.AgentBridge.init().then((ok) => setLive(!!ok)).catch(() => setLive(false)); }, []);
+  useEffect(() => {
+    if (window.AgentBridge) window.AgentBridge.init().then((ok) => { setLive(!!ok); }).catch(() => setLive(false));
+  }, []);
   useEffect(() => { try { localStorage.setItem("webagent.crew", JSON.stringify(crew)); } catch (e) {} }, [crew]);
+  // on mobile, autofocus only works in direct response to a user gesture.
+  // capture the very first touch/click and redirect focus to the input.
+  useEffect(() => {
+    let done = false;
+    const handler = () => {
+      if (done) return;
+      done = true;
+      inputRef.current?.focus();
+    };
+    document.addEventListener("touchstart", handler, { once: true, passive: true });
+    document.addEventListener("click", handler, { once: true, passive: true });
+    return () => { document.removeEventListener("touchstart", handler); document.removeEventListener("click", handler); };
+  }, []);
   const toggleCrew = (id) => setCrew((c) => c.includes(id) ? c.filter((x) => x !== id) : [...c, id]);
 
   const scrollDown = useCallback(() => {
@@ -114,7 +129,7 @@ function App() {
 
   const cycleLogo = () => setAnimIndex((i) => (i + 1) % window.ANIMS.length);
   const prevLogo = () => setAnimIndex((i) => (i - 1 + window.ANIMS.length) % window.ANIMS.length);
-  const newSession = () => { setItems([]); setTin(0); setTout(0); replyCursor = 0; if (window.AgentBridge && window.AgentBridge.available()) window.AgentBridge.newSession(); };
+  const newSession = () => { setItems([]); setTin(0); setTout(0); replyCursor = 0; if (window.AgentBridge && window.AgentBridge.available()) window.AgentBridge.newSession(); inputRef.current?.focus(); };
   const shuffle = () => {
     const ids = window.THEME_ORDER;
     setTheme(ids[Math.floor(Math.random() * ids.length)]);
@@ -218,6 +233,8 @@ function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  
 
   const ctxPct = Math.min(99, Math.round((tin + tout) / 1800 * 100));
 
@@ -368,12 +385,13 @@ function App() {
             </div>
           </div>
         )}
-        <div className="composer">
-          <button className={"chev " + (drawer ? "open" : "")} onClick={() => { setTray(false); setDrawer((d) => !d); }} title="open command drawer">{drawer ? "▾" : "▸"}</button>
+        <div className="composer" onClick={() => inputRef.current?.focus()}>
+          <button className={"chev " + (drawer ? "open" : "")} onClick={(e) => { e.stopPropagation(); setTray(false); setDrawer((d) => !d); }} title="open command drawer">{drawer ? "▾" : "▸"}</button>
           <span className="cmp-prompt">❯</span>
           <input
             ref={inputRef}
             value={input}
+            autoFocus
             placeholder={mode === "shell" ? "ask, or / for commands · @ for files…" : "describe a file change…"}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") send(); }}

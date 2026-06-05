@@ -281,6 +281,26 @@ body.light-mode .header-notif-badge.header-notif-running:hover {
     0%   { transform: rotate(45deg); }
     100% { transform: rotate(405deg); }
   }
+/* Output tokens flowing — clockwise orange spin */
+.chat-token-spinner.spinning-out {
+    animation: tokenSpinOut 0.9s linear infinite;
+    border-color: #ff9e64;
+    opacity: 1;
+  }
+@keyframes tokenSpinOut {
+    0%   { transform: rotate(45deg); }
+    100% { transform: rotate(405deg); }
+  }
+/* Input tokens flowing — counter-clockwise orange spin */
+.chat-token-spinner.spinning-in {
+    animation: tokenSpinIn 0.9s linear infinite;
+    border-color: #ff9e64;
+    opacity: 1;
+  }
+@keyframes tokenSpinIn {
+    0%   { transform: rotate(45deg); }
+    100% { transform: rotate(-315deg); }
+  }
 
 /* ── Execution mode button (single cycle: Read → Ask → Auto → Read) ─────
    Sits above the chat pill, right-aligned alongside continue/stop buttons.
@@ -331,6 +351,8 @@ body.light-mode .chat-mode-btn:hover {
 #chat-messages-inner {
     flex: 1;
     overflow-y: auto;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
     padding: 12px 8px 40px 8px;
     display: flex;
     flex-direction: column;
@@ -371,6 +393,36 @@ body.light-mode .chat-mode-btn:hover {
     background: #2a2a4a;
     color: #7dcfff;
   }
+/* Session-switch loading spinner — shown in the chat area while messages
+   are being fetched from the server after selecting a different session. */
+.chat-loading-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  gap: 12px;
+  padding: 48px 16px;
+  color: #565f89;
+}
+.chat-loading-spinner {
+  animation: chat-loading-spin 1s linear infinite;
+}
+.chat-loading-spinner svg {
+  display: block;
+}
+.chat-loading-text {
+  font-size: 12px;
+  letter-spacing: 0.3px;
+  opacity: 0.7;
+}
+@keyframes chat-loading-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+body.light-mode .chat-loading-wrap {
+  color: #9a7c65;
+}
 .chat-bubble {
     padding: 10px 14px;
     border-radius: 12px;
@@ -509,6 +561,49 @@ body.light-mode .chat-mode-btn:hover {
     align-self: flex-start;
     font-style: italic;
   }
+
+/* ── Pending (outbox) bubble — message queued locally because the server
+     was unreachable. Retry and dismiss buttons appear in the action bar. */
+.chat-bubble.user.pending {
+  border: 1px dashed #e0af68;
+  background: #e0af6808;
+}
+.chat-bubble.user.pending .label {
+  color: #e0af68;
+}
+.chat-bubble.user.pending .label::after {
+  content: ' ⏳';
+  font-size: 11px;
+}
+.pending-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 4px;
+  opacity: 0.7;
+}
+.bubble-action-btn.pending-retry {
+  color: #7dcfff;
+}
+.bubble-action-btn.pending-retry:hover {
+  color: #7dcfff;
+  background: rgba(125, 207, 255, 0.12);
+}
+.bubble-action-btn.pending-dismiss {
+  color: #f7768e;
+}
+.bubble-action-btn.pending-dismiss:hover {
+  color: #f7768e;
+  background: rgba(247, 118, 142, 0.12);
+}
+/* Light mode adjustments */
+body.light-mode .chat-bubble.user.pending {
+  border-color: #d97706;
+  background: #fef3c7;
+}
+body.light-mode .chat-bubble.user.pending .label {
+  color: #b45309;
+}
 
 /* Virtual-scroll placeholder — invisible spacer that preserves scroll height */
 .chat-bubble-placeholder {
@@ -1470,7 +1565,7 @@ body.light-mode .chat-stop-btn:hover {
   @keyframes pulse {0%,
 100% {opacity:1}50% {opacity:0.3} }
 .status-group { display: flex; align-items: center; gap: 6px; }
-#status-right { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+#status-right { margin-left: auto; display: flex; gap: 0; align-items: center; }
 .status-select {
     background: #1a1a2e;
     border: 1px solid #2a2a4a;
@@ -1593,7 +1688,7 @@ body.light-mode .chat-stop-btn:hover {
     font-weight: 600;
     font-family: inherit;
     color: #565f89;
-    padding: 6px 12px;
+    padding: 6px 8px;
     margin: 0;
     border-radius: 8px;
     transition: color 0.15s, background 0.15s;
@@ -1613,6 +1708,31 @@ body.light-mode .chat-stop-btn:hover {
     margin: 0 8px;
     user-select: none;
     font-size: 13px;
+  }
+
+/* ── New-session header button (main header, beside Chat toggle) ── */
+  #session-new-header-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    color: #565f89;
+    padding: 6px;
+    margin: 0;
+    border-radius: 8px;
+    transition: color 0.15s, background 0.15s;
+    user-select: none;
+  }
+  #session-new-header-btn > * { pointer-events: none; }
+  #session-new-header-btn:hover {
+    background: rgba(125,207,255,0.08);
+    color: var(--accent, #7dcfff);
+  }
+  #session-new-header-btn:active {
+    background: rgba(125,207,255,0.15);
   }
 
 /* ── User Dropdown (status-right) ── */
@@ -2444,6 +2564,8 @@ body.light-mode .session-status-unread { color: #73a64a; }
 /* Muted agent-name prefix on each unified session row: "Agent — Title". */
 .session-row-agent { color: var(--fg-3); }
 .session-row-sep { color: var(--fg-3); }
+/* Agent emoji icon prefix in session rows */
+.session-row-agent-icon { font-size: 14px; line-height: 1; flex-shrink: 0; }
 .session-row-time {
     flex-shrink: 0;
     font-size: 11px;

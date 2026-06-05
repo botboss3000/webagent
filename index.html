@@ -73,12 +73,57 @@
 <!-- Design system tokens + visual overrides (loaded last to take effect) -->
 <link rel="stylesheet" href="./ui/css/design-system.css">
 <!-- ============================================================
+     Pull-to-refresh from header (mobile): style for the indicator
+     ============================================================ -->
+<style>
+  #ptr-indicator {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+    display: flex; align-items: flex-end; justify-content: center;
+    background: linear-gradient(180deg, var(--bg-elev, #0d0d1a), transparent);
+    pointer-events: none; overflow: hidden;
+    transition: opacity 0.12s ease;
+    padding-bottom: 6px;
+  }
+  #ptr-indicator svg {
+    display: block;
+    width: 44px; height: 44px;
+    filter: drop-shadow(0 0 8px rgba(70, 212, 255, 0.12));
+  }
+  .ptr-label-hint {
+    position: absolute; bottom: -2px; left: 50%; transform: translateX(-50%);
+    font-family: 'Inter', sans-serif; font-size: 10px; letter-spacing: 0.8px;
+    text-transform: uppercase; white-space: nowrap;
+    color: var(--fg-muted, #6b7397); opacity: 0; transition: opacity 0.15s;
+  }
+  .ptr-label-hint.show { opacity: 0.6; }
+</style>
+<!-- ============================================================
      Stargaze background + dynamic spotlight overrides
      Loaded last so it wins the cascade.
      ============================================================ -->
 <link rel="stylesheet" href="./ui/css/index.css">
 </head>
 <body>
+<!-- Pull-to-refresh indicator (fixed; shown during touch-drag from header on mobile) -->
+<div id="ptr-indicator" style="display:none;">
+  <svg viewBox="0 0 48 48" width="44" height="44">
+    <!-- Dim ghost outline -->
+    <path d="M24,7 A17,17 0 1,1 10.3,15.3 L15.5,10.5"
+      fill="none" stroke="var(--fg-faint, #4a516e)" stroke-width="3"
+      stroke-linecap="round" stroke-linejoin="round" opacity="0.06"/>
+    <!-- Blue fill (stage 1: fills as you drag 0→50% of screen) -->
+    <path id="ptr-blue" d="M24,7 A17,17 0 1,1 10.3,15.3 L15.5,10.5"
+      fill="none" stroke="#46d4ff" stroke-width="3"
+      stroke-linecap="round" stroke-linejoin="round"
+      stroke-dasharray="98" stroke-dashoffset="98"/>
+    <!-- Red fill (stage 2: fills as you drag 50→100% of screen, hidden until then) -->
+    <path id="ptr-red" d="M24,7 A17,17 0 1,1 10.3,15.3 L15.5,10.5"
+      fill="none" stroke="#ff5f56" stroke-width="3"
+      stroke-linecap="round" stroke-linejoin="round"
+      stroke-dasharray="98" stroke-dashoffset="98" style="display:none"/>
+  </svg>
+  <span class="ptr-label-hint" id="ptr-hint"></span>
+</div>
 <canvas class="stargaze-canvas" id="stargaze-bg"></canvas>
 <div class="stargaze-overlay"></div>
 <div id="cursor-glow"></div>
@@ -182,6 +227,12 @@
     }
     if (btn) btn.classList.toggle('active', visible);
     try { localStorage.setItem(window.__chatVisibilityKey(), String(visible)); } catch (_) {}
+    // When showing the chat panel (especially on mobile), focus the input
+    // so the user can start typing without an extra tap.
+    if (visible) {
+      var ci = document.getElementById('chat-input');
+      if (ci) setTimeout(function () { ci.focus(); }, 50);
+    }
   };
   window.__toggleChat = function () {
     window.__applyChatVisible(!window.__getChatVisible());
@@ -319,7 +370,7 @@
       <span class="main-tab-group" id="admin-tools-group">
         <button type="button" class="main-tab" data-value="admin-tools" role="tab">
           <i data-lucide="wrench" class="lucide-icon"></i>Admin Tools
-          <span id="admin-health-dot" class="health-dot health-dot-green" title="Server healthy"></span>
+          <span id="admin-health-dot" class="health-dot health-dot-red" title="Server status unknown"></span>
         </button>
       </span>
       <button type="button" class="main-tab" data-value="autoagent" role="tab">
@@ -404,6 +455,9 @@
     <button id="chat-toggle-btn" class="chat-toggle-btn active" title="Toggle chat panel">
       <i data-lucide="message-square" class="lucide-icon" style="width:16px;height:16px;"></i>
       <span>Chat</span>
+    </button>
+    <button id="session-new-header-btn" class="session-new-header-btn" title="New session">
+      <i data-lucide="plus" style="width:24px;height:24px;"></i>
     </button>
   </span>
 
@@ -637,5 +691,104 @@
 
 
 <script type="module" src="./ui/js/feedback.js"></script>
+<!-- ── Pull-to-refresh: touch-drag from the header to reload ── -->
+<script>
+(() => {
+  const header = document.getElementById('main-header');
+  const indicator = document.getElementById('ptr-indicator');
+  const blueFill = document.getElementById('ptr-blue');
+  const redFill = document.getElementById('ptr-red');
+  const hint = document.getElementById('ptr-hint');
+  if (!header || !indicator || !blueFill || !redFill || !hint) return;
+
+  const FULL_DASH = 98;
+  // Raw drag distance as fraction of screen height
+  const NORMAL_AT = 0.50;   // 50% → fires normal reload
+  const HARD_AT   = 0.85;   // 85% → fires hard refresh
+
+  let dragging = false, startY = 0, stage = 0; // 0=idle, 1=refresh, 2=hard
+
+  function ptrEnd() {
+    if (!dragging) return;
+    const s = stage;
+    dragging = false; startY = 0; stage = 0;
+    indicator.style.display = 'none';
+    hint.textContent = '';
+    hint.className = 'ptr-label-hint';
+    if (s === 1) location.reload();
+    else if (s === 2) window.location.href = window.location.pathname + '?_=' + Date.now();
+  }
+
+  header.addEventListener('touchstart', (e) => {
+    if (window.scrollY > 5) return;
+    const touch = e.touches[0];
+    if (!touch) return;
+    dragging = true;
+    startY = touch.clientY;
+    stage = 0;
+    indicator.style.display = '';
+    indicator.style.opacity = '1';
+    blueFill.setAttribute('stroke-dashoffset', String(FULL_DASH));
+    blueFill.style.display = '';
+    redFill.style.display = 'none';
+    redFill.setAttribute('stroke-dashoffset', String(FULL_DASH));
+    hint.textContent = '';
+    hint.className = 'ptr-label-hint';
+  }, { passive: true });
+
+  header.addEventListener('touchmove', (e) => {
+    if (!dragging) return;
+    const touch = e.touches[0];
+    if (!touch) return;
+    const raw = touch.clientY - startY;
+    if (raw <= 0) { ptrEnd(); return; }
+
+    const screenH = window.innerHeight;
+    const normalPx = screenH * NORMAL_AT;
+    const hardPx   = screenH * HARD_AT;
+
+    // Rubber-band the visual extent
+    const eased = raw * 0.4;
+    const maxEased = screenH * 0.85;
+    const visual = Math.min(eased, maxEased);
+    const frac = Math.min(visual / maxEased, 1);
+
+    if (raw >= hardPx) {
+      // ── HARD REFRESH zone (raw drag ≥ 85% screen) ──
+      stage = 2;
+      // Blue = full
+      blueFill.setAttribute('stroke-dashoffset', '0');
+      // Red fills: from empty at normalPx to full at hardPx
+      const redProgress = Math.min(Math.max(raw - normalPx, 0) / (hardPx - normalPx), 1);
+      const redOffset = FULL_DASH * (1 - redProgress);
+      redFill.style.display = '';
+      redFill.setAttribute('stroke-dashoffset', String(Math.max(0, redOffset)));
+      hint.textContent = 'HARD REFRESH';
+      hint.className = 'ptr-label-hint show';
+    } else if (raw >= normalPx) {
+      // ── NORMAL REFRESH zone (50% ≤ raw < 85%) ──
+      stage = 1;
+      // Blue = full (offset 0)
+      blueFill.setAttribute('stroke-dashoffset', '0');
+      redFill.style.display = 'none';
+      hint.textContent = '';
+      hint.className = 'ptr-label-hint';
+    } else {
+      // ── IDLE zone (raw < 50%) ──
+      stage = 0;
+      // Blue fills proportionally based on raw / normalPx
+      const blueRatio = Math.min(raw / normalPx, 1);
+      const blueOffset = FULL_DASH * (1 - blueRatio);
+      blueFill.setAttribute('stroke-dashoffset', String(Math.max(0, blueOffset)));
+      redFill.style.display = 'none';
+      hint.textContent = '';
+      hint.className = 'ptr-label-hint';
+    }
+  }, { passive: true });
+
+  header.addEventListener('touchend', ptrEnd, { passive: true });
+  header.addEventListener('touchcancel', ptrEnd, { passive: true });
+})();
+</script>
 </body>
 </html>

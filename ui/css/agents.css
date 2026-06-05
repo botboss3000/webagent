@@ -169,44 +169,54 @@
   overflow-y: visible;
 }
 
-/* ── "Show system agents" toggle ──
-   Mounted inside the scroller by agents.js (not a flow sibling), so the grid
-   fills the panel's full height and the builder pill floats over it. In grid
-   mode it's a full-width trailing line in the .agents-squares flex-wrap (the
-   scroller's own 120px bottom padding clears the floating pill). */
-#agents-system-toggle-row {
-  flex: 0 0 100%;
-  width: 100%;
-  box-sizing: border-box;
+/* ── Builder footer row (below the pill) ──
+   A slim flex row below the builder pill holding the system-agents eye
+   toggle on the left. Mirrors #chat-footer-row in layout and spacing so
+   the two panels stay visually aligned. The eye button is styled like
+   .chat-mode-btn (same size, font, border-radius) for consistency. */
+#agent-builder-footer {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 6px 12px;
-  padding: 0;
-  border-top: none;
+  justify-content: flex-start;
+  padding: 0 12px;
+  min-height: 18px;
+  margin: 6px 0 8px 0;
 }
-/* Carousel mode: it rides the shared #agents-grid scroller below the open card,
-   so it supplies its own horizontal inset and bottom clearance for the pill. */
-#agents-grid.carousel > #agents-system-toggle-row {
-  flex: 0 0 auto;
-  padding: 4px 20px 120px;
-}
-#agents-system-toggle-label {
+.agent-builder-eye-btn {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--fg-2);
-  cursor: pointer;
-  user-select: none;
-}
-#agents-show-system {
-  cursor: pointer;
-  accent-color: var(--accent);
-}
-#agents-system-toggle-hint {
+  gap: 4px;
+  background: #7dcfff15;
+  border: 1px solid #7dcfff30;
+  color: #7dcfff;
   font-size: 12px;
-  color: var(--fg-4);
+  font-weight: 600;
+  padding: 4px 14px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  line-height: 1.4;
+  user-select: none;
+  -webkit-user-select: none;
+  font-family: inherit;
+}
+.agent-builder-eye-btn:hover {
+  background: #7dcfff25;
+  border-color: #7dcfff60;
+}
+.agent-builder-eye-btn.active {
+  background: #7dcfff35;
+  border-color: #7dcfff;
+  color: #7dcfff;
+}
+body.light-mode .agent-builder-eye-btn {
+  background: #ff8c4215;
+  border-color: #ff8c4230;
+  color: #ff8c42;
+}
+body.light-mode .agent-builder-eye-btn:hover {
+  background: #ff8c4225;
+  border-color: #ff8c4260;
 }
 
 /* ── Empty state ── */
@@ -225,6 +235,34 @@
   width: auto;
   min-width: 0;
   transition: width 0.2s ease;
+}
+
+/* ── Surgical animations for add/remove/update ──
+   agent-enter:  fade + scale up when a new square appears
+   agent-exit:   fade + shrink when a square is removed
+   agent-update: subtle pulse flash after a rename */
+@keyframes agentEnter {
+  from { opacity: 0; transform: scale(0.85); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes agentExit {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: scale(0.85); }
+}
+@keyframes agentPulse {
+  0%   { box-shadow: 0 0 0 0 rgba(192,202,245,0.3); }
+  70%  { box-shadow: 0 0 0 8px rgba(192,202,245,0); }
+  100% { box-shadow: 0 0 0 0 rgba(192,202,245,0); }
+}
+.agent-row.agent-enter {
+  animation: agentEnter 0.3s ease forwards;
+}
+.agent-row.agent-exit {
+  animation: agentExit 0.25s ease forwards;
+  pointer-events: none;
+}
+.agent-row.agent-pulse {
+  animation: agentPulse 0.5s ease;
 }
 .agent-row.expanded {
   width: 100%;
@@ -748,7 +786,9 @@ body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; co
   --chat-area-bottom-inset: 8px;
   --chat-pill-footer-gap: 6px;
   --chat-footer-row-h: 18px;
-  margin: 0 12px calc(var(--chat-area-bottom-inset) + var(--chat-pill-footer-gap) + var(--chat-footer-row-h));
+  /* The pill itself no longer needs a bottom offset — the footer row
+     (#agent-builder-footer) below it carries the gap and bottom inset. */
+  margin: 0 12px 0;
   width: calc(100% - 24px);
 }
 /* Match the chat pill's resting height: inherit the shared 96px min-height
