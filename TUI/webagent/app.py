@@ -1797,10 +1797,6 @@ class ServerManagerApp(App):
             out.append(Select([(m, m) for m in modes],
                               value=am if am in modes else "public_anonymous",
                               allow_blank=False, id="cfg-access"))
-            out.append(Static(Text("Presentation mode", style=c["dim"]), classes="panel-sub"))
-            out.append(Select([("On", True), ("Off", False)],
-                              value=bool(s.get("presentation_mode", False)),
-                              allow_blank=False, id="cfg-present"))
             out.append(Static(Text("Render recorder (browser capture)", style=c["dim"]), classes="panel-sub"))
             out.append(Select([("On", True), ("Off", False)],
                               value=bool(s.get("render_recording_enabled", False)),
@@ -2174,7 +2170,6 @@ class ServerManagerApp(App):
     def action_cfg_save_settings(self) -> None:
         try:
             access = self.query_one("#cfg-access", Select).value
-            present = self.query_one("#cfg-present", Select).value
             recorder = self.query_one("#cfg-recorder", Select).value
             max_tc = self.query_one("#cfg-max-tool-calls", Input).value.strip()
             max_wall = self.query_one("#cfg-max-wall", Input).value.strip()
@@ -2187,7 +2182,6 @@ class ServerManagerApp(App):
         patch = {}
         if access is not Select.BLANK:
             patch["access_mode"] = access
-        patch["presentation_mode"] = bool(present)
         patch["render_recording_enabled"] = bool(recorder)
         if max_tc:
             patch["max_tool_calls"] = max(0, int(max_tc))
@@ -3800,6 +3794,13 @@ class ServerManagerApp(App):
             guardian.write_clean_exit()
         try:
             await self._webapp.stop()
+        except Exception:
+            pass
+        # Kill any interactive terminal programs the agent opened so they don't
+        # outlive the TUI as orphan processes.
+        try:
+            from . import terminal as _terminal
+            _terminal.close_all()
         except Exception:
             pass
         await self.llm.aclose()

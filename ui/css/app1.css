@@ -171,9 +171,34 @@ body.light-mode .header-notif-badge.header-notif-running:hover {
 }
 
 /* ── Chat input area ── */
-/* Bottom aligns with #main-panel (which has 8px margin), so the pill
-   sits level with the pages card instead of pushed to the bottom of the
-   chat panel. */
+/* PILL-PANEL-LAYOUT: canonical "floating pill over full-height content" layout
+   that EVERY panel hosting a .chat-pill must mirror. Instances: chat panel
+   (here); agents page (#agent-builder-bar over #agents-grid in agents.css);
+   Pages page (#autoagent-footer over #autoagent-viewport in autoagent.css).
+   Full rationale in docs/claude/ui-guidance.md ("Chat pills" → panel layout).
+   Three pieces:
+     1. Panel is a flex column with position: relative (here #chat-panel).
+     2. ONE scroller fills it full-height (#chat-messages → #chat-messages-inner,
+        flex:1 + overflow-y:auto) with bottom padding so the last lines clear /
+        scroll behind the pill. Its scrollbar runs to the panel's bottom.
+     3. The pill is an ABSOLUTE OVERLAY (below), not a flow child — so it never
+        reserves layout space and never shrinks the scroller.
+   HARD RULE: never put the pill, a footer, or any control in normal flow BELOW
+   the scroller — a flow sibling there steals height and the content/scrollbar
+   stop short of the bottom (the agents-page bug). Auxiliary controls belong
+   INSIDE the scroller as trailing content.
+   Bottom aligns with #main-panel (which has 8px margin), so the pill sits level
+   with the pages card instead of pushed to the bottom of the chat panel.
+   PILL-PANEL-ALIGN: this area is a flex COLUMN holding the pill on top and the
+   .chat-footer-row (token/mode row) below it, so the PILL's bottom edge floats
+   this far above the panel floor: 8px (this `bottom`) + 6px (this `gap`) + the
+   rendered .chat-footer-row height (~18px). The agents-page builder bar
+   reproduces that exact offset as a bottom margin so the two side-by-side pills
+   line up (it has no footer row of its own). So if you change THIS `bottom`,
+   THIS `gap`, or the .chat-footer-row height, you MUST update the matching
+   `--chat-*` terms on `#agent-builder-bar > .chat-pill` in agents.css — they
+   are a commonized pair. (Pill skin/geometry is separately commonized; see the
+   CHAT-PILL-SYNC block lower in this file.) */
   #chat-input-area {
     display: flex;
     flex-direction: column;
@@ -758,11 +783,12 @@ body.light-mode .chat-stop-btn:hover {
 /* ── Chat-pill ─────────────────────────────────────────────────────────────
    CHAT-PILL-SYNC: single source of truth for the GEOMETRY/behavior of every
    chat-style "pill" input in the app (layout, buttons, has-text swap, sizing).
-   NOTE: the base skin here is an opaque dark pill with a hard border. Two pills
-   are re-skinned as transparent "floating glass" in ui/css/index.css (loaded
-   last): the web-chat pill (#chat-panel .chat-pill) and the agents-page
-   builder bar (#agent-builder-bar > .chat-pill). If you change the float look,
-   edit index.css; geometry stays here.
+   NOTE: the base skin here is an opaque dark pill with a hard border. Three
+   pills are re-skinned as transparent "floating glass" in ui/css/index.css
+   (loaded last): the web-chat pill (#chat-panel .chat-pill), the agents-page
+   builder bar (#agent-builder-bar > .chat-pill), and the Pages prompt bar
+   (#autoagent-prompt-row). If you change the float look, edit index.css;
+   geometry stays here.
    Apply these classes to opt in:
      .chat-pill        — outer flex row (the rounded container)
      .chat-pill-input  — textarea / text input inside the pill
@@ -778,7 +804,14 @@ body.light-mode .chat-stop-btn:hover {
      #ac-int-admin-chat-input-row (integration admin chat)
      #agent-builder-bar-row       (agents page — agents.js)
      #autoagent-prompt-row        (Pages tab — autoagent.js)
-   When tweaking, change here and every pill in the app updates. */
+   When tweaking, change here and every pill in the app updates.
+   SEPARATE concern — the two FLOATING pills (web-chat + agents builder bar) also
+   share a PANEL LAYOUT and a cross-panel bottom ALIGNMENT that this block does
+   NOT cover. Those have their own grep tags: PILL-PANEL-LAYOUT (full-height
+   scroller + absolute overlay) and PILL-PANEL-ALIGN (the agents bar's bottom
+   margin is computed from the chat pill's footer-row stack). Both live at
+   #chat-input-area above and on #agent-builder-bar in agents.css — grep the tag
+   to find every spot a change must propagate to. */
 
 .chat-pill {
     /* Grid layout: text fills the left column and spans every row; the

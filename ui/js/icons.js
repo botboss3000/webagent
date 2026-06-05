@@ -32,21 +32,33 @@ export function icon(name, opts = {}) {
 
 let _rafId = null;
 
+// Convert ONLY unprocessed placeholders. Lucide copies data-lucide onto the
+// <svg> it generates AND tags it with class "lucide", so a bare
+// createIcons() (which scans every [data-lucide]) re-replaces already-rendered
+// icons on every call. Because each replacement is itself a DOM mutation, the
+// MutationObserver below would re-fire and we'd spin in a once-per-frame loop —
+// constantly tearing icon nodes out from under in-flight clicks (a pointerdown
+// on an icon whose node is replaced before mouseup never produces a click).
+// Selecting [data-lucide]:not(.lucide) and passing it as `nodes` touches only
+// the fresh <i> placeholders, exactly like the rest of the codebase does.
+function _renderPending() {
+  if (typeof lucide === 'undefined') return;
+  const nodes = document.querySelectorAll('[data-lucide]:not(.lucide)');
+  if (!nodes.length) return;
+  lucide.createIcons({ attrs: { 'stroke-width': 1.5 }, nodes: Array.from(nodes) });
+}
+
 function _scheduleRender() {
   if (_rafId) return;
   _rafId = requestAnimationFrame(() => {
     _rafId = null;
-    if (typeof lucide !== 'undefined' && document.querySelector('[data-lucide]')) {
-      lucide.createIcons({ attrs: { 'stroke-width': 1.5 } });
-    }
+    _renderPending();
   });
 }
 
 function _setup() {
   // Initial render for static HTML
-  if (typeof lucide !== 'undefined') {
-    lucide.createIcons({ attrs: { 'stroke-width': 1.5 } });
-  }
+  _renderPending();
   // Watch for dynamically inserted icons
   new MutationObserver(_scheduleRender).observe(document.body, {
     childList: true,

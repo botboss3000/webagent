@@ -3,10 +3,19 @@
 /**
  * Agent Management panel.
  *
- * Each agent card lives in an .agent-row wrapper.  Clicking a card toggles
- * an inline .agent-detail-panel that is appended directly to that row, so
- * multiple rows can be open simultaneously and each panel is fully
- * independent.  There is no shared / floating panel element.
+ * Layout: #agents-grid is a flex column with a `.agents-squares-wrap` (holding
+ * the `.agents-squares` strip + carousel chevrons) and an `#agents-detail-region`.
+ * With nothing open the strip is a wrapping grid of square cards and scrolls
+ * vertically. Clicking a square opens that agent: the strip collapses to a
+ * single-row carousel (#agents-grid gets `.carousel`) with masked edge-fades +
+ * chevrons (wired by _wireSquaresCarousel), the open square keeps its place but
+ * gains an accent ring (`.activated`), and the agent's full card + tabs + detail
+ * panel render in the region below. In carousel mode #agents-grid is the single
+ * vertical scroll container for both the carousel and the card, so scrolling
+ * down lifts the carousel off-screen for a full-height card view. Only one agent
+ * is open at a time; opening another replaces it, and clicking the open square
+ * closes it (back to the grid). _renderSquare builds the squares;
+ * _renderAgentCard builds the single expanded card in the region.
  */
 
 import { app } from './state.js';
@@ -30,9 +39,23 @@ function _triggerKeyPlaceholder(triggerType) {
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let _agents         = [];   // full list from server
+// At most ONE agent is open at a time. The Map is kept (rather than a scalar)
+// only so the existing per-agent { tab } lookups keep working unchanged; helpers
+// enforce the single-entry invariant.
 let _expandedAgents = new Map(); // Map<agentId, { tab: string }>
 let _userIsAdmin    = false;
 let _extendLlmToAgents = true; // mirrors app-settings.json extend_llm_to_agents
+
+// The id of the single open agent, or null. (First/only key in _expandedAgents.)
+function _activeId() {
+  for (const id of _expandedAgents.keys()) return id;
+  return null;
+}
+// Open exactly one agent (clearing any other), defaulting to its Config tab.
+function _setActive(agentId, tab = 'config') {
+  _expandedAgents.clear();
+  _expandedAgents.set(agentId, { tab });
+}
 
 // ── Mock agent (create-in-place) ─────────────────────────────────────────────
 const MOCK_AGENT_ID = '__new__';
@@ -253,8 +276,11 @@ const DESTRUCTIVE = new Set([
 // Mirrors the gating logic in app/tools/loader.py _inject_builtin_tools.
 const ABILITY_TO_TOOLS = {
   codebase_admin:   ['read_source','write_source','edit_source','delete_source','resolve_conflict','run_command','restart_server','db_query','git_tool'],
+  git_control:      ['git_tool','resolve_conflict'],
+  ui_admin:         ['read_source','write_source','edit_source','patch_source','delete_source','search_source','read_directory'],
   web_access:       ['web_search','get_weather','maps_geocode'],
   browser_control:  ['browser_action','http_request'],
+  terminal_control: ['terminal_open','terminal_read','terminal_send','terminal_wait','terminal_list','terminal_close'],
   image_generation: ['generate_image'],
   create_tools:     ['create_tool'],
   diagnostics:      ['read_diagnostics'],
@@ -358,7 +384,12 @@ function _renderSkeleton(count = 6) {
         </div>
       </div>`;
   }
-  grid.innerHTML = html;
+  // Preserve the show-system toggle node (with its bound listener) across the
+  // innerHTML reset — it lives inside the scroller, not as a flow sibling.
+  const toggleRow = document.getElementById('agents-system-toggle-row');
+  grid.classList.remove('carousel');
+  grid.innerHTML = `<div class="agents-squares">${html}</div>`;
+  if (toggleRow) grid.querySelector('.agents-squares').appendChild(toggleRow);
 }
 
 // Re-sync this page after the chat-header dropdown changes agent order or pins.
@@ -376,17 +407,16 @@ app.refreshAgentsOrder = async function refreshAgentsOrder() {
 // (initAgents may still be loading when the user clicks Config from chat).
 window.expandAgent = function expandAgent(agentId) {
   if (!agentId) return;
-  _expandedAgents.set(agentId, { tab: 'config' });
+  _setActive(agentId);
   _saveViewState();
   let attempts = 0;
   const tryRender = () => {
     attempts += 1;
-    const grid = document.getElementById('agents-grid');
     if (_agents.find(a => a.id === agentId)) {
       _renderList();
       requestAnimationFrame(() => {
-        const row = document.querySelector(`.agent-row[data-agent-id="${CSS.escape(agentId)}"]`);
-        if (row && row.scrollIntoView) row.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        const region = document.getElementById('agents-detail-region');
+        if (region && region.scrollIntoView) region.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
       return;
     }
@@ -501,30 +531,171 @@ function _renderList() {
   const grid = document.getElementById('agents-grid');
   if (!grid) return;
 
+  // Preserve the show-system toggle node (with its bound listener) across the
+  // innerHTML reset — it's re-mounted inside the scroller below, not left as a
+  // flow sibling, so the grid fills the panel's full height.
+  const toggleRow = document.getElementById('agents-system-toggle-row');
+
+  const activeId = _activeId();
+  grid.classList.toggle('carousel', !!activeId);
   grid.innerHTML = '';
 
-  // ── Mock card (always first) ──────────────────────────────────────────────
-  const mockAgent = _createMockAgent();
-  const mockExpanded = _expandedAgents.has(MOCK_AGENT_ID);
-  _renderAgentCard(grid, mockAgent, mockExpanded);
+  // ── Squares strip ─────────────────────────────────────────────────────────
+  // Every agent (plus the "New Agent" tile) is a square here. When an agent is
+  // open the strip becomes a single-row carousel (CSS); the open agent keeps its
+  // square but gains an accent ring (.activated). The wrap hosts the edge-fade
+  // chevrons that appear (carousel mode only) when the row overflows.
+  const wrap = document.createElement('div');
+  wrap.className = 'agents-squares-wrap';
+  wrap.innerHTML = `
+    <button type="button" class="agents-carousel-chev left" aria-label="Scroll agents left" tabindex="-1">&#10094;</button>
+    <button type="button" class="agents-carousel-chev right" aria-label="Scroll agents right" tabindex="-1">&#10095;</button>`;
+  const squares = document.createElement('div');
+  squares.className = 'agents-squares';
+  wrap.appendChild(squares);
+  grid.appendChild(wrap);
 
-  // ── Real agents ───────────────────────────────────────────────────────────
-  if (_agents.length === 0) {
-    // No agents yet — just the mock card is fine
-    return;
-  }
+  const mockAgent = _createMockAgent();
+  let activeAgent = activeId === MOCK_AGENT_ID ? mockAgent : null;
+
+  _renderSquare(squares, mockAgent, activeId === MOCK_AGENT_ID);
 
   // Match the chat-header agent dropdown exactly: the server returns agents in
   // the synced sort_order; sortAgentsForDisplay then floats pinned agents to
   // the top. Reordering happens in the dropdown — this page just follows.
-  const ordered = sortAgentsForDisplay(_agents, app.currentUserId);
-  for (const agent of ordered) {
-    const isExpanded = _expandedAgents.has(agent.id);
-    _renderAgentCard(grid, agent, isExpanded);
+  if (_agents.length) {
+    const ordered = sortAgentsForDisplay(_agents, app.currentUserId);
+    for (const agent of ordered) {
+      const isActive = activeId === agent.id;
+      _renderSquare(squares, agent, isActive);
+      if (isActive) activeAgent = agent;
+    }
   }
+
+  // ── Detail region ─────────────────────────────────────────────────────────
+  // The single open agent's full (expanded) card + tabs + panel live here,
+  // below the carousel. Empty/hidden when nothing is open.
+  const region = document.createElement('div');
+  region.id = 'agents-detail-region';
+  grid.appendChild(region);
+  if (activeAgent) {
+    region.classList.add('open');
+    _renderAgentCard(region, activeAgent);
+  }
+
+  // Mount the show-system toggle inside the scroll content so the grid fills the
+  // panel's full height and the floating builder pill hovers over it — mirroring
+  // the chat panel, where one scroller fills the panel and the pill floats. In
+  // grid mode it's a trailing full-width line in the squares scroller; in
+  // carousel mode it rides the shared #agents-grid scroller below the open card.
+  if (toggleRow) {
+    if (activeId) grid.appendChild(toggleRow);
+    else squares.appendChild(toggleRow);
+  }
+
+  // Wire the carousel edge-fades + chevrons (no-op visually until the row
+  // actually overflows in carousel mode).
+  _wireSquaresCarousel(wrap);
 }
 
-function _renderAgentCard(grid, agent, isExpanded) {
+// Edge-fade + chevron wiring for the squares carousel. Mirrors _wireTabCarousel
+// but for the .agents-squares scroller: toggles can-scroll-left/right on the
+// wrap (driving the mask + chevron visibility), scrolls a page per chevron, and
+// supports pointer drag — swallowing the trailing click so a drag never opens an
+// agent.
+function _wireSquaresCarousel(wrap) {
+  const scroller = wrap.querySelector('.agents-squares');
+  if (!scroller) return;
+  const chevLeft  = wrap.querySelector('.agents-carousel-chev.left');
+  const chevRight = wrap.querySelector('.agents-carousel-chev.right');
+
+  const updateAffordances = () => {
+    const maxScroll = scroller.scrollWidth - scroller.clientWidth;
+    const atStart = scroller.scrollLeft <= 1;
+    const atEnd   = scroller.scrollLeft >= maxScroll - 1;
+    const overflowing = maxScroll > 1;
+    wrap.classList.toggle('can-scroll-left',  overflowing && !atStart);
+    wrap.classList.toggle('can-scroll-right', overflowing && !atEnd);
+  };
+
+  scroller.addEventListener('scroll', updateAffordances, { passive: true });
+  // rAF + a short deferred pass cover layout that settles after this render
+  // (carousel-mode reflow, async icon paint); the ResizeObserver then keeps it
+  // current on viewport/visibility changes.
+  requestAnimationFrame(updateAffordances);
+  setTimeout(updateAffordances, 120);
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(updateAffordances).observe(scroller);
+  }
+
+  const page = () => Math.max(scroller.clientWidth * 0.7, 132);
+  if (chevLeft)  chevLeft.addEventListener('click',  e => { e.stopPropagation(); scroller.scrollBy({ left: -page(), behavior: 'smooth' }); });
+  if (chevRight) chevRight.addEventListener('click', e => { e.stopPropagation(); scroller.scrollBy({ left:  page(), behavior: 'smooth' }); });
+
+  // ── Pointer drag-to-scroll ──
+  let dragging = false, startX = 0, startScroll = 0, moved = false;
+  scroller.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    dragging = true; moved = false;
+    startX = e.clientX; startScroll = scroller.scrollLeft;
+  });
+  scroller.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const dx = e.clientX - startX;
+    if (Math.abs(dx) > 4) {
+      moved = true;
+      try { scroller.setPointerCapture(e.pointerId); } catch (_) {}
+    }
+    if (moved) { scroller.scrollLeft = startScroll - dx; e.preventDefault(); }
+  });
+  const endDrag = e => {
+    if (!dragging) return;
+    dragging = false;
+    try { scroller.releasePointerCapture(e.pointerId); } catch (_) {}
+  };
+  scroller.addEventListener('pointerup', endDrag);
+  scroller.addEventListener('pointercancel', endDrag);
+  // Swallow the click that follows a drag so a square isn't selected mid-swipe.
+  scroller.addEventListener('click', e => {
+    if (moved) { e.stopPropagation(); e.preventDefault(); moved = false; }
+  }, true);
+}
+
+// A collapsed square card for the carousel/grid. Clicking it opens (or, if it's
+// the already-open one, closes) the agent. The expanded view is rendered
+// separately into the detail region by _renderAgentCard.
+function _renderSquare(container, agent, isActive) {
+  const isMock = _isMockAgent(agent);
+  const colorClass = isMock ? 'color-blue' : _iconColor(agent);
+  const iconHtml = isMock ? icon('plus', { size: '24px' }) : _renderAgentIcon(agent, '24px');
+  const name = isMock ? 'New Agent' : _displayName(agent);
+
+  const card = document.createElement('div');
+  card.className = 'agent-card agent-square' + (isActive ? ' activated' : '');
+  card.innerHTML = `
+    <div class="agent-card-top">
+      <div class="agent-card-icon-wrap ${colorClass}">${iconHtml}</div>
+      <div class="agent-card-meta">
+        <div class="agent-card-name-row">
+          <span class="agent-card-name">${_esc(name)}</span>
+          ${isMock ? '' : '<span class="agent-status-dot"></span>'}
+        </div>
+      </div>
+    </div>`;
+  card.addEventListener('click', () => _selectAgent(agent));
+
+  const row = document.createElement('div');
+  row.className = 'agent-row';
+  row.dataset.agentId = agent.id;
+  row.appendChild(card);
+  container.appendChild(row);
+}
+
+// Renders the EXPANDED (open) agent's full card + tab bar + detail panel into
+// the given container (the detail region). Only ever called for the single
+// open agent, so the card is always in its wide/active layout. The square in
+// the carousel is what the user clicks to close — this card never toggles.
+function _renderAgentCard(grid, agent) {
   const isMock = _isMockAgent(agent);
 
   const badgeType  = isMock ? 'custom'
@@ -539,21 +710,19 @@ function _renderAgentCard(grid, agent, isExpanded) {
   const isCustom = agent.source === 'custom' || isMock;
 
   const card = document.createElement('div');
-  // The mock "create" card always uses the wide/active layout so the inline
-  // name input + template dropdown have room to render.
-  card.className = 'agent-card' + ((isExpanded || isMock) ? ' active' : '') + (isMock ? ' agent-card-mock' : '');
-  const iconSize = (isExpanded || isMock) ? '20px' : '24px';
-  // For the mock card, the "name" cell is an inline text input plus a template
-  // dropdown toggle. Picking a template prefills the input; typing a name works
+  // Always the wide/active layout — this is the open agent's expanded card.
+  card.className = 'agent-card active' + (isMock ? ' agent-card-mock' : '');
+  const iconSize = '20px';
+  // For the mock card, the "name" cell is an inline contenteditable field plus a
+  // template dropdown toggle. Picking a template prefills the name; typing works
   // too. The big "+" button on the right creates the agent (Enter also works).
-  // type="search" + the autocomplete/ignore attrs keep browser password
-  // managers from offering saved credentials on this field.
+  // It is a contenteditable <div>, NOT an <input>, specifically so browser
+  // password managers never attach their saved-credential popup to it.
   const nameCell = isMock
     ? `<div class="agent-mock-create-field">
-         <input type="search" class="agent-mock-name-input" placeholder="Create a new agent…"
-                name="webagent_new_agent_name" autocomplete="off" autocorrect="off"
-                autocapitalize="none" spellcheck="false" data-lpignore="true" data-1p-ignore
-                data-form-type="other" />
+         <div class="agent-mock-name-input" contenteditable="true" role="textbox"
+              aria-label="New agent name" data-placeholder="Create a new agent…"
+              spellcheck="false"></div>
          <button type="button" class="agent-mock-tpl-toggle" title="Choose a template" disabled></button>
          <div class="agent-mock-tpl-menu" role="listbox" style="display:none"></div>
        </div>`
@@ -590,40 +759,32 @@ function _renderAgentCard(grid, agent, isExpanded) {
     deleteBtn.addEventListener('click', e => { e.stopPropagation(); _deleteAgent(agent); });
   }
 
-  // Clicking the icon when expanded opens the icon picker popover
+  // Clicking the icon opens the icon picker popover. (The expanded card never
+  // toggles itself closed — that's done by clicking its square in the carousel.)
   const iconWrap = card.querySelector('.agent-card-icon-wrap');
   if (iconWrap && !isMock) {
     iconWrap.addEventListener('click', e => {
-      if (isExpanded) {
-        e.stopPropagation();
-        _openIconPicker(iconWrap, agent, null);
-      }
-      // When collapsed, click bubbles up to card → _selectAgent toggles expansion
+      e.stopPropagation();
+      _openIconPicker(iconWrap, agent, null);
     });
   }
 
-  // The mock create card is always expanded; clicking it must not toggle/collapse.
-  if (!isMock) card.addEventListener('click', () => _selectAgent(agent));
-
   if (isMock) _wireMockCreateField(card);
 
-  // Each agent gets its own .agent-row; the detail panel lives inside it
+  // The expanded card lives in its own .agent-row inside the detail region.
   const row = document.createElement('div');
-  row.className = 'agent-row' + ((isExpanded || isMock) ? ' expanded' : '');
+  row.className = 'agent-row expanded';
   row.dataset.agentId = agent.id;
   row.appendChild(card);
 
-  // Only build the detail panel when a specific tab is selected (not just expanded)
+  // The open agent always shows a detail panel (defaulting to the Config tab).
   const state = _expandedAgents.get(agent.id);
-  const hasActiveTab = state && state.tab;
   let panel = null;
-  if (hasActiveTab) {
+  if (state) {
     panel = _buildDetailPanel(agent);
     row.appendChild(panel);
   }
 
-  // Tabs render in both collapsed and expanded states; clicking a tab on a
-  // collapsed card expands it to that tab.
   const cardTabBar = card.querySelector('.agent-card-tabs');
   if (cardTabBar) _populateAgentTabBar(cardTabBar, agent, panel);
   const cardTabWrap = card.querySelector('.agent-card-tabs-wrap');
@@ -636,11 +797,11 @@ function _renderAgentCard(grid, agent, isExpanded) {
 
 function _selectAgent(agent) {
   if (_expandedAgents.has(agent.id)) {
+    // Clicking the already-open agent's square closes it (back to the grid).
     _expandedAgents.delete(agent.id);
   } else {
-    // Expand to show the full card (with tabs) but no detail panel yet.
-    // User clicks a tab to open a specific panel.
-    _expandedAgents.set(agent.id, { tab: null });
+    // Open this one (replacing whatever was open). Only one at a time.
+    _setActive(agent.id);
   }
   _renderList();
   _saveViewState();
@@ -682,7 +843,7 @@ function _mockRandomIcon() {
 async function _fetchMockTemplates() {
   if (_mockTemplatesCache) return _mockTemplatesCache;
   try {
-    const url = `/api/v1/agents/templates?user_id=${encodeURIComponent(app.currentUserId)}&discoverable_only=true${_userIsAdmin ? '&include_admin=true' : ''}`;
+    const url = `/api/v1/agents/templates?user_id=${encodeURIComponent(app.currentUserId)}&discoverable_only=true`;
     const res = await fetch(url);
     _mockTemplatesCache = res.ok ? ((await res.json()).templates || []) : [];
   } catch (e) {
@@ -767,7 +928,7 @@ function _wireMockCreateField(card) {
     card.classList.add('mock-menu-open');
     _populateMockTemplateMenu(menu, (tpl) => {
       input.dataset.templateId = tpl.id;
-      input.value = tpl.name || tpl.id;
+      input.textContent = tpl.name || tpl.id;
       closeMenu();
       input.focus();
     });
@@ -782,21 +943,27 @@ function _wireMockCreateField(card) {
     if (e.key === 'Enter') { e.preventDefault(); _submitMockCreate(input); }
     else if (e.key === 'Escape') { if (menu.style.display === 'block') closeMenu(); else input.blur(); }
   });
+  // Paste as plain text so the contenteditable name never holds markup.
+  input.addEventListener('paste', (e) => {
+    e.preventDefault();
+    const text = (e.clipboardData || window.clipboardData).getData('text').replace(/\s+/g, ' ').trim();
+    document.execCommand('insertText', false, text);
+  });
 
   _ensureMockDocHandler();
 }
 
 async function _submitMockCreate(input) {
-  if (!input || input.disabled) return;
-  const name = input.value.trim();
+  if (!input || input.dataset.busy === '1') return;
+  const name = (input.textContent || '').trim();
   if (!name) return;
-  input.disabled = true;
+  input.dataset.busy = '1';
   try {
     await _postNewAgent({ name, templateId: input.dataset.templateId || 'default' });
   } catch (e) {
     console.warn('agents: quick create failed', e);
     alert('Error creating agent: ' + e.message);
-    input.disabled = false;
+    input.dataset.busy = '';
   }
 }
 
@@ -936,14 +1103,8 @@ function _populateAgentTabBar(tabBar, agent, panel) {
     }
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const entry = _expandedAgents.get(agent.id);
-      if (entry) {
-        // Card is open → switch to the clicked tab (never collapse from tab clicks).
-        _expandedAgents.set(agent.id, { tab: key });
-      } else {
-        // Collapsed → expand to the clicked tab.
-        _expandedAgents.set(agent.id, { tab: key });
-      }
+      // Switch to the clicked tab (tab clicks never collapse the card).
+      _setActive(agent.id, key);
       _renderList();
       _saveViewState();
     });
@@ -1045,10 +1206,12 @@ async function _fetchMembersCount(agent) {
 }
 
 function _refreshAgentTabBar(agent) {
-  const row = document.querySelector(`.agent-row[data-agent-id="${agent.id}"]`);
-  if (!row) return;
-  const tabBar = row.querySelector('.agent-card-tabs');
-  const panel = row.querySelector('.agent-detail-panel');
+  // The tabs + panel only exist on the expanded card in the detail region (the
+  // carousel square shares the data-agent-id but has neither).
+  const region = document.getElementById('agents-detail-region');
+  if (!region) return;
+  const tabBar = region.querySelector('.agent-card-tabs');
+  const panel = region.querySelector('.agent-detail-panel');
   if (tabBar && panel) _populateAgentTabBar(tabBar, agent, panel);
 }
 
@@ -2122,7 +2285,7 @@ function _renderConfigTab(body, agent, panelEl) {
     // Fetch templates
     (async () => {
       try {
-        const url = `/api/v1/agents/templates?user_id=${encodeURIComponent(app.currentUserId)}&discoverable_only=true${_userIsAdmin ? '&include_admin=true' : ''}`;
+        const url = `/api/v1/agents/templates?user_id=${encodeURIComponent(app.currentUserId)}&discoverable_only=true`;
         const res = await fetch(url);
         if (res.ok) {
           const data = await res.json();
@@ -3624,6 +3787,187 @@ function _localLoopLogicObjs(agent) {
   return ll.map(item => ({ ...item }));
 }
 
+// Human label for an ability key (e.g. "agent_management" → "Agent management").
+function _abilityLabel(key) {
+  if (!key) return 'Other';
+  return key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' ');
+}
+
+// Build one tool row for the Tool Availability section: name, description, and
+// either a locked "core" pill or a Sent / Discover segmented toggle that
+// persists immediately. Theme-safe (design-system vars only).
+function _buildExposureRow(agent, t, canEdit) {
+  const row = document.createElement('div');
+  row.style.cssText = 'display:grid;grid-template-columns:1fr 2fr auto;align-items:center;gap:8px;' +
+                      'padding:5px 8px;border-radius:5px;background:var(--bg-2);margin-bottom:4px;';
+
+  const nameEl = document.createElement('span');
+  nameEl.style.cssText = 'font-size:12px;font-weight:500;color:var(--fg-1);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+  nameEl.textContent = t.name;
+  row.appendChild(nameEl);
+
+  const descEl = document.createElement('span');
+  descEl.style.cssText = 'font-size:11px;color:var(--fg-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+  descEl.textContent = t.description || '';
+  row.appendChild(descEl);
+
+  if (t.locked) {
+    const pill = document.createElement('span');
+    pill.className = 'agents-tool-always-on';
+    pill.textContent = 'core';
+    pill.title = 'Core tool — always sent, cannot be changed.';
+    row.appendChild(pill);
+    return row;
+  }
+
+  const seg = document.createElement('div');
+  seg.style.cssText = 'display:flex;border:1px solid var(--border);border-radius:4px;overflow:hidden;flex-shrink:0;font-size:11px;';
+  const MODES = [
+    { id: 'always',       label: 'Sent' },
+    { id: 'discoverable', label: 'Discover' },
+  ];
+  const btns = {};
+  let current = (t.mode === 'discoverable') ? 'discoverable' : 'always';
+
+  function paint(mode) {
+    for (const m of MODES) {
+      const b = btns[m.id];
+      const active = m.id === mode;
+      b.style.cssText =
+        'border:none;padding:3px 10px;border-right:1px solid var(--border);' +
+        'cursor:' + (canEdit ? 'pointer' : 'default') + ';' +
+        (active
+          ? 'background:var(--accent-soft);color:var(--accent);font-weight:600;'
+          : 'background:transparent;color:var(--fg-3);font-weight:400;');
+    }
+    btns['discoverable'].style.borderRight = 'none';
+  }
+
+  async function choose(mode) {
+    if (!canEdit || mode === current) return;
+    const prev = current;
+    current = mode; paint(mode);
+    try {
+      const res = await fetch(`/api/v1/agents/${agent.id}/tools/${encodeURIComponent(t.name)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: app.currentUserId, mode }),
+      });
+      if (!res.ok) throw new Error('save failed');
+    } catch (e) {
+      current = prev; paint(prev);
+    }
+  }
+
+  for (const m of MODES) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = m.label;
+    if (canEdit) b.addEventListener('click', () => choose(m.id));
+    else b.disabled = true;
+    btns[m.id] = b;
+    seg.appendChild(b);
+  }
+  paint(current);
+  row.appendChild(seg);
+  return row;
+}
+
+// Tool Availability section — the authoritative per-agent tool list (from the
+// real loader) with a Sent/Discover exposure toggle per tool. Shown for every
+// agent; toggles are interactive only for agent admins. Grouped by the ability
+// that provides each tool.
+async function _renderToolExposureSection(body, agent) {
+  const group = document.createElement('div');
+  group.className = 'agents-field-group';
+
+  const label = document.createElement('label');
+  label.className = 'agents-field-label';
+  label.textContent = 'Tool Availability';
+  group.appendChild(label);
+
+  const hint = document.createElement('span');
+  hint.className = 'agents-field-hint';
+  hint.textContent = '“Sent” keeps a tool’s full details in the agent’s context every turn. ' +
+    '“Discover” lists it by name only and loads its details when the agent needs it, saving context. ' +
+    'Core tools are always sent.';
+  group.appendChild(hint);
+
+  const listEl = document.createElement('div');
+  listEl.style.cssText = 'margin-top:10px;';
+  const loading = document.createElement('div');
+  loading.style.cssText = 'font-size:12px;color:var(--fg-3);';
+  loading.textContent = 'Loading…';
+  listEl.appendChild(loading);
+  group.appendChild(listEl);
+  body.appendChild(group);
+
+  let data;
+  try {
+    const res = await fetch(`/api/v1/agents/${agent.id}/tools?user_id=${encodeURIComponent(app.currentUserId)}`);
+    data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'failed');
+  } catch (e) {
+    loading.textContent = 'Could not load this agent’s tools.';
+    return;
+  }
+  loading.remove();
+
+  const canEdit = data.user_role === 'admin';
+  const tools = data.tools || [];
+  if (!tools.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'font-size:12px;color:var(--fg-3);';
+    empty.textContent = 'This agent has no tools yet. Enable an ability to add some.';
+    listEl.appendChild(empty);
+    return;
+  }
+
+  // Group by gating ability; "Always available" collects ungated tools.
+  const groups = new Map();
+  for (const t of tools) {
+    const key = t.ability || '__core__';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(t);
+  }
+  const orderedKeys = [...groups.keys()].sort((a, b) => {
+    if (a === '__core__') return -1;
+    if (b === '__core__') return 1;
+    return a.localeCompare(b);
+  });
+
+  for (const key of orderedKeys) {
+    const catTools = groups.get(key);
+    const wrapper = document.createElement('div');
+    wrapper.className = 'agents-tool-category';
+
+    const header = document.createElement('div');
+    header.className = 'agents-tool-category-header collapsed';
+    const labelTxt = key === '__core__' ? 'Always available' : _abilityLabel(key);
+    header.innerHTML = `<span class="agents-tool-category-chevron">▶</span>
+      <span class="agents-tool-category-label">${_esc(labelTxt)}</span>
+      <span class="agents-tool-category-count">${catTools.length}</span>`;
+
+    const catBody = document.createElement('div');
+    catBody.className = 'agents-tool-category-body collapsed';
+
+    header.addEventListener('click', () => {
+      header.classList.toggle('collapsed');
+      catBody.classList.toggle('collapsed');
+      const chevron = header.querySelector('.agents-tool-category-chevron');
+      if (chevron) chevron.textContent = header.classList.contains('collapsed') ? '▶' : '▼';
+    });
+
+    for (const t of catTools) {
+      catBody.appendChild(_buildExposureRow(agent, t, canEdit));
+    }
+
+    wrapper.appendChild(header);
+    wrapper.appendChild(catBody);
+    listEl.appendChild(wrapper);
+  }
+}
+
 async function _renderToolsTab(body, agent, panelEl) {
   if (_isMockAgent(agent)) {
     body.innerHTML = '<div style="padding:20px;color:var(--fg-3);font-size:13px;text-align:center;">Save this agent first to configure tools.</div>';
@@ -3647,106 +3991,14 @@ async function _renderToolsTab(body, agent, panelEl) {
     // non-fatal — proceed without ability-gated tools
   }
 
-  // ── Non-editable: read-only tool list ────────────────────────────────────
-  if (!isEditable) {
-    const tools = _toolsForAgent(agent, enabledAbilities);
-    const toolSet = new Set(tools);
-    const section = document.createElement('div');
-    section.className = 'agents-tools-list';
-    const intro = document.createElement('div');
-    intro.style.cssText = 'font-size:12px;color:#565f89;margin-bottom:14px;line-height:1.5;';
-    intro.textContent = `This agent has access to ${tools.length} tools. Tools marked destructive can modify data or execute code.`;
-    section.appendChild(intro);
+  // ── Tool Availability (Sent vs Discover) — authoritative list for every
+  //    agent, from the real tool loader. Replaces the old client-side
+  //    read-only list, which could show tools the agent didn't actually have.
+  await _renderToolExposureSection(body, agent);
 
-    const agentId = agent.id || '';
-    const isAdmin = agent.is_admin_agent || agentId.startsWith('opt_');
-
-    for (const cat of TOOL_CATEGORIES) {
-      // Check category condition: null=always, 'admin'=admin/optimizer only,
-      // otherwise it's an ability name that must be enabled
-      if (cat.condition === 'admin' && !isAdmin) continue;
-      if (cat.condition && cat.condition !== 'admin' && !enabledAbilities.has(cat.condition)) continue;
-      const catTools = cat.tools.filter(n => toolSet.has(n));
-      if (catTools.length === 0) continue;
-
-      const wrapper = document.createElement('div');
-      wrapper.className = 'agents-tool-category';
-
-      const header = document.createElement('div');
-      header.className = 'agents-tool-category-header collapsed';
-      header.innerHTML = `<span class="agents-tool-category-chevron">▶</span>
-        <span class="agents-tool-category-label">${_esc(cat.label)}</span>
-        <span class="agents-tool-category-count">${catTools.length}</span>`;
-
-      const catBody = document.createElement('div');
-      catBody.className = 'agents-tool-category-body collapsed';
-
-      header.addEventListener('click', () => {
-        header.classList.toggle('collapsed');
-        catBody.classList.toggle('collapsed');
-        const chevron = header.querySelector('.agents-tool-category-chevron');
-        if (chevron) chevron.textContent = header.classList.contains('collapsed') ? '▶' : '▼';
-      });
-
-      for (const name of catTools) {
-        const item = document.createElement('div');
-        item.className = 'agents-tool-item';
-        const isDestructive = DESTRUCTIVE.has(name);
-        item.innerHTML = `
-          <span class="agents-tool-name">${name}</span>
-          <span class="agents-tool-desc">${_esc(TOOL_DESCRIPTIONS[name] || '')}</span>
-          <span class="agents-tool-badge ${isDestructive ? 'destructive' : 'safe'}">
-            ${isDestructive ? 'write' : 'read-only'}
-          </span>
-        `;
-        catBody.appendChild(item);
-      }
-
-      wrapper.appendChild(header);
-      wrapper.appendChild(catBody);
-      section.appendChild(wrapper);
-    }
-
-    // Uncategorized tools (custom skills or tools not in any category)
-    const categorized = new Set(TOOL_CATEGORIES.flatMap(c => c.tools));
-    const uncategorized = tools.filter(n => !categorized.has(n));
-    if (uncategorized.length > 0) {
-      const wrapper = document.createElement('div');
-      wrapper.className = 'agents-tool-category';
-      const header = document.createElement('div');
-      header.className = 'agents-tool-category-header collapsed';
-      header.innerHTML = `<span class="agents-tool-category-chevron">▶</span>
-        <span class="agents-tool-category-label">Custom Skills</span>
-        <span class="agents-tool-category-count">${uncategorized.length}</span>`;
-      const catBody = document.createElement('div');
-      catBody.className = 'agents-tool-category-body collapsed';
-      header.addEventListener('click', () => {
-        header.classList.toggle('collapsed');
-        catBody.classList.toggle('collapsed');
-        const chevron = header.querySelector('.agents-tool-category-chevron');
-        if (chevron) chevron.textContent = header.classList.contains('collapsed') ? '▶' : '▼';
-      });
-      for (const name of uncategorized) {
-        const item = document.createElement('div');
-        item.className = 'agents-tool-item';
-        const isDestructive = DESTRUCTIVE.has(name);
-        item.innerHTML = `
-          <span class="agents-tool-name">${name}</span>
-          <span class="agents-tool-desc">${_esc(TOOL_DESCRIPTIONS[name] || '')}</span>
-          <span class="agents-tool-badge ${isDestructive ? 'destructive' : 'safe'}">
-            ${isDestructive ? 'write' : 'read-only'}
-          </span>
-        `;
-        catBody.appendChild(item);
-      }
-      wrapper.appendChild(header);
-      wrapper.appendChild(catBody);
-      section.appendChild(wrapper);
-    }
-
-    body.appendChild(section);
-    return;
-  }
+  // Non-editable agents (system templates): the availability section is the
+  // whole panel — the guardrail editor below is for custom agents only.
+  if (!isEditable) return;
 
   // ── Editable: full guardrails + per-tool controls ─────────────────────────
 
@@ -4087,9 +4339,22 @@ const _CONN_ICONS = {
   microsoft: 'monitor',
   yahoo:     'mail',
   dropbox:   'folder-open',
+  notion:    'file-text',
+  airtable:  'table',
+  google_sheets: 'sheet',
   github:    'github',
+  gitlab:    'git-branch',
+  jira:      'kanban-square',
   bank:      'landmark',
   search:    'globe',
+  // Payments
+  stripe:    'credit-card',
+  paypal:    'wallet',
+  square:    'square',
+  // CRM & Marketing
+  hubspot:   'contact',
+  salesforce:'cloud',
+  mailchimp: 'mail',
   scraper:         'globe',
   browser_session: 'cookie',
   // Social Media
@@ -4104,15 +4369,18 @@ const _CONN_ICONS = {
   twitch:    'tv',
   // Agent Tools
   codebase_admin:   'folder-cog',
+  git_control:      'git-branch',
+  ui_admin:         'paintbrush',
   create_tools:     'wrench',
   automation:       'clock',
   web_access:       'globe',
   browser_control:  'mouse-pointer-2',
+  terminal_control: 'terminal',
   image_generation: 'image',
   visualizer:       'layout-dashboard',
   agent_orchestration: 'workflow',
   diagnostics:      'stethoscope',
-  agent_management: 'users-cog',
+  agent_management: 'user-cog',
 };
 
 async function _renderConnectionsTab(body, agent) {
@@ -6777,9 +7045,10 @@ async function _postNewAgent({ name, description = '', templateId = 'default', l
   _saveViewState();
   const newId = data.agent && data.agent.id;
   if (newId) {
-    // Auto-expand the new agent's Config tab.
+    // Leave the freshly-created agent open (as the single active agent) on its
+    // Config tab, so creating from the form lands the user straight in it.
     if (_agents.find(a => a.id === newId)) {
-      _expandedAgents.set(newId, { tab: 'config' });
+      _setActive(newId, 'config');
       _saveViewState();
       _renderList();
     }
@@ -6841,11 +7110,12 @@ function _restoreViewState() {
     const { expanded } = JSON.parse(raw);
     if (!expanded || typeof expanded !== 'object') return;
     let changed = false;
+    // Only one agent is open at a time — restore the first still-existing entry.
     for (const [agentId, state] of Object.entries(expanded)) {
-      // Only restore if the agent still exists
       if (_agents.find(a => a.id === agentId)) {
-        _expandedAgents.set(agentId, { tab: state.tab || null });
+        _setActive(agentId, state.tab || 'config');
         changed = true;
+        break;
       }
     }
     if (changed) _renderList();
@@ -6974,15 +7244,12 @@ function _openIconPicker(anchorEl, agent, panelEl) {
 
   function applyIcon(iconName) {
     agent.icon = iconName;
-    // Re-render just the icon in the card
-    const row = document.querySelector(`.agent-row[data-agent-id="${agent.id}"]`);
-    if (row) {
-      const iconWrap = row.querySelector('.agent-card-icon-wrap');
-      if (iconWrap) {
-        const iconSize = row.querySelector('.agent-card.active') ? '20px' : '24px';
-        iconWrap.innerHTML = _renderAgentIcon({ icon: iconName }, iconSize);
-      }
-    }
+    // Re-render the icon everywhere this agent shows: the carousel square (24px)
+    // and the expanded card in the detail region (20px).
+    document.querySelectorAll(`.agent-row[data-agent-id="${CSS.escape(agent.id)}"] .agent-card-icon-wrap`).forEach(iconWrap => {
+      const iconSize = iconWrap.closest('.agent-card.active') ? '20px' : '24px';
+      iconWrap.innerHTML = _renderAgentIcon({ icon: iconName }, iconSize);
+    });
     backdrop.remove();
   }
 

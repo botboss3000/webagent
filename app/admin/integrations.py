@@ -1866,6 +1866,14 @@ _CHANNEL_CONFIG_KEY: dict[str, str] = {
 # turned the ability on, after which agent admins can enable it per-agent.
 _ABILITY_CONFIG_KEY: dict[str, str] = {
     "codebase_admin":   "ability_codebase_admin",
+    # Git Control — structured version control (status/diff/commit/push/branch)
+    # without raw shell access. Pure behavioral toggle (no platform credential —
+    # uses the repo's git + the optional GitHub token), so it lives in
+    # _ALWAYS_ON_ABILITIES (on by default; the per-agent switch is the real gate).
+    "git_control":      "ability_git_control",
+    # UI Admin — edit only front-end files under ui/ (.css/.html); never backend
+    # or shell. Reuses app/admin/ui_guardrails.py. Also a pure behavioral toggle.
+    "ui_admin":         "ability_ui_admin",
     "create_tools":     "ability_create_tools",
     "automation":       "ability_automation",
     "web_access":       "ability_web_access",
@@ -1898,6 +1906,8 @@ _ALWAYS_ON_ABILITIES: set[str] = {
     "agent_orchestration",
     "diagnostics",
     "agent_management",
+    "git_control",
+    "ui_admin",
 }
 
 
@@ -2197,6 +2207,9 @@ async def get_integration_config(
         "telegram_configured":       channel_enabled.get("telegram", False),
         # Agent Tools (host-side privileged capabilities)
         "codebase_admin_configured":   ability_enabled.get("codebase_admin", False),
+        "git_control_configured":      ability_enabled.get("git_control", False),
+        "ui_admin_configured":         ability_enabled.get("ui_admin", False),
+        "terminal_control_configured": ability_enabled.get("terminal_control", False),
         "create_tools_configured":     ability_enabled.get("create_tools", False),
         "automation_configured":       ability_enabled.get("automation", False),
         "web_access_configured":       ability_enabled.get("web_access", False),

@@ -19,10 +19,8 @@ logger = logging.getLogger(__name__)
 # destructive — writes, deletes, or has irreversible side-effects
 # agent_types — which agent type names may use it; [] means all
 BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
-    # ── Core discovery ──
-    "list_tools":                    {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
-    "search_tools":                  {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
-    "get_tool_definition":           {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    # ── Core discovery (always sent, locked) ──
+    "load_tool":                     {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     # ── Web & browser ──
     "web_search":                    {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     "browser_action":                {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
@@ -69,6 +67,14 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     # ── Delegation ──
     "delegate_to_agent":             {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     "list_delegatable_agents":       {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    # ── Terminal control (gated by terminal_control) — open/drive interactive
+    #    terminal programs; open/send/close write, so they pass guardrails ──
+    "terminal_open":                 {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": True,  "agent_types": []},
+    "terminal_read":                 {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    "terminal_send":                 {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": True,  "agent_types": []},
+    "terminal_wait":                 {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    "terminal_list":                 {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    "terminal_close":                {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": True,  "agent_types": []},
     # ── Admin/source (privileged) — write/exec tools pass through guardrails ──
     "read_source":                   {"stages": ["execute_tools"],                               "destructive": False, "requires_confirmation": False, "agent_types": ["admin"]},
     "write_source":                  {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": False, "agent_types": ["admin"]},
@@ -81,6 +87,34 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "register_user":                 {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
     # ── OAuth integration ──
     "check_oauth_connection":        {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
+}
+
+
+# ── Ability → built-in tools map ──────────────────────────────────────────────
+# The authoritative reverse of the per-ability injection blocks in
+# _inject_builtin_tools(). Drives (a) seeding "discoverable" tool modes the
+# moment an ability is toggled on for an agent, and (b) labelling each tool with
+# its ability in the agent Tools panel. Tools NOT listed here (always-on
+# utilities, DB/custom tools, OAuth-integration tools) carry no ability and
+# default to the "always" mode. Keep in sync with the if-blocks below.
+ABILITY_TOOLS: Dict[str, List[str]] = {
+    "web_access":          ["web_search", "maps_geocode", "get_weather"],
+    "diagnostics":         ["read_diagnostics"],
+    "agent_management":    ["list_agent_templates", "list_my_agents", "get_agent",
+                            "create_agent", "update_agent", "edit_agent_prompt",
+                            "set_agent_ability"],
+    "browser_control":     ["browser_action", "http_request"],
+    "image_generation":    ["generate_image"],
+    "codebase_admin":      ["db_query", "read_source", "write_source", "edit_source",
+                            "delete_source", "resolve_conflict", "run_command",
+                            "restart_server"],
+    "create_tools":        ["create_tool"],
+    "agent_orchestration": ["run_optimizer", "delegate_to_agent",
+                            "list_delegatable_agents"],
+    "automation":          ["list_event_sources", "list_delivery_channels",
+                            "event_subscribe"],
+    "terminal_control":    ["terminal_open", "terminal_read", "terminal_send",
+                            "terminal_wait", "terminal_list", "terminal_close"],
 }
 
 
@@ -458,6 +492,12 @@ class ToolLoader:
         )
 
         # ── Communication plugin tools (Telegram, WhatsApp, etc.) ──
+        # Only inject a channel's outbound tools when that channel is actually
+        # active for THIS agent — `enabled_providers` already encodes both gates
+        # (app admin enabled the channel ∩ the agent has the connection on). A
+        # disabled/coming-soon channel therefore injects nothing, so a stray bot
+        # token can't expose send_telegram_message and have a call raise
+        # "bot token not configured" — the source of the spurious Telegram errors.
         try:
             from app.communications.manager import get_plugin_manager
             pm = get_plugin_manager()
@@ -471,6 +511,9 @@ class ToolLoader:
                     None
                 )
                 if _plugin is None:
+                    continue
+                # Channel must be active for this agent (admin-enabled + connected).
+                if _plugin.name not in enabled_providers:
                     continue
                 # Closure capture by value via default args
                 def _build_handler(_p, _n):
@@ -572,6 +615,26 @@ class ToolLoader:
             except ImportError:
                 pass  # admin/source_tools.py not present — source editing disabled
 
+        # ── Git Control — structured git ops only (no shell), gated by "git_control" ──
+        # setdefault inside inject_git_tools means Codebase Admin's git_tool wins
+        # when both are on, so this only adds git when codebase_admin didn't.
+        if "git_control" in enabled_providers:
+            try:
+                from app.admin.source_tools import inject_git_tools
+                inject_git_tools(tools, user_id)
+            except ImportError:
+                pass  # admin/source_tools.py not present — git tools disabled
+
+        # ── UI Admin — file editing confined to ui/ (.css/.html), gated by "ui_admin" ──
+        # Skipped when codebase_admin is on (that's the unrestricted superset), so
+        # an agent with both keeps full access rather than the guardrailed variant.
+        if "ui_admin" in enabled_providers and "codebase_admin" not in enabled_providers:
+            try:
+                from app.admin.ui_tools import inject_ui_tools
+                inject_ui_tools(tools, user_id)
+            except ImportError:
+                pass  # admin/ui_tools.py not present — UI editing disabled
+
         # ── Visualizer tools (page builder: render_visual, list/create/delete/rename/get pages) ──
         # Gated by the "visualizer" ability — only agents whose admin has
         # toggled it on get the page-authoring tools. Without this gate every
@@ -657,9 +720,6 @@ class ToolLoader:
         # ═══════════════════════════════════════════════════════════════
 
         from app.tools.core_tools import (
-            list_tools as _core_list_tools,
-            search_tools as _core_search_tools,
-            get_tool_definition as _core_get_tool_definition,
             web_search as _core_web_search,
             db_query as _core_db_query,
             memory as _core_memory,
@@ -671,108 +731,58 @@ class ToolLoader:
             http_request as _core_http_request,
         )
 
-        # ── Tool discovery ──
-        # Optimizer-pipeline tools are advertised ONLY to the optimizer's own
-        # Planner/Closer agents. For every other agent this is empty so
-        # list_tools / search_tools never surface them (the bug that made the
-        # admin agent discover run_worker_trials and loop on it).
-        BUILTIN_TOOLS = {
-            "run_worker_trials": "Run isolated worker test agents to test proposed optimization changes. Each worker creates a test agent, sends the original user message, and returns the full transcript + metrics.",
-            "handoff_to_closer": "Hand off optimization results to the Closer agent. Pass summary, judging_criteria, baseline_transcript, and worker_results.",
-            "deploy_optimization": "Deploy approved optimization changes to the user's agent. Pass changes_json with element, element_type, and new_content.",
-        } if _is_opt_agent else {}
+        # ── load_tool (core) — activate a discoverable tool ──────────────────
+        # Discoverable tools appear by name + one-line description in the
+        # generated # [TOOLS] index, but their full JSON schema is withheld to
+        # keep context lean. load_tool returns the tool's full input schema AND
+        # records it in the session's active-tools list, so the loop starts
+        # sending its real schema on subsequent turns and it becomes callable.
+        # Mirrors load_skill. Every loaded tool lives in `tools` regardless of
+        # mode (mode only decides whether the schema is sent), so this closure —
+        # capturing the fully-populated dict — can resolve any of them.
+        async def _load_tool_wrapper(name: str):
+            """Activate a tool listed under "Load on demand" in the [TOOLS] section. Returns its full input schema and keeps it callable for the rest of the conversation."""
+            info = tools.get(name)
+            if info is None:
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        f"No tool named '{name}' is available to you. Only load "
+                        f"tools listed in the [TOOLS] section of your prompt."
+                    ),
+                })
+            if session_id:
+                try:
+                    from app.db import get_db as _gd
+                    await _gd().set_session_active_tool(session_id, name, True)
+                except Exception as e:
+                    logger.debug("set_session_active_tool failed: %s", e)
+            desc = (info.handler.__doc__ or "").strip()
+            return json.dumps({
+                "status": "ok",
+                "tool": {
+                    "name": name,
+                    "description": desc,
+                    "parameters": info.parameters,
+                },
+                "message": (
+                    f"Tool '{name}' is now active. You can call it directly for "
+                    f"the rest of this conversation."
+                ),
+            })
 
-        async def _list_tools_wrapper():
-            result = json.loads(await _core_list_tools(user_id=user_id))
-            seen_names = {t.get("name") for t in result.get("tools", [])}
-            # Add optimizer-only tools
-            for name, desc in BUILTIN_TOOLS.items():
-                if name not in seen_names:
-                    if "tools" not in result:
-                        result["tools"] = []
-                    result["tools"].append({"name": name, "description": desc})
-                    seen_names.add(name)
-            # Add all registered built-in tools (no DB tool_id = injected by _inject_builtin_tools)
-            for name, tinfo in tools.items():
-                if name in seen_names or tinfo.tool_id:
-                    continue
-                desc = (tinfo.handler.__doc__ or "").strip()[:300]
-                if not desc:
-                    desc = BUILTIN_TOOL_METADATA.get(name, {}).get("stages", [])[0:1][0] if BUILTIN_TOOL_METADATA.get(name, {}).get("stages") else ""
-                result.setdefault("tools", []).append({"name": name, "description": desc})
-                seen_names.add(name)
-            if "tools" in result:
-                result["count"] = len(result["tools"])
-            return json.dumps(result)
-
-        tools["list_tools"] = ToolInfo(
-            name="list_tools",
-            handler=_list_tools_wrapper,
-            parameters={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        )
-
-        async def _search_tools_wrapper(query: str):
-            result = json.loads(await _core_search_tools(query=query, user_id=user_id))
-            matches = result.get("tools", [])
-            seen_names = {t.get("name") for t in matches}
-            q = query.lower()
-            # Search optimizer-only tools
-            for name, desc in BUILTIN_TOOLS.items():
-                if q in name.lower() or q in desc.lower():
-                    if name not in seen_names:
-                        matches.append({"name": name, "description": desc})
-                        seen_names.add(name)
-            # Search all registered built-in tools
-            for name, tinfo in tools.items():
-                if name in seen_names or tinfo.tool_id:
-                    continue
-                desc = (tinfo.handler.__doc__ or "").strip()[:300]
-                if not desc:
-                    continue
-                if q in name.lower() or q in desc.lower():
-                    matches.append({"name": name, "description": desc})
-                    seen_names.add(name)
-            result["tools"] = matches
-            result["count"] = len(matches)
-            return json.dumps(result)
-
-        tools["search_tools"] = ToolInfo(
-            name="search_tools",
-            handler=_search_tools_wrapper,
+        tools["load_tool"] = ToolInfo(
+            name="load_tool",
+            handler=_load_tool_wrapper,
             parameters={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Keyword to search for in tool names and descriptions"},
+                    "name": {
+                        "type": "string",
+                        "description": "Exact name of the tool to activate (from the [TOOLS] section).",
+                    },
                 },
-                "required": ["query"],
-            },
-        )
-
-        async def _get_tool_definition_wrapper(tool_name: str):
-            # Check optimizer-only tools first
-            if tool_name in BUILTIN_TOOLS:
-                return json.dumps({"status": "ok", "tool": {"name": tool_name, "description": BUILTIN_TOOLS[tool_name], "parameters": {"type": "object", "properties": {}, "required": []}}})
-            # Check all registered built-in tools
-            if tool_name in tools and not tools[tool_name].tool_id:
-                tinfo = tools[tool_name]
-                desc = (tinfo.handler.__doc__ or "").strip()[:500]
-                return json.dumps({"status": "ok", "tool": {"name": tool_name, "description": desc, "parameters": tinfo.parameters}})
-            # Fall through to DB tools table
-            return await _core_get_tool_definition(tool_name=tool_name, user_id=user_id)
-
-        tools["get_tool_definition"] = ToolInfo(
-            name="get_tool_definition",
-            handler=_get_tool_definition_wrapper,
-            parameters={
-                "type": "object",
-                "properties": {
-                    "tool_name": {"type": "string", "description": "Name of the tool to look up"},
-                },
-                "required": ["tool_name"],
+                "required": ["name"],
             },
         )
 
@@ -787,6 +797,7 @@ class ToolLoader:
 
         async def _list_skills_wrapper():
             return await _core_list_skills(agent_id=agent_id, session_id=session_id)
+        _list_skills_wrapper.__doc__ = _core_list_skills.__doc__
 
         tools["list_skills"] = ToolInfo(
             name="list_skills",
@@ -796,6 +807,7 @@ class ToolLoader:
 
         async def _load_skill_wrapper(name: str):
             return await _core_load_skill(name=name, agent_id=agent_id, session_id=session_id)
+        _load_skill_wrapper.__doc__ = _core_load_skill.__doc__
 
         tools["load_skill"] = ToolInfo(
             name="load_skill",
@@ -933,6 +945,18 @@ class ToolLoader:
             async def _amt_set_ability_wrapper(agent_id: str, ability: str, enabled: bool = True):
                 return await _amt_set_ability(agent_id=agent_id, ability=ability,
                                               enabled=enabled, user_id=user_id)
+
+            # The nested wrappers carry no docstring of their own, so the model
+            # would see an empty/generic description. Copy each tool's real usage
+            # doc from the underlying in-process function — this feeds both the
+            # tool-call description and the # [TOOLS] index.
+            _amt_list_templates_wrapper.__doc__ = _amt_list_templates.__doc__
+            _amt_list_agents_wrapper.__doc__    = _amt_list_agents.__doc__
+            _amt_get_agent_wrapper.__doc__      = _amt_get_agent.__doc__
+            _amt_create_agent_wrapper.__doc__   = _amt_create_agent.__doc__
+            _amt_update_agent_wrapper.__doc__   = _amt_update_agent.__doc__
+            _amt_edit_prompt_wrapper.__doc__    = _amt_edit_prompt.__doc__
+            _amt_set_ability_wrapper.__doc__    = _amt_set_ability.__doc__
 
             tools["list_agent_templates"] = ToolInfo(
                 name="list_agent_templates",
@@ -2116,7 +2140,7 @@ async def load_tools(
     # Phase 5: enforce allowed_tools filter.
     # Tier-1 tools are always-on and must never be filtered.
     TIER_1_ALWAYS_ON = {
-        "list_tools", "search_tools", "get_tool_definition",
+        "load_tool",
         "list_skills", "load_skill",
         "get_time", "get_date", "calculate", "read_attachment",
         "register_user",

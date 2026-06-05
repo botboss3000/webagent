@@ -7,15 +7,6 @@
 /* ── 1. CSS Tokens ─────────────────────────────────────────── */
 :root {
   /* Backgrounds */
-  /* --page-bg = the colour actually painted on <body> by index.css (which wins
-     the cascade over --bg-0). Used by edge fades (e.g. the tab carousel chevrons)
-     that must blend seamlessly into the real page background. Keep in sync with
-     index.css's `html, body` / `body.light-mode` background.
-     --page-bg-t0 is the same colour at zero alpha, so edge fades end on a
-     transparent version of the page colour (not the `transparent` keyword,
-     which can interpolate through grey and leave a faint off-colour band). */
-  --page-bg:     #07070c;
-  --page-bg-t0:  rgba(7, 7, 12, 0);
   --bg-0:        #0d0d1a;
   --bg-1:        #13132a;
   --bg-2:        #14142a;
@@ -97,8 +88,6 @@
 
 /* ── 2. Light theme overrides ──────────────────────────────── */
 body.light-mode {
-  --page-bg:     #faf5ee;
-  --page-bg-t0:  rgba(250, 245, 238, 0);
   --bg-0:        #fffaf5;
   --bg-1:        #fff7f0;
   --bg-2:        #fff2e6;
@@ -658,18 +647,46 @@ body.light-mode *::-webkit-scrollbar-thumb:hover {
   padding: 0 4px;
   z-index: 2;
 }
-.main-tabs-chev.left {
-	  left: 0;
-	  justify-content: flex-start;
-	  background: linear-gradient(to right, var(--page-bg) 50%, var(--page-bg-t0) 100%);
-	}
-	.main-tabs-chev.right {
-	  right: 0;
-	  justify-content: flex-end;
-	  background: linear-gradient(to left, var(--page-bg) 50%, var(--page-bg-t0) 100%);
-	}
+/* ── Masked edge-fade carousel — REUSABLE PATTERN ─────────────────────────
+   How the tab strip fades its edges WITHOUT a coloured overlay:
+
+   The chevron buttons stay fully transparent (background lives on the base
+   .main-tabs-chev rule above). The edge fade is produced by a CSS *mask* on the
+   scrolling strip (#main-tabs) — NOT by painting a colour. A mask affects ALPHA
+   only: it fades the tab content itself to transparent at the scrollable edge,
+   so whatever is actually behind the strip shows through.
+
+   Why a mask and not a gradient of the background colour: the header sits over
+   the live stargaze canvas, which continuously REDRAWS the background colour
+   (a warm peach glow that shifts with theme + pointer). No static colour can
+   match a moving target — but a mask paints no colour at all, so it blends into
+   ANY background automatically (light/dark, gradients, the animated canvas).
+
+   The fade only appears on the side that can still scroll, driven by the same
+   `.visible` classes the carousel JS already toggles (index.html
+   updateChevrons()). This is the SAME technique as the agent-card carousel in
+   agents.css (.agent-card-tabs / .agent-card-tabs-chev) — reuse it for any
+   horizontal carousel over a dynamic/themed background:
+     1. transparent chevron buttons positioned over the edges, and
+     2. a left / right / both alpha mask on the scroller, toggled by scroll state. */
+.main-tabs-chev.left  { left: 0;  justify-content: flex-start; }
+.main-tabs-chev.right { right: 0; justify-content: flex-end; }
 .main-tabs-chev.visible { display: flex; }
 .main-tabs-chev:hover { color: var(--fg-1); }
+
+#main-tabs { --tab-fade: 32px; }
+#main-tabs-wrap:has(.main-tabs-chev.left.visible) #main-tabs {
+	  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--tab-fade));
+	          mask-image: linear-gradient(to right, transparent 0, #000 var(--tab-fade));
+	}
+#main-tabs-wrap:has(.main-tabs-chev.right.visible) #main-tabs {
+	  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 var(--tab-fade));
+	          mask-image: linear-gradient(to left, transparent 0, #000 var(--tab-fade));
+	}
+#main-tabs-wrap:has(.main-tabs-chev.left.visible):has(.main-tabs-chev.right.visible) #main-tabs {
+	  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--tab-fade), #000 calc(100% - var(--tab-fade)), transparent 100%);
+	          mask-image: linear-gradient(to right, transparent 0, #000 var(--tab-fade), #000 calc(100% - var(--tab-fade)), transparent 100%);
+	}
 
 /* ── Settings menu items — gap for icon + text ──────────────── */
 .settings-menu-item { gap: 10px; }

@@ -101,50 +101,41 @@ body.light-mode .chat-bubble.agent { --chat-bubble-bg: #ffffff; }
   overflow: visible;
   bottom: 6px;
 }
-/* Chat pill: a soft-bordered control resting on the stage. The glass tint
-   is opaque enough that messages masked behind it never bleed through. */
-#chat-panel .chat-pill {
+/* —— The FLOATING GLASS pill skin — shared by all three floating pills ——
+   CHAT-PILL-SYNC (float skin): the web-chat pill (#chat-panel .chat-pill, over
+   the message list), the agents builder bar (#agent-builder-bar > .chat-pill,
+   over the agent grid), and the Pages prompt bar (#autoagent-prompt-row, over
+   the iframe viewport). The base .chat-pill (app1.css) paints an opaque pill
+   with a hard border; these rules strip that to the transparent-tint +
+   soft-border + blur glass look so all three read as one matched control, each
+   floating on top of its panel's content (which passes behind the glass). The
+   tint is opaque enough that masked/blurred content behind never bleeds
+   through. Geometry/behaviour stay in app1.css; per-panel float LAYOUT (the
+   absolute overlay + vertical lift) lives in each panel's own CSS — change the
+   glass LOOK here so every floating pill updates together. */
+#chat-panel .chat-pill,
+#agent-builder-bar > .chat-pill,
+#autoagent-prompt-row.chat-pill {
   background: color-mix(in oklab, currentColor 7%, transparent) !important;
   border: 1px solid color-mix(in oklab, currentColor 12%, transparent) !important;
   backdrop-filter: blur(12px) saturate(140%) !important;
   -webkit-backdrop-filter: blur(12px) saturate(140%) !important;
 }
-#chat-panel .chat-pill:focus-within {
+#chat-panel .chat-pill:focus-within,
+#agent-builder-bar > .chat-pill:focus-within,
+#autoagent-prompt-row.chat-pill:focus-within {
   border-color: color-mix(in oklab, currentColor 22%, transparent) !important;
   background: color-mix(in oklab, currentColor 9%, transparent) !important;
 }
-#chat-panel .chat-pill.drag-over {
+#chat-panel .chat-pill.drag-over,
+#agent-builder-bar > .chat-pill.drag-over,
+#autoagent-prompt-row.chat-pill.drag-over {
   border: 1px dashed color-mix(in oklab, currentColor 25%, transparent) !important;
   background: color-mix(in oklab, currentColor 10%, transparent) !important;
 }
-#chat-panel .chat-pill-input {
-  background: transparent !important;
-}
-
-/* —— Agent-builder bar (agents page): the SAME floating glass pill as the
-   chat input above. It is no longer a solid bar bolted to the bottom of the
-   panel — it floats on the left, over the agent grid that scrolls behind it,
-   exactly like the chat pill floats on the right over the message list. The
-   base .chat-pill (app1.css) paints it opaque with a hard border; these rules
-   strip that to the transparent-tint + soft-border + blur glass look so the
-   two pills read as a matched pair. #agents-grid already reserves bottom
-   padding so cards pass behind the glass; agents.css owns the vertical lift
-   that sets it a touch higher than the chat pill. —— */
-#agent-builder-bar > .chat-pill {
-  background: color-mix(in oklab, currentColor 7%, transparent) !important;
-  border: 1px solid color-mix(in oklab, currentColor 12%, transparent) !important;
-  backdrop-filter: blur(12px) saturate(140%) !important;
-  -webkit-backdrop-filter: blur(12px) saturate(140%) !important;
-}
-#agent-builder-bar > .chat-pill:focus-within {
-  border-color: color-mix(in oklab, currentColor 22%, transparent) !important;
-  background: color-mix(in oklab, currentColor 9%, transparent) !important;
-}
-#agent-builder-bar > .chat-pill.drag-over {
-  border: 1px dashed color-mix(in oklab, currentColor 25%, transparent) !important;
-  background: color-mix(in oklab, currentColor 10%, transparent) !important;
-}
-#agent-builder-bar .chat-pill-input {
+#chat-panel .chat-pill-input,
+#agent-builder-bar .chat-pill-input,
+#autoagent-prompt-row .chat-pill-input {
   background: transparent !important;
 }
 /* —— Main panel: a real panel (glass) —— */

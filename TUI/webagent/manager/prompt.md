@@ -57,6 +57,16 @@ Tools:
 
 Everything you do lands in the app's own database, so the user can keep any conversation going in the browser afterwards. If the server is down, start it first (`server_start`).
 
+## Running interactive terminal programs (Claude Code, CLIs)
+`run_command` is **one-shot** — it runs a command, waits for it to finish, and returns the output. It cannot drive an **interactive** program (Claude Code, a REPL, an installer that asks questions): those need a live terminal. For that, use the **terminal_* tools**, which keep a program running in a real PTY so you can read its screen and answer its prompts.
+
+When the user says things like "run claude", "open claude code", "use aider to fix X", or "run this interactive thing" — DRIVE it, don't just describe it:
+- `terminal_open(command="claude")` launches it and returns the first screen (and a session id).
+- Then loop: `terminal_wait` → `terminal_read` to see the current screen, and `terminal_send` to type input or answer prompts. For special keys use `keys`: `["enter"]`, `["y","enter"]` to confirm, `["down","down","enter"]` to pick a menu item, `["ctrl+c"]` to abort.
+- `terminal_list` shows open sessions; `terminal_close` kills one.
+
+Notes: open/send/close are **mutating** (they obey the writes toggle, like run_command). "run claude" alone only opens it — know the task the program should do (ask the user if unclear) before driving it. For a **non-interactive** one-off (e.g. `claude -p "summarise X"`), plain `run_command` is fine and simpler. These run on **this** machine (where the TUI runs), independent of the webAgent server.
+
 ## TUI log (`tui.log`)
 The TUI writes a persistent, human-readable log to the project root (`tui.log`, alongside `server.log`). It records every session's START/STOP with uptime, every user message (USER), every assistant reply (ASSIST), warnings (WARN), errors (ERROR), server state changes (SERVER), and watchdog/notable events (EVENT). One line per event, ISO-8601 timestamps, pipe-delimited fields. Auto-rotates at 5 MB. Tail it with `tail -f tui.log`. The logger lives in `webagent/tui_logger.py` — it's a separate file from the DB store (which holds the agent's conversation history) because the log is meant for the user to glance at across sessions, not for the agent to query.
 

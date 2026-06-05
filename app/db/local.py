@@ -4327,6 +4327,174 @@ class LocalBackend(StorageBackend):
             finally:
                 conn.close()
 
+    # ── On-demand tools: per-session active list (lives in sessions.metadata) ──
+    # "active_tools" = names of discoverable tools the agent has pulled into
+    # context this conversation via load_tool. The loop sends a discoverable
+    # tool's full schema only once it appears here. Mirrors active_skills.
+
+    async def get_session_active_tools(self, session_id: str) -> List[str]:
+        if not session_id:
+            return []
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if not row:
+                return []
+            try:
+                meta = json.loads(row["metadata"]) if row["metadata"] else {}
+            except (json.JSONDecodeError, TypeError):
+                return []
+            if not isinstance(meta, dict):
+                return []
+            lst = meta.get("active_tools") or []
+            return [n for n in lst if isinstance(n, str)] if isinstance(lst, list) else []
+        finally:
+            conn.close()
+
+    async def set_session_active_tool(
+        self, session_id: str, name: str, active: bool
+    ) -> List[str]:
+        """Add/remove a tool name in the session's active list. Returns new list."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if not row:
+                    return []
+                try:
+                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                lst = [n for n in (meta.get("active_tools") or []) if isinstance(n, str)]
+                if active:
+                    if name not in lst:
+                        lst.append(name)
+                else:
+                    lst = [n for n in lst if n != name]
+                meta["active_tools"] = lst
+                conn.execute(
+                    "UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(meta), _now_iso(), session_id),
+                )
+                conn.commit()
+                return lst
+            finally:
+                conn.close()
+
+    # ── Per-agent tool modes (lives in agents.metadata under "tool_modes") ──
+    # Flat {tool_name: "always" | "discoverable"} map. Absent tools resolve to
+    # the "always" default (see app/tools/tool_modes.resolve_mode). Core tools
+    # are never stored here — they are always sent and not toggleable.
+
+    async def get_agent_tool_modes(self, agent_id: str) -> Dict[str, str]:
+        if not agent_id:
+            return {}
+        from app.tools.tool_modes import AGENT_TOOL_MODES_KEY, TOGGLEABLE_MODES
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT metadata FROM agents WHERE id = ?", (agent_id,)
+            ).fetchone()
+            if not row:
+                return {}
+            try:
+                meta = json.loads(row["metadata"]) if row["metadata"] else {}
+            except (json.JSONDecodeError, TypeError):
+                return {}
+            modes = (meta or {}).get(AGENT_TOOL_MODES_KEY) or {}
+            if not isinstance(modes, dict):
+                return {}
+            return {k: v for k, v in modes.items()
+                    if isinstance(k, str) and v in TOGGLEABLE_MODES}
+        finally:
+            conn.close()
+
+    async def set_agent_tool_mode(
+        self, agent_id: str, tool_name: str, mode: str
+    ) -> Dict[str, str]:
+        """Set one tool's mode for an agent. mode in {"always","discoverable"};
+        passing anything else clears the explicit setting (back to default).
+        Returns the updated tool_modes map."""
+        from app.tools.tool_modes import AGENT_TOOL_MODES_KEY, TOGGLEABLE_MODES
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT metadata FROM agents WHERE id = ?", (agent_id,)
+                ).fetchone()
+                if not row:
+                    return {}
+                try:
+                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                modes = meta.get(AGENT_TOOL_MODES_KEY)
+                if not isinstance(modes, dict):
+                    modes = {}
+                if mode in TOGGLEABLE_MODES:
+                    modes[tool_name] = mode
+                else:
+                    modes.pop(tool_name, None)
+                meta[AGENT_TOOL_MODES_KEY] = modes
+                conn.execute(
+                    "UPDATE agents SET metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(meta), _now_iso(), agent_id),
+                )
+                conn.commit()
+                return modes
+            finally:
+                conn.close()
+
+    async def seed_agent_tool_modes(
+        self, agent_id: str, tool_names: List[str], mode: str
+    ) -> Dict[str, str]:
+        """Set `mode` for each tool name that has NO explicit setting yet (leaves
+        existing choices untouched). Used to default a newly-enabled ability's
+        tools to "discoverable". Returns the updated map."""
+        from app.tools.tool_modes import AGENT_TOOL_MODES_KEY, TOGGLEABLE_MODES
+        if not tool_names or mode not in TOGGLEABLE_MODES:
+            return await self.get_agent_tool_modes(agent_id)
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT metadata FROM agents WHERE id = ?", (agent_id,)
+                ).fetchone()
+                if not row:
+                    return {}
+                try:
+                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                modes = meta.get(AGENT_TOOL_MODES_KEY)
+                if not isinstance(modes, dict):
+                    modes = {}
+                changed = False
+                for n in tool_names:
+                    if isinstance(n, str) and n not in modes:
+                        modes[n] = mode
+                        changed = True
+                if changed:
+                    meta[AGENT_TOOL_MODES_KEY] = modes
+                    conn.execute(
+                        "UPDATE agents SET metadata = ?, updated_at = ? WHERE id = ?",
+                        (json.dumps(meta), _now_iso(), agent_id),
+                    )
+                    conn.commit()
+                return modes
+            finally:
+                conn.close()
+
     async def neutralize_skill_load(self, session_id: str, name: str) -> int:
         """Overwrite stored load_skill result rows for `name` so the body leaves
         context once the user deactivates the skill. Keeps the row (and its

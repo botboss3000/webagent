@@ -1,18 +1,49 @@
 /* ── AutoAgent Tab ── */
 
-/* ── Footer (page nav above prompt bar, mirroring the web-chat header) ──
-   Background intentionally matches #tab-autoagent so the bottom-faded
-   iframe melts into the footer with no visible seam. */
+/* ── Footer (page nav above prompt bar) ──
+   PILL-PANEL-LAYOUT: this is the Pages-page instance of the "floating pill over
+   full-height content" rule (canonical block at #chat-input-area in app1.css;
+   see also docs/claude/ui-guidance.md). It is NOT a flow footer that reserves
+   height — it's an ABSOLUTE OVERLAY pinned to the bottom, so #autoagent-viewport
+   (flex:1) fills the whole container and this page-nav + prompt pill float over
+   it, exactly like the chat pill over the message list and the agents builder
+   bar over the grid. pointer-events:none here + auto on the controls below lets
+   iframe clicks pass through the transparent gaps. */
 
 #autoagent-footer {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 0 20px 12px;
   background: transparent;
-  flex-shrink: 0;
-  position: relative;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  pointer-events: none;
+  /* PILL-PANEL-ALIGN: the prompt pill is the bottom child, so this padding-bottom
+     IS the pill's bottom offset from the panel floor. It must equal the web-chat
+     pill's bottom offset (right panel) so the two pills line up — the SAME
+     computed value the agents builder bar uses. The chat pill floats this far
+     above its floor (see #chat-input-area in app1.css):
+        --chat-area-bottom-inset = #chat-input-area `bottom`        (8px)
+      + --chat-pill-footer-gap   = #chat-input-area `gap`           (6px)
+      + --chat-footer-row-h      = rendered .chat-footer-row height (18px)
+     The Pages pill has no footer row of its own, so it reproduces that offset
+     here. Keep these vars in sync with #agent-builder-bar in agents.css and the
+     reciprocal note at #chat-input-area in app1.css; if a panel border/margin
+     ever makes the floors diverge, add that delta. */
+  --chat-area-bottom-inset: 8px;
+  --chat-pill-footer-gap: 6px;
+  --chat-footer-row-h: 18px;
+  padding: 0 20px calc(var(--chat-area-bottom-inset) + var(--chat-pill-footer-gap) + var(--chat-footer-row-h));
 }
+/* Only the VISIBLE controls capture clicks — the compact nav chip and the pill
+   itself — so the rest of the overlay (including the empty band beside the chip)
+   is click-through to the iframe behind it. (Their full-width row wrappers stay
+   click-through, or they'd block the iframe.) */
+#aa-page-label,
+#autoagent-prompt-row { pointer-events: auto; }
 
 /* Collapse the whole footer when toggled — viewport takes the full height
    and the floating expand button is shown via the rule below. */
@@ -60,7 +91,11 @@ body.light-mode .aa-footer-expand:hover {
   color: #cc6a28;
 }
 
-/* ── Page Nav Bar ── */
+/* ── Page Nav Bar ──
+   PILL-PANEL-LAYOUT: a compact floating control, not a full-width bar. Since
+   the nav now floats over the iframe (rather than sitting in a solid footer),
+   it hugs its content and left-aligns so only a small selector chip overlays
+   the page — matching how the prompt pill floats rather than spanning. */
 
 #autoagent-page-nav { width: 100%; }
 
@@ -70,9 +105,12 @@ body.light-mode .aa-footer-expand:hover {
   gap: 4px;
   color: #565f89;
   font-size: 11px;
-  width: 100%;
+  width: fit-content;
+  max-width: 100%;
 }
-#aa-page-label .session-dropdown { flex: 1 1 auto; min-width: 0; }
+/* Size to content but cap it so a long page title truncates (ellipsis rule
+   below) instead of stretching the chip across the viewport. */
+#aa-page-label .session-dropdown { flex: 0 1 auto; min-width: 0; max-width: 260px; }
 
 /* The shared .session-dropdown-trigger #session-dropdown-label rule in
    app1.css uses an ID descendant selector that doesn't pick up our new
@@ -214,22 +252,16 @@ body.light-mode #aa-page-label { color: #b09580; }
 }
 
 /* ── Viewport (iframe area) ──
-   Soft fade at the bottom so iframe content melts into the footer area
-   as it approaches the prompt bar — mirrors #agents-grid's top fade. */
+   PILL-PANEL-LAYOUT: the full-height content the prompt pill floats over. With
+   the footer now an absolute overlay, flex:1 fills the entire container. No fade
+   mask — per the floating philosophy (see #chat-panel in index.css) the iframe
+   content passes BEHIND the translucent glass pill rather than melting into a
+   solid footer; a mask would clip that bottom content and break the effect. */
 
 #autoagent-viewport {
   flex: 1;
   position: relative;
   overflow: hidden;
-  -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 24px), transparent 100%);
-          mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 24px), transparent 100%);
-}
-
-/* When the footer collapses, drop the bottom fade — there's no longer a
-   footer for the content to melt into. */
-#autoagent-container:has(#autoagent-footer.aa-collapsed) #autoagent-viewport {
-  -webkit-mask-image: none;
-          mask-image: none;
 }
 
 .aa-iframe {

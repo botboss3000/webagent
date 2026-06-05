@@ -935,6 +935,37 @@ async def stream_agent_events(
            "count": len(_int_summary),
            "integrations": _int_summary}
 
+    # ── Tool exposure index (# [TOOLS]) ──────────────────────────────────────
+    # Generate the tool catalog from the ACTUAL loaded tool set: tools sent in
+    # full this turn ("ready to use") and tools whose schema is withheld until
+    # load_tool pulls them in ("load on demand"). This replaces the hand-written
+    # bootstrap-tool prompt slots (which could name tools the agent didn't have).
+    # `_agent_tool_modes` is stable for the run; the active set grows as the
+    # model loads discoverable tools.
+    _agent_tool_modes: Dict[str, str] = {}
+    _active_tool_names: List[str] = []
+    try:
+        from app.tools.tool_modes import resolve_mode as _tm_resolve, render_index as _tm_render
+        if agent_id:
+            _agent_tool_modes = await db.get_agent_tool_modes(agent_id)
+        if session_id:
+            _active_tool_names = await db.get_session_active_tools(session_id)
+        _active_set = set(_active_tool_names)
+        _idx_entries = []
+        for _tn, _ti in tools.items():
+            _d = (_ti.handler.__doc__ or "").strip() if hasattr(_ti, "handler") else ""
+            _idx_entries.append({
+                "name": _tn,
+                "desc": _d,
+                "mode": _tm_resolve(_tn, _agent_tool_modes),
+                "active": _tn in _active_set,
+            })
+        _tools_index = _tm_render(_idx_entries)
+        if _tools_index:
+            system_prompt = (system_prompt or "") + "\n\n" + _tools_index
+    except Exception as _tie:
+        logger.warning("tools index build failed: %s", _tie)
+
     # Build message list
     messages: List[Dict[str, Any]] = []
     if system_prompt:
@@ -1123,9 +1154,23 @@ async def stream_agent_events(
                                 )
                             messages.append({"role": "system", "content": granted_text})
 
-            # Build tool definitions from loaded tools
+            # Build tool definitions from loaded tools — only the schemas the
+            # model may call THIS turn: core/always tools, plus any discoverable
+            # tool it has already loaded. Re-read the session's active list each
+            # turn so a tool loaded via load_tool last turn now gets its full
+            # schema sent (modes are stable for the run; the active set grows).
+            from app.tools.tool_modes import is_sent as _tm_is_sent
+            if session_id:
+                try:
+                    _active_set_now = set(await db.get_session_active_tools(session_id))
+                except Exception:
+                    _active_set_now = set(_active_tool_names)
+            else:
+                _active_set_now = set(_active_tool_names)
             tool_definitions = []
             for name, info in tools.items():
+                if not _tm_is_sent(name, _agent_tool_modes, _active_set_now):
+                    continue
                 description = info.handler.__doc__ if hasattr(info, 'handler') and info.handler.__doc__ else f"Execute {name}"
                 description = description.split("\n")[0]
                 tool_definitions.append({

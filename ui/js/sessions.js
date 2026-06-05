@@ -906,6 +906,20 @@ export async function populateSessionSelect(userId) {
  * Shows a warning triangle + count for interrupted/errored sessions,
  * and a running count for in-progress sessions.
  */
+// Swap the badge's lucide icon to a new name. Once an icon is rendered it
+// carries the `.lucide` class, which the auto-renderer treats as "already done"
+// and skips — so changing data-lucide alone won't repaint it. Stripping the
+// class makes it an unprocessed placeholder again, then we render that node.
+function _setBadgeIcon(badge, name) {
+  const el = badge.querySelector('[data-lucide]');
+  if (!el) return;
+  el.setAttribute('data-lucide', name);
+  el.classList.remove('lucide');
+  if (window.lucide && typeof window.lucide.createIcons === 'function') {
+    try { window.lucide.createIcons({ nodes: [el] }); } catch (_) {}
+  }
+}
+
 function _updateHeaderSessionCounter() {
   const badge = document.getElementById('header-session-counter');
   const countEl = document.getElementById('header-session-count');
@@ -928,8 +942,7 @@ function _updateHeaderSessionCounter() {
       ? '1 session needs attention'
       : `${needingAttention} sessions need attention`;
     // Reset to warning icon
-    const iconEl = badge.querySelector('[data-lucide]');
-    if (iconEl) iconEl.setAttribute('data-lucide', 'alert-triangle');
+    _setBadgeIcon(badge, 'alert-triangle');
     badge.className = 'header-notif-badge';
   } else if (running > 0) {
     countEl.textContent = running;
@@ -937,8 +950,7 @@ function _updateHeaderSessionCounter() {
     badge.title = running === 1
       ? '1 session running'
       : `${running} sessions running`;
-    const iconEl = badge.querySelector('[data-lucide]');
-    if (iconEl) iconEl.setAttribute('data-lucide', 'loader-2');
+    _setBadgeIcon(badge, 'loader-2');
     badge.className = 'header-notif-badge header-notif-running';
   } else if (unread > 0) {
     countEl.textContent = unread;
@@ -946,8 +958,7 @@ function _updateHeaderSessionCounter() {
     badge.title = unread === 1
       ? '1 session with new response'
       : `${unread} sessions with new responses`;
-    const iconEl = badge.querySelector('[data-lucide]');
-    if (iconEl) iconEl.setAttribute('data-lucide', 'check-circle');
+    _setBadgeIcon(badge, 'check-circle');
     badge.className = 'header-notif-badge header-notif-unread';
   } else {
     badge.style.display = 'none';
@@ -1629,7 +1640,6 @@ export function registerSessionApi() {
 }
 
 export function initSessions() {
-
   // ── Theme system ──
   const STORAGE_KEY = 'webagent_theme';
 
@@ -2284,6 +2294,8 @@ export function initSessions() {
       if (_agentsCache.length > 1) { _openAgentPicker(); return; }
       // 1 agent → use it; 0 agents → start with no agent selected.
       _startNewSession(_agentsCache.length === 1 ? _agentsCache[0].id : null);
+    } catch (err) {
+      console.error('New-session click failed:', err);
     } finally {
       _newSessionBusy = false;
     }

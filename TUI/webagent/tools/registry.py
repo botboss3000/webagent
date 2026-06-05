@@ -29,6 +29,7 @@ from . import (
     webapp,
     server,
     shell,
+    terminal,
     update,
     web_search,
 )
@@ -453,6 +454,58 @@ def _base_specs() -> list[ToolSpec]:
             "properties": {"code": _STR, "timeout": {"type": "integer", "default": 60}},
             "required": ["code"],
         }, shell.run_python, mutating=True),
+        # ── Terminal control (drive interactive programs: Claude Code, CLIs) ──
+        # run_command is one-shot (run, wait, return). These keep an INTERACTIVE
+        # program alive in a PTY so the agent can read its screen and answer its
+        # prompts — open it, wait, read, send, repeat. needs_project=False so it
+        # works in onboarding mode too.
+        ToolSpec("terminal_open", (
+            "Open a NEW local terminal session and optionally run a command in it "
+            "(e.g. command='claude' to start Claude Code, 'python', 'aider', or "
+            "blank for a shell). Returns a session id + the first screen. Use this "
+            "to launch any interactive program you then drive. Mutating."), {
+            "type": "object",
+            "properties": {"command": {**_STR, "default": ""}, "name": {**_STR, "default": ""},
+                           "wait": {"type": "boolean", "default": True}},
+        }, terminal.terminal_open, mutating=True, needs_project=False),
+        ToolSpec("terminal_read", (
+            "Read what's currently on a terminal session's screen (recent output, "
+            "ANSI-cleaned). Read-only."), {
+            "type": "object",
+            "properties": {"session_id": _STR, "tail_chars": {"type": "integer", "default": 4000},
+                           "raw": {"type": "boolean", "default": False}},
+            "required": ["session_id"],
+        }, terminal.terminal_read, mutating=False, needs_project=False),
+        ToolSpec("terminal_send", (
+            "Type into a terminal session. `text` is typed as-is; enter=true runs "
+            "it. `keys` sends named special keys in order to answer prompts / "
+            "navigate: e.g. ['enter'], ['y','enter'], ['down','down','enter'], "
+            "['ctrl+c']. With wait=true it waits for the program to react and "
+            "settle, then returns the screen. Mutating."), {
+            "type": "object",
+            "properties": {"session_id": _STR, "text": {**_STR, "default": ""},
+                           "enter": {"type": "boolean", "default": True},
+                           "keys": {"type": "array", "items": _STR},
+                           "wait": {"type": "boolean", "default": True},
+                           "quiet_secs": {"type": "number", "default": 0.6},
+                           "timeout": {"type": "number", "default": 30}},
+            "required": ["session_id"],
+        }, terminal.terminal_send, mutating=True, needs_project=False),
+        ToolSpec("terminal_wait", (
+            "Block until the program reacts and then goes quiet for quiet_secs "
+            "(done, waiting for input), or timeout passes; returns the screen. Use "
+            "after a slow command. Read-only."), {
+            "type": "object",
+            "properties": {"session_id": _STR, "quiet_secs": {"type": "number", "default": 0.6},
+                           "timeout": {"type": "number", "default": 30}},
+            "required": ["session_id"],
+        }, terminal.terminal_wait, mutating=False, needs_project=False),
+        ToolSpec("terminal_list", "List your open local terminal sessions. Read-only.", {
+            "type": "object", "properties": {},
+        }, terminal.terminal_list, mutating=False, needs_project=False),
+        ToolSpec("terminal_close", "Kill a terminal session and the program in it. Mutating.", {
+            "type": "object", "properties": {"session_id": _STR}, "required": ["session_id"],
+        }, terminal.terminal_close, mutating=True, needs_project=False),
         # ── Source Control ─────────────────────────────────────────────────
         ToolSpec("git_tool", (
             "Structured git. Read-only: status, log, diff, show, branch, remote, "

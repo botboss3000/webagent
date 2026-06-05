@@ -21,7 +21,12 @@ _REGISTRY_PATH = Path(__file__).resolve().parent / "registry.json"
 DEFAULT_REGISTRY = {
     "webhook_base_url": "",
     "plugins": {
-        "telegram": {"enabled": True},
+        # Off by default. A channel only goes live when the app admin enables it
+        # in App Config → Channels (which writes the `channel_telegram` flag) AND
+        # a bot token is present. Hard-enabling here meant a fresh install with a
+        # stray token would start polling and log auth errors before anyone opted
+        # in — the source of the "Telegram always errors" reports.
+        "telegram": {"enabled": False},
     },
 }
 
@@ -179,8 +184,10 @@ class PluginManager:
                 seen_tokens.add(token)
                 await self._start_extra_telegram_poller(token, row["agent_id"])
             except Exception as e:
-                logger.error("Error starting agent Telegram poller for agent %s: %s",
-                             row.get("agent_id"), e)
+                # A bad/expired per-agent token is a user config issue, not a
+                # server fault — warn (don't ERROR into the diagnostics recorder).
+                logger.warning("Skipping agent Telegram poller for agent %s: %s",
+                               row.get("agent_id"), e)
 
     async def _start_extra_telegram_poller(self, token: str, agent_id: str) -> None:
         """Spin up an additional TelegramPlugin poller for a per-agent bot token."""
@@ -212,7 +219,9 @@ class PluginManager:
                 logger.info("Started extra Telegram poller for agent %s (token ...%s, offset=%d)",
                             agent_id, token[-4:], last_update_id)
         except Exception as e:
-            logger.error("Failed to start extra Telegram poller: %s", e)
+            # Invalid token / network blip — warn rather than ERROR so a single
+            # misconfigured agent can't spam the flight recorder on every boot.
+            logger.warning("Could not start extra Telegram poller: %s", e)
 
     async def reload_agent_connections(self) -> None:
         """Reload per-agent Telegram connections (called after UI saves a new token).

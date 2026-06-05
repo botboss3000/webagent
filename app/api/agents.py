@@ -1173,16 +1173,28 @@ _CONNECTION_CATALOG = [
     {"connection_type": "whatsapp",  "section": "channel",     "display_name": "WhatsApp",         "status": "coming_soon"},
     {"connection_type": "discord",   "section": "channel",     "display_name": "Discord",          "status": "coming_soon"},
     {"connection_type": "slack",     "section": "channel",     "display_name": "Slack",            "status": "coming_soon"},
-    # ── Integrations ──
+    # ── Integrations · Productivity ──
     {"connection_type": "google",    "section": "integration", "display_name": "Google",           "status": "available"},
     {"connection_type": "microsoft", "section": "integration", "display_name": "Microsoft 365",    "status": "available"},
     {"connection_type": "yahoo",     "section": "integration", "display_name": "Yahoo",            "status": "available"},
     {"connection_type": "dropbox",   "section": "integration", "display_name": "Dropbox",          "status": "available"},
+    {"connection_type": "notion",        "section": "integration", "display_name": "Notion",        "status": "coming_soon"},
+    {"connection_type": "airtable",      "section": "integration", "display_name": "Airtable",      "status": "coming_soon"},
+    {"connection_type": "google_sheets", "section": "integration", "display_name": "Google Sheets", "status": "coming_soon"},
+    # ── Integrations · Developer ──
     {"connection_type": "github",    "section": "integration", "display_name": "GitHub",           "status": "coming_soon"},
+    {"connection_type": "gitlab",    "section": "integration", "display_name": "GitLab",           "status": "coming_soon"},
+    {"connection_type": "jira",      "section": "integration", "display_name": "Jira / Linear",    "status": "coming_soon"},
+    # ── Integrations · CRM & Email ──
+    {"connection_type": "hubspot",    "section": "integration", "display_name": "HubSpot",         "status": "coming_soon"},
+    {"connection_type": "salesforce", "section": "integration", "display_name": "Salesforce",      "status": "coming_soon"},
+    {"connection_type": "mailchimp",  "section": "integration", "display_name": "Mailchimp",       "status": "coming_soon"},
+    # ── Integrations · Payments ──
+    {"connection_type": "stripe",    "section": "integration", "display_name": "Stripe",           "status": "coming_soon"},
+    {"connection_type": "paypal",    "section": "integration", "display_name": "PayPal",           "status": "coming_soon"},
+    {"connection_type": "square",    "section": "integration", "display_name": "Square",           "status": "coming_soon"},
     {"connection_type": "bank",      "section": "integration", "display_name": "Bank Accounts",    "status": "coming_soon"},
     {"connection_type": "search",    "section": "integration", "display_name": "Search Engine",    "status": "coming_soon"},
-    {"connection_type": "scraper",          "section": "integration", "display_name": "Web Scraper",     "status": "available"},
-    {"connection_type": "browser_session",  "section": "integration", "display_name": "Browser Session", "status": "available"},
     # ── Social Media ──
     {"connection_type": "facebook",  "section": "social",      "display_name": "Facebook",         "status": "available"},
     {"connection_type": "instagram", "section": "social",      "display_name": "Instagram",        "status": "available"},
@@ -1201,6 +1213,8 @@ _CONNECTION_CATALOG = [
 
     # ── Agent Tools (host-side privileged capabilities) ──
     {"connection_type": "codebase_admin",   "section": "ability", "display_name": "Codebase Admin",   "status": "available"},
+    {"connection_type": "git_control",      "section": "ability", "display_name": "Git Control",      "status": "available"},
+    {"connection_type": "ui_admin",         "section": "ability", "display_name": "UI Admin",         "status": "available"},
     {"connection_type": "create_tools",     "section": "ability", "display_name": "Create Tools",     "status": "available"},
     {"connection_type": "automation",       "section": "ability", "display_name": "Automation",       "status": "available"},
     {"connection_type": "web_access",       "section": "ability", "display_name": "Web Access",       "status": "available"},
@@ -1211,6 +1225,11 @@ _CONNECTION_CATALOG = [
     {"connection_type": "diagnostics",      "section": "ability", "display_name": "Diagnostics",      "status": "available"},
     {"connection_type": "agent_management", "section": "ability", "display_name": "Agent Management", "status": "available"},
     {"connection_type": "terminal_control", "section": "ability", "display_name": "Terminal Control",  "status": "available"},
+    # Generic providers — non-OAuth helpers grouped under Agent Tools (was its
+    # own "Generic Providers" category). scraper needs an admin scraper_config;
+    # browser_session is per-user (uploaded cookies).
+    {"connection_type": "scraper",          "section": "ability", "display_name": "Web Scraper",      "status": "available"},
+    {"connection_type": "browser_session",  "section": "ability", "display_name": "Browser Session",  "status": "available"},
 ]
 
 
@@ -1379,6 +1398,18 @@ async def upsert_agent_connection(
         config=new_config,
     )
 
+    # Newly-enabled ability → default its tools to "discoverable" (hybrid rule).
+    # Only sets tools that have no explicit per-tool mode yet, so prior choices
+    # survive. No-op for abilities that provide no built-in tools.
+    if req.enabled:
+        try:
+            from app.tools.tool_modes import tools_for_ability
+            _seed = tools_for_ability(connection_type)
+            if _seed:
+                await db.seed_agent_tool_modes(agent_id, _seed, "discoverable")
+        except Exception as _se:
+            logger.debug("tool-mode seed (connection %s) failed: %s", connection_type, _se)
+
     # Signal manager to reload Telegram connections if needed
     if connection_type == "telegram":
         try:
@@ -1403,6 +1434,93 @@ async def upsert_agent_connection(
             "config": resp_config,
         }
     }
+
+
+class SetToolModeRequest(BaseModel):
+    user_id: str
+    mode: str  # "always" | "discoverable" | (anything else clears the override)
+
+
+@router.get("/agents/{agent_id}/tools")
+async def list_agent_tools(agent_id: str, user_id: str = Query(...)):
+    """Return the agent's actual loaded tool set with each tool's exposure mode.
+
+    Drives the per-agent Tools panel. The list comes from the real tool loader
+    (after ability gating), so it matches exactly what the agent can use. Each
+    entry carries: name, description, ability (the gating ability or null),
+    the resolved mode (core / always / discoverable), locked (core tools), and
+    whether its full schema is sent by default.
+    """
+    import json as _json
+    db = get_db()
+    agent = await db.get_agent_by_id(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+
+    from app.tools.loader import load_tools
+    from app.tools.tool_modes import (
+        resolve_mode, is_locked, is_sent, ability_for_tool,
+    )
+
+    allowed = agent.get("allowed_tools")
+    if isinstance(allowed, str):
+        try:
+            allowed = _json.loads(allowed)
+        except Exception:
+            allowed = []
+
+    try:
+        tools = await load_tools(
+            user_id,
+            agent_id=agent_id,
+            agent_template_id=agent.get("template_id"),
+            allowed_tools=allowed or [],
+            session_id="",
+        )
+    except Exception as e:
+        logger.warning("list_agent_tools: load_tools failed for %s: %s", agent_id, e)
+        tools = {}
+
+    modes = await db.get_agent_tool_modes(agent_id)
+    out: list[dict] = []
+    for name, info in sorted(tools.items()):
+        try:
+            desc = (info.handler.__doc__ or "").strip().split("\n")[0]
+        except Exception:
+            desc = ""
+        out.append({
+            "name": name,
+            "description": desc,
+            "ability": ability_for_tool(name),
+            "mode": resolve_mode(name, modes),
+            "locked": is_locked(name),
+            "sent": is_sent(name, modes, []),
+            "destructive": bool(getattr(info, "destructive", False)
+                                or getattr(info, "requires_confirmation", False)),
+        })
+    is_admin = await _is_agent_admin(db, agent_id, user_id)
+    return {"tools": out, "count": len(out),
+            "user_role": "admin" if is_admin else "member"}
+
+
+@router.put("/agents/{agent_id}/tools/{tool_name}")
+async def set_agent_tool_mode_endpoint(
+    agent_id: str, tool_name: str, req: SetToolModeRequest,
+):
+    """Set how a tool is exposed to the agent: 'always' (full schema every turn)
+    or 'discoverable' (load on demand). Any other value clears the override back
+    to the default. Core tools cannot be changed."""
+    db = get_db()
+    if not await _is_agent_admin(db, agent_id, req.user_id):
+        raise HTTPException(status_code=403, detail="Only agent admins can change tool settings.")
+    from app.tools.tool_modes import is_locked, resolve_mode
+    if is_locked(tool_name):
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{tool_name}' is a core tool — it is always available and cannot be changed.",
+        )
+    modes = await db.set_agent_tool_mode(agent_id, tool_name, req.mode)
+    return {"tool": {"name": tool_name, "mode": resolve_mode(tool_name, modes)}}
 
 
 @router.get("/agents/{agent_id}/connections/google/authorize")
@@ -2101,6 +2219,17 @@ async def upsert_agent_ability(
         enabled=req.enabled,
         source=new_source,
     )
+
+    # Newly-enabled ability → default its tools to "discoverable" (hybrid rule).
+    # No-op for OAuth abilities that provide no built-in tools.
+    if req.enabled:
+        try:
+            from app.tools.tool_modes import tools_for_ability
+            _seed = tools_for_ability(ability_id)
+            if _seed:
+                await db.seed_agent_tool_modes(agent_id, _seed, "discoverable")
+        except Exception as _se:
+            logger.debug("tool-mode seed (ability %s) failed: %s", ability_id, _se)
 
     # Check whether the existing token already covers this ability — if not,
     # build a fresh authorize URL so the UI can prompt re-consent.

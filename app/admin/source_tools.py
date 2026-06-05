@@ -733,3 +733,24 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
         "Injected admin tools: read/write/edit/patch/delete/run/run_python/restart/search/dir/git/resolve_conflict (%d tools)",
         len(tools),
     )
+
+
+def inject_git_tools(tools: dict, user_id: str) -> None:
+    """Inject ONLY the structured git tools (no shell / file / python access).
+
+    Backs the standalone "Git Control" ability: an agent can run version-control
+    operations (status / log / diff / commit / push / branch + resolve_conflict)
+    without the full Codebase Admin toolset. Reuses the existing `git_tool`
+    handler by building the source tools into a throwaway dict and copying just
+    the git entries. `setdefault` so that when Codebase Admin is also enabled its
+    (identical) git_tool is left in place rather than double-registered.
+    """
+    tmp: dict = {}
+    try:
+        inject_source_tools(tmp, user_id)
+    except Exception as e:  # pragma: no cover
+        logger.warning("Git Control: could not build base source tools: %s", e)
+        return
+    for name in ("git_tool", "resolve_conflict"):
+        if name in tmp:
+            tools.setdefault(name, tmp[name])

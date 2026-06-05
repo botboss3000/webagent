@@ -28,30 +28,168 @@
 }
 
 
-/* ── Card grid ── */
+/* ── Card grid ──
+   Outer shell: a flex column holding the squares strip and (when an agent is
+   open) the expanded detail region below it.
+   - Grid mode: the shell doesn't scroll; the squares scroller fills it.
+   - Carousel mode: the shell becomes the SINGLE vertical scroll container for
+     both the carousel row and the expanded card, so scrolling down lifts the
+     carousel off-screen and gives the card full height. */
 #agents-grid {
   flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#agents-grid.carousel {
   overflow-y: auto;
-  padding: 16px 20px;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #2a2a4a transparent;
+}
+#agents-grid.carousel::-webkit-scrollbar { width: 5px; }
+#agents-grid.carousel::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+
+/* The squares wrapper — hosts the scroller plus (in carousel mode) the
+   edge-fade chevron buttons. In grid mode it's a transparent pass-through that
+   just lets the scroller fill the panel. */
+.agents-squares-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  position: relative;
+}
+
+/* The agent squares (scroller).
+   Default (no agent open): a wrapping grid that scrolls vertically and fills
+   the whole panel. */
+.agents-squares {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-wrap: wrap;
   align-content: flex-start;
   gap: 12px;
+  padding: 16px 20px 120px;
   scrollbar-width: thin;
   scrollbar-color: #2a2a4a transparent;
-  padding-bottom: 120px;
 }
-#agents-grid::-webkit-scrollbar { width: 5px; }
-#agents-grid::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+.agents-squares::-webkit-scrollbar { width: 5px; }
+.agents-squares::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
 
-/* ── "Show system agents" toggle (below the grid) ── */
+/* Carousel mode (an agent is open): the squares collapse into a single row
+   pinned to the top, the detail region takes the remaining height below. The
+   horizontal padding (20px) lives on the WRAP so the row's scroll extent — and
+   thus its edge fades and chevrons — line up exactly with the expanded card's
+   vertical borders below (which inset by the same 20px). The row keeps the
+   grid's 16px top padding so squares don't jump when switching, and a 12px
+   bottom padding so the gap down to the card matches the 12px grid row-gap. */
+#agents-grid.carousel .agents-squares-wrap {
+  flex: 0 0 auto;
+  padding: 16px 20px 12px;
+}
+#agents-grid.carousel .agents-squares {
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  align-content: center;
+  padding: 0;
+  scrollbar-width: none;
+}
+#agents-grid.carousel .agents-squares::-webkit-scrollbar { display: none; }
+/* Keep each square at its full 120px in the single row — never let nowrap
+   compress them; they overflow and scroll instead. */
+#agents-grid.carousel .agents-squares .agent-row { flex: 0 0 auto; }
+
+/* ── Carousel edge fades + chevrons ──
+   Same masked-edge technique as the in-card tab strip (.agent-card-tabs): a
+   CSS alpha mask fades the squares to transparent at a scrollable edge (paints
+   no colour, so it blends into the live stargaze background in either theme),
+   with transparent chevron buttons sitting over the faded edge. Toggled by the
+   can-scroll-left / can-scroll-right classes the carousel JS maintains. */
+.agents-carousel-chev {
+  position: absolute;
+  top: 16px;
+  bottom: 12px;
+  width: 30px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--fg-3);
+  font-size: 18px;
+  line-height: 1;
+  z-index: 2;
+}
+.agents-carousel-chev:hover { color: var(--fg-1); }
+/* Sit just inside the card's vertical borders (the wrap's 20px padding edge),
+   never past them. */
+.agents-carousel-chev.left  { left: 20px; }
+.agents-carousel-chev.right { right: 20px; }
+#agents-grid.carousel .agents-squares-wrap.can-scroll-left  .agents-carousel-chev.left  { display: flex; }
+#agents-grid.carousel .agents-squares-wrap.can-scroll-right .agents-carousel-chev.right { display: flex; }
+
+#agents-grid.carousel .agents-squares-wrap.can-scroll-right .agents-squares {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 44px), transparent 100%);
+          mask-image: linear-gradient(to right, #000 calc(100% - 44px), transparent 100%);
+}
+#agents-grid.carousel .agents-squares-wrap.can-scroll-left .agents-squares {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 44px);
+          mask-image: linear-gradient(to right, transparent 0, #000 44px);
+}
+#agents-grid.carousel .agents-squares-wrap.can-scroll-left.can-scroll-right .agents-squares {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 44px, #000 calc(100% - 44px), transparent 100%);
+          mask-image: linear-gradient(to right, transparent 0, #000 44px, #000 calc(100% - 44px), transparent 100%);
+}
+
+/* Expanded detail region — holds the single open agent's full card + tabs +
+   panel. Hidden until an agent is activated. No top padding: the gap above the
+   card is supplied entirely by the carousel row's 12px bottom padding. It flows
+   at its natural height (no own scroll) so the shared #agents-grid scroll moves
+   the carousel and card together. */
+#agents-detail-region { display: none; }
+#agents-grid.carousel #agents-detail-region.open {
+  display: block;
+  flex: 0 0 auto;
+  padding: 0 20px 120px;
+}
+/* In this shared-scroll layout the card grows to its natural height instead of
+   being a fixed 520px box with its own inner scroll — the outer #agents-grid
+   scrolls the whole thing. */
+#agents-detail-region .agent-detail-content {
+  height: auto;
+}
+#agents-detail-region .agent-detail-body {
+  overflow-y: visible;
+}
+
+/* ── "Show system agents" toggle ──
+   Mounted inside the scroller by agents.js (not a flow sibling), so the grid
+   fills the panel's full height and the builder pill floats over it. In grid
+   mode it's a full-width trailing line in the .agents-squares flex-wrap (the
+   scroller's own 120px bottom padding clears the floating pill). */
 #agents-system-toggle-row {
+  flex: 0 0 100%;
+  width: 100%;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px 12px;
-  padding: 10px 20px 100px;
+  padding: 0;
   border-top: none;
+}
+/* Carousel mode: it rides the shared #agents-grid scroller below the open card,
+   so it supplies its own horizontal inset and bottom clearance for the pill. */
+#agents-grid.carousel > #agents-system-toggle-row {
+  flex: 0 0 auto;
+  padding: 4px 20px 120px;
 }
 #agents-system-toggle-label {
   display: inline-flex;
@@ -168,6 +306,13 @@
   box-sizing: border-box;
 }
 .agent-card:hover { border-color: #3a3a6a; background: #14142e; }
+/* A square that is the currently-open agent: stays a square, but gets an accent
+   ring so it reads as "activated" within the carousel. */
+.agent-card.activated {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.agent-card.activated:hover { border-color: var(--accent); }
 .agent-card.active {
   border-color: #7aa2f7;
   background: #13132e;
@@ -326,12 +471,21 @@ body.light-mode .agent-card-desc { color: #7a5a4a; }
 .agent-card:not(.active) .agent-card-tabs-wrap {
   display: none;
 }
-/* Edge fade via a CSS mask on the scroller itself — the tab content fades to
+/* ── Masked edge-fade carousel — REUSABLE PATTERN (origin of this technique) ──
+   Edge fade via a CSS mask on the scroller itself — the tab content fades to
    transparent at the scrollable edge, revealing the card background behind it.
    Because it's a mask (alpha only, never a colour), it adapts automatically to
    whatever the card background is in either theme — no per-theme override and
    no coloured rectangle that could poke past the card's rounded corners. The
-   edge is only faded on the side that actually has more to scroll. */
+   edge is only faded on the side that actually has more to scroll.
+
+   KEY INSIGHT: never paint a colour to fake an edge fade. A mask paints no
+   colour, so it blends into ANY background — including one that changes at
+   runtime (e.g. the live stargaze canvas behind the main header). Pair it with
+   transparent chevron buttons sitting over the faded edge (see .agent-card-tabs-chev
+   below). The header tab strip reuses this exact method — see the
+   "Masked edge-fade carousel" block in design-system.css (#main-tabs). Reuse it
+   for any horizontal carousel over a dynamic/themed background. */
 .agent-card-tabs-wrap.can-scroll-right .agent-card-tabs {
   -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 44px), transparent 100%);
           mask-image: linear-gradient(to right, #000 calc(100% - 44px), transparent 100%);
@@ -553,6 +707,11 @@ body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; co
    chat pill that floats on the right — a matched pair, each pinned to its own
    side. Its bottom edge and resting height are matched to the chat pill so the
    two read as one aligned row (tops and bottoms line up).
+   PILL-PANEL-LAYOUT: this is the agents-page instance of the "floating pill over
+   full-height content" rule — #agents-grid is the full-height scroller and this
+   bar is its absolute overlay. The canonical block + the HARD RULE (never put a
+   control in normal flow below the scroller — it steals height) live above
+   #chat-input-area in ui/css/app1.css; see also docs/claude/ui-guidance.md.
    CHAT-PILL-SYNC: pill geometry, focus state, attach/voice/send buttons,
    has-text swap, and light-mode colors come from the shared .chat-pill* block
    in ui/css/app1.css. The transparent-tint + blur "floating glass" SKIN
@@ -570,9 +729,26 @@ body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; co
 }
 #agent-builder-bar > .chat-pill {
   pointer-events: auto;
-  /* Bottom margin sets this pill's bottom edge level with the chat pill's
-     (the chat pill clears its footer/token row on the right side). */
-  margin: 0 12px 32px;
+  /* PILL-PANEL-ALIGN — keep this pill's BOTTOM edge level with the chat pill's
+     so the two side-by-side pills read as one row. This is NOT a free-standing
+     magic number: it is COMPUTED from the chat pill's bottom spacing. The chat
+     pill (see #chat-input-area in app1.css) floats this far above ITS panel
+     floor:
+        --chat-area-bottom-inset  = #chat-input-area `bottom`        (8px)
+      + --chat-pill-footer-gap    = #chat-input-area `gap`           (6px)
+      + --chat-footer-row-h       = rendered .chat-footer-row height (18px)
+     This bar has NO footer/token row and sits at `bottom:0` on its own panel
+     floor, so it reproduces that same offset as a bottom margin. The two panels
+     currently bottom out on the same line; if that ever changes — a page/panel
+     BORDER is added, or #main-panel's / #chat-panel's margin changes so the
+     floors diverge — add that delta as a 4th term here.
+     IF YOU CHANGE ANY TERM (chat area inset, the gap, the footer row height, or
+     a panel border/margin) UPDATE THIS, and see the reciprocal note at
+     #chat-input-area in app1.css. Keep the named vars below in sync with app1. */
+  --chat-area-bottom-inset: 8px;
+  --chat-pill-footer-gap: 6px;
+  --chat-footer-row-h: 18px;
+  margin: 0 12px calc(var(--chat-area-bottom-inset) + var(--chat-pill-footer-gap) + var(--chat-footer-row-h));
   width: calc(100% - 24px);
 }
 /* Match the chat pill's resting height: inherit the shared 96px min-height
@@ -967,6 +1143,7 @@ body.light-mode #agents-toolbar-sub   { color: #d0b0a0; }
 body.light-mode .agent-card           { background: #fff7f0; border-color: #ffdec4; }
 body.light-mode .agent-card:hover     { background: #fff2e6; border-color: #ffb880; }
 body.light-mode .agent-card.active    { border-color: #ff8c42; }
+body.light-mode .agent-card.activated { border-color: var(--accent); }
 body.light-mode .agent-row .agent-card.active { border-bottom-color: #ffdec4; }
 body.light-mode .agent-detail-panel   { background: #fff7f0; border-color: #ff8c42; }
 body.light-mode .agent-card-name      { color: #3d2c2e; }
@@ -1984,6 +2161,8 @@ body.light-mode .agent-card-mock .agent-card-name {
   flex: 1;
   min-width: 0;
 }
+/* Contenteditable name field (a <div>, not an <input>, so browser password
+   managers never offer saved credentials on it). Styled to look like an input. */
 .agent-mock-name-input {
   flex: 1;
   min-width: 0;
@@ -1997,17 +2176,24 @@ body.light-mode .agent-card-mock .agent-card-name {
   padding: 7px 10px;
   outline: none;
   transition: border-color 0.15s;
+  /* keep it a single line that scrolls rather than wrapping */
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  line-height: 1.4;
+  cursor: text;
+  scrollbar-width: none;
 }
-.agent-mock-name-input::placeholder {
+.agent-mock-name-input::-webkit-scrollbar { display: none; }
+/* Placeholder for the empty contenteditable. */
+.agent-mock-name-input:empty::before {
+  content: attr(data-placeholder);
   color: var(--fg-3);
   font-weight: 600;
   font-style: italic;
+  pointer-events: none;
 }
 .agent-mock-name-input:focus { border-color: var(--accent); }
-/* Hide the type=search clear (X) affordance — we only use search for its
-   immunity to browser password autofill, not its clear button. */
-.agent-mock-name-input::-webkit-search-cancel-button,
-.agent-mock-name-input::-webkit-search-decoration { -webkit-appearance: none; appearance: none; }
 
 /* Big "+" create button on the right of the create bar. */
 .agent-mock-create-go {

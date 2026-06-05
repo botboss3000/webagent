@@ -884,10 +884,13 @@ function _getSelectedScopes(provider) {
 // all required fields are filled.
 
 const _ABILITY_META = {
-  codebase_admin:   { icon: 'folder-cog',   color: '#bb9af7', simple: true,  desc: 'Lets the agent read, write, edit, delete files, and run shell commands on the host.' },
-  create_tools:     { icon: 'wrench',       color: '#7dcfff', simple: true,  desc: 'Lets the agent define new tools in the database.' },
+  codebase_admin:   { icon: 'folder-cog',   color: '#bb9af7', simple: true,  desc: 'Lets the agent read, write, edit, delete files, and run shell commands on the host. No credentials.' },
+  git_control:      { icon: 'git-branch',   color: '#9ece6a', simple: true,  desc: 'Version control only — status, diff, commit, push, branch, pull — without shell access. On by default.' },
+  ui_admin:         { icon: 'paintbrush',   color: '#7dcfff', simple: true,  desc: 'Edits only front-end files (ui/ — CSS & HTML); never backend code or the shell. On by default.' },
+  create_tools:     { icon: 'wrench',       color: '#7dcfff', simple: true,  desc: 'Lets the agent define new tools in the database. No credentials.' },
   web_access:       { icon: 'globe',        color: '#7aa2f7', simple: true,  desc: 'Lets the agent search the web, look up weather, and geocode addresses. No API keys needed.' },
-  browser_control:  { icon: 'mouse-pointer-2', color: '#9ece6a', simple: true, desc: 'Lets the agent drive a headless Chromium browser and make HTTP requests.' },
+  browser_control:  { icon: 'mouse-pointer-2', color: '#9ece6a', simple: true, desc: 'Lets the agent drive a headless Chromium browser and make HTTP requests. No credentials.' },
+  terminal_control: { icon: 'terminal',     color: '#f7768e', simple: true,  desc: 'Lets the agent open and drive interactive terminal programs (REPLs, CLIs) — effectively shell access, so grant per agent with care.' },
   image_generation: { icon: 'image',        color: '#bb9af7', simple: false, desc: 'Lets the agent generate images from text prompts. Requires a provider + model config.' },
   automation:       { icon: 'clock',        color: '#e0af68', simple: false, desc: 'Scheduled tasks and event-triggered jobs that can call integrations.' },
   visualizer:       { icon: 'layout',       color: '#7aa2f7', simple: false, desc: 'Lets the agent create, edit, rename, and delete pages in the Pages workspace.' },
@@ -897,6 +900,21 @@ const _ABILITY_META = {
 };
 
 let _abilityStates = {}; // { [ability]: boolean }
+
+// When the admin toggles an ability, we stamp the moment of that action here.
+// `_loadIntegrations()` runs on every settings/admin-tools (re)activation and
+// force-applies a fetched snapshot onto every toggle. That fetch is slow (it
+// makes ~30 sequential DB lookups), so if the admin toggles an ability while a
+// load is still in flight, the load would resolve with its PRE-toggle snapshot
+// and silently revert the just-made change — the backend keeps the new value
+// (so the agent's Abilities page is correct) but the admin toggle flips back,
+// which reads as "it didn't save". We guard against that by skipping, in the
+// load's apply step, any ability the admin changed after that load began.
+let _abilityLastActionAt = {}; // { [ability]: DOMHighResTimeStamp }
+
+function _markAbilityAction(ability) {
+  _abilityLastActionAt[ability] = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+}
 
 function _initAbilitiesCompact() {
   const container = _qs('ac-abilities-compact');
@@ -920,9 +938,12 @@ function _initAbilitiesCompact() {
     label.className = 'ac-ability-label';
     const nameMap = {
       codebase_admin: 'Codebase Admin',
+      git_control: 'Git Control',
+      ui_admin: 'UI Admin',
       create_tools: 'Create Tools',
       web_access: 'Web Access',
       browser_control: 'Browser Control',
+      terminal_control: 'Terminal Control',
       image_generation: 'Image Generation',
       automation: 'Automation',
       visualizer: 'Visualizer',
@@ -962,6 +983,7 @@ function _initAbilitiesCompact() {
     // ── Toggle click handler ──
     toggle.addEventListener('change', () => {
       const enabled = toggle.checked;
+      _markAbilityAction(id);   // protect this toggle from a stale in-flight load
       if (meta.simple) {
         // Simple ability — toggle directly
         _toggleAbility(id, enabled, row);
@@ -1044,6 +1066,7 @@ async function _toggleAbility(ability, enabled, row) {
       const res = await _fetch(apiPath(`/admin/integrations/abilities/${ability}`), { method: 'DELETE' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
     }
+    _markAbilityAction(ability);   // re-stamp: the write has now committed
     _abilityStates[ability] = enabled;
     _applyAbilityRowStatus(ability, enabled);
     if (statusEl) {
@@ -1120,6 +1143,231 @@ function _expandCard(provider) {
   _toggleCard(provider, true);
 }
 
+// ── Unified compact rows for every integration / channel / generic ─────────
+// Goal: the rest of the page looks like the Agent Tools table — one slim row
+// (icon · name · requirement note · toggle · chevron) that expands to the
+// existing config form. We reuse each card's collapsible body (built by
+// _initCollapsible) and its existing save/OAuth/unconfigure wiring; only the
+// row chrome + the requirement note are layered on top.
+
+const _OAUTH_PROVIDER_IDS = ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon'];
+const _GENERIC_PROVIDER_IDS = ['scraper', 'browser_session'];
+const _CHANNEL_IDS = ['telegram'];
+const _SOON_CHANNEL_IDS = ['whatsapp', 'slack', 'discord', 'email', 'twilio'];
+
+// One-to-1.5-sentence requirement note per row (cost / OAuth / special setup).
+const _ROW_NOTES = {
+  google:    `Free — create a Google Cloud OAuth app. Grants Gmail, Drive, Docs, and Calendar.`,
+  microsoft: `Free — register an Azure app. Grants Outlook, OneDrive, and Calendar.`,
+  yahoo:     `Free OAuth — Yahoo exposes account identity only (no public Mail API).`,
+  dropbox:   `Free — a Dropbox app for file read/write and sharing.`,
+  meta:      `Free OAuth — a Meta app with App Review is required to publish to Facebook/Instagram.`,
+  twitter:   `Paid — X's API needs a paid tier (Basic ≈ $200/mo) for most posting/reading; the free tier is tiny.`,
+  linkedin:  `Free OAuth — posting requires LinkedIn's Community/Marketing API approval.`,
+  tiktok:    `Free OAuth, but the app must pass TikTok's review before going live.`,
+  pinterest: `Free OAuth — a Pinterest app (trial access, then standard approval).`,
+  reddit:    `Free — register a Reddit app for reading and posting.`,
+  snapchat:  `Free OAuth — Snap Kit exposes identity and Bitmoji only.`,
+  twitch:    `Free — register a Twitch app for channel, chat, and clips.`,
+  ebay:      `Free API — an eBay developer account; the production keyset needs approval.`,
+  etsy:      `Free API — an Etsy app, reviewed before production use.`,
+  shopify:   `Free API — a Shopify Partner app; installs per store.`,
+  amazon:    `Requires a Professional Seller plan ($39.99/mo) plus SP-API developer registration.`,
+  scraper:   `Bring-your-own scraping provider (Apify, RapidAPI, or custom HTTP) — most bill per request.`,
+  browser_session: `Free — paste cookies so the agent can act as you on sites with no API. Per-user.`,
+  telegram:  `Free — create a bot with @BotFather; each agent supplies its own token.`,
+  whatsapp:  `Paid — per-conversation fees via Meta WhatsApp Business or Twilio.`,
+  slack:     `Free OAuth app — Slack is free for basic workspaces.`,
+  discord:   `Free — create a Discord bot/app.`,
+  email:     `Free with your own SMTP/IMAP or an email provider.`,
+  twilio:    `Paid — per-message / per-minute Twilio fees.`,
+};
+
+// Coming-soon integrations that have no config card — rendered as greyed rows
+// into the per-category containers added in admin-configuration.html.
+const _COMING_SOON_ROWS = {
+  'ac-rows-productivity': [
+    { name: 'Notion',        icon: 'file-text', note: `Free OAuth — connect Notion pages and databases.` },
+    { name: 'Airtable',      icon: 'table',     note: `Free tier (OAuth or token); paid plans for larger bases.` },
+    { name: 'Google Sheets', icon: 'sheet',     note: `Free OAuth — part of Google Cloud; read/write spreadsheets.` },
+  ],
+  'ac-rows-developer': [
+    { name: 'GitHub',        icon: 'github',        note: `Free — OAuth app or GitHub App for repos, issues, and PRs.` },
+    { name: 'GitLab',        icon: 'git-branch',    note: `Free OAuth — repos, issues, and pipelines.` },
+    { name: 'Jira / Linear', icon: 'kanban-square', note: `Free OAuth — issues and projects.` },
+  ],
+  'ac-rows-crm': [
+    { name: 'HubSpot',    icon: 'contact', note: `Free OAuth app — HubSpot has free and paid tiers.` },
+    { name: 'Salesforce', icon: 'cloud',   note: `OAuth — requires a paid Salesforce org.` },
+    { name: 'Mailchimp',  icon: 'mail',    note: `Free OAuth — Mailchimp has free and paid tiers.` },
+  ],
+  'ac-rows-payments': [
+    { name: 'Stripe', icon: 'credit-card', note: `OAuth (Connect) — free to integrate; Stripe takes a per-transaction fee.` },
+    { name: 'PayPal', icon: 'wallet',      note: `OAuth — free to integrate; per-transaction fees apply.` },
+    { name: 'Square', icon: 'square',      note: `OAuth — free to integrate; per-transaction fees apply.` },
+    { name: 'Bank Accounts', icon: 'landmark', note: `Via an aggregator (e.g. Plaid) — usage-based pricing.` },
+  ],
+};
+
+function _rowConfigured(id) {
+  const badge = _qs(`ac-int-${id}-badge`);
+  return !!(badge && badge.classList.contains('ac-int-badge-on'));
+}
+
+function _unconfigureById(id, kind) {
+  if (id === 'scraper') return _unconfigureScraper();
+  if (id === 'browser_session') return _unconfigureBrowserSession();
+  return _unconfigureProvider(id);
+}
+
+// Transform one existing card into a compact row + collapsible config body.
+function _compactifyCard(id, kind) {
+  const card = _qs(`ac-int-${id}-card`);
+  if (!card || card.dataset.compactified) return;
+  if (!_qs(`ac-int-${id}-body`)) { try { _initCollapsible(id); } catch (_) {} }
+  card.classList.add('ac-card-compact');
+
+  const header = card.querySelector(':scope > div');
+  const soon = (kind === 'soon');
+  const note = _ROW_NOTES[id] || '';
+
+  // Clone the card's existing brand icon (keeps Google's multicolour mark etc.)
+  const iconWrap = document.createElement('div');
+  iconWrap.className = 'ac-ability-icon';
+  const srcIcon = header ? header.querySelector('svg, i[data-lucide]') : null;
+  if (srcIcon) {
+    const ic = srcIcon.cloneNode(true);
+    ic.setAttribute('width', '18'); ic.setAttribute('height', '18');
+    ic.style.width = '18px'; ic.style.height = '18px';
+    iconWrap.appendChild(ic);
+  }
+
+  let name = id;
+  if (header) {
+    const nameNode = header.querySelector('div[style*="font-weight:600"]');
+    if (nameNode) name = nameNode.textContent.trim();
+  }
+
+  const label = document.createElement('div');
+  label.className = 'ac-ability-label';
+  label.innerHTML = `<div class="ac-ability-name"></div><div class="ac-ability-desc"></div>`;
+  label.querySelector('.ac-ability-name').textContent = name;
+  label.querySelector('.ac-ability-desc').textContent = note;
+
+  const row = document.createElement('div');
+  row.className = 'ac-ability-row ac-int-row' + (soon ? ' ac-soon-row' : '');
+  row.id = `ac-int-row-${id}`;
+  row.appendChild(iconWrap);
+  row.appendChild(label);
+
+  if (soon) {
+    const pill = document.createElement('span');
+    pill.className = 'ac-soon-pill';
+    pill.textContent = 'Coming soon';
+    row.appendChild(pill);
+    card.insertBefore(row, card.firstChild);
+    for (const ch of [...card.children]) { if (ch !== row) ch.style.display = 'none'; }
+    card.dataset.compactified = '1';
+    return;
+  }
+
+  const toggleWrap = document.createElement('label');
+  toggleWrap.className = 'conn-toggle-wrap ac-ability-toggle-wrap';
+  toggleWrap.title = 'Enable';
+  const toggle = document.createElement('input');
+  toggle.type = 'checkbox';
+  toggle.className = 'conn-toggle ac-int-row-toggle';
+  toggle.id = `ac-int-row-toggle-${id}`;
+  const track = document.createElement('span');
+  track.className = 'conn-toggle-track';
+  toggleWrap.appendChild(toggle);
+  toggleWrap.appendChild(track);
+
+  const chevron = document.createElement('span');
+  chevron.className = 'ac-int-row-chevron';
+  chevron.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>`;
+
+  row.appendChild(toggleWrap);
+  row.appendChild(chevron);
+  if (header) header.style.display = 'none';
+  card.insertBefore(row, card.firstChild);
+  card.dataset.compactified = '1';
+
+  // Row click (away from the toggle) expands / collapses the config body.
+  row.addEventListener('click', (e) => {
+    if (e.target.closest('.ac-ability-toggle-wrap')) return;
+    const body = _qs(`ac-int-${id}-body`);
+    const open = body && body.style.display !== 'none';
+    _toggleCard(id, !open);
+    chevron.style.transform = !open ? 'rotate(90deg)' : 'rotate(0deg)';
+  });
+
+  // Toggle semantics: channels enable/disable directly; OAuth/generic providers
+  // expand the form when turned on unconfigured, and unconfigure when turned off.
+  toggle.addEventListener('change', () => {
+    const on = toggle.checked;
+    if (kind === 'channel') {
+      if (on) _enableChannel(id); else _disableChannel(id);
+      return;
+    }
+    if (on) {
+      if (!_rowConfigured(id)) {
+        toggle.checked = false;
+        _toggleCard(id, true);
+        chevron.style.transform = 'rotate(90deg)';
+      }
+    } else if (_rowConfigured(id)) {
+      if (!confirm(`Disable ${name}? This removes the saved app credentials.`)) {
+        toggle.checked = true;
+        return;
+      }
+      _unconfigureById(id, kind);
+    }
+  });
+}
+
+function _renderComingSoonRows() {
+  for (const [containerId, items] of Object.entries(_COMING_SOON_ROWS)) {
+    const container = _qs(containerId);
+    if (!container) continue;
+    container.innerHTML = '';
+    for (const it of items) {
+      const row = document.createElement('div');
+      row.className = 'ac-ability-row ac-int-row ac-soon-row';
+      row.innerHTML = `<div class="ac-ability-icon"><i data-lucide="${it.icon}" style="width:18px;height:18px;"></i></div>`
+        + `<div class="ac-ability-label"><div class="ac-ability-name"></div><div class="ac-ability-desc"></div></div>`
+        + `<span class="ac-soon-pill">Coming soon</span>`;
+      row.querySelector('.ac-ability-name').textContent = it.name;
+      row.querySelector('.ac-ability-desc').textContent = it.note;
+      container.appendChild(row);
+    }
+  }
+}
+
+function _compactifyAllIntegrations() {
+  for (const p of _OAUTH_PROVIDER_IDS) _compactifyCard(p, 'oauth');
+  for (const p of _GENERIC_PROVIDER_IDS) _compactifyCard(p, 'generic');
+  for (const c of _CHANNEL_IDS) _compactifyCard(c, 'channel');
+  for (const c of _SOON_CHANNEL_IDS) _compactifyCard(c, 'soon');
+  _renderComingSoonRows();
+  if (typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
+}
+
+function _syncRowToggle(id) {
+  const toggle = _qs(`ac-int-row-toggle-${id}`);
+  if (!toggle) return;
+  const on = _rowConfigured(id);
+  toggle.checked = on;
+  const row = _qs(`ac-int-row-${id}`);
+  if (row) row.classList.toggle('ac-ability-enabled', on);
+}
+
+function _syncAllRowToggles() {
+  for (const id of [..._OAUTH_PROVIDER_IDS, ..._GENERIC_PROVIDER_IDS, ..._CHANNEL_IDS]) {
+    _syncRowToggle(id);
+  }
+}
+
 function _initIntegrations() {
   const providers = ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon'];
   for (const p of providers) {
@@ -1154,6 +1402,10 @@ function _initIntegrations() {
   // Agent Tools (admin enable/disable; per-agent toggles in the Abilities tab)
   // Rendered as compact rows with toggle — see _renderAbilitiesCompact()
   _initAbilitiesCompact();
+
+  // Unify every OAuth / channel / generic card into the same compact-row look,
+  // and render the card-less coming-soon integrations as greyed rows.
+  _compactifyAllIntegrations();
 
   _initIntegrationsSearch([...providers, ...genericProviders, ...channels, ...comingSoonChannels, 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer', 'agent_orchestration', 'diagnostics', 'agent_management']);
   _initIntegrationAdminChat();
@@ -1438,6 +1690,14 @@ function _initIntegrationsSearch(providers) {
 }
 
 async function _loadIntegrations() {
+  // Stamp the instant this load begins, BEFORE the (slow) fetch. Any ability the
+  // admin toggles after this point must not be clobbered by this load's stale
+  // snapshot — see `_abilityLastActionAt` above.
+  const _loadStart = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const _applyAbilityFromLoad = (ability, enabled) => {
+    if ((_abilityLastActionAt[ability] || 0) > _loadStart) return; // user changed it mid-load
+    _applyAbilityStatus(ability, enabled);
+  };
   try {
     const res = await _fetch(apiPath('/admin/integrations'));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1460,18 +1720,23 @@ async function _loadIntegrations() {
     _applyProviderStatus('amazon',    data.amazon_configured,    data.amazon_client_id,    data.amazon_redirect_uri,       data.amazon_scopes,    data.amazon_redirect_uri_suggested);
     _applyScraperStatus(data);
     _applyChannelStatus('telegram', data.telegram_configured);
-    _applyAbilityStatus('codebase_admin',   data.codebase_admin_configured);
-    _applyAbilityStatus('create_tools',     data.create_tools_configured);
-    _applyAbilityStatus('automation',       data.automation_configured);
-    _applyAbilityStatus('web_access',       data.web_access_configured);
-    _applyAbilityStatus('browser_control',  data.browser_control_configured);
-    _applyAbilityStatus('image_generation', data.image_generation_configured);
-    _applyAbilityStatus('visualizer',       data.visualizer_configured);
-    _applyAbilityStatus('agent_orchestration', data.agent_orchestration_configured);
-    _applyAbilityStatus('diagnostics',         data.diagnostics_configured);
-    _applyAbilityStatus('agent_management',    data.agent_management_configured);
+    _applyAbilityFromLoad('codebase_admin',   data.codebase_admin_configured);
+    _applyAbilityFromLoad('git_control',      data.git_control_configured);
+    _applyAbilityFromLoad('ui_admin',         data.ui_admin_configured);
+    _applyAbilityFromLoad('terminal_control', data.terminal_control_configured);
+    _applyAbilityFromLoad('create_tools',     data.create_tools_configured);
+    _applyAbilityFromLoad('automation',       data.automation_configured);
+    _applyAbilityFromLoad('web_access',       data.web_access_configured);
+    _applyAbilityFromLoad('browser_control',  data.browser_control_configured);
+    _applyAbilityFromLoad('image_generation', data.image_generation_configured);
+    _applyAbilityFromLoad('visualizer',       data.visualizer_configured);
+    _applyAbilityFromLoad('agent_orchestration', data.agent_orchestration_configured);
+    _applyAbilityFromLoad('diagnostics',         data.diagnostics_configured);
+    _applyAbilityFromLoad('agent_management',    data.agent_management_configured);
     // Browser session is per-user — fetched from a separate endpoint.
     _loadBrowserSessionStatus();
+    // Reflect each provider/channel's configured state onto its unified row toggle.
+    _syncAllRowToggles();
   } catch (e) {
     for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram', 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer', 'agent_orchestration', 'diagnostics', 'agent_management']) {
       const s = _qs(`ac-int-${p}-status`);
@@ -1500,6 +1765,7 @@ function _applyScraperStatus(data) {
     if (configuredEl) configuredEl.style.display = 'none';
     if (form) form.style.display = 'block';
   }
+  _syncRowToggle('scraper');
 }
 
 function _applyChannelStatus(channel, enabled) {
@@ -1515,6 +1781,7 @@ function _applyChannelStatus(channel, enabled) {
     if (configuredEl) configuredEl.style.display = 'none';
     if (form) form.style.display = 'block';
   }
+  _syncRowToggle(channel);
 }
 
 async function _enableChannel(channel) {
@@ -1562,6 +1829,7 @@ async function _enableAbility(ability) {
   try {
     const res = await _fetch(apiPath(`/admin/integrations/abilities/${ability}`), { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _markAbilityAction(ability);
     _applyAbilityStatus(ability, true);
     if (statusEl) { statusEl.textContent = 'Enabled.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; }
   } catch (e) {
@@ -1583,6 +1851,7 @@ async function _disableAbility(ability) {
   try {
     const res = await _fetch(apiPath(`/admin/integrations/abilities/${ability}`), { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _markAbilityAction(ability);
     _applyAbilityStatus(ability, false);
     if (statusEl) { statusEl.textContent = 'Disabled.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; }
   } catch (e) {
@@ -1611,6 +1880,7 @@ async function _loadBrowserSessionStatus() {
       if (configuredEl) configuredEl.style.display = 'none';
       if (form) form.style.display = 'block';
     }
+    _syncRowToggle('browser_session');
   } catch (e) {
     const s = _qs('ac-int-browser_session-status');
     if (s) { s.textContent = `Failed to load: ${e.message}`; s.style.color = '#f7768e'; s.style.display = 'block'; }
@@ -1876,6 +2146,7 @@ function _applyProviderStatus(provider, configured, clientId, redirectUri, enabl
     if (form) form.style.display = 'block';
   }
   _setScopeSelection(provider, enabledScopes || null);
+  _syncRowToggle(provider);
 }
 
 function _editProviderConfig(provider) {

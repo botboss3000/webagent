@@ -236,6 +236,36 @@
       "enabled": true,
       "description": "Run a Python snippet with the project on sys.path. Mutating."
     },
+    "terminal_open": {
+      "category": "execution",
+      "enabled": true,
+      "description": "Open a NEW local terminal session and optionally run a command (e.g. command='claude'). Returns a session id + first screen. Launch any interactive program you then drive. Mutating."
+    },
+    "terminal_read": {
+      "category": "execution",
+      "enabled": true,
+      "description": "Read what's on a terminal session's screen (recent output, ANSI-cleaned). Read-only."
+    },
+    "terminal_send": {
+      "category": "execution",
+      "enabled": true,
+      "description": "Type into a terminal session; `keys` sends named special keys (enter, y, ctrl+c, arrows) to answer prompts. Waits for the program to react, returns the screen. Mutating."
+    },
+    "terminal_wait": {
+      "category": "execution",
+      "enabled": true,
+      "description": "Wait until the program reacts and settles (done, awaiting input), then return the screen. Read-only."
+    },
+    "terminal_list": {
+      "category": "execution",
+      "enabled": true,
+      "description": "List your open local terminal sessions. Read-only."
+    },
+    "terminal_close": {
+      "category": "execution",
+      "enabled": true,
+      "description": "Kill a terminal session and the program in it. Mutating."
+    },
     "git_tool": {
       "category": "vcs",
       "enabled": true,

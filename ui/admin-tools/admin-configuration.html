@@ -723,14 +723,22 @@
               </details>
             </div>
 
-            <!-- ── Social Media ── -->
-            <div class="ac-section-header" style="margin-top:24px;">
-              <i data-lucide="share-2" class="lucide-icon ac-section-icon"></i>
-              <div>
-                <h3 class="ac-section-title" style="font-size:14px;">Social Media</h3>
-                <p class="ac-section-desc">App-level credentials for social platform OAuth. Users connect their personal accounts from the agent's Abilities tab.</p>
-              </div>
-            </div>
+                <!-- Coming-soon productivity apps (rendered by app-config.js) -->
+                <div class="ac-abilities-compact ac-soon-rows" id="ac-rows-productivity"></div>
+
+              </div><!-- /ac-category-body -->
+            </details><!-- /ac-cat-productivity -->
+
+            <!-- ── Social Media (root category) ── -->
+            <details class="ac-category-group" id="ac-cat-social">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="share-2" class="lucide-icon" style="width:16px;height:16px;color:#bb9af7;"></i>
+                <span class="ac-category-title">Social Media</span>
+                <span class="ac-category-count" id="ac-cat-social-count"></span>
+              </summary>
+              <div class="ac-category-body">
+                <p class="ac-category-desc">App-level credentials for social platform OAuth. Users connect their personal accounts from the agent's Abilities tab.</p>
 
             <!-- Meta (Facebook + Instagram) OAuth Config -->
             <div class="ac-card" id="ac-int-meta-card">
@@ -1183,14 +1191,19 @@
               </details>
             </div>
 
-            <!-- ── Marketplaces ── -->
-            <div class="ac-section-header" style="margin-top:24px;">
-              <i data-lucide="shopping-bag" class="lucide-icon ac-section-icon"></i>
-              <div>
-                <h3 class="ac-section-title" style="font-size:14px;">Marketplaces</h3>
-                <p class="ac-section-desc">App-level credentials for e-commerce platform OAuth. Sellers connect their accounts from the agent's Abilities tab.</p>
-              </div>
-            </div>
+              </div><!-- /ac-category-body -->
+            </details><!-- /ac-cat-social -->
+
+            <!-- ── Marketplaces (root category) ── -->
+            <details class="ac-category-group" id="ac-cat-marketplace">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="shopping-bag" class="lucide-icon" style="width:16px;height:16px;color:#e0af68;"></i>
+                <span class="ac-category-title">Marketplaces</span>
+                <span class="ac-category-count" id="ac-cat-marketplace-count"></span>
+              </summary>
+              <div class="ac-category-body">
+                <p class="ac-category-desc">App-level credentials for e-commerce platform OAuth. Sellers connect their accounts from the agent's Abilities tab.</p>
 
             <!-- eBay OAuth Config -->
             <div class="ac-card" id="ac-int-ebay-card">
@@ -1422,7 +1435,49 @@
             </div>
 
             </div><!-- /ac-category-body -->
-            </details><!-- /ac-cat-productivity -->
+            </details><!-- /ac-cat-marketplace -->
+
+            <!-- ── Payments (root category — coming soon) ── -->
+            <details class="ac-category-group" id="ac-cat-payments">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="credit-card" class="lucide-icon" style="width:16px;height:16px;color:#9ece6a;"></i>
+                <span class="ac-category-title">Payments</span>
+                <span class="ac-category-count" id="ac-cat-payments-count"></span>
+              </summary>
+              <div class="ac-category-body">
+                <p class="ac-category-desc">Accept payments and read transactions. Free to connect via OAuth; providers charge per-transaction fees.</p>
+                <div class="ac-abilities-compact ac-soon-rows" id="ac-rows-payments"></div>
+              </div>
+            </details>
+
+            <!-- ── Developer (root category — coming soon) ── -->
+            <details class="ac-category-group" id="ac-cat-developer">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="git-branch" class="lucide-icon" style="width:16px;height:16px;color:#7aa2f7;"></i>
+                <span class="ac-category-title">Developer</span>
+                <span class="ac-category-count" id="ac-cat-developer-count"></span>
+              </summary>
+              <div class="ac-category-body">
+                <p class="ac-category-desc">Repositories, issues, and CI. Free — connect with an OAuth app or token.</p>
+                <div class="ac-abilities-compact ac-soon-rows" id="ac-rows-developer"></div>
+              </div>
+            </details>
+
+            <!-- ── CRM & Marketing (root category — coming soon) ── -->
+            <details class="ac-category-group" id="ac-cat-crm">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="contact" class="lucide-icon" style="width:16px;height:16px;color:#bb9af7;"></i>
+                <span class="ac-category-title">CRM &amp; Marketing</span>
+                <span class="ac-category-count" id="ac-cat-crm-count"></span>
+              </summary>
+              <div class="ac-category-body">
+                <p class="ac-category-desc">Contacts, deals, and email campaigns. Mostly free OAuth; some products need a paid plan.</p>
+                <div class="ac-abilities-compact ac-soon-rows" id="ac-rows-crm"></div>
+              </div>
+            </details>
 
           </section>
 

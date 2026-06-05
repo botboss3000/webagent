@@ -404,6 +404,16 @@ async def set_agent_ability(
             enabled=bool(enabled),
             config={},
         )
+        # Newly-enabled ability → default its tools to "discoverable" (hybrid
+        # rule); only fills tools with no explicit mode yet. No-op otherwise.
+        if enabled:
+            try:
+                from app.tools.tool_modes import tools_for_ability
+                seed = tools_for_ability(ability)
+                if seed:
+                    await db.seed_agent_tool_modes(agent_id, seed, "discoverable")
+            except Exception as e:
+                logger.debug("tool-mode seed for ability %s failed: %s", ability, e)
         return _ok(agent_id=agent_id, ability=ability, enabled=bool(enabled))
     except Exception as e:
         logger.error("set_agent_ability failed: %s", e)

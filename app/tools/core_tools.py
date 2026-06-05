@@ -1,8 +1,10 @@
 """
 Core bootstrap tools — always available from turn 1.
 
-These are the agent's discovery and essential utilities.
-All other tools are discovered via list_tools / search_tools.
+These are the agent's essential utilities. Tools the agent has but that aren't
+sent in full every turn are surfaced by name in the generated # [TOOLS] index
+and pulled into context on demand via the `load_tool` core tool (see
+app/tools/loader.py and app/tools/tool_modes.py).
 """
 
 import json
@@ -10,135 +12,6 @@ import logging
 from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
-
-
-# ── Tool discovery ────────────────────────────────────────────────────────────
-
-async def list_tools(user_id: str, db=None) -> str:
-    """
-    List all available tools from the database.
-
-    Returns tool names, descriptions, and parameter summaries.
-    Use this to discover what tools are available beyond the core bootstrap set.
-    """
-    try:
-        from app.db import get_db
-        if db is None:
-            db = get_db()
-        client = db.get_raw_client()
-        rows = (
-            client.table("tools")
-            .select("name, description, status, language, created_at")
-            .in_("created_by", [user_id, "__system__"])
-            .eq("status", "active")
-            .execute()
-        )
-        data = rows.data or []
-        if not data:
-            return json.dumps({"status": "ok", "tools": [], "count": 0})
-
-        tools_list = []
-        for r in data:
-            tools_list.append({
-                "name": r["name"],
-                "description": r.get("description", ""),
-                "language": r.get("language", "python"),
-            })
-        tools_list.sort(key=lambda x: x["name"])
-        return json.dumps({"status": "ok", "tools": tools_list, "count": len(tools_list)})
-    except Exception as e:
-        logger.error("list_tools failed: %s", e)
-        return json.dumps({"status": "error", "message": str(e)})
-
-
-async def search_tools(query: str, user_id: str, db=None) -> str:
-    """
-    Search available tools by name or description keyword.
-
-    Use this when you need a specific capability but don't know the exact tool name.
-    """
-    try:
-        from app.db import get_db
-        if db is None:
-            db = get_db()
-        client = db.get_raw_client()
-        q = query.lower()
-        rows = (
-            client.table("tools")
-            .select("name, description, language, status")
-            .in_("created_by", [user_id, "__system__"])
-            .eq("status", "active")
-            .execute()
-        )
-        data = rows.data or []
-        matches = []
-        for r in data:
-            name = r.get("name", "")
-            desc = r.get("description", "")
-            if q in name.lower() or q in desc.lower():
-                matches.append({
-                    "name": name,
-                    "description": desc,
-                    "language": r.get("language", "python"),
-                })
-        matches.sort(key=lambda x: x["name"])
-        return json.dumps({
-            "status": "ok",
-            "query": query,
-            "tools": matches,
-            "count": len(matches),
-        })
-    except Exception as e:
-        logger.error("search_tools failed: %s", e)
-        return json.dumps({"status": "error", "message": str(e)})
-
-
-async def get_tool_definition(tool_name: str, user_id: str, db=None) -> str:
-    """
-    Get the full definition of a tool, including its JSON Schema parameters.
-
-    Use this after discovering a tool via list_tools or search_tools
-    to learn its exact parameters before calling it.
-    """
-    try:
-        from app.db import get_db
-        if db is None:
-            db = get_db()
-        client = db.get_raw_client()
-        rows = (
-            client.table("tools")
-            .select("name, description, parameters, language, code")
-            .in_("created_by", [user_id, "__system__"])
-            .eq("name", tool_name)
-            .eq("status", "active")
-            .limit(1)
-            .execute()
-        )
-        data = rows.data
-        if not data:
-            return json.dumps({
-                "status": "error",
-                "message": f"Tool '{tool_name}' not found or not active.",
-            })
-        tool = data[0]
-        params = tool.get("parameters", {})
-        if isinstance(params, str):
-            try:
-                params = json.loads(params)
-            except (json.JSONDecodeError, TypeError):
-                params = {"type": "object", "properties": {}, "required": []}
-        return json.dumps({
-            "status": "ok",
-            "tool": {
-                "name": tool["name"],
-                "description": tool.get("description", ""),
-                "parameters": params,
-                "language": tool.get("language", "python"),
-            },
-        })
-    except Exception as e:
-        logger.error("get_tool_definition failed: %s", e)
-        return json.dumps({"status": "error", "message": str(e)})
 
 
 # ── On-demand skills ──────────────────────────────────────────────────────────

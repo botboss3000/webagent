@@ -1609,6 +1609,62 @@ body.light-mode .ac-ability-desc {
   color: #9a7c65;
 }
 
+/* ── Compactified integration cards ──────────────────────────────────────
+   Every OAuth / channel / generic card (admin-configuration.html) is turned
+   into a slim row that matches the Agent Tools table: the original card header
+   is hidden and a `.ac-int-row` is prepended; the config form lives in the
+   collapsible `…-body` revealed on expand. See _compactifyCard() in
+   app-config.js. */
+.ac-card.ac-card-compact {
+  padding: 0;
+  margin: 0 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elev);
+  overflow: hidden;
+}
+.ac-card-compact .ac-int-row {
+  border-bottom: none;
+  cursor: pointer;
+}
+.ac-card-compact > div[id$="-body"] {
+  padding: 12px 14px 14px;
+  border-top: 1px solid var(--border);
+}
+.ac-int-row-chevron {
+  display: flex;
+  align-items: center;
+  margin-left: 8px;
+  flex-shrink: 0;
+  color: var(--fg-muted);
+  transition: transform 0.2s;
+}
+.ac-int-row .ac-ability-toggle-wrap { margin-left: auto; }
+.ac-int-row-chevron + * { margin-left: 0; }
+
+/* ── Coming-soon rows (greyed, non-interactive) ──────────────────────────── */
+.ac-soon-rows {
+  margin-top: 8px;
+}
+.ac-soon-row { opacity: 0.7; }
+.ac-soon-row .ac-ability-icon { color: var(--fg-muted); }
+.ac-soon-pill {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--fg-muted);
+  border: 1px solid var(--border-soft, var(--border));
+  white-space: nowrap;
+}
+body.light-mode .ac-card.ac-card-compact { background: #ffffff; border-color: #e8ddd0; }
+body.light-mode .ac-card-compact > div[id$="-body"] { border-top-color: #e8ddd0; }
+body.light-mode .ac-soon-pill { background: rgba(107, 82, 64, 0.08); border-color: #e8ddd0; }
+
 /* ╔══════════════════════════════════════════════════════════════════════╗
    ║  SHARED COLLAPSIBLE SECTION PATTERN  —  KEEP IN SYNC ACROSS PAGES      ║
    ╠══════════════════════════════════════════════════════════════════════╣
