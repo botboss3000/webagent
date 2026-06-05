@@ -83,6 +83,9 @@ automatically, so you can proceed without making them toggle anything.
   `LLM_MODEL`) in the environment or the new `.env`, then relaunch.
 - **Port 8080 already in use:** an old server is probably still running. Once
   linked, use `server_restart` / `server_stop`, or tell them to close the other process.
+  Note: if the **keep-alive guardian** is on (Admin ▸ Keep-alive), a `server_stop`
+  is auto-revived within seconds — turn Keep-alive OFF first if you need the server
+  to stay down.
 - **Target folder exists / is not empty:** pick an empty or new folder, or remove
   the half-made one first.
 - **git clone fails with "cannot read current working directory":** the shell's
@@ -94,6 +97,11 @@ automatically, so you can proceed without making them toggle anything.
 
 The manager command is **`webagent`** on Termux (or the launcher / `.exe` on
 desktop). It auto-starts the server when a checkout is linked.
+
+On desktop it also starts an **external keep-alive guardian** — a detached helper
+that outlives the TUI and revives **both** the server and the TUI window if either
+crashes. It's on by default; toggle it from **Admin ▸ Keep-alive**. Turning it off
+leaves whatever is running in place — it just stops auto-reviving.
 
 ## Uninstalling (only if the user asks to remove webAgent)
 

@@ -1,6 +1,6 @@
 {
   "id": "default",
-  "version": 4,
+  "version": 5,
   "name": "webAgent",
   "description": "General-purpose assistant. Starting agent for all new sessions.",
   "icon": "🤖",

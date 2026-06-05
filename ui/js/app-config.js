@@ -891,6 +891,9 @@ const _ABILITY_META = {
   image_generation: { icon: 'image',        color: '#bb9af7', simple: false, desc: 'Lets the agent generate images from text prompts. Requires a provider + model config.' },
   automation:       { icon: 'clock',        color: '#e0af68', simple: false, desc: 'Scheduled tasks and event-triggered jobs that can call integrations.' },
   visualizer:       { icon: 'layout',       color: '#7aa2f7', simple: false, desc: 'Lets the agent create, edit, rename, and delete pages in the Pages workspace.' },
+  agent_orchestration: { icon: 'share-2',   color: '#7dcfff', simple: true,  desc: 'Lets the agent delegate the session to other agents and run the prompt optimizer. On by default; switch off to remove it platform-wide.' },
+  diagnostics:      { icon: 'activity',     color: '#e0af68', simple: true,  desc: 'Lets the agent read the in-app flight recorder to diagnose the running app. On by default; switch off to remove it platform-wide.' },
+  agent_management: { icon: 'users',        color: '#9ece6a', simple: true,  desc: 'Lets the agent list, create, and update the user\'s own agents and edit their prompts and abilities. On by default; switch off to remove it platform-wide.' },
 };
 
 let _abilityStates = {}; // { [ability]: boolean }
@@ -923,6 +926,9 @@ function _initAbilitiesCompact() {
       image_generation: 'Image Generation',
       automation: 'Automation',
       visualizer: 'Visualizer',
+      agent_orchestration: 'Agent Orchestration',
+      diagnostics: 'Diagnostics',
+      agent_management: 'Agent Management',
     };
     label.innerHTML = `<div class="ac-ability-name">${nameMap[id] || id}</div>
       <div class="ac-ability-desc">${meta.desc}</div>`;
@@ -1149,7 +1155,7 @@ function _initIntegrations() {
   // Rendered as compact rows with toggle — see _renderAbilitiesCompact()
   _initAbilitiesCompact();
 
-  _initIntegrationsSearch([...providers, ...genericProviders, ...channels, ...comingSoonChannels, 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer']);
+  _initIntegrationsSearch([...providers, ...genericProviders, ...channels, ...comingSoonChannels, 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer', 'agent_orchestration', 'diagnostics', 'agent_management']);
   _initIntegrationAdminChat();
 }
 
@@ -1461,10 +1467,13 @@ async function _loadIntegrations() {
     _applyAbilityStatus('browser_control',  data.browser_control_configured);
     _applyAbilityStatus('image_generation', data.image_generation_configured);
     _applyAbilityStatus('visualizer',       data.visualizer_configured);
+    _applyAbilityStatus('agent_orchestration', data.agent_orchestration_configured);
+    _applyAbilityStatus('diagnostics',         data.diagnostics_configured);
+    _applyAbilityStatus('agent_management',    data.agent_management_configured);
     // Browser session is per-user — fetched from a separate endpoint.
     _loadBrowserSessionStatus();
   } catch (e) {
-    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram', 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer']) {
+    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram', 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer', 'agent_orchestration', 'diagnostics', 'agent_management']) {
       const s = _qs(`ac-int-${p}-status`);
       if (s) { s.textContent = `Failed to load: ${e.message}`; s.style.color = '#f7768e'; s.style.display = 'block'; }
     }

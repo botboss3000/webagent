@@ -62,6 +62,7 @@ from .selfinfo import check_self_update, gather
 from .notify import Notifier
 from .procscan import scan_webagent_processes
 from .watchdog import Watchdog, set_active_watchdog
+from . import guardian
 from .pb_coordinator import PlaybookCoordinator
 from .palette import PRESETS, palette_from_theme
 from .theme_colors import chrome_colors
@@ -547,6 +548,9 @@ class ServerManagerApp(App):
         self._self_update_state = "manager update: checking…"  # refreshed by a startup probe
         self._server_state = "n/a"   # cached server health for the status-bar dot
         self._do_autostart = True    # auto-start the managed server on open (tests disable)
+        self._supervise = True       # spawn/refresh the external keep-alive guardian (tests disable)
+        self._user_quit = False      # set True ONLY on a deliberate quit → writes the clean-exit
+                                     # marker in on_unmount so the guardian doesn't relaunch us
         self._watchdog = None        # the autonomous monitor loop (started in on_mount)
         self._dot = None             # the server-status widget, updated in place by the poll
         self._anim = None            # the animated logo banner (collapses once chat starts)
@@ -706,6 +710,25 @@ class ServerManagerApp(App):
             self.run_worker(self._start_bridge(), group="bridge", exclusive=True)
             # Keep the bridge registration alive with a periodic heartbeat
             self.set_interval(15.0, self._bridge_heartbeat)
+        # External keep-alive guardian: record our PID (so the guardian can tell
+        # when we crash), clear any stale clean-exit marker from a prior quit, keep
+        # the PID heartbeat fresh, and — unless turned off — make sure the guardian
+        # process is up. It outlives us and revives the server (and this TUI) on a
+        # crash. Disabled in tests via ``_supervise``.
+        if self._supervise:
+            guardian.clear_clean_exit()
+            guardian.write_tui_pid()
+            self.set_interval(4.0, guardian.write_tui_pid)
+            self.run_worker(self._ensure_guardian(), group="guardian", exclusive=True)
+
+    async def _ensure_guardian(self) -> None:
+        """Spawn the keep-alive guardian if it's enabled and not already running.
+        Off-thread so the blocking PID/spawn calls never stall the UI."""
+        import asyncio
+        try:
+            await asyncio.to_thread(guardian.ensure_running)
+        except Exception:
+            pass
 
     # ── welcome / situation ───────────────────────────────────────────────
     def _recommended_install_path(self) -> str:
@@ -1390,6 +1413,9 @@ class ServerManagerApp(App):
         """Close the manager shortly after the current message renders, so a staged
         self-update swap / source reload (scheduled by self_restart) can finish."""
         self._log(f"[{self.cc['tool']}]{G.BULLET} restarting the manager…[/]")
+        # Deliberate close (the self-update flow relaunches us itself) — mark it so
+        # the guardian doesn't ALSO relaunch the TUI on top of the staged restart.
+        self._user_quit = True
         self._tui_log.stop()
         self.set_timer(1.2, self.exit)
 
@@ -1410,6 +1436,9 @@ class ServerManagerApp(App):
         self._close_panel()
 
     def action_quit_app(self) -> None:
+        # A deliberate quit (Ctrl+Q): mark it so the guardian leaves us closed
+        # instead of relaunching the window.
+        self._user_quit = True
         self._tui_log.stop()
         self.exit()
 
@@ -1523,13 +1552,15 @@ class ServerManagerApp(App):
             return out + self._readout_widgets(kind)
         if kind == "playbook":
             return out + self._playbook_widgets()
+        ka_label = f"[Keep-alive: {'ON' if guardian.read_enabled() else 'OFF'}]"
         specs = {
             "admin": [("[App Config]", "panel_config"),
                       ("[Model Settings]", "panel_model"),
                       ("[Commands]", "help"), ("[Update]", "admin_update"),
                       ("[Install]", "install"), ("[Reset]", "admin_reset"),
                       ("[Uninstall]", "admin_uninstall"),
-                      ("[Diagnostics]", "diagnostics"), ("[Logs]", "server_logs")],
+                      ("[Diagnostics]", "diagnostics"), ("[Logs]", "server_logs"),
+                      (ka_label, "guardian_toggle")],
             "server": [("[Start]", "server_start"), ("[Restart]", "server_restart"),
                        ("[Kill]", "server_stop")],
         }.get(kind, [])
@@ -2220,7 +2251,7 @@ class ServerManagerApp(App):
                   "diag_refresh", "logs_refresh",
                   "playbook_back", "pb_refresh",
                   "pb_mode_document", "pb_mode_safe", "pb_mode_auto",
-                  "reset_do"}
+                  "guardian_toggle", "reset_do"}
 
     @on(Click, ".panel-btn")
     def _on_panel_btn(self, event: Click) -> None:
@@ -2452,6 +2483,34 @@ class ServerManagerApp(App):
             self._log(f"[{self.cc['dim']}]no server to start in onboarding mode[/]")
             return
         self.run_worker(self._do_server("start"), group="server", exclusive=True)
+
+    def action_guardian_toggle(self) -> None:
+        """Flip the external keep-alive guardian on/off. ON keeps the web server AND
+        this TUI window alive through crashes; OFF stops supervising but leaves the
+        running server and window untouched. State persists in ``guardian.json``, so
+        OFF survives a restart (the next open won't re-spawn it until turned ON)."""
+        turning_off = guardian.read_enabled()
+        guardian.write_enabled(not turning_off)
+        if turning_off:
+            self._log(f"[{self.cc['dim']}]{G.BULLET} Keep-alive guardian OFF[/] "
+                      f"[{self.cc['dim']}]— the server and this window keep running; "
+                      f"they just won't be auto-revived after a crash.[/]")
+        else:
+            guardian.write_tui_pid()   # make our PID current before it starts watching
+            self._log(f"[{self.cc['secondary']}]{G.OK} Keep-alive guardian ON[/] "
+                      f"[{self.cc['dim']}]— revives the server and this window if either crashes.[/]")
+        self._rebuild_panel()          # flip the button label immediately
+        self.run_worker(self._apply_guardian_toggle(turning_off), group="guardian", exclusive=True)
+
+    async def _apply_guardian_toggle(self, turning_off: bool) -> None:
+        """Spawn / terminate the guardian off-thread (the PID + subprocess calls
+        block) so the click feels instant."""
+        import asyncio
+        try:
+            await asyncio.to_thread(
+                guardian.stop_guardian if turning_off else guardian.ensure_running)
+        except Exception:
+            pass
 
     def action_server_logs(self) -> None:
         if self.project_root is None:
@@ -3732,6 +3791,13 @@ class ServerManagerApp(App):
             self._ws_finalize(self._ws_bubble_text)
 
     async def on_unmount(self) -> None:
+        # Only a DELIBERATE quit (Ctrl+Q / self-restart) sets ``_user_quit``. Write
+        # the clean-exit marker here so the guardian knows not to relaunch us. A
+        # crash bypasses this orderly teardown (or leaves the flag False), so the
+        # marker stays absent → the guardian revives the TUI. Guarded by
+        # ``_supervise`` so tests never touch the shared marker file.
+        if self._supervise and self._user_quit:
+            guardian.write_clean_exit()
         try:
             await self._webapp.stop()
         except Exception:

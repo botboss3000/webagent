@@ -74,9 +74,6 @@ class UpdateAgentRequest(BaseModel):
     user_mode: Optional[str] = None
     # Per-agent LLM override (stored in metadata['llm_config'])
     llm_config: Optional[Dict[str, Any]] = None
-    # On-demand skills — full list when present; normalized + stored in
-    # metadata['skills']. An empty list clears all skills.
-    skills: Optional[List[Dict[str, Any]]] = None
     # Prompt slots — admin-only. Full slot set when present; reconciled against existing.
     slots: Optional[List[SlotPayload]] = None
     # Per-slot wipe of all user override rows at save time.
@@ -183,9 +180,6 @@ def _safe_agent(agent: dict) -> dict:
         except Exception:
             meta = {}
     result["llm_config"] = meta.get("llm_config") if isinstance(meta, dict) else {"use_default": True}
-    # Expose the agent's on-demand skills (name/description/body/mode/enabled).
-    _sk = meta.get("skills") if isinstance(meta, dict) else None
-    result["skills"] = _sk if isinstance(_sk, list) else []
     # Derive a single ``system`` flag the agents page uses to keep utility agents
     # (Suggested Replies / user-impersonator, source-controller, Agent Manager,
     # etc.) off the user's list by default, behind a "Show system agents" toggle.
@@ -437,13 +431,11 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest):
     slots_in = payload.pop("slots", None)
     reset_for = payload.pop("reset_overrides_for", None)
     llm_config_in = payload.pop("llm_config", None)
-    skills_in = payload.pop("skills", None)
     updates = {k: v for k, v in payload.items()
                if k not in ("user_id",) and v is not None}
 
-    # Merge llm_config / skills into the agent's metadata blob (read once so
-    # the two writes don't clobber each other).
-    if llm_config_in is not None or skills_in is not None:
+    # Merge llm_config into the agent's metadata blob.
+    if llm_config_in is not None:
         current = await db.get_agent_by_id(agent_id)
         meta = {}
         if current:
@@ -455,11 +447,7 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest):
                     pass
             elif isinstance(meta_raw, dict):
                 meta = dict(meta_raw)
-        if llm_config_in is not None:
-            meta["llm_config"] = llm_config_in
-        if skills_in is not None:
-            from app.context.md_seeder import normalize_skills
-            meta["skills"] = normalize_skills(skills_in)
+        meta["llm_config"] = llm_config_in
         updates["metadata"] = meta
 
     updated = await db.update_agent_fields(
@@ -545,12 +533,45 @@ async def get_agent_slots(request: Request, agent_id: str, user_id: str = Query(
             raise HTTPException(status_code=404, detail="Agent not found.")
         is_template = True
     slots = await db.list_slots(agent_id, user_id=user_id)
+    # The `__skills__` slot is managed via the dedicated skills endpoints, not
+    # the generic slot editor — hide it here so it doesn't show as raw JSON.
+    slots = [s for s in slots if s.get("slot_name") != "__skills__"]
     if is_template:
         # Templates have no per-agent admin role — only global admins may edit.
         is_admin = await db.is_user_admin(user_id)
     else:
         is_admin = await _is_agent_admin(db, agent_id, user_id)
     return {"slots": slots, "user_role": "admin" if is_admin else "member"}
+
+
+@router.get("/agents/{agent_id}/skills")
+async def get_agent_skills_ep(request: Request, agent_id: str, user_id: str = Query(...)):
+    """Return the agent's on-demand skills (from its `__skills__` prompt slot)
+    plus whether the caller may edit them."""
+    user_id = await assert_caller_is(request, user_id)
+    db = get_db()
+    skills = await db.get_agent_skills(agent_id)
+    try:
+        is_admin = await _is_agent_admin(db, agent_id, user_id)
+    except Exception:
+        is_admin = await db.is_user_admin(user_id)
+    return {"skills": skills, "user_role": "admin" if is_admin else "member"}
+
+
+class UpdateSkillsRequest(BaseModel):
+    user_id: str
+    skills: List[Dict[str, Any]]
+
+
+@router.put("/agents/{agent_id}/skills")
+async def put_agent_skills_ep(agent_id: str, req: UpdateSkillsRequest):
+    """Replace the agent's full skills list (admin-only). Persists to the
+    `__skills__` prompt slot in agent_prompts."""
+    db = get_db()
+    if not await _is_agent_admin(db, agent_id, req.user_id):
+        raise HTTPException(status_code=403, detail="Only agent admins can edit skills.")
+    saved = await db.set_agent_skills(agent_id, req.skills, updated_by=f"admin:{req.user_id}")
+    return {"skills": saved}
 
 
 @router.put("/agents/{agent_id}/my-prompts")
@@ -1188,6 +1209,8 @@ _CONNECTION_CATALOG = [
     {"connection_type": "visualizer",       "section": "ability", "display_name": "Visualizer",       "status": "available"},
     {"connection_type": "agent_orchestration", "section": "ability", "display_name": "Agent Orchestration", "status": "available"},
     {"connection_type": "diagnostics",      "section": "ability", "display_name": "Diagnostics",      "status": "available"},
+    {"connection_type": "agent_management", "section": "ability", "display_name": "Agent Management", "status": "available"},
+    {"connection_type": "terminal_control", "section": "ability", "display_name": "Terminal Control",  "status": "available"},
 ]
 
 

@@ -110,6 +110,13 @@ const TOOL_DESCRIPTIONS = {
   generate_image:               'Generate an image from a text description',
   read_diagnostics:             'Read server diagnostics, errors, and logs',
   maps_geocode:                 'Geocode an address or reverse-geocode coordinates',
+  list_agent_templates:         'List agent templates (and a template’s prompt slots) to build from',
+  list_my_agents:               'List the agents this user owns',
+  get_agent:                    'Read one of the user’s agents: config, prompts, abilities',
+  create_agent:                 'Create a new agent for the user from a template',
+  update_agent:                 'Update fields on one of the user’s own agents',
+  edit_agent_prompt:            'Read or edit the prompt slots of the user’s own agent',
+  set_agent_ability:            'Turn an ability on/off for the user’s own agent',
 };
 
 // ── Tool tier definitions ─────────────────────────────────────────────
@@ -221,6 +228,12 @@ const TOOL_CATEGORIES = [
     condition: 'agent_orchestration',
     tools: ['delegate_to_agent','list_delegatable_agents'],
   },
+  {
+    label: 'Agent Management',
+    condition: 'agent_management',
+    tools: ['list_agent_templates','list_my_agents','get_agent','create_agent',
+            'update_agent','edit_agent_prompt','set_agent_ability'],
+  },
 ];
 
 const PIPELINE_TOOLS = {
@@ -232,6 +245,7 @@ const DESTRUCTIVE = new Set([
   'db_query','update_agent_context_document','create_tool',
   'delete_webhook','write_source','edit_source','delete_source','resolve_conflict',
   'run_command','restart_server',
+  'create_agent','update_agent','edit_agent_prompt','set_agent_ability',
 ]);
 
 // ── Ability-to-tools mapping ──────────────────────────────────────────
@@ -247,6 +261,7 @@ const ABILITY_TO_TOOLS = {
   automation:       [],  // automation tools are injected dynamically; no static tool names to list
   visualizer:       [],  // visualizer tools are injected dynamically
   agent_orchestration: ['delegate_to_agent','list_delegatable_agents'],
+  agent_management: ['list_agent_templates','list_my_agents','get_agent','create_agent','update_agent','edit_agent_prompt','set_agent_ability'],
   // register_user is always-on (Tier 1), not gated by an ability
 };
 
@@ -1961,17 +1976,26 @@ function _makeAutosaveCheck() {
 
 function _flashSaved(indicator, ok = true, errMsg = '') {
   if (!indicator) return;
+  clearTimeout(indicator._fadeT);
   indicator.classList.remove('saving', 'saved', 'error');
   if (ok) {
-    // Only appears once the backend has confirmed the write — and stays visible
-    // (no auto-fade) so the field's saved state is always clear.
+    // Only appears once the backend has confirmed the write, then fades after a
+    // couple of seconds so it reads as a transient "saved!" confirmation.
     indicator.classList.add('saved');
     indicator.textContent = '✓';
     indicator.title = 'Saved';
+    indicator._fadeT = setTimeout(() => {
+      indicator.classList.remove('saved');
+      indicator.textContent = '';
+    }, 2200);
   } else {
     indicator.classList.add('error');
     indicator.textContent = '!';
     indicator.title = errMsg || 'Save failed';
+    indicator._fadeT = setTimeout(() => {
+      indicator.classList.remove('error');
+      indicator.textContent = '';
+    }, 4000);
   }
 }
 
@@ -1979,16 +2003,18 @@ function _flashSaved(indicator, ok = true, errMsg = '') {
 // backend confirms the write in _flashSaved.
 function _markSaving(indicator) {
   if (!indicator) return;
+  clearTimeout(indicator._fadeT);
   indicator.classList.remove('saved', 'error', 'saving');
   indicator.textContent = '';
 }
 
 /**
- * PUT a partial update for a single custom agent and flash the indicator.
- * No-op for non-custom or mock agents (those use their own flows).
+ * PUT a partial update for a single custom agent. Returns true on success.
+ * Flashes `indicator` (if given) and patches the local agent cache so a later
+ * re-render is consistent. No-op (returns false) for non-custom / mock agents.
  */
 async function _putAgentField(agent, updates, indicator) {
-  if (!agent || agent.source !== 'custom' || _isMockAgent(agent)) return;
+  if (!agent || agent.source !== 'custom' || _isMockAgent(agent)) return false;
   _markSaving(indicator);
   try {
     const res = await fetch(`/api/v1/agents/${agent.id}`, {
@@ -2002,11 +2028,42 @@ async function _putAgentField(agent, updates, indicator) {
       if (idx !== -1) Object.assign(_agents[idx], data.agent);
       Object.assign(agent, data.agent);
       _flashSaved(indicator, true);
-    } else {
-      _flashSaved(indicator, false, data.detail || 'Save failed');
+      return true;
     }
+    _flashSaved(indicator, false, data.detail || 'Save failed');
+    return false;
   } catch (e) {
     _flashSaved(indicator, false, e.message);
+    return false;
+  }
+}
+
+/**
+ * Non-optimistic toggle/button save. The control shows a spinner while the
+ * request is in flight, ignores further clicks until it resolves, and only
+ * adopts the new visual state once the backend confirms it — so a slow or
+ * failed save never leaves the UI showing a value that wasn't persisted.
+ *
+ * @param control   the clickable element (button / checkbox)
+ * @param buildUpdates (newOn) => updates object to PUT
+ * @param applyState  (on) => void   apply the confirmed on/off look to `control`
+ * @param indicator   the green-check element
+ */
+async function _toggleSave(agent, control, currentOn, buildUpdates, applyState, indicator) {
+  if (control.dataset.busy === '1') return;        // ignore double-clicks mid-save
+  const targetOn = !currentOn;
+  control.dataset.busy = '1';
+  control.classList.add('control-saving');
+  const prevHTML = control.innerHTML;
+  control.innerHTML = '<span class="agents-spinner"></span>';
+  _markSaving(indicator);
+  const ok = await _putAgentField(agent, buildUpdates(targetOn), indicator);
+  control.dataset.busy = '0';
+  control.classList.remove('control-saving');
+  if (ok) {
+    applyState(targetOn);                          // adopt the new state only now
+  } else {
+    control.innerHTML = prevHTML;                  // restore the prior look untouched
   }
 }
 
@@ -2568,20 +2625,24 @@ function _renderConfigTab(body, agent, panelEl) {
       const ind = (!isMock) ? _makeAutosaveCheck() : null;
       if (ind) rightWrap.appendChild(ind);
 
+      const applyTog = on => { tog.dataset.on = on ? '1' : '0'; tog.textContent = on ? 'ON' : 'OFF'; };
+
       tog.addEventListener('click', e => {
         e.stopPropagation();
-        const nowOn = tog.dataset.on !== '1';
-        tog.dataset.on = nowOn ? '1' : '0';
-        tog.textContent = nowOn ? 'ON' : 'OFF';
-        if (isMock) return;
-        // Memory toggles both feed loop_logic + allowed_tools — recompute from
-        // the current state of both switches and save together.
-        const recallBtn = panelEl.querySelector('[data-field="memory_recall"]');
-        const saveBtn   = panelEl.querySelector('[data-field="memory_save"]');
-        const recall = recallBtn ? recallBtn.dataset.on === '1' : false;
-        const save   = saveBtn   ? saveBtn.dataset.on === '1'   : false;
-        const mu = _memoryUpdatesFor(agent, recall, save);
-        _putAgentField(agent, { loop_logic: mu.loop_logic, allowed_tools: mu.allowed_tools }, ind);
+        if (isMock) { applyTog(tog.dataset.on !== '1'); return; }  // mock: local flip only
+        const curOn = tog.dataset.on === '1';
+        _toggleSave(agent, tog, curOn,
+          // Memory toggles both feed loop_logic + allowed_tools — recompute from
+          // this toggle's target plus the other switch's confirmed state.
+          (targetOn) => {
+            const other = panelEl.querySelector(`[data-field="${item.field === 'memory_recall' ? 'memory_save' : 'memory_recall'}"]`);
+            const otherOn = other ? other.dataset.on === '1' : false;
+            const recall = item.field === 'memory_recall' ? targetOn : otherOn;
+            const save   = item.field === 'memory_save'   ? targetOn : otherOn;
+            const mu = _memoryUpdatesFor(agent, recall, save);
+            return { loop_logic: mu.loop_logic, allowed_tools: mu.allowed_tools };
+          },
+          applyTog, ind);
       });
 
       row.appendChild(nameEl);
@@ -2615,23 +2676,40 @@ function _renderConfigTab(body, agent, panelEl) {
       : 'Users get auto-generated anonymous IDs. No registration required.'}</span>
   `;
   if (isEditable) {
-    umGroup.querySelectorAll('[data-field="user_mode"]').forEach(radio => {
-      radio.addEventListener('change', () => {
+    const umCheck = umGroup.querySelector('[data-role="um-check"]');
+    const umRadios = [...umGroup.querySelectorAll('[data-field="user_mode"]')];
+    // Paint the selected radio's label + hint to match a given mode.
+    const paintUm = (mode) => {
+      umGroup.querySelectorAll('.conn-user-mode label').forEach(lbl => {
+        const val = lbl.querySelector('input')?.value;
+        lbl.style.borderColor = val === mode ? '#7aa2f7' : 'var(--border,#2a2a3a)';
+        lbl.style.background = val === mode ? 'rgba(122,162,247,0.08)' : 'transparent';
+      });
+      const r = umRadios.find(x => x.value === mode);
+      if (r) r.checked = true;
+      const hintEl = umGroup.querySelector('.conn-user-mode-hint');
+      if (hintEl) {
+        hintEl.textContent = mode === 'register'
+          ? 'Agent guides new users to register and links accounts across channels.'
+          : 'Users get auto-generated anonymous IDs. No registration required.';
+      }
+    };
+    let umConfirmed = umMode;       // last value the backend acknowledged
+    let umBusy = false;
+    umRadios.forEach(radio => {
+      radio.addEventListener('change', async () => {
         const selected = umGroup.querySelector('[data-field="user_mode"]:checked')?.value || 'anonymous';
-        umGroup.querySelectorAll('.conn-user-mode label').forEach(lbl => {
-          const val = lbl.querySelector('input')?.value;
-          lbl.style.borderColor = val === selected ? '#7aa2f7' : 'var(--border,#2a2a3a)';
-          lbl.style.background = val === selected ? 'rgba(122,162,247,0.08)' : 'transparent';
-        });
-        const hintEl = umGroup.querySelector('.conn-user-mode-hint');
-        if (hintEl) {
-          hintEl.textContent = selected === 'register'
-            ? 'Agent guides new users to register and links accounts across channels.'
-            : 'Users get auto-generated anonymous IDs. No registration required.';
-        }
-        if (!isMock) {
-          _putAgentField(agent, { user_mode: selected }, umGroup.querySelector('[data-role="um-check"]'));
-        }
+        paintUm(selected);          // reflect the click immediately for responsiveness
+        if (isMock || umBusy || selected === umConfirmed) return;
+        umBusy = true;
+        umRadios.forEach(r => { r.disabled = true; });
+        if (umCheck) { umCheck.classList.remove('saved','error'); umCheck.innerHTML = '<span class="agents-spinner"></span>'; }
+        const ok = await _putAgentField(agent, { user_mode: selected }, null);
+        umBusy = false;
+        umRadios.forEach(r => { r.disabled = false; });
+        if (umCheck) umCheck.innerHTML = '';
+        if (ok) { umConfirmed = selected; _flashSaved(umCheck, true); }
+        else    { paintUm(umConfirmed); _flashSaved(umCheck, false); }  // revert on failure
       });
     });
   }
@@ -2719,25 +2797,32 @@ function _renderConfigTab(body, agent, panelEl) {
     const discCheck = discGroup.querySelector('[data-role="disc-check"]');
     const cb = discGroup.querySelector('[data-field="discoverable"]');
     cb.addEventListener('change', async () => {
-      _markSaving(discCheck);
+      const target = cb.checked;
+      cb.disabled = true;
+      if (discCheck) { discCheck.classList.remove('saved','error'); discCheck.innerHTML = '<span class="agents-spinner"></span>'; }
+      let ok = false, errMsg = '';
       try {
         const res = await fetch(`/api/v1/agent-templates/config`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_id: app.currentUserId, template_id: agent.id, discoverable: cb.checked }),
+          body: JSON.stringify({ user_id: app.currentUserId, template_id: agent.id, discoverable: target }),
         });
         const data = await res.json();
         if (res.ok) {
           agent.discoverable = data.template?.discoverable;
           const idx = _agents.findIndex(a => a.id === agent.id);
           if (idx !== -1) _agents[idx].discoverable = agent.discoverable;
-          _flashSaved(discCheck, true);
+          ok = true;
         } else {
-          _flashSaved(discCheck, false, data.detail || 'Save failed');
+          errMsg = data.detail || 'Save failed';
         }
       } catch (e) {
-        _flashSaved(discCheck, false, e.message);
+        errMsg = e.message;
       }
+      cb.disabled = false;
+      if (discCheck) discCheck.innerHTML = '';
+      if (ok) { _flashSaved(discCheck, true); }
+      else    { cb.checked = !target; _flashSaved(discCheck, false, errMsg); }  // revert on failure
     });
   }
 
@@ -3004,37 +3089,53 @@ function _renderSkillsSection(body, agent, panelEl, isEditable) {
   list.style.marginTop = '10px';
   group.appendChild(list);
 
-  if (isEditable) {
-    const addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.className = 'agents-btn';
-    addBtn.style.marginTop = '8px';
-    addBtn.textContent = '+ Add skill';
-    addBtn.addEventListener('click', () => {
-      panelEl._skillsState.push({ name: '', description: '', body: '', mode: 'selectable', enabled: true });
-      _renderSkillCards(panelEl, agent, isEditable);
-      panelEl._skillsOnChange();
-    });
-    group.appendChild(addBtn);
-  }
-
   body.appendChild(group);
 
-  // Seed state from the agent (deep copy so edits don't mutate the cached agent).
-  const seed = Array.isArray(agent.skills) ? agent.skills : [];
-  panelEl._skillsState = seed.map(s => ({
-    name: s.name || '', description: s.description || '', body: s.body || '',
-    mode: s.mode === 'always_on' ? 'always_on' : 'selectable',
-    enabled: s.enabled !== false,
-  }));
   panelEl._skillsCheck = check;
+  panelEl._skillsState = [];
+  panelEl._skillsEditable = false;
   panelEl._skillsOnChange = _debounced(() => _saveSkillsNow(agent, panelEl, check), 800);
-  _renderSkillCards(panelEl, agent, isEditable);
+
+  // Load skills from the agent's __skills__ prompt slot via the dedicated
+  // endpoint (skills live in agent_prompts, not metadata).
+  const token = localStorage.getItem('auth_token');
+  const headers = {}; if (token) headers.Authorization = `Bearer ${token}`;
+  fetch(`/api/v1/agents/${agent.id}/skills?user_id=${encodeURIComponent(app.currentUserId)}`, { headers })
+    .then(r => (r.ok ? r.json() : { skills: [], user_role: 'member' }))
+    .then(data => {
+      const editable = data.user_role === 'admin' && agent.source === 'custom';
+      panelEl._skillsEditable = editable;
+      const seed = Array.isArray(data.skills) ? data.skills : [];
+      panelEl._skillsState = seed.map(s => ({
+        name: s.name || '', description: s.description || '', body: s.body || '',
+        mode: s.mode === 'always_on' ? 'always_on' : 'selectable',
+        enabled: s.enabled !== false,
+      }));
+      hint.textContent = editable
+        ? 'Named knowledge packs stored on the agent. The name + description are always shown to the agent; “Always on” also injects the body every turn, otherwise the body loads on demand when the agent calls load_skill. Changes save automatically.'
+        : 'This agent’s skills. The name + description are always visible to the agent; “Always on” skills stay in context, the others load on demand.';
+      if (editable) {
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'agents-btn';
+        addBtn.style.marginTop = '8px';
+        addBtn.textContent = '+ Add skill';
+        addBtn.addEventListener('click', () => {
+          panelEl._skillsState.push({ name: '', description: '', body: '', mode: 'selectable', enabled: true });
+          _renderSkillCards(panelEl, agent);
+          panelEl._skillsOnChange();
+        });
+        group.appendChild(addBtn);
+      }
+      _renderSkillCards(panelEl, agent);
+    })
+    .catch(() => { _renderSkillCards(panelEl, agent); });
 }
 
-function _renderSkillCards(panelEl, agent, isEditable) {
+function _renderSkillCards(panelEl, agent) {
   const list = panelEl.querySelector('[data-role="skills-list"]');
   if (!list) return;
+  const isEditable = !!panelEl._skillsEditable;
   const skills = panelEl._skillsState || [];
   list.innerHTML = '';
 
@@ -3110,7 +3211,7 @@ function _renderSkillCards(panelEl, agent, isEditable) {
       del.addEventListener('mouseleave', () => { del.style.background = 'none'; del.style.color = 'var(--fg-3)'; });
       del.addEventListener('click', () => {
         panelEl._skillsState.splice(idx, 1);
-        _renderSkillCards(panelEl, agent, isEditable);
+        _renderSkillCards(panelEl, agent);
         panelEl._skillsOnChange();
       });
       top.appendChild(del);
@@ -3143,32 +3244,23 @@ function _renderSkillCards(panelEl, agent, isEditable) {
   });
 }
 
-/** Persist the agent's full skills array into metadata via PUT /agents/{id}. */
+/** Persist the agent's full skills list into its __skills__ prompt slot via
+ * PUT /api/v1/agents/{id}/skills. */
 async function _saveSkillsNow(agent, panelEl, indicator) {
   const st = panelEl._skillsState;
-  if (!st) return;
-  if (agent.source !== 'custom') {
-    _flashSaved(indicator, false, 'Skills can only be edited on custom agents.');
-    return;
-  }
+  if (!st || !panelEl._skillsEditable) return;
   _markSaving(indicator);
   const token = localStorage.getItem('auth_token');
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers.Authorization = `Bearer ${token}`;
   try {
-    const res = await fetch(`/api/v1/agents/${agent.id}`, {
+    const res = await fetch(`/api/v1/agents/${agent.id}/skills`, {
       method: 'PUT', headers,
       body: JSON.stringify({ user_id: app.currentUserId, skills: st }),
     });
-    const data = await res.json();
-    if (res.ok) {
-      const idx = _agents.findIndex(a => a.id === agent.id);
-      if (idx !== -1) Object.assign(_agents[idx], data.agent);
-      Object.assign(agent, data.agent);
-      _flashSaved(indicator, true);
-    } else {
-      _flashSaved(indicator, false, data.detail || 'Save failed');
-    }
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) _flashSaved(indicator, true);
+    else _flashSaved(indicator, false, data.detail || 'Save failed');
   } catch (e) {
     _flashSaved(indicator, false, e.message);
   }
@@ -4020,6 +4112,7 @@ const _CONN_ICONS = {
   visualizer:       'layout-dashboard',
   agent_orchestration: 'workflow',
   diagnostics:      'stethoscope',
+  agent_management: 'users-cog',
 };
 
 async function _renderConnectionsTab(body, agent) {

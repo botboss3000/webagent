@@ -3256,29 +3256,73 @@ function ftRenderSessions(items) {
   });
   host.innerHTML = '';
   for (const s of live) {
-    const row = document.createElement('button');
-    row.type = 'button';
-    row.className = 'ft-row';
     const label = _sessionLabel(s);
     const attached = (s.attached_clients || 0) > 0;
+    const isAgent = !!s.agent_driven;
+    // Agent-driven rows nest a real Pause/Resume (take-over) button, so they
+    // must be a div (role=button) — a <button> can't legally contain a button.
+    const row = document.createElement(isAgent ? 'div' : 'button');
+    if (!isAgent) row.type = 'button';
+    else { row.setAttribute('role', 'button'); row.tabIndex = 0; }
+    row.className = 'ft-row';
     row.title = attached
       ? 'Open: ' + label + ' (attached on ' + s.attached_clients + ' client' + (s.attached_clients === 1 ? '' : 's') + ')'
       : 'Reattach: ' + label + (s.idle_secs != null ? ' (idle ' + _fmtIdle(s.idle_secs) + ')' : '');
     const dotCls = attached ? 'ft-row-dot ft-row-dot-on' : 'ft-row-dot';
-    const meta = attached
-      ? ''
-      : (s.idle_secs != null ? _fmtIdle(s.idle_secs) + ' idle' : '');
+    // For agent sessions show the launched command; otherwise idle time.
+    const meta = isAgent
+      ? (s.launch_command || '')
+      : (attached ? '' : (s.idle_secs != null ? _fmtIdle(s.idle_secs) + ' idle' : ''));
+    const icon = isAgent ? 'bot' : 'square-terminal';
+    const chip = isAgent
+      ? '<span class="ft-agent-chip" title="Opened and driven by an agent">AGENT</span>'
+      : '';
     row.innerHTML =
-      '<i data-lucide="square-terminal" class="lucide-icon ft-row-icon"></i>' +
+      '<i data-lucide="' + icon + '" class="lucide-icon ft-row-icon"></i>' +
       '<span class="ft-row-label">' + ftEscapeHtml(label) + '</span>' +
+      chip +
       (meta ? '<span class="ft-row-meta">' + ftEscapeHtml(meta) + '</span>' : '') +
       '<span class="' + dotCls + '" title="' + (attached ? 'attached' : 'detached') + '"></span>';
-    row.addEventListener('click', () => openOrAttachTerminalSession(s.session_id, label));
+    const open = () => openOrAttachTerminalSession(s.session_id, label);
+    row.addEventListener('click', open);
+    if (isAgent) {
+      row.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+      });
+      // Take-over control: pause stops the agent typing so you own the
+      // keyboard; resume hands control back.
+      const pause = document.createElement('button');
+      pause.type = 'button';
+      pause.className = 'ft-pause-btn' + (s.paused ? ' ft-pause-btn-on' : '');
+      pause.textContent = s.paused ? 'Resume' : 'Pause';
+      pause.title = s.paused
+        ? 'Resume: let the agent drive this terminal again'
+        : 'Pause the agent so you can take over typing';
+      pause.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        pause.disabled = true;
+        try {
+          await ftSetSessionPaused(s.session_id, !s.paused);
+          ftLoadSessions();
+        } catch (err) {
+          pause.disabled = false;
+        }
+      });
+      row.appendChild(pause);
+    }
     host.appendChild(row);
   }
   if (window.lucide) {
     try { window.lucide.createIcons({ nodes: Array.from(host.querySelectorAll('[data-lucide]:not(.lucide)')) }); } catch (_) {}
   }
+}
+
+// Take-over lock: pause/resume an agent's control of a terminal session.
+async function ftSetSessionPaused(sessionId, paused) {
+  return apiFetch(
+    '/api/v1/terminal/sessions/' + encodeURIComponent(sessionId) + '/pause',
+    { method: 'POST', body: JSON.stringify({ paused: !!paused }) },
+  );
 }
 
 async function ftLoadSessions() {

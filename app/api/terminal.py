@@ -10,10 +10,12 @@ import concurrent.futures
 import json
 import logging
 import os
+import re
 import sys
 import signal
 import time
-from typing import Any, Dict, List, Optional
+import uuid
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 
@@ -39,6 +41,37 @@ router = APIRouter()
 #   • the server shuts down.
 _sessions: Dict[str, "TerminalSession"] = {}
 _sessions_lock = asyncio.Lock()
+
+# Strips ANSI/VT control sequences (CSI colour codes, cursor moves, OSC titles)
+# so an agent reading the screen via read_text() gets human-/LLM-readable text
+# instead of raw escape soup. The xterm.js browser panel still gets the raw
+# bytes — this only cleans the agent-facing snapshot.
+_ANSI_RE = re.compile(
+    r"""
+    \x1B \[ [0-?]* [ -/]* [@-~]     # CSI ... cmd
+    | \x1B \] .*? (?: \x07 | \x1B \\ )  # OSC ... BEL or ST
+    | \x1B [@-Z\\-_]                # two-byte escapes
+    | [\x00-\x08\x0B\x0C\x0E-\x1F]  # stray control chars (keep \t \n \r)
+    """,
+    re.VERBOSE | re.DOTALL,
+)
+
+# Named keys an agent can send via terminal_send(keys=[...]) → raw byte sequences.
+# Covers Enter, control combos, and the common navigation keys an interactive
+# CLI/TUI expects (answering prompts, moving a selection, aborting).
+_KEY_BYTES: Dict[str, bytes] = {
+    "enter": b"\r", "return": b"\r", "tab": b"\t", "space": b" ",
+    "esc": b"\x1b", "escape": b"\x1b", "backspace": b"\x7f", "delete": b"\x1b[3~",
+    "up": b"\x1b[A", "down": b"\x1b[B", "right": b"\x1b[C", "left": b"\x1b[D",
+    "home": b"\x1b[H", "end": b"\x1b[F", "pageup": b"\x1b[5~", "pagedown": b"\x1b[6~",
+    "ctrl+c": b"\x03", "ctrl+d": b"\x04", "ctrl+z": b"\x1a", "ctrl+l": b"\x0c",
+    "ctrl+a": b"\x01", "ctrl+e": b"\x05", "ctrl+u": b"\x15", "ctrl+k": b"\x0b",
+    "ctrl+w": b"\x17", "ctrl+r": b"\x12",
+}
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 # Per-user limit on simultaneously-running PTYs. A soft guard against a UI
 # bug or DOS attempt opening hundreds of shells. Overridable via env.
@@ -132,6 +165,7 @@ async def get_or_create_session(session_id: str, user_id: str) -> "TerminalSessi
 
         sess = TerminalSession(user_id=user_id)
         sess.spawn()
+        sess.start_pump()          # begin draining output immediately (even with no WS)
         sess.write_input(b"\r")
         _sessions[session_id] = sess
         logger.info("Created terminal session %s for user %s", session_id, user_id)
@@ -169,6 +203,83 @@ async def close_all_sessions():
 
 # Backwards-compatible name retained because main.py imports it on shutdown.
 close_persistent_session = close_all_sessions
+
+
+# ── Agent-facing session API (used by the terminal_* tools) ──
+#
+# These wrap the same session registry the browser terminal uses, so an
+# agent-opened session is a first-class session: it shows up in the sidebar,
+# survives reconnects, and a human can attach to watch / take over.
+
+async def open_agent_session(
+    user_id: str, command: str = "", name: str = "",
+) -> Tuple[str, "TerminalSession"]:
+    """Spawn a new PTY for an agent and (optionally) run `command` in it.
+    Returns (session_id, session). The session is tagged agent_driven so the
+    UI surfaces it for the human to watch."""
+    session_id = uuid.uuid4().hex
+    sess = await get_or_create_session(session_id, user_id)
+    sess.agent_driven = True
+    sess.launch_command = (command or "").strip()
+    sess.name = (name or "").strip()[:80] or (sess.launch_command[:80] if sess.launch_command else "agent terminal")
+    if sess.launch_command:
+        # Wait for the shell to actually paint its first prompt and settle
+        # (cold shells like PowerShell take a few seconds), THEN run the command
+        # — otherwise the keystrokes are typed into a not-yet-ready shell and
+        # lost. require_activity guards against the empty-prompt false-settle.
+        await sess.wait_idle(quiet_secs=0.5, timeout=12.0, require_activity=True)
+        sess.send_text(sess.launch_command, enter=True)
+    return session_id, sess
+
+
+async def get_owned_session(session_id: str, user_id: str) -> Optional["TerminalSession"]:
+    """Look up a live session by id, enforcing ownership. Returns None if it
+    doesn't exist / has died / belongs to someone else."""
+    async with _sessions_lock:
+        _reap_dead_locked()
+        sess = _sessions.get(session_id)
+        if sess is None or not sess.is_alive:
+            return None
+        if sess.user_id and sess.user_id != user_id:
+            return None
+        return sess
+
+
+async def snapshot_sessions(user_id: str) -> List[Dict[str, Any]]:
+    """List the caller's live sessions with agent-driving metadata, for the
+    terminal_list tool."""
+    now = time.time()
+    out: List[Dict[str, Any]] = []
+    async with _sessions_lock:
+        for sid, s in _sessions.items():
+            if s.user_id and s.user_id != user_id:
+                continue
+            if not s.is_alive:
+                continue
+            idle_secs = None
+            if s.attached_count == 0 and s.last_detach_time is not None:
+                idle_secs = int(now - s.last_detach_time)
+            out.append({
+                "session_id": sid,
+                "name": s.name,
+                "agent_driven": s.agent_driven,
+                "launch_command": s.launch_command,
+                "paused": s.paused,
+                "watchers": s.attached_count,
+                "idle_secs": idle_secs,
+                "ended": s.ended,
+            })
+    return out
+
+
+async def set_session_paused(session_id: str, user_id: str, paused: bool) -> bool:
+    """Take-over lock: pause/resume the agent's control of a session. Returns
+    True if the session was found + toggled."""
+    sess = await get_owned_session(session_id, user_id)
+    if sess is None:
+        return False
+    sess.paused = bool(paused)
+    return True
 
 
 # ── Idle GC ──
@@ -244,13 +355,22 @@ if IS_WINDOWS:
 
     # Shared thread pool for Windows PTY reads — avoids per-call executor
     # that blocks event loop on task cancellation (pool.shutdown deadlock).
+    #
+    # Each session's background pump pins ONE worker in a blocking proc.read()
+    # for the session's whole life, so the pool must be at least as large as the
+    # number of concurrent live sessions or later sessions' pumps starve (their
+    # output never drains). Sized to the per-user session cap + headroom;
+    # override with TERMINAL_PTY_READ_THREADS.
+    _PTY_READ_THREADS = int(os.environ.get(
+        "TERMINAL_PTY_READ_THREADS", str(max(32, MAX_SESSIONS_PER_USER + 8))
+    ))
     _WINPTY_READER: Optional[concurrent.futures.ThreadPoolExecutor] = None
 
     def _get_winpty_executor() -> concurrent.futures.ThreadPoolExecutor:
         global _WINPTY_READER
         if _WINPTY_READER is None:
             _WINPTY_READER = concurrent.futures.ThreadPoolExecutor(
-                max_workers=2, thread_name_prefix="pty-read"
+                max_workers=_PTY_READ_THREADS, thread_name_prefix="pty-read"
             )
         return _WINPTY_READER
 
@@ -292,6 +412,28 @@ class TerminalSession:
         # clock running.
         self.last_detach_time: Optional[float] = time.time()
 
+        # ── Background pump + broadcast (decouples reading from WS attachment) ──
+        # A single pump task owns the PTY's sole reader; it drains output into
+        # scrollback AND fans it out to every subscriber queue. This lets the
+        # agent drive a session with NO browser attached (the program never
+        # blocks on a full output buffer) and lets multiple watchers share one
+        # PTY. Reads must not happen anywhere else (single-reader constraint).
+        self._subscribers: set[asyncio.Queue] = set()
+        self._io_lock = asyncio.Lock()        # guards (append scrollback + fan-out) vs (snapshot + subscribe)
+        self._pump_task: Optional[asyncio.Task] = None
+        self._ended = False                   # the child process has exited
+        self.last_output_ts: float = time.monotonic()  # for wait_idle() quiet detection
+
+        # ── Agent-driving metadata ──
+        # agent_driven → this session was opened by an agent (terminal_open),
+        # surfaced in the sessions list + sidebar so a human knows to watch it.
+        # launch_command → the command the agent ran on open (for display).
+        # paused → take-over lock: while True, agent terminal_send is refused so
+        # a human who grabbed the wheel isn't fought for the keyboard.
+        self.agent_driven: bool = False
+        self.launch_command: str = ""
+        self.paused: bool = False
+
     def mark_attached(self) -> None:
         """Increment the connected-clients counter (WS handshake)."""
         self.attached_count += 1
@@ -320,6 +462,139 @@ class TerminalSession:
     def get_scrollback(self) -> bytes:
         """Return a snapshot of the current scrollback buffer."""
         return bytes(self._scrollback)
+
+    # ── Background pump + broadcast ──
+
+    def start_pump(self) -> None:
+        """Launch the single background reader for this session (idempotent).
+        It drains the PTY forever — into scrollback and out to all subscribers —
+        so output is captured even with no WebSocket attached."""
+        if self._pump_task is not None and not self._pump_task.done():
+            return
+        self._pump_task = asyncio.ensure_future(self._pump_loop())
+
+    async def _pump_loop(self) -> None:
+        """Own the PTY's sole reader: read → append scrollback → fan out. On the
+        child exiting, mark ended and signal every subscriber with a None
+        sentinel so their WebSocket loops can close cleanly."""
+        try:
+            while True:
+                data = await self.read_output()   # the ONLY caller of read_output
+                if data is None:
+                    self._ended = True
+                    await self._broadcast(None)
+                    return
+                if not data:
+                    continue
+                self.last_output_ts = time.monotonic()
+                await self._broadcast(data)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug("pump loop ended for a session: %s", e)
+            self._ended = True
+            try:
+                await self._broadcast(None)
+            except Exception:
+                pass
+
+    async def _broadcast(self, item: Optional[bytes]) -> None:
+        """Append `item` to scrollback AND push it to every subscriber, atomically
+        under _io_lock vs. a new subscriber snapshotting scrollback — so no byte
+        is both replayed AND queued (duplicate) or lost between the two (gap).
+        `item` is None for the end-of-stream sentinel."""
+        async with self._io_lock:
+            if item:
+                self._append_scrollback(item)
+            for q in list(self._subscribers):
+                try:
+                    q.put_nowait(item)
+                except asyncio.QueueFull:
+                    # Slow watcher — drop to stay live; scrollback still has it.
+                    pass
+
+    async def subscribe(self) -> Tuple["asyncio.Queue", bytes]:
+        """Register a live-output queue AND atomically grab the current
+        scrollback, so a newly-attached watcher gets every byte exactly once:
+        everything up to now via the returned snapshot, everything after via the
+        queue. Returns (queue, scrollback_snapshot)."""
+        q: asyncio.Queue = asyncio.Queue(maxsize=1000)
+        async with self._io_lock:
+            snapshot = bytes(self._scrollback)
+            self._subscribers.add(q)
+            if self._ended:
+                q.put_nowait(None)
+        return q, snapshot
+
+    def unsubscribe(self, q: "asyncio.Queue") -> None:
+        self._subscribers.discard(q)
+
+    # ── Agent-facing I/O (used by the terminal_* tools) ──
+
+    def send_text(self, text: str, enter: bool = False) -> None:
+        """Type `text` into the program (optionally followed by Enter)."""
+        if text:
+            self.write_input(text.encode("utf-8"))
+        if enter:
+            self.write_input(b"\r")
+
+    def send_keys(self, keys: List[str]) -> List[str]:
+        """Send a sequence of named keys (see _KEY_BYTES). Returns the list of
+        any unknown key names (ignored) so the tool can report them."""
+        unknown: List[str] = []
+        for k in keys:
+            seq = _KEY_BYTES.get(str(k).strip().lower())
+            if seq is None:
+                unknown.append(k)
+            else:
+                self.write_input(seq)
+        return unknown
+
+    def read_text(self, tail_chars: int = 4000, strip_ansi: bool = True) -> str:
+        """Return the recent output as readable text (ANSI stripped by default),
+        trimmed to the last `tail_chars` characters — what's effectively on
+        screen now, for the agent to reason about."""
+        raw = bytes(self._scrollback).decode("utf-8", errors="replace")
+        if strip_ansi:
+            raw = _strip_ansi(raw)
+        if tail_chars and len(raw) > tail_chars:
+            raw = raw[-tail_chars:]
+        return raw
+
+    async def wait_idle(
+        self, quiet_secs: float = 0.6, timeout: float = 30.0,
+        require_activity: bool = True,
+    ) -> bool:
+        """Block until the program has REACTED and then gone quiet — i.e. it
+        produced some new output after this call started and has since been
+        silent for `quiet_secs` (it's settled, presumably waiting for input).
+
+        `require_activity` defaults True so this doesn't "false-settle" during a
+        cold start or the beat between sending input and the program responding
+        (both look momentarily quiet though nothing has happened yet). Pass
+        False for a plain "is it quiet right now" check. Returns True if it
+        settled (or the child exited), False on timeout with no reaction."""
+        start = time.monotonic()
+        deadline = start + max(0.0, timeout)
+        baseline_ts = self.last_output_ts
+        saw_activity = False
+        poll = min(0.1, quiet_secs / 2) if quiet_secs > 0 else 0.1
+        while True:
+            if self._ended or not self.is_alive:
+                return True
+            if self.last_output_ts > baseline_ts:
+                saw_activity = True
+            ready = saw_activity or not require_activity
+            quiet_for = time.monotonic() - self.last_output_ts
+            if ready and quiet_for >= quiet_secs:
+                return True
+            if time.monotonic() >= deadline:
+                return saw_activity or not require_activity
+            await asyncio.sleep(poll)
+
+    @property
+    def ended(self) -> bool:
+        return self._ended
 
     # ── Platform-specific helpers ──
 
@@ -426,9 +701,10 @@ class TerminalSession:
             data = await self._read_output_windows()
         else:
             data = await self._read_output_unix()
-        # Mirror everything into the scrollback so a later reattach can replay.
-        if data:
-            self._append_scrollback(data)
+        # NB: scrollback append happens in _broadcast(), under _io_lock, so that
+        # "append + fan-out" is atomic vs. a new subscriber's "snapshot +
+        # subscribe" — otherwise a byte could land in both the replay snapshot
+        # AND the live queue (duplicate) or neither (gap).
         return data
 
     async def _read_output_unix(self) -> Optional[bytes]:
@@ -551,6 +827,11 @@ class TerminalSession:
 
     def close(self):
         """Kill the child and clean up."""
+        # Stop the background pump first so it doesn't read a closing fd.
+        if self._pump_task is not None and not self._pump_task.done():
+            self._pump_task.cancel()
+        self._pump_task = None
+        self._ended = True
         if self._process is None:
             return
 
@@ -622,6 +903,25 @@ async def delete_terminal_session(session_id: str, request: Request):
     return {"closed": closed}
 
 
+@router.post("/api/v1/terminal/sessions/{session_id}/pause")
+async def pause_terminal_session(session_id: str, request: Request):
+    """Take-over lock: pause (or resume) an agent's control of a session so a
+    human can drive it without the agent fighting for the keyboard. Body:
+    {"paused": true|false}. Admin-only."""
+    uid = await assert_caller_is(request, None)
+    if not await _is_admin(uid):
+        raise HTTPException(status_code=403, detail="Admin required")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    paused = bool(body.get("paused", True))
+    ok = await set_session_paused(session_id, uid, paused)
+    if not ok:
+        raise HTTPException(status_code=404, detail="No such session")
+    return {"session_id": session_id, "paused": paused}
+
+
 @router.get("/api/v1/terminal/sessions")
 async def list_terminal_sessions(request: Request) -> List[Dict[str, Any]]:
     """Snapshot of live PTY sessions. Each admin caller sees only their own
@@ -651,6 +951,11 @@ async def list_terminal_sessions(request: Request) -> List[Dict[str, Any]]:
                 "idle_secs": idle_secs,
                 "age_secs": int(now - s.created_at),
                 "scrollback_bytes": s.scrollback_size(),
+                # Agent-driving metadata — the sidebar badges agent-opened
+                # sessions and offers a pause/resume (take-over) control.
+                "agent_driven": s.agent_driven,
+                "launch_command": s.launch_command,
+                "paused": s.paused,
             })
     return out
 
@@ -818,11 +1123,12 @@ async def terminal_websocket(websocket: WebSocket):
 
     session.mark_attached()
 
-    # ── Replay scrollback ──
-    # A reattached tab sees a fresh xterm that knows nothing about what was
-    # on screen before. Send the last SCROLLBACK_BYTES of output before the
-    # live stream so the user picks up roughly where they left off.
-    scrollback = session.get_scrollback()
+    # ── Subscribe to the session's output broadcast ──
+    # The background pump owns the PTY reader; we get a live queue plus an atomic
+    # scrollback snapshot (everything-so-far via the snapshot, everything-after
+    # via the queue — no byte duplicated or dropped). Replaying the snapshot
+    # first gives a reattached tab roughly the screen it left.
+    out_queue, scrollback = await session.subscribe()
     if scrollback:
         try:
             await asyncio.wait_for(
@@ -833,12 +1139,12 @@ async def terminal_websocket(websocket: WebSocket):
 
     try:
         async def reader_task():
-            """Background: pump PTY output → WebSocket.
+            """Forward this subscriber's broadcast queue → WebSocket.
             Every send is bounded — a hung client must not pin this coroutine."""
             try:
                 while not closing.is_set():
-                    data = await session.read_output()
-                    if data is None:
+                    data = await out_queue.get()
+                    if data is None:        # child exited (end sentinel from pump)
                         try:
                             await asyncio.wait_for(
                                 websocket.send_bytes(b""), timeout=SEND_TIMEOUT,
@@ -887,12 +1193,19 @@ async def terminal_websocket(websocket: WebSocket):
                         elif ctrl.get("type") == "set_name":
                             new_name = str(ctrl.get("name") or "").strip()[:80]
                             session.name = new_name
+                        elif ctrl.get("type") == "set_paused":
+                            # Take-over lock: while paused, the agent's
+                            # terminal_send is refused so the human at this panel
+                            # owns the keyboard. The human's own keystrokes
+                            # (bytes / input) are never gated.
+                            session.paused = bool(ctrl.get("paused"))
                         # Other JSON control types (e.g. "pong") only matter
                         # for liveness, which we already updated above.
                     except (json.JSONDecodeError, TypeError):
                         session.write_input(text.encode("utf-8"))
 
         finally:
+            session.unsubscribe(out_queue)
             reader.cancel()
             try:
                 await reader

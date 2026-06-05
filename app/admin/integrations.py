@@ -1872,7 +1872,54 @@ _ABILITY_CONFIG_KEY: dict[str, str] = {
     "browser_control":  "ability_browser_control",
     "image_generation": "ability_image_generation",
     "visualizer":       "ability_visualizer",
+    # Terminal control — lets an agent open + drive interactive terminal
+    # programs (Claude Code, REPLs, any CLI). Effectively shell access, so it's
+    # OFF by default (not in _ALWAYS_ON_ABILITIES) and must be turned on at the
+    # app level then per-agent, exactly like codebase_admin.
+    "terminal_control": "ability_terminal_control",
+    # Pure behavioral toggles — no platform credential. They differ from the
+    # rows above only in their *default*: they are available unless an admin
+    # explicitly turns them off (see `_ALWAYS_ON_ABILITIES`), whereas the rows
+    # above are off until enabled. Listed here so the admin Agent Tools page
+    # can show + toggle them and the enable/disable endpoints accept them.
+    "agent_orchestration": "ability_agent_orchestration",
+    "diagnostics":         "ability_diagnostics",
+    "agent_management":    "ability_agent_management",
 }
+
+# Abilities that are ON by default at the app level: available to the per-agent
+# toggle unless an admin explicitly disables them. For these the persisted
+# `auth_elements` row is inverted vs. the credentialed abilities — *absence of a
+# row means enabled*, and an explicit `secret_ref="disabled"` row means the
+# admin turned it off. This preserves the long-standing "always configured"
+# behavior (no regression for agents already using them) while still letting an
+# admin switch them off platform-wide from App Config → Agent Tools.
+_ALWAYS_ON_ABILITIES: set[str] = {
+    "agent_orchestration",
+    "diagnostics",
+    "agent_management",
+}
+
+
+async def _ability_app_enabled(db, ability: str) -> bool:
+    """True iff `ability` is enabled at the app (platform) level.
+
+    - Credentialed abilities (codebase_admin, web_access, …): enabled only when
+      an `auth_elements` row exists with a truthy `secret_ref`.
+    - Always-on abilities (agent_orchestration, diagnostics, agent_management):
+      enabled unless an explicit `secret_ref="disabled"` row exists.
+    """
+    service_key = _ABILITY_CONFIG_KEY.get(ability)
+    if not service_key:
+        return False
+    try:
+        elem = await db.auth_element_get(_ADMIN_USER, service_key, "default")
+    except Exception as e:
+        logger.debug("auth_element_get failed for ability %s: %s", service_key, e)
+        elem = None
+    if ability in _ALWAYS_ON_ABILITIES:
+        return not (elem and elem.get("secret_ref") == "disabled")
+    return bool(elem and elem.get("secret_ref"))
 
 
 async def get_admin_configured_providers(user_id: Optional[str] = None) -> set[str]:
@@ -1903,29 +1950,13 @@ async def get_admin_configured_providers(user_id: Optional[str] = None) -> set[s
         except Exception as e:
             logger.debug("auth_element_get failed for channel %s: %s", service_key, e)
 
-    # Agent Tools (codebase_admin, create_tools) — same enable-flag pattern.
-    for ct, service_key in _ABILITY_CONFIG_KEY.items():
-        try:
-            elem = await db.auth_element_get(_ADMIN_USER, service_key, "default")
-            if elem and elem.get("secret_ref"):
-                configured.add(ct)
-        except Exception as e:
-            logger.debug("auth_element_get failed for ability %s: %s", service_key, e)
-
-    # ── agent_orchestration — pure behavioral toggle, always "configured" ──
-    # Unlike codebase_admin / browser_control (host-privileged, need an app-admin
-    # enable in App Config), this ability only controls whether an agent may
-    # delegate to other agents or trigger the optimizer. There is no platform
-    # secret to set, so it is always available for the per-agent toggle; the
-    # per-agent agent_connections row is the only gate.
-    configured.add("agent_orchestration")
-
-    # ── diagnostics — pure behavioral toggle, always "configured" ──
-    # Like agent_orchestration, this needs no platform secret: it only controls
-    # whether an agent gets the read_diagnostics tool (read the in-app flight
-    # recorder to diagnose the running app). The per-agent agent_connections row
-    # is the only gate.
-    configured.add("diagnostics")
+    # Agent Tools — credentialed abilities (codebase_admin, create_tools, …) use
+    # the enable-flag pattern; always-on abilities (agent_orchestration,
+    # diagnostics, agent_management) are configured unless explicitly disabled.
+    # `_ability_app_enabled` encapsulates both cases.
+    for ct in _ABILITY_CONFIG_KEY:
+        if await _ability_app_enabled(db, ct):
+            configured.add(ct)
 
     # Cache per service_key — facebook & instagram share `meta_oauth_config`.
     seen: dict[str, bool] = {}
@@ -2172,6 +2203,9 @@ async def get_integration_config(
         "browser_control_configured":  ability_enabled.get("browser_control", False),
         "image_generation_configured": ability_enabled.get("image_generation", False),
         "visualizer_configured":       ability_enabled.get("visualizer", False),
+        "agent_orchestration_configured": ability_enabled.get("agent_orchestration", False),
+        "diagnostics_configured":         ability_enabled.get("diagnostics", False),
+        "agent_management_configured":    ability_enabled.get("agent_management", False),
     }
 
 
@@ -2613,13 +2647,8 @@ async def get_ability_enabled_map() -> dict[str, bool]:
         logger.debug("Failed to import db while reading ability states: %s", e)
         return {ab: False for ab in _ABILITY_CONFIG_KEY}
     out: dict[str, bool] = {}
-    for ab, service_key in _ABILITY_CONFIG_KEY.items():
-        try:
-            elem = await db.auth_element_get(_ADMIN_USER, service_key, "default")
-            out[ab] = bool(elem and elem.get("secret_ref"))
-        except Exception as e:
-            logger.debug("auth_element_get failed for ability %s: %s", service_key, e)
-            out[ab] = False
+    for ab in _ABILITY_CONFIG_KEY:
+        out[ab] = await _ability_app_enabled(db, ab)
     return out
 
 
@@ -2631,8 +2660,7 @@ async def is_ability_enabled_for_agent(agent_id: str, ability: str) -> bool:
     try:
         from app.db import get_db
         db = get_db()
-        elem = await db.auth_element_get(_ADMIN_USER, service_key, "default")
-        if not (elem and elem.get("secret_ref")):
+        if not await _ability_app_enabled(db, ability):
             return False
         rows = await db.get_agent_connections(agent_id)
         match = next(
@@ -2741,13 +2769,18 @@ async def enable_ability(
         return {"status": "error", "message": f"Unknown ability: {ability}"}
     from app.db import get_db
     db = get_db()
-    await db.auth_element_set(
-        user_id=_ADMIN_USER,
-        service=_ABILITY_CONFIG_KEY[ability],
-        config={"enabled": True},
-        secret_ref="enabled",
-        label="default",
-    )
+    if ability in _ALWAYS_ON_ABILITIES:
+        # Inverted persistence: enabling means clearing any "disabled" marker so
+        # the ability falls back to its always-available default.
+        await db.auth_element_delete(_ADMIN_USER, _ABILITY_CONFIG_KEY[ability], "default")
+    else:
+        await db.auth_element_set(
+            user_id=_ADMIN_USER,
+            service=_ABILITY_CONFIG_KEY[ability],
+            config={"enabled": True},
+            secret_ref="enabled",
+            label="default",
+        )
     logger.info("Ability %s enabled by admin", ability)
     return {"status": "ok", "ability": ability, "enabled": True}
 
@@ -2766,7 +2799,19 @@ async def disable_ability(
         return {"status": "error", "message": f"Unknown ability: {ability}"}
     from app.db import get_db
     db = get_db()
-    deleted = await db.auth_element_delete(_ADMIN_USER, _ABILITY_CONFIG_KEY[ability], "default")
+    if ability in _ALWAYS_ON_ABILITIES:
+        # Inverted persistence: disabling writes an explicit "disabled" marker
+        # (absence of a row would otherwise read as the always-on default).
+        await db.auth_element_set(
+            user_id=_ADMIN_USER,
+            service=_ABILITY_CONFIG_KEY[ability],
+            config={"enabled": False},
+            secret_ref="disabled",
+            label="default",
+        )
+        deleted = True
+    else:
+        deleted = await db.auth_element_delete(_ADMIN_USER, _ABILITY_CONFIG_KEY[ability], "default")
     if ability == "automation":
         # Wipe every agent's automation data so the feature truly resets.
         tasks_removed = await db.delete_all_automations()

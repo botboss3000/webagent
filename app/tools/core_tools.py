@@ -153,11 +153,9 @@ async def list_skills(agent_id: str = "", session_id: str = "", db=None) -> str:
     """
     try:
         from app.db import get_db
-        from app.agent.skills import parse_agent_skills
         if db is None:
             db = get_db()
-        agent = await db.get_agent_by_id(agent_id) if agent_id else None
-        skills = parse_agent_skills(agent)
+        skills = await db.get_agent_skills(agent_id) if agent_id else []
         active = set(await db.get_session_active_skills(session_id)) if session_id else set()
         out = []
         for s in skills:
@@ -187,11 +185,10 @@ async def load_skill(name: str, agent_id: str = "", session_id: str = "", db=Non
     """
     try:
         from app.db import get_db
-        from app.agent.skills import parse_agent_skills, loaded_result_text
+        from app.agent.skills import loaded_result_text
         if db is None:
             db = get_db()
-        agent = await db.get_agent_by_id(agent_id) if agent_id else None
-        skills = parse_agent_skills(agent)
+        skills = await db.get_agent_skills(agent_id) if agent_id else []
         target = (name or "").strip().lower()
         match = next((s for s in skills if s["name"].lower() == target), None)
         if not match:

@@ -1410,6 +1410,40 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 }
 .ft-row-dot-on { background: #6bd968; }
 
+/* Agent-driven terminal sessions: a small badge + a take-over Pause/Resume
+   button. Design-system vars so both light and dark themes stay legible. */
+.ft-agent-chip {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  color: var(--accent);
+  background: var(--bg-tint);
+  border: 1px solid var(--border-soft);
+}
+.ft-pause-btn {
+  flex-shrink: 0;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  color: var(--fg-2);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+}
+.ft-pause-btn:hover { background: var(--bg-elev-2); color: var(--fg-1); }
+.ft-pause-btn:disabled { opacity: 0.5; cursor: default; }
+/* Paused → the resume affordance is highlighted (agent is held off). */
+.ft-pause-btn-on {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
 .ft-empty {
   color: var(--files-text-faint);
   font-size: 12px;

@@ -7,6 +7,15 @@
 /* ── 1. CSS Tokens ─────────────────────────────────────────── */
 :root {
   /* Backgrounds */
+  /* --page-bg = the colour actually painted on <body> by index.css (which wins
+     the cascade over --bg-0). Used by edge fades (e.g. the tab carousel chevrons)
+     that must blend seamlessly into the real page background. Keep in sync with
+     index.css's `html, body` / `body.light-mode` background.
+     --page-bg-t0 is the same colour at zero alpha, so edge fades end on a
+     transparent version of the page colour (not the `transparent` keyword,
+     which can interpolate through grey and leave a faint off-colour band). */
+  --page-bg:     #07070c;
+  --page-bg-t0:  rgba(7, 7, 12, 0);
   --bg-0:        #0d0d1a;
   --bg-1:        #13132a;
   --bg-2:        #14142a;
@@ -88,6 +97,8 @@
 
 /* ── 2. Light theme overrides ──────────────────────────────── */
 body.light-mode {
+  --page-bg:     #faf5ee;
+  --page-bg-t0:  rgba(250, 245, 238, 0);
   --bg-0:        #fffaf5;
   --bg-1:        #fff7f0;
   --bg-2:        #fff2e6;
@@ -650,12 +661,12 @@ body.light-mode *::-webkit-scrollbar-thumb:hover {
 .main-tabs-chev.left {
 	  left: 0;
 	  justify-content: flex-start;
-	  background: linear-gradient(to right, #07070c 50%, transparent 100%);
+	  background: linear-gradient(to right, var(--page-bg) 50%, var(--page-bg-t0) 100%);
 	}
 	.main-tabs-chev.right {
 	  right: 0;
 	  justify-content: flex-end;
-	  background: linear-gradient(to left, #07070c 50%, transparent 100%);
+	  background: linear-gradient(to left, var(--page-bg) 50%, var(--page-bg-t0) 100%);
 	}
 .main-tabs-chev.visible { display: flex; }
 .main-tabs-chev:hover { color: var(--fg-1); }
@@ -684,12 +695,6 @@ body.light-mode .main-tab:hover { background: var(--accent-soft); color: var(--f
 body.light-mode .main-tab.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
 body.light-mode .main-tabs-chev { color: var(--fg-2); }
 body.light-mode .main-tabs-chev:hover { color: var(--accent); }
-body.light-mode .main-tabs-chev.left {
-	  background: linear-gradient(to right, #faf5ee 50%, transparent 100%);
-	}
-	body.light-mode .main-tabs-chev.right {
-	  background: linear-gradient(to left, #faf5ee 50%, transparent 100%);
-	}
 
 /* ── Agents tab — transparent bg,
 card-aware borders ────────── */

@@ -104,6 +104,11 @@ TUI/
 ├── config.json          ← settings                 (gitignored)
 ├── monitor.json         ← watchdog config          (gitignored)
 ├── alarms.json          ← watchdog alarms          (gitignored)
+├── guardian.json        ← keep-alive on/off state  (gitignored)
+├── guardian.pid         ← guardian PID (singleton)  (gitignored)
+├── tui.pid              ← TUI PID + heartbeat       (gitignored)
+├── tui.clean_exit       ← deliberate-quit marker    (gitignored)
+├── guardian.log         ← guardian activity log     (gitignored)
 └── attachments/         ← pasted images            (gitignored)
 ```
 
@@ -197,6 +202,42 @@ with `monitor_status`.
 The live files are per-machine and **gitignored**: `monitor.json` (config, seeded
 from the shipped defaults) and `alarms.json` (the watch list), both in the data
 dir. The watchdog re-reads them every tick, so edits apply with no restart.
+
+## Keep-alive guardian (survives the TUI)
+
+The watchdog above is **in-process** — it dies the instant the TUI dies, which is
+exactly when the server it launched is most likely to fall over. The **keep-alive
+guardian** ([`webagent/guardian.py`](webagent/guardian.py)) is the answer: a
+**separate, detached process** the TUI spawns on open that **outlives** it and
+keeps **both** running:
+
+- **the web server** — if `/health` stops answering and a checkout is linked, it
+  relaunches `run.py` from the checkout's venv (clearing a zombie port first, with
+  a crash-loop cap);
+- **the TUI itself** — if the TUI process vanishes **without** a clean-quit marker
+  (i.e. it crashed or its window was closed), it relaunches the TUI in a fresh
+  console window.
+
+It's **on by default** and designed to be invisible:
+
+- **Spawned on open, singleton.** The TUI starts it on launch; reopening the TUI
+  never stacks a second one (a cheap pre-check plus an atomic `O_EXCL` claim on
+  `guardian.pid` make a duplicate spawn a harmless immediate no-op).
+- **Truly detached.** It runs windowless in its own process group, so it survives
+  the TUI crashing/closing — that's the whole point.
+- **Clean quit vs crash.** Only a deliberate quit (**Ctrl+Q**, or the self-update
+  restart) writes `tui.clean_exit`; the guardian then leaves the TUI closed.
+  Anything else (crash, window-X) has no marker → the TUI is revived.
+- **Off switch.** **Admin ▸ `[Keep-alive: ON/OFF]`** flips it. **OFF** terminates
+  the guardian but **leaves the running server and window untouched** — it only
+  stops auto-reviving them. The state lives in `guardian.json` and **persists
+  across restarts** (a future open won't re-spawn it until turned back ON).
+
+Standard-library only and import-light (no Textual / httpx / tool registry), so
+the daemon stays tiny. The runtime files (`guardian.pid`, `guardian.json`,
+`tui.pid`, `tui.clean_exit`, `guardian.log`) live in the data dir and are
+**gitignored**. The guardian-launched server writes the **same** `server.pid` /
+`server.log` the manager already tracks, so Server status/logs keep working.
 
 ## The Playbook (self-healing issue knowledge base)
 
@@ -293,7 +334,8 @@ pytest-asyncio dependency), run with the venv Python:
 | Style | What it drives | Files |
 |-------|----------------|-------|
 | **Logic / agent loop** | `ServerManagerAgent` directly with a `FakeLLM` — no UI, no network. Verifies the event-driven loop, subagents, and delegate tools. | `test_event_loop.py`, `test_subagents.py`, `test_delegate.py`, `test_playbook.py` |
-| **UI / Pilot** | The whole `ServerManagerApp` **headlessly** via Textual's `App.run_test()` → a `Pilot`. Boots into an off-screen buffer (no terminal opens), then types, presses keys, clicks widgets, inspects the tree, and takes **text** screenshots to verify appearance. | [`pilot_harness.py`](tests/pilot_harness.py) (reusable boot/snapshot helpers), [`test_tui_pilot.py`](tests/test_tui_pilot.py) (smoke test) |
+| **UI / Pilot** | The whole `ServerManagerApp` **headlessly** via Textual's `App.run_test()` → a `Pilot`. Boots into an off-screen buffer (no terminal opens), then types, presses keys, clicks widgets, inspects the tree, and takes **text** screenshots to verify appearance. | [`pilot_harness.py`](tests/pilot_harness.py) (reusable boot/snapshot/LLM helpers), [`test_tui_pilot.py`](tests/test_tui_pilot.py) (pure-UI smoke test) |
+| **UI / Pilot + LLM** | A full chat turn driven **through the UI** with a scripted `FakeLLM` — prompt submit → agent loop → assistant bubble → token HUD → Stop pill — offline and deterministic. Use `use_fake_llm` + `drive_turn` from the harness. | [`test_tui_pilot_llm.py`](tests/test_tui_pilot_llm.py) |
 
 Run a Pilot test:
 
@@ -307,9 +349,16 @@ managed server launch), `cfg.bridge_enabled = False` (silence the bridge thread)
 and UTF-8 stdout (the box-drawing chrome crashes a cp1252 console). `snapshot(app)`
 returns the off-screen buffer as plain text (capture it inside the `run_test` block,
 print/assert **after**). Header/category buttons are id-less — select them with
-`hdr_button(app, "<_btn_action>")` and pass the widget to `pilot.click`. Keep Pilot
-tests offline: exercise local interactions (typing, theme cycle, panels, tabs) and
-don't submit the prompt, which would invoke the real LLM.
+`hdr_button(app, "<_btn_action>")` and pass the widget to `pilot.click`.
+
+To test a **chat turn through the UI** without a live provider, install a scripted
+LLM and drive a submit: `use_fake_llm(app, [assistant("hi")])` then
+`await drive_turn(app, pilot, "say hi")`. The fake also handles tool-call turns
+(`call("tool", {args})` — the agent runs the tool for real and loops to the next
+scripted reply). `drive_turn` presses Enter as a real key event (so the submit
+message resolves) and waits on `app._busy` (not `wait_for_complete`, which would hang
+on the never-ending watchdog worker). Leave the fake out only for a genuine
+live-provider smoke test — that needs an API key + network and a longer timeout.
 
 ## Configuration files (human-readable)
 
@@ -503,7 +552,7 @@ agent re-reads each session's history by id, so its context follows the active t
 | Header item | Action |
 |-------------|--------|
 | **mode** (far left) — a **one-word** write-gate (`read` / `write` / `auto`) | **Click to cycle** read → write → auto (colour signals the mode). Same gate as the App panel's Read/Write/Auto. |
-| **Admin** | opens `[Connect]` · `[App Config]` · `[Model Settings]` · `[Commands]` · `[Update]` · `[Install]` · `[Reset]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` |
+| **Admin** | opens `[Connect]` · `[App Config]` · `[Model Settings]` · `[Commands]` · `[Update]` · `[Install]` · `[Reset]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` · `[Keep-alive: ON/OFF]` |
 | **Git** (managed mode only) | source control: a **GitHub token** field with `[Save]` / `[Clear]` (used to authenticate network ops; stored in the TUI's own config, never written into the repo's `.git/config`), then `[Fetch]` · `[Pull]` · `[Push]`. Each button hands the agent a plain-language request so it runs the matching `git_tool` op under the usual op-safety rules (force-push blocked); Pull/Push arm writes first since the click is the consent. |
 | **Playbook** (managed mode only) | the self-healing **issue knowledge base**: a **remediation-mode** selector (`[Document]` / `[Safe-auto]` / `[Autonomous]`), then the list of learned issues (occurrences, status, best remedy + confidence). Click an issue to drill in: its remedies with helped/didn't stats, recent incidents, and `[Approve]` / `[Disable]` / `[Forget]` controls. See [The Playbook](#the-playbook-self-healing-issue-knowledge-base). |
 | **App** | the **AI provider** block — **Provider** as a grid of **pill buttons** (OpenRouter / OpenAI / DeepSeek / Groq / Together / Mistral / xAI / Custom); clicking one highlights it and fills the **Base URL** + **Model** to match (Custom leaves them as typed). Then a plain-text **AI key** field, `[Save]` / `[Clear]`; plus the write-gate `[Read-only]` / `[Write]` / `[Autonomous]` (current one highlighted) and `[Open Browser]` (opens `http://localhost:8080/index.html`). **Keys are shown in clear text** (not masked) so you can verify what you pasted. |
@@ -527,6 +576,7 @@ the header.
 | `[Uninstall]` | Remove webAgent from the device (Termux) — lists exactly what's deleted (launcher, shortcut, repo, data, package), then removes it and closes |
 | `[Diagnostics]` | Show the app's recorded warnings/errors — reads the local DB, so it works even when the server is down |
 | `[Logs]` | Show the captured server log in the transcript |
+| `[Keep-alive: ON/OFF]` | Toggle the **external keep-alive guardian** (see [Keep-alive guardian](#keep-alive-guardian-survives-the-tui)). ON keeps the server **and** this window alive through crashes; OFF stops supervising but leaves both running. Persists across restarts |
 
 Install, Update, Reset and Uninstall each open a **confirmation right inside the
 sidebar** (the panel switches from its buttons to an info + `[…]` / `[Cancel]` view —

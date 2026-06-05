@@ -236,6 +236,127 @@
                   </div>
 
                 </div>
+
+                <!-- ── Web tools (moved here from the obsolete "Generic Providers" category) ── -->
+                <p class="ac-category-desc" style="margin-top:4px;">Non-OAuth web tools for sites without a public API. Configure here, then turn on per agent from the agent's <strong>Abilities</strong> tab.</p>
+
+            <!-- Web Scraper (generic third-party scraping API) -->
+            <div class="ac-card" id="ac-int-scraper-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#7aa2f7" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 0 1-7.06-4.27c.74-.92 2.85-1.73 7.06-1.73s6.32.81 7.06 1.73A8 8 0 0 1 12 20zm0-8a3 3 0 1 1 3-3 3 3 0 0 1-3 3z"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Web Scraper</div>
+                  <div class="ac-hint" style="margin:0;">Bring-your-own scraping API (Apify, RapidAPI, or any custom HTTP endpoint). Works for any site.</div>
+                </div>
+                <span id="ac-int-scraper-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
+              </div>
+
+              <div id="ac-int-scraper-configured" style="display:none;font-size:12px;">
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <div><span style="color:var(--fg-muted);">Provider:</span> <code id="ac-int-scraper-provider" style="font-size:11px;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Endpoint:</span> <code id="ac-int-scraper-endpoint" style="font-size:11px;word-break:break-all;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Actor / Host:</span> <code id="ac-int-scraper-extra" style="font-size:11px;word-break:break-all;"></code></div>
+                </div>
+                <div style="margin-top:12px;display:flex;gap:8px;">
+                  <button id="ac-int-scraper-edit" class="ac-btn ac-btn-ghost">Edit</button>
+                  <button id="ac-int-scraper-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
+                </div>
+              </div>
+
+              <div id="ac-int-scraper-form" style="display:block;">
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Provider</label>
+                  <select id="ac-int-scraper-input-provider" class="ac-input">
+                    <option value="apify">Apify</option>
+                    <option value="rapidapi">RapidAPI</option>
+                    <option value="custom_http">Custom HTTP endpoint</option>
+                  </select>
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">API Key</label>
+                  <input type="password" id="ac-int-scraper-input-key" class="ac-input" placeholder="API key / token" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Endpoint <span style="color:var(--fg-muted);font-weight:400;">(optional for Apify / RapidAPI; required for custom_http)</span></label>
+                  <input type="text" id="ac-int-scraper-input-endpoint" class="ac-input" placeholder="https://…" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Actor ID <span style="color:var(--fg-muted);font-weight:400;">(Apify only)</span></label>
+                  <input type="text" id="ac-int-scraper-input-actor" class="ac-input" placeholder="apify/web-scraper" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Host <span style="color:var(--fg-muted);font-weight:400;">(RapidAPI only)</span></label>
+                  <input type="text" id="ac-int-scraper-input-host" class="ac-input" placeholder="example.p.rapidapi.com" autocomplete="off">
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-scraper-save" class="ac-btn ac-btn-primary">Save</button>
+                </div>
+              </div>
+              <span id="ac-int-scraper-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+              <details class="ac-details" style="margin-top:12px;">
+                <summary>How agents use this</summary>
+                <div class="ac-details-body">
+                  Enables the <code>web_scrape_search</code> and <code>web_scrape_url</code> tools. The agent decides when to use them based on the user's request — e.g. asking the agent to "search Marketplace for bicycles" will route through this scraper. No site-specific configuration here; site recipes live in the agent's skills prompt.
+                </div>
+              </details>
+            </div>
+
+            <!-- Browser Session (per-user cookie jar for authenticated scraping) -->
+            <div class="ac-card" id="ac-int-browser_session-card">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#bb9af7" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm6.93 6h-2.95a15.61 15.61 0 0 0-1.38-3.56A8 8 0 0 1 18.93 8zM12 4a13.94 13.94 0 0 1 1.84 4H10.16A13.94 13.94 0 0 1 12 4zM4.26 14a7.69 7.69 0 0 1 0-4h3.38a16.49 16.49 0 0 0 0 4zm.82 2h2.95a15.61 15.61 0 0 0 1.38 3.56A8 8 0 0 1 5.08 16zm2.95-8H5.08a8 8 0 0 1 4.33-3.56A15.61 15.61 0 0 0 8.03 8zM12 20a13.94 13.94 0 0 1-1.84-4h3.68A13.94 13.94 0 0 1 12 20zm2.34-6H9.66a14.4 14.4 0 0 1 0-4h4.68a14.4 14.4 0 0 1 0 4zm.25 5.56A15.61 15.61 0 0 0 15.97 16h2.95a8 8 0 0 1-4.33 3.56zM16.36 14a16.49 16.49 0 0 0 0-4h3.38a7.69 7.69 0 0 1 0 4z"/>
+                </svg>
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:14px;">Browser Session</div>
+                  <div class="ac-hint" style="margin:0;">Paste cookies from a site you're already logged into. Lets the agent act on your behalf for sites without an API.</div>
+                </div>
+                <span id="ac-int-browser_session-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
+              </div>
+
+              <div id="ac-int-browser_session-configured" style="display:none;font-size:12px;">
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <div><span style="color:var(--fg-muted);">Domain:</span> <code id="ac-int-browser_session-domain" style="font-size:11px;"></code></div>
+                  <div><span style="color:var(--fg-muted);">User-Agent:</span> <code id="ac-int-browser_session-ua" style="font-size:11px;word-break:break-all;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Cookies stored:</span> <code id="ac-int-browser_session-count" style="font-size:11px;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Saved:</span> <code id="ac-int-browser_session-saved" style="font-size:11px;"></code></div>
+                </div>
+                <div style="margin-top:12px;display:flex;gap:8px;">
+                  <button id="ac-int-browser_session-edit" class="ac-btn ac-btn-ghost">Replace</button>
+                  <button id="ac-int-browser_session-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
+                </div>
+              </div>
+
+              <div id="ac-int-browser_session-form" style="display:block;">
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Domain <span style="color:var(--fg-muted);font-weight:400;">(optional label, e.g. .facebook.com)</span></label>
+                  <input type="text" id="ac-int-browser_session-input-domain" class="ac-input" placeholder=".facebook.com" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">User-Agent <span style="color:var(--fg-muted);font-weight:400;">(leave blank for a default Chrome UA)</span></label>
+                  <input type="text" id="ac-int-browser_session-input-ua" class="ac-input" placeholder="Mozilla/5.0 …" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Cookies</label>
+                  <textarea id="ac-int-browser_session-input-cookies" class="ac-input" rows="6" placeholder='{"c_user":"…","xs":"…"}  — or Netscape cookie-jar text' style="font-family:monospace;font-size:11px;"></textarea>
+                  <div class="ac-hint" style="margin-top:6px;">Accepts JSON (<code>{"name":"value"}</code>) or Netscape cookie-jar format. Export from your browser using a "cookie editor" extension. Cookies never leave your account.</div>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-browser_session-save" class="ac-btn ac-btn-primary">Save</button>
+                </div>
+              </div>
+              <span id="ac-int-browser_session-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+              <details class="ac-details" style="margin-top:12px;">
+                <summary>How agents use this & risks</summary>
+                <div class="ac-details-body">
+                  Enables the <code>web_session_status</code>, <code>web_session_fetch</code>, and <code>web_session_graphql</code> tools. The agent talks to the site exactly as your browser would — useful when no official API exists.
+                  <div style="margin-top:6px;color:var(--fg-muted);">Cookies expire (often daily). The agent will surface a <code>session_expired</code> error when that happens — re-paste fresh cookies here. Some sites' Terms of Service forbid automated access; you accept that risk.</div>
+                </div>
+              </details>
+            </div>
+
               </div>
             </details>
 
@@ -1302,135 +1423,6 @@
 
             </div><!-- /ac-category-body -->
             </details><!-- /ac-cat-productivity -->
-
-            <!-- ── Generic Providers (collapsible, collapsed by default) ── -->
-            <details class="ac-category-group" id="ac-cat-generic">
-              <summary class="ac-category-summary">
-                <span class="ac-category-chevron">▶</span>
-                <i data-lucide="globe" class="lucide-icon" style="width:16px;height:16px;color:#7aa2f7;"></i>
-                <span class="ac-category-title">Generic Providers</span>
-                <span class="ac-category-count" id="ac-cat-generic-count"></span>
-              </summary>
-              <div class="ac-category-body">
-                <p class="ac-category-desc">Non-OAuth integrations for sites without a public API.</p>
-
-            <!-- Web Scraper (generic third-party scraping API) -->
-            <div class="ac-card" id="ac-int-scraper-card">
-              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
-                  <path fill="#7aa2f7" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 0 1-7.06-4.27c.74-.92 2.85-1.73 7.06-1.73s6.32.81 7.06 1.73A8 8 0 0 1 12 20zm0-8a3 3 0 1 1 3-3 3 3 0 0 1-3 3z"/>
-                </svg>
-                <div style="flex:1;">
-                  <div style="font-weight:600;font-size:14px;">Web Scraper</div>
-                  <div class="ac-hint" style="margin:0;">Bring-your-own scraping API (Apify, RapidAPI, or any custom HTTP endpoint). Works for any site.</div>
-                </div>
-                <span id="ac-int-scraper-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
-              </div>
-
-              <div id="ac-int-scraper-configured" style="display:none;font-size:12px;">
-                <div style="display:flex;flex-direction:column;gap:6px;">
-                  <div><span style="color:var(--fg-muted);">Provider:</span> <code id="ac-int-scraper-provider" style="font-size:11px;"></code></div>
-                  <div><span style="color:var(--fg-muted);">Endpoint:</span> <code id="ac-int-scraper-endpoint" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div><span style="color:var(--fg-muted);">Actor / Host:</span> <code id="ac-int-scraper-extra" style="font-size:11px;word-break:break-all;"></code></div>
-                </div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-scraper-edit" class="ac-btn ac-btn-ghost">Edit</button>
-                  <button id="ac-int-scraper-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
-                </div>
-              </div>
-
-              <div id="ac-int-scraper-form" style="display:block;">
-                <div class="ac-field" style="margin-bottom:10px;">
-                  <label class="ac-label">Provider</label>
-                  <select id="ac-int-scraper-input-provider" class="ac-input">
-                    <option value="apify">Apify</option>
-                    <option value="rapidapi">RapidAPI</option>
-                    <option value="custom_http">Custom HTTP endpoint</option>
-                  </select>
-                </div>
-                <div class="ac-field" style="margin-bottom:10px;">
-                  <label class="ac-label">API Key</label>
-                  <input type="password" id="ac-int-scraper-input-key" class="ac-input" placeholder="API key / token" autocomplete="off">
-                </div>
-                <div class="ac-field" style="margin-bottom:10px;">
-                  <label class="ac-label">Endpoint <span style="color:var(--fg-muted);font-weight:400;">(optional for Apify / RapidAPI; required for custom_http)</span></label>
-                  <input type="text" id="ac-int-scraper-input-endpoint" class="ac-input" placeholder="https://…" autocomplete="off">
-                </div>
-                <div class="ac-field" style="margin-bottom:10px;">
-                  <label class="ac-label">Actor ID <span style="color:var(--fg-muted);font-weight:400;">(Apify only)</span></label>
-                  <input type="text" id="ac-int-scraper-input-actor" class="ac-input" placeholder="apify/web-scraper" autocomplete="off">
-                </div>
-                <div class="ac-field" style="margin-bottom:10px;">
-                  <label class="ac-label">Host <span style="color:var(--fg-muted);font-weight:400;">(RapidAPI only)</span></label>
-                  <input type="text" id="ac-int-scraper-input-host" class="ac-input" placeholder="example.p.rapidapi.com" autocomplete="off">
-                </div>
-                <div style="margin-top:12px;">
-                  <button id="ac-int-scraper-save" class="ac-btn ac-btn-primary">Save</button>
-                </div>
-              </div>
-              <span id="ac-int-scraper-status" class="ac-status" style="display:none;margin-top:8px;"></span>
-              <details class="ac-details" style="margin-top:12px;">
-                <summary>How agents use this</summary>
-                <div class="ac-details-body">
-                  Enables the <code>web_scrape_search</code> and <code>web_scrape_url</code> tools. The agent decides when to use them based on the user's request — e.g. asking the agent to "search Marketplace for bicycles" will route through this scraper. No site-specific configuration here; site recipes live in the agent's skills prompt.
-                </div>
-              </details>
-            </div>
-
-            <!-- Browser Session (per-user cookie jar for authenticated scraping) -->
-            <div class="ac-card" id="ac-int-browser_session-card">
-              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
-                  <path fill="#bb9af7" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm6.93 6h-2.95a15.61 15.61 0 0 0-1.38-3.56A8 8 0 0 1 18.93 8zM12 4a13.94 13.94 0 0 1 1.84 4H10.16A13.94 13.94 0 0 1 12 4zM4.26 14a7.69 7.69 0 0 1 0-4h3.38a16.49 16.49 0 0 0 0 4zm.82 2h2.95a15.61 15.61 0 0 0 1.38 3.56A8 8 0 0 1 5.08 16zm2.95-8H5.08a8 8 0 0 1 4.33-3.56A15.61 15.61 0 0 0 8.03 8zM12 20a13.94 13.94 0 0 1-1.84-4h3.68A13.94 13.94 0 0 1 12 20zm2.34-6H9.66a14.4 14.4 0 0 1 0-4h4.68a14.4 14.4 0 0 1 0 4zm.25 5.56A15.61 15.61 0 0 0 15.97 16h2.95a8 8 0 0 1-4.33 3.56zM16.36 14a16.49 16.49 0 0 0 0-4h3.38a7.69 7.69 0 0 1 0 4z"/>
-                </svg>
-                <div style="flex:1;">
-                  <div style="font-weight:600;font-size:14px;">Browser Session</div>
-                  <div class="ac-hint" style="margin:0;">Paste cookies from a site you're already logged into. Lets the agent act on your behalf for sites without an API.</div>
-                </div>
-                <span id="ac-int-browser_session-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
-              </div>
-
-              <div id="ac-int-browser_session-configured" style="display:none;font-size:12px;">
-                <div style="display:flex;flex-direction:column;gap:6px;">
-                  <div><span style="color:var(--fg-muted);">Domain:</span> <code id="ac-int-browser_session-domain" style="font-size:11px;"></code></div>
-                  <div><span style="color:var(--fg-muted);">User-Agent:</span> <code id="ac-int-browser_session-ua" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div><span style="color:var(--fg-muted);">Cookies stored:</span> <code id="ac-int-browser_session-count" style="font-size:11px;"></code></div>
-                  <div><span style="color:var(--fg-muted);">Saved:</span> <code id="ac-int-browser_session-saved" style="font-size:11px;"></code></div>
-                </div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-browser_session-edit" class="ac-btn ac-btn-ghost">Replace</button>
-                  <button id="ac-int-browser_session-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
-                </div>
-              </div>
-
-              <div id="ac-int-browser_session-form" style="display:block;">
-                <div class="ac-field" style="margin-bottom:10px;">
-                  <label class="ac-label">Domain <span style="color:var(--fg-muted);font-weight:400;">(optional label, e.g. .facebook.com)</span></label>
-                  <input type="text" id="ac-int-browser_session-input-domain" class="ac-input" placeholder=".facebook.com" autocomplete="off">
-                </div>
-                <div class="ac-field" style="margin-bottom:10px;">
-                  <label class="ac-label">User-Agent <span style="color:var(--fg-muted);font-weight:400;">(leave blank for a default Chrome UA)</span></label>
-                  <input type="text" id="ac-int-browser_session-input-ua" class="ac-input" placeholder="Mozilla/5.0 …" autocomplete="off">
-                </div>
-                <div class="ac-field" style="margin-bottom:10px;">
-                  <label class="ac-label">Cookies</label>
-                  <textarea id="ac-int-browser_session-input-cookies" class="ac-input" rows="6" placeholder='{"c_user":"…","xs":"…"}  — or Netscape cookie-jar text' style="font-family:monospace;font-size:11px;"></textarea>
-                  <div class="ac-hint" style="margin-top:6px;">Accepts JSON (<code>{"name":"value"}</code>) or Netscape cookie-jar format. Export from your browser using a "cookie editor" extension. Cookies never leave your account.</div>
-                </div>
-                <div style="margin-top:12px;">
-                  <button id="ac-int-browser_session-save" class="ac-btn ac-btn-primary">Save</button>
-                </div>
-              </div>
-              <span id="ac-int-browser_session-status" class="ac-status" style="display:none;margin-top:8px;"></span>
-              <details class="ac-details" style="margin-top:12px;">
-                <summary>How agents use this & risks</summary>
-                <div class="ac-details-body">
-                  Enables the <code>web_session_status</code>, <code>web_session_fetch</code>, and <code>web_session_graphql</code> tools. The agent talks to the site exactly as your browser would — useful when no official API exists.
-                  <div style="margin-top:6px;color:var(--fg-muted);">Cookies expire (often daily). The agent will surface a <code>session_expired</code> error when that happens — re-paste fresh cookies here. Some sites' Terms of Service forbid automated access; you accept that risk.</div>
-                </div>
-              </details>
-            </div><!-- /ac-category-body -->
-            </details><!-- /ac-cat-generic -->
 
           </section>
 

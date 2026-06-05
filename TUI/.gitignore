@@ -23,3 +23,12 @@ config.json
 monitor.json
 alarms.json
 attachments/
+
+# keep-alive guardian + server lifecycle runtime files (per-machine, recreated)
+# guardian.pid / tui.pid / server.pid (PID + heartbeat), guardian.json (on/off
+# state), guardian.log / server.log, tui.clean_exit (deliberate-quit marker)
+*.pid
+guardian.json
+guardian.log
+server.log
+tui.clean_exit

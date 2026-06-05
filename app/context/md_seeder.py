@@ -328,14 +328,9 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
             )
             continue
 
-        # Serialize metadata dict to JSON string. A top-level `skills` array on
-        # the agent JSON is folded into metadata["skills"] so on-demand skills
-        # ride the existing metadata seeding + per-agent cloning path — no new
-        # tables or columns. Authors write `skills` at the top level for clarity.
+        # Serialize metadata dict to JSON string
         meta = data.get("metadata", {})
         if isinstance(meta, dict):
-            if "skills" in data:
-                meta = {**meta, "skills": normalize_skills(data.get("skills"))}
             meta_str = json.dumps(meta)
         else:
             meta_str = str(meta)
@@ -395,6 +390,10 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
             "trigger_type": data.get("trigger_type", "user_input"),
             "trigger_key": data.get("trigger_key", None),
             "loop_logic": json.dumps(data.get("loop_logic", [])),
+            # Raw on-demand skills list — consumed by _slots_from_template_data
+            # to seed the agent's `__skills__` prompt slot (not an agent_templates
+            # column). Kept on the row purely as a pass-through to the slot seeder.
+            "skills": data.get("skills"),
         }
 
         results.append(row)

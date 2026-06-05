@@ -369,10 +369,9 @@ async def chat_skills(user_id: str, session_id: str, agent_id: Optional[str] = N
     The active list alone needs no agent (it lives in session metadata), so the
     chat chips work even if agent_id isn't passed; the panel passes agent_id to
     also get descriptions + modes."""
-    from app.agent.skills import parse_agent_skills
     db = get_db()
     active = await db.get_session_active_skills(session_id)
-    agent = await db.get_agent_by_id(agent_id) if agent_id else None
+    skills = await db.get_agent_skills(agent_id) if agent_id else []
     active_set = set(active)
     catalog = [
         {
@@ -381,7 +380,7 @@ async def chat_skills(user_id: str, session_id: str, agent_id: Optional[str] = N
             "mode": s.get("mode", "selectable"),
             "active": s["name"] in active_set,
         }
-        for s in parse_agent_skills(agent)
+        for s in skills
         if s.get("enabled", True) and s.get("mode") != "always_on"
     ]
     return {"active": active, "skills": catalog}

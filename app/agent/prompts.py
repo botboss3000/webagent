@@ -49,6 +49,10 @@ async def build_system_prompt(
     """
     sections: List[str] = []
     for doc in docs:
+        # The `__skills__` slot holds skills as raw JSON — never dump it into the
+        # prompt; it's rendered separately by append_skills_section().
+        if (doc.get("context_type") or doc.get("slot_name")) == "__skills__":
+            continue
         content = _row_content(doc)
         if content:
             sections.append(content)
@@ -85,22 +89,31 @@ async def append_skills_section(
 ) -> str:
     """Append the `# [SKILLS]` block to a built system prompt.
 
-    Reads the agent's skills (from `metadata.skills`) and the session's active
-    (loaded) skill list, then renders always-on bodies + a loadable catalog.
-    A no-op when the agent has no skills. Called right after build_system_prompt
-    at each chat prompt-build site.
+    Reads the agent's skills (from its `__skills__` prompt slot) and the
+    session's active (loaded) skill list, then renders name + description for
+    every skill, plus the body for always-on/loaded skills and a placeholder for
+    selectable ones. A no-op when the agent has no skills.
     """
-    from app.agent.skills import parse_agent_skills, format_skills_section
+    from app.agent.skills import format_skills_section
 
-    skills = parse_agent_skills(agent)
+    agent_id = (agent or {}).get("id")
+    if not agent_id:
+        return system_prompt
+
+    try:
+        from app.db import get_db
+        db = get_db()
+        skills = await db.get_agent_skills(agent_id, user_id=None)
+    except Exception as e:
+        logger.debug("Could not load skills for agent %s: %s", agent_id, e)
+        return system_prompt
     if not skills:
         return system_prompt
 
     active: List[str] = []
     if session_id:
         try:
-            from app.db import get_db
-            active = await get_db().get_session_active_skills(session_id)
+            active = await db.get_session_active_skills(session_id)
         except Exception as e:
             logger.debug("Could not load active skills for session %s: %s", session_id, e)
 

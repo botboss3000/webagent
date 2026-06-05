@@ -631,6 +631,9 @@ body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; co
   font-size: 11px;
   font-weight: 600;
   padding: 4px 14px;
+  min-width: 56px;
+  box-sizing: border-box;
+  text-align: center;
   border-radius: 12px;
   border: 1px solid #2a2a4a;
   background: transparent;
@@ -735,6 +738,27 @@ body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; co
   color: var(--danger);
   background: var(--danger-soft, transparent);
 }
+/* Reveal the indicator while it holds an in-flight spinner. */
+.agents-autosave-check:has(.agents-spinner) {
+  opacity: 1;
+  transform: scale(1);
+  background: transparent;
+  color: var(--accent);
+}
+
+/* ── In-flight control spinner (toggles, radios, checkboxes) ── */
+.agents-spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: agents-spin 0.6s linear infinite;
+  vertical-align: middle;
+}
+@keyframes agents-spin { to { transform: rotate(360deg); } }
+.limits-toggle.control-saving { cursor: default; }
 
 /* ── Per-agent LLM card ── */
 .agents-llm-card {

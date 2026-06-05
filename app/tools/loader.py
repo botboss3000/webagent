@@ -34,6 +34,16 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "db_query":                      {"stages": ["execute_tools"],                                "destructive": True,  "agent_types": []},
     # ── Diagnostics (gated by the diagnostics ability) ──
     "read_diagnostics":              {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    # ── Agent management (gated by the agent_management ability) — in-process,
+    #    user-scoped agent CRUD. Reads are non-destructive; writes mutate the
+    #    user's own agents only (ownership enforced in the tool/DB layer). ──
+    "list_agent_templates":          {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    "list_my_agents":                {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    "get_agent":                     {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    "create_agent":                  {"stages": ["execute_tools"],                                "destructive": True,  "agent_types": []},
+    "update_agent":                  {"stages": ["execute_tools"],                                "destructive": True,  "agent_types": []},
+    "edit_agent_prompt":             {"stages": ["execute_tools"],                                "destructive": True,  "agent_types": []},
+    "set_agent_ability":             {"stages": ["execute_tools"],                                "destructive": True,  "agent_types": []},
     # ── Memory ──
     "memory":                        {"stages": ["memory_search", "memory_save", "execute_tools"], "destructive": False, "agent_types": []},
     "session_search":                {"stages": ["load_context", "execute_tools"],               "destructive": False, "agent_types": []},
@@ -611,6 +621,35 @@ class ToolLoader:
             except Exception as _de:
                 logger.warning("Delegation tools unavailable: %s", _de)
 
+        # ── Terminal-control tools — gated by the "terminal_control" ability ──
+        # Lets an agent open and drive interactive terminal programs (Claude
+        # Code, REPLs, any CLI) via the shared PTY session registry — a human
+        # can watch / take over the same session. Effectively shell access, so
+        # it's off by default; the app admin enables the ability, then the agent
+        # admin turns it on per-agent. open/send/close are marked destructive so
+        # the write-mode guardrail can require confirmation.
+        if "terminal_control" in enabled_providers:
+            try:
+                from app.tools.terminal_tools import (
+                    build_terminal_tools,
+                    TERMINAL_TOOL_SCHEMAS,
+                    TERMINAL_DESTRUCTIVE,
+                )
+                _terminal = build_terminal_tools(user_id)
+                for _tname, _thandler in _terminal.items():
+                    _destructive = _tname in TERMINAL_DESTRUCTIVE
+                    tools[_tname] = ToolInfo(
+                        name=_tname,
+                        handler=_thandler,
+                        parameters=TERMINAL_TOOL_SCHEMAS.get(
+                            _tname, {"type": "object", "properties": {}, "required": []}
+                        ),
+                        destructive=_destructive,
+                        requires_confirmation=_destructive,
+                    )
+            except Exception as _te:
+                logger.warning("Terminal-control tools unavailable: %s", _te)
+
         # ═══════════════════════════════════════════════════════════════
         # Bootstrap core tools — always available from turn 1
         # These are the agent's discovery and essential utilities.
@@ -831,6 +870,155 @@ class ToolLoader:
                 name="read_diagnostics",
                 handler=_read_diagnostics_wrapper,
                 parameters=_DIAG_PARAMS,
+            )
+
+        # ── Agent Management ability (the Agent Manager's core toolkit) ──
+        # Gated by the "agent_management" toggle (a pure behavioural switch, no
+        # platform secret). In-process, user-scoped agent CRUD: list templates,
+        # list/read/create/update the USER'S OWN agents, edit their prompt
+        # slots, and toggle their abilities. Replaces the old "manage via the
+        # REST API over http_request" design (which made the agent HTTP-call the
+        # server it runs inside). Deliberately carries NO interactions or file
+        # access — those stay under codebase_admin. Every handler closes over the
+        # injected user_id; the model cannot act on another user's agents.
+        if "agent_management" in enabled_providers:
+            from app.tools.agent_mgmt_tools import (
+                list_agent_templates as _amt_list_templates,
+                list_my_agents as _amt_list_agents,
+                get_agent as _amt_get_agent,
+                create_agent as _amt_create_agent,
+                update_agent as _amt_update_agent,
+                edit_agent_prompt as _amt_edit_prompt,
+                set_agent_ability as _amt_set_ability,
+            )
+
+            async def _amt_list_templates_wrapper(template_id: Optional[str] = None,
+                                                  include_admin: bool = False):
+                return await _amt_list_templates(template_id=template_id,
+                                                 include_admin=include_admin, user_id=user_id)
+
+            async def _amt_list_agents_wrapper():
+                return await _amt_list_agents(user_id=user_id)
+
+            async def _amt_get_agent_wrapper(agent_id: str):
+                return await _amt_get_agent(agent_id=agent_id, user_id=user_id)
+
+            async def _amt_create_agent_wrapper(name: str, template_id: str = "default",
+                                                description: str = ""):
+                return await _amt_create_agent(name=name, template_id=template_id,
+                                               description=description, user_id=user_id)
+
+            async def _amt_update_agent_wrapper(agent_id: str, name: Optional[str] = None,
+                                                description: Optional[str] = None,
+                                                model: Optional[str] = None,
+                                                temperature: Optional[float] = None,
+                                                max_tokens: Optional[int] = None,
+                                                max_turn_count: Optional[int] = None):
+                return await _amt_update_agent(agent_id=agent_id, name=name,
+                                               description=description, model=model,
+                                               temperature=temperature, max_tokens=max_tokens,
+                                               max_turn_count=max_turn_count, user_id=user_id)
+
+            async def _amt_edit_prompt_wrapper(action: str, agent_id: str,
+                                               slot_name: Optional[str] = None,
+                                               content: Optional[str] = None,
+                                               lock: Optional[bool] = None,
+                                               merge_mode: Optional[str] = None,
+                                               order_index: Optional[int] = None):
+                return await _amt_edit_prompt(action=action, agent_id=agent_id,
+                                              slot_name=slot_name, content=content, lock=lock,
+                                              merge_mode=merge_mode, order_index=order_index,
+                                              user_id=user_id)
+
+            async def _amt_set_ability_wrapper(agent_id: str, ability: str, enabled: bool = True):
+                return await _amt_set_ability(agent_id=agent_id, ability=ability,
+                                              enabled=enabled, user_id=user_id)
+
+            tools["list_agent_templates"] = ToolInfo(
+                name="list_agent_templates",
+                handler=_amt_list_templates_wrapper,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "template_id": {"type": "string", "description": "Optional: a template id to also return its canonical prompt slots."},
+                        "include_admin": {"type": "boolean", "description": "Include admin-only templates (platform admins only).", "default": False},
+                    },
+                    "required": [],
+                },
+            )
+            tools["list_my_agents"] = ToolInfo(
+                name="list_my_agents",
+                handler=_amt_list_agents_wrapper,
+                parameters={"type": "object", "properties": {}, "required": []},
+            )
+            tools["get_agent"] = ToolInfo(
+                name="get_agent",
+                handler=_amt_get_agent_wrapper,
+                parameters={
+                    "type": "object",
+                    "properties": {"agent_id": {"type": "string", "description": "The agent's id."}},
+                    "required": ["agent_id"],
+                },
+            )
+            tools["create_agent"] = ToolInfo(
+                name="create_agent",
+                handler=_amt_create_agent_wrapper,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Display name for the new agent."},
+                        "template_id": {"type": "string", "description": "Template to clone from (see list_agent_templates).", "default": "default"},
+                        "description": {"type": "string", "description": "Short description of the agent."},
+                    },
+                    "required": ["name"],
+                },
+            )
+            tools["update_agent"] = ToolInfo(
+                name="update_agent",
+                handler=_amt_update_agent_wrapper,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "agent_id": {"type": "string", "description": "The agent to update (must be yours)."},
+                        "name": {"type": "string"},
+                        "description": {"type": "string"},
+                        "model": {"type": "string", "description": "Model id (e.g. an OpenRouter model slug)."},
+                        "temperature": {"type": "number"},
+                        "max_tokens": {"type": "integer"},
+                        "max_turn_count": {"type": "integer"},
+                    },
+                    "required": ["agent_id"],
+                },
+            )
+            tools["edit_agent_prompt"] = ToolInfo(
+                name="edit_agent_prompt",
+                handler=_amt_edit_prompt_wrapper,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["list", "get", "insert", "update", "delete"], "description": "What to do with the prompt slots."},
+                        "agent_id": {"type": "string", "description": "The agent whose prompts to read/edit."},
+                        "slot_name": {"type": "string", "description": "Slot name (e.g. system, agent, user, skills, tasks, misc)."},
+                        "content": {"type": "string", "description": "New slot content (for insert/update)."},
+                        "lock": {"type": "boolean", "description": "Whether per-user overrides are blocked for this slot."},
+                        "merge_mode": {"type": "string", "description": "'replace' or 'append'."},
+                        "order_index": {"type": "integer", "description": "Sort order of the slot."},
+                    },
+                    "required": ["action", "agent_id"],
+                },
+            )
+            tools["set_agent_ability"] = ToolInfo(
+                name="set_agent_ability",
+                handler=_amt_set_ability_wrapper,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "agent_id": {"type": "string", "description": "The agent to change (must be yours)."},
+                        "ability": {"type": "string", "description": "Ability connection_type, e.g. codebase_admin, web_access, diagnostics, agent_orchestration, browser_control, create_tools, image_generation, visualizer, agent_management."},
+                        "enabled": {"type": "boolean", "description": "Turn the ability on (true) or off (false).", "default": True},
+                    },
+                    "required": ["agent_id", "ability"],
+                },
             )
 
         # ── Browser Control ability (browser_action, http_request) ──

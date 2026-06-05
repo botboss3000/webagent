@@ -3103,6 +3103,7 @@ class LocalBackend(StorageBackend):
                     "merge_mode": s.get("merge_mode") if s.get("merge_mode") in VALID_MERGE_MODES else "replace",
                     "content": s.get("content", "") or "",
                 })
+            out.extend(LocalBackend._skills_slot_from_template(tpl))
             return out
 
         # Legacy: derive slots from flat keys.
@@ -3126,7 +3127,29 @@ class LocalBackend(StorageBackend):
                 "merge_mode": "replace",
                 "content": content,
             })
+        out.extend(LocalBackend._skills_slot_from_template(tpl))
         return out
+
+    @staticmethod
+    def _skills_slot_from_template(tpl: dict) -> List[dict]:
+        """Build the single `__skills__` slot (JSON of skills) from a template's
+        top-level `skills` array, or [] when there are none. The slot is locked
+        (admin-managed) and ordered last; its content is never dumped raw into
+        the prompt — the skills renderer reads it instead."""
+        raw = tpl.get("skills")
+        if not isinstance(raw, list) or not raw:
+            return []
+        from app.context.md_seeder import normalize_skills
+        normalized = normalize_skills(raw)
+        if not normalized:
+            return []
+        return [{
+            "slot_name": "__skills__",
+            "order_index": 200,
+            "lock": True,
+            "merge_mode": "replace",
+            "content": json.dumps(normalized),
+        }]
 
     def _clone_template_slots(
         self,
@@ -3430,7 +3453,11 @@ class LocalBackend(StorageBackend):
             ).fetchall()}
         finally:
             conn.close()
-        for stale in existing_names - desired_names:
+        # Never let the generic slot editor delete the skills slot — it's managed
+        # through the dedicated skills endpoints, not the slot reconcile.
+        stale_names = existing_names - desired_names
+        stale_names.discard("__skills__")
+        for stale in stale_names:
             await self.delete_slot(agent_id, stale)
 
         # 2. Upsert each slot.
@@ -4204,6 +4231,41 @@ class LocalBackend(StorageBackend):
             return dict(row) if row else None
         finally:
             conn.close()
+
+    # ── On-demand skills: definitions live in the `__skills__` prompt slot ──
+
+    async def get_agent_skills(self, agent_id: str, user_id: Optional[str] = None) -> List[dict]:
+        """Return the agent's on-demand skills, parsed from its `__skills__`
+        prompt slot. `user_id=None` reads the admin-base definition (the source
+        of truth for skills, which are admin-managed/locked)."""
+        from app.agent.skills import SKILLS_SLOT_NAME, parse_skills_content
+        try:
+            slots = await self.resolve_prompts(agent_id, user_id=user_id)
+        except Exception:
+            return []
+        for s in slots:
+            if s.get("slot_name") == SKILLS_SLOT_NAME:
+                return parse_skills_content(s.get("content"))
+        return []
+
+    async def set_agent_skills(
+        self, agent_id: str, skills, updated_by: str = "admin"
+    ) -> List[dict]:
+        """Write the agent's full skills list into its admin-base `__skills__`
+        slot (normalized). Returns the normalized list."""
+        from app.agent.skills import SKILLS_SLOT_NAME, skills_to_content
+        from app.context.md_seeder import normalize_skills
+        content = skills_to_content(skills)
+        await self.upsert_slot(
+            agent_id=agent_id,
+            slot_name=SKILLS_SLOT_NAME,
+            order_index=200,
+            lock=True,
+            merge_mode="replace",
+            content=content,
+            updated_by=updated_by,
+        )
+        return normalize_skills(skills)
 
     # ── On-demand skills: per-session active list (lives in sessions.metadata) ──
     # "active_skills" = the names of selectable skills the agent has loaded this

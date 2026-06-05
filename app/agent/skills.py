@@ -1,19 +1,21 @@
 """
 On-demand agent skills — shared helpers.
 
-A **skill** is a named knowledge pack defined per-agent (stored in the agent's
-`metadata.skills` list, seeded from `data/agents/*.json`). Each skill is either:
+A **skill** is a named knowledge pack with three authored parts: a `name`, a
+`description` of when to use it (always shown to the agent), and a `body` (the
+full how-to). Each skill is either:
 
-  - **always_on**  — its full body is injected into the system prompt every turn
-    (classic context-document behaviour), or
-  - **selectable** — only its name + "when to use" description appear in the
-    `# [SKILLS]` catalog. The agent calls the `load_skill` tool to pull in the
-    full body, which then stays in the conversation transcript (and so in
-    context) until the user deactivates it.
+  - **always_on**  — its body is injected into the system prompt every turn, or
+  - **selectable** — only its name + description are shown; the body is replaced
+    by a placeholder until the agent pulls it in with the `load_skill` tool.
 
-This module is the single source of truth for the skill shapes and the strings
-that the prompt-builder, the tools, and the API endpoints all share, so an
-edit to (say) the loaded-result header can't drift between producers/consumers.
+**Storage:** skills live in the prompt-slot tables, not in agent metadata. Each
+agent has a single `__skills__` slot (in `agent_prompt_templates` for the
+seed/template, cloned into `agent_prompts` per agent) whose `content` is a JSON
+array of skill objects. This rides the existing slot seeding / cloning / admin
+machinery. The DB layer (`get_agent_skills` / `set_agent_skills`) reads/writes
+that slot; this module only deals with the parsed skill objects + the strings
+that the prompt-builder, tools, and endpoints share.
 """
 
 from __future__ import annotations
@@ -23,37 +25,34 @@ from typing import Any, Dict, List, Optional
 
 from app.context.md_seeder import normalize_skills
 
-# Key under which the active-skill name list is stored inside a session's
-# `metadata` JSON blob. The active list drives (a) which selectable skills are
-# excluded from the loadable catalog, and (b) the active-skill chips in the UI.
+# Slot name that holds the agent's skills (JSON array) in the prompt-slot tables.
+SKILLS_SLOT_NAME = "__skills__"
+
+# Key under which the active-skill name list is stored in a session's metadata.
 SESSION_ACTIVE_SKILLS_KEY = "active_skills"
 
 
-def parse_agent_skills(agent: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Return the normalized skill list for an agent dict (raw `agents` row).
+def parse_skills_content(content: Optional[str]) -> List[Dict[str, Any]]:
+    """Parse the JSON `content` of a `__skills__` slot into normalized skills."""
+    if not content or not content.strip():
+        return []
+    try:
+        data = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return normalize_skills(data)
 
-    Tolerates `metadata` being a JSON string (DB row) or an already-parsed
-    dict. Returns [] when the agent has no skills.
-    """
-    if not agent:
-        return []
-    meta = agent.get("metadata")
-    if isinstance(meta, str):
-        try:
-            meta = json.loads(meta) if meta.strip() else {}
-        except (json.JSONDecodeError, TypeError):
-            meta = {}
-    if not isinstance(meta, dict):
-        return []
-    return normalize_skills(meta.get("skills"))
+
+def skills_to_content(skills: Any) -> str:
+    """Serialize a skills list to the `__skills__` slot content (normalized)."""
+    return json.dumps(normalize_skills(skills))
 
 
 def loaded_result_text(skill: Dict[str, Any]) -> str:
     """The text `load_skill` returns (and persists) when a skill is loaded.
 
     Begins with a stable header line keyed by skill name so the deactivate
-    path can find and neutralize this row later via a prefix match, while
-    still reading naturally to the model.
+    path can find and neutralize this row later via a prefix match.
     """
     body = (skill.get("body") or "").strip()
     return (
@@ -81,11 +80,12 @@ def format_skills_section(
 ) -> str:
     """Build the `# [SKILLS]` system-prompt block.
 
-    - always_on enabled skills → full body inline.
-    - selectable enabled skills not yet active → a one-line catalog entry the
-      agent can `load_skill` on demand.
-    - selectable enabled skills already active → listed by name only (their
-      body is already in the transcript, so we don't duplicate it here).
+    For EVERY enabled skill the name + description are always shown. The body is
+    shown only when the skill is always_on or currently loaded; for a selectable
+    skill that isn't loaded yet, a placeholder tells the agent to call
+    load_skill. This way authors never hand-write the catalog — it's generated
+    from the skill definitions, and the heavy body text stays out of the prompt
+    until it's actually needed.
 
     Returns "" when there are no enabled skills.
     """
@@ -94,39 +94,31 @@ def format_skills_section(
     if not enabled:
         return ""
 
-    always = [s for s in enabled if s.get("mode") == "always_on"]
-    selectable = [s for s in enabled if s.get("mode") != "always_on"]
-    loadable = [s for s in selectable if s["name"] not in active]
-    loaded = [s for s in selectable if s["name"] in active]
+    lines: List[str] = [
+        "# [SKILLS]",
+        "You have the skills below. Each lists when to use it. For a skill marked "
+        "“load on demand”, call `load_skill` with its name to pull its full "
+        "instructions into the conversation the moment a task needs it — don't "
+        "guess at the steps before loading it.",
+    ]
 
-    lines: List[str] = ["# [SKILLS]"]
+    for s in enabled:
+        name = s["name"]
+        desc = (s.get("description") or "").strip()
+        lines.append(f"\n## {name}")
+        if desc:
+            lines.append(desc)
 
-    for s in always:
-        body = (s.get("body") or "").strip()
-        lines.append(f"\n## {s['name']} (always on)")
-        if s.get("description"):
-            lines.append(f"_{s['description']}_")
-        if body:
-            lines.append(body)
+        if s.get("mode") == "always_on":
+            body = (s.get("body") or "").strip()
+            if body:
+                lines.append(body)
+        elif name in active:
+            lines.append("_(Loaded — the full instructions are in the conversation above.)_")
+        else:
+            lines.append(
+                f'_(Load on demand — this skill’s full instructions are only '
+                f'visible after you call load_skill("{name}").)_'
+            )
 
-    if loadable:
-        lines.append(
-            "\nThe following skills are available. Each is a step-by-step "
-            "playbook you do NOT see yet — call `load_skill` with its name to "
-            "pull in the full instructions when a task matches:"
-        )
-        for s in loadable:
-            desc = s.get("description") or "(no description)"
-            lines.append(f"- **{s['name']}** — {desc}")
-
-    if loaded:
-        names = ", ".join(s["name"] for s in loaded)
-        lines.append(
-            f"\nAlready loaded this conversation (instructions are in the "
-            f"transcript above — don't reload): {names}."
-        )
-
-    section = "\n".join(lines).strip()
-    # Guard: if only always-on skills with empty bodies existed, the block is
-    # just the header — drop it.
-    return section if section != "# [SKILLS]" else ""
+    return "\n".join(lines).strip()
