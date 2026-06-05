@@ -476,9 +476,6 @@ class MetadataSetting(BaseModel):
 class AppSettings(BaseModel):
     extend_llm_to_agents: bool = True
     access_mode: str = "public_anonymous"  # public_anonymous | public_registered | admin_approval | private
-    # ── PRESENTATION-MODE START ── (remove this field to drop the demo toggle entirely)
-    presentation_mode: bool = False
-    # ── PRESENTATION-MODE END ──
     # Seconds to keep a completed turn's in-memory RunBuffer around for
     # WS-replay on reconnect. 0 = drop immediately. Default 60s gives a
     # smooth refresh-after-completion UX without holding RAM long.
