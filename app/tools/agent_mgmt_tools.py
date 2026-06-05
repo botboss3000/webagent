@@ -418,3 +418,105 @@ async def set_agent_ability(
     except Exception as e:
         logger.error("set_agent_ability failed: %s", e)
         return _err(str(e))
+
+
+# ── Skills (read/write, own agents) ───────────────────────────────────────────
+
+_VALID_SKILL_MODES = ("always_on", "selectable")
+
+
+async def manage_agent_skills(
+    action: str,
+    agent_id: str,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    body: Optional[str] = None,
+    mode: Optional[str] = None,
+    enabled: Optional[bool] = None,
+    user_id: str = "",
+) -> str:
+    """Read or edit the on-demand SKILLS of one of the user's own agents.
+
+    A skill is a named knowledge pack stored on the agent. Each has:
+      - name        : short identifier the agent uses with load_skill
+      - description : ALWAYS shown to the agent — say WHEN to use this skill
+      - body        : the full step-by-step instructions
+      - mode        : 'always_on'  → body is always in the agent's context, or
+                      'selectable' → body is hidden; the agent only sees the
+                       name + description and pulls the body in with load_skill
+                       when a task matches (use this for specialized playbooks)
+      - enabled     : whether the skill is active at all
+
+    Actions:
+      list   → list the agent's skills (name, description, mode, enabled)
+      set    → add or update a skill by name. NEW skill: name required, provide
+               description + body; mode defaults to 'selectable', enabled true.
+               EXISTING skill: omitted fields keep their current value.
+      remove → delete a skill by name
+
+    Reads require the agent be visible to you; writes require you to own it.
+    Prefer 'selectable' for niche/specialized skills and 'always_on' only for
+    guidance the agent should follow on every turn.
+    """
+    try:
+        from app.db import get_db
+        db = get_db()
+        if not agent_id:
+            return _err("agent_id is required.")
+
+        if action == "list":
+            is_admin = await db.is_user_admin(user_id)
+            visible = await db.list_agents_for_user(user_id, include_admin=is_admin)
+            if not any(a.get("id") == agent_id for a in visible):
+                return _err("Agent not found or not visible to you.")
+            skills = await db.get_agent_skills(agent_id)
+            return _ok(count=len(skills), skills=skills)
+
+        if not await _owns_agent(db, user_id, agent_id):
+            return _err("You can only edit skills on agents you own.")
+        skills = await db.get_agent_skills(agent_id)
+
+        if action == "set":
+            if not name or not name.strip():
+                return _err("name is required for set.")
+            nm = name.strip()
+            if mode is not None and mode not in _VALID_SKILL_MODES:
+                return _err("mode must be 'always_on' or 'selectable'.")
+            existing = next((s for s in skills if s["name"].lower() == nm.lower()), None)
+            if existing:
+                if description is not None:
+                    existing["description"] = description
+                if body is not None:
+                    existing["body"] = body
+                if mode is not None:
+                    existing["mode"] = mode
+                if enabled is not None:
+                    existing["enabled"] = bool(enabled)
+            else:
+                skills.append({
+                    "name": nm,
+                    "description": description or "",
+                    "body": body or "",
+                    "mode": mode or "selectable",
+                    "enabled": True if enabled is None else bool(enabled),
+                })
+            saved = await db.set_agent_skills(agent_id, skills, updated_by=f"agent_mgmt:{user_id}")
+            return _ok(
+                skill=nm, count=len(saved),
+                skills=[{"name": s["name"], "mode": s["mode"], "enabled": s["enabled"]} for s in saved],
+            )
+
+        if action == "remove":
+            if not name or not name.strip():
+                return _err("name is required for remove.")
+            target = name.strip().lower()
+            kept = [s for s in skills if s["name"].lower() != target]
+            if len(kept) == len(skills):
+                return _err(f"No skill named '{name}'.")
+            saved = await db.set_agent_skills(agent_id, kept, updated_by=f"agent_mgmt:{user_id}")
+            return _ok(removed=name, count=len(saved))
+
+        return _err(f"Unknown action '{action}'. Use: list, set, remove.")
+    except Exception as e:
+        logger.error("manage_agent_skills failed: %s", e)
+        return _err(str(e))

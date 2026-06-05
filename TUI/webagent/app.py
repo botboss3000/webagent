@@ -2696,21 +2696,24 @@ class ServerManagerApp(App):
         is_pg = (self.project_root is not None
                  and _active_provider(self.project_root) in _PG_PROVIDERS)
 
-        db_label = ("  database  (Postgres — schema dropped & recreated, NOT backed up)"
+        db_label = ("  user data  (Postgres — schema dropped & recreated, NOT backed up)"
                     if is_pg else
-                    "  database  (local.db + journal/wal/shm sidecars)")
+                    "  user data  (local.db + journal/wal/shm — chats, sessions, agents)")
         pages_label = "  generated pages  (visuals/users/)"
-        secrets_label = "  app secrets  (AI keys, OAuth tokens, integration creds, scheduler/db-mode config)"
+        logs_label = "  diagnostics & logs  (logs.db + recordings.db — regenerated on next run)"
+        secrets_label = "  credentials & vault  (AI key/provider config + vault.db: OAuth tokens, secrets)"
         users_label = "  local accounts  (passwords + remember-me tokens)"
         env_label = "  .env file  (environment config — app won't boot without it)"
         agents_label = "  agent templates  (data/agents/*.json — zero agents after)"
 
-        # Default state: database + pages always checked (always wiped).
+        # Default state: user data + pages checked; credentials, logins, logs,
+        # env and agents PRESERVED (off) so the app still works after a reset.
         st = self._reset_state
         out: list[Widget] = [
             Static(Text("What to reset:", style=c["dim"]), classes="panel-sub"),
             Checkbox(db_label, id="reset-db", value=st.get("db", True)),
             Checkbox(pages_label, id="reset-pages", value=st.get("pages", True)),
+            Checkbox(logs_label, id="reset-logs", value=st.get("logs", False)),
             Checkbox(secrets_label, id="reset-secrets", value=st.get("secrets", False)),
             Checkbox(users_label, id="reset-users", value=st.get("users", False)),
             Checkbox(env_label, id="reset-env", value=st.get("env", False)),
@@ -2727,7 +2730,7 @@ class ServerManagerApp(App):
         if self.project_root is None:
             self._log(f"[{self.cc['dim']}]nothing to reset in onboarding mode (link a checkout first)[/]")
             return
-        self._reset_state = {"db": True, "pages": True, "secrets": False,
+        self._reset_state = {"db": True, "pages": True, "logs": False, "secrets": False,
                              "users": False, "env": False, "agents": False}
         self._panel_kind = "reset"
         self._refresh_status()
@@ -2743,6 +2746,7 @@ class ServerManagerApp(App):
         try:
             db = self.query_one("#reset-db", Checkbox).value
             pages = self.query_one("#reset-pages", Checkbox).value
+            logs = self.query_one("#reset-logs", Checkbox).value
             secrets = self.query_one("#reset-secrets", Checkbox).value
             users = self.query_one("#reset-users", Checkbox).value
             env = self.query_one("#reset-env", Checkbox).value
@@ -2753,10 +2757,10 @@ class ServerManagerApp(App):
             return
 
         # Save state so re-opening the panel restores the same choices.
-        self._reset_state = {"db": db, "pages": pages, "secrets": secrets,
+        self._reset_state = {"db": db, "pages": pages, "logs": logs, "secrets": secrets,
                              "users": users, "env": env, "agents": agents}
 
-        if not any([db, pages, secrets, users, env, agents]):
+        if not any([db, pages, logs, secrets, users, env, agents]):
             self._log(f"[{self.cc['tool']}]{G.WARN} nothing selected — no reset performed[/]")
             self._close_panel()
             return
@@ -2765,8 +2769,9 @@ class ServerManagerApp(App):
         self._log(f"[{self.cc['tool']}]{G.BULLET} resetting — stopping the server, backing up, and wiping data…[/]")
         msg = await reset.reset_app(
             self._admin_ctx(), backup=True,
+            clear_db=db, clear_pages=pages,
             clear_secrets=secrets, clear_users=users,
-            delete_env=env, delete_agents=agents,
+            delete_env=env, delete_agents=agents, clear_logs=logs,
         )
         self._log_block(msg)
         self._server_state = await server_health() if self.project_root else "n/a"

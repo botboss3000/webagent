@@ -2,9 +2,18 @@
 
 The in-app equivalent of the repo's ``reset_webagent.bat``: it wipes the running
 app's **userbase** (the live database + the per-user generated pages) and, opt-in,
-the app's **secrets**, **local logins**, **.env**, and **agent template JSONs**.
-The database, the default ``admin/admin`` user, and the agents are recreated by
-the app's own first-run migration on next start (provided the agent JSONs were kept).
+the app's **diagnostics/logs**, **credentials (secrets + vault)**, **local
+logins**, **.env**, and **agent template JSONs**. The database, the default
+``admin/admin`` user, and the agents are recreated by the app's own first-run
+migration on next start (provided the agent JSONs were kept).
+
+**Designed to be non-destructive to function.** Credentials now live OUTSIDE the
+user-data DB: the LLM key / provider config in ``provider.json``, local logins in
+``users.json``, and integration OAuth tokens + inline secrets in the dedicated
+``app/db/vault.db`` (kept separate from ``local.db`` exactly so a user-data reset
+doesn't touch them). So the default reset (database + pages only) leaves the app
+fully working — only the user's activity is cleared. The diagnostics/log DBs
+(``logs.db`` / ``recordings.db``) are their own opt-in group, kept by default.
 
 **Backend-aware (active backend only).** Reset wipes whatever database
 ``app/db_connection.json`` selects:
@@ -45,19 +54,39 @@ from .base import WRITES_DISABLED_MSG, ToolContext
 _PG_PROVIDERS = {"postgres", "neon", "gcp_cloud_sql"}
 
 # SQLite userbase files — processed only when SQLite is the active backend.
+# Runtime DBs live under data/db/; the legacy app/db/ paths are listed too so a
+# reset still cleans installs that haven't yet relocated (the app moves them to
+# data/db/ on first run of the new layout).
 _USERBASE_FILES = [
-    "app/db/local.db",
-    "app/db/local.db-journal",
-    "app/db/local.db-wal",
-    "app/db/local.db-shm",
-    "app/db/local.db.preprompt-bak",
+    "data/db/local.db",
+    "data/db/local.db-journal",
+    "data/db/local.db-wal",
+    "data/db/local.db-shm",
+    "data/db/local.db.preprompt-bak",
+    "app/db/local.db", "app/db/local.db-journal", "app/db/local.db-wal",
+    "app/db/local.db-shm", "app/db/local.db.preprompt-bak",
     "local.db",
 ]
 # Generated pages live on disk regardless of backend → always part of the wipe.
 _USERBASE_DIRS = ["visuals/users"]
 
+# Diagnostics / log databases — always-local SQLite (independent of the main
+# backend; see app/db/logs_store.py). NOT user data and NOT credentials, so they
+# are their own opt-in group (default: kept). Regenerated on next run.
+_LOGS_FILES = [
+    "data/db/logs.db", "data/db/logs.db-journal", "data/db/logs.db-wal", "data/db/logs.db-shm",
+    "data/db/recordings.db", "data/db/recordings.db-journal", "data/db/recordings.db-wal", "data/db/recordings.db-shm",
+    "data/db/instance_id.txt",
+    "app/db/logs.db", "app/db/logs.db-journal", "app/db/logs.db-wal", "app/db/logs.db-shm",
+    "app/db/recordings.db", "app/db/recordings.db-journal", "app/db/recordings.db-wal", "app/db/recordings.db-shm",
+    "app/db/instance_id.txt",
+]
+
 # Opt-in groups (mirrors reset_webagent.bat). These are filesystem files,
 # independent of which database backend is active.
+# The credentials "vault" (data/db/vault.db) holds integration OAuth tokens +
+# inline secret values, kept OUT of the user-data DB precisely so a user-data
+# reset does NOT wipe it — it is cleared only with this opt-in secrets group.
 _SECRETS_FILES = [
     "data/config/provider.json",
     "data/config/app-settings.json",
@@ -66,6 +95,8 @@ _SECRETS_FILES = [
     "app/pages_mode.json",
     "app/db_connection.json",
     "app/secrets_mode.json",
+    "data/db/vault.db", "data/db/vault.db-journal", "data/db/vault.db-wal", "data/db/vault.db-shm",
+    "app/db/vault.db", "app/db/vault.db-journal", "app/db/vault.db-wal", "app/db/vault.db-shm",
 ]
 _USER_FILES = ["app/auth/users.json", "app/auth/users.json.bak"]
 _ENV_FILES = [".env"]
@@ -199,13 +230,25 @@ def _process(root: Path, rel: str, backup_dir: Path | None,
 async def reset_app(
     ctx: ToolContext,
     backup: bool = True,
+    clear_db: bool = True,
+    clear_pages: bool = True,
     clear_secrets: bool = False,
     clear_users: bool = False,
     delete_env: bool = False,
     delete_agents: bool = False,
+    clear_logs: bool = False,
 ) -> str:
-    """Reset the linked webAgent install. Wipes the userbase (active database +
-    generated pages) always; the other groups only when their flag is set.
+    """Reset the linked webAgent install. Each group is gated by its own flag:
+    ``clear_db`` (the active user-data database) and ``clear_pages`` default ON;
+    ``clear_logs`` / ``clear_secrets`` / ``clear_users`` / ``delete_env`` /
+    ``delete_agents`` default OFF. So a caller can reset only logs, or only the
+    DB, etc.
+
+    **Non-destructive by default:** the credentials vault (``app/db/vault.db`` —
+    integration tokens + secrets), the LLM key + provider config, and local
+    logins are all preserved unless their opt-in group is selected, so the app
+    keeps functioning after a user-data reset. The diagnostics/log DBs
+    (``logs.db`` / ``recordings.db``) are kept unless ``clear_logs`` is set.
 
     The database wipe targets whatever backend ``app/db_connection.json`` selects:
     a Postgres-family backend is wiped by dropping its schema (NOT backed up —
@@ -228,13 +271,15 @@ async def reset_app(
 
     is_pg = _active_provider(root) in _PG_PROVIDERS
 
-    # 2) Build the filesystem work list. SQLite userbase files are processed only
-    #    when SQLite is the active backend (Postgres leaves them untouched). The
-    #    generated-pages dir is always wiped (disk state, backend-independent).
+    # 2) Build the filesystem work list. The user-data DB (SQLite files, or the
+    #    Postgres schema below) and the generated-pages dir are each gated by their
+    #    own flag, so a caller can reset ONLY logs (keep user data) or vice-versa.
     files: list[str] = []
-    dirs = list(_USERBASE_DIRS)
-    if not is_pg:
+    dirs = list(_USERBASE_DIRS) if clear_pages else []
+    if clear_db and not is_pg:
         files += _USERBASE_FILES
+    if clear_logs:
+        files += _LOGS_FILES   # always-local; cleared regardless of backend
     if clear_secrets:
         files += _SECRETS_FILES
     if clear_users:
@@ -262,17 +307,19 @@ async def reset_app(
 
     await asyncio.to_thread(_run)
 
-    # 3) Wipe the live Postgres schema (no backup), if Postgres is the backend.
+    # 3) Wipe the live Postgres schema (no backup) — only when resetting user data
+    #    and Postgres is the active backend.
     pg_ok: bool | None = None
     pg_detail = ""
-    if is_pg:
+    if is_pg and clear_db:
         pg_ok, pg_detail = await _wipe_postgres(root)
 
     ok, failed, skipped = results["ok"], results["failed"], results["skipped"]
     ctx.audit("reset_app", {
         "backend": "postgres" if is_pg else "sqlite",
-        "pg_ok": pg_ok, "backup": backup, "clear_secrets": clear_secrets,
-        "clear_users": clear_users, "delete_env": delete_env, "delete_agents": delete_agents,
+        "pg_ok": pg_ok, "backup": backup, "clear_db": clear_db, "clear_pages": clear_pages,
+        "clear_secrets": clear_secrets, "clear_users": clear_users,
+        "delete_env": delete_env, "delete_agents": delete_agents, "clear_logs": clear_logs,
     }, (not failed) and (pg_ok is not False), f"ok={len(ok)} failed={len(failed)} skipped={len(skipped)}")
 
     lines: list[str] = []
@@ -297,8 +344,14 @@ async def reset_app(
                          "database open. Stop it (Server ▸ Kill), then reset again.")
     if backup_dir is not None and ok:
         lines.append(f"  backup: {backup_dir}")
-    lines.append("Next start recreates the database, the default admin/admin user, and the "
-                 "agents from their templates" +
-                 (" — but you deleted the agent JSONs, so the app will start with zero agents."
-                  if delete_agents else "."))
+    if clear_db:
+        lines.append("Next start recreates the database, the default admin/admin user, and the "
+                     "agents from their templates" +
+                     (" — but you deleted the agent JSONs, so the app will start with zero agents."
+                      if delete_agents else "."))
+        if not clear_secrets:
+            lines.append("Credentials preserved: the LLM key/provider config, local logins, and the "
+                         "vault (integration tokens + secrets) survived — the app stays functional.")
+    else:
+        lines.append("User data left intact (only the selected groups were cleared).")
     return "\n".join(lines)

@@ -29,6 +29,7 @@ These hold the full rules. Open the one that matches your task **before** making
 | Adding / changing / renaming agent **loop nodes** or the loop diagram | [docs/claude/agent-loop.md](docs/claude/agent-loop.md) |
 | Deploy config, OAuth / secure-context APIs, or any **file the app writes at runtime** (gitignore rules) | [docs/claude/deployment.md](docs/claude/deployment.md) |
 | Docs upkeep (README + folder `.md`), where to put scratch/temp files, console-log cleanup, git push rules | [docs/claude/repo-conventions.md](docs/claude/repo-conventions.md) |
+| **Editions** / production-path, drop-in plugin discovery, the **feature catalog** (`FEATURE` headers), ability-bundled skills | [docs/claude/production-editions.md](docs/claude/production-editions.md) |
 
 > **Updating these docs — touch the expanded files, not this one.** This `CLAUDE.md` is a deliberately small at-a-glance index. When a rule changes or a new convention is added, **put the detail in the relevant `docs/claude/*.md` file** (or create a new one and add a row above). Only edit `CLAUDE.md` itself for genuinely minor, index-level changes — fixing a routing row, adding a new guide link, or tweaking a one-line essential below. If you find yourself writing more than a line or two here, it belongs in an expanded file.
 
@@ -39,3 +40,4 @@ These hold the full rules. Open the one that matches your task **before** making
 - **Temp / scratch files:** put non-Markdown scratch and new Markdown drafts under `temp/`; never treat `temp/` as a source of truth. (→ repo-conventions)
 - **Git pushes:** always promote to `main` via `git push origin HEAD:main` as part of the same step — don't stop at the feature branch. (→ repo-conventions)
 - **UI in both themes:** every `ui/` feature must be correct in dark **and** light mode; use design-system CSS variables, never hard-coded hex. (→ ui-guidance)
+- **Mirror the two ability tables:** the admin **Agent Settings** ability table and the per-agent **Abilities tab** (agent card) are sister panels that must stay **mirrored in design** — any change to one (look, structure, grouping, toggle behaviour) must be applied to the other in the same work. Both carry the embedded marker `SISTER-PANEL: AGENT-ABILITY-TABLE` (grep it). (→ ui-guidance)

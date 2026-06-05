@@ -11,7 +11,7 @@ count, failure rate, avg/max duration, recent failures) from the structured
 tool_executions table.
 
 The flight-recorder writes to the dedicated, always-local logs database
-(app/db/logs.db + recordings.db — see app/db/logs_store.py), separate from the
+(data/db/logs.db + recordings.db — see app/db/logs_store.py), separate from the
 main app DB. Gated behind the pure-behavioral "diagnostics" ability (App Config
 → Agent Abilities). The recorder itself lives in app/agent/diagnostics.py.
 """

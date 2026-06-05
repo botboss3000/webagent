@@ -11,6 +11,19 @@ SQLite allows only **one writer at a time** for the whole file, so the design se
 
 Durability trade-off: with `synchronous=NORMAL`, a sudden power loss / OS crash can lose the **last few committed transactions** that hadn't been checkpointed yet — but the database is **never corrupted**. Acceptable for the agent harness (interactions / diagnostics / stream chunks); revisit if a table ever needs hard durability.
 
+## Credentials vault — `vault.db` (always local, separate from user data)
+
+`auth_elements` (per-user service credentials: integration **OAuth tokens** + the **inline secret values** stored by `InlineDBSecrets`, plus the LLM auth row) does **not** live in the user-data `local.db`. It lives in a dedicated sibling file **`data/db/vault.db`**, so a user-data reset never wipes credentials — the app keeps working after a reset.
+
+How it works (SQLite only, zero call-site changes):
+
+- `LocalBackend._get_conn()` **`ATTACH`es** `vault.db` as the `vault` schema on every connection.
+- `auth_elements` is **removed from the main SQLite schema** (`SCHEMA_SQL`) and created **only in the vault** (`VAULT_SCHEMA`). With the table absent from `main`, SQLite's main-first name resolution makes every unqualified `… FROM auth_elements` query — in the backend methods, the raw-client query builder (`get_raw_client`), and the encryption migration — resolve transparently to the vault. No per-call-site edits.
+- On init, a **one-time migration** copies any legacy `main.auth_elements` rows into the vault (explicit columns + `COALESCE` so NULL-default rows can't be silently dropped) and only **drops the source once every row is confirmed copied** (a partial copy leaves the main table in place — safe fallback, retried next boot).
+- The vault path pairs `local.db` → `vault.db`; any other DB file → `<name>.vault.db` (so test / reference instances get isolated vaults).
+
+**Postgres:** the vault is a SQLite-file concept. `PostgresBackend` overrides `_get_conn` (no ATTACH) and `auth_elements` stays a normal table in the Postgres schema (`tables.py` / `render_postgres`). Caveat: a Postgres **schema-drop reset wipes `auth_elements` too** (it's in the dropped schema), and `migrate_sqlite_to_pg` reads `local.db` only, so it currently won't carry `vault.db` rows across — both are follow-ups for Postgres deployments. `vault.db` is a **gitignored runtime artifact**.
+
 ## Pluggable backends + the Postgres translation layer
 
 `PostgresBackend` (in `postgres_backend.py`) is a **subclass of `LocalBackend`** that overrides only the connection and schema bootstrap. Every data method is inherited and runs through **`pg_portable.py`** — a `sqlite3`-compatible facade over a pooled `psycopg` connection that translates SQLite-dialect SQL to Postgres on the fly (`?`→`%s`, `INSERT OR IGNORE/REPLACE`→`ON CONFLICT`, `datetime('now')`→text timestamp, `IFNULL`→`COALESCE`, `json_each(col)`→`json_array_elements_text(...)`). This means **one codebase serves both stores** — when writing new backend code, keep using `self._get_conn()` + SQLite-dialect SQL and it works on both. Avoid Postgres-only or SQLite-only SQL in shared methods; if a method genuinely needs native features (FTS, embeddings), override it in `PostgresBackend` (see `_fts5_search`, `_vector_search`, `doc_chunk_upsert`).
@@ -60,9 +73,9 @@ Operational logs are a high-volume, **per-machine** firehose that nobody reads a
 
 | File | Tables | Holds |
 |------|--------|-------|
-| **`app/db/logs.db`** | `diagnostics`, `tool_executions` | Server-side flight recorder + structured tool metrics |
-| **`app/db/recordings.db`** | `render_recordings` | Browser-side render recorder (big HTML blobs; off by default) |
-| `app/db/instance_id.txt` | — | A per-box id, created once, stamped on every record |
+| **`data/db/logs.db`** | `diagnostics`, `tool_executions` | Server-side flight recorder + structured tool metrics |
+| **`data/db/recordings.db`** | `render_recordings` | Browser-side render recorder (big HTML blobs; off by default) |
+| `data/db/instance_id.txt` | — | A per-box id, created once, stamped on every record |
 
 All three are **gitignored runtime artifacts** (recreated on first run). The optimizer's temp `.db` scratch files are a third, pre-existing local split.
 

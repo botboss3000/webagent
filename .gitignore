@@ -56,8 +56,22 @@ temp/
 # Ad-hoc prompt-slot dumps written to the project root (scratch; belong in temp/)
 /tmp_*.txt
 
-# Local SQLite DB — now gitignored; was previously tracked but is now a runtime artifact.
-# The transient sidecars and stray root copy stay ignored too:
+# ── Runtime databases (now under data/db/) ──────────────────────────────────
+# All runtime DB *files* live in data/db/ (the app's stored state); the DB *code*
+# stays in app/db/. Covers local.db, logs.db, recordings.db, vault.db, tests.db,
+# and the optimizer/closer scratch DBs + their WAL/SHM/journal sidecars.
+data/db/
+local.db
+
+# Company-wide Wiki: the wiki.db file itself IS tracked (committed to the repo),
+# but its transient SQLite sidecars are not — they only exist mid-write.
+data/wiki.db-journal
+data/wiki.db-wal
+data/wiki.db-shm
+
+# ── Legacy app/db/ runtime DBs ──────────────────────────────────────────────
+# Pre-data/db layout. The app relocates these into data/db/ on first run; kept
+# ignored so a not-yet-relocated copy is never accidentally committed.
 app/db/local.db
 app/db/local.db-journal
 app/db/local.db-wal
@@ -76,6 +90,13 @@ app/db/recordings.db-journal
 app/db/recordings.db-wal
 app/db/recordings.db-shm
 app/db/instance_id.txt
+
+# Dedicated credentials "vault" DB (auth_elements — integration OAuth tokens +
+# inline secret values), kept out of the user-data DB so a reset is non-destructive.
+app/db/vault.db
+app/db/vault.db-journal
+app/db/vault.db-wal
+app/db/vault.db-shm
 
 # Per-user runtime "closer" DBs (created by the running app)
 app/db/closer_*.db

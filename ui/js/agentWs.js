@@ -346,6 +346,17 @@ export function connectAgent() {
         break;
       }
 
+      case 'tunnel_state': {
+        // Terminal-tunnel mode toggled (user drives a terminal through chat).
+        // The chat module mounts/unmounts the tunnel banner + embedded terminal.
+        // Honor on replay too, so a reconnect re-mounts an active tunnel.
+        if (eventSessionId && eventSessionId !== app.currentSessionId) break;
+        if (typeof app.onTunnelState === 'function') {
+          try { app.onTunnelState(event); } catch (_) { /* ignore */ }
+        }
+        break;
+      }
+
       // All other event types (stream, tool_call, tool_result, pipeline,
       // db, attachment) are handled by:
       //   - SSE reader in chat.js (chat bubble updates for user turns)

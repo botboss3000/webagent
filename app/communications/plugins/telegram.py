@@ -370,4 +370,13 @@ class TelegramPlugin(CommunicationPlugin):
         return await get_me(token)
 
 # -- Plugin discovery hook --
+FEATURE = {
+    "id": "telegram",
+    "display_name": "Telegram",
+    "category": "channel",
+    "status": "stable",
+    "summary": "Send/receive Telegram messages; webhook or polling, per-agent bot tokens.",
+    "requires": ["A Telegram bot token"],
+}
+
 plugin_cls = TelegramPlugin

@@ -1,7 +1,7 @@
 """Force-clean the SQLite DB — checkpoint, switch to DELETE mode, clean test data."""
 import sqlite3, os, time
 
-DB_PATH = "app/db/local.db"
+DB_PATH = "data/db/local.db"
 
 # Step 1: Try checkpoint to settle WAL
 try:

@@ -922,6 +922,104 @@ async def pause_terminal_session(session_id: str, request: Request):
     return {"session_id": session_id, "paused": paused}
 
 
+# ── Terminal tunnel: the user drives a program directly through chat ──
+#
+# A tunnel binds a CHAT session to a terminal session so the user's chat
+# messages become keystrokes for the program and its output streams into chat.
+# The agent steps aside. Mechanism lives in app/agent/terminal_tunnel.py; these
+# endpoints are what the chat UI calls (status on load, key palette, hand-back)
+# and what the one-click "Terminal Tunnel" launcher calls to open+bind.
+
+
+@router.get("/api/v1/terminal/tunnel/{chat_session_id}")
+async def get_tunnel(chat_session_id: str, request: Request) -> Dict[str, Any]:
+    """Return the tunnel binding for a chat session ({"enabled": false} if none).
+    The chat UI calls this on load to know whether to mount the tunnel banner +
+    embedded terminal."""
+    uid = await assert_caller_is(request, None)
+    if not await _is_admin(uid):
+        raise HTTPException(status_code=403, detail="Admin required")
+    from app.db import get_db
+    from app.agent.terminal_tunnel import get_tunnel_cfg
+    cfg = await get_tunnel_cfg(get_db(), chat_session_id)
+    return cfg or {"enabled": False}
+
+
+@router.post("/api/v1/terminal/tunnel/{chat_session_id}/enable")
+async def enable_tunnel_endpoint(chat_session_id: str, request: Request) -> Dict[str, Any]:
+    """Open (if needed) and bind a terminal to this chat as a tunnel — the
+    one-click "Terminal Tunnel" path. Body: {terminal_session_id?, command?,
+    name?}. With terminal_session_id it binds that existing session; otherwise it
+    opens a fresh session running `command` and binds that."""
+    uid = await assert_caller_is(request, None)
+    if not await _is_admin(uid):
+        raise HTTPException(status_code=403, detail="Admin required")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    terminal_session_id = (body.get("terminal_session_id") or "").strip()
+    command = (body.get("command") or "").strip()
+    name = (body.get("name") or "").strip()
+
+    if not terminal_session_id:
+        # Open a fresh terminal for this tunnel.
+        try:
+            terminal_session_id, _sess = await open_agent_session(
+                uid, command=command, name=name or "terminal tunnel",
+            )
+        except SessionCapExceeded as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"could not open terminal: {e}")
+
+    from app.db import get_db
+    from app.agent.terminal_tunnel import enable_tunnel
+    try:
+        cfg = await enable_tunnel(
+            get_db(), uid, chat_session_id, terminal_session_id,
+            mediated=False, command=command,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return cfg
+
+
+@router.post("/api/v1/terminal/tunnel/{chat_session_id}/disable")
+async def disable_tunnel_endpoint(chat_session_id: str, request: Request) -> Dict[str, Any]:
+    """Hand control back to the agent — the chat UI's "Hand back" button. The
+    terminal program keeps running; only the chat↔terminal binding is removed."""
+    uid = await assert_caller_is(request, None)
+    if not await _is_admin(uid):
+        raise HTTPException(status_code=403, detail="Admin required")
+    from app.db import get_db
+    from app.agent.terminal_tunnel import disable_tunnel
+    await disable_tunnel(get_db(), uid, chat_session_id, reason="handed back")
+    return {"chat_session_id": chat_session_id, "enabled": False}
+
+
+@router.post("/api/v1/terminal/tunnel/{chat_session_id}/keys")
+async def tunnel_keys_endpoint(chat_session_id: str, request: Request) -> Dict[str, Any]:
+    """Send named special keys (Enter, Esc, Ctrl+C, arrows, Tab, …) from the
+    chat key palette into the bound program. Body: {"keys": ["ctrl+c"]}."""
+    uid = await assert_caller_is(request, None)
+    if not await _is_admin(uid):
+        raise HTTPException(status_code=403, detail="Admin required")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    keys = body.get("keys") or []
+    if not isinstance(keys, list):
+        raise HTTPException(status_code=400, detail="keys must be a list")
+    from app.db import get_db
+    from app.agent.terminal_tunnel import send_keys as _tunnel_send_keys
+    ok, info = await _tunnel_send_keys(get_db(), uid, chat_session_id, keys)
+    if not ok:
+        raise HTTPException(status_code=409, detail=str(info))
+    return {"chat_session_id": chat_session_id, "sent": keys, "unknown_keys": info}
+
+
 @router.get("/api/v1/terminal/sessions")
 async def list_terminal_sessions(request: Request) -> List[Dict[str, Any]]:
     """Snapshot of live PTY sessions. Each admin caller sees only their own

@@ -1,0 +1,26 @@
+{
+  "active": null,
+  "editions": {
+    "full": {
+      "label": "Full / dev",
+      "description": "Every feature in the codebase, regardless of maturity. The default.",
+      "rule": "all"
+    },
+    "production": {
+      "label": "Production",
+      "description": "Only features marked stable, plus anything explicitly promoted below.",
+      "rule": "min_status",
+      "min_status": "stable",
+      "include": [],
+      "exclude": []
+    },
+    "beta": {
+      "label": "Beta channel",
+      "description": "Stable + beta features; experimental excluded.",
+      "rule": "min_status",
+      "min_status": "beta",
+      "include": [],
+      "exclude": []
+    }
+  }
+}

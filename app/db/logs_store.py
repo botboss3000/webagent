@@ -42,6 +42,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -49,11 +50,35 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Files live alongside the main local.db (app/db/). All gitignored runtime data.
-_DB_DIR = os.path.dirname(os.path.abspath(__file__))
+# Runtime DBs live under data/db/ (the app's stored state), NOT app/db/ (logic).
+# Files live alongside the main local.db. All gitignored runtime data.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_DB_DIR = os.path.join(_PROJECT_ROOT, "data", "db")
+_LEGACY_DB_DIR = os.path.dirname(os.path.abspath(__file__))  # old app/db/ location
 LOGS_DB_PATH = os.path.join(_DB_DIR, "logs.db")
 RECORDINGS_DB_PATH = os.path.join(_DB_DIR, "recordings.db")
 INSTANCE_ID_PATH = os.path.join(_DB_DIR, "instance_id.txt")
+
+
+def _relocate_legacy_log_files() -> None:
+    """One-time move of the log DBs from the legacy app/db/ dir to data/db/.
+    Idempotent + safe (only moves when the destination is absent); never raises."""
+    try:
+        if os.path.abspath(_LEGACY_DB_DIR) == os.path.abspath(_DB_DIR):
+            return
+        os.makedirs(_DB_DIR, exist_ok=True)
+        for name in ("logs.db", "logs.db-wal", "logs.db-shm", "logs.db-journal",
+                     "recordings.db", "recordings.db-wal", "recordings.db-shm",
+                     "recordings.db-journal", "instance_id.txt"):
+            old = os.path.join(_LEGACY_DB_DIR, name)
+            new = os.path.join(_DB_DIR, name)
+            if os.path.exists(old) and not os.path.exists(new):
+                try:
+                    shutil.move(old, new)
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 
 def _now_iso() -> str:
@@ -190,6 +215,16 @@ class LogStore:
 
     def _init_db(self) -> None:
         try:
+            # On the default install, relocate legacy app/db/ log files into
+            # data/db/ before opening (one-time, safe). Skipped for custom/test
+            # paths so they never touch the real runtime files.
+            if self._logs_path == LOGS_DB_PATH and self._rec_path == RECORDINGS_DB_PATH:
+                _relocate_legacy_log_files()
+            for p in (self._logs_path, self._rec_path):
+                try:
+                    os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
+                except Exception:
+                    pass
             conn = self._connect(self._logs_path)
             try:
                 conn.executescript(_LOGS_SCHEMA)

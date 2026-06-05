@@ -70,4 +70,13 @@ class TelegramSource(EventSource):
         return True
 
 
+FEATURE = {
+    "id": "telegram_events",
+    "display_name": "Telegram (events)",
+    "category": "event_source",
+    "status": "beta",
+    "summary": "Fire the agent on inbound Telegram messages.",
+    "requires": ["A Telegram bot token"],
+}
+
 source_cls = TelegramSource

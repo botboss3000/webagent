@@ -1897,6 +1897,11 @@ _ABILITY_CONFIG_KEY: dict[str, str] = {
     # main view, show/hide & resize the chat panel). Pure behavioral toggle,
     # no credential, non-destructive → on by default at the app level.
     "app_control":         "ability_app_control",
+    # Wiki control — lets an agent read/search the company-wide Wiki and
+    # create/edit/delete its articles. Writes/deletes change shared data
+    # everyone sees, so it's OFF by default (not in _ALWAYS_ON_ABILITIES) and
+    # must be turned on at the app level then per-agent, like terminal_control.
+    "wiki_control":        "ability_wiki_control",
 }
 
 # Abilities that are ON by default at the app level: available to the per-agent
@@ -2225,6 +2230,7 @@ async def get_integration_config(
         "diagnostics_configured":         ability_enabled.get("diagnostics", False),
         "agent_management_configured":    ability_enabled.get("agent_management", False),
         "app_control_configured":         ability_enabled.get("app_control", False),
+        "wiki_control_configured":         ability_enabled.get("wiki_control", False),
     }
 
 

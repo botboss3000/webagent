@@ -288,6 +288,7 @@ const ABILITY_TO_TOOLS = {
   visualizer:       [],  // visualizer tools are injected dynamically
   agent_orchestration: ['delegate_to_agent','list_delegatable_agents'],
   agent_management: ['list_agent_templates','list_my_agents','get_agent','create_agent','update_agent','edit_agent_prompt','set_agent_ability'],
+  wiki_control:     ['wiki_search','wiki_list','wiki_get','wiki_create','wiki_update','wiki_delete'],
   // register_user is always-on (Tier 1), not gated by an ability
 };
 
@@ -4546,6 +4547,7 @@ const _CONN_ICONS = {
   agent_orchestration: 'workflow',
   diagnostics:      'stethoscope',
   agent_management: 'user-cog',
+  wiki_control:     'book-open',
 };
 
 // Brief one-line description shown under each connection's name on the collapsed
@@ -4567,6 +4569,7 @@ const _CONN_NOTES = {
   agent_orchestration: 'Delegate the session to other agents and run the prompt optimizer.',
   diagnostics:      'Read the in-app flight recorder to diagnose the running app.',
   agent_management: 'List, create, and update agents and edit their prompts and abilities.',
+  wiki_control:     'Read, search, create, edit, and delete entries in the company-wide Wiki.',
   // Channels
   telegram:  'Send and receive messages through a Telegram bot.',
   twilio:    'Send and receive SMS / voice via Twilio.',
@@ -4576,6 +4579,18 @@ const _CONN_NOTES = {
   slack:     'Send and receive messages through Slack.',
 };
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  SISTER-PANEL: AGENT-ABILITY-TABLE  —  KEEP THE TWO IN SYNC                ║
+// ║  This is one of the TWO ability tables that must stay MIRRORED IN DESIGN: ║
+// ║    • here — the per-agent **Abilities tab** (agent card), and             ║
+// ║    • the admin **Agent Settings** panel (app-config.js `_ABILITY_GROUPS`  ║
+// ║      / `_initAbilitiesCompact` / `_buildIntegrationGroupShells`).         ║
+// ║  Both render the shared `.ac-list` / `.ac-row` / `.ac-tri` component and  ║
+// ║  read as the SAME table. If you change the look, structure, grouping, or  ║
+// ║  toggle behaviour on EITHER side, apply the matching change on the other  ║
+// ║  (grep `SISTER-PANEL: AGENT-ABILITY-TABLE`). See docs/claude/ui-guidance. ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+//
 // Agent Tools grouping — mirrors the admin Agent Tools panel (app-config.js
 // `_ABILITY_GROUPS`). The single "Agent Tools" section is split into three
 // alphabetical groups, each an expandable header row with a 3-position toggle
@@ -4590,9 +4605,9 @@ const _AGENT_ABILITY_GROUPS = [
     members: ['codebase_admin', 'diagnostics', 'git_control', 'terminal_control'],
   },
   {
-    id: 'basic', name: 'Basic', icon: 'wrench', color: '#7dcfff',
-    desc: 'Everyday, non-destructive capabilities — UI edits, tool creation, automation, pages, image generation, orchestration, agent management, and app view control.',
-    members: ['agent_management', 'agent_orchestration', 'app_control', 'automation', 'create_tools', 'image_generation', 'ui_admin', 'visualizer'],
+    id: 'basic', name: 'Core', icon: 'wrench', color: '#7dcfff',
+    desc: 'Everyday, non-destructive capabilities — UI edits, tool creation, automation, pages, image generation, orchestration, agent management, app view control, and the company Wiki.',
+    members: ['agent_management', 'agent_orchestration', 'app_control', 'automation', 'create_tools', 'image_generation', 'ui_admin', 'visualizer', 'wiki_control'],
   },
   {
     id: 'web', name: 'Web', icon: 'globe', color: '#7aa2f7',

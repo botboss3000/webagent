@@ -348,6 +348,15 @@ async def snapchat_userinfo(user_id: str, agent_id: str) -> str:
 
 # ── Tool registry ─────────────────────────────────────────────────────────
 
+FEATURE = {
+    "id": "social",
+    "display_name": "Social (X / LinkedIn / Meta / Reddit / Pinterest)",
+    "category": "integration",
+    "status": "beta",
+    "summary": "Post and read across social platforms; coverage varies by provider.",
+    "requires": ["Per-platform OAuth credentials"],
+}
+
 TOOLS = [
     # ── Twitter / X ──
     {"name": "twitter_me", "provider": "twitter", "handler": twitter_me, "stages": ["execute_tools"], "destructive": False,

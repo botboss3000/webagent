@@ -2016,3 +2016,105 @@ body.light-mode .ac-main-panel-item .ac-mp-toggle.active {
 body.light-mode .ac-main-panel-item.ac-mp-locked {
   background: rgba(122, 162, 247, 0.08);
 }
+
+/* ── Terminal tunnel (user drives a terminal through chat) ──────────────────
+   The overlay covers the chat message area with a live read-only terminal; the
+   banner (above the pill) carries the key palette + Hand-back. Theme-aware via
+   design-system variables — correct in dark and light. See ui/js/chatTunnel.js
+   and app/agent/terminal_tunnel.py. */
+.chat-tunnel-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-0, #0d0d1a);
+  border-top: 1px solid var(--border, #2a2a3a);
+  overflow: hidden;
+}
+.chat-tunnel-overlay .xterm { padding: 8px; height: 100%; }
+.chat-tunnel-error {
+  padding: 16px;
+  color: var(--danger, #f7768e);
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+}
+
+.chat-tunnel-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent, #7aa2f7);
+  border-radius: 12px;
+  background: var(--bg-elev, var(--bg-1, #15151f));
+  box-shadow: 0 0 0 1px rgba(122, 162, 247, 0.12) inset;
+}
+.chat-tunnel-banner-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.chat-tunnel-label {
+  flex: 1 1 auto;
+  font-size: 13px;
+  color: var(--fg-2, #c0caf5);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-tunnel-label .chat-tunnel-cmd {
+  color: var(--fg-1, #fff);
+  font-family: var(--font-mono, monospace);
+}
+.chat-tunnel-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent, #7aa2f7);
+  flex: 0 0 auto;
+  animation: chat-tunnel-pulse 1.6s ease-in-out infinite;
+}
+@keyframes chat-tunnel-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}
+.chat-tunnel-handback {
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent, #7aa2f7);
+  background: transparent;
+  border: 1px solid var(--accent, #7aa2f7);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.chat-tunnel-handback:hover {
+  color: var(--bg-0, #0d0d1a);
+  background: var(--accent, #7aa2f7);
+}
+.chat-tunnel-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chat-tunnel-key {
+  min-width: 34px;
+  padding: 4px 9px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--fg-2, #c0caf5);
+  background: var(--bg-1, #15151f);
+  border: 1px solid var(--border, #2a2a3a);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.chat-tunnel-key:hover {
+  color: var(--fg-1, #fff);
+  border-color: var(--accent, #7aa2f7);
+  background: var(--bg-tint, rgba(122, 162, 247, 0.08));
+}
+.chat-tunnel-key:active { transform: translateY(1px); }

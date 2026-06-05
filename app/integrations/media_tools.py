@@ -112,6 +112,15 @@ async def twitch_followed_channels(user_id: str, agent_id: str, limit: int = 20)
 
 # ── Tool registry ─────────────────────────────────────────────────────────
 
+FEATURE = {
+    "id": "media",
+    "display_name": "Media (TikTok / Twitch)",
+    "category": "integration",
+    "status": "beta",
+    "summary": "TikTok and Twitch identity and media endpoints.",
+    "requires": ["TikTok and/or Twitch OAuth credentials"],
+}
+
 TOOLS = [
     # ── TikTok ──
     {"name": "tiktok_userinfo", "provider": "tiktok", "handler": tiktok_userinfo, "stages": ["execute_tools"], "destructive": False,

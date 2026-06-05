@@ -21,10 +21,14 @@ _COLS = "ts, level, category, source, message, detail"
 
 
 def _diag_db(project_root: Path) -> Path:
-    """The dedicated logs DB if present (current builds), else the legacy
-    main DB (older builds wrote diagnostics into local.db)."""
-    logs = project_root / "app" / "db" / "logs.db"
-    return logs if logs.exists() else (project_root / "app" / "db" / "local.db")
+    """The dedicated logs DB if present (current builds), else the legacy main DB
+    (older builds wrote diagnostics into local.db). Runtime DBs live under
+    data/db/ now; the old app/db/ location is checked as a fallback."""
+    for rel in ("data/db/logs.db", "app/db/logs.db", "data/db/local.db", "app/db/local.db"):
+        p = project_root / rel
+        if p.exists():
+            return p
+    return project_root / "data" / "db" / "logs.db"
 
 
 async def read_diagnostics(ctx: ToolContext, limit: int = 20, level: str = "",

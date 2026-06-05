@@ -171,6 +171,15 @@ async def outlook_calendar_create_event(
 
 # ── Tool registry ─────────────────────────────────────────────────────────
 
+FEATURE = {
+    "id": "calendar",
+    "display_name": "Calendar (Google / Outlook)",
+    "category": "integration",
+    "status": "stable",
+    "summary": "List, create, and manage events on Google Calendar and Outlook Calendar.",
+    "requires": ["Google and/or Microsoft OAuth credentials"],
+}
+
 TOOLS = [
     # ── Google Calendar ──
     {

@@ -6,6 +6,7 @@ import { startAgents, stopAgents } from './agents.js';
 import { startAccount } from './account.js';
 import { startAdminTools, stopAdminTools } from './files.js';
 import { startWeb, stopWeb } from './web.js';
+import { startWiki, stopWiki } from './wiki.js';
 import { refreshTutorial } from './tutorial.js';
 import { initAppConfig } from './app-config.js';
 import { initDbViewer } from './db/index.js';
@@ -98,34 +99,46 @@ export function initTabs() {
       stopAgents();
       stopAdminTools();
       stopWeb();
+      stopWiki();
       startAutoAgent();
     } else if (tabValue === 'agents') {
       stopAutoAgent();
       stopAdminTools();
       stopWeb();
+      stopWiki();
       startAgents();
     } else if (tabValue === 'account') {
       stopAutoAgent();
       stopAgents();
       stopAdminTools();
       stopWeb();
+      stopWiki();
       startAccount();
     } else if (tabValue === 'admin-tools') {
       stopAutoAgent();
       stopAgents();
       stopWeb();
+      stopWiki();
       _ensureAdminInit();   // build the Admin Tools sub-panels on first open
       startAdminTools();
     } else if (tabValue === 'web') {
       stopAutoAgent();
       stopAgents();
       stopAdminTools();
+      stopWiki();
       startWeb();
     } else if (tabValue === 'terminal') {
       stopAutoAgent();
       stopAgents();
       stopAdminTools();
       stopWeb();
+      stopWiki();
+    } else if (tabValue === 'wiki') {
+      stopAutoAgent();
+      stopAgents();
+      stopAdminTools();
+      stopWeb();
+      startWiki();
     }
 
     // Re-render tutorial hint badges for the newly active tab. Defer a tick

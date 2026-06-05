@@ -1296,6 +1296,11 @@ export async function loadSessionChat(sessionId) {
   if (typeof app.refreshActiveSkills === 'function') {
     try { app.refreshActiveSkills(); } catch (_) { /* best-effort */ }
   }
+  // Mount/unmount the terminal-tunnel UI for the session being opened (a
+  // session bound to a terminal shows the live terminal + key palette).
+  if (typeof app.refreshTunnelForSession === 'function') {
+    try { app.refreshTunnelForSession(); } catch (_) { /* best-effort */ }
+  }
   try {
     // Check cache first
     const cached = _messageCache.get(sessionId);

@@ -406,6 +406,15 @@ async def web_session_graphql(
 
 # ── Tool registry ──────────────────────────────────────────────────────────
 
+FEATURE = {
+    "id": "web_scraper",
+    "display_name": "Web Scraper",
+    "category": "integration",
+    "status": "beta",
+    "summary": "Scrape-based web search/fetch via a configured scraper provider.",
+    "requires": ["A configured scraper provider"],
+}
+
 TOOLS = [
     {"name": "web_scrape_search", "provider": "scraper", "handler": web_scrape_search,
      "stages": ["execute_tools"], "destructive": False,

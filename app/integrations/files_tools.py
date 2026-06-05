@@ -231,6 +231,15 @@ def _wrap_binary_resp(resp) -> str:
 
 # ── Tool registry ─────────────────────────────────────────────────────────
 
+FEATURE = {
+    "id": "files",
+    "display_name": "Cloud Files (Drive / OneDrive / Dropbox)",
+    "category": "integration",
+    "status": "stable",
+    "summary": "Browse, read, and write files on Google Drive, OneDrive, and Dropbox.",
+    "requires": ["Google, Microsoft, and/or Dropbox OAuth credentials"],
+}
+
 TOOLS = [
     # ── Google Drive ──
     {

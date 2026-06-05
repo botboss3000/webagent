@@ -51,6 +51,7 @@ from app.api.uploads import router as uploads_router
 from app.api.db_viewer import router as db_viewer_router
 from app.api.diagnostics import router as diagnostics_router
 from app.api.recordings import router as recordings_router
+from app.api.features import router as features_router
 try:
     from app.admin.review import router as admin_router
     from app.admin.db_mode import router as admin_db_router
@@ -118,6 +119,7 @@ try:
 except ImportError:
     optimizer_router = None
 from app.api.pages import router as pages_router
+from app.api.wiki import router as wiki_router
 
 # Configure logging
 logging.basicConfig(
@@ -335,6 +337,7 @@ app.include_router(uploads_router)
 app.include_router(db_viewer_router)
 app.include_router(diagnostics_router)
 app.include_router(recordings_router)
+app.include_router(features_router)
 for _admin_r in (admin_router, admin_db_router, admin_storage_router):
     if _admin_r is not None:
         app.include_router(_admin_r)
@@ -388,6 +391,9 @@ if optimizer_router is not None:
 
 # Register AutoAgent pages router
 app.include_router(pages_router)
+
+# Register the company-wide Wiki router
+app.include_router(wiki_router)
 
 # ── Restart endpoint ──
 # POST /api/v1/restart shuts down the server process.

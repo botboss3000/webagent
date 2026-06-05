@@ -831,6 +831,10 @@ TABLES: List[Table] = [
     ]),
 ]
 
+# NOTE: the company-wide Wiki lives in its OWN dedicated SQLite file
+# (data/wiki.db, see app/wiki/db.py) — deliberately NOT in this schema or the
+# main backend. Keep wiki tables out of here.
+
 
 # ── Indexes ─────────────────────────────────────────────────────────────────
 

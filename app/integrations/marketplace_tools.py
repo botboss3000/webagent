@@ -546,6 +546,15 @@ async def amazon_update_listing_price(
 
 # ── Tool registry ─────────────────────────────────────────────────────────
 
+FEATURE = {
+    "id": "marketplace",
+    "display_name": "Marketplace (eBay, etc.)",
+    "category": "integration",
+    "status": "experimental",
+    "summary": "Marketplace search/listing endpoints; early coverage.",
+    "requires": ["Per-marketplace OAuth credentials"],
+}
+
 TOOLS = [
     # ── eBay ──
     {"name": "ebay_search_items", "provider": "ebay", "handler": ebay_search_items,

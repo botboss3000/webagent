@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sqlite3
 import struct
 import uuid
@@ -36,8 +37,46 @@ from app.agent.embed import embed_text, EMBED_DIM
 
 logger = logging.getLogger(__name__)
 
-# Default path for the local database (alongside this module)
-DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "local.db")
+# All runtime databases live under data/db/ — `data/` is the app's stored state
+# (alongside data/config, data/agents, data/uploads, data/visuals); `app/` is
+# logic only. The DB *code* stays in app/db/; the DB *files* live in data/db/.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DB_DIR = os.path.join(_PROJECT_ROOT, "data", "db")
+DEFAULT_DB_PATH = os.path.join(DB_DIR, "local.db")
+
+# Legacy location (app/db/) — runtime DBs used to live next to the DB code. On
+# first run of the new layout we relocate any existing files to data/db/ so an
+# upgraded install (dev or the production VM) keeps its data instead of silently
+# starting fresh.
+_LEGACY_DB_DIR = os.path.dirname(os.path.abspath(__file__))
+_RUNTIME_DB_FILES = [
+    "local.db", "local.db-wal", "local.db-shm", "local.db-journal", "local.db.preprompt-bak",
+    "vault.db", "vault.db-wal", "vault.db-shm", "vault.db-journal",
+    "logs.db", "logs.db-wal", "logs.db-shm", "logs.db-journal",
+    "recordings.db", "recordings.db-wal", "recordings.db-shm", "recordings.db-journal",
+    "instance_id.txt",
+]
+
+
+def _relocate_legacy_db_files() -> None:
+    """One-time move of runtime DB files from the legacy app/db/ dir to data/db/.
+    Idempotent and safe: only moves a file when the destination doesn't already
+    exist; never raises. Tied to the default location only (custom/test paths
+    never trigger it)."""
+    try:
+        if os.path.abspath(_LEGACY_DB_DIR) == os.path.abspath(DB_DIR):
+            return
+        os.makedirs(DB_DIR, exist_ok=True)
+        for name in _RUNTIME_DB_FILES:
+            old = os.path.join(_LEGACY_DB_DIR, name)
+            new = os.path.join(DB_DIR, name)
+            if os.path.exists(old) and not os.path.exists(new):
+                try:
+                    shutil.move(old, new)
+                except Exception as e:
+                    logger.debug("relocate %s failed: %s", name, e)
+    except Exception:
+        pass
 
 
 def _now_iso() -> str:
@@ -808,23 +847,13 @@ CREATE INDEX IF NOT EXISTS idx_webhook_log_created ON webhook_event_log(created_
 
 -- ============================================================
 -- Auth Elements: per-user service credentials (LLM, Telegram, Google, etc.)
--- config holds non-sensitive settings (JSON).
--- secret_ref holds the actual secret (API key, token) — migrating to vault later.
+-- MOVED OUT of this user-data DB into the dedicated, attached `vault` DB so a
+-- user-data reset never wipes credentials. The table is created in the vault by
+-- VAULT_SCHEMA (see LocalBackend._init_db); every unqualified `auth_elements`
+-- query resolves to the attached vault. Postgres keeps it as a normal table
+-- (tables.py / render_postgres). Do NOT re-add a CREATE here — it would shadow
+-- the vault copy via SQLite's main-first name resolution.
 -- ============================================================
-CREATE TABLE IF NOT EXISTS auth_elements (
-    id              TEXT PRIMARY KEY,
-    user_id         TEXT NOT NULL,
-    service         TEXT NOT NULL,             -- 'llm', 'telegram', 'google', etc.
-    label           TEXT NOT NULL DEFAULT 'default',
-    config          TEXT NOT NULL DEFAULT '{}',  -- JSON: non-sensitive settings
-    secret_ref      TEXT NOT NULL DEFAULT '',    -- secret value; later vault path
-    is_active       INTEGER NOT NULL DEFAULT 1,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_elements_user_service_label
-    ON auth_elements(user_id, service, label);
 
 -- ============================================================
 -- Provider Ratings: Tracks the auto-updated ratings of parallel providers
@@ -1145,6 +1174,9 @@ CREATE TABLE IF NOT EXISTS pages (
 
 CREATE INDEX IF NOT EXISTS idx_pages_user ON pages(user_id);
 
+-- NOTE: the company-wide Wiki lives in its OWN dedicated SQLite file
+-- (data/wiki.db, see app/wiki/db.py) — not in this schema or the main backend.
+
 """
 
 
@@ -1183,11 +1215,55 @@ def _slot_apply(base: str, override: Optional[str], lock: bool, merge_mode: str)
     return override
 
 
+# Dedicated "vault" DB schema — credentials kept OUT of the user-data DB so a
+# user-data reset never wipes them. Created in the ATTACHed `vault` schema (see
+# LocalBackend._get_conn + _init_db). The table mirrors the legacy main-DB
+# definition; unqualified `auth_elements` resolves here once the main copy is
+# dropped. Postgres keeps auth_elements as a normal table (tables.py).
+VAULT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS vault.auth_elements (
+    id              TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL,
+    service         TEXT NOT NULL,
+    label           TEXT NOT NULL DEFAULT 'default',
+    config          TEXT NOT NULL DEFAULT '{}',
+    secret_ref      TEXT NOT NULL DEFAULT '',
+    is_active       INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS vault.idx_auth_elements_user_service_label
+    ON auth_elements(user_id, service, label);
+"""
+
+
+def _vault_path_for(db_path: str) -> str:
+    """Sibling vault-DB path for a given main DB path. The default ``local.db``
+    pairs with ``vault.db``; any other DB file pairs with ``<name>.vault.db`` so
+    test / reference instances get their own isolated vault."""
+    d, base = os.path.split(db_path)
+    stem = base[:-3] if base.endswith(".db") else base
+    name = "vault.db" if stem == "local" else f"{stem}.vault.db"
+    return os.path.join(d or ".", name)
+
+
 class LocalBackend(StorageBackend):
     """SQLite implementation of StorageBackend."""
 
     def __init__(self, db_path: Optional[str] = None, seed: bool = True):
         self._db_path = db_path or DEFAULT_DB_PATH
+        # On the default install, relocate any legacy app/db/ runtime DBs into
+        # data/db/ before opening anything (one-time, safe). Then make sure the
+        # target directory exists so sqlite3.connect can create the file.
+        if self._db_path == DEFAULT_DB_PATH:
+            _relocate_legacy_db_files()
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(self._db_path)), exist_ok=True)
+        except Exception:
+            pass
+        # Credentials (auth_elements) live in this sibling vault DB, attached on
+        # every connection — separate physical file from the user-data DB.
+        self._vault_path = _vault_path_for(self._db_path)
         self._write_lock = asyncio.Lock()
         # Subclasses (PostgresBackend) flip these. seed=False builds a schema-only
         # reference instance (used to introspect the canonical column set).
@@ -1235,12 +1311,65 @@ class LocalBackend(StorageBackend):
         conn.execute("PRAGMA cache_size=-16000")
         conn.execute("PRAGMA mmap_size=268435456")
         conn.execute("PRAGMA wal_autocheckpoint=2000")
+        # Attach the dedicated vault DB (credentials / auth_elements) under the
+        # `vault` schema. With auth_elements absent from this main file, every
+        # unqualified `auth_elements` query transparently resolves to the vault —
+        # no per-call-site changes. Non-fatal on failure: the core app still
+        # works; only credential lookups would be unavailable.
+        try:
+            conn.execute("ATTACH DATABASE ? AS vault", (self._vault_path,))
+            conn.execute("PRAGMA vault.journal_mode=WAL")
+            conn.execute("PRAGMA vault.synchronous=NORMAL")
+        except Exception as e:
+            logger.debug("vault attach failed (%s): %s", self._vault_path, e)
         return conn
 
     def _init_db(self) -> None:
         """Create tables if they don't exist."""
         conn = self._get_conn()
         try:
+            # ── Vault: keep credentials OUT of the user-data DB ──
+            # auth_elements (per-user service creds / OAuth tokens / secret refs)
+            # lives in the attached `vault` DB, never this main user-data file, so
+            # a user-data reset never wipes credentials. Create it in the vault,
+            # then migrate-and-drop any legacy copy from the main DB (older
+            # installs). After this, unqualified `auth_elements` everywhere
+            # resolves to the vault. Runs first so all downstream migrations that
+            # touch auth_elements (e.g. migration 024) hit the vault copy.
+            try:
+                conn.executescript(VAULT_SCHEMA)
+                if conn.execute("SELECT 1 FROM main.sqlite_master WHERE type='table' "
+                                "AND name='auth_elements'").fetchone():
+                    src_n = conn.execute("SELECT COUNT(*) FROM main.auth_elements").fetchone()[0]
+                    # Explicit columns + COALESCE on the NOT-NULL-with-default
+                    # columns so a legacy row with NULLs can't be silently dropped
+                    # by INSERT OR IGNORE.
+                    conn.execute(
+                        "INSERT OR IGNORE INTO vault.auth_elements "
+                        "(id, user_id, service, label, config, secret_ref, is_active, created_at, updated_at) "
+                        "SELECT id, user_id, service, label, "
+                        "COALESCE(config,'{}'), COALESCE(secret_ref,''), COALESCE(is_active,1), "
+                        "COALESCE(created_at, datetime('now')), COALESCE(updated_at, datetime('now')) "
+                        "FROM main.auth_elements"
+                    )
+                    # Only drop the source once EVERY row is confirmed in the vault
+                    # (a partial copy leaves main.auth_elements in place — safe
+                    # fallback; the app keeps using it and the migration retries).
+                    unmigrated = conn.execute(
+                        "SELECT COUNT(*) FROM main.auth_elements "
+                        "WHERE id NOT IN (SELECT id FROM vault.auth_elements)"
+                    ).fetchone()[0]
+                    if unmigrated == 0:
+                        conn.execute("DROP TABLE main.auth_elements")
+                        logger.info("Relocated %d auth_elements row(s) into the dedicated vault DB (%s)",
+                                    src_n, self._vault_path)
+                    else:
+                        logger.warning("Vault migration incomplete (%d of %d rows not copied) — "
+                                       "leaving auth_elements in the main DB for now", unmigrated, src_n)
+                conn.commit()
+            except Exception as e:
+                logger.warning("Vault init/migration failed: %s", e)
+
             # ── Pre-migration: handle old agents table ──
             # Old schema (v1): (id TEXT PK DEFAULT 'default_agent', max_turn_count INT)
             # New schema (v2): (id TEXT PK, user_id TEXT NOT NULL UNIQUE, ...)
@@ -4384,6 +4513,64 @@ class LocalBackend(StorageBackend):
                 )
                 conn.commit()
                 return lst
+            finally:
+                conn.close()
+
+    # ── Terminal tunnel binding (lives in sessions.metadata under "tunnel") ──
+    # When set, this chat session is bound to a live terminal: the user's chat
+    # messages are keystrokes for that program and its output streams back into
+    # chat (the agent steps aside). See app/agent/terminal_tunnel.py.
+
+    async def get_session_tunnel(self, session_id: str) -> Dict[str, Any]:
+        """Return the tunnel binding dict for a session ({} if none)."""
+        if not session_id:
+            return {}
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if not row:
+                return {}
+            try:
+                meta = json.loads(row["metadata"]) if row["metadata"] else {}
+            except (json.JSONDecodeError, TypeError):
+                return {}
+            if not isinstance(meta, dict):
+                return {}
+            tun = meta.get("tunnel") or {}
+            return tun if isinstance(tun, dict) else {}
+        finally:
+            conn.close()
+
+    async def set_session_tunnel(
+        self, session_id: str, config: Optional[Dict[str, Any]]
+    ) -> None:
+        """Store (or clear, if config is None) the session's tunnel binding under
+        sessions.metadata["tunnel"]."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if not row:
+                    return
+                try:
+                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                if config:
+                    meta["tunnel"] = config
+                else:
+                    meta.pop("tunnel", None)
+                conn.execute(
+                    "UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(meta), _now_iso(), session_id),
+                )
+                conn.commit()
             finally:
                 conn.close()
 

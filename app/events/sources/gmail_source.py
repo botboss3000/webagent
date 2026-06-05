@@ -515,4 +515,13 @@ class GmailSource(EventSource):
         return True
 
 
+FEATURE = {
+    "id": "gmail_events",
+    "display_name": "Gmail (events)",
+    "category": "event_source",
+    "status": "stable",
+    "summary": "Fire the agent when matching email arrives (Gmail push via Pub/Sub).",
+    "requires": ["Google OAuth credentials", "Cloud Pub/Sub setup (see docs/events-setup.md)"],
+}
+
 source_cls = GmailSource

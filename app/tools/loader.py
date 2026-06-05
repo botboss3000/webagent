@@ -42,6 +42,7 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "update_agent":                  {"stages": ["execute_tools"],                                "destructive": True,  "agent_types": []},
     "edit_agent_prompt":             {"stages": ["execute_tools"],                                "destructive": True,  "agent_types": []},
     "set_agent_ability":             {"stages": ["execute_tools"],                                "destructive": True,  "agent_types": []},
+    "manage_agent_skills":           {"stages": ["execute_tools"],                                "destructive": True,  "agent_types": []},
     # ── Memory ──
     "memory":                        {"stages": ["memory_search", "memory_save", "execute_tools"], "destructive": False, "agent_types": []},
     "session_search":                {"stages": ["load_context", "execute_tools"],               "destructive": False, "agent_types": []},
@@ -106,7 +107,7 @@ ABILITY_TOOLS: Dict[str, List[str]] = {
     "diagnostics":         ["read_diagnostics"],
     "agent_management":    ["list_agent_templates", "list_my_agents", "get_agent",
                             "create_agent", "update_agent", "edit_agent_prompt",
-                            "set_agent_ability"],
+                            "set_agent_ability", "manage_agent_skills"],
     "browser_control":     ["browser_action", "http_request"],
     "image_generation":    ["generate_image"],
     "codebase_admin":      ["db_query", "read_source", "write_source", "edit_source",
@@ -120,6 +121,8 @@ ABILITY_TOOLS: Dict[str, List[str]] = {
     "terminal_control":    ["terminal_open", "terminal_read", "terminal_send",
                             "terminal_wait", "terminal_list", "terminal_close"],
     "app_control":         ["set_app_view"],
+    "wiki_control":        ["wiki_search", "wiki_list", "wiki_get",
+                            "wiki_create", "wiki_update", "wiki_delete"],
 }
 
 
@@ -703,7 +706,7 @@ class ToolLoader:
                     TERMINAL_TOOL_SCHEMAS,
                     TERMINAL_DESTRUCTIVE,
                 )
-                _terminal = build_terminal_tools(user_id)
+                _terminal = build_terminal_tools(user_id, session_id)
                 for _tname, _thandler in _terminal.items():
                     _destructive = _tname in TERMINAL_DESTRUCTIVE
                     tools[_tname] = ToolInfo(
@@ -739,6 +742,34 @@ class ToolLoader:
                     )
             except Exception as _ae:
                 logger.warning("App-control tools unavailable: %s", _ae)
+
+        # ── Wiki-control tools — gated by the "wiki_control" ability ──
+        # Lets the agent read, search, create, edit, and delete entries in the
+        # company-wide Wiki (the shared knowledge base). Writes/deletes change
+        # data everyone sees, so it's off by default; the app admin enables the
+        # ability, then the agent admin turns it on per-agent. wiki_delete is
+        # marked destructive so the write-mode guardrail can require confirmation.
+        if "wiki_control" in enabled_providers:
+            try:
+                from app.tools.wiki_tools import (
+                    build_wiki_tools,
+                    WIKI_TOOL_SCHEMAS,
+                    WIKI_DESTRUCTIVE,
+                )
+                _wiki = build_wiki_tools(user_id)
+                for _wname, _whandler in _wiki.items():
+                    _destructive = _wname in WIKI_DESTRUCTIVE
+                    tools[_wname] = ToolInfo(
+                        name=_wname,
+                        handler=_whandler,
+                        parameters=WIKI_TOOL_SCHEMAS.get(
+                            _wname, {"type": "object", "properties": {}, "required": []}
+                        ),
+                        destructive=_destructive,
+                        requires_confirmation=_destructive,
+                    )
+            except Exception as _we:
+                logger.warning("Wiki-control tools unavailable: %s", _we)
 
         # ═══════════════════════════════════════════════════════════════
         # Bootstrap core tools — always available from turn 1
@@ -933,6 +964,7 @@ class ToolLoader:
                 update_agent as _amt_update_agent,
                 edit_agent_prompt as _amt_edit_prompt,
                 set_agent_ability as _amt_set_ability,
+                manage_agent_skills as _amt_manage_skills,
             )
 
             async def _amt_list_templates_wrapper(template_id: Optional[str] = None,
@@ -977,6 +1009,16 @@ class ToolLoader:
                 return await _amt_set_ability(agent_id=agent_id, ability=ability,
                                               enabled=enabled, user_id=user_id)
 
+            async def _amt_manage_skills_wrapper(action: str, agent_id: str,
+                                                 name: Optional[str] = None,
+                                                 description: Optional[str] = None,
+                                                 body: Optional[str] = None,
+                                                 mode: Optional[str] = None,
+                                                 enabled: Optional[bool] = None):
+                return await _amt_manage_skills(action=action, agent_id=agent_id, name=name,
+                                                description=description, body=body, mode=mode,
+                                                enabled=enabled, user_id=user_id)
+
             # The nested wrappers carry no docstring of their own, so the model
             # would see an empty/generic description. Copy each tool's real usage
             # doc from the underlying in-process function — this feeds both the
@@ -988,6 +1030,7 @@ class ToolLoader:
             _amt_update_agent_wrapper.__doc__   = _amt_update_agent.__doc__
             _amt_edit_prompt_wrapper.__doc__    = _amt_edit_prompt.__doc__
             _amt_set_ability_wrapper.__doc__    = _amt_set_ability.__doc__
+            _amt_manage_skills_wrapper.__doc__  = _amt_manage_skills.__doc__
 
             tools["list_agent_templates"] = ToolInfo(
                 name="list_agent_templates",
@@ -1073,6 +1116,23 @@ class ToolLoader:
                         "enabled": {"type": "boolean", "description": "Turn the ability on (true) or off (false).", "default": True},
                     },
                     "required": ["agent_id", "ability"],
+                },
+            )
+            tools["manage_agent_skills"] = ToolInfo(
+                name="manage_agent_skills",
+                handler=_amt_manage_skills_wrapper,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["list", "set", "remove"], "description": "list the agent's skills, set (add/update) one, or remove one."},
+                        "agent_id": {"type": "string", "description": "The agent whose skills to read/edit (must be yours to write)."},
+                        "name": {"type": "string", "description": "Skill name (required for set/remove)."},
+                        "description": {"type": "string", "description": "When to use the skill — ALWAYS shown to the agent."},
+                        "body": {"type": "string", "description": "The full step-by-step instructions for the skill."},
+                        "mode": {"type": "string", "enum": ["always_on", "selectable"], "description": "'always_on' = body always in context; 'selectable' = body hidden until the agent calls load_skill. Defaults to 'selectable'."},
+                        "enabled": {"type": "boolean", "description": "Whether the skill is active."},
+                    },
+                    "required": ["action", "agent_id"],
                 },
             )
 

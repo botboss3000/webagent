@@ -444,6 +444,19 @@ async def chat(request: ChatRequest, fastapi_request: Request):
                 db = _OptBackend(db_path=_temp_db_path)
                 logger.info("Using temp DB for %s session: %s", request.session_id[:12], _temp_db_path)
 
+        # ── Terminal tunnel: the user is driving a program directly ──
+        # If this chat session is bound to a live terminal, the message is a
+        # keystroke line for that program, not a prompt for the agent. Route it
+        # to the PTY (persisted but context-excluded) and return — the slash
+        # parser and the whole agent loop are bypassed. The user ends the tunnel
+        # with the UI "Hand back" button, never by typing.
+        try:
+            from app.agent.terminal_tunnel import route_user_line as _route_tunnel
+            if await _route_tunnel(db, request.user_id, request.session_id, request.message or ""):
+                return ChatResponse(reply="", response="", session_id=request.session_id)
+        except Exception as _tun_err:
+            logger.warning("tunnel routing failed for %s: %s", request.session_id, _tun_err)
+
         # ── Handle slash commands ──
         _slash_match = _match_slash_command(request.message or "")
         if _slash_match:
@@ -875,6 +888,18 @@ async def _prepare_send(request: ChatRequest, fastapi_request: Request) -> Dict[
             from app.db.local import LocalBackend as _OptBackend
             db = _OptBackend(db_path=_temp_db_path)
             logger.info("Using temp DB for %s session: %s", request.session_id[:12], _temp_db_path)
+
+    # ── Terminal tunnel: the user is driving a program directly ──
+    # If this chat is bound to a live terminal, the message is a keystroke line
+    # for that program, not a prompt for the agent. Route it to the PTY
+    # (persisted but context-excluded) and stop — no slash parsing, no agent run.
+    # The user ends the tunnel with the UI "Hand back" button, never by typing.
+    try:
+        from app.agent.terminal_tunnel import route_user_line as _route_tunnel
+        if await _route_tunnel(db, request.user_id, request.session_id, request.message or ""):
+            return {"tunnel_handled": True}
+    except Exception as _tun_err:
+        logger.warning("tunnel routing failed for %s: %s", request.session_id, _tun_err)
 
     # ── Handle slash commands ──
     _slash_match = _match_slash_command(request.message or "")
@@ -1543,6 +1568,10 @@ async def chat_send(request: ChatRequest, fastapi_request: Request):
     the new message; the agent then decides whether to stop, steer, or continue.
     """
     prep = await _prepare_send(request, fastapi_request)
+    if prep.get("tunnel_handled"):
+        # Routed straight to the bound terminal — no agent run. Output streams
+        # back over the embedded terminal; nothing for the chat bubble flow.
+        return {"status": "tunnelled", "session_id": request.session_id}
     if "slash_result" in prep:
         return {"status": "ok", "session_id": request.session_id, "reply": prep["slash_result"]}
 
@@ -1631,6 +1660,10 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
     device via the DB + WebSocket. Prefer /send + the WebSocket for new clients.
     """
     prep = await _prepare_send(request, fastapi_request)
+    if prep.get("tunnel_handled"):
+        async def _tunnel_noop():
+            yield f"data: {json.dumps({'type': 'response', 'level': 'agent', 'content': ''})}\n\n"
+        return StreamingResponse(_tunnel_noop(), media_type="text/event-stream")
     if "slash_result" in prep:
         result = prep["slash_result"]
         async def _slash_events():

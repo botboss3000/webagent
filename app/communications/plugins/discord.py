@@ -187,4 +187,13 @@ class DiscordPlugin(CommunicationPlugin):
         return str(result)
 
 
+FEATURE = {
+    "id": "discord",
+    "display_name": "Discord",
+    "category": "channel",
+    "status": "beta",
+    "summary": "Send and receive Discord messages.",
+    "requires": ["A Discord bot token"],
+}
+
 plugin_cls = DiscordPlugin

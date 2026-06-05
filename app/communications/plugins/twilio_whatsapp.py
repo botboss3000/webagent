@@ -126,4 +126,13 @@ class TwilioWhatsAppPlugin(CommunicationPlugin):
         return str(result)
 
 
+FEATURE = {
+    "id": "whatsapp",
+    "display_name": "WhatsApp (Twilio)",
+    "category": "channel",
+    "status": "beta",
+    "summary": "Send and receive WhatsApp messages via Twilio.",
+    "requires": ["Twilio account SID + auth token + a WhatsApp sender"],
+}
+
 plugin_cls = TwilioWhatsAppPlugin

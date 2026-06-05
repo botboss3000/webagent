@@ -69,6 +69,7 @@
 <link rel="stylesheet" href="./ui/css/agents.css">
 <link rel="stylesheet" href="./ui/css/files.css">
 <link rel="stylesheet" href="./ui/css/web.css">
+<link rel="stylesheet" href="./ui/css/wiki.css">
 <link rel="stylesheet" href="./ui/css/tutorial.css">
 <!-- Design system tokens + visual overrides (loaded last to take effect) -->
 <link rel="stylesheet" href="./ui/css/design-system.css">
@@ -296,6 +297,7 @@
     <option value="agents">Agents</option>
     <option value="web">Web</option>
     <option value="terminal">Terminal</option>
+    <option value="wiki">Wiki</option>
     <option value="account">Manage Account</option>
   </select>
 
@@ -385,6 +387,9 @@
       <button type="button" class="main-tab" data-value="terminal" role="tab">
         <i data-lucide="terminal" class="lucide-icon"></i>Terminal
       </button>
+      <button type="button" class="main-tab" data-value="wiki" role="tab">
+        <i data-lucide="book-open" class="lucide-icon"></i>Wiki
+      </button>
     </div>
     <button type="button" id="main-tabs-chev-right" class="main-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
   </div>
@@ -400,7 +405,7 @@
   <script>
   (function () {
     try {
-      var DEFAULT_ORDER = ['admin-tools', 'agents', 'autoagent', 'web', 'terminal'];
+      var DEFAULT_ORDER = ['admin-tools', 'agents', 'autoagent', 'web', 'terminal', 'wiki'];
       var bar = document.getElementById('main-tabs');
       if (!bar) return;
 
@@ -475,6 +480,7 @@
     <div id="tab-terminal" class="tab-content">
       <iframe src="/web-terminal/" class="terminal-frame" title="Terminal" loading="lazy"></iframe>
     </div>
+    <div id="tab-wiki" class="tab-content"></div>
     <div id="tab-account" class="tab-content"></div>
     <div id="tab-admin-tools" class="tab-content"></div>
 

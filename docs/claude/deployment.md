@@ -28,7 +28,7 @@ The app runs on a **Google Cloud Compute Engine VM** (project `webagent-495517`,
 | App server | **uvicorn** running `app.main:app` bound to `127.0.0.1:8080` (loopback only — Caddy is the only public ingress) | systemd unit `/etc/systemd/system/webagent.service` |
 | GCE firewall | `allow-http-https` rule opens tcp 80, 443 to `0.0.0.0/0`. Port 8080 is **not** exposed publicly. | Created from Cloud Shell, not from VM SSH (VM SA lacks compute scope) |
 
-**Repo on VM:** `~/webagent` (user `botboss3000`). Python venv inside. Deploy via `git pull` on `main`. **`app/db/local.db` is now gitignored** — it is a runtime artifact, not tracked in the repo. The VM generates its own `local.db` on first run. When pulling, if a stale `local.db` blocks the pull, discard it first (`git stash push -- app/db/local.db` or simply delete it) then pull. The initial seed DB is created by the app's migration logic on startup.
+**Repo on VM:** `~/webagent` (user `botboss3000`). Python venv inside. Deploy via `git pull` on `main`. **All runtime databases live under `data/db/`** (`local.db`, `logs.db`, `recordings.db`, `vault.db`, optimizer scratch) and are gitignored — runtime artifacts, not tracked. The VM generates its own on first run. **Migration note:** older installs kept these in `app/db/`; on the first restart after this change the app **auto-relocates** any `app/db/*.db` into `data/db/` (only when the file isn't already there), so the VM keeps its data — **stop the server before deploying** so the DB files aren't locked during the move. Since both old and new locations are gitignored, neither blocks a `git pull`.
 
 **Google OAuth:** redirect URI must match the public HTTPS URL → `https://webagent.live/api/v1/oauth/callback/google`. JS origin `https://webagent.live`. OAuth never works against `http://<vm-ip>:8080`.
 
@@ -40,7 +40,7 @@ The app runs on a **Google Cloud Compute Engine VM** (project `webagent-495517`,
 
 Any file the **running app writes to** is per-machine runtime data and, as a rule, must never be tracked by git. Tracking such files causes `error: Your local changes to the following files would be overwritten by merge` on `git pull` on the production VM, blocking deploys.
 
-**`app/db/local.db` is gitignored** — it was previously tracked, but is now treated as a per-machine runtime artifact (the `.gitignore` says so explicitly). On a fresh checkout the app recreates it on first run via the migration/seed logic, pulling agent templates from `data/agents/`. Its **transient sidecars** (`-journal`, `-wal`, `-shm`, `.preprompt-bak`) and any **stray root `local.db`** are gitignored too: never commit a live write-ahead log or shared-memory file.
+**`data/db/local.db` is gitignored** (whole `data/db/` tree is) — it was previously tracked at `app/db/local.db`, but is now a per-machine runtime artifact under `data/db/` (`data/` = the app's stored state; `app/` = logic only). On a fresh checkout the app recreates it on first run via the migration/seed logic, pulling agent templates from `data/agents/`. Its **transient sidecars** (`-journal`, `-wal`, `-shm`, `.preprompt-bak`) and any **stray root `local.db`** are gitignored too. Older installs that still have DBs in `app/db/` are auto-relocated into `data/db/` on the next startup (the legacy `app/db/` paths stay gitignored for the transition).
 
 **Rule (every other runtime file):** before introducing a new file the backend writes during normal operation (auth blobs, caches, per-machine config, runtime backups, user-generated artifacts), add it to `.gitignore` in the same commit. If you discover one already tracked, untrack it: `git rm --cached <path>` + add to `.gitignore` + commit.
 
@@ -48,11 +48,13 @@ Any file the **running app writes to** is per-machine runtime data and, as a rul
 
 | Path | What it is |
 |------|-----------|
-| `app/db/local.db` (+ sidecars `-journal`, `-wal`, `-shm`, `.preprompt-bak`) | Runtime SQLite DB + transient write logs — all gitignored; recreated on first run via the seed/migration logic. |
+| `data/db/local.db` (+ sidecars `-journal`, `-wal`, `-shm`, `.preprompt-bak`) | Runtime SQLite DB + transient write logs — all gitignored (whole `data/db/` tree); recreated on first run via the seed/migration logic. Relocated from the legacy `app/db/` on first startup. |
 | `local.db` (root) | Stray runtime SQLite |
-| `app/db/logs.db` (+ `-wal`/`-shm`/`-journal`) | **Dedicated, always-local logs DB** — server diagnostics (`diagnostics`) + tool metrics (`tool_executions`). Own WAL, separate from `local.db`. Per-machine; recreated on first run. See `app/db/logs_store.py`. |
-| `app/db/recordings.db` (+ `-wal`/`-shm`/`-journal`) | Browser render recorder (`render_recordings`) — separate firehose file, off by default. Per-machine; recreated on first run. |
-| `app/db/instance_id.txt` | Per-box identity stamped on every log record (multi-instance disambiguation). Generated once on first run. |
+| `data/db/logs.db` (+ `-wal`/`-shm`/`-journal`) | **Dedicated, always-local logs DB** — server diagnostics (`diagnostics`) + tool metrics (`tool_executions`). Own WAL, separate from `local.db`. Per-machine; recreated on first run. See `app/db/logs_store.py`. |
+| `data/db/recordings.db` (+ `-wal`/`-shm`/`-journal`) | Browser render recorder (`render_recordings`) — separate firehose file, off by default. Per-machine; recreated on first run. |
+| `data/db/instance_id.txt` | Per-box identity stamped on every log record (multi-instance disambiguation). Generated once on first run. |
+| `data/db/vault.db` (+ `-wal`/`-shm`/`-journal`) | **Credentials vault** — `auth_elements` (integration OAuth tokens + inline secret values), kept OUT of `local.db` so a user-data reset is non-destructive. Own WAL, attached as `vault`. Per-machine; `auth_elements` is migrated here from `local.db` on first run of the new code. See `app/db/local.py` (`VAULT_SCHEMA`). |
+| `data/db/optimizer_*.db`, `data/db/tests.db`, `data/db/closer_*.db` | Optimizer / self-improvement scratch DBs. Transient, per-machine. |
 | `app/auth/users.json` (+ `.bak`) | Password hashes, remember tokens |
 | `app/db_mode.json` | Per-machine DB target switch |
 | `app/db/.fuse_hidden*`, `**/.fuse_hidden*` | FUSE/SSHFS temp leftovers |

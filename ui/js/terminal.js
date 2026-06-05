@@ -40,9 +40,14 @@ export function createTerminalInstance(container, sessionId, opts) {
     : (typeof opts.name === 'string' ? () => opts.name : null);
   const initialFontSize = (typeof opts.fontSize === 'number' && opts.fontSize >= MIN_FONT_SIZE && opts.fontSize <= MAX_FONT_SIZE)
     ? opts.fontSize : DEFAULT_FONT_SIZE;
+  // Read-only embed (e.g. the chat terminal-tunnel view): render the live
+  // session but never forward keystrokes from this widget — input is driven
+  // elsewhere (the chat composer) so it can be persisted + context-excluded.
+  const readOnly = !!opts.readOnly;
 
   const term = new Terminal({
-    cursorBlink: true,
+    cursorBlink: !readOnly,
+    disableStdin: readOnly,
     cursorStyle: 'block',
     fontSize: initialFontSize,
     fontFamily:
@@ -110,6 +115,8 @@ export function createTerminalInstance(container, sessionId, opts) {
   }
 
   term.onData((data) => {
+    // Read-only embed: swallow all keystrokes — this widget only displays.
+    if (readOnly) return;
     // Optional global hook used by the mobile shortcut bar to wrap soft-
     // keyboard keystrokes under an armed Ctrl / tmux modifier. Defined on
     // window (not imported) to avoid a cycle between files.js and this

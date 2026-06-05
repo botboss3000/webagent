@@ -161,4 +161,13 @@ class SlackPlugin(CommunicationPlugin):
         return str(result)
 
 
+FEATURE = {
+    "id": "slack",
+    "display_name": "Slack",
+    "category": "channel",
+    "status": "beta",
+    "summary": "Send and receive Slack messages.",
+    "requires": ["A Slack bot token / app credentials"],
+}
+
 plugin_cls = SlackPlugin

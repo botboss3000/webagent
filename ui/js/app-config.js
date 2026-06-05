@@ -65,7 +65,7 @@ let _intAdminWired = false;
 // ── Sidebar nav + scroll highlighting ────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────
 const _SECTION_KEY = 'appConfig_activeSection';
-const _VALID_SECTIONS = ['app-settings', 'agent-settings', 'user-management', 'database', 'optimizer', 'git', 'automation', 'events', 'monetization'];
+const _VALID_SECTIONS = ['app-settings', 'agent-settings', 'user-management', 'database', 'optimizer', 'git', 'automation', 'events', 'monetization', 'features'];
 	let _activeSection = localStorage.getItem(_SECTION_KEY) || 'agent-settings';
 
 function _showSection(section) {
@@ -79,6 +79,137 @@ function _showSection(section) {
   if (section === 'monetization') _renderPlatformBillingPanel();
   if (section === 'app-settings' && typeof window.__refreshRemoteAccess === 'function') window.__refreshRemoteAccess();
   if (section === 'agent-settings') _intAdminResetSession();
+  if (section === 'features') _renderFeaturesCatalog();
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// ── Features (discovery catalog) ──────────────────────────────────────────
+// Read-only report of every capability the app discovered: its maturity, if
+// it's true drop-in, and whether the active edition includes it. Backed by
+// GET /api/v1/features. See docs/claude/production-editions.md. Phase 1 is
+// report-only — nothing is gated here.
+// ─────────────────────────────────────────────────────────────────────────
+const _FEATURE_STATUS_STYLE = {
+  stable:       { label: 'Stable',       color: 'var(--success)' },
+  beta:         { label: 'Beta',         color: 'var(--warning)' },
+  experimental: { label: 'Experimental', color: 'var(--danger)' },
+  unknown:      { label: 'Unmarked',     color: 'var(--fg-4)' },
+};
+const _FEATURE_CAT_ICON = {
+  integration: 'plug', event_source: 'radio', channel: 'message-square',
+  connector: 'database', scheduler: 'clock', encryption: 'lock',
+  payment: 'credit-card', secrets: 'key-round', storage: 'hard-drive',
+  tool: 'wrench', ability: 'sparkles',
+};
+const _FEATURE_CAT_LABEL = {
+  integration: 'Integrations', event_source: 'Event sources', channel: 'Communication channels',
+  connector: 'Data connectors', scheduler: 'Scheduler providers', encryption: 'Encryption methods',
+  payment: 'Payment processors', secrets: 'Secrets vaults', storage: 'Storage backends',
+  tool: 'Tools', ability: 'Abilities',
+};
+const _FEATURE_CAT_ORDER = ['integration', 'event_source', 'channel', 'connector', 'scheduler', 'encryption', 'payment', 'secrets', 'storage', 'tool', 'ability'];
+
+function _featEsc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+function _featChip(label, n, color) {
+  return `<span style="border:1px solid var(--border);border-radius:10px;padding:2px 9px;color:var(--fg-2);">` +
+    `<span style="color:${color || 'var(--fg-3)'};font-weight:600;">${n == null ? 0 : n}</span> ` +
+    `<span style="color:var(--fg-4);">${_featEsc(label)}</span></span>`;
+}
+
+function _featureRow(f) {
+  const st = _FEATURE_STATUS_STYLE[f.status] || _FEATURE_STATUS_STYLE.unknown;
+  const reqs = (f.requires && f.requires.length)
+    ? ` <span style="color:var(--fg-4);">· needs ${_featEsc(f.requires.join(', '))}</span>` : '';
+  const desc = (f.summary ? _featEsc(f.summary) : '<span style="color:var(--fg-4);">no description yet</span>') + reqs;
+  const errTag = f.error
+    ? ` <span style="color:var(--danger);font-size:10px;" title="${_featEsc(f.error)}">import error</span>` : '';
+  const incIcon = f.included
+    ? '<span title="included in the active edition" style="color:var(--success);font-size:13px;">&#9679;</span>'
+    : `<span title="${_featEsc(f.reason || 'excluded')}" style="color:var(--fg-4);font-size:13px;">&#9675;</span>`;
+  return `<div class="ac-ability-row"${f.included ? '' : ' style="opacity:.62;"'}>` +
+    `<i data-lucide="${_FEATURE_CAT_ICON[f.category] || 'box'}" class="lucide-icon ac-ability-icon"></i>` +
+    `<div class="ac-ability-label">` +
+      `<div class="ac-ability-name">${_featEsc(f.display_name)}${errTag}</div>` +
+      `<div class="ac-ability-desc">${desc}</div>` +
+    `</div>` +
+    `<div class="ac-ability-status" style="display:flex;align-items:center;gap:10px;">` +
+      `<span style="font-size:10px;font-weight:600;color:${st.color};border:1px solid var(--border);border-radius:10px;padding:1px 8px;white-space:nowrap;">${st.label}</span>` +
+      incIcon +
+    `</div></div>`;
+}
+
+async function _renderFeaturesCatalog() {
+  const banner = _qs('ac-features-banner');
+  const list = _qs('ac-features-list');
+  if (!banner || !list) return;
+  if (typeof isAdmin === 'function' && !isAdmin()) {
+    banner.innerHTML = '<div style="color:var(--fg-3);font-size:13px;">Platform admin access required.</div>';
+    list.innerHTML = '';
+    return;
+  }
+  banner.innerHTML = '<div style="color:var(--fg-3);font-size:13px;">Loading feature catalog…</div>';
+  list.innerHTML = '';
+
+  let data;
+  try {
+    const res = await _fetch(apiPath('/api/v1/features'));
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    data = await res.json();
+  } catch (e) {
+    banner.innerHTML = `<div style="color:var(--danger);font-size:13px;">Could not load feature catalog: ${_featEsc(String(e))}</div>`;
+    return;
+  }
+
+  const c = data.counts || {};
+  const bs = c.by_status || {};
+  const editions = Object.keys(data.editions || {}).map(_featEsc).join(' &middot; ');
+  banner.innerHTML =
+    `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">` +
+      `<span style="font-size:13px;color:var(--fg-2);">Active edition</span>` +
+      `<span style="font-weight:600;color:var(--accent);font-size:14px;">${_featEsc(data.active_edition)}</span>` +
+      `<span style="margin-left:auto;font-size:11px;color:var(--fg-4);">Report only — nothing is gated yet</span>` +
+    `</div>` +
+    `<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;font-size:12px;">` +
+      _featChip('Total', c.total) +
+      _featChip('In this edition', c.included, 'var(--success)') +
+      _featChip('Stable', bs.stable || 0, 'var(--success)') +
+      _featChip('Beta', bs.beta || 0, 'var(--warning)') +
+      _featChip('Experimental', bs.experimental || 0, 'var(--danger)') +
+      _featChip('Unmarked', bs.unknown || 0, 'var(--fg-4)') +
+      _featChip('Drop-in', c.drop_in) +
+    `</div>` +
+    `<div style="margin-top:8px;font-size:11px;color:var(--fg-4);">Editions defined: ${editions || '—'}. Set the active edition with the WEBAGENT_EDITION env var.</div>`;
+
+  const feats = (data.features || []).slice();
+  const groups = {};
+  feats.forEach(f => { (groups[f.category] = groups[f.category] || []).push(f); });
+  const cats = Object.keys(groups).sort((a, b) => {
+    const ia = _FEATURE_CAT_ORDER.indexOf(a), ib = _FEATURE_CAT_ORDER.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  });
+
+  let html = '';
+  cats.forEach(cat => {
+    const items = groups[cat];
+    const dropIn = items.length && items[0].drop_in;
+    const tag = dropIn
+      ? '<span style="font-size:10px;color:var(--success);border:1px solid var(--border);border-radius:10px;padding:1px 7px;" title="add/remove by dropping or deleting a file">drop-in</span>'
+      : '<span style="font-size:10px;color:var(--fg-4);border:1px solid var(--border);border-radius:10px;padding:1px 7px;" title="adding/removing needs a central registry edit today">registry</span>';
+    html +=
+      `<div style="margin:16px 0 6px;display:flex;align-items:center;gap:8px;">` +
+        `<i data-lucide="${_FEATURE_CAT_ICON[cat] || 'box'}" class="lucide-icon" style="width:15px;height:15px;color:var(--accent);"></i>` +
+        `<span style="font-weight:600;font-size:13px;color:var(--fg-1);">${_featEsc(_FEATURE_CAT_LABEL[cat] || cat)}</span>` +
+        `<span style="font-size:11px;color:var(--fg-4);">${items.length}</span>` +
+        tag +
+      `</div>` +
+      `<div class="ac-list">${items.map(_featureRow).join('')}</div>`;
+  });
+  list.innerHTML = html;
 }
 
 function _renderPlatformBillingPanel() {
@@ -898,6 +1029,7 @@ const _ABILITY_META = {
   diagnostics:      { icon: 'activity',     color: '#e0af68', simple: true,  desc: 'Lets the agent read the in-app flight recorder to diagnose the running app. On by default; switch off to remove it platform-wide.' },
   agent_management: { icon: 'users',        color: '#9ece6a', simple: true,  desc: 'Lets the agent list, create, and update the user\'s own agents and edit their prompts and abilities. On by default; switch off to remove it platform-wide.' },
   app_control:      { icon: 'app-window',   color: '#73daca', simple: true,  desc: 'Lets the agent change what you\'re looking at — switch the main view (Browser, Pages, Agents…), show or hide the chat panel, and resize it. On by default; switch off to remove it platform-wide.' },
+  wiki_control:     { icon: 'book-open',     color: '#7dcfff', simple: true,  desc: 'Lets the agent read, search, create, edit, and delete entries in the company-wide Wiki. Writes change shared data everyone sees, so grant per agent with care.' },
 };
 
 // Human labels for every ability key (shared by the row builder and search).
@@ -916,8 +1048,22 @@ const _ABILITY_NAMES = {
   diagnostics: 'Diagnostics',
   agent_management: 'Agent Management',
   app_control: 'App Control',
+  wiki_control: 'Wiki Control',
 };
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  SISTER-PANEL: AGENT-ABILITY-TABLE  —  KEEP THE TWO IN SYNC                ║
+// ║  This is one of the TWO ability tables that must stay MIRRORED IN DESIGN: ║
+// ║    • here — the admin **Agent Settings** panel (`_ABILITY_GROUPS` +       ║
+// ║      `_INTEGRATION_GROUPS` / `_initAbilitiesCompact`), and                ║
+// ║    • the per-agent **Abilities tab** in agents.js (`_AGENT_ABILITY_GROUPS`║
+// ║      / `_buildAbilityGroupsGrid`).                                        ║
+// ║  Both render the shared `.ac-list` / `.ac-row` / `.ac-tri` component and  ║
+// ║  read as the SAME table. If you change the look, structure, grouping, or  ║
+// ║  toggle behaviour on EITHER side, apply the matching change on the other  ║
+// ║  (grep `SISTER-PANEL: AGENT-ABILITY-TABLE`). See docs/claude/ui-guidance. ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+//
 // ── Agent Tools grouping ───────────────────────────────────────────────────
 // The 13 host abilities are presented in three alphabetical groups, each an
 // expandable header row carrying a 3-position toggle (Off · Mixed · On). The
@@ -939,9 +1085,9 @@ const _ABILITY_GROUPS = [
     members: ['codebase_admin', 'diagnostics', 'git_control', 'terminal_control'],
   },
   {
-    id: 'basic', name: 'Basic', icon: 'wrench', color: '#7dcfff',
+    id: 'basic', name: 'Core', icon: 'wrench', color: '#7dcfff',
     desc: 'Everyday, non-destructive capabilities — UI edits, tool creation, automation, pages, image generation, orchestration, agent management, and app view control.',
-    members: ['agent_management', 'agent_orchestration', 'app_control', 'automation', 'create_tools', 'image_generation', 'ui_admin', 'visualizer'],
+    members: ['agent_management', 'agent_orchestration', 'app_control', 'automation', 'create_tools', 'image_generation', 'ui_admin', 'visualizer', 'wiki_control'],
   },
   {
     id: 'web', name: 'Web', icon: 'globe', color: '#7aa2f7',
@@ -1114,6 +1260,10 @@ function _initAbilitiesCompact() {
     });
   }
 
+  // Append the former settings "categories" as expandable groups in the SAME
+  // table, after the host-ability groups. Their cards are relocated in later.
+  _buildIntegrationGroupShells(container);
+
   // Wire up save/unconfigure buttons for complex ability config panels
   const complexAbilities = ['image_generation', 'automation', 'visualizer'];
   for (const a of complexAbilities) {
@@ -1167,8 +1317,8 @@ function _syncGroupOfAbility(ability) {
 // Move the compactified credential cards (Web Scraper, Browser Cookies) into
 // the Web group body so they sit with the other Web rows instead of forming a
 // separate list below. Runs after _compactifyAllIntegrations turns them into
-// `.ac-card-compact` rows and BEFORE _groupIntegrationLists (so they're no
-// longer direct children of the category body and won't be re-grouped).
+// `.ac-card-compact` rows; mirrors _placeIntegrationGroupCards, which does the
+// same relocation for the channel / OAuth groups.
 function _placeWebCredentialRows() {
   for (const id of ['scraper', 'browser_session']) {
     const slot = document.getElementById(`ac-group-slot-${id}`);
@@ -1373,6 +1523,235 @@ const _COMING_SOON_ROWS = {
   ],
 };
 
+// ── Former settings "categories" → expandable groups in the ONE Agent Tools
+// table ──────────────────────────────────────────────────────────────────────
+// Each entry renders as an `.ac-row.ac-group` appended into #ac-abilities-compact
+// right after the host-ability groups (Administrator / Core / Web), so the whole
+// tab reads as a single flush table instead of a stack of collapsible category
+// sections. Members are existing integration cards (relocated into the group body
+// at runtime by _placeIntegrationGroupCards) and/or coming-soon placeholder rows.
+//
+// The group's 3-position toggle (Off · Mixed · On) reflects and bulk-controls
+// ONLY the available members — coming-soon rows never count, and a group with no
+// available members yet (Payments / Developer / CRM) shows no toggle at all, just
+// an expand chevron. Turning a group off disables/unconfigures its members;
+// turning it on can only enable members that need no credentials (a channel) —
+// an OAuth app still needs its keys entered on its own row.
+const _INTEGRATION_GROUPS = [
+  {
+    id: 'communication', name: 'Communication', icon: 'message-square', color: '#26A5E4',
+    desc: 'How agents send and receive messages. Enable a channel to make it available to your agents.',
+    members: [{ id: 'telegram', kind: 'channel' }],
+    soonCards: ['whatsapp', 'slack', 'discord', 'email', 'twilio'],
+    soonRowsKey: null,
+  },
+  {
+    id: 'productivity', name: 'Productivity', icon: 'briefcase', color: '#4285F4',
+    desc: 'App-level credentials for mail, calendar and file providers. Users connect their personal accounts from the agent’s Abilities tab.',
+    members: [{ id: 'google', kind: 'oauth' }, { id: 'microsoft', kind: 'oauth' }, { id: 'yahoo', kind: 'oauth' }, { id: 'dropbox', kind: 'oauth' }],
+    soonCards: [],
+    soonRowsKey: 'ac-rows-productivity',
+  },
+  {
+    id: 'social', name: 'Social Media', icon: 'share-2', color: '#bb9af7',
+    desc: 'App-level credentials for social platform OAuth. Users connect their personal accounts from the agent’s Abilities tab.',
+    members: [{ id: 'meta', kind: 'oauth' }, { id: 'twitter', kind: 'oauth' }, { id: 'linkedin', kind: 'oauth' }, { id: 'tiktok', kind: 'oauth' }, { id: 'pinterest', kind: 'oauth' }, { id: 'reddit', kind: 'oauth' }, { id: 'snapchat', kind: 'oauth' }, { id: 'twitch', kind: 'oauth' }],
+    soonCards: [],
+    soonRowsKey: null,
+  },
+  {
+    id: 'marketplace', name: 'Marketplaces', icon: 'shopping-bag', color: '#e0af68',
+    desc: 'App-level credentials for e-commerce platform OAuth. Sellers connect their accounts from the agent’s Abilities tab.',
+    members: [{ id: 'ebay', kind: 'oauth' }, { id: 'etsy', kind: 'oauth' }, { id: 'shopify', kind: 'oauth' }, { id: 'amazon', kind: 'oauth' }],
+    soonCards: [],
+    soonRowsKey: null,
+  },
+  {
+    id: 'payments', name: 'Payments', icon: 'credit-card', color: '#9ece6a',
+    desc: 'Accept payments and read transactions. Free to connect via OAuth; providers charge per-transaction fees.',
+    members: [],
+    soonCards: [],
+    soonRowsKey: 'ac-rows-payments',
+  },
+  {
+    id: 'developer', name: 'Developer', icon: 'git-branch', color: '#7aa2f7',
+    desc: 'Repositories, issues, and CI. Free — connect with an OAuth app or token.',
+    members: [],
+    soonCards: [],
+    soonRowsKey: 'ac-rows-developer',
+  },
+  {
+    id: 'crm', name: 'CRM & Marketing', icon: 'contact', color: '#bb9af7',
+    desc: 'Contacts, deals, and email campaigns. Mostly free OAuth; some products need a paid plan.',
+    members: [],
+    soonCards: [],
+    soonRowsKey: 'ac-rows-crm',
+  },
+];
+
+function _integrationGroupOf(id) {
+  return _INTEGRATION_GROUPS.find(g => g.members.some(m => m.id === id));
+}
+
+// Build the empty group shells (head + body with a slot per card member) and
+// append them to the single Agent Tools table, after the host-ability groups.
+// The real cards are relocated into the slots later by _placeIntegrationGroupCards.
+function _buildIntegrationGroupShells(container) {
+  for (const group of _INTEGRATION_GROUPS) {
+    const groupEl = document.createElement('div');
+    groupEl.className = 'ac-row ac-group';
+    groupEl.id = `ac-group-${group.id}`;
+
+    const head = document.createElement('div');
+    head.className = 'ac-ability-row ac-group-head';
+
+    const iconWrap = document.createElement('div');
+    iconWrap.className = 'ac-ability-icon';
+    iconWrap.style.color = group.color;
+    iconWrap.innerHTML = `<i data-lucide="${group.icon}" style="width:18px;height:18px;"></i>`;
+
+    const label = document.createElement('div');
+    label.className = 'ac-ability-label';
+    label.innerHTML = `<div class="ac-ability-name"></div><div class="ac-ability-desc"></div>`;
+    label.querySelector('.ac-ability-name').textContent = group.name;
+    label.querySelector('.ac-ability-desc').textContent = group.desc;
+
+    head.appendChild(iconWrap);
+    head.appendChild(label);
+
+    // 3-position toggle — only when the group has at least one available
+    // (non-coming-soon) member it can actually reflect / control.
+    if (group.members.length) {
+      const tri = document.createElement('span');
+      tri.className = 'ac-tri';
+      tri.id = `ac-group-tri-${group.id}`;
+      tri.dataset.state = 'off';
+      tri.setAttribute('role', 'button');
+      tri.setAttribute('tabindex', '0');
+      tri.title = 'Off · Mixed · On — click the left half for all-off, the right half for all-on';
+      tri.innerHTML = `<span class="ac-tri-knob"></span>`;
+      head.appendChild(tri);
+      tri.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const rect = tri.getBoundingClientRect();
+        _setIntegrationGroupAll(group, (e.clientX - rect.left) > rect.width / 2);
+      });
+      tri.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          _setIntegrationGroupAll(group, tri.dataset.state !== 'on');
+        }
+      });
+    }
+
+    const chevron = document.createElement('span');
+    chevron.className = 'ac-row-chevron';
+    chevron.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>`;
+    head.appendChild(chevron);
+
+    const bodyEl = document.createElement('div');
+    bodyEl.className = 'ac-group-body';
+    bodyEl.id = `ac-group-body-${group.id}`;
+    for (const m of group.members) {
+      const slot = document.createElement('div');
+      slot.id = `ac-group-slot-${m.id}`;
+      bodyEl.appendChild(slot);
+    }
+
+    groupEl.appendChild(head);
+    groupEl.appendChild(bodyEl);
+    container.appendChild(groupEl);
+
+    head.addEventListener('click', (e) => {
+      if (e.target.closest('.ac-tri')) return;
+      groupEl.classList.toggle('expanded');
+    });
+  }
+}
+
+// Move the compactified integration cards + coming-soon rows into their group
+// bodies in the single Agent Tools table, then hide the now-empty legacy category
+// sections. Runs after _compactifyAllIntegrations has built the compact rows.
+function _placeIntegrationGroupCards() {
+  for (const group of _INTEGRATION_GROUPS) {
+    const body = document.getElementById(`ac-group-body-${group.id}`);
+    if (!body) continue;
+    // Available member cards → their slots, in order.
+    for (const m of group.members) {
+      const slot = document.getElementById(`ac-group-slot-${m.id}`);
+      const card = document.getElementById(`ac-int-${m.id}-card`);
+      if (slot && card) slot.replaceWith(card);
+    }
+    // Coming-soon channel cards (real cards, compactified as 'soon' rows).
+    for (const sid of (group.soonCards || [])) {
+      const card = document.getElementById(`ac-int-${sid}-card`);
+      if (card) body.appendChild(card);
+    }
+    // Coming-soon placeholder rows (no backing card) — build inline.
+    const soon = group.soonRowsKey ? (_COMING_SOON_ROWS[group.soonRowsKey] || []) : [];
+    for (const it of soon) {
+      const row = document.createElement('div');
+      row.className = 'ac-ability-row ac-int-row ac-soon-row';
+      row.innerHTML = `<div class="ac-ability-icon"><i data-lucide="${it.icon}" style="width:18px;height:18px;"></i></div>`
+        + `<div class="ac-ability-label"><div class="ac-ability-name"></div><div class="ac-ability-desc"></div></div>`
+        + `<span class="ac-soon-pill">Coming soon</span>`;
+      row.querySelector('.ac-ability-name').textContent = it.name;
+      row.querySelector('.ac-ability-desc').textContent = it.note;
+      body.appendChild(row);
+    }
+  }
+  // Hide the emptied legacy category sections (their cards now live in groups).
+  for (const cid of ['ac-cat-channels', 'ac-cat-productivity', 'ac-cat-social', 'ac-cat-marketplace', 'ac-cat-payments', 'ac-cat-developer', 'ac-cat-crm']) {
+    const cat = document.getElementById(cid);
+    if (cat) cat.style.display = 'none';
+  }
+  _syncAllIntegrationGroupTris();
+}
+
+// ── Integration-group 3-position toggle: reflect state + bulk on/off ─────────
+// Only AVAILABLE members count (coming-soon never does). "On" = configured /
+// enabled (the row's badge carries ac-int-badge-on, read by _rowConfigured).
+function _syncIntegrationGroupTri(groupId) {
+  const group = _INTEGRATION_GROUPS.find(g => g.id === groupId);
+  const tri = _qs(`ac-group-tri-${groupId}`);
+  if (!group || !tri || !group.members.length) return;
+  const onCount = group.members.filter(m => _rowConfigured(m.id)).length;
+  tri.dataset.state = onCount === 0 ? 'off'
+    : (onCount === group.members.length ? 'on' : 'mixed');
+}
+
+function _syncAllIntegrationGroupTris() {
+  for (const g of _INTEGRATION_GROUPS) _syncIntegrationGroupTri(g.id);
+}
+
+function _syncIntegrationGroupTriOf(id) {
+  const g = _integrationGroupOf(id);
+  if (g) _syncIntegrationGroupTri(g.id);
+}
+
+// Bulk on/off for a group's available members. Off disables channels and
+// unconfigures providers (one confirm for the destructive provider case). On
+// enables what needs no credentials (a channel); unconfigured OAuth providers
+// can't be force-enabled here — they still need their keys on their own row.
+function _setIntegrationGroupAll(group, goOn) {
+  if (!goOn) {
+    const configuredProviders = group.members.filter(m => m.kind !== 'channel' && _rowConfigured(m.id));
+    if (configuredProviders.length &&
+        !confirm(`Disable all configured ${group.name} integrations? This removes their saved app credentials.`)) {
+      return;
+    }
+    for (const m of group.members) {
+      if (!_rowConfigured(m.id)) continue;
+      if (m.kind === 'channel') _disableChannel(m.id);
+      else _unconfigureById(m.id, m.kind);
+    }
+  } else {
+    for (const m of group.members) {
+      if (m.kind === 'channel' && !_rowConfigured(m.id)) _enableChannel(m.id);
+    }
+  }
+}
+
 function _rowConfigured(id) {
   const badge = _qs(`ac-int-${id}-badge`);
   return !!(badge && badge.classList.contains('ac-int-badge-on'));
@@ -1490,52 +1869,14 @@ function _compactifyCard(id, kind) {
   });
 }
 
-function _renderComingSoonRows() {
-  for (const [containerId, items] of Object.entries(_COMING_SOON_ROWS)) {
-    const container = _qs(containerId);
-    if (!container) continue;
-    container.innerHTML = '';
-    for (const it of items) {
-      const row = document.createElement('div');
-      row.className = 'ac-ability-row ac-int-row ac-soon-row';
-      row.innerHTML = `<div class="ac-ability-icon"><i data-lucide="${it.icon}" style="width:18px;height:18px;"></i></div>`
-        + `<div class="ac-ability-label"><div class="ac-ability-name"></div><div class="ac-ability-desc"></div></div>`
-        + `<span class="ac-soon-pill">Coming soon</span>`;
-      row.querySelector('.ac-ability-name').textContent = it.name;
-      row.querySelector('.ac-ability-desc').textContent = it.note;
-      container.appendChild(row);
-    }
-  }
-}
-
 function _compactifyAllIntegrations() {
   for (const p of _OAUTH_PROVIDER_IDS) _compactifyCard(p, 'oauth');
   for (const p of _GENERIC_PROVIDER_IDS) _compactifyCard(p, 'generic');
   for (const c of _CHANNEL_IDS) _compactifyCard(c, 'channel');
   for (const c of _SOON_CHANNEL_IDS) _compactifyCard(c, 'soon');
-  _renderComingSoonRows();
-  _placeWebCredentialRows();   // move Web Scraper + Browser Cookies into the Web group
-  _groupIntegrationLists();
+  _placeWebCredentialRows();        // Web Scraper + Browser Cookies into the Web group
+  _placeIntegrationGroupCards();    // channels/providers into their groups; hide legacy categories
   if (typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
-}
-
-// Group the compactified integration cards in each settings section into ONE
-// flush `.ac-list` so the section reads as a single compact option-table (the
-// shared toggle-list look), instead of a stack of separate bordered cards.
-// Idempotent — guarded so repeated settings (re)activations don't re-wrap.
-function _groupIntegrationLists() {
-  document.querySelectorAll('.ac-category-body').forEach(body => {
-    if (body.dataset.acListGrouped) return;
-    const cards = Array.from(body.children).filter(
-      el => el.classList && el.classList.contains('ac-card-compact')
-    );
-    if (!cards.length) return;
-    const list = document.createElement('div');
-    list.className = 'ac-list';
-    body.insertBefore(list, cards[0]);
-    cards.forEach(c => list.appendChild(c));
-    body.dataset.acListGrouped = '1';
-  });
 }
 
 function _syncRowToggle(id) {
@@ -1545,6 +1886,7 @@ function _syncRowToggle(id) {
   toggle.checked = on;
   const row = _qs(`ac-int-row-${id}`);
   if (row) row.classList.toggle('ac-ability-enabled', on);
+  _syncIntegrationGroupTriOf(id);   // keep the parent group's 3-pos toggle in sync
 }
 
 function _syncAllRowToggles() {
@@ -1592,7 +1934,7 @@ function _initIntegrations() {
   // and render the card-less coming-soon integrations as greyed rows.
   _compactifyAllIntegrations();
 
-  _initIntegrationsSearch([...providers, ...genericProviders, ...channels, ...comingSoonChannels, 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer', 'agent_orchestration', 'diagnostics', 'agent_management']);
+  _initIntegrationsSearch([...providers, ...genericProviders, ...channels, ...comingSoonChannels, 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer', 'agent_orchestration', 'diagnostics', 'agent_management', 'app_control', 'wiki_control']);
   _initIntegrationAdminChat();
 }
 
@@ -1811,7 +2153,7 @@ function _initIntegrationsSearch(providers) {
   // group head rows, which always stay visible as section labels).
   const compactContainer = _qs('ac-abilities-compact');
   const compactRows = compactContainer
-    ? [...compactContainer.querySelectorAll('.ac-ability-row:not(.ac-group-head)')]
+    ? [...compactContainer.querySelectorAll('.ac-ability-row:not(.ac-group-head):not(.ac-int-row)')]
     : [];
   const groupEls = compactContainer
     ? [...compactContainer.querySelectorAll('.ac-group')]
@@ -1935,6 +2277,7 @@ async function _loadIntegrations() {
     _applyAbilityFromLoad('agent_orchestration', data.agent_orchestration_configured);
     _applyAbilityFromLoad('diagnostics',         data.diagnostics_configured);
     _applyAbilityFromLoad('agent_management',    data.agent_management_configured);
+    _applyAbilityFromLoad('wiki_control',        data.wiki_control_configured);
     // Browser session is per-user — fetched from a separate endpoint.
     _loadBrowserSessionStatus();
     // Reflect each provider/channel's configured state onto its unified row toggle.
@@ -2772,6 +3115,7 @@ const _MAIN_PANEL_PAGES = [
   { id: 'autoagent',   label: 'Pages',       icon: 'files' },
   { id: 'web',         label: 'Web',         icon: 'globe' },
   { id: 'terminal',    label: 'Terminal',    icon: 'terminal' },
+  { id: 'wiki',        label: 'Wiki',        icon: 'book-open' },
 ];
 
 const _LS_MAIN_PANEL_ORDER = 'mainPanelOrder';
@@ -2787,7 +3131,7 @@ function _getMainPanelOrder() {
       if (hasAll && parsed.length === allIds.length) return parsed;
     }
   } catch (_) {}
-  return ['admin-tools', 'agents', 'autoagent', 'web', 'terminal'];
+  return ['admin-tools', 'agents', 'autoagent', 'web', 'terminal', 'wiki'];
 }
 
 function _getMainPanelHidden() {

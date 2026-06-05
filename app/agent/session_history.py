@@ -20,6 +20,12 @@ logger = logging.getLogger(__name__)
 TOOL_MARKER = "\n\n[Tool calls: "  # legacy — kept for backward compat with old rows
 INTERNAL_TOOL_NAMES = frozenset({"memory_search", "memory_save"})
 
+# Rows whose `source` is this are terminal-tunnel traffic: persisted to the
+# transcript but excluded from the agent's LLM context (defined in
+# app/agent/terminal_tunnel.py; duplicated here as a literal to avoid an
+# import cycle through that module's lazy app.api imports).
+TUNNEL_SOURCE = "terminal_tunnel"
+
 # Reasoning models (Gemini 3.1 Pro, DeepSeek, etc.) stream <think>...</think>
 # blocks as part of `content`. Replaying that back to the model on subsequent
 # turns causes some providers (notably Gemini via DeepInfra) to return empty
@@ -77,6 +83,12 @@ def interactions_to_openai_messages(
         if r.id in exclude:
             continue
         if r.role == "tool" and r.tool_name in INTERNAL_TOOL_NAMES:
+            continue
+        # Terminal-tunnel traffic (the user driving a program directly through
+        # chat) is persisted for the transcript/record but must stay OUT of the
+        # agent's context — see app/agent/terminal_tunnel.py. This is the
+        # context-exclusion seed of the coming compaction feature.
+        if getattr(r, "source", None) == TUNNEL_SOURCE:
             continue
         # Skip optimizer system messages (init, prefilter) — they are metadata,
         # not conversation turns. The optimizer session should only show

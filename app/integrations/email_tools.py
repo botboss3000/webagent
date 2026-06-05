@@ -235,6 +235,15 @@ async def yahoo_userinfo(user_id: str, agent_id: str) -> str:
 
 # ── Tool registry ─────────────────────────────────────────────────────────
 
+FEATURE = {
+    "id": "email",
+    "display_name": "Email (Gmail / Outlook / Yahoo)",
+    "category": "integration",
+    "status": "stable",
+    "summary": "Read, search, and send email across Gmail and Outlook; Yahoo identity.",
+    "requires": ["Google and/or Microsoft OAuth credentials"],
+}
+
 TOOLS = [
     # ── Gmail ──
     {

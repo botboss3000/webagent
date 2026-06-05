@@ -53,9 +53,8 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
     run_id = str(uuid.uuid4())
     opt_sid = f"optimizer-{str(uuid.uuid4())[:8]}"
 
-    # ── Create optimizer temp DB ──
-    _here = os.path.dirname(os.path.abspath(__file__))
-    _db_dir = os.path.normpath(os.path.join(_here, "..", "db"))
+    # ── Create optimizer temp DB (under data/db/, with the other runtime DBs) ──
+    from app.db.local import DB_DIR as _db_dir
     os.makedirs(_db_dir, exist_ok=True)
     temp_db_name = f"optimizer_{uuid.uuid4().hex[:16]}.db"
     temp_db_path = os.path.join(_db_dir, temp_db_name)

@@ -6,6 +6,7 @@ import { addAttachmentsToMessage, renderAttachmentElement } from './attachments.
 import { getAccessMode, fetchAccessMode, authHeaders } from './left-login.js';
 import { _cacheAppendMessage } from './sessions.js';
 import { fmtArgs, buildToolRow } from './chat-activity.js';
+import { initChatTunnel } from './chatTunnel.js';
 
 /** Whether the user has explicitly locked auto-scroll (by clicking the
  *  scroll-to-bottom chevron or by being at the bottom). When true, new
@@ -978,6 +979,22 @@ async function sendMessage() {
   const text = app.chatInput.value.trim();
   if (!text) return;
 
+  // ── Terminal tunnel: the composer is driving a program directly ──
+  // The text is a keystroke line for the bound terminal, not a prompt for the
+  // agent. Send it to the program (the embedded terminal shows the echo +
+  // output); add no chat bubble and don't light the "thinking" pill.
+  if (app.tunnel && app.tunnel.active) {
+    app.chatInput.value = '';
+    app.chatSend.disabled = true;
+    _updateInputRowState();
+    _autoResizePill(app.chatInput);
+    _clearDraft();
+    if (typeof app.sendTunnelLine === 'function') {
+      try { await app.sendTunnelLine(text); } catch (_) { /* terminal reflects state */ }
+    }
+    return;
+  }
+
   // No agent yet — don't push the user into a "create an agent" flow. Spin up
   // (or reuse) their shared webAgent in a fresh session and carry on sending.
   if (!app.currentAgentId) {
@@ -1414,6 +1431,11 @@ export function initChat() {
       sendMessage();
     }
   });
+
+  // Terminal-tunnel UI (user drives a terminal through chat). Sets up the
+  // overlay/banner/palette and the app.onTunnelState / app.refreshTunnelForSession
+  // hooks used by the WS dispatcher and session loader.
+  try { initChatTunnel(); } catch (_) { /* non-fatal */ }
   app.chatInput.addEventListener('input', () => {
     if (!_canChat()) { app.chatSend.disabled = true; _updateInputRowState(); return; }
     app.chatSend.disabled = !app.chatInput.value.trim();

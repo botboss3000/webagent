@@ -10,8 +10,8 @@ USER_ID = sys.argv[2] if len(sys.argv) > 2 else ""
 ORIGINAL_MESSAGE = sys.argv[3] if len(sys.argv) > 3 else "hi"
 TIMEOUT_SEC = int(sys.argv[4]) if len(sys.argv) > 4 else 45
 
-TEST_DB = "app/db/tests.db"
-MAIN_DB = "app/db/local.db"
+TEST_DB = "data/db/tests.db"
+MAIN_DB = "data/db/local.db"
 
 def run_test(change):
     element = change.get("element", "unknown")

@@ -43,9 +43,14 @@ def _err(msg: str, **extra) -> str:
     return json.dumps(out)
 
 
-def build_terminal_tools(user_id: str):
+def build_terminal_tools(user_id: str, chat_session_id: str = ""):
     """Return {tool_name: handler} bound to this user. Mirrors the
-    build_delegation_tools(user_id) pattern used elsewhere in the loader."""
+    build_delegation_tools(user_id) pattern used elsewhere in the loader.
+
+    `chat_session_id` is the live chat session — needed by terminal_tunnel to
+    bind *this* conversation to a terminal so the user can drive it directly.
+    (The per-tool `session_id` argument is the *terminal* session, distinct from
+    this chat session.)"""
 
     async def terminal_open(command: str = "", name: str = "", wait: bool = True) -> str:
         """Open a NEW terminal session and optionally run a command in it.
@@ -181,6 +186,47 @@ def build_terminal_tools(user_id: str):
         return json.dumps({"status": "ok" if closed else "error",
                            "closed": closed, "session_id": session_id})
 
+    async def terminal_tunnel(session_id: str) -> str:
+        """Hand a terminal session over to the USER to drive directly through chat.
+
+        After you call this, you step aside: the user's chat messages are typed
+        straight into the program in `session_id` (NOT sent to you), and the
+        program's output streams live into the chat. Use this when the user wants
+        to operate a program themselves — e.g. they say "start claude and let me
+        drive it" or "let me type into this". Typically: terminal_open the
+        program first, then terminal_tunnel its session_id.
+
+        The user ends the tunnel with the "Hand back" button in the chat (they
+        cannot end it by typing, since typing goes to the program). While the
+        tunnel is active you will not receive their messages, and that traffic is
+        kept out of your context — so you can pick back up cleanly afterwards.
+        """
+        if not session_id:
+            return _err("session_id is required (the terminal to hand over)")
+        if not chat_session_id:
+            return _err("no live chat session to attach a tunnel to (this run "
+                        "has no UI session — e.g. a background/event run)")
+        from app.agent.terminal_tunnel import enable_tunnel
+        from app.db import get_db
+        try:
+            cfg = await enable_tunnel(
+                get_db(), user_id, chat_session_id, session_id, mediated=True,
+            )
+        except ValueError as e:
+            return _err(str(e), session_id=session_id)
+        except Exception as e:
+            return _err(f"could not start tunnel: {e}", session_id=session_id)
+        return json.dumps({
+            "status": "ok",
+            "tunnel": "active",
+            "session_id": session_id,
+            "command": cfg.get("command", ""),
+            "note": "You are now a pass-through. The user drives this program; "
+                    "their messages go to it, not to you, and are excluded from "
+                    "your context. Stop here — do not keep calling tools. The "
+                    "user ends the tunnel with the 'Hand back' button.",
+        })
+
     return {
         "terminal_open": terminal_open,
         "terminal_read": terminal_read,
@@ -188,6 +234,7 @@ def build_terminal_tools(user_id: str):
         "terminal_wait": terminal_wait,
         "terminal_list": terminal_list,
         "terminal_close": terminal_close,
+        "terminal_tunnel": terminal_tunnel,
     }
 
 
@@ -239,6 +286,13 @@ TERMINAL_TOOL_SCHEMAS = {
         "type": "object",
         "properties": {
             "session_id": {"type": "string", "description": "The session to kill."},
+        },
+        "required": ["session_id"],
+    },
+    "terminal_tunnel": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "The terminal session to hand over to the user (from terminal_open/terminal_list)."},
         },
         "required": ["session_id"],
     },

@@ -1,0 +1,96 @@
+<!-- Wiki: the company-wide, searchable knowledge base.
+     Loaded by ui/js/partial-loader.js into #tab-wiki · logic: ui/js/wiki.js ·
+     styles: ui/css/wiki.css · API: app/api/wiki.py (/api/v1/wiki).
+     One shared collection of articles (company info, policies, contacts — any
+     reference data). Searchable by people (semantic + keyword) and managed by
+     agents through the wiki_control ability. NOT per-user: everyone sees the
+     same entries. Theme-driven (design-system variables) so it works dark+light. -->
+<div class="wiki-page">
+
+  <!-- ── List view: search + browse all articles ── -->
+  <div class="wiki-list-view" data-view="list">
+    <div class="wiki-toolbar">
+      <div class="wiki-search">
+        <i data-lucide="search" class="lucide-icon wiki-search-icon"></i>
+        <input class="wiki-search-input" type="text" spellcheck="false" autocomplete="off"
+               placeholder="Search the wiki&hellip;" aria-label="Search the wiki" />
+        <button class="wiki-search-clear" title="Clear search" aria-label="Clear search" hidden>
+          <i data-lucide="x" class="lucide-icon"></i>
+        </button>
+      </div>
+      <button class="wiki-btn wiki-new-btn" data-act="new" title="New article">
+        <i data-lucide="plus" class="lucide-icon"></i><span>New</span>
+      </button>
+    </div>
+
+    <div class="wiki-list-scroll">
+      <div class="wiki-count" hidden></div>
+      <ul class="wiki-list" role="list"></ul>
+      <div class="wiki-empty">
+        <i data-lucide="book-open" class="lucide-icon wiki-empty-icon"></i>
+        <div class="wiki-empty-title">The wiki is empty</div>
+        <div class="wiki-empty-text">Add your first article &mdash; company info, a policy,
+          contacts, anything worth keeping. You can also ask an agent (with the Wiki
+          ability) to fill it in for you.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Article view: read / edit a single article ── -->
+  <div class="wiki-article-view" data-view="article" hidden>
+    <div class="wiki-toolbar">
+      <button class="wiki-btn wiki-icon-btn" data-act="back" title="Back to list" aria-label="Back">
+        <i data-lucide="arrow-left" class="lucide-icon"></i>
+      </button>
+      <div class="wiki-article-toolbar-spacer"></div>
+      <button class="wiki-btn" data-act="edit" title="Edit article">
+        <i data-lucide="pencil" class="lucide-icon"></i><span>Edit</span>
+      </button>
+      <button class="wiki-btn wiki-btn-primary" data-act="save" title="Save changes" hidden>
+        <i data-lucide="check" class="lucide-icon"></i><span>Save</span>
+      </button>
+      <button class="wiki-btn" data-act="cancel" title="Discard changes" hidden>
+        <span>Cancel</span>
+      </button>
+      <button class="wiki-btn wiki-btn-danger" data-act="delete" title="Delete article">
+        <i data-lucide="trash-2" class="lucide-icon"></i>
+      </button>
+    </div>
+
+    <div class="wiki-article-scroll">
+      <!-- Reader (rendered) -->
+      <article class="wiki-reader">
+        <h1 class="wiki-reader-title"></h1>
+        <div class="wiki-reader-meta">
+          <span class="wiki-reader-category" hidden></span>
+          <span class="wiki-reader-tags"></span>
+        </div>
+        <div class="wiki-reader-body"></div>
+      </article>
+
+      <!-- Editor (inputs) -->
+      <div class="wiki-editor" hidden>
+        <label class="wiki-field">
+          <span class="wiki-field-label">Title</span>
+          <input class="wiki-editor-title" type="text" maxlength="120" placeholder="Article title" />
+        </label>
+        <div class="wiki-field-row">
+          <label class="wiki-field">
+            <span class="wiki-field-label">Category</span>
+            <input class="wiki-editor-category" type="text" placeholder="e.g. HR, Product (optional)" />
+          </label>
+          <label class="wiki-field">
+            <span class="wiki-field-label">Tags</span>
+            <input class="wiki-editor-tags" type="text" placeholder="comma,separated,tags" />
+          </label>
+        </div>
+        <label class="wiki-field wiki-field-grow">
+          <span class="wiki-field-label">Content</span>
+          <textarea class="wiki-editor-body" placeholder="Write the article&hellip;"></textarea>
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div class="wiki-toast" role="status" aria-live="polite" hidden></div>
+</div>

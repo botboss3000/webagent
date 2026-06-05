@@ -55,4 +55,13 @@ class SlackSource(EventSource):
         return True
 
 
+FEATURE = {
+    "id": "slack_events",
+    "display_name": "Slack (events)",
+    "category": "event_source",
+    "status": "beta",
+    "summary": "Fire the agent on inbound Slack messages / mentions.",
+    "requires": ["Slack app credentials"],
+}
+
 source_cls = SlackSource

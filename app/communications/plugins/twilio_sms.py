@@ -147,4 +147,13 @@ class TwilioSmsPlugin(CommunicationPlugin):
         return str(result)
 
 
+FEATURE = {
+    "id": "sms",
+    "display_name": "SMS (Twilio)",
+    "category": "channel",
+    "status": "beta",
+    "summary": "Send and receive SMS via Twilio.",
+    "requires": ["Twilio account SID + auth token + a phone number"],
+}
+
 plugin_cls = TwilioSmsPlugin
