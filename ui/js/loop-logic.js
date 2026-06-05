@@ -9,7 +9,7 @@ export { NODE_PANEL_INFO } from './loop-node-data.js';
 
 // LOOP_W imported from loop-diagram.js (used for optimizer label)
 
-// â”€â”€ Optimizer edges â”€â”€
+// ── Optimizer edges ──
 const OPTIMIZER_EDGES = [
   { from: 'opt_collect',  to: 'opt_analyze'  },
   { from: 'opt_analyze',  to: 'opt_propose'  },
@@ -18,16 +18,16 @@ const OPTIMIZER_EDGES = [
   { from: 'opt_apply',    to: 'opt_collect',  loopback: 500 },
 ];
 
-// â”€â”€ Tool panel state â”€â”€
+// ── Tool panel state ──
 let _activePanelNodeId = null;
 let _activePanelEl = null;
 
-// â”€â”€ Tool metadata cache (30s TTL â€” avoids re-fetching on every panel open) â”€â”€
+// ── Tool metadata cache (30s TTL — avoids re-fetching on every panel open) ──
 let _toolMetaCache = null;
 let _toolMetaCacheTs = 0;
 const TOOL_META_CACHE_MS = 30_000;
 
-// â”€â”€ Fetch all tool metadata from /admin/tools (built-ins + user skills) â”€â”€
+// ── Fetch all tool metadata from /admin/tools (built-ins + user skills) ──
 export async function fetchAllToolMeta() {
   const now = Date.now();
   if (_toolMetaCache && (now - _toolMetaCacheTs) < TOOL_META_CACHE_MS) {
@@ -47,7 +47,7 @@ export async function fetchAllToolMeta() {
   }
 }
 
-// â”€â”€ Safely parse a JSON field that may already be an array or a JSON string â”€â”€
+// ── Safely parse a JSON field that may already be an array or a JSON string ──
 function _parseJsonField(val, fallback) {
   if (Array.isArray(val)) return val;
   if (typeof val === 'string') {
@@ -56,7 +56,7 @@ function _parseJsonField(val, fallback) {
   return fallback;
 }
 
-// â”€â”€ State â”€â”€
+// ── State ──
 let loopVisualActive = false;
 let eventBuffer = [];
 const MAX_BUFFER = 2000;
@@ -71,12 +71,12 @@ let currentTurnEvents = [];
 
 let _renderTimer = null;
 
-// â”€â”€ Init â”€â”€
+// ── Init ──
 export function initLoopVisual() {
   app._loopVisualHandler = handleEvent;
 }
 
-// â”€â”€ Start â”€â”€
+// ── Start ──
 export function startLoopVisual() {
   loopVisualActive = true;
 
@@ -91,19 +91,19 @@ export function startLoopVisual() {
   currentTurnEvents = [];
   sessionLoaded = false;
 
-  area.innerHTML = '<div class="loop-visual-hint">Loading loop historyâ€¦</div>';
+  area.innerHTML = '<div class="loop-visual-hint">Loading loop history…</div>';
   pagesContainer.innerHTML = '';
   try { renderRuntimeLoopSidebar(); } catch (_) {}
 
   fetchLoopHistory();
 }
 
-// â”€â”€ Stop â”€â”€
+// ── Stop ──
 export function stopLoopVisual() {
   loopVisualActive = false;
 }
 
-// â”€â”€ Handle events from agentWs â”€â”€
+// ── Handle events from agentWs ──
 function handleEvent(event) {
   if (eventBuffer.length >= MAX_BUFFER) eventBuffer.shift();
   eventBuffer.push(event);
@@ -312,9 +312,9 @@ function renderPageButtons() {
 }
 
 
-// â”€â”€ Render a single page (turn) â”€â”€
+// ── Render a single page (turn) ──
 function renderPage(idx) {
-  // NOTE: do NOT call hideToolPanel here â€” streaming events call renderPage on every
+  // NOTE: do NOT call hideToolPanel here — streaming events call renderPage on every
   // frame, which would destroy the panel immediately after the user opens it.
   // Panel is now attached to #loop-visual-container (outside area), so area rebuilds
   // don't affect it. selectPage/startNewPage call hideToolPanel explicitly on page switch.
@@ -323,7 +323,7 @@ function renderPage(idx) {
 
   const page = pages[idx];
   if (!page) {
-    area.innerHTML = '<div class="loop-visual-hint">No loop data yet â€” waiting for agent eventsâ€¦</div>';
+    area.innerHTML = '<div class="loop-visual-hint">No loop data yet — waiting for agent events…</div>';
     return;
   }
 
@@ -335,22 +335,22 @@ function renderPage(idx) {
   scaleWrap.style.cssText = 'width:100%;flex-shrink:0;overflow:hidden;';
   area.appendChild(scaleWrap);
 
-  // Measure scaleWrap (not area) â€” excludes area padding and accounts for scrollbar
+  // Measure scaleWrap (not area) — excludes area padding and accounts for scrollbar
   const availableWidth = Math.max(300, scaleWrap.clientWidth || scaleWrap.offsetWidth || LOOP_W);
 
   function getNodeDetail(nd) {
     const nodeEvents = page.events.filter(e => e.nodeId === nd.id);
-    if (nodeEvents.length === 0) return 'Waitingâ€¦';
+    if (nodeEvents.length === 0) return 'Waiting…';
     const last = nodeEvents[nodeEvents.length - 1];
     const parts = [];
     if (last.event.duration_ms)          parts.push(`${last.event.duration_ms}ms`);
-    if (last.event.input_tokens)         parts.push(`â†“${last.event.input_tokens}`);
-    if (last.event.output_tokens)        parts.push(`â†‘${last.event.output_tokens}`);
+    if (last.event.input_tokens)         parts.push(`↓${last.event.input_tokens}`);
+    if (last.event.output_tokens)        parts.push(`↑${last.event.output_tokens}`);
     if (last.event.model)                parts.push(last.event.model);
     if (last.event.tool)                 parts.push(last.event.tool);
     if (last.event.results_count != null) parts.push(`${last.event.results_count} results`);
     return parts.length > 0
-      ? parts.join(' Â· ')
+      ? parts.join(' · ')
       : `${nodeEvents.length} event${nodeEvents.length !== 1 ? 's' : ''}`;
   }
 
@@ -380,7 +380,7 @@ function renderPage(idx) {
   const labY  = layout.canvasH + 34;
   const optCY = layout.canvasH + 78;
 
-  // â”€â”€ Optimizer section divider & label â”€â”€
+  // ── Optimizer section divider & label ──
   const divLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
   divLine.setAttribute('x1', 10);
   divLine.setAttribute('y1', divY);
@@ -397,7 +397,7 @@ function renderPage(idx) {
   optLabel.setAttribute('class', 'lv-stage-label');
   optLabel.setAttribute('fill', '#9ece6a');
   optLabel.setAttribute('fill-opacity', '0.45');
-  optLabel.textContent = 'âš™ OPTIMIZER LOOP  â€”  runs on a separate schedule to improve agent skills';
+  optLabel.textContent = '⚙ OPTIMIZER LOOP  —  runs on a separate schedule to improve agent skills';
   svgEl.appendChild(optLabel);
 
   // Position optimizer nodes at computed cy
@@ -408,7 +408,7 @@ function renderPage(idx) {
   const OPT_HH = OPTIMIZER_NODES[0].hh;
   const dynOptEdges = OPTIMIZER_EDGES.map(e => e.loopback ? { ...e, loopback: optCY + OPT_HH + 30 } : e);
 
-  // â”€â”€ Draw optimizer edges (always static/dim) â”€â”€
+  // ── Draw optimizer edges (always static/dim) ──
   for (const edge of dynOptEdges) {
     const pi = computeEdgePath(edge, finalOptNodes);
     if (!pi) continue;
@@ -433,17 +433,17 @@ function renderPage(idx) {
     }
   }
 
-  // â”€â”€ Render optimizer node elements â”€â”€
+  // ── Render optimizer node elements ──
   for (const nodeDef of finalOptNodes) {
     renderNodeEl(nodeDef, rootEl);
   }
 
   // Restore scroll position after browser has laid out the new content.
-  // Must use rAF â€” setting scrollTop synchronously after innerHTML clear may be
+  // Must use rAF — setting scrollTop synchronously after innerHTML clear may be
   // ignored because the browser hasn't computed the new scroll height yet.
   if (savedScroll > 0) requestAnimationFrame(() => { area.scrollTop = savedScroll; });
 
-  // Re-render on resize â€” observe parentElement, not area itself, to avoid feedback
+  // Re-render on resize — observe parentElement, not area itself, to avoid feedback
   // loop where re-rendering area content triggers another resize observation.
   area._lvRo = new ResizeObserver(() => {
     clearTimeout(area._lvResizeTimer);
@@ -476,7 +476,7 @@ function renderNodeEl(nodeDef, parent) {
 }
 
 
-// â”€â”€ Show tool panel for a node â”€â”€
+// ── Show tool panel for a node ──
 function showToolPanel(nodeDef, nodeEl, container) {
   hideToolPanel();
 
@@ -497,12 +497,12 @@ function showToolPanel(nodeDef, nodeEl, container) {
 
   const close = document.createElement('button');
   close.className = 'lv-tool-panel-close';
-  close.textContent = 'âœ•';
+  close.textContent = '✕';
   close.addEventListener('click', (e) => { e.stopPropagation(); hideToolPanel(); });
   header.appendChild(close);
   panel.appendChild(header);
 
-  // â”€â”€ Node description (from NODE_PANEL_INFO) â”€â”€
+  // ── Node description (from NODE_PANEL_INFO) ──
   const info = NODE_PANEL_INFO[nodeDef.id];
   if (info) {
     const descLbl = document.createElement('div');
@@ -535,7 +535,7 @@ function showToolPanel(nodeDef, nodeEl, container) {
     }
   }
 
-  // â”€â”€ Build Prompt: raw LLM payload viewer â”€â”€
+  // ── Build Prompt: raw LLM payload viewer ──
   if (nodeDef.id === 'build_prompt' && page) {
     const bpEvent = [...page.events].reverse().find(e => e.event.step === 'build_prompt');
     if (bpEvent) {
@@ -551,7 +551,7 @@ function showToolPanel(nodeDef, nodeEl, container) {
       if (ev.tool_count_in_prompt != null) parts.push(`${ev.tool_count_in_prompt} tools`);
       if (ev.brain_injected) parts.push('memory injected');
       if (ev.sections?.length) parts.push(`sections: ${ev.sections.join(', ')}`);
-      meta.textContent = parts.join(' Â· ');
+      meta.textContent = parts.join(' · ');
       panel.appendChild(meta);
 
       if (ev.system_prompt) {
@@ -563,7 +563,7 @@ function showToolPanel(nodeDef, nodeEl, container) {
     }
   }
 
-  // â”€â”€ Load Context: DB query info â”€â”€
+  // ── Load Context: DB query info ──
   if (nodeDef.id === 'load_context') {
     const lcLabel = document.createElement('div');
     lcLabel.className = 'lv-tool-section-label';
@@ -584,7 +584,7 @@ function showToolPanel(nodeDef, nodeEl, container) {
     panel.appendChild(lcList);
   }
 
-  // â”€â”€ Build History: session history info â”€â”€
+  // ── Build History: session history info ──
   if (nodeDef.id === 'build_history') {
     const atLabel = document.createElement('div');
     atLabel.className = 'lv-tool-section-label';
@@ -592,11 +592,11 @@ function showToolPanel(nodeDef, nodeEl, container) {
     panel.appendChild(atLabel);
     const atDesc = document.createElement('div');
     atDesc.className = 'lv-bp-meta';
-    atDesc.textContent = 'Loads prior interactions â†’ OpenAI messages format. Strips internal tools (memory_search / memory_save). Rebuilds assistant tool_calls from persisted [Tool calls: â€¦] suffix.';
+    atDesc.textContent = 'Loads prior interactions → OpenAI messages format. Strips internal tools (memory_search / memory_save). Rebuilds assistant tool_calls from persisted [Tool calls: …] suffix.';
     panel.appendChild(atDesc);
   }
 
-  // â”€â”€ Assemble Msgs: show messages structure â”€â”€
+  // ── Assemble Msgs: show messages structure ──
   if (nodeDef.id === 'assemble_msgs' && page) {
     const asLabel = document.createElement('div');
     asLabel.className = 'lv-tool-section-label';
@@ -606,11 +606,11 @@ function showToolPanel(nodeDef, nodeEl, container) {
     const sysSnippet = bpEvent ? (bpEvent.event.system_prompt || '').slice(0, 200) : '{ system_prompt }';
     const asPre = document.createElement('pre');
     asPre.className = 'lv-bp-prompt';
-    asPre.textContent = `[0] system:\n${sysSnippet}${sysSnippet.length >= 200 ? 'â€¦' : ''}\n\n[1..N] { transcript }\n\n[N+1] { current user message }`;
+    asPre.textContent = `[0] system:\n${sysSnippet}${sysSnippet.length >= 200 ? '…' : ''}\n\n[1..N] { transcript }\n\n[N+1] { current user message }`;
     panel.appendChild(asPre);
   }
 
-  // â”€â”€ Load Tools: show tool count and names from pipeline event â”€â”€
+  // ── Load Tools: show tool count and names from pipeline event ──
   if (nodeDef.id === 'load_tools' && page) {
     const ltEvent = [...page.events].reverse().find(e => e.event && e.event.step === 'load_tools');
     const ltLabel = document.createElement('div');
@@ -621,7 +621,7 @@ function showToolPanel(nodeDef, nodeEl, container) {
       const ev = ltEvent.event;
       const meta = document.createElement('div');
       meta.className = 'lv-bp-meta';
-      meta.textContent = `${ev.count ?? '?'} tools Â· ${ev.duration_ms ?? '?'}ms`;
+      meta.textContent = `${ev.count ?? '?'} tools · ${ev.duration_ms ?? '?'}ms`;
       panel.appendChild(meta);
       if (Array.isArray(ev.names) && ev.names.length) {
         const pre = document.createElement('pre');
@@ -638,7 +638,7 @@ function showToolPanel(nodeDef, nodeEl, container) {
     }
   }
 
-  // â”€â”€ Static items (slash commands + Settings shortcuts) â”€â”€
+  // ── Static items (slash commands + Settings shortcuts) ──
   const staticItems = NODE_STATIC_ITEMS[nodeDef.id] || [];
   if (staticItems.length > 0) {
     const lbl = document.createElement('div');
@@ -652,7 +652,7 @@ function showToolPanel(nodeDef, nodeEl, container) {
     panel.appendChild(list);
   }
 
-  // â”€â”€ Live tools section (derived from /admin/tools stage metadata) â”€â”€
+  // ── Live tools section (derived from /admin/tools stage metadata) ──
   const toolsLabel = document.createElement('div');
   toolsLabel.className = 'lv-tool-section-label lv-tool-section-live';
   toolsLabel.innerHTML = 'Tools <span class="lv-live-dot"></span>';
@@ -663,7 +663,7 @@ function showToolPanel(nodeDef, nodeEl, container) {
 
   const loadingEl = document.createElement('div');
   loadingEl.className = 'lv-tool-panel-empty lv-tool-loading';
-  loadingEl.textContent = 'Loadingâ€¦';
+  loadingEl.textContent = 'Loading…';
   toolsList.appendChild(loadingEl);
   panel.appendChild(toolsList);
 
@@ -719,14 +719,14 @@ function showToolPanel(nodeDef, nodeEl, container) {
   });
 }
 
-// â”€â”€ Append a single tool row to a list element â”€â”€
+// ── Append a single tool row to a list element ──
 function _appendToolItem(listEl, tool) {
   const BADGE_LABELS = {
     command: 'cmd',
     tool:    'tool',
-    guarded: 'ðŸ›¡ guarded',
+    guarded: '🛡 guarded',
     admin:   'admin',
-    skill:   'âœ¦ skill',
+    skill:   '✦ skill',
   };
 
   const item = document.createElement('div');
@@ -768,7 +768,7 @@ function hideToolPanel() {
   document.removeEventListener('click', _outsideClickHandler);
 }
 
-// â”€â”€ Page summary bar (shown at bottom of graph area) â”€â”€
+// ── Page summary bar (shown at bottom of graph area) ──
 function updatePageSummary(idx) {
   const page = pages[idx];
   if (!page) return;
@@ -794,7 +794,7 @@ function updatePageSummary(idx) {
   area.appendChild(summary);
 }
 
-// â”€â”€ Fetch session history from DB â”€â”€
+// ── Fetch session history from DB ──
 async function fetchLoopHistory() {
   const area = document.getElementById('loop-visual-graph-area');
   const userId    = app.currentUserId;
@@ -820,7 +820,7 @@ async function fetchLoopHistory() {
     replayBuffer();
 
     if (pages.length === 0 && area) {
-      area.innerHTML = '<div class="loop-visual-hint">Agent loop visualizer â€” waiting for agent eventsâ€¦</div>';
+      area.innerHTML = '<div class="loop-visual-hint">Agent loop visualizer — waiting for agent events…</div>';
     }
   } catch (e) {
     console.error('[loop-visual] fetch failed:', e);
@@ -838,20 +838,20 @@ function replayBuffer() {
 
   if (pages.length === 0) {
     const el = document.getElementById('loop-visual-graph-area');
-    if (el) el.innerHTML = '<div class="loop-visual-hint">Agent loop visualizer â€” waiting for agent eventsâ€¦</div>';
+    if (el) el.innerHTML = '<div class="loop-visual-hint">Agent loop visualizer — waiting for agent events…</div>';
   }
 }
 
-// â”€â”€ Convert DB interaction row â†’ loop events â”€â”€
+// ── Convert DB interaction row → loop events ──
 // interactionToEvents(row) now lives in ./loop-events.js (imported above),
 // shared with loop.js so the DB-row -> loop-event mapping stays in sync.
 
-// â”€â”€ Session changed (called from sessions.js) â”€â”€
+// ── Session changed (called from sessions.js) ──
 export function loopVisualSessionChanged() {
   if (!loopVisualActive) return;
 
   const area = document.getElementById('loop-visual-graph-area');
-  if (area) area.innerHTML = '<div class="loop-visual-hint">Session changed â€” reloadingâ€¦</div>';
+  if (area) area.innerHTML = '<div class="loop-visual-hint">Session changed — reloading…</div>';
 
   pages = [];
   currentPageIdx = 0;

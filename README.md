@@ -251,7 +251,6 @@ webAgent/
 ├── export_agent_templates.bat  # Double-click: runs export_agent_templates.py (--dry-run supported)
 ├── migrations/             # Ad-hoc SQL snapshots (includes 007_channel_identities, 008_linking_codes, 009_multi_agent_system, 010_agent_name_backfill, 011_add_login_tracking, 014_data_sources, 018_agent_prompt_templates); see migrations/README.md
 ├── supabase/migrations/    # e.g. 005_memory_system.sql (Supabase CLI / team workflow)
-├── tasks/                  # Small Node helper (package.json, run-all.ts)
 ├── temp/                   # Scratch files incl. Markdown drafts (see agent.md); roadmap: temp/FUTURE_PLANS.md
 ├── kill_webagent.bat       # Windows: show + kill all webAgent server processes on port 8080
 ├── reset_webagent.bat      # Windows: guided clean-slate reset (DB, visual pages, optional auth/secrets/templates); see Maintenance
