@@ -6,32 +6,14 @@
 <title>webAgent</title>
 <link rel="icon" href="./ui/favicon.svg" type="image/svg+xml">
 <!-- PWA: manifest + service worker -->
-<!-- ╔═══════════════════════════════════════════════════════════════╗
-     ║  Bypass stale service worker: unregister + drop cache on     ║
-     ║  every hard reload. Inserted early (blocking) so it runs     ║
-     ║  before the module script. Remove this block once the        ║
-     ║  service worker is confirmed clean.                          ║
-     ╚═══════════════════════════════════════════════════════════════╝ -->
-<script>
-if ('serviceWorker' in navigator) {
-  (async function() {
-    // Unregister any existing service worker for this scope
-    const regs = await navigator.serviceWorker.getRegistrations();
-    for (const reg of regs) {
-      await reg.unregister();
-    }
-    // Delete all caches
-    const keys = await caches.keys();
-    for (const key of keys) {
-      await caches.delete(key);
-    }
-    // If a SW was controlling the page, reload so we get a clean load
-    if (regs.length > 0 && navigator.serviceWorker.controller) {
-      window.location.reload();
-    }
-  })();
-}
-</script>
+<!-- The service worker is registered ONCE near the end of <body> (search for
+     "Register service worker"). A new sw.js (bumped CACHE version) is picked up
+     there via a single guarded controllerchange reload. Do NOT add an early
+     unregister/delete-caches "bypass" block here: it fights the registration
+     block, so every load would unregister → re-register → controllerchange →
+     reload in a thrash loop, resetting the UI mid-interaction. To ship updated
+     JS/CSS, bump CACHE in sw.js (stale-while-revalidate then drops the old
+     cache on activate). -->
 <link rel="manifest" href="./ui/manifest.json">
 <meta name="theme-color" content="#0d0d1a">
 <meta name="apple-mobile-web-app-capable" content="yes">

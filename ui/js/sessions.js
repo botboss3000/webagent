@@ -2190,6 +2190,13 @@ export function initSessions() {
     document.removeEventListener('keydown', _onAgentPickerEsc, true);
     window.removeEventListener('resize', _closeAgentPicker);
   }
+  // True only when a picker element is actually in the DOM. Guards against a
+  // stale _agentPickerEl (element detached without going through
+  // _closeAgentPicker): without this, the next click sees a truthy ref, treats
+  // it as "open", toggles it off, and opens nothing — so the + appears dead.
+  function _pickerIsOpen() {
+    return !!_agentPickerEl && document.body.contains(_agentPickerEl);
+  }
   function _onAgentPickerOutside(e) {
     if (_agentPickerEl && !_agentPickerEl.contains(e.target) && !e.target.closest('#session-new')) {
       _closeAgentPicker();
@@ -2271,7 +2278,8 @@ export function initSessions() {
     _newSessionBusy = true;
     try {
       closeMenu();                                         // close session list
-      if (_agentPickerEl) { _closeAgentPicker(); return; } // toggle picker off
+      if (_pickerIsOpen()) { _closeAgentPicker(); return; } // open → toggle off
+      _closeAgentPicker();                                 // clear any stale ref
       await _ensureAgentsLoaded();
       if (_agentsCache.length > 1) { _openAgentPicker(); return; }
       // 1 agent → use it; 0 agents → start with no agent selected.
@@ -2283,7 +2291,7 @@ export function initSessions() {
 
   // Double click: skip the picker entirely, start fresh on the current agent.
   function _onNewSessionDouble() {
-    if (_agentPickerEl) _closeAgentPicker();
+    _closeAgentPicker();
     _startNewSession(app.currentAgentId || null);
   }
 
