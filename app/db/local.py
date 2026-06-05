@@ -891,12 +891,7 @@ CREATE TABLE IF NOT EXISTS data_sources (
     id                    TEXT PRIMARY KEY,
     user_id               TEXT NOT NULL,
     name                  TEXT NOT NULL,
-    type                  TEXT NOT NULL CHECK (type IN (
-                              'sql_postgres','sql_mysql','rest_api',
-                              'doc_store','web_search_domain',
-                              'notion','confluence','shopify',
-                              'airtable','google_sheets'
-                          )),
+    type                  TEXT NOT NULL,   -- validated in code by CONNECTOR_REGISTRY (drop-in); no CHECK so new connector files need no schema edit
     config                TEXT NOT NULL DEFAULT '{}',   -- JSON: non-sensitive
     auth_element_id       TEXT,                          -- FK -> auth_elements(id), nullable
     schema_cache          TEXT NOT NULL DEFAULT '{}',   -- JSON: introspected tables/endpoints
@@ -3209,6 +3204,35 @@ class LocalBackend(StorageBackend):
         }
 
     @staticmethod
+    def _tool_perm_columns(metadata) -> tuple:
+        """Derive the (allowed_tools, safety_policy) column JSON for a NEW agent
+        from a template's ``metadata.tool_permissions`` map {name: auto|ask|deny}.
+
+        Mapping (the inverse of how the API/UI reconstruct the three-way toggle):
+          - ``deny`` → tool added to ``allowed_tools`` (the blocked / disabled list)
+          - ``ask``  → tool added to ``safety_policy.destructive_tools`` (needs
+                       per-call confirmation)
+          - ``auto`` / unknown → neither (the default; tool runs unattended)
+
+        Accepts a metadata dict or its JSON string. Returns ``('[]', '{}')`` when
+        no permissions are declared, so callers can use it unconditionally. Note:
+        this only seeds INITIAL values for a new agent — once created, the agent's
+        own columns are the source of truth (edited via the Tools panel)."""
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata or "{}")
+            except (TypeError, ValueError):
+                metadata = {}
+        perms = metadata.get("tool_permissions") if isinstance(metadata, dict) else None
+        if not isinstance(perms, dict) or not perms:
+            return ("[]", "{}")
+        deny = sorted({n for n, v in perms.items() if v == "deny"})
+        ask = sorted({n for n, v in perms.items() if v == "ask"})
+        allowed_tools = json.dumps(deny)
+        safety_policy = json.dumps({"destructive_tools": ask}) if ask else "{}"
+        return (allowed_tools, safety_policy)
+
+    @staticmethod
     def _slots_from_template_data(tpl: dict) -> List[dict]:
         """Build a list of slot dicts from a template JSON.
 
@@ -4797,6 +4821,7 @@ class LocalBackend(StorageBackend):
             tpl_data = dict(tpl)
             now = _now_iso()
             agent_id = _uuid()
+            _allowed_tools, _safety_policy = self._tool_perm_columns(tpl_data["metadata"])
             conn.execute(
                 """INSERT INTO agents
                    (id, name,
@@ -4805,8 +4830,9 @@ class LocalBackend(StorageBackend):
                     model, provider,
                     temperature, max_tokens, status, metadata,
                     trigger_type, trigger_key, loop_logic,
+                    allowed_tools, safety_policy,
                     is_user_default, admin_users, assigned_at, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
                 (agent_id, tpl_data.get("name", "autoAgent"),
                  tpl_data["max_turn_count"],
                  tpl_data.get("max_wall_seconds"),
@@ -4820,6 +4846,7 @@ class LocalBackend(StorageBackend):
                  tpl_data.get("trigger_type", "user_input"),
                  tpl_data.get("trigger_key"),
                  tpl_data.get("loop_logic", "[]"),
+                 _allowed_tools, _safety_policy,
                  json.dumps([user_id]),
                  now, now, now),
             )
@@ -5128,12 +5155,19 @@ class LocalBackend(StorageBackend):
             try:
                 now = _now_iso()
                 _owner = user_id
+                # Normalise metadata to a JSON *string* (resolve_agent hands it
+                # back already-stringified for template rows; re-dumping a string
+                # would double-encode it and hide tool_modes / pre_enabled_*).
+                _meta_in = agent.get("metadata", {})
+                _meta_str = _meta_in or "{}" if isinstance(_meta_in, str) else json.dumps(_meta_in or {})
+                _allowed_tools, _safety_policy = self._tool_perm_columns(_meta_str)
                 conn.execute(
                     """INSERT INTO agents
                        (id, template_id, name, max_turn_count, max_wall_seconds, model, provider,
                         temperature, max_tokens, status, metadata, trigger_type, trigger_key, loop_logic,
+                        allowed_tools, safety_policy,
                         is_admin_agent, admin_users, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (agent_id, template_id,
                      agent.get("name", ""),
                      agent.get("max_turn_count", 0),
@@ -5142,10 +5176,11 @@ class LocalBackend(StorageBackend):
                      agent.get("provider"),
                      agent.get("temperature", 0.0),
                      agent.get("max_tokens", 4096),
-                     json.dumps(agent.get("metadata", {})),
+                     _meta_str,
                      agent.get("trigger_type", "user_input"),
                      agent.get("trigger_key"),
                      agent.get("loop_logic", "[]"),
+                     _allowed_tools, _safety_policy,
                      1 if agent.get("is_admin_agent") else 0,
                      json.dumps([user_id]),
                      now, now),
@@ -6397,6 +6432,7 @@ class LocalBackend(StorageBackend):
         # Coerce a missing / 0 / non-positive template value up to the default.
         _tpl_mtc = tpl.get("max_turn_count")
         _new_max_turns = _tpl_mtc if (isinstance(_tpl_mtc, int) and _tpl_mtc > 0) else 9999
+        _allowed_tools, _safety_policy = self._tool_perm_columns(tpl.get("metadata", "{}"))
         conn = self._get_conn()
         try:
             conn.execute(
@@ -6412,7 +6448,7 @@ class LocalBackend(StorageBackend):
                     safety_policy, is_admin_agent,
                     admin_users,
                     created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,'[]','[]',?,?,?,'{}',?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,'[]',?,?,?,?,?,?,?,?)""",
                 (
                     agent_id, name, description,
                     _new_max_turns,
@@ -6425,9 +6461,11 @@ class LocalBackend(StorageBackend):
                     tpl.get("max_tokens", 4096),
                     json.dumps({**json.loads(tpl.get("metadata", "{}")), "owner_user_id": user_id}),
                     template_id,
+                    _allowed_tools,
                     tpl.get("trigger_type", "user_input"),
                     tpl.get("trigger_key"),
                     tpl.get("loop_logic", "[]"),
+                    _safety_policy,
                     1 if tpl.get("is_admin_agent") else 0,
                     json.dumps([user_id]),
                     now, now,

@@ -328,16 +328,24 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
             )
             continue
 
-        # Serialize metadata dict to JSON string
+        # Serialize metadata dict to JSON string. Metadata is the carrier that
+        # flows verbatim from template → agent on every create path, so the
+        # per-tool override maps live inside it:
+        #   - tool_modes        {name: "always"|"discoverable"}  (Sent/Discover)
+        #   - tool_permissions  {name: "auto"|"ask"|"deny"}      (Auto/Ask/Deny)
+        # Authors may write these as readable TOP-LEVEL keys in the JSON; we fold
+        # them into metadata here so the rest of the pipeline sees one shape.
         meta = data.get("metadata", {})
-        if isinstance(meta, dict):
-            meta_str = json.dumps(meta)
-        else:
-            meta_str = str(meta)
-        # Validate metadata is valid JSON
+        if not isinstance(meta, dict):
+            meta = {}
+        for _tool_key in ("tool_modes", "tool_permissions"):
+            _top = data.get(_tool_key)
+            if isinstance(_top, dict) and _top:
+                meta[_tool_key] = _top
         try:
-            json.loads(meta_str)
-        except (TypeError, json.JSONDecodeError):
+            meta_str = json.dumps(meta)
+            json.loads(meta_str)  # validate round-trip
+        except (TypeError, ValueError):
             meta_str = "{}"
 
         # Version is required for the manifest-hash short-circuit + the
@@ -369,6 +377,8 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
             "system_prompt": data.get("system_prompt", ""),
             "max_turn_count": data.get("max_turn_count", 0),
             "max_wall_seconds": data.get("max_wall_seconds"),
+            "max_identical_tool_calls": data.get("max_identical_tool_calls", 0),
+            "max_stall_strikes": data.get("max_stall_strikes", 0),
             "model": data.get("model"),
             "provider": data.get("provider"),
             "temperature": data.get("temperature", 0.0),
@@ -380,7 +390,11 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
             "tasks_prompt": data.get("tasks_prompt", ""),
             "misc_prompt": data.get("misc_prompt", ""),
             "automation_prompt": data.get("automation_prompt", ""),
-            "bootstrap_tools": data.get("bootstrap_tools", ""),
+            # Accept the readable `bootstrap_tools_prompt` key (matches the other
+            # *_prompt slots) and fall back to the legacy bare `bootstrap_tools`.
+            "bootstrap_tools": data.get(
+                "bootstrap_tools", data.get("bootstrap_tools_prompt", "")
+            ),
             "can_be_default": 1 if data.get("can_be_default", True) else 0,
             "is_system": 1 if data.get("is_system", False) else 0,
             "is_pipeline": 1 if data.get("is_pipeline", False) else 0,
@@ -436,8 +450,10 @@ def compute_agent_manifest_hash(directory: Optional[str] = None) -> str:
     # Seeder-logic version: bump this when the JSON→DB mapping changes (not the
     # JSON files themselves) so existing DBs re-run the (non-destructive) seed
     # pass once and pick up newly-synced config columns. v2: the scanner now
-    # carries the `discoverable` flag and the config upsert syncs it.
-    h.update(b"seeder-logic-v2\x00")
+    # carries the `discoverable` flag and the config upsert syncs it. v3: the
+    # scanner now folds top-level tool_modes/tool_permissions into metadata,
+    # carries the stall/identical-call limits, and accepts bootstrap_tools_prompt.
+    h.update(b"seeder-logic-v3\x00")
     if not os.path.isdir(directory):
         return h.hexdigest()
 

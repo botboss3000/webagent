@@ -1,6 +1,6 @@
 {
   "id": "default",
-  "version": 7,
+  "version": 8,
   "name": "WebAgent",
   "description": "General-purpose assistant with all abilities unlocked. Starting agent for all new sessions.",
   "icon": "robot",
@@ -47,6 +47,14 @@
   "provider": null,
   "temperature": 0.0,
   "max_tokens": 4096,
+  "max_wall_seconds": null,
+  "max_identical_tool_calls": 0,
+  "max_stall_strikes": 0,
+  "trigger_type": "user_input",
+  "trigger_key": null,
+  "loop_logic": [],
+  "tool_modes": {},
+  "tool_permissions": {},
   "metadata": {
     "pre_enabled_connections": [
       "agent_management",
@@ -71,5 +79,5 @@
   "tasks_prompt": "## Debugging an Error\n1. Read the error message carefully\n2. If the user provides stack trace, analyze the root cause\n3. Search the codebase for relevant code\n4. Propose a fix, ask for confirmation, then apply it\n\n## Diagnosing a Failing Agent\n1. Find the agent: list_my_agents\n2. Check its config: get_agent\n3. Read diagnostics: read_diagnostics(levels='error,warning', search=<agent_id>)\n4. Look for: server tracebacks, guardrail blocks, stall guards, tool errors, run failures\n5. Report: root-cause hypothesis → evidence → confidence → suggested fix\n\n## Editing Code\n1. read_source to see the file (use offset/limit for large files)\n2. patch_source for targeted changes (two-strike rule: if it fails twice, use exact patch)\n3. Verify with run_python or git diff\n\n## Creating a Dashboard Page\n1. Use render_visual(html='...', page_name='slug') — ALL HTML goes in the tool call\n2. Use list_pages / get_page to see existing pages\n3. Research designs via web_search and browser_action\n4. Reply with a single sentence — no HTML in text\n\n## Managing Agents\n1. list_agent_templates — see templates\n2. Propose template + name + description, confirm with user\n3. create_agent — build it\n4. Edit prompts: edit_agent_prompt\n5. Toggle abilities (unlock tool bundles): set_agent_ability\n6. Add/adjust skills (knowledge packs; always_on or selectable): manage_agent_skills\n7. Change config: update_agent\n\n## Delegating to Another Agent\n1. delegate_to_agent(agent_id, task=<description>)\n2. The target agent receives the task and returns its result\n3. Report back to the user with the result\n\n## Data analysis\n1. Use `db_query` to inspect database tables\n2. For external data, use `web_search` or `browser_action`\n3. Present findings clearly with numbers and patterns\n\n## Optimizer submissions\nWhen submitting an optimizer request via `run_optimizer`:\n1. **Do NOT infer or guess** any parameter values — ever.\n2. If the user says something vague like \"optimize that\" — **ask them** to provide `feedback` first.\n3. Only call `run_optimizer` after the user has provided `feedback`.\n4. Pass parameters **exactly** as stated — no rewording.",
   "misc_prompt": "",
   "automation_prompt": "# Automation tasks\n\nDescribe scheduled jobs in plain English, one task per paragraph. Each task should say WHEN to run, WHAT prompt the agent should run, and HOW the result should be delivered (silently, via webchat, telegram, email, sms, etc.).\n\nExample:\n  - Every weekday at 9am, summarize my unread Telegram messages and send the summary back via Telegram.\n  - Every Sunday night at 8pm, write a short weekly recap of the chats and save it silently.\n\nWhen you save this file, the agent will parse it into structured scheduled tasks shown in the panel below. Edits replace the schedule on the next save.",
-  "bootstrap_tools_prompt": "# [BOOTSTRAP TOOLS]\nYou have core tools always available: list_tools, search_tools, get_tool_definition, create_tool, web_search, browser_action, db_query, memory, session_search, get_time, get_date, get_weather, calculate, read_attachment, render_visual, register_user, run_optimizer.\n\n# [AGENT MANAGEMENT TOOLS]\nlist_agent_templates, list_my_agents, get_agent, create_agent, update_agent, edit_agent_prompt, set_agent_ability, manage_agent_skills (abilities unlock tool bundles; manage_agent_skills edits knowledge packs — always_on or selectable)\n\n# [DIAGNOSTICS TOOLS]\nread_diagnostics\n\n# [ORCHESTRATION TOOLS]\ndelegate_to_agent, list_delegatable_agents\n\n# [IMAGE GENERATION TOOLS]\ngenerate_image\n\nUse `list_tools` to discover additional tools, `search_tools` to find tools by keyword, and `get_tool_definition` to learn a tool's parameters."
+  "bootstrap_tools_prompt": "# [BOOTSTRAP TOOLS]\nYou have core tools always available: load_tool, create_tool, web_search, browser_action, db_query, memory, session_search, get_time, get_date, get_weather, calculate, read_attachment, render_visual, register_user, run_optimizer.\n\n# [AGENT MANAGEMENT TOOLS]\nlist_agent_templates, list_my_agents, get_agent, create_agent, update_agent, edit_agent_prompt, set_agent_ability, manage_agent_skills (abilities unlock tool bundles; manage_agent_skills edits knowledge packs — always_on or selectable)\n\n# [DIAGNOSTICS TOOLS]\nread_diagnostics\n\n# [ORCHESTRATION TOOLS]\ndelegate_to_agent, list_delegatable_agents\n\n# [IMAGE GENERATION TOOLS]\ngenerate_image\n\nThe auto-generated # [TOOLS] index lists every tool available to you. For any tool shown under “Load on demand”, call `load_tool(\"<name>\")` to pull in its full parameters before using it."
 }

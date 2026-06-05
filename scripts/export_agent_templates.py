@@ -26,7 +26,8 @@ BOOL_COLUMNS = {"can_be_default", "is_system", "is_pipeline", "discoverable"}
 COLUMNS = [
     "id", "name", "description", "icon",
     "can_be_default", "is_system", "is_pipeline", "access_level", "discoverable",
-    "system_prompt", "max_turn_count", "max_wall_seconds", "model", "provider",
+    "system_prompt", "max_turn_count", "max_wall_seconds",
+    "max_identical_tool_calls", "max_stall_strikes", "model", "provider",
     "temperature", "max_tokens", "metadata",
     "agent_prompt", "user_prompt", "skills_prompt", "tasks_prompt", "misc_prompt",
     "bootstrap_tools", "trigger_type", "trigger_key", "loop_logic",
