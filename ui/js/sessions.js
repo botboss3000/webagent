@@ -520,8 +520,6 @@ export function renderUserDropdown() {
 let _sessionsCache = [];
 
 // Map of agentId → boolean indicating whether that agent has running sessions.
-// Populated by _fetchAgentRunningStatuses() and used by _renderAgentRows() to
-// show a spinner next to agents that are currently thinking.
 // Removed: _agentRunningStatus, _fetchAgentRunningStatuses — agent dropdown UI removed.
 
 // Monotonic counter — on init we fire one fetch from populateUserSelect (no
@@ -536,50 +534,13 @@ let _sessionFetchSeq = 0;
  * _renderAgentRows() can show a spinner next to agents with active runs.
  */
 async function _fetchAgentRunningStatuses() {
-  const userId = app.currentUserId;
-  if (!userId) return;
-  try {
-    const token = localStorage.getItem('auth_token');
-    let url = `/api/v1/db/sessions?db=local.db&user_id=${encodeURIComponent(userId)}&limit=50`;
-    if (token) url += `&token=${encodeURIComponent(token)}`;
-    const res = await fetch(apiPath(url));
-    if (!res.ok) return;
-    const data = await res.json();
-    const map = {};
-    for (const s of (data.sessions || [])) {
-      if (s.run_status === 'running' && s.agent_id) {
-        map[s.agent_id] = true;
-      }
-    }
-    _agentRunningStatus = map;
-    // Re-render agent rows so the status sprites appear
-    _renderAgentRows();
-  } catch (e) {
-    // Silently fail — the spinner is a nice-to-have, not critical
-  }
+  // Agent dropdown UI removed — this is a no-op kept for call sites.
 }
 
 function _truncate(s, n) {
   return (s && s.length > n) ? s.slice(0, n) + '…' : (s || '');
 }
 
-/**
- * Resolve an agent id to its display name using the cached agent list.
- * The header session dropdown spans every agent, so each row is prefixed
- * with the owning agent's name. Falls back to a short id slice (or "Agent")
- * when the agent isn't in the cache (e.g. orphaned/legacy sessions).
- */
-function _agentNameFor(agentId) {
-  if (!agentId) return 'Agent';
-  const found = _agentsCache.find(a => a.id === agentId);
-  if (found && found.name) return found.name;
-  return agentId.slice(0, 8);
-}
-
-/**
- * Resolve an agent id to its emoji icon using the cached agent list.
- * Returns empty string if no icon is set.
- */
 function _agentIconFor(agentId) {
   if (!agentId) return '';
   const found = _agentsCache.find(a => a.id === agentId);
@@ -778,6 +739,7 @@ export async function populateSessionSelect(userId) {
     _renderSessionRows();
     _setTriggerLabel();
     _setAgentTriggerLabel();  // refresh agent status icon based on session states
+    _fetchAgentRunningStatuses();  // refresh running-status sprites in agent dropdown
     _fetchAgentRunningStatuses();  // refresh running-status sprites in agent dropdown
     _updateHeaderSessionCounter();
   } catch (e) {

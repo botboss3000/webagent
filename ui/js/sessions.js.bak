@@ -5,7 +5,6 @@ import { loopSessionChanged } from './loop.js';
 import { loopVisualSessionChanged } from './loop-logic.js';
 import { autoAgentSessionChanged } from './autoagent.js';
 import { chatActivitySessionChanged } from './chat-activity.js';
-import { abortChatStream } from './chat.js';
 import { consumeReplayedEventsFor } from './agentWs.js';
 import { apiPath } from './config.js';
 import { icon } from './icons.js';
@@ -22,9 +21,7 @@ import { ensureFreshToken } from './auth-refresh.js';
 import { randomUUID } from './uuid.js';
 import {
   getPinnedAgents,
-  toggleAgentPin as _toggleAgentPinStore,
   sortAgentsForDisplay,
-  persistAgentOrder,
   persistSessionOrder,
   makeRowsReorderable,
   attachRowLongPress,
@@ -78,6 +75,59 @@ export function generateUUID() {
   return randomUUID();
 }
 
+// ── webAgent (the do-it-all agent) ───────────────────────────────────────────
+// All page chat pills (Agents / Pages / Source Control / Agent Settings) and the
+// "no agent yet" chat fallback target one agent: the user's instance of the
+// `default` template (named "webAgent"). We find-or-create exactly one per user
+// so there is a single shared do-it-all agent, then start a fresh session on it.
+const WEBAGENT_TEMPLATE_ID = 'default';
+const _webagentIdCache = new Map(); // userId → agentId
+
+async function findWebagentAgent(userId) {
+  if (_webagentIdCache.has(userId)) return _webagentIdCache.get(userId);
+  try {
+    const res = await fetch(apiPath(`/api/v1/agents?user_id=${encodeURIComponent(userId)}`));
+    if (!res.ok) return null;
+    const data = await res.json();
+    const match = (data.agents || []).find(a => a.template_id === WEBAGENT_TEMPLATE_ID);
+    if (match) { _webagentIdCache.set(userId, match.id); return match.id; }
+  } catch (e) {
+    console.warn('[webAgent] find failed:', e);
+  }
+  return null;
+}
+
+async function createWebagentAgent(userId) {
+  const res = await fetch(apiPath('/api/v1/agents'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: userId,
+      name: 'webAgent',
+      description: 'Your all-purpose webAgent — chat, tools, web, browser, code, pages, and source control.',
+      template_id: WEBAGENT_TEMPLATE_ID,
+    }),
+  });
+  if (!res.ok) {
+    let detail = `agent create failed (${res.status})`;
+    try { const e = await res.json(); detail = e.detail || detail; } catch (_) {}
+    throw new Error(detail);
+  }
+  const data = await res.json();
+  const id = data.agent && data.agent.id;
+  if (!id) throw new Error('agent create returned no id');
+  _webagentIdCache.set(userId, id);
+  if (typeof app.populateAgentSelect === 'function') {
+    try { await app.populateAgentSelect(userId); } catch (_) {}
+  }
+  return id;
+}
+
+export async function ensureWebagentAgent(userId) {
+  if (!userId) throw new Error('not signed in');
+  return (await findWebagentAgent(userId)) || (await createWebagentAgent(userId));
+}
+
 /**
  * Interrupt the backend agent loop for a session (best-effort, fire-and-forget).
  * Tells the server to gracefully stop an in-flight run. NOTE: this is now only
@@ -99,132 +149,69 @@ function interruptSession(sessionId) {
 // Cache of last-fetched agents (templates + customs, in display order)
 let _agentsCache = [];
 
-function _toggleAgentPin(agentId) {
-  const pinnedNow = _toggleAgentPinStore(app.currentUserId, agentId);
-  // Refresh agents cache (pinned flag) and re-render. sortAgentsForDisplay
-  // floats pinned to the top while preserving the synced server order.
-  _agentsCache = _agentsCache.map(a => ({ ...a, pinned: pinnedNow.has(a.id) }));
-  _agentsCache = sortAgentsForDisplay(_agentsCache, app.currentUserId);
-  _renderAgentRows();
-  _setAgentTriggerLabel();
-  // Keep the Agents page in sync (pinned floats to the top there too).
-  if (typeof app.refreshAgentsOrder === 'function') app.refreshAgentsOrder();
+// The header "+" new-session button starts as a spinner and only becomes a
+// clickable plus once the agent list has loaded, so early clicks during the
+// cold-start window (before the handler/agents are ready) don't half-fire.
+// Flipped on by _setNewSessionBtnReady() at the end of populateAgentSelect.
+let _newSessionBtnReady = false;
+// Whether the server is currently reachable. Flipped by the health poll in
+// reconnect.js via setChatHeaderReachable(). While unreachable, the new-session
+// "+" and the session-dropdown chevron both render as spinners and ignore
+// clicks, since neither can act on fresh data until the server is back.
+let _serverReachable = true;
+
+// Render the new-session "+" button to match the current state: a spinner while
+// the agent list is still loading OR the server is unreachable, a clickable plus
+// otherwise. Idempotent, so it can be called from either gate.
+function _renderNewSessionBtn() {
+  const btn = document.getElementById('session-new');
+  if (!btn) return;
+  const spinner = !_newSessionBtnReady || !_serverReachable;
+  if (spinner) {
+    if (!btn.classList.contains('loading')) {
+      btn.classList.add('loading');
+      btn.innerHTML = icon('loader-2', { size: '24px' });
+    }
+    btn.disabled = true;
+    btn.title = _serverReachable ? 'Loading…' : 'Server unreachable…';
+  } else if (btn.classList.contains('loading')) {
+    btn.classList.remove('loading');
+    btn.innerHTML = icon('plus', { size: '24px' });
+    btn.disabled = false;
+    btn.title = 'New session';
+  }
 }
 
+function _setNewSessionBtnReady() {
+  _newSessionBtnReady = true;
+  _renderNewSessionBtn();
+}
+
+// Health-poll hook (reconnect.js): toggle the chat-header controls between their
+// normal state and the "waiting for the server" spinner state.
+export function setChatHeaderReachable(reachable) {
+  reachable = reachable !== false;
+  if (reachable === _serverReachable) return;
+  _serverReachable = reachable;
+  const dropdown = document.getElementById('session-dropdown');
+  if (dropdown) {
+    if (_serverReachable) dropdown.removeAttribute('data-offline');
+    else dropdown.dataset.offline = 'true';
+  }
+  _renderNewSessionBtn();
+}
+
+// Removed: _toggleAgentPin, _setAgentTriggerLabel, _renderAgentRows,
+// _agentRunningStatus, _fetchAgentRunningStatuses, _applyAgentReorder —
+// the agent dropdown UI was removed from the HTML.
+
 function _setAgentTriggerLabel() {
-  let labelEl = document.getElementById('agent-dropdown-label');
-  const trigger = document.getElementById('agent-dropdown-trigger');
-  // If the label was replaced by a rename input, restore the label span
-  if (!labelEl && trigger) {
-    const input = trigger.querySelector('.session-row-title-input');
-    if (input) {
-      labelEl = document.createElement('span');
-      labelEl.id = 'agent-dropdown-label';
-      input.replaceWith(labelEl);
-    }
-  }
-  if (!labelEl) return;
-  const aid = app.currentAgentId;
-  const found = _agentsCache.find(a => a.id === aid);
-  const title = (found && found.name) || (window.__agentName) || aid || 'No agent';
-  labelEl.textContent = _truncate(title, 20);
-  labelEl.title = (found && found.name) || title || '';
-  // Click the label to re-enter rename mode
-  labelEl.addEventListener('click', (e) => {
-    e.stopPropagation();
-    _headerRenameAgent();
-  });
-  // Mark the agent dropdown as loaded (removes shimmer + re-enables trigger)
-  const agentDropdown = document.getElementById('agent-dropdown');
-  if (agentDropdown) agentDropdown.dataset.loaded = 'true';
-  // Status icon: check if any session for this agent is running or has unread
-  const statusEl = document.getElementById('agent-dropdown-status');
-  if (statusEl) {
-    const hasRunning = _sessionsCache.some(s => s.run_status === 'running');
-    const hasUnread = _sessionsCache.some(s => s.has_unread);
-    if (hasRunning) {
-      statusEl.innerHTML = icon('loader-2', { size: '12px' });
-      statusEl.className = 'agent-dropdown-status session-status-running';
-      statusEl.title = 'Agent is thinking…';
-    } else if (hasUnread) {
-      statusEl.innerHTML = icon('check-circle', { size: '12px' });
-      statusEl.className = 'agent-dropdown-status session-status-unread';
-      statusEl.title = 'New response ready';
-    } else {
-      statusEl.innerHTML = '';
-      statusEl.className = 'agent-dropdown-status';
-      statusEl.title = '';
-    }
-  }
-  // TUI bridge indicator: show when the selected agent is the TUI bridge agent
-  const tuiIndicator = document.getElementById('tui-bridge-indicator');
-  if (tuiIndicator) {
-    const isTuiAgent = found && (found.template_id === 'web-agent-tui' || found.trigger_type === 'tui_bridge');
-    if (isTuiAgent) {
-      // Check if the bridge is alive
-      fetch('/api/v1/chat/tui-bridge/status')
-        .then(r => r.json())
-        .then(data => {
-          tuiIndicator.style.display = 'inline';
-          tuiIndicator.title = data.alive
-            ? 'TUI agent bridge active (port ' + data.port + ')'
-            : 'TUI agent bridge not connected — start the Server Manager (TUI)';
-          tuiIndicator.style.opacity = data.alive ? '1' : '0.4';
-        })
-        .catch(() => {
-          tuiIndicator.style.display = 'inline';
-          tuiIndicator.style.opacity = '0.4';
-          tuiIndicator.title = 'TUI agent bridge unavailable';
-        });
-    } else {
-      tuiIndicator.style.display = 'none';
-    }
-  }
+  // Agent dropdown UI removed — this is a no-op kept for call sites.
   _updateHeaderSessionCounter();
 }
 
 function _renderAgentRows() {
-  const menu = document.getElementById('agent-dropdown-menu');
-  if (!menu) return;
-  menu.innerHTML = '';
-  if (!_agentsCache.length) {
-    const empty = document.createElement('div');
-    empty.className = 'agent-dropdown-empty';
-    empty.textContent = 'No agents yet';
-    menu.appendChild(empty);
-    return;
-  }
-  // Insert visual separator between templates and customs (unpinned only)
-  let lastType = null;
-  for (const a of _agentsCache) {
-    if (lastType !== null && lastType !== a.type && !a.pinned) {
-      const sep = document.createElement('div');
-      sep.className = 'agent-row-sep';
-      menu.appendChild(sep);
-    }
-    lastType = a.type;
-    const row = document.createElement('div');
-    row.className = 'agent-row-item' + (a.pinned ? ' pinned' : '') + (a.id === app.currentAgentId ? ' selected' : '');
-    row.dataset.id = a.id;
-    row.dataset.type = a.type;
-    const label = a.name || a.id.slice(0, 12);
-    const configBtn = a.type === 'custom'
-      ? `<button class="agent-row-config" title="Configure agent" data-id="${a.id}">${icon('settings', { size: '14px' })}</button>`
-      : '';
-    const hasRunning = !!_agentRunningStatus[a.id];
-    const statusHtml = hasRunning
-      ? `<span class="session-row-status session-status-running" title="Agent is thinking…">${icon('loader-2', { size: '12px' })}</span>`
-      : '';
-    row.innerHTML = `
-      <span class="row-drag-handle" data-drag-handle title="Drag to reorder · hold to pin">${icon('grip-vertical', { size: '13px' })}</span>
-      <span class="agent-row-pin-icon">${icon('pin', { size: '12px' })}</span>
-      ${statusHtml}
-      <span class="agent-row-title" title="Hold to rename">${_truncate(label, 28).replace(/</g, '&lt;')}</span>
-      ${configBtn}
-      <button class="agent-row-delete" title="Delete agent" data-id="${a.id}">${icon('trash-2', { size: '14px' })}</button>
-    `;
-    menu.appendChild(row);
-  }
+  // Agent dropdown UI removed — this is a no-op kept for call sites.
 }
 
 /**
@@ -245,7 +232,11 @@ function _applyAgentReorder(orderedIds) {
 }
 
 export async function populateAgentSelect(userId) {
-  if (!userId) return;
+  // No user yet (cold start / anon id not resolved): still flip the spinner to a
+  // clickable + so the new-session button never sits dead. Starting a fresh
+  // session doesn't require the agent list — the click handler falls back to a
+  // direct new session when nothing is cached.
+  if (!userId) { _setNewSessionBtnReady(); return; }
 
   try {
     // Share the agent data with agents.js so it doesn't re-fetch.
@@ -268,6 +259,7 @@ export async function populateAgentSelect(userId) {
     _agentsCache = customs.map(a => ({
       id: a.id,
       name: a.name || a.id.slice(0, 12),
+      icon: a.icon || '',
       type: 'custom',
       pinned: pinned.has(a.id),
     }));
@@ -286,6 +278,7 @@ export async function populateAgentSelect(userId) {
         _agentsCache = [{
           id: window.__agentId,
           name: window.__agentName || window.__agentId.slice(0, 12),
+          icon: '',
           type: 'custom',
           pinned: false,
         }];
@@ -299,27 +292,28 @@ export async function populateAgentSelect(userId) {
     }
     app.currentAgentId = (found && found.id) || '';
 
-    // Lock the trigger when visiting a public agent URL
-    const trigger = document.getElementById('agent-dropdown-trigger');
-    if (trigger) {
-      trigger.disabled = !!window.__agentId;
-      trigger.style.pointerEvents = window.__agentId ? 'none' : '';
-      trigger.style.opacity = window.__agentId ? '0.6' : '';
-    }
+    // Lock the trigger when visiting a public agent URL — no longer needed
+    // since the agent dropdown was removed, but kept for __agentId support.
 
     _renderAgentRows();
     _setAgentTriggerLabel();
+
+    // Agent icons just became available — refresh any already-rendered session
+    // rows so they show real icons instead of empty.
+    if (_sessionsCache.length) {
+      _renderSessionRows();
+      _setTriggerLabel();
+    }
 
     // Sessions are scoped to an agent — refresh the session list now that
     // currentAgentId is settled. Deferred: sessions are fetched lazily when
     // the user first opens the session dropdown (see openMenu below).
     // populateSessionSelect(userId);
-
-    // Fetch running status for all agents so the dropdown shows spinners
-    // next to agents that are currently thinking.
-    _fetchAgentRunningStatuses();
   } catch (e) {
     console.warn('Failed to load agents for selector:', e);
+  } finally {
+    // Agents are loaded (or failed) — turn the spinner into a clickable +.
+    _setNewSessionBtnReady();
   }
 }
 
@@ -526,9 +520,7 @@ export function renderUserDropdown() {
 let _sessionsCache = [];
 
 // Map of agentId → boolean indicating whether that agent has running sessions.
-// Populated by _fetchAgentRunningStatuses() and used by _renderAgentRows() to
-// show a spinner next to agents that are currently thinking.
-let _agentRunningStatus = {};
+// Removed: _agentRunningStatus, _fetchAgentRunningStatuses — agent dropdown UI removed.
 
 // Monotonic counter — on init we fire one fetch from populateUserSelect (no
 // agent filter yet) and another from populateAgentSelect (filtered once the
@@ -542,31 +534,17 @@ let _sessionFetchSeq = 0;
  * _renderAgentRows() can show a spinner next to agents with active runs.
  */
 async function _fetchAgentRunningStatuses() {
-  const userId = app.currentUserId;
-  if (!userId) return;
-  try {
-    const token = localStorage.getItem('auth_token');
-    let url = `/api/v1/db/sessions?db=local.db&user_id=${encodeURIComponent(userId)}&limit=50`;
-    if (token) url += `&token=${encodeURIComponent(token)}`;
-    const res = await fetch(apiPath(url));
-    if (!res.ok) return;
-    const data = await res.json();
-    const map = {};
-    for (const s of (data.sessions || [])) {
-      if (s.run_status === 'running' && s.agent_id) {
-        map[s.agent_id] = true;
-      }
-    }
-    _agentRunningStatus = map;
-    // Re-render agent rows so the status sprites appear
-    _renderAgentRows();
-  } catch (e) {
-    // Silently fail — the spinner is a nice-to-have, not critical
-  }
+  // Agent dropdown UI removed — this is a no-op kept for call sites.
 }
 
 function _truncate(s, n) {
   return (s && s.length > n) ? s.slice(0, n) + '…' : (s || '');
+}
+
+function _agentIconFor(agentId) {
+  if (!agentId) return '';
+  const found = _agentsCache.find(a => a.id === agentId);
+  return (found && found.icon) || '';
 }
 
 function _setTriggerLabel() {
@@ -585,8 +563,11 @@ function _setTriggerLabel() {
   const sid = app.currentSessionId;
   const found = _sessionsCache.find(s => s.id === sid);
   const title = (found && found.title) || 'New Session';
-  labelEl.textContent = _truncate(title, 20);
-  labelEl.title = (found && found.id) || sid || '';
+  // Show the agent's icon (emoji) + session title — no agent name text.
+  const agentId = (found && found.agent_id) || app.currentAgentId;
+  const agentIcon = _agentIconFor(agentId);
+  labelEl.textContent = (agentIcon ? agentIcon + ' ' : '') + _truncate(title, 22);
+  labelEl.title = ((found && found.id) || sid || '');
   // Click the label to re-enter rename mode
   labelEl.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -660,7 +641,11 @@ function _renderSessionRows() {
     const row = document.createElement('div');
     row.className = 'session-row' + (s.pinned ? ' pinned' : '') + (s.id === app.currentSessionId ? ' selected' : '');
     row.dataset.id = s.id;
+    if (s.agent_id) row.dataset.agent = s.agent_id;
     const label = s.title || 'New Session';
+    // Each row spans the whole agent list, so prefix the title with the owning
+    // agent's icon: "🤖 Session Title".
+    const agentIcon = _agentIconFor(s.agent_id);
     // Status indicator: spinning loader for running, checkmark for completed-unread, dot for read
     let statusHtml = '';
     if (s.run_status === 'running') {
@@ -668,11 +653,11 @@ function _renderSessionRows() {
     } else if (s.has_unread) {
       statusHtml = `<span class="session-row-status session-status-unread" title="New response ready">${icon('check-circle', { size: '12px' })}</span>`;
     }
-row.innerHTML = `
+    row.innerHTML = `
       <span class="row-drag-handle" data-drag-handle title="Drag to reorder · hold to pin">${icon('grip-vertical', { size: '13px' })}</span>
       <span class="session-row-pin-icon">${icon('pin', { size: '12px' })}</span>
       ${statusHtml}
-      <span class="session-row-title" title="Hold to rename">${_truncate(label, 28).replace(/</g, '&lt;')}</span>
+      <span class="session-row-title" title="Hold to rename"><span class="session-row-agent-icon">${agentIcon.replace(/</g, '&lt;')}</span><span class="session-row-sep"> </span>${_truncate(label, 28).replace(/</g, '&lt;')}</span>
       <button class="session-row-delete" title="Delete session" data-id="${s.id}" data-state="trash">${icon('trash-2', { size: '14px' })}</button>
     `;
     menu.appendChild(row);
@@ -717,9 +702,10 @@ export async function populateSessionSelect(userId) {
   const mySeq = ++_sessionFetchSeq;
   try {
     const token = localStorage.getItem('auth_token');
-    const agentId = app.currentAgentId || '';
-    let url = `/api/v1/db/sessions?db=local.db&user_id=${encodeURIComponent(userId)}&limit=20`;
-    if (agentId) url += `&agent_id=${encodeURIComponent(agentId)}`;
+    // The header dropdown now lists sessions for EVERY agent, so we deliberately
+    // omit the agent_id filter — the server returns the user's sessions across
+    // all agents, newest-active first, pinned on top.
+    let url = `/api/v1/db/sessions?db=local.db&user_id=${encodeURIComponent(userId)}&limit=50`;
     if (token) url += `&token=${encodeURIComponent(token)}`;
     const res = await fetch(apiPath(url));
     const data = await res.json();
@@ -727,6 +713,7 @@ export async function populateSessionSelect(userId) {
     _sessionsCache = (data.sessions || []).map(s => ({
       id: s.id,
       title: s.title || 'New Session',
+      agent_id: s.agent_id || null,
       created_at: s.created_at,
       updated_at: s.updated_at || s.created_at,
       pinned: !!s.pinned,
@@ -741,6 +728,7 @@ export async function populateSessionSelect(userId) {
       _sessionsCache.unshift({
         id: app.currentSessionId,
         title: 'New Session',
+        agent_id: app.currentAgentId || null,
         created_at: null,
         updated_at: null,
         pinned: false,
@@ -763,6 +751,20 @@ export async function populateSessionSelect(userId) {
  * Shows a warning triangle + count for interrupted/errored sessions,
  * and a running count for in-progress sessions.
  */
+// Swap the badge's lucide icon to a new name. Once an icon is rendered it
+// carries the `.lucide` class, which the auto-renderer treats as "already done"
+// and skips — so changing data-lucide alone won't repaint it. Stripping the
+// class makes it an unprocessed placeholder again, then we render that node.
+function _setBadgeIcon(badge, name) {
+  const el = badge.querySelector('[data-lucide]');
+  if (!el) return;
+  el.setAttribute('data-lucide', name);
+  el.classList.remove('lucide');
+  if (window.lucide && typeof window.lucide.createIcons === 'function') {
+    try { window.lucide.createIcons({ nodes: [el] }); } catch (_) {}
+  }
+}
+
 function _updateHeaderSessionCounter() {
   const badge = document.getElementById('header-session-counter');
   const countEl = document.getElementById('header-session-count');
@@ -785,8 +787,7 @@ function _updateHeaderSessionCounter() {
       ? '1 session needs attention'
       : `${needingAttention} sessions need attention`;
     // Reset to warning icon
-    const iconEl = badge.querySelector('[data-lucide]');
-    if (iconEl) iconEl.setAttribute('data-lucide', 'alert-triangle');
+    _setBadgeIcon(badge, 'alert-triangle');
     badge.className = 'header-notif-badge';
   } else if (running > 0) {
     countEl.textContent = running;
@@ -794,8 +795,7 @@ function _updateHeaderSessionCounter() {
     badge.title = running === 1
       ? '1 session running'
       : `${running} sessions running`;
-    const iconEl = badge.querySelector('[data-lucide]');
-    if (iconEl) iconEl.setAttribute('data-lucide', 'loader-2');
+    _setBadgeIcon(badge, 'loader-2');
     badge.className = 'header-notif-badge header-notif-running';
   } else if (unread > 0) {
     countEl.textContent = unread;
@@ -803,8 +803,7 @@ function _updateHeaderSessionCounter() {
     badge.title = unread === 1
       ? '1 session with new response'
       : `${unread} sessions with new responses`;
-    const iconEl = badge.querySelector('[data-lucide]');
-    if (iconEl) iconEl.setAttribute('data-lucide', 'check-circle');
+    _setBadgeIcon(badge, 'check-circle');
     badge.className = 'header-notif-badge header-notif-unread';
   } else {
     badge.style.display = 'none';
@@ -953,78 +952,68 @@ async function _fetchMessages(sessionId, limit, beforeId) {
 }
 
 /**
- * Prepend a "Load earlier messages" button at the top of chatMessages.
+ * Guard flag — prevents concurrent scroll-triggered loads.
  */
-function _prependLoadEarlierBtn(sessionId) {
-  const existing = document.getElementById(`load-earlier-${sessionId}`);
-  if (existing) return existing;
-  const btn = document.createElement('div');
-  btn.id = `load-earlier-${sessionId}`;
-  btn.className = 'load-earlier-btn';
-  btn.textContent = '\u2191 Load earlier messages';
-  btn.addEventListener('click', async function onClick() {
-    btn.textContent = 'Loading\u2026';
-    btn.style.pointerEvents = 'none';
-    try {
-      const cache = _messageCache.get(sessionId);
-      const oldestId = cache && cache.messages.length > 0 ? cache.messages[0].id : null;
-      if (!oldestId) { btn.remove(); return; }
-      const data = await _fetchMessages(sessionId, 100, oldestId);
-      if (!data.messages || data.messages.length === 0) {
-        btn.textContent = 'No more messages';
-        setTimeout(() => btn.remove(), 2000);
-        return;
-      }
-      // Prepend to cache
-      cache.messages = [...data.messages, ...cache.messages];
-      cache.hasMore = !!data.has_more;
-      // Capture scrollHeight before inserting so we can adjust scrollTop
-      const container = app.chatMessages;
-      const oldScrollHeight = container ? container.scrollHeight : 0;
-      // Render above existing bubbles — find the load-earlier btn as anchor
-      const anchor = document.getElementById(`load-earlier-${sessionId}`);
-      // We'll insertBefore each new bubble right after the anchor
-      for (const msg of data.messages) {
-        if (msg.role === 'user') {
-          const bubble = _createBubble('user', msg.content, null, null, null, msg.id);
-          if (anchor && anchor.parentNode) {
-            anchor.parentNode.insertBefore(bubble, anchor.nextSibling);
-          }
-        } else if (msg.role === 'assistant') {
-          let text = msg.content || '';
-          const toolCallIdx = text.indexOf('\n\n[Tool calls: ');
-          if (toolCallIdx !== -1) text = text.slice(0, toolCallIdx);
-          const hasText = !!text.trim();
-          if (!hasText && msg.status !== 'streaming') continue;
-          const cls = msg.status === 'streaming' ? 'streaming' :
-                      msg.status === 'interrupted' ? 'interrupted' :
-                      msg.status === 'error' ? 'error' : null;
-          const bubble = _createBubble('agent', text, cls, null, msg.id, null);
-          if (anchor && anchor.parentNode) {
-            anchor.parentNode.insertBefore(bubble, anchor.nextSibling);
-          }
-        }
-      }
-      // Adjust scrollTop so the view doesn't jump
-      if (container) _adjustScrollForPrepend(container, oldScrollHeight);
-      if (!data.has_more) {
-        btn.remove();
-      } else {
-        btn.textContent = '\u2191 Load earlier messages';
-        btn.style.pointerEvents = '';
-      }
-    } catch (e) {
-      console.warn('Failed to load earlier messages:', e);
-      btn.textContent = '\u2191 Load earlier messages';
-      btn.style.pointerEvents = '';
+let _loadingMoreMessages = false;
+
+/**
+ * When the user scrolls near the top of the chat and more server-side
+ * messages exist, fetch and prepend the next batch. Called from the
+ * virtual-scroll scroll handler (on every animation frame while scrolling).
+ */
+async function _maybeLoadMoreOnScrollTop(sessionId) {
+  if (!sessionId) return;
+  if (_loadingMoreMessages) return;
+  const container = app.chatMessages;
+  if (!container) return;
+  const cache = _messageCache.get(sessionId);
+  if (!cache || !cache.hasMore) return;
+  // Trigger when the user is within 150px of the top of the scroll container
+  if (container.scrollTop > 150) return;
+
+  _loadingMoreMessages = true;
+  try {
+    const oldestId = cache.messages.length > 0 ? cache.messages[0].id : null;
+    if (!oldestId) { cache.hasMore = false; return; }
+    const data = await _fetchMessages(sessionId, 100, oldestId);
+    if (!data.messages || data.messages.length === 0) {
+      cache.hasMore = false;
+      return;
     }
-  });
-  if (app.chatMessages && app.chatMessages.firstChild) {
-    app.chatMessages.insertBefore(btn, app.chatMessages.firstChild);
-  } else if (app.chatMessages) {
-    app.chatMessages.appendChild(btn);
+    // Prepend to cache
+    cache.messages = [...data.messages, ...cache.messages];
+    cache.hasMore = !!data.has_more;
+    // Capture scrollHeight before inserting so we can adjust scrollTop
+    const oldScrollHeight = container.scrollHeight;
+    // Capture the first child as an anchor so we insert before it
+    const firstChild = container.firstChild;
+    // Render above existing bubbles (insertBefore each new bubble before firstChild)
+    for (const msg of data.messages) {
+      if (msg.role === 'user') {
+        const bubble = _createBubble('user', msg.content, null, null, null, msg.id);
+        container.insertBefore(bubble, firstChild);
+      } else if (msg.role === 'assistant') {
+        let text = msg.content || '';
+        const toolCallIdx = text.indexOf('\n\n[Tool calls: ');
+        if (toolCallIdx !== -1) text = text.slice(0, toolCallIdx);
+        const hasText = !!text.trim();
+        if (!hasText && msg.status !== 'streaming') continue;
+        const cls = msg.status === 'streaming' ? 'streaming' :
+                    msg.status === 'interrupted' ? 'interrupted' :
+                    msg.status === 'error' ? 'error' : null;
+        const bubble = _createBubble('agent', text, cls, null, msg.id, null);
+        container.insertBefore(bubble, firstChild);
+      }
+    }
+    // Adjust scrollTop so the view doesn't jump
+    _adjustScrollForPrepend(container, oldScrollHeight);
+    // Store heights for newly inserted real bubbles
+    container.querySelectorAll('.chat-bubble').forEach(b => _storeBubbleHeight(b));
+  } catch (e) {
+    console.warn('Failed to load earlier messages:', e);
+  } finally {
+    _loadingMoreMessages = false;
   }
-  return btn;
 }
 
 // ── Virtual-scroll helpers ──────────────────────────────────────────────────
@@ -1233,6 +1222,7 @@ function _installVirtualScroll() {
     if (_vsTimer) cancelAnimationFrame(_vsTimer);
     _vsTimer = requestAnimationFrame(() => {
       _recycleVisible();
+      _maybeLoadMoreOnScrollTop(app.currentSessionId);
       _vsTimer = null;
     });
   };
@@ -1301,6 +1291,10 @@ function _showDebugBubble(sessionId) {
 }
 
 export async function loadSessionChat(sessionId) {
+  // Refresh the active-skill chips for the session being opened.
+  if (typeof app.refreshActiveSkills === 'function') {
+    try { app.refreshActiveSkills(); } catch (_) { /* best-effort */ }
+  }
   try {
     // Check cache first
     const cached = _messageCache.get(sessionId);
@@ -1349,9 +1343,7 @@ export async function loadSessionChat(sessionId) {
       // Attach tool-call panels from cached data
       _attachToolCallsFromMessages(cached.messages);
 
-      if (cached.hasMore) {
-        _prependLoadEarlierBtn(sessionId);
-      }
+      // Infinite-scroll: auto-loads when the user scrolls to the top
 
       app.chatMessages.scrollTop = app.chatMessages.scrollHeight;
       // Install virtual scroll after rendering
@@ -1415,10 +1407,7 @@ export async function loadSessionChat(sessionId) {
     const run = data.run || null;
     _renderMessages(msgs, sessionId, run, false);
 
-    // Prepend "Load earlier" button if more exist
-    if (data.has_more) {
-      _prependLoadEarlierBtn(sessionId);
-    }
+    // No "Load earlier" button — scroll-to-top auto-loads more messages
 
     // Input availability follows text presence, not run state
     if (app.chatSend) app.chatSend.disabled = !((app.chatInput && app.chatInput.value.trim()));
@@ -1482,7 +1471,6 @@ export function registerSessionApi() {
 }
 
 export function initSessions() {
-
   // ── Theme system ──
   const STORAGE_KEY = 'webagent_theme';
 
@@ -1692,16 +1680,42 @@ export function initSessions() {
 
   async function switchToSession(sid) {
     if (!sid || sid === app.currentSessionId) { closeMenu(); return; }
-    // Record this session as the last active for the current agent
-    if (app.currentAgentId) {
-      _lastSessionPerAgent.set(app.currentAgentId, sid);
+    // The dropdown spans every agent, so the picked session may belong to a
+    // different agent than the one currently active. Switch the agent to match
+    // before loading the session, so chat sends and agent-scoped UI line up.
+    const targetSess = _sessionsCache.find(s => s.id === sid);
+    const targetAgentId = (targetSess && targetSess.agent_id) || app.currentAgentId;
+    if (targetAgentId && targetAgentId !== app.currentAgentId) {
+      app.currentAgentId = targetAgentId;
+      try { localStorage.setItem('selectedAgentId', targetAgentId); } catch (_) {}
+    }
+    // Record this session as the last active for its owning agent
+    if (targetAgentId) {
+      _lastSessionPerAgent.set(targetAgentId, sid);
       _saveLastSessionMap();
     }
     // Leaving a session does NOT stop its run — it keeps going server-side and
     // we can view it again later from any device. Only tear down LOCAL UI state.
-    abortChatStream();
+    app.abortChatStream?.();
     app.currentSessionId = sid;
     localStorage.setItem('terminalSessionId', app.currentSessionId);
+
+    // ── IMMEDIATE UI: close dropdown, update label, and show a loading
+    //    spinner in the chat area BEFORE the async fetch below. ──
+    closeMenu();
+    _renderSessionRows();
+    _setTriggerLabel();
+    _setAgentTriggerLabel();
+    _teardownVirtualScroll();
+    if (app.chatMessages) {
+      app.chatMessages.innerHTML =
+        '<div class="chat-loading-wrap">' +
+          '<div class="chat-loading-spinner">' +
+            '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/></svg>' +
+          '</div>' +
+        '</div>';
+    }
+
     // Await so the in-progress partial is rendered + the resume floor is set
     // BEFORE we ask the WS to replay only-newer events below.
     await loadSessionChat(sid);
@@ -1711,7 +1725,6 @@ export function initSessions() {
     chatActivitySessionChanged();
     _renderSessionRows();
     _setTriggerLabel();
-    closeMenu();
 
     // Drain any WS-replayed events that arrived BEFORE we navigated here
     // (e.g. user hard-refreshed onto the home page while a run was in
@@ -1768,8 +1781,11 @@ export function initSessions() {
         if (other !== btn) _resetDeleteBtn(other);
       });
     } else if (state === 'warning') {
-      // Second click: delete
+      // Second click: show spinner + delete
       btn.dataset.state = 'deleting';
+      btn.classList.remove('warning');
+      btn.title = 'Deleting…';
+      btn.innerHTML = icon('loader-2', { size: '14px' });
       deleteSession(sid);
     }
   }
@@ -1842,6 +1858,16 @@ export function initSessions() {
       else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
     });
     input.addEventListener('blur', () => finish(true));
+    // Clicking outside the input (on the sessionTrigger but outside the input,
+    // or anywhere else on the page) should blur → commit the rename.
+    const _docHandler = (e) => {
+      if (input && !input.contains(e.target)) {
+        document.removeEventListener('pointerdown', _docHandler, true);
+        input.blur();
+      }
+    };
+    // Use capture phase so we catch clicks before the trigger's own handlers.
+    document.addEventListener('pointerdown', _docHandler, true);
   }
 
   async function deleteSession(sid) {
@@ -1851,13 +1877,21 @@ export function initSessions() {
       const res = await fetch(apiPath('/api/v1/db/sessions/' + encodeURIComponent(sid) + '?db=local.db'), { method: 'DELETE' });
       if (res.ok) {
         if (sid === app.currentSessionId) {
-          app.currentSessionId = generateUUID();
-          localStorage.setItem('terminalSessionId', app.currentSessionId);
-          _teardownVirtualScroll();
-          app.chatMessages.innerHTML = '';
-          app.addChatBubble('agent', 'Session deleted. New session created.');
+          // Refresh cache then switch to most recent session, or create new if none
+          await populateSessionSelect(app.currentUserId);
+          const others = _sessionsCache.filter(s => s.id !== sid);
+          if (others.length > 0) {
+            await switchToSession(others[0].id);
+          } else {
+            app.currentSessionId = generateUUID();
+            localStorage.setItem('terminalSessionId', app.currentSessionId);
+            _teardownVirtualScroll();
+            app.chatMessages.innerHTML = '';
+            app.addChatBubble('agent', 'Session deleted. New session created.');
+          }
+        } else {
+          await populateSessionSelect(app.currentUserId);
         }
-        await populateSessionSelect(app.currentUserId);
       }
     } catch (e) {
       console.warn('Failed to delete session:', e);
@@ -1899,6 +1933,14 @@ export function initSessions() {
       else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
     });
     input.addEventListener('blur', () => finish(true));
+    // Clicking outside the input should blur → commit the rename.
+    const _docHandler = (e) => {
+      if (input && !input.contains(e.target)) {
+        document.removeEventListener('pointerdown', _docHandler, true);
+        input.blur();
+      }
+    };
+    document.addEventListener('pointerdown', _docHandler, true);
   }
 
   if (sessionTrigger) {
@@ -1974,24 +2016,184 @@ export function initSessions() {
     if (e.key === 'Escape' && menu && !menu.hidden) closeMenu();
   });
 
-  // New session button — creates a fresh session for the current agent
+  // New session button — start a fresh session. When the user owns more than
+  // one agent, clicking + opens a small picker so they choose which agent the
+  // new session belongs to; with a single agent (or none) it starts directly.
   const sessionNewBtn = document.getElementById('session-new');
-  if (sessionNewBtn) {
-    sessionNewBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      abortChatStream();
-      app.currentSessionId = generateUUID();
-      localStorage.setItem('terminalSessionId', app.currentSessionId);
-      _teardownVirtualScroll();
-      app.chatMessages.innerHTML = '';
-      app.addChatBubble('agent', 'New session. Start typing below.');
-      populateSessionSelect(app.currentUserId);
-      loopSessionChanged();
-      loopVisualSessionChanged();
-      autoAgentSessionChanged();
-      chatActivitySessionChanged();
-    });
+
+  /** Create a fresh session, optionally switching to a chosen agent first. */
+  function _startNewSession(agentId) {
+    app.abortChatStream?.();
+    if (agentId && agentId !== app.currentAgentId) {
+      app.currentAgentId = agentId;
+      try { localStorage.setItem('selectedAgentId', agentId); } catch (_) {}
+    }
+    app.currentSessionId = generateUUID();
+    localStorage.setItem('terminalSessionId', app.currentSessionId);
+    _teardownVirtualScroll();
+    app.chatMessages.innerHTML = '';
+    app.addChatBubble('agent', 'New session. Start typing below.');
+    populateSessionSelect(app.currentUserId);
+    loopSessionChanged();
+    loopVisualSessionChanged();
+    autoAgentSessionChanged();
+    chatActivitySessionChanged();
+    _setAgentTriggerLabel();
+    // Focus the input after creating a new session so the user can start
+    // typing immediately (especially important on mobile).
+    if (app.chatInput) {
+      app.chatInput.value = '';
+      app.chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    if (app.focusChatInput) app.focusChatInput();
   }
+
+  // ── New-session agent picker (only shown when >1 agent) ──
+  let _agentPickerEl = null;
+  function _closeAgentPicker() {
+    if (_agentPickerEl) { _agentPickerEl.remove(); _agentPickerEl = null; }
+    document.removeEventListener('click', _onAgentPickerOutside, true);
+    document.removeEventListener('keydown', _onAgentPickerEsc, true);
+    window.removeEventListener('resize', _closeAgentPicker);
+  }
+  // True only when a picker element is actually in the DOM. Guards against a
+  // stale _agentPickerEl (element detached without going through
+  // _closeAgentPicker): without this, the next click sees a truthy ref, treats
+  // it as "open", toggles it off, and opens nothing — so the + appears dead.
+  function _pickerIsOpen() {
+    return !!_agentPickerEl && document.body.contains(_agentPickerEl);
+  }
+  function _onAgentPickerOutside(e) {
+    if (_agentPickerEl && !_agentPickerEl.contains(e.target) && !e.target.closest('#session-new') && !e.target.closest('#session-new-header-btn')) {
+      _closeAgentPicker();
+    }
+  }
+  function _onAgentPickerEsc(e) { if (e.key === 'Escape') _closeAgentPicker(); }
+
+  function _openAgentPicker(anchorEl) {
+    _closeAgentPicker();
+    const picker = document.createElement('div');
+    picker.className = 'agent-dropdown-menu new-session-agent-picker';
+    const head = document.createElement('div');
+    head.className = 'new-session-picker-head';
+    head.textContent = 'New session with…';
+    picker.appendChild(head);
+    for (const a of _agentsCache) {
+      const row = document.createElement('div');
+      row.className = 'agent-row-item';
+      row.innerHTML = `<span class="agent-row-title">${_truncate(a.name || a.id.slice(0, 12), 28).replace(/</g, '&lt;')}</span>`;
+      row.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        _closeAgentPicker();
+        _startNewSession(a.id);
+      });
+      picker.appendChild(row);
+    }
+    document.body.appendChild(picker);
+    // Anchor under the triggering + button. If the header button triggered
+    // this, anchor below it instead of the chat-panel button.
+    const anchorBtn = anchorEl || document.getElementById('session-new') || sessionNewBtn;
+    const r = anchorBtn.getBoundingClientRect();
+    picker.style.top = Math.round(r.bottom + 6) + 'px';
+    const w = picker.offsetWidth || 200;
+    let left = r.right - w;
+    if (left < 8) left = 8;
+    picker.style.left = Math.round(left) + 'px';
+    _agentPickerEl = picker;
+    // Defer listener attach so this same click doesn't immediately close it.
+    setTimeout(() => {
+      document.addEventListener('click', _onAgentPickerOutside, true);
+      document.addEventListener('keydown', _onAgentPickerEsc, true);
+      window.addEventListener('resize', _closeAgentPicker);
+    }, 0);
+  }
+
+  // The + button drives its own work: a click loads the agent list on demand
+  // (showing a spinner while it does), then opens the agent picker once the
+  // list is in. A double-click skips the picker and starts a fresh session with
+  // the agent already selected. This makes the button reliable regardless of
+  // how far along boot is — there is no "dead until agents preload" window and
+  // no race on whether the cache happened to be populated at click time.
+
+  let _newSessionBusy = false;     // a load is in flight — ignore extra clicks
+  let _newSessionClickTimer = null; // pending single-click (waiting for a 2nd)
+
+  // Swap the + into a spinner (or back) while the agent list loads on click.
+  function _setNewSessionBtnSpinning(on) {
+    const b = document.getElementById('session-new');
+    if (!b) return;
+    b.classList.toggle('loading', on);
+    b.title = on ? 'Loading agents…' : 'New session';
+    b.innerHTML = icon(on ? 'loader-2' : 'plus', { size: '24px' });
+  }
+
+  // Make sure the agent list has been fetched at least once. populateAgentSelect
+  // caches the fetch on window.__agentsSharedData, so this only hits the network
+  // the first time; later calls are effectively instant.
+  async function _ensureAgentsLoaded() {
+    if (window.__agentsSharedData || !app.currentUserId) return;
+    _setNewSessionBtnSpinning(true);
+    try { await populateAgentSelect(app.currentUserId); }
+    catch (_) { /* fall through — we still let the user start a session */ }
+    finally { _setNewSessionBtnSpinning(false); }
+  }
+
+  // Single click: load agents (with spinner) if needed, then pick or start.
+  async function _onNewSessionSingle(anchorEl) {
+    if (_newSessionBusy) return;
+    _newSessionBusy = true;
+    try {
+      closeMenu();                                         // close session list
+      if (_pickerIsOpen()) { _closeAgentPicker(); return; } // open → toggle off
+      _closeAgentPicker();                                 // clear any stale ref
+      await _ensureAgentsLoaded();
+      if (_agentsCache.length > 1) { _openAgentPicker(anchorEl); return; }
+      // 1 agent → use it; 0 agents → start with no agent selected.
+      _startNewSession(_agentsCache.length === 1 ? _agentsCache[0].id : null);
+    } catch (err) {
+      console.error('New-session click failed:', err);
+    } finally {
+      _newSessionBusy = false;
+    }
+  }
+
+  // Double click: skip the picker entirely, start fresh on the current agent.
+  function _onNewSessionDouble() {
+    _closeAgentPicker();
+    _startNewSession(app.currentAgentId || null);
+  }
+
+  // Delegated on document (capture) so it fires even if the #session-new button
+  // is re-rendered/replaced after init or sits under another element — we just
+  // need the click to land anywhere on (or inside) #session-new. A short timer
+  // holds the single-click action so a second click can promote it to a
+  // double-click instead.
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest && e.target.closest('#session-new');
+    if (!btn) return;
+    e.stopPropagation();
+    e.preventDefault();
+    if (_newSessionClickTimer) return; // 2nd click of a pair — dblclick handles it
+    _newSessionClickTimer = setTimeout(() => {
+      _newSessionClickTimer = null;
+      _onNewSessionSingle();
+    }, 220);
+  }, true);
+
+  document.addEventListener('dblclick', (e) => {
+    const btn = e.target.closest && e.target.closest('#session-new');
+    if (!btn) return;
+    e.stopPropagation();
+    e.preventDefault();
+    if (_newSessionClickTimer) { clearTimeout(_newSessionClickTimer); _newSessionClickTimer = null; }
+    _onNewSessionDouble();
+  }, true);
+
+  // The handler is wired, so flip the boot spinner to a clickable + right away
+  // (the button starts disabled in chat.html). The on-click flow above handles
+  // loading agents itself, so the + no longer has to wait on the initial
+  // populateAgentSelect — which on a cold server start can take many seconds.
+  _setNewSessionBtnReady();
 
   // Header delete button — two-click confirm (same pattern as dropdown rows)
   const sessionDelHeader = document.getElementById('session-delete-header');
@@ -2005,7 +2207,7 @@ export function initSessions() {
         sessionDelHeader.dataset.state = 'warning';
         sessionDelHeader.title = 'Click again to confirm delete';
         sessionDelHeader.innerHTML = icon('alert-triangle', { size: '14px' });
-        sessionDelHeader.style.color = '#ff5577';
+        sessionDelHeader.style.color = '#e5a83e';
         setTimeout(() => {
           sessionDelHeader.dataset.state = 'trash';
           sessionDelHeader.title = 'Delete session';
@@ -2013,16 +2215,65 @@ export function initSessions() {
           sessionDelHeader.style.color = '';
         }, 3000);
       } else if (state === 'warning') {
-        deleteSession(sid);
-        sessionDelHeader.dataset.state = 'trash';
-        sessionDelHeader.title = 'Delete session';
-        sessionDelHeader.innerHTML = icon('trash-2', { size: '14px' });
+        sessionDelHeader.dataset.state = 'deleting';
+        sessionDelHeader.title = 'Deleting…';
+        sessionDelHeader.innerHTML = '<span class="session-status-running" style="display:inline-flex;width:18px;height:18px;">' + icon('loader-2', { size: '18px' }) + '</span>';
         sessionDelHeader.style.color = '';
+        deleteSession(sid).then(() => {
+          sessionDelHeader.dataset.state = 'trash';
+          sessionDelHeader.title = 'Delete session';
+          sessionDelHeader.innerHTML = icon('trash-2', { size: '14px' });
+        });
       }
     });
   }
 
-  // Header delete button for agent — two-click confirm
+  // ── Agent header delete button ──
+  // Agent dropdown UI removed — no agent dropdown wiring needed.
+
+  function switchToAgent(aid, opts) {
+    opts = opts || {};
+    const forceNew = !!opts.forceNewSession;
+    const silent   = !!opts.silent;
+    if (!aid) return;
+    if (aid === app.currentAgentId && !forceNew) return;
+    // Save the current session under the PREVIOUS agent before switching
+    const prevAgentId = app.currentAgentId;
+    if (prevAgentId && app.currentSessionId) {
+      _lastSessionPerAgent.set(prevAgentId, app.currentSessionId);
+      _saveLastSessionMap();
+    }
+    // Switching agent leaves the current session's run going in the
+    // background — do NOT interrupt it. Reset local UI only.
+    app.abortChatStream?.();
+    app.currentAgentId = aid;
+    localStorage.setItem('selectedAgentId', aid);
+    // Look up the last session for this agent (skipped when forcing a new one)
+    const lastSid = forceNew ? null : _lastSessionPerAgent.get(aid);
+    if (lastSid) {
+      app.currentSessionId = lastSid;
+      localStorage.setItem('terminalSessionId', app.currentSessionId);
+      _teardownVirtualScroll();
+      app.chatMessages.innerHTML = '';
+      // loadSessionChat will render messages; if the session was deleted
+      // (restricted response) it auto-creates a fresh one.
+      loadSessionChat(lastSid);
+    } else {
+      // No prior session for this agent — start a fresh one
+      app.currentSessionId = generateUUID();
+      localStorage.setItem('terminalSessionId', app.currentSessionId);
+      _teardownVirtualScroll();
+      app.chatMessages.innerHTML = '';
+      if (!silent) app.addChatBubble('agent', 'Switched agent. New session started.');
+    }
+    populateSessionSelect(app.currentUserId);
+    loopSessionChanged();
+    loopVisualSessionChanged();
+    autoAgentSessionChanged();
+    chatActivitySessionChanged();
+    _renderAgentRows();
+    _setAgentTriggerLabel();
+  }
   const agentDelHeader = document.getElementById('agent-delete-header');
   if (agentDelHeader) {
     agentDelHeader.addEventListener('click', (e) => {
@@ -2052,293 +2303,33 @@ export function initSessions() {
   }
 
   // ── Custom agent dropdown ──
-  const agentDropdown = document.getElementById('agent-dropdown');
-  const agentTrigger  = document.getElementById('agent-dropdown-trigger');
-  const agentMenu     = document.getElementById('agent-dropdown-menu');
+  // Agent dropdown UI removed — the full block (agentDropdown, agentTrigger,
+  // agentMenu, openAgentMenu, closeAgentMenu, startAgentRename, patchAgentName,
+  // confirmDeleteAgent, openAgentConfig, _headerRenameAgent, agent-new, and
+  // their event wiring) has been deleted.
 
-  function openAgentMenu() {
-    if (!agentMenu) return;
-    // Opening one header dropdown closes the other — treat the gesture as
-    // an outside-click for any peer menu.
-    closeMenu();
-    agentMenu.hidden = false;
-    agentDropdown.classList.add('open');
-  }
+  // Keep: switchToAgent, app.switchToAgent, startWebagentSession
+  // (these are the core agent-switching logic, still needed by page chat pills).
 
-  function closeAgentMenu() {
-    if (!agentMenu) return;
-    agentMenu.hidden = true;
-    agentDropdown.classList.remove('open');
-  }
+  // switchToAgent and startWebagentSession are defined above — we skip the
+  // old inline copy that was inside the agent dropdown event wiring.
+  // app.switchToAgent and app.startWebagentSession are already set above.
 
-  function switchToAgent(aid) {
-    if (!aid || aid === app.currentAgentId) { closeAgentMenu(); return; }
-    // Save the current session under the PREVIOUS agent before switching
-    const prevAgentId = app.currentAgentId;
-    if (prevAgentId && app.currentSessionId) {
-      _lastSessionPerAgent.set(prevAgentId, app.currentSessionId);
-      _saveLastSessionMap();
-    }
-    // Switching agent leaves the current session's run going in the
-    // background — do NOT interrupt it. Reset local UI only.
-    abortChatStream();
-    app.currentAgentId = aid;
-    localStorage.setItem('selectedAgentId', aid);
-    // Look up the last session for this agent
-    const lastSid = _lastSessionPerAgent.get(aid);
-    if (lastSid) {
-      app.currentSessionId = lastSid;
-      localStorage.setItem('terminalSessionId', app.currentSessionId);
-      _teardownVirtualScroll();
-      app.chatMessages.innerHTML = '';
-      // loadSessionChat will render messages; if the session was deleted
-      // (restricted response) it auto-creates a fresh one.
-      loadSessionChat(lastSid);
-    } else {
-      // No prior session for this agent — start a fresh one
-      app.currentSessionId = generateUUID();
-      localStorage.setItem('terminalSessionId', app.currentSessionId);
-      _teardownVirtualScroll();
-      app.chatMessages.innerHTML = '';
-      app.addChatBubble('agent', 'Switched agent. New session started.');
-    }
-    populateSessionSelect(app.currentUserId);
-    loopSessionChanged();
-    loopVisualSessionChanged();
-    autoAgentSessionChanged();
-    chatActivitySessionChanged();
-    _renderAgentRows();
-    _setAgentTriggerLabel();
-    closeAgentMenu();
-  }
-
-  // Expose so other modules (e.g. the Pages prompt bar) can drive the
-  // right-side chat agent without duplicating session/teardown logic.
-  app.switchToAgent = switchToAgent;
-
-  function startAgentRename(aid, row) {
-    const titleEl = row.querySelector('.agent-row-title');
-    if (!titleEl) return;
-    const agent = _agentsCache.find(a => a.id === aid);
-    const current = (agent && agent.name) || '';
-    const input = document.createElement('input');
-    input.type = 'text';
-    // Reuse the session input styling; the agent class lets the long-press
-    // handler opt out of re-triggering on the input.
-    input.className = 'agent-row-title-input session-row-title-input';
-    input.value = current;
-    titleEl.replaceWith(input);
-    input.focus();
-    input.select();
-
-    let done = false;
-    const finish = async (commit) => {
-      if (done) return;
-      done = true;
-      const newName = input.value.trim();
-      if (commit && newName && newName !== current) {
-        const ok = await patchAgentName(aid, newName);
-        if (ok && agent) agent.name = newName;
-      }
-      _renderAgentRows();
-      _setAgentTriggerLabel();
-      // Keep the Agents page label in sync with the rename.
-      if (typeof app.refreshAgentsOrder === 'function') app.refreshAgentsOrder();
-    };
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-      else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
-    });
-    input.addEventListener('blur', () => finish(true));
-  }
-
-  async function patchAgentName(aid, name) {
-    try {
-      const res = await fetch(apiPath('/api/v1/agents/' + encodeURIComponent(aid)), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: app.currentUserId, name }),
-      });
-      return res.ok;
-    } catch (e) {
-      console.warn('Failed to rename agent:', e);
-      return false;
-    }
-  }
-
-  async function confirmDeleteAgent(aid) {
-    const agent = _agentsCache.find(a => a.id === aid);
-    const name = (agent && agent.name) || 'this agent';
-    if (!window.confirm(`Delete agent "${name}"? This cannot be undone.`)) return;
-    try {
-      const res = await fetch(
-        apiPath('/api/v1/agents/' + encodeURIComponent(aid) + '?user_id=' + encodeURIComponent(app.currentUserId)),
-        { method: 'DELETE' },
-      );
-      if (!res.ok) return;
-      // If the active agent was deleted, drop the saved selection so
-      // populateAgentSelect re-resolves to whatever agent remains.
-      if (aid === app.currentAgentId) {
-        try { localStorage.removeItem('selectedAgentId'); } catch (_) {}
-      }
-      // Re-fetch + re-render the dropdown (and the agent-scoped session list).
-      await populateAgentSelect(app.currentUserId);
-      // Mirror the removal on the Agents page if it's mounted.
-      if (typeof app.refreshAgentsOrder === 'function') app.refreshAgentsOrder();
-    } catch (e) {
-      console.warn('Failed to delete agent:', e);
-    }
-  }
-
-  function openAgentConfig(aid) {
-    const sel = document.getElementById('main-tab-select');
-    if (sel) {
-      sel.value = 'agents';
-      sel.dispatchEvent(new Event('change'));
-    }
-    // Defer to allow startAgents() to populate the grid before expanding
-    setTimeout(() => {
-      if (window.expandAgent) window.expandAgent(aid);
-    }, 50);
-  }
-
-  // ── Header trigger: long-press or double-click to rename ──
-  function _headerRenameAgent() {
-    const labelEl = document.getElementById('agent-dropdown-label');
-    if (!labelEl) return;
-    const aid = app.currentAgentId;
-    if (!aid) return;
-    const agent = _agentsCache.find(a => a.id === aid);
-    const current = (agent && agent.name) || (window.__agentName) || '';
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'session-row-title-input';
-    input.value = current;
-    input.style.width = '140px';
-    labelEl.replaceWith(input);
-    // Override the trigger's pointer-events:none on direct children so clicks
-    // reach the input and the cursor can be placed at the click location.
-    input.style.pointerEvents = 'auto';
-    input.focus();
-    input.select();
-    let done = false;
-    const finish = async (commit) => {
-      if (done) return;
-      done = true;
-      const newName = input.value.trim();
-      if (commit && newName && newName !== current) {
-        const ok = await patchAgentName(aid, newName);
-        if (ok && agent) agent.name = newName;
-      }
-      _setAgentTriggerLabel();
-    };
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-      else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
-    });
-    input.addEventListener('blur', () => finish(true));
-  }
-
-  if (agentTrigger) {
-    let _lpTimer = null, _lpStartX = 0, _lpStartY = 0;
-    agentTrigger.addEventListener('pointerdown', (e) => {
-      if (e.target.closest('.header-delete-btn, .header-plus-btn, .agent-dropdown-status')) return;
-      if (e.pointerType === 'mouse' && e.button !== 0) return;
-      _lpStartX = e.clientX; _lpStartY = e.clientY;
-      _lpTimer = setTimeout(() => {
-        _lpTimer = null;
-        e.preventDefault();
-        _headerRenameAgent();
-      }, 500);
-    });
-    agentTrigger.addEventListener('pointermove', (e) => {
-      if (!_lpTimer) return;
-      if (Math.abs(e.clientX - _lpStartX) > 8 || Math.abs(e.clientY - _lpStartY) > 8) {
-        clearTimeout(_lpTimer); _lpTimer = null;
-      }
-    });
-    agentTrigger.addEventListener('pointerup', () => { if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; } });
-    agentTrigger.addEventListener('pointercancel', () => { if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; } });
-    agentTrigger.addEventListener('dblclick', (e) => {
-      if (e.target.closest('.header-delete-btn, .header-plus-btn, .agent-dropdown-status')) return;
+  // ── Header new-session button (main header, beside Chat toggle) ──
+  // Shows the chat panel and immediately starts a brand-new session, skipping
+  // any loading of the previously active session.
+  const headerNewBtn = document.getElementById('session-new-header-btn');
+  if (headerNewBtn) {
+    headerNewBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      _headerRenameAgent();
-    });
-    agentTrigger.addEventListener('click', (e) => {
-      // Don't toggle dropdown when clicking the delete button inside the trigger
-      if (e.target.closest('.header-delete-btn, .header-plus-btn')) return;
-      // If the label was replaced by a rename input, don't toggle dropdown
-      if (e.target.closest('.session-row-title-input')) return;
-      e.stopPropagation();
-      if (agentMenu.hidden) openAgentMenu(); else closeAgentMenu();
-    });
-  }
-
-  if (agentMenu) {
-    agentMenu.addEventListener('click', (e) => {
-      e.stopPropagation();
-      // Config button (right side)
-      const cfgBtn = e.target.closest('.agent-row-config');
-      if (cfgBtn) {
-        const aid = cfgBtn.dataset.id;
-        closeAgentMenu();
-        if (aid) openAgentConfig(aid);
-        return;
+      // Show the chat panel first
+      if (!window.__getChatVisible()) {
+        window.__applyChatVisible(true);
       }
-      // Delete button (far right)
-      const delBtn = e.target.closest('.agent-row-delete');
-      if (delBtn) {
-        const aid = delBtn.dataset.id;
-        if (aid) confirmDeleteAgent(aid);
-        return;
-      }
-      // Row body click → switch agent (ignore clicks inside the rename input)
-      if (e.target.closest('.agent-row-title-input')) return;
-      const row = e.target.closest('.agent-row-item');
-      if (row) switchToAgent(row.dataset.id);
-    });
-    // Drag the grip handle to reorder; press-and-hold it to pin. Per-account,
-    // mirrored on the Agents page.
-    makeRowsReorderable(agentMenu, {
-      rowSelector: '.agent-row-item',
-      handleSelector: '.row-drag-handle',
-      onReorder: _applyAgentReorder,
-      onHandleLongPress: (aid) => _toggleAgentPin(aid),
-    });
-    // Press-and-hold the row body to rename (grip + action buttons opt out).
-    attachRowLongPress(agentMenu, {
-      rowSelector: '.agent-row-item',
-      ignoreSelector: '.row-drag-handle, .agent-row-config, .agent-row-delete, .agent-row-title-input',
-      onLongPress: (aid, row) => startAgentRename(aid, row),
-    });
-  }
-
-  document.addEventListener('click', (e) => {
-    if (agentDropdown && !agentDropdown.contains(e.target)) closeAgentMenu();
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && agentMenu && !agentMenu.hidden) closeAgentMenu();
-  });
-
-  // ── + new agent button ──
-  const agentNewBtn = document.getElementById('agent-new');
-  if (agentNewBtn) {
-    // Use pointerdown — see note on sessionNewBtn above.
-    agentNewBtn.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      closeAgentMenu();
-      const sel = document.getElementById('main-tab-select');
-      if (sel) {
-        sel.value = 'agents';
-        sel.dispatchEvent(new Event('change'));
-      }
-      // Defer to let the agents tab render, then expand the mock card
-      setTimeout(() => {
-        if (window.expandAgent) {
-          window.expandAgent('__new__');
-        }
-      }, 50);
+      // Same single-click behaviour as the chat-panel + button:
+      // shows the agent picker if >1 agent, else starts directly.
+      // Pass the header button as anchor so the picker appears below it.
+      _onNewSessionSingle(headerNewBtn);
     });
   }
 

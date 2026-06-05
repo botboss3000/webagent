@@ -729,8 +729,164 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
         },
     )
 
+    # ── commit_and_push: one-shot stage → commit → push ──
+    _SECRET_PATTERNS = [
+        (re.compile(r'ghp_[A-Za-z0-9]{36}'), 'GitHub personal access token'),
+        (re.compile(r'sk-or-v1-[A-Za-z0-9]{32,}'), 'OpenRouter/OpenAI API key'),
+        (re.compile(r'sk-[A-Za-z0-9]{32,}'), 'API key pattern'),
+        (re.compile(r'AKIA[0-9A-Z]{16}'), 'AWS access key'),
+        (re.compile(r'-----BEGIN (?:RSA |EC )?PRIVATE KEY-----'), 'Private key'),
+    ]
+
+    async def _commit_and_push(message: str = "", skip_push: bool = False, include_untracked: bool = True) -> str:
+        """Stage all changes, generate a commit message via lightweight LLM sub-call, commit, and push — all in one tool call."""
+        import asyncio, json
+
+        # Helper: run git with auth, same as _git_tool
+        def _git(args, timeout=60):
+            try:
+                from app.api.github import _run_git, _get_token, _cache_token
+                _cache_token(_get_token())
+                return _run_git(args, timeout=timeout)
+            except Exception:
+                result = _run_subprocess(["git"] + args, timeout=timeout)
+                return result["stdout"], result["stderr"], result["exit_code"]
+
+        # ── 1. Check repo state ──
+        status_out, status_err, status_code = _git(["status", "--porcelain"], timeout=30)
+        if status_code != 0:
+            return f"Error: git status failed (exit {status_code}): {status_err}"
+        if not status_out.strip():
+            return "Nothing to commit — working tree is clean."
+
+        # ── 2. Gather diffs ──
+        stat_out, _, _ = _git(["diff", "--stat"], timeout=30)
+        full_diff, _, _ = _git(["diff"], timeout=30)
+
+        untracked = []
+        for line in status_out.strip().splitlines():
+            if line.strip().startswith("?? "):
+                untracked.append(line.strip()[3:])
+
+        # ── 3. Safety checks ──
+        diff_text = full_diff or ""
+        warnings = []
+        for pattern, label in _SECRET_PATTERNS:
+            if pattern.findall(diff_text):
+                warnings.append(f"⚠️  Possible {label} found in diff — ABORTED")
+                break
+        if warnings:
+            return (
+                "❌ **Commit BLOCKED by safety checks**\n\n"
+                + "\n".join(warnings)
+                + "\n\nRemove the secrets from the working tree and retry."
+            )
+
+        # ── 4. Generate commit message via lightweight LLM sub-call ──
+        if message:
+            commit_msg = message
+        else:
+            llm_base = os.environ.get("LLM_BASE_URL") or "https://openrouter.ai/api/v1"
+            llm_key = os.environ.get("LLM_API_KEY") or ""
+            llm_model = os.environ.get("LLM_MODEL") or "deepseek/deepseek-v4-flash"
+
+            diff_window = full_diff[:6000] if full_diff else "(no diff)"
+            if full_diff and len(full_diff) > 6000:
+                diff_window += f"\n... (truncated, {len(full_diff)} total bytes)"
+
+            summary = (
+                f"Changed files:\n{stat_out.strip() or 'N/A'}\n\n"
+                f"Untracked:\n" + ("\n".join(f"  {f}" for f in untracked) if untracked else "  (none)") + "\n\n"
+                f"Diff:\n{diff_window}"
+            )
+            try:
+                client = AsyncOpenAI(base_url=llm_base, api_key=llm_key, timeout=30.0)
+                resp = await client.chat.completions.create(
+                    model=llm_model,
+                    messages=[
+                        {"role": "system", "content": (
+                            "You generate concise git commit messages from a diff. "
+                            "Output ONLY:\n"
+                            "Line 1: conventional commit title (max 72 chars)\n"
+                            "Line 2: blank\n"
+                            "Line 3+: brief bullet-point body\n"
+                            "Types: feat, fix, chore, refactor, docs, style, test, perf, ci"
+                        )},
+                        {"role": "user", "content": f"Generate a commit message for:\n\n{summary}"}
+                    ],
+                    max_tokens=300,
+                    temperature=0.3,
+                )
+                commit_msg = resp.choices[0].message.content.strip()
+            except Exception as e:
+                logger.warning("LLM sub-call for commit message failed: %s", e)
+                commit_msg = "chore: staged changes"
+
+        # ── 5. Stage ──
+        if include_untracked:
+            _, stderr_add, code_add = _git(["add", "-A"], timeout=30)
+        else:
+            _, stderr_add, code_add = _git(["add", "-u"], timeout=30)
+        if code_add != 0:
+            return f"Error: git add failed: {stderr_add}"
+
+        # ── 6. Commit ──
+        msg_file = _PROJECT_ROOT / "data" / "tmp" / "_commit_msg.txt"
+        msg_file.parent.mkdir(parents=True, exist_ok=True)
+        msg_file.write_text(commit_msg, encoding="utf-8")
+        _, stderr_commit, code_commit = _git(["commit", "-F", str(msg_file)], timeout=30)
+        msg_file.unlink(missing_ok=True)
+        if code_commit != 0:
+            return f"Error: git commit failed: {stderr_commit}"
+
+        hash_out, _, _ = _git(["rev-parse", "HEAD"], timeout=10)
+        commit_hash = hash_out.strip()[:12]
+        commit_title = commit_msg.split('\n')[0].strip()
+
+        # ── 7. Push ──
+        push_result = "⏭️  Skipped (skip_push=True)"
+        if not skip_push:
+            push_out, push_err, push_code = _git(["push"], timeout=120)
+            push_result = f"❌ Push FAILED: {push_err or push_out}" if push_code != 0 else "✅ Push successful"
+
+        lines_count = len(status_out.strip().splitlines())
+        return (
+            f"## ✅ Commit + Push\n\n"
+            f"**Message:** `{commit_title}`\n"
+            f"**Hash:**   `{commit_hash}`\n"
+            f"**Push:**   {push_result}\n"
+            f"**Files:**  {lines_count} file(s) affected\n\n"
+            f"```\n{stat_out.strip()}\n```"
+        )
+
+    tools["commit_and_push"] = ToolInfo(
+        name="commit_and_push",
+        handler=_commit_and_push,
+        parameters={
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "Optional commit message. Auto-generated from diff via lightweight LLM if empty.",
+                    "default": "",
+                },
+                "skip_push": {
+                    "type": "boolean",
+                    "description": "If true, commit locally but skip push.",
+                    "default": False,
+                },
+                "include_untracked": {
+                    "type": "boolean",
+                    "description": "If true, include untracked files (git add -A). If false, modified only (git add -u).",
+                    "default": True,
+                },
+            },
+            "required": [],
+        },
+    )
+
     logger.info(
-        "Injected admin tools: read/write/edit/patch/delete/run/run_python/restart/search/dir/git/resolve_conflict (%d tools)",
+        "Injected admin tools: read/write/edit/patch/delete/run/run_python/restart/search/dir/git/resolve_conflict/commit_and_push (%d tools)",
         len(tools),
     )
 
@@ -751,6 +907,6 @@ def inject_git_tools(tools: dict, user_id: str) -> None:
     except Exception as e:  # pragma: no cover
         logger.warning("Git Control: could not build base source tools: %s", e)
         return
-    for name in ("git_tool", "resolve_conflict"):
+    for name in ("git_tool", "commit_and_push", "resolve_conflict"):
         if name in tmp:
             tools.setdefault(name, tmp[name])

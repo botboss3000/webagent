@@ -81,6 +81,7 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "edit_source":                   {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": False, "agent_types": ["admin"]},
     "delete_source":                 {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": False, "agent_types": ["admin"]},
     "resolve_conflict":              {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": False, "agent_types": ["admin"]},
+    "commit_and_push":               {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": True,  "agent_types": ["admin"]},
     "run_command":                   {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": True,  "agent_types": ["admin"]},
     "restart_server":                {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": True,  "agent_types": ["admin"]},
     # ── Auth / comms ──
@@ -106,8 +107,8 @@ ABILITY_TOOLS: Dict[str, List[str]] = {
     "browser_control":     ["browser_action", "http_request"],
     "image_generation":    ["generate_image"],
     "codebase_admin":      ["db_query", "read_source", "write_source", "edit_source",
-                            "delete_source", "resolve_conflict", "run_command",
-                            "restart_server"],
+                            "delete_source", "resolve_conflict", "commit_and_push",
+                            "run_command", "restart_server"],
     "create_tools":        ["create_tool"],
     "agent_orchestration": ["run_optimizer", "delegate_to_agent",
                             "list_delegatable_agents"],
