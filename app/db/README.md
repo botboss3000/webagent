@@ -43,6 +43,8 @@ Per-slot upsert rules:
 
 The destructive `DELETE` from the old seeder is GONE. Admin edits in `agent_prompt_templates` survive re-seed unless the admin clicks **Force Re-Seed** in the config page.
 
+The `agent_templates` **config row** (not the prompt slots) is always upserted from the JSON, including the `discoverable` flag. So a template's `discoverable: true/false` in `data/agents/*.json` is authoritative and re-asserted on every re-seed — it controls whether the template appears in the Agents page **"Create a new agent"** dropdown (the dropdown queries `discoverable_only=true`). An admin's runtime discoverable toggle therefore holds only until the next re-seed of changed JSON; to permanently hide/show a template, edit its JSON.
+
 ## Schema additions for this design
 
 - `app/db/schema/tables.py`: `agent_prompt_templates`, `app_meta`, plus `template_version` column on `agent_prompts`.

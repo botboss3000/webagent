@@ -1,13 +1,12 @@
 'use strict';
 
 import { app } from '../state.js';
-import { saveEdit } from './edit.js';
 import { formatJsonAsHtml } from '../json-tree.js';
 
 let isEditing = false;
 
-function openCellPopup(cell, ri, col, originalValue) {
-  app.cellPopupData = { cell, col, originalValue };
+function openCellPopup(cell, ri, col, originalValue, onSave) {
+  app.cellPopupData = { cell, col, originalValue, onSave };
   isEditing = false;
 
   const titleEl = document.getElementById('cell-modal-title');
@@ -111,7 +110,7 @@ function closeCellPopup(discard) {
     return;
   }
   if (app.cellPopupData) {
-    const { cell, col, originalValue } = app.cellPopupData;
+    const { cell, col, originalValue, onSave } = app.cellPopupData;
     app.cellPopupData = null;
     
     // Only save if we were in editing mode AND the value actually changed
@@ -120,7 +119,7 @@ function closeCellPopup(discard) {
       if (newValue !== originalValue) {
         const ri = parseInt(cell.dataset.row, 10);
         app.editingCell = { rowIndex: ri, colName: col, originalValue };
-        saveEdit(cell, newValue);
+        if (typeof onSave === 'function') onSave(cell, newValue);
       }
     }
   }

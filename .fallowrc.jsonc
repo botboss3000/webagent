@@ -1,0 +1,40 @@
+{
+  // fallow configuration — https://docs.fallow.tools
+  //
+  // Why this file exists: webAgent's UI is NOT loaded through statically
+  // traceable ES imports, so without these hints fallow reports ~84 live
+  // files as "unused dead code". Two distinct loading mechanisms defeat
+  // static analysis:
+  //
+  //  1. The SPA boot (index.html) injects HTML partials, then *dynamically*
+  //     import()s the JS roots below. fallow does not treat those runtime
+  //     dynamic imports as reachability roots, so the whole ui/js graph
+  //     looked orphaned. Listing the roots in "entry" fixes that — every
+  //     other ui/js module is reachable from them via normal static imports.
+  //
+  //  2. app/web-terminal/ is a self-contained React app compiled in the
+  //     browser by Babel-standalone (no build step). Its files load via
+  //     <script> tags and communicate through window.* globals, so nothing
+  //     statically imports them. They are all live; "ignorePatterns" stops
+  //     them being false-flagged.
+  "entry": [
+    "ui/js/partial-loader.js",
+    "ui/js/main.js",
+    "ui/js/attachments.js",
+    "ui/js/data-sources.js",
+    "ui/js/db-select.js",
+    "ui/js/stargaze.js",
+    "ui/js/feedback.js",
+    "sw.js"
+  ],
+  "ignorePatterns": [
+    "app/web-terminal/**",
+    "temp/**",
+    ".source-backups/**",
+    // Stylesheets are pulled in by <link> tags in index.html and the
+    // admin-tools HTML pages. fallow is a JS/TS analyzer and does not trace
+    // HTML, so every .css file would otherwise be a permanent false positive.
+    // Unused-CSS detection is out of scope for this tool.
+    "ui/css/**"
+  ]
+}

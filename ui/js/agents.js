@@ -524,27 +524,49 @@ function _renderAgentCard(grid, agent, isExpanded) {
   const isCustom = agent.source === 'custom' || isMock;
 
   const card = document.createElement('div');
-  card.className = 'agent-card' + (isExpanded ? ' active' : '') + (isMock ? ' agent-card-mock' : '');
-  const iconSize = isExpanded ? '20px' : '24px';
+  // The mock "create" card always uses the wide/active layout so the inline
+  // name input + template dropdown have room to render.
+  card.className = 'agent-card' + ((isExpanded || isMock) ? ' active' : '') + (isMock ? ' agent-card-mock' : '');
+  const iconSize = (isExpanded || isMock) ? '20px' : '24px';
+  // For the mock card, the "name" cell is an inline text input plus a template
+  // dropdown toggle. Picking a template prefills the input; typing a name works
+  // too. The big "+" button on the right creates the agent (Enter also works).
+  // type="search" + the autocomplete/ignore attrs keep browser password
+  // managers from offering saved credentials on this field.
+  const nameCell = isMock
+    ? `<div class="agent-mock-create-field">
+         <input type="search" class="agent-mock-name-input" placeholder="Create a new agent…"
+                name="webagent_new_agent_name" autocomplete="off" autocorrect="off"
+                autocapitalize="none" spellcheck="false" data-lpignore="true" data-1p-ignore
+                data-form-type="other" />
+         <button type="button" class="agent-mock-tpl-toggle" title="Choose a template" disabled></button>
+         <div class="agent-mock-tpl-menu" role="listbox" style="display:none"></div>
+       </div>`
+    : `<span class="agent-card-name">${_esc(_displayName(agent))}</span>`;
   card.innerHTML = `
     <div class="agent-card-top">
       <div class="agent-card-icon-wrap ${isMock ? 'color-blue' : _iconColor(agent)}">
-        ${isMock ? icon('plus', { size: iconSize }) : _renderAgentIcon(agent, iconSize)}
+        ${isMock ? icon(_mockRandomIcon(), { size: iconSize }) : _renderAgentIcon(agent, iconSize)}
       </div>
       <div class="agent-card-meta">
         <div class="agent-card-name-row">
-          <span class="agent-card-name">${isMock ? 'Create a new agent' : _esc(_displayName(agent))}</span>
-          <span class="agent-status-dot ${isMock ? 'inactive' : ''}"></span>
+          ${nameCell}
+          ${isMock ? '' : '<span class="agent-status-dot"></span>'}
         </div>
         ${!isMock && agent.description ? `<div class="agent-card-desc">${_esc(agent.description)}</div>` : ''}
-        ${isMock ? '<div class="agent-card-desc agent-card-mock-hint">Click to configure, then save</div>' : ''}
+        ${isMock ? '<div class="agent-card-desc agent-card-mock-hint">Pick a template or type a name, then hit +</div>' : ''}
       </div>
       <div class="agent-card-badge-wrap">
-        <span class="agent-badge ${badgeType}">${badgeLabel}</span>
-        ${isCustom && !isMock ? '<button class="agent-card-action-btn delete-btn">Delete</button>' : ''}
+        ${isMock
+          ? `<button type="button" class="agent-mock-create-go" title="Create agent">${icon('plus', { size: '22px' })}</button>`
+          : `<span class="agent-badge ${badgeType}">${badgeLabel}</span>${isCustom ? '<button class="agent-card-action-btn delete-btn">Delete</button>' : ''}`}
       </div>
     </div>
-    <div class="agent-card-tabs" role="tablist"></div>
+    <div class="agent-card-tabs-wrap">
+      <button type="button" class="agent-card-tabs-chev left" aria-label="Scroll tabs left" tabindex="-1">&#10094;</button>
+      <div class="agent-card-tabs" role="tablist"></div>
+      <button type="button" class="agent-card-tabs-chev right" aria-label="Scroll tabs right" tabindex="-1">&#10095;</button>
+    </div>
   `;
 
   // Wire inline action buttons — stopPropagation so click doesn't toggle the panel
@@ -565,11 +587,14 @@ function _renderAgentCard(grid, agent, isExpanded) {
     });
   }
 
-  card.addEventListener('click', () => _selectAgent(agent));
+  // The mock create card is always expanded; clicking it must not toggle/collapse.
+  if (!isMock) card.addEventListener('click', () => _selectAgent(agent));
+
+  if (isMock) _wireMockCreateField(card);
 
   // Each agent gets its own .agent-row; the detail panel lives inside it
   const row = document.createElement('div');
-  row.className = 'agent-row' + (isExpanded ? ' expanded' : '');
+  row.className = 'agent-row' + ((isExpanded || isMock) ? ' expanded' : '');
   row.dataset.agentId = agent.id;
   row.appendChild(card);
 
@@ -586,6 +611,8 @@ function _renderAgentCard(grid, agent, isExpanded) {
   // collapsed card expands it to that tab.
   const cardTabBar = card.querySelector('.agent-card-tabs');
   if (cardTabBar) _populateAgentTabBar(cardTabBar, agent, panel);
+  const cardTabWrap = card.querySelector('.agent-card-tabs-wrap');
+  if (cardTabWrap) _wireTabCarousel(cardTabWrap);
 
   grid.appendChild(row);
 }
@@ -621,6 +648,243 @@ function _mockAgentName() {
   return nameEl ? nameEl.value.trim() : '';
 }
 
+// ── Mock card: inline quick-create (name input + template dropdown) ────────────
+
+let _mockTemplatesCache  = null;   // [{id, name, description}, …]
+let _mockDocHandlerInstalled = false;
+
+// A random Lucide icon for the "create a new agent" card, re-picked after each
+// successful create so each fresh card looks distinct.
+const _MOCK_ICON_CHOICES = ['bot','cpu','sparkles','zap','rocket','brain-circuit',
+  'wand-2','compass','feather','flame','gem','globe','lightbulb','orbit','atom',
+  'telescope','puzzle','shapes','terminal','bird','star','blocks','boxes','wrench'];
+let _mockIconName = null;
+function _mockRandomIcon() {
+  if (!_mockIconName) _mockIconName = _MOCK_ICON_CHOICES[Math.floor(Math.random() * _MOCK_ICON_CHOICES.length)];
+  return _mockIconName;
+}
+
+async function _fetchMockTemplates() {
+  if (_mockTemplatesCache) return _mockTemplatesCache;
+  try {
+    const url = `/api/v1/agents/templates?user_id=${encodeURIComponent(app.currentUserId)}&discoverable_only=true${_userIsAdmin ? '&include_admin=true' : ''}`;
+    const res = await fetch(url);
+    _mockTemplatesCache = res.ok ? ((await res.json()).templates || []) : [];
+  } catch (e) {
+    console.warn('agents: failed to load templates for mock', e);
+    _mockTemplatesCache = [];
+  }
+  return _mockTemplatesCache;
+}
+
+async function _populateMockTemplateMenu(menu, onPick) {
+  menu.innerHTML = '<div class="agent-mock-tpl-loading">Loading templates…</div>';
+  const templates = await _fetchMockTemplates();
+  menu.innerHTML = '';
+  if (!templates.length) {
+    menu.innerHTML = '<div class="agent-mock-tpl-empty">No templates available</div>';
+    return;
+  }
+  for (const tpl of templates) {
+    const row = document.createElement('div');
+    row.className = 'agent-mock-tpl-row';
+    row.setAttribute('role', 'option');
+    let html = `<span class="agent-mock-tpl-name">${_esc(tpl.name || tpl.id)}</span>`;
+    if (tpl.description) html += `<span class="agent-mock-tpl-desc">${_esc(tpl.description)}</span>`;
+    row.innerHTML = html;
+    row.addEventListener('click', () => onPick(tpl));
+    menu.appendChild(row);
+  }
+}
+
+// Installed once. Closes the template menu on any click outside the field.
+function _ensureMockDocHandler() {
+  if (_mockDocHandlerInstalled) return;
+  _mockDocHandlerInstalled = true;
+  document.addEventListener('click', (e) => {
+    const field = document.querySelector('.agent-card-mock .agent-mock-create-field');
+    if (!field || field.contains(e.target)) return;
+    const card = field.closest('.agent-card');
+    const menu = field.querySelector('.agent-mock-tpl-menu');
+    if (menu) menu.style.display = 'none';
+    if (card) card.classList.remove('mock-menu-open');
+  });
+}
+
+function _wireMockCreateField(card) {
+  const field = card.querySelector('.agent-mock-create-field');
+  if (!field) return;
+  const input  = field.querySelector('.agent-mock-name-input');
+  const toggle = field.querySelector('.agent-mock-tpl-toggle');
+  const menu   = field.querySelector('.agent-mock-tpl-menu');
+  if (!input || !toggle || !menu) return;
+
+  input.dataset.templateId = 'default';
+
+  // Clicks inside the field never bubble to the document outside-click handler
+  // (which would close the menu).
+  field.addEventListener('click', e => e.stopPropagation());
+
+  // The big "+" button on the right of the bar creates the agent.
+  const createGo = card.querySelector('.agent-mock-create-go');
+  if (createGo) createGo.addEventListener('click', (e) => { e.stopPropagation(); _submitMockCreate(input); });
+
+  // Toggle shows a spinner until the template list is loaded, then a chevron.
+  // Prefetching here means the dropdown opens instantly when the user clicks.
+  const CHEVRON = icon('chevron-down', { size: '16px' });
+  const SPINNER = icon('loader-2', { size: '16px' });
+  const _setToggleReady = (ready) => {
+    toggle.innerHTML = ready ? CHEVRON : SPINNER;
+    toggle.disabled = !ready;
+    toggle.classList.toggle('loading', !ready);
+    toggle.title = ready ? 'Choose a template' : 'Loading templates…';
+  };
+  if (_mockTemplatesCache) {
+    _setToggleReady(true);
+  } else {
+    _setToggleReady(false);
+    _fetchMockTemplates().finally(() => _setToggleReady(true));
+  }
+
+  const closeMenu = () => { menu.style.display = 'none'; card.classList.remove('mock-menu-open'); };
+  const openMenu  = () => {
+    menu.style.display = 'block';
+    card.classList.add('mock-menu-open');
+    _populateMockTemplateMenu(menu, (tpl) => {
+      input.dataset.templateId = tpl.id;
+      input.value = tpl.name || tpl.id;
+      closeMenu();
+      input.focus();
+    });
+  };
+
+  toggle.addEventListener('click', () => {
+    if (menu.style.display === 'block') closeMenu();
+    else openMenu();
+  });
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); _submitMockCreate(input); }
+    else if (e.key === 'Escape') { if (menu.style.display === 'block') closeMenu(); else input.blur(); }
+  });
+
+  _ensureMockDocHandler();
+}
+
+async function _submitMockCreate(input) {
+  if (!input || input.disabled) return;
+  const name = input.value.trim();
+  if (!name) return;
+  input.disabled = true;
+  try {
+    await _postNewAgent({ name, templateId: input.dataset.templateId || 'default' });
+  } catch (e) {
+    console.warn('agents: quick create failed', e);
+    alert('Error creating agent: ' + e.message);
+    input.disabled = false;
+  }
+}
+
+// ── Tab carousel: drag-to-scroll + edge fades + clickable chevrons ────────────
+
+/**
+ * Make the in-card tab strip draggable with the mouse, show/hide edge fades and
+ * the left/right chevron buttons depending on scroll position, and wire the
+ * chevrons to scroll a page at a time.
+ *
+ * The scroller (.agent-card-tabs) is the overflow container; the wrapper holds
+ * the fades (::before/::after) and the chevron buttons. We toggle the
+ * can-scroll-left / can-scroll-right classes on the wrapper to reveal them.
+ */
+function _wireTabCarousel(wrap) {
+  if (wrap.dataset.carouselWired === '1') return;
+  wrap.dataset.carouselWired = '1';
+  const scroller = wrap.querySelector('.agent-card-tabs');
+  if (!scroller) return;
+  const chevLeft  = wrap.querySelector('.agent-card-tabs-chev.left');
+  const chevRight = wrap.querySelector('.agent-card-tabs-chev.right');
+
+  const updateAffordances = () => {
+    // Allow a 1px slack so rounding doesn't leave a fade stuck on.
+    const maxScroll = scroller.scrollWidth - scroller.clientWidth;
+    const atStart = scroller.scrollLeft <= 1;
+    const atEnd   = scroller.scrollLeft >= maxScroll - 1;
+    const overflowing = maxScroll > 1;
+    wrap.classList.toggle('can-scroll-left',  overflowing && !atStart);
+    wrap.classList.toggle('can-scroll-right', overflowing && !atEnd);
+  };
+
+  scroller.addEventListener('scroll', updateAffordances, { passive: true });
+  // Recompute after tab content (and async count badges) settle, and on resize.
+  requestAnimationFrame(updateAffordances);
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(updateAffordances).observe(scroller);
+  }
+
+  const page = () => Math.max(scroller.clientWidth * 0.7, 120);
+  if (chevLeft) {
+    chevLeft.addEventListener('click', e => {
+      e.stopPropagation();
+      scroller.scrollBy({ left: -page(), behavior: 'smooth' });
+    });
+  }
+  if (chevRight) {
+    chevRight.addEventListener('click', e => {
+      e.stopPropagation();
+      scroller.scrollBy({ left: page(), behavior: 'smooth' });
+    });
+  }
+
+  // ── Pointer drag-to-scroll ──
+  let dragging = false;
+  let startX = 0;
+  let startScroll = 0;
+  let moved = false;
+
+  scroller.addEventListener('pointerdown', e => {
+    // Only primary button; ignore clicks on the chevrons (they live in the wrap,
+    // not the scroller, so they never reach here).
+    if (e.button !== 0) return;
+    dragging = true;
+    moved = false;
+    startX = e.clientX;
+    startScroll = scroller.scrollLeft;
+    scroller.classList.add('dragging');
+  });
+
+  scroller.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const dx = e.clientX - startX;
+    if (Math.abs(dx) > 4) {
+      moved = true;
+      // Capture once we know it's a drag so the pointer can leave the strip.
+      try { scroller.setPointerCapture(e.pointerId); } catch (_) {}
+    }
+    if (moved) {
+      scroller.scrollLeft = startScroll - dx;
+      e.preventDefault();
+    }
+  });
+
+  const endDrag = e => {
+    if (!dragging) return;
+    dragging = false;
+    scroller.classList.remove('dragging');
+    try { scroller.releasePointerCapture(e.pointerId); } catch (_) {}
+  };
+  scroller.addEventListener('pointerup', endDrag);
+  scroller.addEventListener('pointercancel', endDrag);
+
+  // Swallow the click that follows a drag so a tab isn't selected mid-swipe.
+  scroller.addEventListener('click', e => {
+    if (moved) {
+      e.stopPropagation();
+      e.preventDefault();
+      moved = false;
+    }
+  }, true);
+}
+
 // ── Per-row detail panel ──────────────────────────────────────────────────────
 
 function _populateAgentTabBar(tabBar, agent, panel) {
@@ -631,7 +895,7 @@ function _populateAgentTabBar(tabBar, agent, panel) {
   // When tab is null (card expanded but no tab selected), no tab is highlighted.
   const activeTab = state ? state.tab : null;
   tabBar.innerHTML = '';
-  const tabs = [['config','Config'],['tools','Tools'],['test','Agent Loop'],['connections','Abilities']];
+  const tabs = [['config','Config'],['prompts','Prompts'],['tools','Tools'],['test','Agent Loop'],['connections','Abilities']];
   if (!isMock) {
     if (state?.automationEnabled) tabs.push(['automation','Automation']);
     if (_userIsAdmin) tabs.push(['members','Members']);
@@ -985,6 +1249,7 @@ function _renderPanelBody(agent, panelEl) {
   if (oldSaveBar) oldSaveBar.remove();
 
   if (tab === 'config')            _renderConfigTab(body, agent, panelEl);
+  else if (tab === 'prompts')      _renderPromptsTab(body, agent, panelEl);
   else if (tab === 'tools')        _renderToolsTab(body, agent, panelEl);
   else if (tab === 'test')         _renderTestTab(body, agent);
   else if (tab === 'connections')  _renderConnectionsTab(body, agent);
@@ -1683,6 +1948,79 @@ function _renderSuggestionModeControl(body) {
   countSel.addEventListener('change', _save);
 }
 
+// ── Per-field auto-save ───────────────────────────────────────────────────────
+// Config / Prompts fields persist on change instead of via a bottom Save button.
+// Each field gets a small indicator that flashes a green check on success.
+
+function _makeAutosaveCheck() {
+  const el = document.createElement('span');
+  el.className = 'agents-autosave-check';
+  el.setAttribute('aria-hidden', 'true');
+  return el;
+}
+
+function _flashSaved(indicator, ok = true, errMsg = '') {
+  if (!indicator) return;
+  indicator.classList.remove('saving', 'saved', 'error');
+  if (ok) {
+    // Only appears once the backend has confirmed the write — and stays visible
+    // (no auto-fade) so the field's saved state is always clear.
+    indicator.classList.add('saved');
+    indicator.textContent = '✓';
+    indicator.title = 'Saved';
+  } else {
+    indicator.classList.add('error');
+    indicator.textContent = '!';
+    indicator.title = errMsg || 'Save failed';
+  }
+}
+
+// While a save is in flight, clear the indicator — no icon shows until the
+// backend confirms the write in _flashSaved.
+function _markSaving(indicator) {
+  if (!indicator) return;
+  indicator.classList.remove('saved', 'error', 'saving');
+  indicator.textContent = '';
+}
+
+/**
+ * PUT a partial update for a single custom agent and flash the indicator.
+ * No-op for non-custom or mock agents (those use their own flows).
+ */
+async function _putAgentField(agent, updates, indicator) {
+  if (!agent || agent.source !== 'custom' || _isMockAgent(agent)) return;
+  _markSaving(indicator);
+  try {
+    const res = await fetch(`/api/v1/agents/${agent.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: app.currentUserId, ...updates }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      const idx = _agents.findIndex(a => a.id === agent.id);
+      if (idx !== -1) Object.assign(_agents[idx], data.agent);
+      Object.assign(agent, data.agent);
+      _flashSaved(indicator, true);
+    } else {
+      _flashSaved(indicator, false, data.detail || 'Save failed');
+    }
+  } catch (e) {
+    _flashSaved(indicator, false, e.message);
+  }
+}
+
+/** Debounce a handler so rapid typing only saves once it settles. */
+function _debounced(fn, ms = 700) {
+  let t;
+  const wrapped = (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+  wrapped.flush = (...args) => { clearTimeout(t); fn(...args); };
+  return wrapped;
+}
+
 // ── Config tab ────────────────────────────────────────────────────────────────
 
 function _renderConfigTab(body, agent, panelEl) {
@@ -1698,11 +2036,15 @@ function _renderConfigTab(body, agent, panelEl) {
   }
 
   // Name + description (editable for custom agents only)
+  // Mock agents have no row to save to yet — the create flow gathers these,
+  // so skip auto-save wiring (passing no onSave) for the mock card.
   if (isEditable) {
     _addField(body, 'Name', 'agents-input', 'name',
-      agent.name || '', false);
+      agent.name || '', false, 4, '',
+      isMock ? null : (val, ind) => _putAgentField(agent, { name: val.trim() }, ind));
     _addField(body, 'Description', 'agents-textarea', 'desc',
-      agent.description || '', false, 2);
+      agent.description || '', false, 2, '',
+      isMock ? null : (val, ind) => _putAgentField(agent, { description: val }, ind));
   }
 
   // ── Template selector (mock agent only) ────────────────────────────────────
@@ -1760,12 +2102,20 @@ function _renderConfigTab(body, agent, panelEl) {
     llmTitle.textContent = 'LLM';
     const llmBadge = document.createElement('span');
     llmBadge.className = 'agents-llm-badge';
+    const llmCheck = _makeAutosaveCheck();
     const llmChevron = document.createElement('span');
     llmChevron.className = 'agents-llm-chevron';
     llmChevron.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>`;
     llmHeader.appendChild(llmTitle);
     llmHeader.appendChild(llmBadge);
+    llmHeader.appendChild(llmCheck);
     llmHeader.appendChild(llmChevron);
+
+    // Persist the whole LLM block on any change (mock create captures it separately).
+    const _saveLlm = _debounced(() => {
+      if (isMock) return;
+      _putAgentField(agent, { llm_config: { ...panelEl._llmState } }, llmCheck);
+    }, 500);
 
     // Body (collapsed by default)
     const llmBody = document.createElement('div');
@@ -1913,6 +2263,7 @@ function _renderConfigTab(body, agent, panelEl) {
           modelStatus.style.color = '#9ece6a';
           panelEl._llmState.model = m.id;
           _llmUpdateBadge();
+          _saveLlm();
         });
         modelDd.appendChild(item);
       });
@@ -1956,11 +2307,13 @@ function _renderConfigTab(body, agent, panelEl) {
       panelEl._llmState.model = '';
       _fetchAgentModels();
       _llmUpdateBadge();
+      _saveLlm();
     });
 
-    urlInput.addEventListener('change', () => { panelEl._llmState.base_url = urlInput.value.trim(); });
+    urlInput.addEventListener('change', () => { panelEl._llmState.base_url = urlInput.value.trim(); _saveLlm(); });
     keyInput.addEventListener('change', () => {
       panelEl._llmState.api_key = keyInput.value.trim();
+      _saveLlm();
     });
 
     modelSearch.addEventListener('focus', () => _renderAgentModelDd(modelSearch.value.toLowerCase()));
@@ -1983,7 +2336,7 @@ function _renderConfigTab(body, agent, panelEl) {
     }
 
     Object.entries(_llmModeLabels).forEach(([val, { radio }]) => {
-      radio.addEventListener('change', () => { if (radio.checked) _applyLlmMode(val); });
+      radio.addEventListener('change', () => { if (radio.checked) { _applyLlmMode(val); _saveLlm(); } });
     });
 
     const initialMode = (llmCfg.use_default === false || !_extendLlmToAgents) ? 'custom' : 'default';
@@ -2126,8 +2479,30 @@ function _renderConfigTab(body, agent, panelEl) {
     if (cfg.step) inputEl.step = cfg.step;
     if (!isEditable) inputEl.readOnly = true;
 
+    // Right side: input + auto-save indicator.
+    const rightWrap = document.createElement('span');
+    rightWrap.style.cssText = 'display:flex;align-items:center;flex-shrink:0;';
+    rightWrap.appendChild(inputEl);
+
+    if (isEditable && !isMock) {
+      const ind = _makeAutosaveCheck();
+      rightWrap.appendChild(ind);
+      const saveLimit = _debounced(() => {
+        const raw = inputEl.value;
+        let val;
+        if (cfg.field === 'max_wall_seconds') {
+          val = (raw === '') ? null : (isNaN(parseFloat(raw)) ? null : parseFloat(raw));
+        } else {
+          val = (raw === '') ? 0 : (parseInt(raw, 10) || 0);
+        }
+        _putAgentField(agent, { [cfg.field]: val }, ind);
+      });
+      inputEl.addEventListener('input', saveLimit);
+      inputEl.addEventListener('blur', () => saveLimit.flush());
+    }
+
     row.appendChild(nameEl);
-    row.appendChild(inputEl);
+    row.appendChild(rightWrap);
     limitsTable.appendChild(row);
   });
 
@@ -2186,15 +2561,31 @@ function _renderConfigTab(body, agent, panelEl) {
       tog.dataset.field = item.field;
       tog.dataset.on = item.checked ? '1' : '0';
       tog.textContent = item.checked ? 'ON' : 'OFF';
+
+      const rightWrap = document.createElement('span');
+      rightWrap.style.cssText = 'display:flex;align-items:center;flex-shrink:0;';
+      rightWrap.appendChild(tog);
+      const ind = (!isMock) ? _makeAutosaveCheck() : null;
+      if (ind) rightWrap.appendChild(ind);
+
       tog.addEventListener('click', e => {
         e.stopPropagation();
         const nowOn = tog.dataset.on !== '1';
         tog.dataset.on = nowOn ? '1' : '0';
         tog.textContent = nowOn ? 'ON' : 'OFF';
+        if (isMock) return;
+        // Memory toggles both feed loop_logic + allowed_tools — recompute from
+        // the current state of both switches and save together.
+        const recallBtn = panelEl.querySelector('[data-field="memory_recall"]');
+        const saveBtn   = panelEl.querySelector('[data-field="memory_save"]');
+        const recall = recallBtn ? recallBtn.dataset.on === '1' : false;
+        const save   = saveBtn   ? saveBtn.dataset.on === '1'   : false;
+        const mu = _memoryUpdatesFor(agent, recall, save);
+        _putAgentField(agent, { loop_logic: mu.loop_logic, allowed_tools: mu.allowed_tools }, ind);
       });
 
       row.appendChild(nameEl);
-      row.appendChild(tog);
+      row.appendChild(rightWrap);
       memTable.appendChild(row);
     });
 
@@ -2207,7 +2598,7 @@ function _renderConfigTab(body, agent, panelEl) {
   umGroup.className = 'agents-field-group';
   const umMode = agent.user_mode || 'anonymous';
   umGroup.innerHTML = `
-    <label class="agents-field-label">User Mode</label>
+    <label class="agents-field-label">User Mode<span class="agents-autosave-check" data-role="um-check" aria-hidden="true"></span></label>
     <span class="agents-field-hint">How this agent handles users across all channels.</span>
     <div class="conn-user-mode" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;padding:6px 10px;border-radius:6px;border:1px solid ${umMode === 'anonymous' ? '#7aa2f7' : 'var(--border,#2a2a3a)'};background:${umMode === 'anonymous' ? 'rgba(122,162,247,0.08)' : 'transparent'};">
@@ -2238,6 +2629,9 @@ function _renderConfigTab(body, agent, panelEl) {
             ? 'Agent guides new users to register and links accounts across channels.'
             : 'Users get auto-generated anonymous IDs. No registration required.';
         }
+        if (!isMock) {
+          _putAgentField(agent, { user_mode: selected }, umGroup.querySelector('[data-role="um-check"]'));
+        }
       });
     });
   }
@@ -2250,6 +2644,8 @@ function _renderConfigTab(body, agent, panelEl) {
     const triggerLabel = document.createElement('label');
     triggerLabel.className = 'agents-field-label';
     triggerLabel.textContent = 'Trigger';
+    const triggerCheck = (!isMock) ? _makeAutosaveCheck() : null;
+    if (triggerCheck) triggerLabel.appendChild(triggerCheck);
     const triggerSel = document.createElement('select');
     triggerSel.className = 'agents-input';
     triggerSel.dataset.field = 'trigger_type';
@@ -2277,6 +2673,8 @@ function _renderConfigTab(body, agent, panelEl) {
     const keyLabel = document.createElement('label');
     keyLabel.className = 'agents-field-label';
     keyLabel.textContent = 'Trigger Key';
+    const keyCheck = (!isMock) ? _makeAutosaveCheck() : null;
+    if (keyCheck) keyLabel.appendChild(keyCheck);
     const keyInput = document.createElement('input');
     keyInput.type = 'text';
     keyInput.className = 'agents-input';
@@ -2290,77 +2688,26 @@ function _renderConfigTab(body, agent, panelEl) {
     triggerSel.addEventListener('change', () => {
       keyRow.style.display = triggerSel.value !== 'user_input' ? '' : 'none';
       keyInput.placeholder = _triggerKeyPlaceholder(triggerSel.value);
+      if (!isMock) _putAgentField(agent, { trigger_type: triggerSel.value }, triggerCheck);
     });
+
+    if (!isMock) {
+      const saveKey = _debounced(() => {
+        _putAgentField(agent, { trigger_key: keyInput.value.trim() || null }, keyCheck);
+      });
+      keyInput.addEventListener('input', saveKey);
+      keyInput.addEventListener('blur', () => saveKey.flush());
+    }
   }
 
-  // ── Prompt slots ────────────────────────────────────────────────────────
-  // Admin (isEditable) sees the full slot editor; everyone else sees the
-  // override view for unlocked slots + read-only base for locked ones.
-  const slotsHost = document.createElement('div');
-  slotsHost.className = 'agents-field-group';
-  slotsHost.dataset.role = 'slots-host';
-
-  const slotsCard = document.createElement('div');
-  slotsCard.className = 'agents-llm-card';
-
-  const slotsHeader = document.createElement('div');
-  slotsHeader.className = 'agents-llm-header';
-  const slotsTitle = document.createElement('span');
-  slotsTitle.className = 'agents-llm-title';
-  slotsTitle.textContent = 'Prompt Slots';
-  const slotsChevron = document.createElement('span');
-  slotsChevron.className = 'agents-llm-chevron';
-  slotsChevron.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>`;
-  slotsHeader.appendChild(slotsTitle);
-  slotsHeader.appendChild(slotsChevron);
-
-  const slotsBody = document.createElement('div');
-  slotsBody.className = 'agents-llm-body';
-  slotsBody.style.display = 'none';
-
-  slotsHeader.addEventListener('click', () => {
-    const open = slotsBody.style.display === 'none';
-    slotsBody.style.display = open ? 'flex' : 'none';
-    slotsChevron.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)';
-  });
-
-  const slotsHint = document.createElement('span');
-  slotsHint.className = 'agents-field-hint';
-  slotsHint.textContent = isEditable
-    ? 'Slots are concatenated in order into the system message. Lock a slot to keep it admin-only; otherwise users may write overrides.'
-    : 'You can override unlocked slots for yourself without affecting other users.';
-  slotsBody.appendChild(slotsHint);
-
-  const slotsList = document.createElement('div');
-  slotsList.className = 'agents-slots-list';
-  slotsList.dataset.role = 'slots-list';
-  slotsList.style.marginTop = '8px';
-  slotsBody.appendChild(slotsList);
-
-  if (isEditable) {
-    const slotsAddBtn = document.createElement('button');
-    slotsAddBtn.type = 'button';
-    slotsAddBtn.className = 'agents-btn';
-    slotsAddBtn.dataset.role = 'slots-add';
-    slotsAddBtn.style.marginTop = '8px';
-    slotsAddBtn.textContent = '+ Add slot';
-    slotsBody.appendChild(slotsAddBtn);
-  }
-
-  slotsCard.appendChild(slotsHeader);
-  slotsCard.appendChild(slotsBody);
-  slotsHost.appendChild(slotsCard);
-  body.appendChild(slotsHost);
-  // Track slot edit state on the panel for save handlers.
-  panelEl._slotState = { slots: [], overrides: {}, resetOverridesFor: new Set(), userRole: 'member', loaded: false };
-  _loadAndRenderSlots(panelEl, agent, isEditable);
+  // Prompt slots now live in their own "Prompts" carousel tab (_renderPromptsTab).
 
   // Admin-only: Discoverable toggle for system templates
   if (!isEditable && _userIsAdmin && agent.source === 'template') {
     const discGroup = document.createElement('div');
     discGroup.className = 'agents-field-group';
     discGroup.innerHTML = `
-      <label class="agents-field-label">Discoverable</label>
+      <label class="agents-field-label">Discoverable<span class="agents-autosave-check" data-role="disc-check" aria-hidden="true"></span></label>
       <span class="agents-field-hint">Show this template in the "New Agent" creation dropdown.</span>
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px;">
         <input type="checkbox" data-field="discoverable" ${agent.discoverable ? 'checked' : ''}>
@@ -2369,41 +2716,29 @@ function _renderConfigTab(body, agent, panelEl) {
     `;
     body.appendChild(discGroup);
 
-    const content = panelEl.querySelector('.agent-detail-content');
-    const bar = document.createElement('div');
-    bar.className = 'agents-save-bar';
-    const saveBtn = _btn('Save', 'agents-btn primary');
-    const msg = document.createElement('span');
-    msg.className = 'agents-save-msg';
-    saveBtn.addEventListener('click', async () => {
-      msg.textContent = '';
-      msg.className = 'agents-save-msg';
-      const cb = panelEl.querySelector('[data-field="discoverable"]');
+    const discCheck = discGroup.querySelector('[data-role="disc-check"]');
+    const cb = discGroup.querySelector('[data-field="discoverable"]');
+    cb.addEventListener('change', async () => {
+      _markSaving(discCheck);
       try {
         const res = await fetch(`/api/v1/agent-templates/config`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_id: app.currentUserId, template_id: agent.id, discoverable: cb ? cb.checked : false }),
+          body: JSON.stringify({ user_id: app.currentUserId, template_id: agent.id, discoverable: cb.checked }),
         });
         const data = await res.json();
         if (res.ok) {
           agent.discoverable = data.template?.discoverable;
           const idx = _agents.findIndex(a => a.id === agent.id);
           if (idx !== -1) _agents[idx].discoverable = agent.discoverable;
-          msg.textContent = '✓ Saved';
-          msg.className = 'agents-save-msg';
+          _flashSaved(discCheck, true);
         } else {
-          msg.textContent = data.detail || 'Save failed';
-          msg.className = 'agents-save-msg error';
+          _flashSaved(discCheck, false, data.detail || 'Save failed');
         }
       } catch (e) {
-        msg.textContent = `Error: ${e.message}`;
-        msg.className = 'agents-save-msg error';
+        _flashSaved(discCheck, false, e.message);
       }
     });
-    bar.appendChild(saveBtn);
-    bar.appendChild(msg);
-    if (content) content.appendChild(bar);
   }
 
   // ── External Data Sources (per-agent) ───────────────────────────────────────
@@ -2428,23 +2763,18 @@ function _renderConfigTab(body, agent, panelEl) {
     }
   }
 
-  // Save bar (sticky at bottom of content — outside the scrollable body)
-  // Skip for mock agent — the create button in the panel header handles saving.
-  if (isEditable && !isMock) {
+  // Fields auto-save individually now (each shows its own green check), so there
+  // is no "Save Changes" button. Admins still get a "Save as Template" action.
+  if (isEditable && !isMock && _userIsAdmin) {
     const content = panelEl.querySelector('.agent-detail-content');
     const bar = document.createElement('div');
     bar.className = 'agents-save-bar';
-    const saveBtn = _btn('Save Changes', 'agents-btn primary');
     const msg = document.createElement('span');
     msg.className = 'agents-save-msg';
-    saveBtn.addEventListener('click', () => _saveChanges(agent, bar, panelEl));
-    bar.appendChild(saveBtn);
-    if (_userIsAdmin) {
-      const tplBtn = _btn('Save as Template', 'agents-btn');
-      tplBtn.title = 'Save this agent\'s config and prompts as a reusable template (admin only).';
-      tplBtn.addEventListener('click', () => _openSaveAsTemplateModal(agent, bar));
-      bar.appendChild(tplBtn);
-    }
+    const tplBtn = _btn('Save as Template', 'agents-btn');
+    tplBtn.title = 'Save this agent\'s config and prompts as a reusable template (admin only).';
+    tplBtn.addEventListener('click', () => _openSaveAsTemplateModal(agent, bar));
+    bar.appendChild(tplBtn);
     bar.appendChild(msg);
     if (content) content.appendChild(bar);
   }
@@ -2576,6 +2906,341 @@ function _openSaveAsTemplateModal(agent, hostBar) {
   slugIn.select();
 }
 
+// ── Prompts tab ───────────────────────────────────────────────────────────────
+// Prompt slots used to live inside the Config tab; they now have their own
+// carousel page. Admins edit the base slots; members write personal overrides.
+// Edits auto-save (debounced) and flash a green check in the header.
+
+function _renderPromptsTab(body, agent, panelEl) {
+  const isEditable = agent.source === 'custom';
+
+  if (_isMockAgent(agent)) {
+    body.innerHTML = '<div style="padding:20px;color:var(--fg-3);font-size:13px;text-align:center;">Save this agent first to configure prompts.</div>';
+    return;
+  }
+
+  const host = document.createElement('div');
+  host.className = 'agents-field-group';
+  host.dataset.role = 'slots-host';
+
+  // Header with title + auto-save indicator.
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;align-items:center;margin-bottom:6px;';
+  const title = document.createElement('label');
+  title.className = 'agents-field-label';
+  title.style.marginBottom = '0';
+  title.textContent = 'Prompt Slots';
+  const check = _makeAutosaveCheck();
+  title.appendChild(check);
+  header.appendChild(title);
+  host.appendChild(header);
+
+  const hint = document.createElement('span');
+  hint.className = 'agents-field-hint';
+  hint.textContent = isEditable
+    ? 'Slots are concatenated in order into the system message. Lock a slot to keep it admin-only; otherwise users may write overrides. Changes save automatically.'
+    : 'You can override unlocked slots for yourself without affecting other users. Changes save automatically.';
+  host.appendChild(hint);
+
+  const list = document.createElement('div');
+  list.className = 'agents-slots-list';
+  list.dataset.role = 'slots-list';
+  list.style.marginTop = '10px';
+  host.appendChild(list);
+
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'agents-btn';
+  addBtn.dataset.role = 'slots-add';
+  addBtn.style.marginTop = '8px';
+  addBtn.textContent = '+ Add slot';
+  host.appendChild(addBtn);
+
+  body.appendChild(host);
+
+  // Debounced auto-save shared by every slot/override edit on this panel.
+  panelEl._slotsCheck = check;
+  panelEl._slotsOnChange = _debounced(() => _saveSlotsNow(agent, panelEl, check), 800);
+
+  // Track slot edit state on the panel for save handlers.
+  panelEl._slotState = { slots: [], overrides: {}, resetOverridesFor: new Set(), userRole: 'member', loaded: false };
+  _loadAndRenderSlots(panelEl, agent, isEditable);
+
+  // On-demand skills editor (own group below the slots).
+  _renderSkillsSection(body, agent, panelEl, isEditable);
+}
+
+/**
+ * Render the on-demand skills editor. Each skill is a named knowledge pack with
+ * a one-line "when to use" description and a full body. The "Always on" check
+ * decides whether the body is injected every turn or only loaded on demand via
+ * the agent's load_skill tool. Admin-editable on custom agents; read-only else.
+ */
+function _renderSkillsSection(body, agent, panelEl, isEditable) {
+  const group = document.createElement('div');
+  group.className = 'agents-field-group';
+  group.style.marginTop = '18px';
+
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;align-items:center;margin-bottom:6px;';
+  const title = document.createElement('label');
+  title.className = 'agents-field-label';
+  title.style.marginBottom = '0';
+  title.textContent = 'Skills';
+  const check = _makeAutosaveCheck();
+  title.appendChild(check);
+  header.appendChild(title);
+  group.appendChild(header);
+
+  const hint = document.createElement('span');
+  hint.className = 'agents-field-hint';
+  hint.textContent = isEditable
+    ? 'Named knowledge packs. “Always on” injects the body every turn; otherwise the agent only sees the name + description and loads the body on demand via load_skill. Changes save automatically.'
+    : 'This agent’s skills. “Always on” skills are always in context; the others load on demand when the agent needs them.';
+  group.appendChild(hint);
+
+  const list = document.createElement('div');
+  list.dataset.role = 'skills-list';
+  list.style.marginTop = '10px';
+  group.appendChild(list);
+
+  if (isEditable) {
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'agents-btn';
+    addBtn.style.marginTop = '8px';
+    addBtn.textContent = '+ Add skill';
+    addBtn.addEventListener('click', () => {
+      panelEl._skillsState.push({ name: '', description: '', body: '', mode: 'selectable', enabled: true });
+      _renderSkillCards(panelEl, agent, isEditable);
+      panelEl._skillsOnChange();
+    });
+    group.appendChild(addBtn);
+  }
+
+  body.appendChild(group);
+
+  // Seed state from the agent (deep copy so edits don't mutate the cached agent).
+  const seed = Array.isArray(agent.skills) ? agent.skills : [];
+  panelEl._skillsState = seed.map(s => ({
+    name: s.name || '', description: s.description || '', body: s.body || '',
+    mode: s.mode === 'always_on' ? 'always_on' : 'selectable',
+    enabled: s.enabled !== false,
+  }));
+  panelEl._skillsCheck = check;
+  panelEl._skillsOnChange = _debounced(() => _saveSkillsNow(agent, panelEl, check), 800);
+  _renderSkillCards(panelEl, agent, isEditable);
+}
+
+function _renderSkillCards(panelEl, agent, isEditable) {
+  const list = panelEl.querySelector('[data-role="skills-list"]');
+  if (!list) return;
+  const skills = panelEl._skillsState || [];
+  list.innerHTML = '';
+
+  if (!skills.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'font-size:12px;color:var(--fg-3);padding:8px 2px;';
+    empty.textContent = isEditable
+      ? 'No skills yet. Add one to give this agent a loadable playbook.'
+      : 'This agent has no skills.';
+    list.appendChild(empty);
+    return;
+  }
+
+  skills.forEach((skill, idx) => {
+    const card = document.createElement('div');
+    card.style.cssText =
+      'border:1px solid var(--border-soft);border-radius:8px;padding:10px;margin-bottom:8px;background:var(--bg-1);';
+
+    // Top row: name + controls.
+    const top = document.createElement('div');
+    top.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;';
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.value = skill.name;
+    nameInput.placeholder = 'skill-name';
+    nameInput.disabled = !isEditable;
+    nameInput.style.cssText =
+      'flex:1;min-width:140px;padding:5px 8px;border:1px solid var(--border-soft);border-radius:6px;background:var(--bg-0);color:var(--fg-1);font-size:13px;font-weight:600;';
+    nameInput.addEventListener('input', () => { skill.name = nameInput.value; panelEl._skillsOnChange(); });
+    top.appendChild(nameInput);
+
+    // Always-on toggle (the "check for always on or selectable").
+    const alwaysWrap = document.createElement('label');
+    alwaysWrap.style.cssText = 'display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--fg-2);cursor:pointer;';
+    const alwaysCb = document.createElement('input');
+    alwaysCb.type = 'checkbox';
+    alwaysCb.checked = skill.mode === 'always_on';
+    alwaysCb.disabled = !isEditable;
+    const alwaysTxt = document.createElement('span');
+    const setModeLabel = () => { alwaysTxt.textContent = alwaysCb.checked ? 'Always on' : 'Selectable'; };
+    setModeLabel();
+    alwaysCb.addEventListener('change', () => {
+      skill.mode = alwaysCb.checked ? 'always_on' : 'selectable';
+      setModeLabel();
+      panelEl._skillsOnChange();
+    });
+    alwaysWrap.appendChild(alwaysCb);
+    alwaysWrap.appendChild(alwaysTxt);
+    alwaysWrap.title = 'Checked = body always in the prompt. Unchecked = agent loads it on demand via load_skill.';
+    top.appendChild(alwaysWrap);
+
+    // Enabled toggle.
+    const enWrap = document.createElement('label');
+    enWrap.style.cssText = 'display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--fg-3);cursor:pointer;';
+    const enCb = document.createElement('input');
+    enCb.type = 'checkbox';
+    enCb.checked = skill.enabled !== false;
+    enCb.disabled = !isEditable;
+    enCb.addEventListener('change', () => { skill.enabled = enCb.checked; panelEl._skillsOnChange(); });
+    enWrap.appendChild(enCb);
+    enWrap.appendChild(document.createTextNode('Enabled'));
+    top.appendChild(enWrap);
+
+    if (isEditable) {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.textContent = '×';
+      del.title = 'Delete skill';
+      del.style.cssText =
+        'margin-left:auto;width:24px;height:24px;border:none;border-radius:6px;background:none;color:var(--fg-3);font-size:16px;cursor:pointer;';
+      del.addEventListener('mouseenter', () => { del.style.background = 'var(--danger)'; del.style.color = '#fff'; });
+      del.addEventListener('mouseleave', () => { del.style.background = 'none'; del.style.color = 'var(--fg-3)'; });
+      del.addEventListener('click', () => {
+        panelEl._skillsState.splice(idx, 1);
+        _renderSkillCards(panelEl, agent, isEditable);
+        panelEl._skillsOnChange();
+      });
+      top.appendChild(del);
+    }
+    card.appendChild(top);
+
+    // Description (when-to-use).
+    const desc = document.createElement('input');
+    desc.type = 'text';
+    desc.value = skill.description;
+    desc.placeholder = 'When to use this skill (the agent always sees this line)';
+    desc.disabled = !isEditable;
+    desc.style.cssText =
+      'width:100%;margin-top:8px;padding:5px 8px;border:1px solid var(--border-soft);border-radius:6px;background:var(--bg-0);color:var(--fg-2);font-size:12px;';
+    desc.addEventListener('input', () => { skill.description = desc.value; panelEl._skillsOnChange(); });
+    card.appendChild(desc);
+
+    // Body (full instructions).
+    const ta = document.createElement('textarea');
+    ta.value = skill.body;
+    ta.placeholder = 'Full step-by-step instructions the agent loads when it uses this skill…';
+    ta.disabled = !isEditable;
+    ta.rows = 4;
+    ta.style.cssText =
+      'width:100%;margin-top:8px;padding:6px 8px;border:1px solid var(--border-soft);border-radius:6px;background:var(--bg-0);color:var(--fg-1);font-size:12px;font-family:inherit;resize:vertical;';
+    ta.addEventListener('input', () => { skill.body = ta.value; panelEl._skillsOnChange(); });
+    card.appendChild(ta);
+
+    list.appendChild(card);
+  });
+}
+
+/** Persist the agent's full skills array into metadata via PUT /agents/{id}. */
+async function _saveSkillsNow(agent, panelEl, indicator) {
+  const st = panelEl._skillsState;
+  if (!st) return;
+  if (agent.source !== 'custom') {
+    _flashSaved(indicator, false, 'Skills can only be edited on custom agents.');
+    return;
+  }
+  _markSaving(indicator);
+  const token = localStorage.getItem('auth_token');
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  try {
+    const res = await fetch(`/api/v1/agents/${agent.id}`, {
+      method: 'PUT', headers,
+      body: JSON.stringify({ user_id: app.currentUserId, skills: st }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      const idx = _agents.findIndex(a => a.id === agent.id);
+      if (idx !== -1) Object.assign(_agents[idx], data.agent);
+      Object.assign(agent, data.agent);
+      _flashSaved(indicator, true);
+    } else {
+      _flashSaved(indicator, false, data.detail || 'Save failed');
+    }
+  } catch (e) {
+    _flashSaved(indicator, false, e.message);
+  }
+}
+
+/**
+ * Persist prompt-slot edits. Admins PUT the full slot set on the agent; members
+ * PUT their personal overrides via the my-prompts endpoint. Flashes `indicator`.
+ */
+async function _saveSlotsNow(agent, panelEl, indicator) {
+  const sstate = panelEl._slotState || {};
+  if (!sstate.loaded) return;
+  const role = sstate.userRole || 'member';
+  _markSaving(indicator);
+  const token = localStorage.getItem('auth_token');
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  try {
+    if (role === 'admin') {
+      if (agent.source !== 'custom') {
+        // Base-slot edits are only persistable on custom agents.
+        _flashSaved(indicator, false, 'Base prompts can only be edited on custom agents.');
+        return;
+      }
+      const slotsPayload = (sstate.slots || []).map(s => ({
+        slot_name: s.slot_name,
+        order_index: s.order_index || 0,
+        lock: !!s.lock,
+        merge_mode: s.merge_mode || 'replace',
+        content: s.content || '',
+      }));
+      const payload = { user_id: app.currentUserId, slots: slotsPayload };
+      if (sstate.resetOverridesFor && sstate.resetOverridesFor.size > 0) {
+        payload.reset_overrides_for = Array.from(sstate.resetOverridesFor);
+      }
+      const res = await fetch(`/api/v1/agents/${agent.id}`, {
+        method: 'PUT', headers, body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        const idx = _agents.findIndex(a => a.id === agent.id);
+        if (idx !== -1) Object.assign(_agents[idx], data.agent);
+        Object.assign(agent, data.agent);
+        if (sstate.resetOverridesFor) sstate.resetOverridesFor.clear();
+        _flashSaved(indicator, true);
+      } else {
+        _flashSaved(indicator, false, data.detail || 'Save failed');
+      }
+    } else {
+      const items = [];
+      for (const s of (sstate.slots || [])) {
+        if (s.lock) continue;
+        const v = sstate.overrides && sstate.overrides[s.slot_name];
+        if (v === undefined || v === null) continue;
+        items.push({ slot_name: s.slot_name, content: v });
+      }
+      const res = await fetch(`/api/v1/agents/${agent.id}/my-prompts`, {
+        method: 'PUT', headers,
+        body: JSON.stringify({ user_id: app.currentUserId, slots: items }),
+      });
+      if (res.ok) _flashSaved(indicator, true);
+      else {
+        let detail = 'Save failed';
+        try { detail = (await res.json()).detail || detail; } catch (_) {}
+        _flashSaved(indicator, false, detail);
+      }
+    }
+  } catch (e) {
+    _flashSaved(indicator, false, e.message);
+  }
+}
+
 async function _loadAndRenderSlots(panelEl, agent, _isEditable) {
   const listEl = panelEl.querySelector('[data-role="slots-list"]');
   if (!listEl) return;
@@ -2630,6 +3295,7 @@ async function _loadAndRenderSlots(panelEl, agent, _isEditable) {
       while (state.slots.some(s => s.slot_name === nm)) { n += 1; nm = `new_slot_${n}`; }
       state.slots.push({ slot_name: nm, order_index: nextOrder, lock: false, merge_mode: 'replace', content: '' });
       _renderSlotsList(panelEl, agent, adminEditor);
+      panelEl._slotsOnChange?.();
     });
   }
 }
@@ -2666,7 +3332,7 @@ function _renderSlotCard(panelEl, agent, adminEditor, idx) {
     nameInput.className = 'agents-input';
     nameInput.value = slot.slot_name;
     nameInput.style.cssText = 'flex:1;min-width:140px;';
-    nameInput.addEventListener('input', () => { slot.slot_name = nameInput.value.trim(); });
+    nameInput.addEventListener('input', () => { slot.slot_name = nameInput.value.trim(); panelEl._slotsOnChange?.(); });
     head.appendChild(nameInput);
 
     const orderInput = document.createElement('input');
@@ -2677,6 +3343,7 @@ function _renderSlotCard(panelEl, agent, adminEditor, idx) {
     orderInput.title = 'Order (lower = earlier in system prompt)';
     orderInput.addEventListener('input', () => {
       slot.order_index = parseInt(orderInput.value, 10) || 0;
+      panelEl._slotsOnChange?.();
     });
     head.appendChild(orderInput);
 
@@ -2689,6 +3356,7 @@ function _renderSlotCard(panelEl, agent, adminEditor, idx) {
       slot.lock = lockCb.checked;
       // Locking disables merge_mode in the UI.
       _renderSlotsList(panelEl, agent, adminEditor);
+      panelEl._slotsOnChange?.();
     });
     const lockTxt = document.createElement('span'); lockTxt.textContent = 'admin only';
     lockLabel.appendChild(lockCb); lockLabel.appendChild(lockTxt);
@@ -2705,7 +3373,7 @@ function _renderSlotCard(panelEl, agent, adminEditor, idx) {
     }
     modeSel.disabled = slot.lock;
     modeSel.title = slot.lock ? 'Locked slots have no overrides — merge mode does not apply.' : 'How a user override combines with the admin base.';
-    modeSel.addEventListener('change', () => { slot.merge_mode = modeSel.value; });
+    modeSel.addEventListener('change', () => { slot.merge_mode = modeSel.value; panelEl._slotsOnChange?.(); });
     head.appendChild(modeSel);
 
     const delBtn = document.createElement('button');
@@ -2717,6 +3385,7 @@ function _renderSlotCard(panelEl, agent, adminEditor, idx) {
       if (!confirm(`Delete slot "${slot.slot_name}"? This also drops all user overrides for it.`)) return;
       state.slots.splice(idx, 1);
       _renderSlotsList(panelEl, agent, adminEditor);
+      panelEl._slotsOnChange?.();
     });
     head.appendChild(delBtn);
   } else {
@@ -2738,7 +3407,7 @@ function _renderSlotCard(panelEl, agent, adminEditor, idx) {
     ta.rows = 6;
     ta.value = slot.content || '';
     ta.placeholder = 'Slot content (admin base)';
-    ta.addEventListener('input', () => { slot.content = ta.value; });
+    ta.addEventListener('input', () => { slot.content = ta.value; panelEl._slotsOnChange?.(); });
     card.appendChild(ta);
 
     // Reset-overrides checkbox shown only for unlocked slots (locked → nothing to reset).
@@ -2749,11 +3418,15 @@ function _renderSlotCard(panelEl, agent, adminEditor, idx) {
       resetCb.type = 'checkbox';
       resetCb.checked = state.resetOverridesFor.has(slot.slot_name);
       resetCb.addEventListener('change', () => {
-        if (resetCb.checked) state.resetOverridesFor.add(slot.slot_name);
-        else state.resetOverridesFor.delete(slot.slot_name);
+        if (resetCb.checked) {
+          state.resetOverridesFor.add(slot.slot_name);
+          panelEl._slotsOnChange?.();
+        } else {
+          state.resetOverridesFor.delete(slot.slot_name);
+        }
       });
       const resetTxt = document.createElement('span');
-      resetTxt.textContent = 'On save: reset existing user overrides for this slot';
+      resetTxt.textContent = 'Reset existing user overrides for this slot';
       resetWrap.appendChild(resetCb); resetWrap.appendChild(resetTxt);
       card.appendChild(resetWrap);
     }
@@ -2781,7 +3454,7 @@ function _renderSlotCard(panelEl, agent, adminEditor, idx) {
       ovTa.rows = 4;
       ovTa.value = state.overrides[slot.slot_name] || '';
       ovTa.placeholder = 'Your override (leave empty to inherit admin base)';
-      ovTa.addEventListener('input', () => { state.overrides[slot.slot_name] = ovTa.value; });
+      ovTa.addEventListener('input', () => { state.overrides[slot.slot_name] = ovTa.value; panelEl._slotsOnChange?.(); });
       card.appendChild(ovTa);
 
       const clearBtn = document.createElement('button');
@@ -2806,12 +3479,18 @@ function _renderSlotCard(panelEl, agent, adminEditor, idx) {
   return card;
 }
 
-function _addField(container, label, tag, fieldKey, value, readonly, rows = 4, hint = '') {
+function _addField(container, label, tag, fieldKey, value, readonly, rows = 4, hint = '', onSave = null) {
   const group = document.createElement('div');
   group.className = 'agents-field-group';
   const labelEl = document.createElement('label');
   labelEl.className = 'agents-field-label';
   labelEl.textContent = label;
+  // Auto-save indicator rides on the label line.
+  let indicator = null;
+  if (onSave && !readonly) {
+    indicator = _makeAutosaveCheck();
+    labelEl.appendChild(indicator);
+  }
   group.appendChild(labelEl);
   if (hint) {
     const hintEl = document.createElement('span');
@@ -2830,8 +3509,16 @@ function _addField(container, label, tag, fieldKey, value, readonly, rows = 4, h
     el.value = value;
   }
   if (readonly) el.readOnly = true;
+  if (onSave && !readonly) {
+    const save = () => onSave(el.value, indicator);
+    const debouncedSave = _debounced(save);
+    el.addEventListener('input', debouncedSave);
+    // Commit immediately when focus leaves so nothing is lost mid-debounce.
+    el.addEventListener('blur', () => debouncedSave.flush());
+  }
   group.appendChild(el);
   container.appendChild(group);
+  return el;
 }
 
 // ── Tools tab ─────────────────────────────────────────────────────────────────
@@ -5941,123 +6628,6 @@ function _memoryUpdatesFor(agent, recall, save) {
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 
-async function _saveChanges(agent, barEl, panelEl) {
-  if (agent.source !== 'custom') return;
-  const msg = barEl.querySelector('.agents-save-msg');
-  if (msg) { msg.textContent = ''; msg.className = 'agents-save-msg'; }
-
-  const updates = {};
-  const fv = key => { const el = panelEl.querySelector(`[data-field="${key}"]`); return el ? el.value : undefined; };
-  const nameVal = fv('name');        if (nameVal !== undefined) updates.name          = nameVal.trim();
-  const descVal = fv('desc');        if (descVal !== undefined) updates.description   = descVal;
-  // Icon may have been set via the icon picker popover — capture from agent object
-  if (agent.icon !== undefined && agent.icon !== null) {
-    updates.icon = agent.icon;
-  }
-  const tcVal   = fv('max_turn_count'); if (tcVal !== undefined) updates.max_turn_count = parseInt(tcVal, 10) || 0;
-  const wcVal   = fv('max_wall_seconds');
-  if (wcVal !== undefined && wcVal !== '') {
-    const parsed = parseFloat(wcVal);
-    updates.max_wall_seconds = isNaN(parsed) ? null : parsed;
-  } else if (wcVal !== undefined) {
-    updates.max_wall_seconds = null;
-  }
-
-  // Stall guard limits (0 = off/infinite)
-  const icVal = fv('max_identical_tool_calls');
-  if (icVal !== undefined && icVal !== '') {
-    const parsed = parseInt(icVal, 10);
-    updates.max_identical_tool_calls = isNaN(parsed) ? 0 : parsed;
-  }
-  const ssVal = fv('max_stall_strikes');
-  if (ssVal !== undefined && ssVal !== '') {
-    const parsed = parseInt(ssVal, 10);
-    updates.max_stall_strikes = isNaN(parsed) ? 0 : parsed;
-  }
-  const ttVal   = fv('trigger_type');   if (ttVal !== undefined) updates.trigger_type   = ttVal;
-  const tkVal   = fv('trigger_key');    if (tkVal !== undefined) updates.trigger_key    = tkVal || null;
-  const umChecked = panelEl.querySelector('[data-field="user_mode"]:checked');
-  if (umChecked) updates.user_mode = umChecked.value;
-
-  // Memory switches → same loop_logic + allowed_tools the Agent Loop diagram uses.
-  const memRecallBtn = panelEl.querySelector('[data-field="memory_recall"]');
-  const memSaveBtn   = panelEl.querySelector('[data-field="memory_save"]');
-  if (memRecallBtn || memSaveBtn) {
-    const cur    = _memoryStateFromAgent(agent);
-    const recall = memRecallBtn ? memRecallBtn.dataset.on === '1' : cur.recall;
-    const save   = memSaveBtn   ? memSaveBtn.dataset.on === '1'   : cur.save;
-    const mu = _memoryUpdatesFor(agent, recall, save);
-    updates.loop_logic    = mu.loop_logic;
-    updates.allowed_tools = mu.allowed_tools;
-  }
-
-  // Per-agent LLM override
-  if (panelEl._llmState) updates.llm_config = { ...panelEl._llmState };
-
-  // Slot writes: split into admin (slots payload) and member (overrides payload).
-  const sstate = panelEl._slotState || {};
-  const role = sstate.userRole || 'member';
-  let slotsPayload = null;
-  let overridesPayload = null;
-  if (sstate.loaded) {
-    if (role === 'admin') {
-      slotsPayload = (sstate.slots || []).map(s => ({
-        slot_name: s.slot_name,
-        order_index: s.order_index || 0,
-        lock: !!s.lock,
-        merge_mode: s.merge_mode || 'replace',
-        content: s.content || '',
-      }));
-      updates.slots = slotsPayload;
-      if (sstate.resetOverridesFor && sstate.resetOverridesFor.size > 0) {
-        updates.reset_overrides_for = Array.from(sstate.resetOverridesFor);
-      }
-    } else {
-      const items = [];
-      for (const s of (sstate.slots || [])) {
-        if (s.lock) continue;
-        const v = sstate.overrides && sstate.overrides[s.slot_name];
-        if (v === undefined || v === null) continue;
-        items.push({ slot_name: s.slot_name, content: v });
-      }
-      if (items.length > 0) overridesPayload = items;
-    }
-  }
-
-  try {
-    const res = await fetch(`/api/v1/agents/${agent.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: app.currentUserId, ...updates }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      // Patch the local agents array so re-render shows fresh values
-      const idx = _agents.findIndex(a => a.id === agent.id);
-      if (idx !== -1) Object.assign(_agents[idx], data.agent);
-      Object.assign(agent, data.agent); // also update the closure reference
-
-      // Member-only: send override writes via the my-prompts endpoint.
-      if (overridesPayload) {
-        try {
-          await fetch(`/api/v1/agents/${agent.id}/my-prompts`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ user_id: app.currentUserId, slots: overridesPayload }),
-          });
-        } catch (_) { /* surface only main save status */ }
-      }
-      // Reset the reset-overrides marks so saving again doesn't repeat.
-      if (sstate.resetOverridesFor) sstate.resetOverridesFor.clear();
-      if (msg) { msg.textContent = '✓ Saved'; msg.className = 'agents-save-msg'; }
-    } else {
-      if (msg) { msg.textContent = data.detail || 'Save failed'; msg.className = 'agents-save-msg error'; }
-    }
-  } catch (e) {
-    if (msg) { msg.textContent = `Error: ${e.message}`; msg.className = 'agents-save-msg error'; }
-  }
-}
-
 async function _deleteAgent(agent) {
   if (agent.source !== 'custom') return;
   const displayName = _displayName(agent);
@@ -6081,6 +6651,55 @@ async function _deleteAgent(agent) {
 
 // ── Create agent from mock card ───────────────────────────────────────────────
 
+/**
+ * Shared create-agent core. POSTs a new agent, then closes the mock card,
+ * reloads the list, auto-expands the new agent's Config tab, and makes it the
+ * active agent so chat picks it up. Returns the created agent (or null on error).
+ */
+async function _postNewAgent({ name, description = '', templateId = 'default', llmConfig = { use_default: true } }) {
+  const res = await fetch('/api/v1/agents', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: app.currentUserId,
+      name,
+      description,
+      template_id: templateId || 'default',
+      llm_config: llmConfig,
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    alert(data.detail || 'Failed to create agent');
+    return null;
+  }
+  // Close the mock card and reload the list. Bust the shared agent cache first
+  // so _loadAgents() refetches and the new agent actually appears in the grid
+  // (and the chat-header dropdown) instead of reusing the pre-create snapshot.
+  _expandedAgents.delete(MOCK_AGENT_ID);
+  _mockIconName = null;  // re-randomize the icon for the next "create" card
+  window.__agentsSharedData = null;
+  await _loadAgents();
+  _renderList();
+  _saveViewState();
+  const newId = data.agent && data.agent.id;
+  if (newId) {
+    // Auto-expand the new agent's Config tab.
+    if (_agents.find(a => a.id === newId)) {
+      _expandedAgents.set(newId, { tab: 'config' });
+      _saveViewState();
+      _renderList();
+    }
+    // Make the new agent the active one so chat picks it up on next send.
+    app.currentAgentId = newId;
+    try { localStorage.setItem('selectedAgentId', newId); } catch (_) {}
+    if (typeof app.populateAgentSelect === 'function') {
+      try { await app.populateAgentSelect(app.currentUserId); } catch (_) {}
+    }
+  }
+  return data.agent;
+}
+
 async function _createAgentFromMock(panelEl) {
   // Gather the name from the config tab
   const nameEl = panelEl.querySelector('[data-field="name"]');
@@ -6092,50 +6711,13 @@ async function _createAgentFromMock(panelEl) {
     return;
   }
 
-  const templateId = tplEl ? tplEl.value : 'default';
-
-  // Gather LLM config from panel state
-  const llmConfig = panelEl._llmState || { use_default: true };
-
   try {
-    const res = await fetch('/api/v1/agents', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        user_id: app.currentUserId,
-        name,
-        description: descEl ? descEl.value.trim() : '',
-        template_id: templateId || 'default',
-        llm_config: llmConfig,
-      }),
+    await _postNewAgent({
+      name,
+      description: descEl ? descEl.value.trim() : '',
+      templateId: tplEl ? tplEl.value : 'default',
+      llmConfig: panelEl._llmState || { use_default: true },
     });
-    const data = await res.json();
-    if (res.ok) {
-      // Close the mock card
-      _expandedAgents.delete(MOCK_AGENT_ID);
-      // Reload agents list
-      await _loadAgents();
-      _renderList();
-      _saveViewState();
-      // Auto-expand the new agent
-      const newAgent = _agents.find(a => a.id === data.agent?.id);
-      if (newAgent) {
-        _expandedAgents.set(newAgent.id, { tab: 'config' });
-        _saveViewState();
-        _renderList();
-      }
-      // Make the new agent the active one so chat picks it up on next send.
-      const newId = data.agent && data.agent.id;
-      if (newId) {
-        app.currentAgentId = newId;
-        try { localStorage.setItem('selectedAgentId', newId); } catch (_) {}
-        if (typeof app.populateAgentSelect === 'function') {
-          try { await app.populateAgentSelect(app.currentUserId); } catch (_) {}
-        }
-      }
-    } else {
-      alert(data.detail || 'Failed to create agent');
-    }
   } catch (e) {
     console.warn('agents: create from mock failed', e);
     alert('Error creating agent: ' + e.message);

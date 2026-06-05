@@ -5,7 +5,6 @@ import { loopSessionChanged } from './loop.js';
 import { loopVisualSessionChanged } from './loop-logic.js';
 import { autoAgentSessionChanged } from './autoagent.js';
 import { chatActivitySessionChanged } from './chat-activity.js';
-import { abortChatStream } from './chat.js';
 import { consumeReplayedEventsFor } from './agentWs.js';
 import { apiPath } from './config.js';
 import { icon } from './icons.js';
@@ -157,14 +156,51 @@ let _agentsCache = [];
 // cold-start window (before the handler/agents are ready) don't half-fire.
 // Flipped on by _setNewSessionBtnReady() at the end of populateAgentSelect.
 let _newSessionBtnReady = false;
+// Whether the server is currently reachable. Flipped by the health poll in
+// reconnect.js via setChatHeaderReachable(). While unreachable, the new-session
+// "+" and the session-dropdown chevron both render as spinners and ignore
+// clicks, since neither can act on fresh data until the server is back.
+let _serverReachable = true;
+
+// Render the new-session "+" button to match the current state: a spinner while
+// the agent list is still loading OR the server is unreachable, a clickable plus
+// otherwise. Idempotent, so it can be called from either gate.
+function _renderNewSessionBtn() {
+  const btn = document.getElementById('session-new');
+  if (!btn) return;
+  const spinner = !_newSessionBtnReady || !_serverReachable;
+  if (spinner) {
+    if (!btn.classList.contains('loading')) {
+      btn.classList.add('loading');
+      btn.innerHTML = icon('loader-2', { size: '24px' });
+    }
+    btn.disabled = true;
+    btn.title = _serverReachable ? 'Loading…' : 'Server unreachable…';
+  } else if (btn.classList.contains('loading')) {
+    btn.classList.remove('loading');
+    btn.innerHTML = icon('plus', { size: '24px' });
+    btn.disabled = false;
+    btn.title = 'New session';
+  }
+}
+
 function _setNewSessionBtnReady() {
   _newSessionBtnReady = true;
-  const btn = document.getElementById('session-new');
-  if (!btn || !btn.classList.contains('loading')) return;
-  btn.classList.remove('loading');
-  btn.disabled = false;
-  btn.title = 'New session';
-  btn.innerHTML = icon('plus', { size: '24px' });
+  _renderNewSessionBtn();
+}
+
+// Health-poll hook (reconnect.js): toggle the chat-header controls between their
+// normal state and the "waiting for the server" spinner state.
+export function setChatHeaderReachable(reachable) {
+  reachable = reachable !== false;
+  if (reachable === _serverReachable) return;
+  _serverReachable = reachable;
+  const dropdown = document.getElementById('session-dropdown');
+  if (dropdown) {
+    if (_serverReachable) dropdown.removeAttribute('data-offline');
+    else dropdown.dataset.offline = 'true';
+  }
+  _renderNewSessionBtn();
 }
 
 function _toggleAgentPin(agentId) {
@@ -313,7 +349,11 @@ function _applyAgentReorder(orderedIds) {
 }
 
 export async function populateAgentSelect(userId) {
-  if (!userId) return;
+  // No user yet (cold start / anon id not resolved): still flip the spinner to a
+  // clickable + so the new-session button never sits dead. Starting a fresh
+  // session doesn't require the agent list — the click handler falls back to a
+  // direct new session when nothing is cached.
+  if (!userId) { _setNewSessionBtnReady(); return; }
 
   try {
     // Share the agent data with agents.js so it doesn't re-fetch.
@@ -1404,6 +1444,10 @@ function _showDebugBubble(sessionId) {
 }
 
 export async function loadSessionChat(sessionId) {
+  // Refresh the active-skill chips for the session being opened.
+  if (typeof app.refreshActiveSkills === 'function') {
+    try { app.refreshActiveSkills(); } catch (_) { /* best-effort */ }
+  }
   try {
     // Check cache first
     const cached = _messageCache.get(sessionId);
@@ -1811,7 +1855,7 @@ export function initSessions() {
     }
     // Leaving a session does NOT stop its run — it keeps going server-side and
     // we can view it again later from any device. Only tear down LOCAL UI state.
-    abortChatStream();
+    app.abortChatStream?.();
     app.currentSessionId = sid;
     localStorage.setItem('terminalSessionId', app.currentSessionId);
     // Await so the in-progress partial is rendered + the resume floor is set
@@ -2120,7 +2164,7 @@ export function initSessions() {
 
   /** Create a fresh session, optionally switching to a chosen agent first. */
   function _startNewSession(agentId) {
-    abortChatStream();
+    app.abortChatStream?.();
     if (agentId && agentId !== app.currentAgentId) {
       app.currentAgentId = agentId;
       try { localStorage.setItem('selectedAgentId', agentId); } catch (_) {}
@@ -2191,26 +2235,89 @@ export function initSessions() {
     }, 0);
   }
 
+  // The + button drives its own work: a click loads the agent list on demand
+  // (showing a spinner while it does), then opens the agent picker once the
+  // list is in. A double-click skips the picker and starts a fresh session with
+  // the agent already selected. This makes the button reliable regardless of
+  // how far along boot is — there is no "dead until agents preload" window and
+  // no race on whether the cache happened to be populated at click time.
+
+  let _newSessionBusy = false;     // a load is in flight — ignore extra clicks
+  let _newSessionClickTimer = null; // pending single-click (waiting for a 2nd)
+
+  // Swap the + into a spinner (or back) while the agent list loads on click.
+  function _setNewSessionBtnSpinning(on) {
+    const b = document.getElementById('session-new');
+    if (!b) return;
+    b.classList.toggle('loading', on);
+    b.title = on ? 'Loading agents…' : 'New session';
+    b.innerHTML = icon(on ? 'loader-2' : 'plus', { size: '24px' });
+  }
+
+  // Make sure the agent list has been fetched at least once. populateAgentSelect
+  // caches the fetch on window.__agentsSharedData, so this only hits the network
+  // the first time; later calls are effectively instant.
+  async function _ensureAgentsLoaded() {
+    if (window.__agentsSharedData || !app.currentUserId) return;
+    _setNewSessionBtnSpinning(true);
+    try { await populateAgentSelect(app.currentUserId); }
+    catch (_) { /* fall through — we still let the user start a session */ }
+    finally { _setNewSessionBtnSpinning(false); }
+  }
+
+  // Single click: load agents (with spinner) if needed, then pick or start.
+  async function _onNewSessionSingle() {
+    if (_newSessionBusy) return;
+    _newSessionBusy = true;
+    try {
+      closeMenu();                                         // close session list
+      if (_agentPickerEl) { _closeAgentPicker(); return; } // toggle picker off
+      await _ensureAgentsLoaded();
+      if (_agentsCache.length > 1) { _openAgentPicker(); return; }
+      // 1 agent → use it; 0 agents → start with no agent selected.
+      _startNewSession(_agentsCache.length === 1 ? _agentsCache[0].id : null);
+    } finally {
+      _newSessionBusy = false;
+    }
+  }
+
+  // Double click: skip the picker entirely, start fresh on the current agent.
+  function _onNewSessionDouble() {
+    if (_agentPickerEl) _closeAgentPicker();
+    _startNewSession(app.currentAgentId || null);
+  }
+
   // Delegated on document (capture) so it fires even if the #session-new button
   // is re-rendered/replaced after init or sits under another element — we just
-  // need the click to land anywhere on (or inside) #session-new.
+  // need the click to land anywhere on (or inside) #session-new. A short timer
+  // holds the single-click action so a second click can promote it to a
+  // double-click instead.
   document.addEventListener('click', (e) => {
     const btn = e.target.closest && e.target.closest('#session-new');
     if (!btn) return;
-    // Ignore clicks until the agent list has loaded — the button is a spinner
-    // until then (see _setNewSessionBtnReady), so it isn't really clickable yet.
-    if (!_newSessionBtnReady) return;
     e.stopPropagation();
     e.preventDefault();
-    closeMenu();           // close the session list if it's open
-    if (_agentPickerEl) { _closeAgentPicker(); return; }  // toggle off
-    if (_agentsCache.length > 1) {
-      _openAgentPicker();
-      return;
-    }
-    // 0 agents → keep current (empty) agent; 1 agent → use it.
-    _startNewSession(_agentsCache.length === 1 ? _agentsCache[0].id : null);
+    if (_newSessionClickTimer) return; // 2nd click of a pair — dblclick handles it
+    _newSessionClickTimer = setTimeout(() => {
+      _newSessionClickTimer = null;
+      _onNewSessionSingle();
+    }, 220);
   }, true);
+
+  document.addEventListener('dblclick', (e) => {
+    const btn = e.target.closest && e.target.closest('#session-new');
+    if (!btn) return;
+    e.stopPropagation();
+    e.preventDefault();
+    if (_newSessionClickTimer) { clearTimeout(_newSessionClickTimer); _newSessionClickTimer = null; }
+    _onNewSessionDouble();
+  }, true);
+
+  // The handler is wired, so flip the boot spinner to a clickable + right away
+  // (the button starts disabled in chat.html). The on-click flow above handles
+  // loading agents itself, so the + no longer has to wait on the initial
+  // populateAgentSelect — which on a cold server start can take many seconds.
+  _setNewSessionBtnReady();
 
   // Header delete button — two-click confirm (same pattern as dropdown rows)
   const sessionDelHeader = document.getElementById('session-delete-header');
@@ -2310,7 +2417,7 @@ export function initSessions() {
     }
     // Switching agent leaves the current session's run going in the
     // background — do NOT interrupt it. Reset local UI only.
-    abortChatStream();
+    app.abortChatStream?.();
     app.currentAgentId = aid;
     localStorage.setItem('selectedAgentId', aid);
     // Look up the last session for this agent (skipped when forcing a new one)

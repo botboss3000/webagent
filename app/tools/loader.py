@@ -737,6 +737,42 @@ class ToolLoader:
             },
         )
 
+        # ── On-demand skills (list_skills / load_skill) ──
+        # Always available (mirrors the tool-discovery bootstrap). The agent
+        # learns which skills exist from the `# [SKILLS]` prompt section and
+        # uses load_skill to pull a selectable skill's full body into context.
+        from app.tools.core_tools import (
+            list_skills as _core_list_skills,
+            load_skill as _core_load_skill,
+        )
+
+        async def _list_skills_wrapper():
+            return await _core_list_skills(agent_id=agent_id, session_id=session_id)
+
+        tools["list_skills"] = ToolInfo(
+            name="list_skills",
+            handler=_list_skills_wrapper,
+            parameters={"type": "object", "properties": {}, "required": []},
+        )
+
+        async def _load_skill_wrapper(name: str):
+            return await _core_load_skill(name=name, agent_id=agent_id, session_id=session_id)
+
+        tools["load_skill"] = ToolInfo(
+            name="load_skill",
+            handler=_load_skill_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Exact name of the skill to load (from the [SKILLS] section).",
+                    },
+                },
+                "required": ["name"],
+            },
+        )
+
         # ── Web Access ability (web_search, get_weather, maps_geocode) ──
         # Gated by the "web_access" toggle in App Config → Agent Abilities.
         # Bundles lightweight web lookup tools that don't drive a real browser.
@@ -1893,6 +1929,7 @@ async def load_tools(
     # Tier-1 tools are always-on and must never be filtered.
     TIER_1_ALWAYS_ON = {
         "list_tools", "search_tools", "get_tool_definition",
+        "list_skills", "load_skill",
         "get_time", "get_date", "calculate", "read_attachment",
         "register_user",
     }

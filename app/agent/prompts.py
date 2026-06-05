@@ -78,6 +78,38 @@ async def build_system_prompt(
     return "\n\n".join(s for s in sections if s.strip()).strip()
 
 
+async def append_skills_section(
+    system_prompt: str,
+    agent: Optional[Dict] = None,
+    session_id: Optional[str] = None,
+) -> str:
+    """Append the `# [SKILLS]` block to a built system prompt.
+
+    Reads the agent's skills (from `metadata.skills`) and the session's active
+    (loaded) skill list, then renders always-on bodies + a loadable catalog.
+    A no-op when the agent has no skills. Called right after build_system_prompt
+    at each chat prompt-build site.
+    """
+    from app.agent.skills import parse_agent_skills, format_skills_section
+
+    skills = parse_agent_skills(agent)
+    if not skills:
+        return system_prompt
+
+    active: List[str] = []
+    if session_id:
+        try:
+            from app.db import get_db
+            active = await get_db().get_session_active_skills(session_id)
+        except Exception as e:
+            logger.debug("Could not load active skills for session %s: %s", session_id, e)
+
+    section = format_skills_section(skills, active)
+    if not section:
+        return system_prompt
+    return f"{system_prompt}\n\n{section}".strip() if system_prompt else section
+
+
 async def format_data_sources_for_prompt(agent_id: str) -> str:
     """Build the `# [DATA SOURCES]` block for an agent's enabled attachments.
 

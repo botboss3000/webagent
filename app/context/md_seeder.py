@@ -85,6 +85,44 @@ def _parse_frontmatter(raw: str) -> tuple[dict, str]:
     return fm, body
 
 
+def normalize_skills(raw: Any) -> List[Dict[str, Any]]:
+    """Coerce an agent's `skills` list into the canonical on-demand-skill shape.
+
+    Each skill is a named knowledge pack the agent can either always carry
+    (mode="always_on") or load on demand via the `load_skill` tool
+    (mode="selectable"). Shape per item:
+        name        — unique short identifier shown in the skill catalog
+        description — "when to use this" line the agent always sees
+        body        — the full how-to instructions (loaded on demand)
+        mode        — "selectable" (default) or "always_on"
+        enabled     — bool; disabled skills are ignored everywhere
+
+    Invalid/blank entries are dropped. Returns a list (possibly empty).
+    """
+    if not isinstance(raw, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        mode = str(item.get("mode", "selectable")).strip().lower()
+        if mode not in ("selectable", "always_on"):
+            mode = "selectable"
+        out.append({
+            "name": name,
+            "description": str(item.get("description", "")).strip(),
+            "body": str(item.get("body", "")),
+            "mode": mode,
+            "enabled": False if item.get("enabled") is False else True,
+        })
+    return out
+
+
 def scan_context_files(directory: Optional[str] = None) -> List[Dict]:
     """
     Scan a directory for .md files and parse into context_templates rows.
@@ -290,9 +328,14 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
             )
             continue
 
-        # Serialize metadata dict to JSON string
+        # Serialize metadata dict to JSON string. A top-level `skills` array on
+        # the agent JSON is folded into metadata["skills"] so on-demand skills
+        # ride the existing metadata seeding + per-agent cloning path — no new
+        # tables or columns. Authors write `skills` at the top level for clarity.
         meta = data.get("metadata", {})
         if isinstance(meta, dict):
+            if "skills" in data:
+                meta = {**meta, "skills": normalize_skills(data.get("skills"))}
             meta_str = json.dumps(meta)
         else:
             meta_str = str(meta)
@@ -346,6 +389,8 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
             "can_be_default": 1 if data.get("can_be_default", True) else 0,
             "is_system": 1 if data.get("is_system", False) else 0,
             "is_pipeline": 1 if data.get("is_pipeline", False) else 0,
+            # Whether this template appears in the "New Agent" creation dropdown.
+            "discoverable": 1 if data.get("discoverable", False) else 0,
             "access_level": data.get("access_level", "all"),
             "trigger_type": data.get("trigger_type", "user_input"),
             "trigger_key": data.get("trigger_key", None),
@@ -389,6 +434,11 @@ def compute_agent_manifest_hash(directory: Optional[str] = None) -> str:
         directory = DEFAULT_AGENTS_DIR
 
     h = hashlib.sha256()
+    # Seeder-logic version: bump this when the JSON→DB mapping changes (not the
+    # JSON files themselves) so existing DBs re-run the (non-destructive) seed
+    # pass once and pick up newly-synced config columns. v2: the scanner now
+    # carries the `discoverable` flag and the config upsert syncs it.
+    h.update(b"seeder-logic-v2\x00")
     if not os.path.isdir(directory):
         return h.hexdigest()
 

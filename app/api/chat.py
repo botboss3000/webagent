@@ -16,6 +16,7 @@ from app.models.schemas import ChatRequest, ChatResponse
 from app.db import get_db
 from app.agent.prompts import (
     build_system_prompt,
+    append_skills_section,
     build_user_message_content,
     format_attachments_for_prompt,
     CONTEXT_SECTION_TYPES,
@@ -350,6 +351,56 @@ async def get_suggestions_config():
     return load_runtime_config()
 
 
+# ── On-demand skills (active list + deactivate) ─────────────────────────────
+# Power the active-skill chips below the chat box. The active list lives in the
+# session's metadata; load_skill adds to it, this endpoint removes from it.
+
+class SkillDeactivateRequest(BaseModel):
+    user_id: str
+    session_id: str
+    name: str
+
+
+@router.get("/skills")
+async def chat_skills(user_id: str, session_id: str, agent_id: Optional[str] = None):
+    """Return the active (loaded) selectable skills for a session, plus the
+    agent's enabled skill catalog when `agent_id` is supplied.
+
+    The active list alone needs no agent (it lives in session metadata), so the
+    chat chips work even if agent_id isn't passed; the panel passes agent_id to
+    also get descriptions + modes."""
+    from app.agent.skills import parse_agent_skills
+    db = get_db()
+    active = await db.get_session_active_skills(session_id)
+    agent = await db.get_agent_by_id(agent_id) if agent_id else None
+    active_set = set(active)
+    catalog = [
+        {
+            "name": s["name"],
+            "description": s.get("description", ""),
+            "mode": s.get("mode", "selectable"),
+            "active": s["name"] in active_set,
+        }
+        for s in parse_agent_skills(agent)
+        if s.get("enabled", True) and s.get("mode") != "always_on"
+    ]
+    return {"active": active, "skills": catalog}
+
+
+@router.post("/skills/deactivate")
+async def chat_skill_deactivate(req: SkillDeactivateRequest):
+    """Drop a loaded skill from the conversation: remove it from the session's
+    active list and neutralize its stored load result so the body leaves the
+    model's context on the next turn."""
+    db = get_db()
+    active = await db.set_session_active_skill(req.session_id, req.name, False)
+    try:
+        await db.neutralize_skill_load(req.session_id, req.name)
+    except Exception as e:
+        logger.debug("neutralize_skill_load failed for %s: %s", req.name, e)
+    return {"active": active, "name": req.name}
+
+
 @router.put("/suggestions/config")
 async def update_suggestions_config(req: SuggestionsConfigRequest):
     """Update the Suggested-Replies runtime config. Used by the impersonator
@@ -677,6 +728,7 @@ async def chat(request: ChatRequest, fastapi_request: Request):
         )
         if attachment_context:
             system_prompt = system_prompt + "\n\n" + attachment_context
+        system_prompt = await append_skills_section(system_prompt, agent, request.session_id)
 
         # ── Pipeline: prompt built ──
         from app.tools.loader import load_tools
@@ -1173,6 +1225,7 @@ async def _run_turn_background(
             context_docs, brain_context, request.user_id, agent_id=_agent_id_for_prompt)
         if attachment_context:
             system_prompt = system_prompt + "\n\n" + attachment_context
+        system_prompt = await append_skills_section(system_prompt, agent, request.session_id)
 
         from app.tools.loader import load_tools
         tools = await load_tools(request.user_id, agent_id=_agent_id_for_prompt or "",
@@ -1326,6 +1379,7 @@ async def _resume_web_turn(rc: Dict[str, Any], replaced: bool):
         context_docs = agent.get("context_documents", [])
         system_prompt = await build_system_prompt(
             context_docs, None, user_id, agent_id=agent_id)
+        system_prompt = await append_skills_section(system_prompt, agent, session_id)
         history = await build_openai_history_from_session(db, user_id, session_id)
         _raw_at = agent.get("allowed_tools", [])
         if isinstance(_raw_at, str):

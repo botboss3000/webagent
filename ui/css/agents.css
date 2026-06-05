@@ -303,6 +303,74 @@
 body.light-mode .agent-card-desc { color: #7a5a4a; }
 
 /* ── In-card tab carousel (shown when card is expanded) ── */
+/* Wrapper hosts the scroller plus the edge fades and chevron buttons.
+   The negative margins cancel the card's padding so the strip spans the card's
+   inner width and bottom edge (not beyond it). overflow:hidden + the bottom
+   radius keep it inside the card and tucked under the rounded corners. */
+.agent-card-tabs-wrap {
+  position: relative;
+  min-width: 0;
+  margin: 4px -10px -14px;
+  border-top: 1px solid var(--border-soft);
+  overflow: hidden;
+  border-bottom-left-radius: 9px;
+  border-bottom-right-radius: 9px;
+}
+/* When a detail panel follows, the card's bottom corners are squared off, so
+   square the strip to match. */
+.agent-row:has(.agent-detail-panel) .agent-card-tabs-wrap {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+/* Hide the whole strip in collapsed (square) mode */
+.agent-card:not(.active) .agent-card-tabs-wrap {
+  display: none;
+}
+/* Edge fade via a CSS mask on the scroller itself — the tab content fades to
+   transparent at the scrollable edge, revealing the card background behind it.
+   Because it's a mask (alpha only, never a colour), it adapts automatically to
+   whatever the card background is in either theme — no per-theme override and
+   no coloured rectangle that could poke past the card's rounded corners. The
+   edge is only faded on the side that actually has more to scroll. */
+.agent-card-tabs-wrap.can-scroll-right .agent-card-tabs {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 44px), transparent 100%);
+          mask-image: linear-gradient(to right, #000 calc(100% - 44px), transparent 100%);
+}
+.agent-card-tabs-wrap.can-scroll-left .agent-card-tabs {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 44px);
+          mask-image: linear-gradient(to right, transparent 0, #000 44px);
+}
+.agent-card-tabs-wrap.can-scroll-left.can-scroll-right .agent-card-tabs {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 44px, #000 calc(100% - 44px), transparent 100%);
+          mask-image: linear-gradient(to right, transparent 0, #000 44px, #000 calc(100% - 44px), transparent 100%);
+}
+
+/* Clickable chevrons — sit above the faded edge. Transparent button; the glyph
+   colour comes from the design system so it tracks the theme automatically. */
+.agent-card-tabs-chev {
+  position: absolute;
+  top: 1px;
+  bottom: 0;
+  width: 30px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--fg-2);
+  cursor: pointer;
+  z-index: 2;
+  font-size: 14px;
+  line-height: 1;
+  transition: color 0.15s;
+}
+.agent-card-tabs-chev.left  { left: 0; }
+.agent-card-tabs-chev.right { right: 0; }
+.agent-card-tabs-chev:hover { color: var(--fg-1); }
+.agent-card-tabs-wrap.can-scroll-left  .agent-card-tabs-chev.left  { display: flex; }
+.agent-card-tabs-wrap.can-scroll-right .agent-card-tabs-chev.right { display: flex; }
+
 .agent-card-tabs {
   display: flex;
   align-items: center;
@@ -312,15 +380,15 @@ body.light-mode .agent-card-desc { color: #7a5a4a; }
   scrollbar-width: none;
   -ms-overflow-style: none;
   min-width: 0;
-  margin: 4px -18px -16px;
   padding: 0 12px;
-  border-top: 1px solid #1e1e3a;
+  cursor: grab;
+  touch-action: pan-y;
 }
-/* Hide tabs in collapsed (square) mode */
-.agent-card:not(.active) .agent-card-tabs {
-  display: none;
+.agent-card-tabs.dragging {
+  cursor: grabbing;
+  scroll-behavior: auto;
+  user-select: none;
 }
-body.light-mode .agent-card-tabs { border-top-color: #ffdec4; }
 .agent-card-tabs::-webkit-scrollbar { display: none; }
 .agent-card-tabs .agents-detail-tab {
   background: none;
@@ -480,11 +548,17 @@ body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; co
 .agent-detail-body::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
 
 /* ── Agent Manager page-level chat bar ──
-   Sits at the bottom of the agents page (below the grid and system toggle),
-   page-wide chat entry that hands off to the built-in agent-builder system agent.
+   A FLOATING glass pill, not a solid bar. It hovers over the agent grid (which
+   reserves bottom padding so cards scroll behind it) on the LEFT, mirroring the
+   chat pill that floats on the right — a matched pair, each pinned to its own
+   side. Its bottom edge and resting height are matched to the chat pill so the
+   two read as one aligned row (tops and bottoms line up).
    CHAT-PILL-SYNC: pill geometry, focus state, attach/voice/send buttons,
-   has-text swap, and light-mode colors all come from the shared .chat-pill*
-   block in ui/css/app1.css. Only wrapper-specific rules belong here. */
+   has-text swap, and light-mode colors come from the shared .chat-pill* block
+   in ui/css/app1.css. The transparent-tint + blur "floating glass" SKIN
+   (background, border, backdrop-filter) is overridden in ui/css/index.css
+   alongside the chat pill — change the float look there, not here. Only
+   wrapper-specific layout (position, bottom alignment) belongs here. */
 #agent-builder-bar {
   position: absolute;
   left: 0;
@@ -496,13 +570,16 @@ body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; co
 }
 #agent-builder-bar > .chat-pill {
   pointer-events: auto;
-  margin: 0 12px 12px;
+  /* Bottom margin sets this pill's bottom edge level with the chat pill's
+     (the chat pill clears its footer/token row on the right side). */
+  margin: 0 12px 32px;
   width: calc(100% - 24px);
 }
-/* Two-line tall textarea for the page-level builder bar (taller than the
-   web chat default). */
+/* Match the chat pill's resting height: inherit the shared 96px min-height
+   (see .chat-pill-input in app1.css) so both pills are the same height and
+   their tops align. A larger max-height lets the builder bar grow more for
+   long agent-creation prompts. */
 #agent-builder-bar-input {
-  min-height: 52px;
   max-height: 160px;
 }
 
@@ -628,6 +705,36 @@ body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; co
 }
 .agents-save-msg { font-size: 12px; color: #9ece6a; }
 .agents-save-msg.error { color: #f7768e; }
+
+/* ── Per-field auto-save indicator ── */
+.agents-autosave-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  margin-left: 8px;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: middle;
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.agents-autosave-check.saved {
+  opacity: 1;
+  transform: scale(1);
+  color: var(--success);
+  background: var(--success-soft);
+}
+.agents-autosave-check.error {
+  opacity: 1;
+  transform: scale(1);
+  color: var(--danger);
+  background: var(--danger-soft, transparent);
+}
 
 /* ── Per-agent LLM card ── */
 .agents-llm-card {
@@ -1842,6 +1949,138 @@ body.light-mode .members-policy-opt-label { color: #2a1f17; }
 }
 body.light-mode .agent-card-mock .agent-card-name {
   color: #ff8c42;
+}
+
+/* ── Mock card inline create field (name input + template dropdown) ──────── */
+.agent-mock-create-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.agent-mock-name-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg-1);
+  font-size: 15px;
+  font-weight: 700;
+  font-family: inherit;
+  padding: 7px 10px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.agent-mock-name-input::placeholder {
+  color: var(--fg-3);
+  font-weight: 600;
+  font-style: italic;
+}
+.agent-mock-name-input:focus { border-color: var(--accent); }
+/* Hide the type=search clear (X) affordance — we only use search for its
+   immunity to browser password autofill, not its clear button. */
+.agent-mock-name-input::-webkit-search-cancel-button,
+.agent-mock-name-input::-webkit-search-decoration { -webkit-appearance: none; appearance: none; }
+
+/* Big "+" create button on the right of the create bar. */
+.agent-mock-create-go {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  background: var(--accent);
+  color: var(--bg-0);
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: filter 0.15s, transform 0.05s;
+}
+.agent-mock-create-go:hover { filter: brightness(1.08); }
+.agent-mock-create-go:active { transform: scale(0.94); }
+.agent-mock-create-go:disabled { opacity: 0.55; cursor: default; }
+
+.agent-mock-tpl-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg-2);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.agent-mock-tpl-toggle:hover {
+  background: var(--bg-elev-2);
+  color: var(--fg-1);
+  border-color: var(--border-strong);
+}
+.agent-card-mock.mock-menu-open .agent-mock-tpl-toggle {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* While templates are still loading the toggle shows a spinning loader. */
+.agent-mock-tpl-toggle.loading { cursor: default; opacity: 0.75; }
+.agent-mock-tpl-toggle.loading:hover {
+  background: var(--bg-elev);
+  color: var(--fg-2);
+  border-color: var(--border);
+}
+.agent-mock-tpl-toggle.loading .ui-icon,
+.agent-mock-tpl-toggle.loading svg {
+  animation: agentMockSpin 0.7s linear infinite;
+}
+@keyframes agentMockSpin { to { transform: rotate(360deg); } }
+.agent-mock-tpl-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 50;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  padding: 4px;
+}
+.agent-mock-tpl-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.agent-mock-tpl-row:hover { background: var(--bg-tint); }
+.agent-mock-tpl-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-1);
+}
+.agent-mock-tpl-desc {
+  font-size: 11px;
+  color: var(--fg-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-mock-tpl-loading,
+.agent-mock-tpl-empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--fg-3);
+  font-style: italic;
 }
 
 /* ── Mock agent create button bar ─────────────────────────────────────── */

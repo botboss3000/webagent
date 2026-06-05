@@ -14,6 +14,8 @@ import { randomUUID } from './uuid.js';
 import { startAppConfig, stopAppConfig } from './app-config.js';
 import { startAutoRefresh, stopAutoRefresh } from './db/pagination.js';
 import { startDbViewer } from './db/index.js';
+import { isMobileLayout } from './layout.js';
+import { app } from './state.js';
 import { startLoop, stopLoop, renderInteractionsSidebar } from './loop.js';
 import { startLoopVisual, stopLoopVisual, renderRuntimeLoopSidebar } from './loop-logic.js';
 import { startDiagnostics, stopDiagnostics, renderDiagnosticsSidebar } from './diagnostics.js';
@@ -2833,10 +2835,9 @@ window.addEventListener('resize', () => {
 
 const LS_SIDEBAR_STATE = 'files.sidebarState';   // 'split' | 'max' | 'strip'
 
-export function isMobileLayout() {
-  if (typeof window.__isMobileChatLayout === 'function') return window.__isMobileChatLayout();
-  return window.innerWidth <= 800;
-}
+// isMobileLayout now lives in ./layout.js (imported at the top of this file)
+// so leaf modules like db/tables.js can use it without importing this large
+// module — that import created a db/* <-> files.js cycle.
 
 function initSidebarMaximize() {
   const sidebar = document.getElementById('files-sidebar');
@@ -2898,7 +2899,9 @@ function cycleSidebarState() {
   setSidebarState(next);
 }
 
-export function setSidebarState(state) {
+// Not exported: db/tables.js reaches this via app.setSidebarState (registered
+// below) to avoid a db/* <-> files.js import cycle.
+function setSidebarState(state) {
   const sidebar = document.getElementById('files-sidebar');
   if (!sidebar) return;
   if (state !== 'split' && state !== 'max' && state !== 'strip') state = 'split';
@@ -2929,6 +2932,12 @@ export function setSidebarState(state) {
   }
   try { localStorage.setItem(LS_SIDEBAR_STATE, state); } catch (_) {}
 }
+
+// Exposed on `app` so db/tables.js can collapse the sidebar after a table is
+// selected WITHOUT importing files.js (that import was the db/* <-> files.js
+// cycle edge). files.js is always loaded before the DB viewer it launches, so
+// app.setSidebarState is set well before any table click.
+app.setSidebarState = setSidebarState;
 
 // ── Sidebar view switcher (Explorer ↔ Source Control) ─────────────
 

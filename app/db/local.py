@@ -2948,6 +2948,7 @@ class LocalBackend(StorageBackend):
                     is_pipeline = excluded.is_pipeline,
                     access_level = excluded.access_level,
                     is_admin_agent = excluded.is_admin_agent,
+                    discoverable = excluded.discoverable,
                     trigger_type = excluded.trigger_type,
                     trigger_key = excluded.trigger_key,
                     loop_logic = excluded.loop_logic,
@@ -4203,6 +4204,84 @@ class LocalBackend(StorageBackend):
             return dict(row) if row else None
         finally:
             conn.close()
+
+    # ── On-demand skills: per-session active list (lives in sessions.metadata) ──
+    # "active_skills" = the names of selectable skills the agent has loaded this
+    # conversation via load_skill. Drives the loadable-vs-loaded catalog in the
+    # system prompt and the active-skill chips in the chat UI.
+
+    @staticmethod
+    def _active_skills_from_meta(meta_raw) -> List[str]:
+        try:
+            meta = json.loads(meta_raw) if meta_raw else {}
+        except (json.JSONDecodeError, TypeError):
+            return []
+        if not isinstance(meta, dict):
+            return []
+        lst = meta.get("active_skills") or []
+        return [n for n in lst if isinstance(n, str)] if isinstance(lst, list) else []
+
+    async def get_session_active_skills(self, session_id: str) -> List[str]:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            return self._active_skills_from_meta(row["metadata"]) if row else []
+        finally:
+            conn.close()
+
+    async def set_session_active_skill(
+        self, session_id: str, name: str, active: bool
+    ) -> List[str]:
+        """Add/remove a skill name in the session's active list. Returns new list."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if not row:
+                    return []
+                try:
+                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                lst = [n for n in (meta.get("active_skills") or []) if isinstance(n, str)]
+                if active:
+                    if name not in lst:
+                        lst.append(name)
+                else:
+                    lst = [n for n in lst if n != name]
+                meta["active_skills"] = lst
+                conn.execute(
+                    "UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(meta), _now_iso(), session_id),
+                )
+                conn.commit()
+                return lst
+            finally:
+                conn.close()
+
+    async def neutralize_skill_load(self, session_id: str, name: str) -> int:
+        """Overwrite stored load_skill result rows for `name` so the body leaves
+        context once the user deactivates the skill. Keeps the row (and its
+        tool_call_id pairing) intact — only the content changes."""
+        from app.agent.skills import loaded_result_prefix, deactivated_text
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "UPDATE interactions SET content = ? "
+                    "WHERE session_id = ? AND tool_name = 'load_skill' AND content LIKE ?",
+                    (deactivated_text(name), session_id, loaded_result_prefix(name) + "%"),
+                )
+                conn.commit()
+                return cur.rowcount or 0
+            finally:
+                conn.close()
 
     async def fetch_agent_with_context(
         self,

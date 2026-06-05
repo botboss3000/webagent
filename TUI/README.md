@@ -176,6 +176,17 @@ as `n/a`.
 which always **also** echoes the alert into the chat transcript. The notifier is
 channel-based so Telegram / email / an in-webapp banner can be added later.
 
+In the transcript each alert renders as a **colour-coded, collapsible notification
+box** (`_notify_box` in [`webagent/app.py`](webagent/app.py)): a header showing the
+**timestamp** + a 1–3 word summary on the left and a clickable **`[Show]`/`[Hide]`**
+toggle on the right. It's **collapsed by default** — only the header line shows;
+click **`[Show]`** to reveal the full detail below (and **`[Hide]`** to re-collapse). It's
+**orange** while it's a **warning** and **green** once it's **resolved** — and an
+incoming recovery (e.g. "Server recovered", a healthy auto-restart) also flips the
+matching still-orange warning boxes (same coarse subject: server / disk / memory /
+cpu) to green, so a downed-then-recovered server reads as orange → green. Colours
+are theme variables (`$warning` / `$success`), legible in light and dark.
+
 **The "watch for this error" flow:** tell the agent about an error → it finds the
 matching diagnostics → on your OK it writes an **alarm rule** (`add_alarm`): a
 `contains` / `level` / `category` match, an `action` (`notify` | `auto_restart`),
@@ -273,6 +284,32 @@ Textual app ([`webagent/app.py`](webagent/app.py)) hosts the workers: `_spawn_su
 creates the sub-session and launches a worker; `_run_subagent` runs it and reports back; steering
 is queued on submit while busy; `_after_turn_settle` handles auto-continue. Tests live in
 [`tests/`](tests/) (`test_subagents.py`, `test_delegate.py`, `test_event_loop.py`).
+
+## Testing
+
+Two complementary styles, both as plain `asyncio.run(...)` scripts (no
+pytest-asyncio dependency), run with the venv Python:
+
+| Style | What it drives | Files |
+|-------|----------------|-------|
+| **Logic / agent loop** | `ServerManagerAgent` directly with a `FakeLLM` — no UI, no network. Verifies the event-driven loop, subagents, and delegate tools. | `test_event_loop.py`, `test_subagents.py`, `test_delegate.py`, `test_playbook.py` |
+| **UI / Pilot** | The whole `ServerManagerApp` **headlessly** via Textual's `App.run_test()` → a `Pilot`. Boots into an off-screen buffer (no terminal opens), then types, presses keys, clicks widgets, inspects the tree, and takes **text** screenshots to verify appearance. | [`pilot_harness.py`](tests/pilot_harness.py) (reusable boot/snapshot helpers), [`test_tui_pilot.py`](tests/test_tui_pilot.py) (smoke test) |
+
+Run a Pilot test:
+
+```
+cd tests
+PYTHONUTF8=1 PYTHONIOENCODING=utf-8 ../.venv/Scripts/python.exe test_tui_pilot.py
+```
+
+The harness handles the three boot quirks for you — `_do_autostart = False` (no
+managed server launch), `cfg.bridge_enabled = False` (silence the bridge thread),
+and UTF-8 stdout (the box-drawing chrome crashes a cp1252 console). `snapshot(app)`
+returns the off-screen buffer as plain text (capture it inside the `run_test` block,
+print/assert **after**). Header/category buttons are id-less — select them with
+`hdr_button(app, "<_btn_action>")` and pass the widget to `pilot.click`. Keep Pilot
+tests offline: exercise local interactions (typing, theme cycle, panels, tabs) and
+don't submit the prompt, which would invoke the real LLM.
 
 ## Configuration files (human-readable)
 

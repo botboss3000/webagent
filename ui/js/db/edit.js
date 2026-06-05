@@ -125,6 +125,6 @@ export function initDbCellEditors() {
     const col = cell.dataset.col;
     const originalValue = cell.dataset.val === 'null' ? '' : cell.dataset.val;
 
-    openCellPopup(cell, ri, col, originalValue);
+    openCellPopup(cell, ri, col, originalValue, saveEdit);
   });
 }

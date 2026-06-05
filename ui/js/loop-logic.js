@@ -4,6 +4,7 @@ import { app } from './state.js';
 import { apiPath } from './config.js';
 import { LOOP_W, LOOP_NODES, BREAKPOINT_VERTICAL, computeEdgePath, renderLoopDiagram } from './loop-diagram.js';
 import { NODE_STATIC_ITEMS, OPTIMIZER_NODES, NODE_PANEL_INFO } from './loop-node-data.js';
+import { interactionToEvents } from './loop-events.js';
 export { NODE_PANEL_INFO } from './loop-node-data.js';
 
 // LOOP_W imported from loop-diagram.js (used for optimizer label)
@@ -204,6 +205,7 @@ function eventToNodeId(event) {
       case 'data_src_query_started':
       case 'data_src_query_finished': return 'data_src_exec';
       case 'agent_delegation':      return 'delegation_chk';
+      case 'skill_track':           return 'skill_track';
 
       // CONTINUE?
       case 'check_continue':
@@ -841,52 +843,8 @@ function replayBuffer() {
 }
 
 // â”€â”€ Convert DB interaction row â†’ loop events â”€â”€
-function interactionToEvents(row) {
-  const events = [];
-  const role = row.role || 'unknown';
-
-  if (role === 'user') {
-    events.push({ type: 'pipeline', level: 'user', step: 'user_message', content: row.content || '' });
-  } else if (role === 'assistant') {
-    let meta = {};
-    try { meta = JSON.parse(row.metadata || '{}'); } catch(e) {}
-    if (meta.turn) {
-      events.push({ type: 'pipeline', level: 'pipeline', step: 'turn_start', turn: meta.turn, max_turns: 10 });
-    }
-    events.push({
-      type: 'response', level: 'agent',
-      content: (row.content || '').replace(/\n\n\[Tool calls:.*\]$/s, ''),
-      _input_tokens: meta.input_tokens,
-      _output_tokens: meta.output_tokens,
-      _duration_ms: meta.duration_ms,
-      _model: meta.model,
-    });
-  } else if (role === 'tool') {
-    const toolName = row.tool_name || 'unknown';
-    let meta = {};
-    try { meta = JSON.parse(row.metadata || '{}'); } catch(e) {}
-
-    if (toolName === 'memory_search') {
-      let contentObj = {};
-      try { contentObj = JSON.parse(row.content || '{}'); } catch(e) {}
-      events.push({ type: 'pipeline', level: 'pipeline', step: 'memory_search_end',
-        results_count: meta.count || contentObj.count || 0 });
-    } else if (toolName === 'memory_save') {
-      events.push({ type: 'pipeline', level: 'pipeline', step: 'memory_save_end',
-        slug: meta.slug || toolName });
-    } else {
-      events.push({ type: 'tool_call', level: 'agent', tool: toolName, args: meta.input_params || {} });
-      events.push({ type: 'tool_result', level: 'agent', tool: toolName, result: row.content || '',
-        duration_ms: meta.duration_ms || 0,
-        error: !(meta.success !== false),
-        error_type: meta.error_message ? 'execution_error' : null,
-        recoverable: true,
-      });
-    }
-  }
-
-  return events;
-}
+// interactionToEvents(row) now lives in ./loop-events.js (imported above),
+// shared with loop.js so the DB-row -> loop-event mapping stays in sync.
 
 // â”€â”€ Session changed (called from sessions.js) â”€â”€
 export function loopVisualSessionChanged() {

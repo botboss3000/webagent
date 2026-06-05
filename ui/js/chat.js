@@ -856,6 +856,12 @@ export function abortChatStream() {
   if (app.chatSend) app.chatSend.disabled = false;
 }
 
+// Exposed on `app` so modules that need to abort the stream (e.g. sessions.js
+// when switching session/agent) can call it WITHOUT importing chat.js — that
+// import created a chat.js <-> sessions.js cycle. chat.js is loaded at boot
+// (main.js), so app.abortChatStream is always set before any switch happens.
+app.abortChatStream = abortChatStream;
+
 /**
  * Find the agent bubble for a given turn_id. Returns null if none exists.
  * Falls back to last agent bubble when no turn_id is supplied (legacy path).
@@ -962,6 +968,10 @@ function finalizeAgentResponse(content, turnId, isReplayed) {
   // The agent just finished — offer fresh suggested replies in the pill chips.
   if (typeof app.refreshSuggestions === 'function') {
     try { app.refreshSuggestions(); } catch (_) { /* best-effort */ }
+  }
+  // The turn may have loaded a skill — refresh the active-skill chips.
+  if (typeof app.refreshActiveSkills === 'function') {
+    try { app.refreshActiveSkills(); } catch (_) { /* best-effort */ }
   }
 }
 

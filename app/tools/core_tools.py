@@ -141,6 +141,84 @@ async def get_tool_definition(tool_name: str, user_id: str, db=None) -> str:
         return json.dumps({"status": "error", "message": str(e)})
 
 
+# ── On-demand skills ──────────────────────────────────────────────────────────
+
+async def list_skills(agent_id: str = "", session_id: str = "", db=None) -> str:
+    """
+    List this agent's skills — named knowledge packs you can pull in on demand.
+
+    Returns each skill's name, when-to-use description, mode (always_on or
+    selectable), and whether it is already loaded in this conversation. Call
+    `load_skill` with a skill's name to load its full step-by-step instructions.
+    """
+    try:
+        from app.db import get_db
+        from app.agent.skills import parse_agent_skills
+        if db is None:
+            db = get_db()
+        agent = await db.get_agent_by_id(agent_id) if agent_id else None
+        skills = parse_agent_skills(agent)
+        active = set(await db.get_session_active_skills(session_id)) if session_id else set()
+        out = []
+        for s in skills:
+            if not s.get("enabled", True):
+                continue
+            always = s.get("mode") == "always_on"
+            out.append({
+                "name": s["name"],
+                "description": s.get("description", ""),
+                "mode": s.get("mode", "selectable"),
+                "loaded": always or s["name"] in active,
+            })
+        return json.dumps({"status": "ok", "count": len(out), "skills": out})
+    except Exception as e:
+        logger.error("list_skills failed: %s", e)
+        return json.dumps({"status": "error", "message": str(e)})
+
+
+async def load_skill(name: str, agent_id: str = "", session_id: str = "", db=None) -> str:
+    """
+    Load a skill's full instructions into this conversation.
+
+    Use this when the user's request matches a skill listed in the `[SKILLS]`
+    section of your system prompt. Pass the skill's exact `name`. The returned
+    instructions stay active for the rest of the conversation — load each skill
+    only once.
+    """
+    try:
+        from app.db import get_db
+        from app.agent.skills import parse_agent_skills, loaded_result_text
+        if db is None:
+            db = get_db()
+        agent = await db.get_agent_by_id(agent_id) if agent_id else None
+        skills = parse_agent_skills(agent)
+        target = (name or "").strip().lower()
+        match = next((s for s in skills if s["name"].lower() == target), None)
+        if not match:
+            avail = [s["name"] for s in skills if s.get("enabled", True)]
+            return json.dumps({
+                "status": "error",
+                "message": f"No skill named '{name}'. Available: "
+                           f"{', '.join(avail) if avail else '(none)'}",
+            })
+        if not match.get("enabled", True):
+            return json.dumps({"status": "error",
+                               "message": f"Skill '{match['name']}' is disabled."})
+        # Record it active for this session (drives the catalog + UI chips).
+        if session_id:
+            try:
+                await db.set_session_active_skill(session_id, match["name"], True)
+            except Exception as e:
+                logger.debug("set_session_active_skill failed: %s", e)
+        # The returned text IS the persisted tool result, so it replays into
+        # context for the rest of the conversation. Its header line lets the
+        # deactivate endpoint neutralize this row later.
+        return loaded_result_text(match)
+    except Exception as e:
+        logger.error("load_skill failed: %s", e)
+        return json.dumps({"status": "error", "message": str(e)})
+
+
 # ── Web search ────────────────────────────────────────────────────────────────
 
 async def web_search(query: str, max_results: int = 5) -> str:

@@ -689,9 +689,81 @@ body.light-mode .chat-stop-btn:hover {
     color: var(--fg-1);
   }
 
+/* ── Active on-demand skill chips (below the chat box) ──────────────────────
+   One small "pill" per skill the agent has loaded this conversation. The × on
+   each deactivates it (drops its instructions from the agent's context).
+   Theme-aware via design tokens — legible in dark + light. */
+.chat-skills-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    align-self: stretch;
+    margin-bottom: 4px;
+    padding: 0 6px;
+  }
+.chat-skills-row[hidden] {
+    display: none;
+  }
+.chat-skills-label {
+    font-size: 11px;
+    color: var(--fg-4);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+.chat-skill-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    padding: 2px 4px 2px 9px;
+    background: var(--bg-tint);
+    border: 1px solid var(--border-soft);
+    border-radius: 999px;
+    color: var(--fg-2);
+    font-size: 12px;
+    line-height: 1.3;
+  }
+.chat-skill-chip-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 220px;
+  }
+.chat-skill-chip-x {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: none;
+    border-radius: 999px;
+    background: none;
+    color: var(--fg-4);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+.chat-skill-chip-x:hover {
+    background: var(--danger);
+    color: #fff;
+  }
+.chat-skill-chip-x:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
 /* ── Chat-pill ─────────────────────────────────────────────────────────────
-   CHAT-PILL-SYNC: single source of truth for every chat-style "pill" input
-   in the app. Apply these classes to opt in:
+   CHAT-PILL-SYNC: single source of truth for the GEOMETRY/behavior of every
+   chat-style "pill" input in the app (layout, buttons, has-text swap, sizing).
+   NOTE: the base skin here is an opaque dark pill with a hard border. Two pills
+   are re-skinned as transparent "floating glass" in ui/css/index.css (loaded
+   last): the web-chat pill (#chat-panel .chat-pill) and the agents-page
+   builder bar (#agent-builder-bar > .chat-pill). If you change the float look,
+   edit index.css; geometry stays here.
+   Apply these classes to opt in:
      .chat-pill        — outer flex row (the rounded container)
      .chat-pill-input  — textarea / text input inside the pill
      .chat-pill-attach — left-side paperclip / attach icon button
@@ -2177,11 +2249,29 @@ body.light-mode .agent-dropdown:not([data-loaded="true"]) #agent-dropdown-label 
   color: #b09580;
 }
 .session-dropdown:not([data-loaded="true"]) .session-dropdown-trigger,
-.agent-dropdown:not([data-loaded="true"]) .agent-dropdown-trigger {
+.agent-dropdown:not([data-loaded="true"]) .agent-dropdown-trigger,
+.session-dropdown[data-offline="true"] .session-dropdown-trigger {
   pointer-events: none;
   opacity: 0.5;
   cursor: default;
 }
+
+/* Session-dropdown chevron / spinner swap. The trigger shows a spinner while
+   it is waiting for data (session not yet loaded) or the server is unreachable
+   (data-offline, set from the health poll), and the chevron arrow only once a
+   session has loaded AND the server is reachable. */
+.session-dropdown-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.session-dropdown-chevron .session-chevron-arrow { display: none; }
+.session-dropdown-chevron .session-chevron-spinner {
+  animation: session-status-spin 1s linear infinite;
+}
+.session-dropdown[data-loaded="true"]:not([data-offline="true"]) .session-dropdown-chevron .session-chevron-spinner { display: none; }
+.session-dropdown[data-loaded="true"]:not([data-offline="true"]) .session-dropdown-chevron .session-chevron-arrow { display: inline-flex; }
 
   .session-dropdown,
 .agent-dropdown {

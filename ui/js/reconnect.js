@@ -3,6 +3,7 @@
 import { reconnectAllTerminals } from './files.js';
 import { connectAgent } from './agentWs.js';
 import { apiPath } from './config.js';
+import { setChatHeaderReachable } from './sessions.js';
 
 function setRestartStatus(msg) {
   const el = document.getElementById('restart-status');
@@ -18,6 +19,10 @@ function setRestartStatus(msg) {
 
 /* ── Server health dot ─────────────────────────────────────── */
 function setHealthDot(state) {
+  // Mirror reachability onto the chat-header controls: only a healthy (green)
+  // server lets the new-session "+" and the session-dropdown chevron act on
+  // fresh data; red (down) and orange (restarting) both keep them as spinners.
+  setChatHeaderReachable(state === 'green');
   const dot = document.getElementById('admin-health-dot');
   if (!dot) return;
   dot.className = 'health-dot';

@@ -1868,6 +1868,11 @@ async def stream_agent_events(
                                "step": "execute_end", "tool": tool_name,
                                "duration_ms": result["duration_ms"],
                                "success": success}
+                        # Light up the skill_track node when an on-demand skill loads.
+                        if tool_name == "load_skill" and success:
+                            yield {"type": "pipeline", "level": "pipeline",
+                                   "step": "skill_track", "tool": tool_name,
+                                   "skill": (tool_args or {}).get("name")}
                         _ti2 = tools.get(tool_name)
                         _tid2 = getattr(_ti2, "tool_id", "") or ""
                         if _tid2.startswith("ds:"):

@@ -3,7 +3,7 @@
 import { app } from '../state.js';
 import { apiPath } from '../config.js';
 import { getAuthToken, authUrl, isAdmin } from '../left-login.js';
-import { isMobileLayout, setSidebarState } from '../files.js';
+import { isMobileLayout } from '../layout.js';
 
 const RESTRICTED_TRUNCATE_TIP = 'Restricted: only admins can clear tables';
 
@@ -155,7 +155,7 @@ export function renderTableList() {
       // to the strip so the table viewer that just loaded becomes visible.
       const sidebar = document.getElementById('files-sidebar');
       if (sidebar && isMobileLayout() && sidebar.dataset.state === 'max') {
-        setSidebarState('strip');
+        app.setSidebarState?.('strip');
       }
     });
   });

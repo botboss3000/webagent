@@ -564,6 +564,7 @@ class ServerManagerApp(App):
         self._tool_group = None      # current open "N tool calls" Collapsible (None = none)
         self._tool_n = 0             # how many calls are in the current group
         self._tool_pending: list[dict] = []  # calls awaiting their result (fill in place)
+        self._open_notifies: list = []       # still-orange watchdog warnings (flip green on recovery)
         # ── TUI log (persistent, human-readable) ──
         log_dir = self.project_root or Path.cwd()
         self._tui_log = TuiLogger(log_dir)
@@ -1200,16 +1201,107 @@ class ServerManagerApp(App):
         self._refresh_status()
 
     def _log_watchdog(self, text: str) -> None:
-        """Transcript sink for the watchdog/notifier. Rendered as a distinct
-        notification block — bordered, accent-coloured, with its own CSS class
-        (``msg-notify``) so it stands apart from user/agent/web-app messages."""
+        """Transcript sink for the watchdog/notifier. Rendered as a colour-coded,
+        collapsible notification box: a timestamped one-line summary with a
+        [Hide]/[Show] toggle over the full detail. **Orange** while it's a warning,
+        **green** once it resolves — and an incoming recovery flips the matching
+        still-orange warnings green too."""
         try:
-            # Strip any leading bell/emoji prefix if present; the CSS border + accent
+            # Strip any leading bell/emoji prefix if present; the box's own border +
             # colour already signal "this is a notification" — cleaner without it.
             clean = text.lstrip("\u2600\ufe0f \U0001f514")  # strip ☀️/🔔 + spaces
-            self._mount(Static(Text(clean, style=self.cc["accent"]),
-                               classes="msg-notify", markup=False))
+            self._mount(self._notify_box(clean.strip()))
             self._tui_log.event(clean)
+        except Exception:
+            pass
+
+    # ── watchdog notification box (timestamp · severity colour · hide/show) ──
+    @staticmethod
+    def _notify_severity(text: str) -> str:
+        """Classify a notification as a resolution ('ok' → green) or a warning
+        ('warn' → orange) from its wording."""
+        low = text.lower()
+        ok_words = ("recovered", "healthy again", "is healthy", "resolved by",
+                    "resolved", "back up", "back online", "restored", "cleared port")
+        if "fail" not in low and (any(w in low for w in ok_words) or "healthy" in low):
+            return "ok"
+        return "warn"
+
+    @staticmethod
+    def _notify_subject(text: str) -> str:
+        """Coarse subject so a recovery can flip the matching open warnings green."""
+        low = text.lower()
+        if "disk" in low:
+            return "disk"
+        if "memory" in low:
+            return "memory"
+        if "cpu" in low:
+            return "cpu"
+        if any(w in low for w in ("server", "restart", "crash", "port", "zombie", "health")):
+            return "server"
+        return "other"
+
+    @staticmethod
+    def _notify_label(text: str) -> str:
+        """A 1-3 word summary for the collapsed view — the title before ' — ',
+        capped to a few words / 28 chars."""
+        head = text.split(" — ")[0].strip()
+        short = " ".join(head.split()[:3])
+        if len(short) > 28:
+            short = short[:27].rstrip() + "…"
+        return short or "notification"
+
+    def _notify_box(self, text: str) -> Widget:
+        """Build one colour-coded, collapsible notification widget (see
+        ``_log_watchdog``)."""
+        sev = self._notify_severity(text)        # "ok" | "warn"
+        subject = self._notify_subject(text)
+        stamp = time.strftime("%H:%M:%S")
+        label = self._notify_label(text)
+        head_label = Static(Text(f"{stamp}  {label}", no_wrap=True, overflow="ellipsis"),
+                            classes="notify-head-label", markup=False)
+        toggle = Static("[Show]", classes="notify-toggle", markup=False)
+        detail = Static(Text(text), classes="notify-detail", markup=False)
+        detail.display = False                  # collapsed by default — click [Show] to expand
+        head = Horizontal(head_label, toggle, classes="notify-head")
+        box = Vertical(head, detail, classes=f"notify-box notify-{sev}")
+        toggle._notify_body = detail            # type: ignore[attr-defined]
+        box._notify_subject = subject           # type: ignore[attr-defined]
+        # A recovery flips the matching still-open warnings green; a new warning
+        # joins the open list so a later recovery can resolve it.
+        if sev == "ok" and subject != "other":
+            self._resolve_open_notifies(subject)
+        elif sev == "warn":
+            self._open_notifies.append(box)
+        return box
+
+    def _resolve_open_notifies(self, subject: str) -> None:
+        """Flip every still-orange warning box for ``subject`` to green (resolved)."""
+        still: list = []
+        for box in self._open_notifies:
+            if getattr(box, "_notify_subject", "other") == subject:
+                try:
+                    box.remove_class("notify-warn")
+                    box.add_class("notify-ok")
+                except Exception:
+                    still.append(box)
+            else:
+                still.append(box)
+        self._open_notifies = still
+
+    @on(Click, ".notify-toggle")
+    def _on_notify_toggle(self, event: Click) -> None:
+        """Collapse a notification to its one-line summary ([Hide] -> [Show]) or
+        expand it back to the full detail. Stops the click so nothing else fires."""
+        event.stop()
+        btn = event.widget
+        body = getattr(btn, "_notify_body", None)
+        if body is None:
+            return
+        showing = body.display
+        body.display = not showing
+        try:
+            btn.update("[Show]" if showing else "[Hide]")
         except Exception:
             pass
 

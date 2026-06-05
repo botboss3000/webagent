@@ -251,7 +251,39 @@ ConfirmModal { align: center middle; }
 .msg-line { width: 100%; height: auto; }
 .msg-block { width: 100%; height: auto; color: $dim; }
 .msg-agent { width: 100%; height: auto; color: $foreground; padding: 0 1; margin: 1 0 0 0; }
-/* System notification from the watchdog — distinct from user/agent messages. */
+/* System notification from the watchdog — a colour-coded, collapsible box.
+ *   • orange ($warning) while it's a WARNING; green ($success) once RESOLVED
+ *   • a header row: timestamp + 1-3 word summary on the left, a clickable
+ *     [Hide]/[Show] toggle on the right
+ *   • the full detail below, hidden when collapsed
+ * Theme variables only, so it reads in light AND dark. */
+.notify-box {
+    width: 100%; height: auto;
+    background: $boost;
+    border: round $warning;
+    padding: 0 1; margin: 1 0 0 0;
+}
+.notify-box .notify-head { layout: horizontal; width: 100%; height: 1; }
+.notify-box .notify-head-label {
+    width: 1fr; height: 1;
+    content-align: left middle;
+    color: $warning; text-style: bold;
+}
+.notify-box .notify-detail { width: 100%; height: auto; margin: 1 0 0 0; color: $warning; }
+.notify-box .notify-toggle {
+    width: auto; height: 1; margin: 0 0 0 1;
+    content-align: right middle;
+    color: $bar-accent;
+}
+.notify-box .notify-toggle:hover { color: $primary; text-style: bold; }
+
+/* Resolved → green. The two-class selector outranks the orange defaults above. */
+.notify-box.notify-ok { border: round $success; }
+.notify-box.notify-ok .notify-head-label,
+.notify-box.notify-ok .notify-detail { color: $success; }
+
+/* Subagent lifecycle line (start / done) — accent-bordered info, distinct from
+ * the watchdog warning boxes above. */
 .msg-notify {
     width: 100%; height: auto;
     background: $boost;
