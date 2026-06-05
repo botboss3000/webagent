@@ -1,5 +1,23 @@
 """
 Tool loader for dynamic tool loading from database.
+
+================================================================================
+ THIS IS CORE — do NOT add new integrations / providers / capabilities here.
+================================================================================
+New capabilities are DROP-IN FILES in a plugin folder, auto-discovered at
+runtime — never wired into this loader or a central list. See CLAUDE.md
+("Core vs. plugins") and docs/claude/production-editions.md.
+
+  • A new OAuth/API integration → a new file in app/integrations/ exposing a
+    TOOLS list (copy app/integrations/_TEMPLATE.py). It is gathered by
+    inject_integration_tools() automatically.
+  • A new event source / channel / connector / secrets vault / encryption
+    method / payment processor / scheduler provider → its own file in the
+    matching plugin folder with a FEATURE header.
+
+Only edit this file to change CORE loop machinery (the irreducible built-in
+tools, ability gating, tool-mode handling) — not to register a capability.
+================================================================================
 """
 import json
 import logging
@@ -38,8 +56,10 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "list_agent_templates":          {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     "list_my_agents":                {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     "get_agent":                     {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    "list_agent_tools":              {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     "create_agent":                  {"stages": ["execute_tools"],                                "destructive": True,  "agent_types": []},
     "update_agent":                  {"stages": ["execute_tools"],                                "destructive": True,  "agent_types": []},
+    "set_agent_tool":                {"stages": ["execute_tools"],                                "destructive": True,  "agent_types": []},
     "edit_agent_prompt":             {"stages": ["execute_tools"],                                "destructive": True,  "agent_types": []},
     "set_agent_ability":             {"stages": ["execute_tools"],                                "destructive": True,  "agent_types": []},
     "manage_agent_skills":           {"stages": ["execute_tools"],                                "destructive": True,  "agent_types": []},
@@ -101,12 +121,18 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
 # moment an ability is toggled on for an agent, and (b) labelling each tool with
 # its ability in the agent Tools panel. Tools NOT listed here (always-on
 # utilities, DB/custom tools, OAuth-integration tools) carry no ability and
-# default to the "always" mode. Keep in sync with the if-blocks below.
-ABILITY_TOOLS: Dict[str, List[str]] = {
+# default to the "always" mode.
+#
+# DROP-IN — this map is now BUILT from the ability files in plugins/abilities/
+# (each declares the tool names it gates). Do NOT add an ability here: drop a
+# file in plugins/abilities/ instead. The literal below is only a fail-safe used
+# if that scan is unavailable. See app/abilities/__init__.py and CLAUDE.md.
+_FALLBACK_ABILITY_TOOLS: Dict[str, List[str]] = {
     "web_access":          ["web_search", "maps_geocode", "get_weather"],
     "diagnostics":         ["read_diagnostics"],
     "agent_management":    ["list_agent_templates", "list_my_agents", "get_agent",
-                            "create_agent", "update_agent", "edit_agent_prompt",
+                            "list_agent_tools", "create_agent", "update_agent",
+                            "set_agent_tool", "edit_agent_prompt",
                             "set_agent_ability", "manage_agent_skills"],
     "browser_control":     ["browser_action", "http_request"],
     "image_generation":    ["generate_image"],
@@ -122,8 +148,35 @@ ABILITY_TOOLS: Dict[str, List[str]] = {
                             "terminal_wait", "terminal_list", "terminal_close"],
     "app_control":         ["set_app_view"],
     "wiki_control":        ["wiki_search", "wiki_list", "wiki_get",
-                            "wiki_create", "wiki_update", "wiki_delete"],
+                            "wiki_create", "wiki_update", "wiki_set_status",
+                            "wiki_delete", "wiki_history", "wiki_get_revision",
+                            "wiki_restore", "wiki_backlinks"],
 }
+
+# context_control gates loop behavior (context-fill signal + compaction), not a
+# grantable, user-facing ability — so it stays a core residual rather than a
+# drop-in file. It carries no statically-gated tool names.
+_CORE_ABILITY_TOOLS: Dict[str, List[str]] = {
+    "context_control": [],
+}
+
+
+def _build_ability_tools() -> Dict[str, List[str]]:
+    """Build the ability→tools map from plugins/abilities/, with a fail-safe."""
+    merged: Dict[str, List[str]] = {}
+    try:
+        from app.abilities import tools_map
+        merged.update(tools_map())
+    except Exception as e:
+        logger.warning("Ability scan unavailable (%s); using fallback ability map", e)
+        merged.update(_FALLBACK_ABILITY_TOOLS)
+    if not merged:  # scan present but empty — don't strand every ability
+        merged.update(_FALLBACK_ABILITY_TOOLS)
+    merged.update(_CORE_ABILITY_TOOLS)
+    return merged
+
+
+ABILITY_TOOLS: Dict[str, List[str]] = _build_ability_tools()
 
 
 def _merge_integration_metadata() -> None:
@@ -218,6 +271,17 @@ class ToolLoader:
             pass
         except Exception as e:
             logger.warning("Could not gather enabled providers for %s: %s", agent_id, e)
+
+        # ── Edition gate ──
+        # In a non-`full` build, drop abilities the active edition excludes (by
+        # maturity). This is the single chokepoint that gates every built-in
+        # ability's tools (web_access, browser_control, …). No-op for `full`;
+        # unknown keys (integration provider connection-types) are kept as-is.
+        try:
+            from app.features.gating import ability_enabled
+            enabled_providers = {p for p in enabled_providers if ability_enabled(p)}
+        except Exception:
+            pass
 
         # ── Inject built-in tools (override any DB versions) ──
         self._inject_builtin_tools(
@@ -960,8 +1024,10 @@ class ToolLoader:
                 list_agent_templates as _amt_list_templates,
                 list_my_agents as _amt_list_agents,
                 get_agent as _amt_get_agent,
+                list_agent_tools as _amt_list_tools,
                 create_agent as _amt_create_agent,
                 update_agent as _amt_update_agent,
+                set_agent_tool as _amt_set_tool,
                 edit_agent_prompt as _amt_edit_prompt,
                 set_agent_ability as _amt_set_ability,
                 manage_agent_skills as _amt_manage_skills,
@@ -978,6 +1044,11 @@ class ToolLoader:
             async def _amt_get_agent_wrapper(agent_id: str):
                 return await _amt_get_agent(agent_id=agent_id, user_id=user_id)
 
+            async def _amt_list_tools_wrapper(agent_id: str, ability: Optional[str] = None,
+                                              query: Optional[str] = None):
+                return await _amt_list_tools(agent_id=agent_id, ability=ability,
+                                             query=query, user_id=user_id)
+
             async def _amt_create_agent_wrapper(name: str, template_id: str = "default",
                                                 description: str = ""):
                 return await _amt_create_agent(name=name, template_id=template_id,
@@ -988,11 +1059,28 @@ class ToolLoader:
                                                 model: Optional[str] = None,
                                                 temperature: Optional[float] = None,
                                                 max_tokens: Optional[int] = None,
-                                                max_turn_count: Optional[int] = None):
+                                                max_turn_count: Optional[int] = None,
+                                                max_wall_seconds: Optional[int] = None,
+                                                max_identical_tool_calls: Optional[int] = None,
+                                                max_stall_strikes: Optional[int] = None,
+                                                trigger_type: Optional[str] = None,
+                                                trigger_key: Optional[str] = None):
                 return await _amt_update_agent(agent_id=agent_id, name=name,
                                                description=description, model=model,
                                                temperature=temperature, max_tokens=max_tokens,
-                                               max_turn_count=max_turn_count, user_id=user_id)
+                                               max_turn_count=max_turn_count,
+                                               max_wall_seconds=max_wall_seconds,
+                                               max_identical_tool_calls=max_identical_tool_calls,
+                                               max_stall_strikes=max_stall_strikes,
+                                               trigger_type=trigger_type, trigger_key=trigger_key,
+                                               user_id=user_id)
+
+            async def _amt_set_tool_wrapper(agent_id: str, tool: str,
+                                            availability: Optional[str] = None,
+                                            permission: Optional[str] = None):
+                return await _amt_set_tool(agent_id=agent_id, tool=tool,
+                                           availability=availability, permission=permission,
+                                           user_id=user_id)
 
             async def _amt_edit_prompt_wrapper(action: str, agent_id: str,
                                                slot_name: Optional[str] = None,
@@ -1026,8 +1114,10 @@ class ToolLoader:
             _amt_list_templates_wrapper.__doc__ = _amt_list_templates.__doc__
             _amt_list_agents_wrapper.__doc__    = _amt_list_agents.__doc__
             _amt_get_agent_wrapper.__doc__      = _amt_get_agent.__doc__
+            _amt_list_tools_wrapper.__doc__     = _amt_list_tools.__doc__
             _amt_create_agent_wrapper.__doc__   = _amt_create_agent.__doc__
             _amt_update_agent_wrapper.__doc__   = _amt_update_agent.__doc__
+            _amt_set_tool_wrapper.__doc__       = _amt_set_tool.__doc__
             _amt_edit_prompt_wrapper.__doc__    = _amt_edit_prompt.__doc__
             _amt_set_ability_wrapper.__doc__    = _amt_set_ability.__doc__
             _amt_manage_skills_wrapper.__doc__  = _amt_manage_skills.__doc__
@@ -1058,6 +1148,19 @@ class ToolLoader:
                     "required": ["agent_id"],
                 },
             )
+            tools["list_agent_tools"] = ToolInfo(
+                name="list_agent_tools",
+                handler=_amt_list_tools_wrapper,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "agent_id": {"type": "string", "description": "The agent whose tools to list (must be visible to you)."},
+                        "ability": {"type": "string", "description": "Optional: only tools provided by this ability."},
+                        "query": {"type": "string", "description": "Optional: substring filter on tool name or description."},
+                    },
+                    "required": ["agent_id"],
+                },
+            )
             tools["create_agent"] = ToolInfo(
                 name="create_agent",
                 handler=_amt_create_agent_wrapper,
@@ -1083,9 +1186,28 @@ class ToolLoader:
                         "model": {"type": "string", "description": "Model id (e.g. an OpenRouter model slug)."},
                         "temperature": {"type": "number"},
                         "max_tokens": {"type": "integer"},
-                        "max_turn_count": {"type": "integer"},
+                        "max_turn_count": {"type": "integer", "description": "Max turns per run; 0 = unlimited."},
+                        "max_wall_seconds": {"type": "integer", "description": "Wall-clock cap per run in seconds."},
+                        "max_identical_tool_calls": {"type": "integer", "description": "Loop-breaker for repeated identical calls; 0 = off."},
+                        "max_stall_strikes": {"type": "integer", "description": "Stall-guard strikes before stopping; 0 = off."},
+                        "trigger_type": {"type": "string", "enum": ["user_input", "slash_command", "tool_call", "schedule", "webhook", "background"], "description": "What starts the agent."},
+                        "trigger_key": {"type": "string", "description": "Command/event key for the trigger type."},
                     },
                     "required": ["agent_id"],
+                },
+            )
+            tools["set_agent_tool"] = ToolInfo(
+                name="set_agent_tool",
+                handler=_amt_set_tool_wrapper,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "agent_id": {"type": "string", "description": "The agent to change (must be yours)."},
+                        "tool": {"type": "string", "description": "The tool name (see list_agent_tools)."},
+                        "availability": {"type": "string", "enum": ["sent", "discover"], "description": "'sent' = full schema every turn; 'discover' = loaded on demand."},
+                        "permission": {"type": "string", "enum": ["auto", "ask", "deny"], "description": "'auto' = runs unattended; 'ask' = confirm first; 'deny' = blocked. Sets policy only — cannot relabel a tool's built-in danger."},
+                    },
+                    "required": ["agent_id", "tool"],
                 },
             )
             tools["edit_agent_prompt"] = ToolInfo(

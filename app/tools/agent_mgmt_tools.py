@@ -78,6 +78,90 @@ def _read_template_slots(db, template_id: str) -> List[dict]:
         conn.close()
 
 
+# ── Tool catalogue: availability + permission + danger ────────────────────────
+# The two per-tool knobs from the Tools panel, in readable form:
+#   availability — "sent" (full schema every turn) | "discover" (load on demand)
+#   permission   — "auto" (runs unattended) | "ask" (confirm first) | "deny" (blocked)
+_AVAIL_TO_MODE = {"sent": "always", "discover": "discoverable"}
+_MODE_TO_AVAIL = {"always": "sent", "discoverable": "discover", "core": "core"}
+_VALID_PERMISSIONS = ("auto", "ask", "deny")
+_VALID_TRIGGERS = (
+    "user_input", "slash_command", "tool_call", "schedule", "webhook", "background",
+)
+
+
+def _as_json_list(v) -> list:
+    if isinstance(v, str):
+        try:
+            return json.loads(v) or []
+        except Exception:
+            return []
+    return v or []
+
+
+def _as_json_obj(v) -> dict:
+    if isinstance(v, str):
+        try:
+            return json.loads(v) or {}
+        except Exception:
+            return {}
+    return v or {}
+
+
+async def _agent_tool_catalog(db, agent_id: str, user_id: str) -> Optional[List[dict]]:
+    """Build the agent's full tool catalogue — one row per tool its enabled
+    abilities provide, each carrying:
+      - availability : "sent" | "discover" | "core"
+      - permission   : "auto" | "ask" | "deny"
+      - locked       : True for core meta-tools (cannot be changed)
+      - destructive  : the tool's BUILT-IN danger label (read-only, code-defined)
+
+    Returns None if the agent doesn't exist. The danger label comes from the
+    tool's own definition — policy can require confirmation or deny a tool, but
+    nothing here relabels an inherently dangerous tool as safe.
+    """
+    agent = await db.get_agent_by_id(agent_id)
+    if not agent:
+        return None
+    from app.tools.loader import load_tools
+    from app.tools.tool_modes import resolve_mode, is_locked, ability_for_tool
+
+    deny = set(_as_json_list(agent.get("allowed_tools")))
+    ask = set(_as_json_obj(agent.get("safety_policy")).get("destructive_tools") or [])
+    modes = await db.get_agent_tool_modes(agent_id)
+
+    # Load the full ability-gated set with an EMPTY deny list so denied tools
+    # still appear — otherwise the manager couldn't see or re-enable them.
+    try:
+        tools = await load_tools(
+            user_id, agent_id=agent_id,
+            agent_template_id=agent.get("template_id"),
+            allowed_tools=[], session_id="",
+        )
+    except Exception as e:
+        logger.warning("_agent_tool_catalog: load_tools failed for %s: %s", agent_id, e)
+        tools = {}
+
+    out: List[dict] = []
+    for name, info in sorted(tools.items()):
+        try:
+            desc = (info.handler.__doc__ or "").strip().split("\n")[0]
+        except Exception:
+            desc = ""
+        permission = "deny" if name in deny else ("ask" if name in ask else "auto")
+        out.append({
+            "name": name,
+            "description": desc,
+            "ability": ability_for_tool(name),
+            "availability": _MODE_TO_AVAIL.get(resolve_mode(name, modes), "sent"),
+            "permission": permission,
+            "locked": is_locked(name),
+            "destructive": bool(getattr(info, "destructive", False)
+                                or getattr(info, "requires_confirmation", False)),
+        })
+    return out
+
+
 # ── Templates (read-only) ─────────────────────────────────────────────────────
 
 async def list_agent_templates(
@@ -188,8 +272,27 @@ async def get_agent(agent_id: str, user_id: str = "") -> str:
             "temperature": full.get("temperature"),
             "max_tokens": full.get("max_tokens"),
             "max_turn_count": full.get("max_turn_count"),
+            "max_wall_seconds": full.get("max_wall_seconds"),
+            "max_identical_tool_calls": full.get("max_identical_tool_calls"),
+            "max_stall_strikes": full.get("max_stall_strikes"),
+            "trigger_type": full.get("trigger_type"),
+            "trigger_key": full.get("trigger_key"),
+            "loop_logic": _as_json_list(full.get("loop_logic")),
+            "user_mode": full.get("user_mode"),
         }
-        return _ok(agent=agent, abilities=abilities,
+        # Tool overview: counts + only the tools whose settings differ from the
+        # default (sent + auto). Use list_agent_tools for the full per-tool list.
+        catalog = await _agent_tool_catalog(db, agent_id, user_id) or []
+        customized = [t for t in catalog
+                      if t["availability"] != "sent" or t["permission"] != "auto"]
+        tools_overview = {
+            "total": len(catalog),
+            "discover": sum(1 for t in catalog if t["availability"] == "discover"),
+            "ask": sum(1 for t in catalog if t["permission"] == "ask"),
+            "deny": sum(1 for t in catalog if t["permission"] == "deny"),
+            "customized": customized,
+        }
+        return _ok(agent=agent, abilities=abilities, tools=tools_overview,
                    slots=[{"slot_name": s["slot_name"], "order_index": s["order_index"],
                            "lock": s["lock"], "content": s["content"]} for s in slots])
     except Exception as e:
@@ -241,12 +344,23 @@ async def update_agent(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     max_turn_count: Optional[int] = None,
+    max_wall_seconds: Optional[int] = None,
+    max_identical_tool_calls: Optional[int] = None,
+    max_stall_strikes: Optional[int] = None,
+    trigger_type: Optional[str] = None,
+    trigger_key: Optional[str] = None,
     user_id: str = "",
 ) -> str:
-    """Update editable fields on one of the user's own agents.
+    """Update editable config fields on one of the user's own agents.
 
-    Only the supplied fields change. Ownership is enforced: the update silently
-    affects nothing (and returns an error) if the agent isn't yours.
+    Covers identity (name, description), the model settings (model, temperature,
+    max_tokens), the guardrail limits (max_turn_count, max_wall_seconds,
+    max_identical_tool_calls, max_stall_strikes), and the trigger (trigger_type,
+    trigger_key). Only the supplied fields change. Use set_agent_tool for per-tool
+    availability/permission, and set_agent_ability for abilities.
+
+    Ownership is enforced: the update affects nothing (and returns an error) if
+    the agent isn't yours.
     """
     try:
         from app.db import get_db
@@ -255,11 +369,16 @@ async def update_agent(
             return _err("agent_id is required.")
         if not await _owns_agent(db, user_id, agent_id):
             return _err("You can only edit agents you own.")
+        if trigger_type is not None and trigger_type not in _VALID_TRIGGERS:
+            return _err(f"trigger_type must be one of: {', '.join(_VALID_TRIGGERS)}.")
         updates: Dict[str, Any] = {}
         for k, v in (
             ("name", name), ("description", description), ("model", model),
             ("temperature", temperature), ("max_tokens", max_tokens),
-            ("max_turn_count", max_turn_count),
+            ("max_turn_count", max_turn_count), ("max_wall_seconds", max_wall_seconds),
+            ("max_identical_tool_calls", max_identical_tool_calls),
+            ("max_stall_strikes", max_stall_strikes),
+            ("trigger_type", trigger_type), ("trigger_key", trigger_key),
         ):
             if v is not None:
                 updates[k] = v
@@ -417,6 +536,130 @@ async def set_agent_ability(
         return _ok(agent_id=agent_id, ability=ability, enabled=bool(enabled))
     except Exception as e:
         logger.error("set_agent_ability failed: %s", e)
+        return _err(str(e))
+
+
+# ── Tools (read/write, own agents) ────────────────────────────────────────────
+
+async def list_agent_tools(
+    agent_id: str,
+    ability: Optional[str] = None,
+    query: Optional[str] = None,
+    user_id: str = "",
+) -> str:
+    """List one of your visible agents' tools, each with its current settings.
+
+    Every row carries:
+      - availability : 'sent' (full schema every turn) | 'discover' (loaded on
+                       demand) | 'core' (always sent, locked)
+      - permission   : 'auto' (runs unattended) | 'ask' (confirm first) |
+                       'deny' (the agent can't use it)
+      - locked       : true for core tools (cannot be changed)
+      - destructive  : the tool's built-in danger label (read-only)
+      - ability      : the ability that provides the tool, if any
+
+    Optional filters: ``ability`` (exact match) and ``query`` (substring on the
+    tool name or description). Read-only — use set_agent_tool to change settings.
+    """
+    try:
+        from app.db import get_db
+        db = get_db()
+        if not agent_id:
+            return _err("agent_id is required.")
+        is_admin = await db.is_user_admin(user_id)
+        visible = await db.list_agents_for_user(user_id, include_admin=is_admin)
+        if not any(a.get("id") == agent_id for a in visible):
+            return _err("Agent not found or not visible to you.")
+        catalog = await _agent_tool_catalog(db, agent_id, user_id)
+        if catalog is None:
+            return _err("Agent not found.")
+        if ability:
+            catalog = [t for t in catalog if t["ability"] == ability]
+        if query:
+            q = query.lower()
+            catalog = [t for t in catalog
+                       if q in t["name"].lower() or q in (t["description"] or "").lower()]
+        return _ok(count=len(catalog), tools=catalog)
+    except Exception as e:
+        logger.error("list_agent_tools failed: %s", e)
+        return _err(str(e))
+
+
+async def set_agent_tool(
+    agent_id: str,
+    tool: str,
+    availability: Optional[str] = None,
+    permission: Optional[str] = None,
+    user_id: str = "",
+) -> str:
+    """Set ONE tool's availability and/or permission on one of your own agents.
+
+      availability : 'sent' = full schema sent every turn; 'discover' = name
+                     only until the agent loads it on demand (saves context).
+      permission   : 'auto' = runs unattended; 'ask' = requires confirmation
+                     first; 'deny' = the agent cannot use the tool at all.
+
+    Provide at least one of the two. Core tools are locked and cannot be changed.
+    This sets POLICY only — a tool's built-in danger label is fixed in code and
+    cannot be changed here (you can require confirmation or deny a tool, but you
+    cannot mark a dangerous tool as safe). Check tool names with list_agent_tools.
+    """
+    try:
+        from app.db import get_db
+        db = get_db()
+        if not agent_id or not tool:
+            return _err("agent_id and tool are required.")
+        if availability is None and permission is None:
+            return _err("Provide availability and/or permission.")
+        if availability is not None and availability not in _AVAIL_TO_MODE:
+            return _err("availability must be 'sent' or 'discover'.")
+        if permission is not None and permission not in _VALID_PERMISSIONS:
+            return _err("permission must be 'auto', 'ask', or 'deny'.")
+        if not await _owns_agent(db, user_id, agent_id):
+            return _err("You can only change tools on agents you own.")
+
+        from app.tools.tool_modes import is_locked
+        if is_locked(tool):
+            return _err(f"'{tool}' is a core tool — it is always available and cannot be changed.")
+
+        catalog = await _agent_tool_catalog(db, agent_id, user_id)
+        if catalog is None:
+            return _err("Agent not found.")
+        if not any(t["name"] == tool for t in catalog):
+            return _err(
+                f"'{tool}' is not one of this agent's tools. Enable the ability that "
+                f"provides it first, or check the name with list_agent_tools."
+            )
+
+        changed: Dict[str, Any] = {}
+        if availability is not None:
+            await db.set_agent_tool_mode(agent_id, tool, _AVAIL_TO_MODE[availability])
+            changed["availability"] = availability
+
+        if permission is not None:
+            agent = await db.get_agent_by_id(agent_id)
+            deny_set = set(_as_json_list(agent.get("allowed_tools")))
+            safety = _as_json_obj(agent.get("safety_policy"))
+            ask_set = set(safety.get("destructive_tools") or [])
+            # Clear then re-apply, so the three states are mutually exclusive.
+            deny_set.discard(tool)
+            ask_set.discard(tool)
+            if permission == "deny":
+                deny_set.add(tool)
+            elif permission == "ask":
+                ask_set.add(tool)
+            safety["destructive_tools"] = sorted(ask_set)
+            updated = await db.update_agent_fields(
+                agent_id=agent_id, user_id=user_id,
+                updates={"allowed_tools": sorted(deny_set), "safety_policy": safety},
+            )
+            if updated is None:
+                return _err("Agent not found or not owned by you.")
+            changed["permission"] = permission
+
+        return _ok(agent_id=agent_id, tool=tool, **changed)
+    except Exception as e:
+        logger.error("set_agent_tool failed: %s", e)
         return _err(str(e))
 
 
