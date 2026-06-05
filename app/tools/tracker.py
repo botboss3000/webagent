@@ -1,115 +1,68 @@
 """
-Tool execution tracker for performance monitoring.
+Tool execution tracker — structured per-call metrics (duration, success,
+interaction_id) written to the dedicated, always-local logs database
+(``tool_executions`` table in ``logs.db``; see app/db/logs_store.py).
+
+Two ways tool executions reach that table:
+
+  1. **Automatically** — the diagnostics loop tap
+     (``app.agent.diagnostics.tap_loop_event``) pairs every ``tool_call`` with
+     its ``tool_result``, times it, and queues a row. No call site needed.
+  2. **Explicitly** — call :func:`track_execution` from anywhere you run a tool
+     outside the visualizer event stream and want a metric row.
+
+This module used to point at a non-existent ``tool_executions`` table via the
+Supabase raw client and crashed on import; it now delegates to the log store and
+never raises.
 """
+
 import json
 import logging
-from typing import Dict, Any, Optional
-from app.db import get_db
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 
-class ToolExecutionTracker:
-    """Track tool executions and log them to the database."""
-
-    def __init__(self):
-        self._client = get_db().get_raw_client()
-
-    async def track_execution(
-        self,
-        tool_name: str,
-        user_id: str,
-        session_id: str,
-        success: bool,
-        duration_ms: int,
-        interaction_id: Optional[str] = None,
-        error_message: Optional[str] = None,
-        input_params: Optional[Dict[str, Any]] = None,
-        output_result: Optional[str] = None,
-    ) -> None:
-        """
-        Track a tool execution and log it to the database.
-
-        Args:
-            tool_name: The name of the tool
-            user_id: The user who executed the tool
-            session_id: The session in which the tool was executed
-            success: Whether the execution was successful
-            duration_ms: Duration of execution in milliseconds
-            interaction_id: FK to interactions table (links to the tool call)
-            error_message: Error message if execution failed
-            input_params: Input parameters (truncated if large)
-            output_result: Output result (truncated if large)
-        """
-        try:
-            if input_params:
-                input_str = str(input_params)
-                if len(input_str) > 1000:
-                    input_params = {"truncated": True, "original_length": len(input_str)}
-
-            if output_result and len(output_result) > 1000:
-                output_result = output_result[:1000] + " [truncated]"
-
-            data = {
-                "tool_name": tool_name,
-                "user_id": user_id,
-                "session_id": session_id,
-                "interaction_id": interaction_id,
-                "success": success,
-                "duration_ms": duration_ms,
-                "error_message": error_message,
-                "input_params": json.dumps(input_params) if input_params else "{}",
-                "output_result": output_result,
-            }
-
-            response = self._client.table("tool_executions").insert(data).execute()
-
-            if response.data:
-                logger.debug(f"Tracked tool execution: {tool_name} for user {user_id}")
-            else:
-                logger.warning(f"Failed to track tool execution: {tool_name}")
-
-        except Exception as e:
-            logger.error(f"Error tracking tool execution for {tool_name}: {e}")
-
-
-# Global instance
-_tool_tracker = ToolExecutionTracker()
-
-
 async def track_execution(
     tool_name: str,
-    user_id: str,
-    session_id: str,
-    success: bool,
-    duration_ms: int,
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    success: bool = True,
+    duration_ms: Optional[int] = None,
     interaction_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
     error_message: Optional[str] = None,
+    error_type: Optional[str] = None,
     input_params: Optional[Dict[str, Any]] = None,
     output_result: Optional[str] = None,
 ) -> None:
-    """
-    Track a tool execution and log it to the database.
+    """Record one tool execution to logs.db. Inputs/outputs are truncated. Never
+    raises — a failed metric write must not break the tool call it describes."""
+    try:
+        params_str: Optional[str] = None
+        if input_params is not None:
+            params_str = json.dumps(input_params, default=str)
+            if len(params_str) > 1000:
+                params_str = params_str[:1000] + " …[truncated]"
+        out_str = output_result
+        if out_str and len(out_str) > 1000:
+            out_str = out_str[:1000] + " …[truncated]"
 
-    Args:
-        tool_name: The name of the tool
-        user_id: The user who executed the tool
-        session_id: The session in which the tool was executed
-        success: Whether the execution was successful
-        duration_ms: Duration of execution in milliseconds
-        interaction_id: FK to interactions table
-        error_message: Error message if execution failed
-        input_params: Input parameters (truncated if large)
-        output_result: Output result (truncated if large)
-    """
-    await _tool_tracker.track_execution(
-        tool_name=tool_name,
-        user_id=user_id,
-        session_id=session_id,
-        success=success,
-        duration_ms=duration_ms,
-        interaction_id=interaction_id,
-        error_message=error_message,
-        input_params=input_params,
-        output_result=output_result,
-    )
+        from app.db.logs_store import get_log_store
+        await get_log_store().insert_tool_executions([{
+            "tool_name": tool_name,
+            "user_id": user_id,
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "interaction_id": interaction_id,
+            "agent_id": agent_id,
+            "success": bool(success),
+            "duration_ms": duration_ms,
+            "error_type": error_type,
+            "error_message": error_message,
+            "input_params": params_str,
+            "output_preview": out_str,
+        }])
+    except Exception as e:
+        logger.debug("track_execution failed for %s: %s", tool_name, e)

@@ -324,6 +324,28 @@ export function connectAgent() {
         }
         break;
 
+      case 'ui_command': {
+        // Agent-driven screen control (the "App Control" ability). The agent's
+        // set_app_view tool emits this to rearrange the viewer's own screen:
+        // switch the main view, show/hide the chat panel, resize it. Only obey
+        // commands for the session the user is currently viewing, and never on
+        // replay — a stale view-switch on reconnect would yank the user around.
+        if (event.replayed) break;
+        if (eventSessionId && eventSessionId !== app.currentSessionId) break;
+        if (event.action === 'set_view') {
+          if (event.view && typeof window.__setMainTab === 'function') {
+            try { window.__setMainTab(event.view); } catch (_) { /* ignore */ }
+          }
+          if (typeof event.show_chat === 'boolean' && typeof window.__applyChatVisible === 'function') {
+            try { window.__applyChatVisible(event.show_chat); } catch (_) { /* ignore */ }
+          }
+          if (typeof event.chat_width === 'number' && typeof window.__setChatPanelWidth === 'function') {
+            try { window.__setChatPanelWidth(event.chat_width); } catch (_) { /* ignore */ }
+          }
+        }
+        break;
+      }
+
       // All other event types (stream, tool_call, tool_result, pipeline,
       // db, attachment) are handled by:
       //   - SSE reader in chat.js (chat bubble updates for user turns)

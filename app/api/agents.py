@@ -1224,12 +1224,13 @@ _CONNECTION_CATALOG = [
     {"connection_type": "agent_orchestration", "section": "ability", "display_name": "Agent Orchestration", "status": "available"},
     {"connection_type": "diagnostics",      "section": "ability", "display_name": "Diagnostics",      "status": "available"},
     {"connection_type": "agent_management", "section": "ability", "display_name": "Agent Management", "status": "available"},
+    {"connection_type": "app_control",      "section": "ability", "display_name": "App Control",      "status": "available"},
     {"connection_type": "terminal_control", "section": "ability", "display_name": "Terminal Control",  "status": "available"},
     # Generic providers — non-OAuth helpers grouped under Agent Tools (was its
     # own "Generic Providers" category). scraper needs an admin scraper_config;
     # browser_session is per-user (uploaded cookies).
     {"connection_type": "scraper",          "section": "ability", "display_name": "Web Scraper",      "status": "available"},
-    {"connection_type": "browser_session",  "section": "ability", "display_name": "Browser Session",  "status": "available"},
+    {"connection_type": "browser_session",  "section": "ability", "display_name": "Browser Cookies",  "status": "available"},
 ]
 
 

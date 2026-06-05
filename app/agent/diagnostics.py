@@ -56,9 +56,10 @@ LEVELS: Dict[str, int] = {
     "debug": 10, "info": 20, "warning": 30, "error": 40, "critical": 50,
 }
 
-DEFAULT_RING_SIZE = 2000          # in-memory records kept for the live feed
-DEFAULT_RETENTION_ROWS = 20000    # max durable rows kept in the DB table
-DEFAULT_RETENTION_HOURS = 72      # max age of durable rows
+DEFAULT_RING_SIZE = 4000          # in-memory records kept for the live feed
+DEFAULT_RETENTION_ROWS = 200000   # max durable rows kept in the logs DB table
+DEFAULT_RETENTION_HOURS = 168     # max age of durable rows (7 days)
+DEFAULT_PERSIST_LEVEL = "info"    # records at this level+ are written to logs.db
 DEFAULT_LOG_DIR = "logs"          # per-source text files live here
 DEFAULT_LOG_MAX_BYTES = 5_000_000 # rotate each file at ~5 MB
 DEFAULT_LOG_BACKUPS = 3           # keep this many rotated files per source
@@ -126,6 +127,12 @@ class DiagnosticRecorder:
         ring_size = int(s.get("diagnostics_ring_size", DEFAULT_RING_SIZE) or DEFAULT_RING_SIZE)
         self.retention_rows = int(s.get("diagnostics_retention_rows", DEFAULT_RETENTION_ROWS) or DEFAULT_RETENTION_ROWS)
         self.retention_hours = float(s.get("diagnostics_retention_hours", DEFAULT_RETENTION_HOURS) or DEFAULT_RETENTION_HOURS)
+        # Records at this level or above are persisted to the (now isolated)
+        # logs.db; below it they stay in the RAM ring + text files only. Default
+        # is INFO so full backend detail is queryable — affordable now that logs
+        # no longer share the interactions file. ``run``/``recovery`` always persist.
+        _pl = str(s.get("diagnostics_persist_level", DEFAULT_PERSIST_LEVEL) or DEFAULT_PERSIST_LEVEL).lower()
+        self.persist_level = LEVELS.get(_pl, LEVELS["info"])
 
         # Per-source rotating text files (logs/<category>.log). A plain,
         # tail-able mirror of every captured record, in addition to the DB.
@@ -140,6 +147,10 @@ class DiagnosticRecorder:
         # from the logging handler (any thread) without a lock.
         self._ring: Deque[Dict[str, Any]] = collections.deque(maxlen=ring_size)
         self._pending: Deque[Dict[str, Any]] = collections.deque(maxlen=ring_size * 4)
+        # Structured tool-execution metrics, flushed to logs.db by the same writer.
+        self._pending_tools: Deque[Dict[str, Any]] = collections.deque(maxlen=ring_size * 4)
+        # In-flight tool calls awaiting their result, keyed for duration pairing.
+        self._open_tools: Dict[str, Dict[str, Any]] = {}
         self._task: Optional[asyncio.Task] = None
         self._last_prune: float = 0.0
         # Lightweight running counters for the stats endpoint.
@@ -159,13 +170,20 @@ class DiagnosticRecorder:
         turn_id: Optional[str] = None,
         agent_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        interaction_id: Optional[str] = None,
+        session_seq: Optional[int] = None,
+        turn_seq: Optional[int] = None,
         persist: Optional[bool] = None,
     ) -> Optional[Dict[str, Any]]:
         """Append a diagnostic record. Cheap, non-blocking, never raises.
 
-        ``persist=None`` (the default) auto-decides durability: WARNING+ and all
-        ``run`` records are written to the DB; routine INFO/loop records stay in
-        the RAM ring only. Pass ``persist=True/False`` to force it.
+        ``persist=None`` (the default) auto-decides durability: records at or
+        above ``persist_level`` (INFO by default) and all ``run``/``recovery``
+        records are written to logs.db; anything below stays in the RAM ring +
+        text files only. Pass ``persist=True/False`` to force it.
+
+        ``interaction_id`` / ``session_seq`` / ``turn_seq`` are the correlation
+        keys that join this record to the exact interactions row it belongs to.
         """
         if not self.enabled:
             return None
@@ -191,12 +209,16 @@ class DiagnosticRecorder:
                 "turn_id": turn_id,
                 "agent_id": agent_id,
                 "user_id": user_id,
+                "interaction_id": interaction_id,
+                "session_seq": session_seq,
+                "turn_seq": turn_seq,
+                "instance_id": self._instance_id(),
             }
             self._ring.append(rec)
             self._counts[lvl] = self._counts.get(lvl, 0) + 1
             self._write_file(rec)
             if persist is None:
-                persist = LEVELS[lvl] >= LEVELS["warning"] or category in ("run", "recovery")
+                persist = LEVELS[lvl] >= self.persist_level or category in ("run", "recovery")
             if persist:
                 self._pending.append(rec)
                 self._ensure_task()
@@ -204,6 +226,19 @@ class DiagnosticRecorder:
         except Exception:
             # A recorder must never break its caller.
             return None
+
+    def queue_tool_execution(self, row: Dict[str, Any]) -> None:
+        """Queue one structured tool-execution metric row for the logs DB.
+        Cheap, non-blocking, never raises."""
+        try:
+            if not self.enabled:
+                return
+            row.setdefault("instance_id", self._instance_id())
+            row.setdefault("ts", _now_iso())
+            self._pending_tools.append(row)
+            self._ensure_task()
+        except Exception:
+            pass
 
     # ── Per-source text files ──────────────────────────────────────────────
 
@@ -295,41 +330,68 @@ class DiagnosticRecorder:
                 logger.debug("diagnostics writer error: %s", e)
 
     async def _flush_once(self) -> None:
-        if not self._pending:
-            return
-        batch: List[Dict[str, Any]] = []
-        while self._pending and len(batch) < 500:
-            try:
-                batch.append(self._pending.popleft())
-            except IndexError:
-                break
-        if not batch:
-            return
         db = self._db()
-        if db is None or not hasattr(db, "insert_diagnostics_batch"):
-            return  # backend can't persist → records stay RAM-only
-        try:
-            await db.insert_diagnostics_batch(batch)
-        except Exception as e:
-            logger.debug("insert_diagnostics_batch failed: %s", e)
+        if db is None:
+            return  # store unavailable → records stay RAM-only
+        # 1. Diagnostics rows.
+        if self._pending and hasattr(db, "insert_diagnostics_batch"):
+            batch: List[Dict[str, Any]] = []
+            while self._pending and len(batch) < 500:
+                try:
+                    batch.append(self._pending.popleft())
+                except IndexError:
+                    break
+            if batch:
+                try:
+                    await db.insert_diagnostics_batch(batch)
+                except Exception as e:
+                    logger.debug("insert_diagnostics_batch failed: %s", e)
+        # 2. Structured tool-execution metrics.
+        if self._pending_tools and hasattr(db, "insert_tool_executions"):
+            tbatch: List[Dict[str, Any]] = []
+            while self._pending_tools and len(tbatch) < 500:
+                try:
+                    tbatch.append(self._pending_tools.popleft())
+                except IndexError:
+                    break
+            if tbatch:
+                try:
+                    await db.insert_tool_executions(tbatch)
+                except Exception as e:
+                    logger.debug("insert_tool_executions failed: %s", e)
 
     async def _prune_once(self) -> None:
         db = self._db()
-        if db is None or not hasattr(db, "prune_diagnostics"):
+        if db is None:
             return
+        if hasattr(db, "prune_diagnostics"):
+            try:
+                await db.prune_diagnostics(
+                    max_rows=self.retention_rows,
+                    max_age_seconds=self.retention_hours * 3600.0,
+                )
+            except Exception as e:
+                logger.debug("prune_diagnostics failed: %s", e)
+        if hasattr(db, "prune_tool_executions"):
+            try:
+                await db.prune_tool_executions(
+                    max_rows=max(self.retention_rows // 2, 50000),
+                    max_age_seconds=self.retention_hours * 3600.0,
+                )
+            except Exception as e:
+                logger.debug("prune_tool_executions failed: %s", e)
+
+    def _instance_id(self) -> Optional[str]:
         try:
-            await db.prune_diagnostics(
-                max_rows=self.retention_rows,
-                max_age_seconds=self.retention_hours * 3600.0,
-            )
-        except Exception as e:
-            logger.debug("prune_diagnostics failed: %s", e)
+            return self._db().instance_id()
+        except Exception:
+            return None
 
     @staticmethod
     def _db() -> Any:
         try:
-            from app.db import get_db
-            return get_db()
+            from app.db.logs_store import get_log_store
+            return get_log_store()
         except Exception:
             return None
 
@@ -572,12 +634,24 @@ def start_recorder() -> None:
 
 # ── stdlib logging → recorder bridge ──────────────────────────────────────────
 
-class DiagnosticLogHandler(logging.Handler):
-    """Feeds WARNING+ log records (with tracebacks) into the recorder.
+# Noisy third-party loggers we only want to hear from at WARNING+, even when the
+# handler is attached at INFO. Keeps logs.db full of OUR backend detail without
+# drowning it in framework/library chatter.
+_NOISY_LOGGER_PREFIXES = (
+    "httpx", "httpcore", "urllib3", "openai", "anthropic", "asyncio",
+    "uvicorn.access", "watchfiles", "PIL", "websockets", "multipart",
+    "botocore", "boto3", "s3transfer", "google", "charset_normalizer",
+)
 
-    Attached to the root logger so it captures everything the app logs at the
-    chosen level — including the unhandled-exception handler in ``app.main`` and
-    every module's ``logger.error``/``logger.warning`` call.
+
+class DiagnosticLogHandler(logging.Handler):
+    """Feeds log records (with tracebacks) into the recorder.
+
+    Attached to the root logger at INFO so it captures everything the app logs —
+    including the unhandled-exception handler in ``app.main`` and every module's
+    ``logger.info``/``warning``/``error`` call. To stay useful at INFO it applies
+    a per-logger policy: OUR ``app.*`` loggers are captured at INFO+, while noisy
+    third-party libraries are only captured at WARNING+.
     """
 
     def emit(self, record: logging.LogRecord) -> None:  # noqa: D401
@@ -586,6 +660,11 @@ class DiagnosticLogHandler(logging.Handler):
             # Avoid feedback loops: never re-record our own writer/debug chatter.
             if name.startswith("app.agent.diagnostics"):
                 return
+            # Per-logger level policy: below WARNING, keep only OUR app.* loggers
+            # (and never the noisy libs). WARNING+ is kept from every logger.
+            if record.levelno < logging.WARNING:
+                if not name.startswith("app") or name.startswith(_NOISY_LOGGER_PREFIXES):
+                    return
             detail: Dict[str, Any] = {
                 "logger": name,
                 "where": f"{record.pathname}:{record.lineno}",
@@ -606,7 +685,7 @@ class DiagnosticLogHandler(logging.Handler):
             pass
 
 
-def install_log_handler(level: int = logging.WARNING) -> None:
+def install_log_handler(level: int = logging.INFO) -> None:
     """Attach a single DiagnosticLogHandler to the root logger (idempotent)."""
     root = logging.getLogger()
     for h in root.handlers:
@@ -635,6 +714,12 @@ def tap_loop_event(session_id: str, event: Dict[str, Any]) -> None:
         turn_id = event.get("turn_id")
         agent_id = event.get("agent_id") or event.get("agent")
         user_id = event.get("user_id")
+        # Correlation keys — stamp_event() puts session_seq/turn_seq on the event;
+        # interaction_id ties the log line to the exact interactions row.
+        session_seq = event.get("session_seq")
+        turn_seq = event.get("turn_seq")
+        interaction_id = (event.get("interaction_id") or event.get("tool_call_id")
+                          or event.get("call_id") or event.get("id"))
 
         if etype == "pipeline":
             step = event.get("step") or "pipeline"
@@ -645,25 +730,92 @@ def tap_loop_event(session_id: str, event: Dict[str, Any]) -> None:
             rec.record(level, "loop", f"pipeline: {step}", source=step,
                        detail=detail, session_id=session_id, turn_id=turn_id,
                        agent_id=agent_id, user_id=user_id,
-                       persist=problem or None)
+                       interaction_id=interaction_id, session_seq=session_seq,
+                       turn_seq=turn_seq, persist=problem or None)
         elif etype == "tool_call":
             name = event.get("name") or event.get("tool_name") or "tool"
+            args = event.get("arguments") or event.get("args")
             rec.record("info", "tool", f"tool_call: {name}", source=name,
-                       detail={"arguments": event.get("arguments") or event.get("args")},
+                       detail={"arguments": args},
                        session_id=session_id, turn_id=turn_id, agent_id=agent_id,
-                       user_id=user_id, persist=False)
+                       user_id=user_id, interaction_id=interaction_id,
+                       session_seq=session_seq, turn_seq=turn_seq, persist=None)
+            # Open a timing entry to pair with the matching tool_result.
+            key = str(interaction_id or f"{session_id}:{turn_id}:{name}")
+            rec._open_tools[key] = {
+                "start": time.time(), "tool_name": name, "session_id": session_id,
+                "turn_id": turn_id, "agent_id": agent_id, "user_id": user_id,
+                "interaction_id": interaction_id,
+                "input_params": _truncate(json.dumps(args, default=str), 1000) if args is not None else None,
+            }
         elif etype == "tool_result":
             name = event.get("name") or event.get("tool_name") or "tool"
             is_err = bool(event.get("error") or event.get("is_error"))
+            result_str = _truncate(
+                event.get("result") if isinstance(event.get("result"), str)
+                else json.dumps(event.get("result"), default=str), 4000)
             rec.record("error" if is_err else "info", "tool",
                        f"tool_result: {name}" + (" (error)" if is_err else ""),
                        source=name,
-                       detail={"result": _truncate(
-                           event.get("result") if isinstance(event.get("result"), str)
-                           else json.dumps(event.get("result"), default=str), 4000),
-                           "error": event.get("error")},
+                       detail={"result": result_str, "error": event.get("error")},
                        session_id=session_id, turn_id=turn_id, agent_id=agent_id,
-                       user_id=user_id, persist=is_err or None)
+                       user_id=user_id, interaction_id=interaction_id,
+                       session_seq=session_seq, turn_seq=turn_seq,
+                       persist=is_err or None)
+            # Close the timing entry → structured tool_executions row.
+            key = str(interaction_id or f"{session_id}:{turn_id}:{name}")
+            opened = rec._open_tools.pop(key, None)
+            dur = event.get("duration_ms")
+            if dur is None and opened:
+                dur = int((time.time() - opened["start"]) * 1000)
+            base = opened or {"tool_name": name, "session_id": session_id,
+                              "turn_id": turn_id, "agent_id": agent_id,
+                              "user_id": user_id, "interaction_id": interaction_id}
+            rec.queue_tool_execution({
+                "tool_name": base.get("tool_name") or name,
+                "session_id": base.get("session_id"),
+                "turn_id": base.get("turn_id"),
+                "interaction_id": base.get("interaction_id"),
+                "agent_id": base.get("agent_id"),
+                "user_id": base.get("user_id"),
+                "success": not is_err,
+                "duration_ms": dur,
+                "error_type": event.get("error_type"),
+                "error_message": _truncate(str(event.get("error")), 1000) if is_err else None,
+                "input_params": base.get("input_params"),
+                "output_preview": _truncate(result_str, 1000),
+            })
+    except Exception:
+        pass
+
+
+def record_ws_event(action: str, *, user_id: Optional[str] = None,
+                    detail: Optional[Dict[str, Any]] = None,
+                    level: str = "info") -> None:
+    """Record a WebSocket lifecycle event (connect / subscribe / disconnect)
+    into the ``ws`` category. Never raises."""
+    try:
+        get_recorder().record(level, "ws", f"ws: {action}", source=action,
+                              detail=detail, user_id=user_id, persist=None)
+    except Exception:
+        pass
+
+
+def record_access(method: str, path: str, status: int, duration_ms: int, *,
+                  user_id: Optional[str] = None, client: Optional[str] = None) -> None:
+    """Record a completed HTTP request into the ``access`` category. Errors
+    (4xx/5xx) are warnings/errors; normal responses are info. Never raises."""
+    try:
+        level = "info"
+        if status >= 500:
+            level = "error"
+        elif status >= 400:
+            level = "warning"
+        get_recorder().record(
+            level, "access", f"{status} {method} {path}", source=f"HTTP {status}",
+            detail={"status": status, "method": method, "path": path,
+                    "duration_ms": duration_ms, "client": client},
+            user_id=user_id, persist=None)
     except Exception:
         pass
 

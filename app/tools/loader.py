@@ -75,6 +75,9 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "terminal_wait":                 {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     "terminal_list":                 {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     "terminal_close":                {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": True,  "agent_types": []},
+    # ── App control (gated by app_control) — rearrange the viewer's own screen,
+    #    writes no data ──
+    "set_app_view":                  {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     # ── Admin/source (privileged) — write/exec tools pass through guardrails ──
     "read_source":                   {"stages": ["execute_tools"],                               "destructive": False, "requires_confirmation": False, "agent_types": ["admin"]},
     "write_source":                  {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": False, "agent_types": ["admin"]},
@@ -116,6 +119,7 @@ ABILITY_TOOLS: Dict[str, List[str]] = {
                             "event_subscribe"],
     "terminal_control":    ["terminal_open", "terminal_read", "terminal_send",
                             "terminal_wait", "terminal_list", "terminal_close"],
+    "app_control":         ["set_app_view"],
 }
 
 
@@ -714,6 +718,28 @@ class ToolLoader:
             except Exception as _te:
                 logger.warning("Terminal-control tools unavailable: %s", _te)
 
+        # ── App-control tools — gated by the "app_control" ability ──
+        # Lets the agent rearrange the user's own screen: switch the main view
+        # (e.g. bring the live browser to the front), show/hide the chat panel,
+        # and resize it. Non-destructive — it only moves panels around for the
+        # viewer and writes no data — so it's a Basic ability. Needs the live
+        # session id to target the right screen via the visualizer WebSocket.
+        if "app_control" in enabled_providers:
+            try:
+                from app.tools.app_control_tools import (
+                    build_app_control_tools,
+                    SET_APP_VIEW_SCHEMA,
+                )
+                _appctl = build_app_control_tools(user_id, session_id)
+                for _aname, _ahandler in _appctl.items():
+                    tools[_aname] = ToolInfo(
+                        name=_aname,
+                        handler=_ahandler,
+                        parameters=SET_APP_VIEW_SCHEMA,
+                    )
+            except Exception as _ae:
+                logger.warning("App-control tools unavailable: %s", _ae)
+
         # ═══════════════════════════════════════════════════════════════
         # Bootstrap core tools — always available from turn 1
         # These are the agent's discovery and essential utilities.
@@ -862,8 +888,10 @@ class ToolLoader:
             from app.tools.diagnostics_tool import read_diagnostics as _core_read_diagnostics, TOOL_PARAMETERS as _DIAG_PARAMS
 
             async def _read_diagnostics_wrapper(
+                view: str = "diagnostics",
                 levels: Optional[str] = None,
                 categories: Optional[str] = None,
+                tool_name: Optional[str] = None,
                 session_id: Optional[str] = None,
                 search: Optional[str] = None,
                 since_minutes: Optional[float] = None,
@@ -871,8 +899,10 @@ class ToolLoader:
             ):
                 return await _core_read_diagnostics(
                     user_id=user_id,
+                    view=view,
                     levels=levels,
                     categories=categories,
+                    tool_name=tool_name,
                     session_id=session_id,
                     search=search,
                     since_minutes=since_minutes,

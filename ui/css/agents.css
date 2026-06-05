@@ -1762,22 +1762,16 @@ body.light-mode .lv-edit-save-btn.dirty { background: #fff2e6; border-color: #ff
   color: #3a3a5a;
 }
 
+/* The agent-card connection list now uses the SHARED expandable-row component
+   (`.ac-list` / `.ac-row` / `.ac-ability-*` in app3.css). The `.conn-*` classes
+   below are kept ONLY as JS/behaviour hooks — their visual rules are gutted so
+   the shared component governs the look. Change the look in app3.css, not here. */
 .conn-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  /* Container look comes from `.ac-list`. */
 }
 
 .conn-card {
-  background: #11112a;
-  border: 1px solid #1e1e3a;
-  border-radius: 8px;
-  padding: 12px 14px;
-  transition: border-color 0.15s;
-}
-
-.conn-card.enabled {
-  border-color: #2a3a5a;
+  /* Row box / dividers come from `.ac-row` + `.ac-list`. */
 }
 
 .conn-card.coming-soon {
@@ -1786,23 +1780,15 @@ body.light-mode .lv-edit-save-btn.dirty { background: #fff2e6; border-color: #ff
 }
 
 .conn-card-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+  /* Head-line layout comes from `.ac-ability-row`. */
 }
 
 .conn-icon {
-  font-size: 18px;
-  width: 24px;
-  text-align: center;
-  flex-shrink: 0;
+  /* Icon box comes from `.ac-ability-icon`. */
 }
 
 .conn-name {
-  flex: 1;
-  font-size: 13px;
-  font-weight: 600;
-  color: #c0caf5;
+  /* Name typography comes from `.ac-ability-name`. */
 }
 
 .conn-badge {
@@ -1872,16 +1858,13 @@ body.light-mode .lv-edit-save-btn.dirty { background: #fff2e6; border-color: #ff
 .conn-card-header-clickable {
   cursor: pointer;
 }
-.conn-card-header-clickable:hover .conn-name { color: #7aa2f7; }
+.conn-card-header-clickable:hover .conn-name { color: var(--accent); }
 
-/* Token / config fields — hidden until card expanded */
+/* Token / config fields — show/hide + padding/border come from the shared
+   `.ac-ability-body` + `.ac-row.expanded`; `.conn-fields` stays as a JS hook. */
 .conn-fields {
-  display: none;
-  margin-top: 10px;
-  border-top: 1px solid #1e1e3a;
-  padding-top: 10px;
+  /* visual rules intentionally empty — see app3.css `.ac-ability-body` */
 }
-.conn-card-expanded .conn-fields { display: block; }
 
 .conn-field-label {
   display: block;
@@ -1924,17 +1907,14 @@ body.light-mode .lv-edit-save-btn.dirty { background: #fff2e6; border-color: #ff
   color: #f7768e;
 }
 
-/* Light mode */
-body.light-mode .conn-card          { background: #f8f8ff; border-color: #d8d8f0; }
-body.light-mode .conn-card.enabled  { border-color: #7aa2f7; }
+/* Light mode (conn-card / conn-name / conn-fields colours now come from the
+   shared `.ac-*` light-mode rules in app3.css). */
 body.light-mode .conn-section-label { color: #9a9ab8; }
 body.light-mode .conn-section-hint  { color: #b8b8d8; }
-body.light-mode .conn-name          { color: #1a1a3a; }
 body.light-mode .conn-toggle-track  { background: #e8e8f8; border-color: #c8c8e8; }
 body.light-mode .conn-toggle-track::after { background: #a8a8c8; }
 body.light-mode .conn-toggle:checked + .conn-toggle-track { background: #ddeaff; border-color: #7aa2f7; }
 body.light-mode .conn-toggle:checked + .conn-toggle-track::after { background: #4a7af7; }
-body.light-mode .conn-fields        { border-color: #e0e0f0; }
 body.light-mode .conn-field-label   { color: #8888a8; }
 body.light-mode .conn-field-hint    { color: #a8a8c8; }
 body.light-mode .conn-badge.coming-soon { background: #f0f0ff; color: #9898c0; border-color: #d8d8f0; }

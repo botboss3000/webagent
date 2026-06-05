@@ -294,9 +294,11 @@ class RenderRecorder:
 
     @staticmethod
     def _db() -> Any:
+        # Render recordings live in the dedicated, always-local recordings.db
+        # (own WAL), not the main application DB — see app/db/logs_store.py.
         try:
-            from app.db import get_db
-            return get_db()
+            from app.db.logs_store import get_log_store
+            return get_log_store()
         except Exception:
             return None
 

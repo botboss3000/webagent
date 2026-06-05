@@ -23,6 +23,19 @@ export function initChatResize() {
   applySavedWidth();
   window.addEventListener('resize', applySavedWidth);
 
+  // Programmatic width set for the App-control ability (agent-driven, via a
+  // `ui_command` WebSocket event). Clamped to the same bounds as a drag and
+  // persisted, so it survives reloads. No-op on mobile (chat is full-width).
+  window.__setChatPanelWidth = function (px) {
+    const w = parseInt(px, 10);
+    if (isNaN(w)) return;
+    if (window.innerWidth <= MOBILE_BP) return;
+    const maxWidth = window.innerWidth - 250;
+    const clamped = Math.min(maxWidth, Math.max(MIN_WIDTH, w));
+    chatPanel.style.width = clamped + 'px';
+    try { localStorage.setItem(STORAGE_KEY, String(clamped)); } catch (_) {}
+  };
+
   let dragging = false;
   let startX = 0;
   let startWidth = 0;

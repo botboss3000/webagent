@@ -1,10 +1,13 @@
 """Read the webAgent app's diagnostics — its flight-recorder of server
-warnings/errors (with tracebacks), agent-loop problems, run outcomes, and tool
-errors.
+warnings/errors (with tracebacks), agent-loop problems, run outcomes, tool
+errors, every HTTP request (access) and WebSocket lifecycle (ws).
 
-Read STRAIGHT from the linked checkout's ``app/db/local.db`` (the ``diagnostics``
-table), so it works even when the server is **down** — exactly when you need it.
-Strictly read-only (opens the DB read-only and never writes).
+Read STRAIGHT from the linked checkout's **dedicated logs database**
+(``app/db/logs.db`` — the ``diagnostics`` table), so it works even when the
+server is **down** — exactly when you need it. Newer webAgent builds keep
+diagnostics in this isolated logs DB (own WAL, separate from ``local.db``);
+older builds wrote them into ``local.db``, so we fall back to that when no
+``logs.db`` exists. Strictly read-only (opens the DB read-only, never writes).
 """
 
 from __future__ import annotations
@@ -17,13 +20,21 @@ from .base import ToolContext
 _COLS = "ts, level, category, source, message, detail"
 
 
+def _diag_db(project_root: Path) -> Path:
+    """The dedicated logs DB if present (current builds), else the legacy
+    main DB (older builds wrote diagnostics into local.db)."""
+    logs = project_root / "app" / "db" / "logs.db"
+    return logs if logs.exists() else (project_root / "app" / "db" / "local.db")
+
+
 async def read_diagnostics(ctx: ToolContext, limit: int = 20, level: str = "",
                            category: str = "") -> str:
     """Most-recent diagnostics from the linked checkout, optionally filtered by
-    ``level`` (e.g. error/warning) or ``category`` (e.g. server/http/agent)."""
+    ``level`` (e.g. error/warning) or ``category`` (e.g. server/http/access/ws/
+    loop/run/recovery/tool)."""
     if ctx.project_root is None:
         return "Error: no checkout linked — link one first."
-    db = ctx.project_root / "app" / "db" / "local.db"
+    db = _diag_db(ctx.project_root)
     if not db.exists():
         return f"No diagnostics database yet ({db} not found — the app builds it on first run)."
 
@@ -44,7 +55,7 @@ async def read_diagnostics(ctx: ToolContext, limit: int = 20, level: str = "",
         counts = dict(cur.execute(
             "SELECT level, count(*) FROM diagnostics GROUP BY level").fetchall())
         rows = cur.execute(
-            f"SELECT {_COLS} FROM diagnostics{clause} ORDER BY id DESC LIMIT ?",
+            f"SELECT {_COLS} FROM diagnostics{clause} ORDER BY ts DESC LIMIT ?",
             (*params, limit)).fetchall()
         con.close()
     except sqlite3.Error as e:

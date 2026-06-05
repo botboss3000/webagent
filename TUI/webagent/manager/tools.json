@@ -124,7 +124,7 @@
     "read_diagnostics": {
       "category": "diagnostics",
       "enabled": true,
-      "description": "Read the webAgent app's diagnostics — its flight-recorder of warnings/errors (with tracebacks), agent-loop problems, run outcomes and tool errors — straight from the checkout's local DB, so it works even when the server is DOWN. Filter by level (error/warning) or category (server/http/agent/...). Use it to diagnose a broken server."
+      "description": "Read the webAgent app's diagnostics — its flight-recorder of warnings/errors (with tracebacks), agent-loop problems, run outcomes, tool errors, every HTTP request (access) and WebSocket lifecycle (ws) — straight from the checkout's dedicated logs database (app/db/logs.db; falls back to local.db on older builds), so it works even when the server is DOWN. Filter by level (error/warning) or category (server/http/access/ws/loop/run/recovery/tool). Use it to diagnose a broken server."
     },
     "monitor_status": {
       "category": "monitoring",

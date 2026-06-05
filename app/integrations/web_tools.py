@@ -259,7 +259,7 @@ async def web_session_fetch(
     cookies = _parse_cookies(sess.get("cookies", ""))
     if not cookies:
         return json.dumps({"status": "session_expired", "provider": "browser_session",
-                           "message": "No cookies in stored session — re-paste in App Config → Browser Session."})
+                           "message": "No cookies in stored session — re-paste in App Config → Browser Cookies."})
 
     method = (method or "GET").upper()
     user_agent = sess.get("user_agent") or "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -283,7 +283,7 @@ async def web_session_fetch(
             "status": "session_expired",
             "provider": "browser_session",
             "http_status": resp.status_code,
-            "message": "Upstream bounced to login — cookies are stale, refresh them in App Config → Browser Session.",
+            "message": "Upstream bounced to login — cookies are stale, refresh them in App Config → Browser Cookies.",
         })
 
     try:

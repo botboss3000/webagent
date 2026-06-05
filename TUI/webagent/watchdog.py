@@ -52,7 +52,11 @@ def active_watchdog() -> "Optional[Watchdog]":
 
 
 def _diag_db(project_root: Path) -> Path:
-    return project_root / "app" / "db" / "local.db"
+    # Current webAgent builds keep diagnostics in a dedicated, isolated logs DB
+    # (own WAL, separate from local.db). Older builds wrote them into local.db,
+    # so fall back to that when no logs.db exists.
+    logs = project_root / "app" / "db" / "logs.db"
+    return logs if logs.exists() else (project_root / "app" / "db" / "local.db")
 
 
 def _read_new_diagnostics(db: Path, after_id: int) -> tuple[list[dict[str, Any]], int]:

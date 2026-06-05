@@ -237,8 +237,10 @@
 
                 </div>
 
-                <!-- ── Web tools (moved here from the obsolete "Generic Providers" category) ── -->
-                <p class="ac-category-desc" style="margin-top:4px;">Non-OAuth web tools for sites without a public API. Configure here, then turn on per agent from the agent's <strong>Abilities</strong> tab.</p>
+                <!-- ── Web tools (moved here from the obsolete "Generic Providers" category) ──
+                     These two credential cards are relocated INTO the Web group body at
+                     runtime by _placeWebCredentialRows(); this intro is hidden there too. -->
+                <p class="ac-category-desc" id="ac-web-tools-intro" style="margin-top:4px;">Non-OAuth web tools for sites without a public API. Configure here, then turn on per agent from the agent's <strong>Abilities</strong> tab.</p>
 
             <!-- Web Scraper (generic third-party scraping API) -->
             <div class="ac-card" id="ac-int-scraper-card">
@@ -310,7 +312,7 @@
                   <path fill="#bb9af7" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm6.93 6h-2.95a15.61 15.61 0 0 0-1.38-3.56A8 8 0 0 1 18.93 8zM12 4a13.94 13.94 0 0 1 1.84 4H10.16A13.94 13.94 0 0 1 12 4zM4.26 14a7.69 7.69 0 0 1 0-4h3.38a16.49 16.49 0 0 0 0 4zm.82 2h2.95a15.61 15.61 0 0 0 1.38 3.56A8 8 0 0 1 5.08 16zm2.95-8H5.08a8 8 0 0 1 4.33-3.56A15.61 15.61 0 0 0 8.03 8zM12 20a13.94 13.94 0 0 1-1.84-4h3.68A13.94 13.94 0 0 1 12 20zm2.34-6H9.66a14.4 14.4 0 0 1 0-4h4.68a14.4 14.4 0 0 1 0 4zm.25 5.56A15.61 15.61 0 0 0 15.97 16h2.95a8 8 0 0 1-4.33 3.56zM16.36 14a16.49 16.49 0 0 0 0-4h3.38a7.69 7.69 0 0 1 0 4z"/>
                 </svg>
                 <div style="flex:1;">
-                  <div style="font-weight:600;font-size:14px;">Browser Session</div>
+                  <div style="font-weight:600;font-size:14px;">Browser Cookies</div>
                   <div class="ac-hint" style="margin:0;">Paste cookies from a site you're already logged into. Lets the agent act on your behalf for sites without an API.</div>
                 </div>
                 <span id="ac-int-browser_session-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
@@ -2150,12 +2152,10 @@
                 <span class="ac-category-count">Drag to reorder, toggle visibility</span>
               </summary>
               <div class="ac-category-body">
-                <div class="ac-card">
-                  <div class="ac-hint">
-                    Choose which pages appear in the header and in what order. Admin Tools is always visible.
-                  </div>
-                  <div id="ac-main-panel-list" class="ac-main-panel-list" style="margin-top:10px;display:flex;flex-direction:column;gap:4px;"></div>
-                </div>
+                <p class="ac-category-desc">
+                  Choose which pages appear in the header and in what order. Admin Tools is always visible.
+                </p>
+                <div id="ac-main-panel-list" class="ac-main-panel-list ac-list" style="margin-top:10px;"></div>
               </div>
             </details>
 
@@ -2167,23 +2167,42 @@
                 <span class="ac-category-title">Startup &amp; Boot</span>
               </summary>
               <div class="ac-category-body">
-                <div class="ac-card">
-                  <div class="ac-field">
-                    <label class="ac-label" for="ac-boot-animation">Boot animation</label>
-                    <select id="ac-boot-animation" class="ac-input">
-                      <option value="chat-slide-right">Chat slides right, page reveals on left</option>
-                      <option value="page-slide-in">Page slides in from the right</option>
-                      <option value="crossfade">Crossfade</option>
-                    </select>
-                    <div class="ac-hint">Picks how the chat shrinks and the saved page appears when the app first loads. Saved per browser; applied on the next reload.</div>
+                <div class="ac-list" id="ac-boot-list">
+                  <!-- Each setting is a compact row; the dropdown lives in the expanded body. -->
+                  <div class="ac-row" id="ac-boot-anim-row">
+                    <div class="ac-ability-row">
+                      <span class="ac-ability-icon"><i data-lucide="play" class="lucide-icon" style="width:18px;height:18px;"></i></span>
+                      <div class="ac-ability-label">
+                        <div class="ac-ability-name">Boot animation</div>
+                        <div class="ac-ability-desc">How the chat shrinks and the saved page appears when the app first loads. Saved per browser; applied on the next reload.</div>
+                      </div>
+                      <span class="ac-ability-status"></span>
+                      <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+                    </div>
+                    <div class="ac-ability-body">
+                      <select id="ac-boot-animation" class="ac-input" style="width:100%;">
+                        <option value="chat-slide-right">Chat slides right, page reveals on left</option>
+                        <option value="page-slide-in">Page slides in from the right</option>
+                        <option value="crossfade">Crossfade</option>
+                      </select>
+                    </div>
                   </div>
-                  <div class="ac-field" style="margin-top:14px;">
-                    <label class="ac-label" for="ac-boot-mobile-mode">Mobile boot</label>
-                    <select id="ac-boot-mobile-mode" class="ac-input">
-                      <option value="chat-first">Always start with chat full-screen</option>
-                      <option value="memory">Remember last view (chat or page)</option>
-                    </select>
-                    <div class="ac-hint">Mobile only. "Always" forces the chat-first boot then animates to the saved view. "Remember" skips the animation and goes straight to whichever panel you had open last.</div>
+                  <div class="ac-row" id="ac-boot-mobile-row">
+                    <div class="ac-ability-row">
+                      <span class="ac-ability-icon"><i data-lucide="smartphone" class="lucide-icon" style="width:18px;height:18px;"></i></span>
+                      <div class="ac-ability-label">
+                        <div class="ac-ability-name">Mobile boot</div>
+                        <div class="ac-ability-desc">Mobile only. "Always" forces the chat-first boot then animates to the saved view. "Remember" skips the animation and goes straight to whichever panel you had open last.</div>
+                      </div>
+                      <span class="ac-ability-status"></span>
+                      <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+                    </div>
+                    <div class="ac-ability-body">
+                      <select id="ac-boot-mobile-mode" class="ac-input" style="width:100%;">
+                        <option value="chat-first">Always start with chat full-screen</option>
+                        <option value="memory">Remember last view (chat or page)</option>
+                      </select>
+                    </div>
                   </div>
                 </div>
               </div>

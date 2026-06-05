@@ -65,6 +65,18 @@ app/db/local.db-shm
 app/db/local.db.preprompt-bak
 local.db
 
+# Dedicated, always-local logs databases (server diagnostics + browser render
+# recorder) and the per-box instance id. Runtime artifacts — see app/db/logs_store.py.
+app/db/logs.db
+app/db/logs.db-journal
+app/db/logs.db-wal
+app/db/logs.db-shm
+app/db/recordings.db
+app/db/recordings.db-journal
+app/db/recordings.db-wal
+app/db/recordings.db-shm
+app/db/instance_id.txt
+
 # Per-user runtime "closer" DBs (created by the running app)
 app/db/closer_*.db
 app/db/closer_*.db-journal

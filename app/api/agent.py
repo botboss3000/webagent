@@ -173,6 +173,16 @@ async def agent_websocket(websocket: WebSocket):
             "active_sessions": active_sessions,
         }, default=_json_default))
 
+        # Flight-recorder: WebSocket subscribe (connect) into the `ws` category.
+        try:
+            from app.agent.diagnostics import record_ws_event
+            record_ws_event("subscribe", user_id=user_id, detail={
+                "replayed": replayed_summary, "active_sessions": active_sessions,
+                "client": (websocket.client.host if websocket.client else None),
+            })
+        except Exception:
+            pass
+
         # ── Stay connected until client disconnects ──
         while True:
             raw = await websocket.receive_text()
@@ -216,6 +226,11 @@ async def agent_websocket(websocket: WebSocket):
     finally:
         if user_id:
             unregister_user_listener(user_id, websocket)
+            try:
+                from app.agent.diagnostics import record_ws_event
+                record_ws_event("disconnect", user_id=user_id)
+            except Exception:
+                pass
         if heartbeat_task and not heartbeat_task.done():
             heartbeat_task.cancel()
         try:

@@ -132,7 +132,10 @@ logger = logging.getLogger(__name__)
 # writer is started in the startup() hook below (needs the event loop).
 try:
     from app.agent.diagnostics import install_log_handler as _install_diag_handler
-    _diag_level = getattr(logging, os.environ.get("DIAGNOSTICS_CAPTURE_LEVEL", "WARNING").upper(), logging.WARNING)
+    # INFO by default: capture full backend detail into the now-isolated logs.db.
+    # The handler applies a per-logger policy (our app.* at INFO+, noisy libs at
+    # WARNING+) so this stays signal, not framework chatter.
+    _diag_level = getattr(logging, os.environ.get("DIAGNOSTICS_CAPTURE_LEVEL", "INFO").upper(), logging.INFO)
     _install_diag_handler(level=_diag_level)
 except Exception as _diag_err:  # never let diagnostics wiring break boot
     logger.warning("Diagnostic log handler not installed: %s", _diag_err)
@@ -156,6 +159,41 @@ async def _unhandled_exception_handler(request: Request, exc: Exception):
     except Exception:
         pass
     return JSONResponse(status_code=500, content={"detail": "Internal server error", "error": str(exc)})
+
+
+# ── Access log ──
+# Record every (non-static) HTTP request into the diagnostics `access` category
+# in the dedicated logs.db, so the flight recorder shows the full HTTP timeline,
+# not just errors. Static asset GETs are skipped to keep the log signal-rich.
+_ACCESS_SKIP_PREFIXES = ("/ui/", "/static", "/assets", "/screenshots/",
+                         "/visuals/", "/favicon", "/web-terminal")
+_ACCESS_SKIP_EXT = (".js", ".css", ".map", ".ico", ".svg", ".png", ".jpg",
+                    ".jpeg", ".gif", ".webp", ".woff", ".woff2", ".ttf")
+
+
+@app.middleware("http")
+async def _access_log_middleware(request: Request, call_next):
+    import time as _t
+    start = _t.perf_counter()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        try:
+            path = request.url.path
+            if not (path.startswith(_ACCESS_SKIP_PREFIXES) or path.endswith(_ACCESS_SKIP_EXT)):
+                from app.api.http_diag import _user_from_request
+                from app.agent.diagnostics import record_access
+                record_access(
+                    request.method, path, status,
+                    int((_t.perf_counter() - start) * 1000),
+                    user_id=_user_from_request(request),
+                    client=(request.client.host if request.client else None),
+                )
+        except Exception:
+            pass
 
 
 # ── Favicon ──

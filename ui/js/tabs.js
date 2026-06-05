@@ -133,6 +133,19 @@ export function initTabs() {
     try { refreshTutorial(tabValue); } catch (_) {}
   }
 
+  // Programmatic view switch for the App-control ability (agent-driven, via a
+  // `ui_command` WebSocket event). Mirrors a user picking from the dropdown:
+  // sync the select (when the option exists) then activate the tab.
+  window.__setMainTab = function (view) {
+    if (!view) return;
+    try {
+      if (tabSelect.querySelector(`option[value="${view}"]`)) {
+        tabSelect.value = view;
+      }
+      activateTab(view, true);
+    } catch (_) { /* ignore */ }
+  };
+
   tabSelect.addEventListener('change', (e) => {
     activateTab(e.target.value, true);
   });

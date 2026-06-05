@@ -1893,6 +1893,10 @@ _ABILITY_CONFIG_KEY: dict[str, str] = {
     "agent_orchestration": "ability_agent_orchestration",
     "diagnostics":         "ability_diagnostics",
     "agent_management":    "ability_agent_management",
+    # App control — lets an agent rearrange the user's own screen (switch the
+    # main view, show/hide & resize the chat panel). Pure behavioral toggle,
+    # no credential, non-destructive → on by default at the app level.
+    "app_control":         "ability_app_control",
 }
 
 # Abilities that are ON by default at the app level: available to the per-agent
@@ -1908,6 +1912,7 @@ _ALWAYS_ON_ABILITIES: set[str] = {
     "agent_management",
     "git_control",
     "ui_admin",
+    "app_control",
 }
 
 
@@ -2219,6 +2224,7 @@ async def get_integration_config(
         "agent_orchestration_configured": ability_enabled.get("agent_orchestration", False),
         "diagnostics_configured":         ability_enabled.get("diagnostics", False),
         "agent_management_configured":    ability_enabled.get("agent_management", False),
+        "app_control_configured":         ability_enabled.get("app_control", False),
     }
 
 

@@ -1525,14 +1525,21 @@ body.light-mode #files-restricted-overlay { background: var(--bg-0) !important; 
 body.light-mode .files-restricted-card { background: #ffffff !important; border-color: #d4c4b4 !important; box-shadow: 0 12px 32px rgba(0,0,0,0.10) !important; }
 
 /* ── Agent Tools — compact ability rows ── */
-.ac-abilities-compact {
+.ac-abilities-compact,
+.ac-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
   border: 1px solid var(--border, #2a2a4a);
   border-radius: 10px;
   overflow: hidden;
   background: var(--bg-elev, #1a1a2e);
+}
+/* Hairline dividers are drawn by the CONTAINER between items — so an item can be
+   a bare row OR an expandable `.ac-row` wrapper and the dividers always line up. */
+.ac-abilities-compact > * + *,
+.ac-list > * + * {
+  border-top: 1px solid var(--border, #2a2a4a);
 }
 .ac-ability-row {
   display: flex;
@@ -1541,10 +1548,6 @@ body.light-mode .files-restricted-card { background: #ffffff !important; border-
   padding: 8px 14px;
   background: transparent;
   transition: background 0.15s;
-  border-bottom: 1px solid var(--border, #2a2a4a);
-}
-.ac-ability-row:last-child {
-  border-bottom: none;
 }
 .ac-ability-row:hover {
   background: rgba(122, 162, 247, 0.04);
@@ -1609,6 +1612,153 @@ body.light-mode .ac-ability-desc {
   color: #9a7c65;
 }
 
+/* ── Expandable row (click-to-open info / config) ─────────────────────────
+   An item that reveals a body when clicked. Wrap the head + body in `.ac-row`
+   and JS adds `.expanded` to open it. Use `.ac-row-static` for a non-expanding
+   item. The body holds additional info and/or config fields (OAuth, scopes…). */
+.ac-row {
+  display: flex;
+  flex-direction: column;
+}
+.ac-row > .ac-ability-row {
+  cursor: pointer;
+}
+.ac-row-static > .ac-ability-row {
+  cursor: default;
+}
+.ac-ability-body {
+  display: none;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--border, #2a2a4a);
+  background: var(--bg-1, rgba(0, 0, 0, 0.12));
+}
+.ac-row.expanded > .ac-ability-body {
+  display: block;
+}
+.ac-row-chevron {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: 8px;
+  color: var(--fg-muted, #565f89);
+  transition: transform 0.2s;
+}
+.ac-row.expanded > .ac-ability-row .ac-row-chevron {
+  transform: rotate(90deg);
+}
+body.light-mode .ac-list,
+body.light-mode .ac-abilities-compact {
+  background: #ffffff;
+  border-color: #e8ddd0;
+}
+body.light-mode .ac-list > * + *,
+body.light-mode .ac-abilities-compact > * + * {
+  border-top-color: #e8ddd0;
+}
+body.light-mode .ac-ability-body {
+  border-top-color: #e8ddd0;
+  background: #fbf6f0;
+}
+
+/* ── Grouped abilities (Administrator / Basic / Web) ──────────────────────
+   Each group is an expandable `.ac-row` whose head carries a 3-position
+   toggle; expanding reveals its member abilities as plain rows in `.ac-group-
+   body` (NOT a nested bordered box — the members read as continuation rows of
+   the same flush list). */
+.ac-group > .ac-ability-row.ac-group-head {
+  cursor: pointer;
+  padding-top: 11px;
+  padding-bottom: 11px;
+}
+.ac-group-head .ac-ability-name { font-size: 13.5px; }
+.ac-group-body {
+  display: none;
+  /* No own background / box — the members are flush rows revealed below the
+     head. A faint inset on the left edge marks them as children. */
+  border-top: 1px solid var(--border, #2a2a4a);
+}
+.ac-row.expanded > .ac-group-body { display: block; }
+/* Hairlines between members. */
+.ac-group-body > .ac-ability-row + .ac-ability-row,
+.ac-group-body > .ac-card.ac-card-compact + .ac-ability-row,
+.ac-group-body > .ac-ability-row + .ac-card.ac-card-compact,
+.ac-group-body > .ac-card.ac-card-compact + .ac-card.ac-card-compact {
+  border-top: 1px solid var(--border, #2a2a4a);
+}
+/* Member rows sit indented under the group, on a faintly recessed surface so
+   the group reads as a parent without becoming a separate table. */
+.ac-group-body > .ac-ability-row,
+.ac-group-body > .ac-card.ac-card-compact .ac-int-row {
+  padding-left: 40px;
+  background: rgba(0, 0, 0, 0.12);
+}
+.ac-group-body > .ac-ability-row:hover,
+.ac-group-body > .ac-card.ac-card-compact .ac-int-row:hover {
+  background: rgba(122, 162, 247, 0.06);
+}
+/* Credential cards (Web Scraper / Browser Cookies) relocated into the Web
+   group shed their own box so they line up with the toggle rows. */
+.ac-group-body > .ac-card.ac-card-compact {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+.ac-group-body > .ac-card.ac-card-compact > div[id$="-body"] { padding-left: 40px; }
+body.light-mode .ac-group-body { border-top-color: #e8ddd0; }
+body.light-mode .ac-group-body > .ac-ability-row + .ac-ability-row,
+body.light-mode .ac-group-body > .ac-card.ac-card-compact + .ac-ability-row,
+body.light-mode .ac-group-body > .ac-ability-row + .ac-card.ac-card-compact,
+body.light-mode .ac-group-body > .ac-card.ac-card-compact + .ac-card.ac-card-compact {
+  border-top-color: #e8ddd0;
+}
+body.light-mode .ac-group-body > .ac-ability-row,
+body.light-mode .ac-group-body > .ac-card.ac-card-compact .ac-int-row {
+  background: #fbf6f0;
+}
+body.light-mode .ac-group-body > .ac-ability-row:hover,
+body.light-mode .ac-group-body > .ac-card.ac-card-compact .ac-int-row:hover {
+  background: rgba(204, 106, 40, 0.06);
+}
+
+/* ── 3-position toggle (Off · Mixed · On) ─────────────────────────────────
+   A wider sliding switch with three detents. The left/right halves are click
+   targets (all-off / all-on); the centre "mixed" detent is set by the code
+   when members are partially on — you reach it by toggling members, not by
+   clicking. Mirrors `.conn-toggle-track` colours so it sits with the app's
+   switches. */
+.ac-tri {
+  position: relative;
+  display: block;
+  width: 54px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  border: 1px solid var(--border, #2a2a4a);
+  background: #1e1e3a;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+.ac-tri-knob {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #565f89;
+  transition: left 0.2s, background 0.2s;
+}
+.ac-tri[data-state="mixed"] .ac-tri-knob { left: 20px; background: #e0af68; }
+.ac-tri[data-state="on"] { background: #1e3a6a; border-color: #7aa2f7; }
+.ac-tri[data-state="on"] .ac-tri-knob { left: 38px; background: #7aa2f7; }
+body.light-mode .ac-tri { background: #e8e8f8; border-color: #c8c8e8; }
+body.light-mode .ac-tri-knob { background: #a8a8c8; }
+body.light-mode .ac-tri[data-state="mixed"] .ac-tri-knob { background: #d99a3c; }
+body.light-mode .ac-tri[data-state="on"] { background: #ddeaff; border-color: #7aa2f7; }
+body.light-mode .ac-tri[data-state="on"] .ac-tri-knob { background: #4a7af7; }
+
 /* ── Compactified integration cards ──────────────────────────────────────
    Every OAuth / channel / generic card (admin-configuration.html) is turned
    into a slim row that matches the Agent Tools table: the original card header
@@ -1641,6 +1791,25 @@ body.light-mode .ac-ability-desc {
 }
 .ac-int-row .ac-ability-toggle-wrap { margin-left: auto; }
 .ac-int-row-chevron + * { margin-left: 0; }
+
+/* Integration cards grouped into ONE flush `.ac-list` (see _groupIntegrationLists
+   in app-config.js). The list draws the border / radius / dividers; each card
+   sheds its own box so the section reads as a single compact option-table —
+   the same look as the Agent Tools reference. */
+.ac-list > .ac-card.ac-card-compact {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+/* Divider between cards — needs higher specificity than the `border:none` above,
+   so the generic `.ac-list > * + *` rule (lower specificity) can't supply it. */
+.ac-list > .ac-card.ac-card-compact + .ac-card.ac-card-compact {
+  border-top: 1px solid var(--border, #2a2a4a);
+}
+body.light-mode .ac-list > .ac-card.ac-card-compact + .ac-card.ac-card-compact {
+  border-top-color: #e8ddd0;
+}
 
 /* ── Coming-soon rows (greyed, non-interactive) ──────────────────────────── */
 .ac-soon-rows {
@@ -1763,33 +1932,23 @@ body.light-mode .ac-category-desc {
   color: #9a7c65;
 }
 /* ── Main Panel Pages (drag-reorderable list) ── */
+/* Main Panel Pages — the shared `.ac-list` flush table plus a drag handle so the
+   rows double as a drag-to-reorder list. The list/row look comes from `.ac-list`
+   / `.ac-ability-row`; only the drag affordance, drop indicator and the small
+   visibility toggle are defined here. */
 .ac-main-panel-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  /* container look comes from `.ac-list` */
 }
 .ac-main-panel-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--border, #2a2a3e);
-  border-radius: 6px;
-  background: var(--bg-elev, #1a1a2e);
   cursor: grab;
   user-select: none;
-  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
-}
-.ac-main-panel-item:hover {
-  background: var(--bg-hover, #22223a);
-  border-color: var(--accent, #7aa2f7);
 }
 .ac-main-panel-item.dragging {
   opacity: 0.5;
   cursor: grabbing;
 }
 .ac-main-panel-item.drag-over {
-  border-color: var(--accent, #7aa2f7);
+  box-shadow: inset 0 2px 0 0 var(--accent, #7aa2f7);
   background: rgba(122, 162, 247, 0.08);
 }
 .ac-main-panel-item .ac-mp-drag-handle {
@@ -1806,31 +1965,17 @@ body.light-mode .ac-category-desc {
   width: 14px;
   height: 14px;
 }
-.ac-main-panel-item .ac-mp-label {
-  flex: 1;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--fg-1, #c0caf5);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.ac-main-panel-item .ac-mp-label svg {
-  width: 15px;
-  height: 15px;
-  color: var(--fg-2, #a9b1d6);
-  flex-shrink: 0;
-}
 .ac-main-panel-item .ac-mp-toggle {
-  width: 32px;
-  height: 18px;
-  border-radius: 9px;
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
   border: none;
   background: var(--bg-2, #2a2a3e);
   cursor: pointer;
   position: relative;
   transition: background 0.2s;
   flex-shrink: 0;
+  margin-left: auto;
   padding: 0;
 }
 .ac-main-panel-item .ac-mp-toggle::after {
@@ -1838,8 +1983,8 @@ body.light-mode .ac-category-desc {
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   background: var(--fg-3, #565f89);
   transition: transform 0.2s, background 0.2s;
@@ -1848,7 +1993,7 @@ body.light-mode .ac-category-desc {
   background: var(--accent, #7aa2f7);
 }
 .ac-main-panel-item .ac-mp-toggle.active::after {
-  transform: translateX(14px);
+  transform: translateX(16px);
   background: #fff;
 }
 .ac-main-panel-item .ac-mp-toggle:disabled {
@@ -1856,22 +2001,11 @@ body.light-mode .ac-category-desc {
   cursor: not-allowed;
 }
 .ac-main-panel-item.ac-mp-locked {
-  border-color: rgba(122, 162, 247, 0.3);
-  background: rgba(122, 162, 247, 0.05);
+  cursor: default;
+  background: rgba(122, 162, 247, 0.06);
 }
-.ac-main-panel-item.ac-mp-locked .ac-mp-label {
+.ac-main-panel-item.ac-mp-locked .ac-ability-name {
   color: var(--accent, #7aa2f7);
-}
-body.light-mode .ac-main-panel-item {
-  background: #f5f0eb;
-  border-color: #d9d0c4;
-}
-body.light-mode .ac-main-panel-item:hover {
-  background: #ede6dc;
-  border-color: #b8a99a;
-}
-body.light-mode .ac-main-panel-item .ac-mp-label {
-  color: #3d2e22;
 }
 body.light-mode .ac-main-panel-item .ac-mp-toggle {
   background: #d9d0c4;
@@ -1880,6 +2014,5 @@ body.light-mode .ac-main-panel-item .ac-mp-toggle.active {
   background: #7aa2f7;
 }
 body.light-mode .ac-main-panel-item.ac-mp-locked {
-  border-color: rgba(122, 162, 247, 0.4);
   background: rgba(122, 162, 247, 0.08);
 }

@@ -4548,6 +4548,158 @@ const _CONN_ICONS = {
   agent_management: 'user-cog',
 };
 
+// Brief one-line description shown under each connection's name on the collapsed
+// row. The API may already send `conn.description`; this is the fallback so the
+// privileged "Agent Tools" rows (and common channels) always read clearly.
+// Mirrors the admin wording in app-config.js `_ABILITY_META`.
+const _CONN_NOTES = {
+  // Agent Tools (privileged capabilities)
+  codebase_admin:   'Read, write, edit, delete files and run shell commands on the host. No credentials.',
+  git_control:      'Version control — status, diff, commit, push, branch, pull — without shell access.',
+  ui_admin:         'Edits only front-end files (ui/ — CSS & HTML); never backend code or the shell.',
+  create_tools:     'Lets the agent define new tools in the database. No credentials.',
+  web_access:       'Search the web, look up weather, and geocode addresses. No API keys needed.',
+  browser_control:  'Drive a headless Chromium browser and make HTTP requests. No credentials.',
+  terminal_control: 'Open and drive interactive terminal programs (REPLs, CLIs) — effectively shell access.',
+  image_generation: 'Generate images from text prompts. Requires a provider + model config.',
+  automation:       'Scheduled tasks and event-triggered jobs that can call integrations.',
+  visualizer:       'Create, edit, rename, and delete pages in the Pages workspace.',
+  agent_orchestration: 'Delegate the session to other agents and run the prompt optimizer.',
+  diagnostics:      'Read the in-app flight recorder to diagnose the running app.',
+  agent_management: 'List, create, and update agents and edit their prompts and abilities.',
+  // Channels
+  telegram:  'Send and receive messages through a Telegram bot.',
+  twilio:    'Send and receive SMS / voice via Twilio.',
+  email:     'Send and receive email on behalf of the agent.',
+  whatsapp:  'Send and receive messages through WhatsApp.',
+  discord:   'Send and receive messages through a Discord bot.',
+  slack:     'Send and receive messages through Slack.',
+};
+
+// Agent Tools grouping — mirrors the admin Agent Tools panel (app-config.js
+// `_ABILITY_GROUPS`). The single "Agent Tools" section is split into three
+// alphabetical groups, each an expandable header row with a 3-position toggle
+// (Off · Mixed · On). Members are alphabetical by display name. The two
+// credential members (scraper / browser_session) keep their own config body and
+// are excluded from a group's On/Off math (managed from their own row).
+const _AGENT_CREDENTIAL_MEMBERS = new Set(['scraper', 'browser_session']);
+const _AGENT_ABILITY_GROUPS = [
+  {
+    id: 'administrator', name: 'Administrator', icon: 'shield-alert', color: '#f7768e',
+    desc: 'Full host control — files & shell, version control, terminals, and diagnostics. Grant with care.',
+    members: ['codebase_admin', 'diagnostics', 'git_control', 'terminal_control'],
+  },
+  {
+    id: 'basic', name: 'Basic', icon: 'wrench', color: '#7dcfff',
+    desc: 'Everyday, non-destructive capabilities — UI edits, tool creation, automation, pages, image generation, orchestration, agent management, and app view control.',
+    members: ['agent_management', 'agent_orchestration', 'app_control', 'automation', 'create_tools', 'image_generation', 'ui_admin', 'visualizer'],
+  },
+  {
+    id: 'web', name: 'Web', icon: 'globe', color: '#7aa2f7',
+    desc: 'Reach the open web — search, a headless browser, third-party scraping, and authenticated cookie sessions.',
+    members: ['browser_control', 'browser_session', 'web_access', 'scraper'],
+  },
+];
+
+// Build the "Agent Tools" section grid as three grouped, expandable rows. Each
+// member is a normal connection card nested in the group body; a 3-position
+// group toggle bulk-enables/disables the group's (non-credential) members.
+function _buildAbilityGroupsGrid(agent, items, canEdit, indexed) {
+  const grid = document.createElement('div');
+  grid.className = 'conn-grid ac-list';
+  const byType = {};
+  for (const conn of items) byType[conn.connection_type] = conn;
+  const used = new Set();
+  const chevronSvg = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>';
+
+  for (const group of _AGENT_ABILITY_GROUPS) {
+    if (!group.members.some(m => byType[m])) continue;
+
+    const groupEl = document.createElement('div');
+    groupEl.className = 'ac-row ac-group';
+    groupEl.dataset.group = group.id;
+
+    const head = document.createElement('div');
+    head.className = 'ac-ability-row ac-group-head';
+    head.innerHTML = `
+      <span class="ac-ability-icon" style="color:${group.color}">${icon(group.icon, { size: '18px' })}</span>
+      <div class="ac-ability-label">
+        <div class="ac-ability-name">${_esc(group.name)}</div>
+        <div class="ac-ability-desc">${_esc(group.desc)}</div>
+      </div>
+      ${canEdit ? '<span class="ac-tri" data-state="off" role="button" tabindex="0" title="Off · Mixed · On — left half for all-off, right half for all-on"><span class="ac-tri-knob"></span></span>' : ''}
+      <span class="ac-row-chevron">${chevronSvg}</span>`;
+
+    const bodyEl = document.createElement('div');
+    bodyEl.className = 'ac-group-body';
+    for (const m of group.members) {
+      const conn = byType[m];
+      if (!conn) continue;
+      used.add(m);
+      const card = _buildConnectionCard(agent, conn, canEdit);
+      card.dataset.connType = m;
+      const haystack = ((conn.display_name || '') + ' ' + (conn.connection_type || '') + ' Agent Tools').toLowerCase();
+      indexed.push({ card, haystack });
+      bodyEl.appendChild(card);
+    }
+
+    groupEl.appendChild(head);
+    groupEl.appendChild(bodyEl);
+    grid.appendChild(groupEl);
+
+    head.addEventListener('click', (e) => {
+      if (e.target.closest('.ac-tri')) return;
+      groupEl.classList.toggle('expanded');
+    });
+
+    const tri = head.querySelector('.ac-tri');
+    if (tri && canEdit) {
+      const togglable = group.members.filter(m => byType[m] && !_AGENT_CREDENTIAL_MEMBERS.has(m));
+      const sync = () => {
+        const on = togglable.filter(m => {
+          const cb = bodyEl.querySelector(`[data-conn-type="${m}"] .conn-toggle`);
+          return cb && cb.checked;
+        }).length;
+        tri.dataset.state = on === 0 ? 'off' : (on === togglable.length ? 'on' : 'mixed');
+      };
+      sync();
+      // Re-sync when a member's own toggle changes (user click).
+      bodyEl.addEventListener('change', (e) => {
+        if (e.target.classList && e.target.classList.contains('conn-toggle')) sync();
+      });
+      const setAll = async (goOn) => {
+        for (const m of togglable) {
+          const conn = byType[m];
+          if (!!conn.enabled === goOn) continue;
+          const card = bodyEl.querySelector(`[data-conn-type="${m}"]`);
+          const cb = card && card.querySelector('.conn-toggle');
+          if (cb) cb.checked = goOn;
+          await _saveConnection(agent, conn, card, goOn);
+        }
+        sync();
+      };
+      tri.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const r = tri.getBoundingClientRect();
+        setAll((e.clientX - r.left) > r.width / 2);
+      });
+      tri.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setAll(tri.dataset.state !== 'on'); }
+      });
+    }
+  }
+
+  // Safety: any ability not placed in a group is appended as a plain card.
+  for (const conn of items) {
+    if (used.has(conn.connection_type)) continue;
+    const card = _buildConnectionCard(agent, conn, canEdit);
+    indexed.push({ card, haystack: ((conn.display_name || '') + ' ' + conn.connection_type + ' Agent Tools').toLowerCase() });
+    grid.appendChild(card);
+  }
+
+  return grid;
+}
+
 async function _renderConnectionsTab(body, agent) {
   if (_isMockAgent(agent)) {
     body.innerHTML = '<div style="padding:20px;color:var(--fg-3);font-size:13px;text-align:center;">Save this agent first to configure abilities.</div>';
@@ -4649,18 +4801,23 @@ async function _renderConnectionsTab(body, agent) {
       <span class="conn-section-hint">${_esc(sec.hint)}</span>
     `;
 
-    const grid = document.createElement('div');
-    grid.className = 'conn-grid';
-
-    for (const conn of items) {
-      const card = _buildConnectionCard(agent, conn, canEdit);
-      const haystack = (
-        (conn.display_name || '') + ' ' +
-        (conn.connection_type || '') + ' ' +
-        sec.label
-      ).toLowerCase();
-      indexed.push({ card, haystack });
-      grid.appendChild(card);
+    let grid;
+    if (sec.key === 'ability') {
+      // Agent Tools — render as the three grouped, expandable rows.
+      grid = _buildAbilityGroupsGrid(agent, items, canEdit, indexed);
+    } else {
+      grid = document.createElement('div');
+      grid.className = 'conn-grid ac-list';
+      for (const conn of items) {
+        const card = _buildConnectionCard(agent, conn, canEdit);
+        const haystack = (
+          (conn.display_name || '') + ' ' +
+          (conn.connection_type || '') + ' ' +
+          sec.label
+        ).toLowerCase();
+        indexed.push({ card, haystack });
+        grid.appendChild(card);
+      }
     }
 
     secEl.appendChild(header);
@@ -4677,9 +4834,17 @@ async function _renderConnectionsTab(body, agent) {
       card.style.display = match ? '' : 'none';
       if (match) visible++;
     }
+    // Ability groups: expand while searching so members are reachable, and hide
+    // a group whose member cards are all filtered out.
+    body.querySelectorAll('.ac-group').forEach(g => {
+      g.classList.toggle('expanded', !!q);
+      if (!q) { g.style.display = ''; return; }
+      const anyVisible = [...g.querySelectorAll('.conn-card')].some(c => c.style.display !== 'none');
+      g.style.display = anyVisible ? '' : 'none';
+    });
     // Hide section wrappers whose grids have no visible cards left.
     for (const { secEl, grid } of sectionEls) {
-      const anyVisible = Array.from(grid.children).some(c => c.style.display !== 'none');
+      const anyVisible = [...grid.querySelectorAll('.conn-card')].some(c => c.style.display !== 'none');
       secEl.style.display = anyVisible ? '' : 'none';
     }
     searchEmpty.style.display = (q && visible === 0) ? 'block' : 'none';
@@ -4782,24 +4947,30 @@ async function _loadTelegramCardStatus(body) {
 
 function _buildConnectionCard(agent, conn, canEdit = true) {
   const isComingSoon = conn.status === 'coming_soon';
+  // `.ac-row` is the shared expandable-row wrapper (look lives in app3.css);
+  // `.conn-card` is kept purely as a JS/behaviour hook for the wiring below.
   const card = document.createElement('div');
-  card.className = 'conn-card' + (isComingSoon ? ' coming-soon' : '') + (conn.enabled ? ' enabled' : '');
+  card.className = 'conn-card ac-row' + (isComingSoon ? ' coming-soon ac-row-static' : '') + (conn.enabled ? ' enabled' : '');
 
   const connIcon = icon(_CONN_ICONS[conn.connection_type] || 'plug', { size: '16px' });
+  const desc = conn.description || _CONN_NOTES[conn.connection_type] || '';
 
   const toggleTitle = canEdit
     ? (conn.enabled ? 'Disable' : 'Enable')
     : (conn.enabled ? 'Enabled (admin only)' : 'Disabled (admin only)');
 
-  // ── Always-visible header ──
+  // ── Always-visible head line (shared `.ac-ability-row` look) ──
   const header = document.createElement('div');
-  header.className = 'conn-card-header';
+  header.className = 'conn-card-header ac-ability-row';
   header.innerHTML = `
-    <span class="conn-icon">${connIcon}</span>
-    <span class="conn-name">${_esc(conn.display_name)}</span>
+    <span class="conn-icon ac-ability-icon">${connIcon}</span>
+    <div class="ac-ability-label">
+      <div class="conn-name ac-ability-name">${_esc(conn.display_name)}</div>
+      ${desc ? `<div class="ac-ability-desc">${_esc(desc)}</div>` : ''}
+    </div>
     ${isComingSoon
       ? '<span class="conn-badge coming-soon">Coming soon</span>'
-      : `<label class="conn-toggle-wrap" title="${toggleTitle}">
+      : `<label class="conn-toggle-wrap ac-ability-toggle-wrap" title="${toggleTitle}">
            <input type="checkbox" class="conn-toggle" ${conn.enabled ? 'checked' : ''} ${canEdit ? '' : 'disabled'}>
            <span class="conn-toggle-track"></span>
          </label>`
@@ -4811,10 +4982,15 @@ function _buildConnectionCard(agent, conn, canEdit = true) {
   const connBody = _buildConnectionBody(conn, canEdit, agent.id);
   if (connBody) {
     card.appendChild(connBody);
-    // Click header (not toggle) to expand/collapse
+    // Click head (not toggle) to expand/collapse — `.expanded` drives the shared CSS.
     header.classList.add('conn-card-header-clickable');
+    const chevron = document.createElement('span');
+    chevron.className = 'ac-row-chevron';
+    chevron.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>`;
+    header.appendChild(chevron);
     header.addEventListener('click', e => {
       if (e.target.closest('.conn-toggle-wrap')) return;
+      card.classList.toggle('expanded');
       card.classList.toggle('conn-card-expanded');
     });
   }
@@ -4873,7 +5049,7 @@ function _buildConnectionBody(conn, canEdit = true, agentId = null) {
   if (conn.status === 'coming_soon') return null;
 
   const el = document.createElement('div');
-  el.className = 'conn-fields';
+  el.className = 'conn-fields ac-ability-body';
 
   if (conn.connection_type === 'telegram') {
     if (!canEdit) {
@@ -5036,31 +5212,33 @@ function _renderAbilitiesBlock(abilities, conn, canEdit) {
   const byoAllowed = canEdit && list.some(a => a.mode === 'byo_only' || a.mode === 'both');
   const byoLink = byoAllowed
     ? `<button class="conn-byo-setup-btn" data-provider="${_esc(list[0].provider)}"
-                style="background:none;border:none;color:#7aa2f7;font-size:10px;cursor:pointer;padding:0;margin-left:auto;">
+                style="background:none;border:none;color:var(--accent);font-size:10px;cursor:pointer;padding:0;margin-left:auto;">
          Use my own credentials →
        </button>`
     : '';
 
+  // Nested abilities render as their own shared `.ac-list` so they match the
+  // top-level row look. `.conn-ability-row` / `.conn-ability-toggle` are kept
+  // only as JS hooks for the toggle wiring in _buildConnectionCard.
   const rows = list.map(ab => {
     const cantToggle = !canEdit;
     const checked = ab.enabled ? 'checked' : '';
     const dis = cantToggle ? 'disabled' : '';
     const sourceTag = ab.source === 'byo'
-      ? '<span style="font-size:9px;background:#3a2a4a;color:#bb9af7;padding:1px 4px;border-radius:3px;margin-left:6px;font-weight:600;">BYO</span>'
+      ? '<span style="font-size:9px;background:var(--bg-2);color:var(--accent);padding:1px 4px;border-radius:3px;margin-left:6px;font-weight:600;">BYO</span>'
       : '';
     const byoConfigured = ab.byo_configured
-      ? '<span title="BYO credentials configured" style="font-size:10px;color:#9ece6a;margin-left:6px;">●</span>'
+      ? '<span title="BYO credentials configured" style="font-size:10px;color:var(--success);margin-left:6px;">●</span>'
       : '';
     return `
-      <div class="conn-ability-row" data-ability-id="${_esc(ab.id)}" data-provider="${_esc(ab.provider)}"
-           style="display:flex;align-items:center;padding:6px 8px;gap:8px;border-top:1px solid #2a2a4a;">
-        <div style="flex:1;min-width:0;">
-          <div style="font-size:12px;color:#c0caf5;font-weight:500;">
+      <div class="conn-ability-row ac-ability-row" data-ability-id="${_esc(ab.id)}" data-provider="${_esc(ab.provider)}">
+        <div class="ac-ability-label">
+          <div class="ac-ability-name" style="font-size:12px;">
             ${_esc(ab.display_name)}${sourceTag}${byoConfigured}
           </div>
-          <div style="font-size:10px;color:#565f89;line-height:1.4;">${_esc(ab.description || '')}</div>
+          <div class="ac-ability-desc">${_esc(ab.description || '')}</div>
         </div>
-        <label class="conn-toggle-wrap" title="${cantToggle ? 'Admin only' : (ab.enabled ? 'Disable' : 'Enable')}">
+        <label class="conn-toggle-wrap ac-ability-toggle-wrap" title="${cantToggle ? 'Admin only' : (ab.enabled ? 'Disable' : 'Enable')}">
           <input type="checkbox" class="conn-toggle conn-ability-toggle" ${checked} ${dis}>
           <span class="conn-toggle-track"></span>
         </label>
@@ -5069,9 +5247,9 @@ function _renderAbilitiesBlock(abilities, conn, canEdit) {
   }).join('');
 
   return `
-    <div class="conn-abilities-block" style="margin-top:10px;border:1px solid #2a2a4a;border-radius:6px;background:#161728;">
-      <div style="font-size:10px;color:#7aa2f7;padding:6px 8px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;display:flex;align-items:center;">
-        Abilities
+    <div class="conn-abilities-block ac-list" style="margin-top:10px;">
+      <div class="ac-ability-row conn-abilities-head">
+        <span class="ac-ability-name" style="font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);">Abilities</span>
         ${byoLink}
       </div>
       ${rows}

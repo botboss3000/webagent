@@ -897,7 +897,58 @@ const _ABILITY_META = {
   agent_orchestration: { icon: 'share-2',   color: '#7dcfff', simple: true,  desc: 'Lets the agent delegate the session to other agents and run the prompt optimizer. On by default; switch off to remove it platform-wide.' },
   diagnostics:      { icon: 'activity',     color: '#e0af68', simple: true,  desc: 'Lets the agent read the in-app flight recorder to diagnose the running app. On by default; switch off to remove it platform-wide.' },
   agent_management: { icon: 'users',        color: '#9ece6a', simple: true,  desc: 'Lets the agent list, create, and update the user\'s own agents and edit their prompts and abilities. On by default; switch off to remove it platform-wide.' },
+  app_control:      { icon: 'app-window',   color: '#73daca', simple: true,  desc: 'Lets the agent change what you\'re looking at — switch the main view (Browser, Pages, Agents…), show or hide the chat panel, and resize it. On by default; switch off to remove it platform-wide.' },
 };
+
+// Human labels for every ability key (shared by the row builder and search).
+const _ABILITY_NAMES = {
+  codebase_admin: 'Codebase Admin',
+  git_control: 'Git Control',
+  ui_admin: 'UI Admin',
+  create_tools: 'Create Tools',
+  web_access: 'Web Access',
+  browser_control: 'Browser Control',
+  terminal_control: 'Terminal Control',
+  image_generation: 'Image Generation',
+  automation: 'Automation',
+  visualizer: 'Visualizer',
+  agent_orchestration: 'Agent Orchestration',
+  diagnostics: 'Diagnostics',
+  agent_management: 'Agent Management',
+  app_control: 'App Control',
+};
+
+// ── Agent Tools grouping ───────────────────────────────────────────────────
+// The 13 host abilities are presented in three alphabetical groups, each an
+// expandable header row carrying a 3-position toggle (Off · Mixed · On). The
+// grouping is purely a UI convenience — there is NO group concept on the
+// backend; turning a group On/Off just flips each member with the same per-
+// ability save the individual rows use.
+//
+// Two Web members — `scraper` (Web Scraper) and `browser_session` (Browser
+// Cookies) — are credential providers, not simple toggles. They keep their own
+// config cards (relocated into the Web group body by _placeWebCredentialRows)
+// and are NOT part of a group's On/Off math (they can't be "on" without
+// credentials); they're managed by their own row. Members are alphabetical by
+// display name; groups are alphabetical (Administrator, Basic, Web).
+const _CREDENTIAL_MEMBERS = new Set(['scraper', 'browser_session']);
+const _ABILITY_GROUPS = [
+  {
+    id: 'administrator', name: 'Administrator', icon: 'shield-alert', color: '#f7768e',
+    desc: 'Full host control — files & shell, version control, terminals, and diagnostics. Grant with care.',
+    members: ['codebase_admin', 'diagnostics', 'git_control', 'terminal_control'],
+  },
+  {
+    id: 'basic', name: 'Basic', icon: 'wrench', color: '#7dcfff',
+    desc: 'Everyday, non-destructive capabilities — UI edits, tool creation, automation, pages, image generation, orchestration, agent management, and app view control.',
+    members: ['agent_management', 'agent_orchestration', 'app_control', 'automation', 'create_tools', 'image_generation', 'ui_admin', 'visualizer'],
+  },
+  {
+    id: 'web', name: 'Web', icon: 'globe', color: '#7aa2f7',
+    desc: 'Reach the open web — search, a headless browser, third-party scraping, and authenticated cookie sessions.',
+    members: ['browser_control', 'browser_session', 'web_access', 'scraper'],
+  },
+];
 
 let _abilityStates = {}; // { [ability]: boolean }
 
@@ -916,91 +967,149 @@ function _markAbilityAction(ability) {
   _abilityLastActionAt[ability] = (typeof performance !== 'undefined' ? performance.now() : Date.now());
 }
 
+// Build one always-visible ability row (icon + name + desc + toggle). Used as a
+// member row inside a group body. The change handler matches the legacy flat
+// list: simple abilities toggle directly; complex ones (need a config panel)
+// expand their card and warn until configured.
+function _buildAbilityRow(id, meta) {
+  const row = document.createElement('div');
+  row.className = 'ac-ability-row';
+  row.id = `ac-ability-row-${id}`;
+  row.dataset.ability = id;
+
+  const iconWrap = document.createElement('div');
+  iconWrap.className = 'ac-ability-icon';
+  iconWrap.style.color = meta.color;
+  iconWrap.innerHTML = `<i data-lucide="${meta.icon}" style="width:18px;height:18px;"></i>`;
+
+  const label = document.createElement('div');
+  label.className = 'ac-ability-label';
+  label.innerHTML = `<div class="ac-ability-name"></div><div class="ac-ability-desc"></div>`;
+  label.querySelector('.ac-ability-name').textContent = _ABILITY_NAMES[id] || id;
+  label.querySelector('.ac-ability-desc').textContent = meta.desc;
+
+  const toggleWrap = document.createElement('label');
+  toggleWrap.className = 'conn-toggle-wrap ac-ability-toggle-wrap';
+  toggleWrap.title = 'Enable';
+  const toggle = document.createElement('input');
+  toggle.type = 'checkbox';
+  toggle.className = 'conn-toggle ac-ability-toggle';
+  toggle.id = `ac-ability-toggle-${id}`;
+  toggle.dataset.ability = id;
+  const track = document.createElement('span');
+  track.className = 'conn-toggle-track';
+  toggleWrap.appendChild(toggle);
+  toggleWrap.appendChild(track);
+
+  const statusEl = document.createElement('span');
+  statusEl.className = 'ac-status ac-ability-status';
+  statusEl.id = `ac-ability-status-${id}`;
+  statusEl.style.display = 'none';
+
+  row.appendChild(iconWrap);
+  row.appendChild(label);
+  row.appendChild(statusEl);
+  row.appendChild(toggleWrap);
+
+  toggle.addEventListener('change', () => {
+    const enabled = toggle.checked;
+    _markAbilityAction(id);   // protect this toggle from a stale in-flight load
+    if (meta.simple) {
+      _toggleAbility(id, enabled, row);
+    } else {
+      if (enabled && !_abilityStates[id]) {
+        toggle.checked = false;
+        _showAbilityConfigWarning(id, row);
+        _expandAbilityConfig(id);
+      } else if (enabled && _abilityStates[id]) {
+        _toggleAbility(id, true, row);
+      } else {
+        _toggleAbility(id, false, row);
+      }
+    }
+  });
+
+  return row;
+}
+
 function _initAbilitiesCompact() {
   const container = _qs('ac-abilities-compact');
   if (!container) return;
   container.innerHTML = '';
 
-  for (const [id, meta] of Object.entries(_ABILITY_META)) {
-    const row = document.createElement('div');
-    row.className = 'ac-ability-row';
-    row.id = `ac-ability-row-${id}`;
-    row.dataset.ability = id;
+  for (const group of _ABILITY_GROUPS) {
+    const groupEl = document.createElement('div');
+    groupEl.className = 'ac-row ac-group';
+    groupEl.id = `ac-group-${group.id}`;
 
-    // Icon
+    // ── Group head row (icon + name + 3-position toggle + chevron) ──
+    const head = document.createElement('div');
+    head.className = 'ac-ability-row ac-group-head';
+
     const iconWrap = document.createElement('div');
     iconWrap.className = 'ac-ability-icon';
-    iconWrap.style.color = meta.color;
-    iconWrap.innerHTML = `<i data-lucide="${meta.icon}" style="width:18px;height:18px;"></i>`;
+    iconWrap.style.color = group.color;
+    iconWrap.innerHTML = `<i data-lucide="${group.icon}" style="width:18px;height:18px;"></i>`;
 
-    // Label
     const label = document.createElement('div');
     label.className = 'ac-ability-label';
-    const nameMap = {
-      codebase_admin: 'Codebase Admin',
-      git_control: 'Git Control',
-      ui_admin: 'UI Admin',
-      create_tools: 'Create Tools',
-      web_access: 'Web Access',
-      browser_control: 'Browser Control',
-      terminal_control: 'Terminal Control',
-      image_generation: 'Image Generation',
-      automation: 'Automation',
-      visualizer: 'Visualizer',
-      agent_orchestration: 'Agent Orchestration',
-      diagnostics: 'Diagnostics',
-      agent_management: 'Agent Management',
-    };
-    label.innerHTML = `<div class="ac-ability-name">${nameMap[id] || id}</div>
-      <div class="ac-ability-desc">${meta.desc}</div>`;
+    label.innerHTML = `<div class="ac-ability-name"></div><div class="ac-ability-desc"></div>`;
+    label.querySelector('.ac-ability-name').textContent = group.name;
+    label.querySelector('.ac-ability-desc').textContent = group.desc;
 
-    // Toggle
-    const toggleWrap = document.createElement('label');
-    toggleWrap.className = 'conn-toggle-wrap ac-ability-toggle-wrap';
-    toggleWrap.title = 'Enable';
-    const toggle = document.createElement('input');
-    toggle.type = 'checkbox';
-    toggle.className = 'conn-toggle ac-ability-toggle';
-    toggle.id = `ac-ability-toggle-${id}`;
-    toggle.dataset.ability = id;
-    const track = document.createElement('span');
-    track.className = 'conn-toggle-track';
-    toggleWrap.appendChild(toggle);
-    toggleWrap.appendChild(track);
+    const tri = document.createElement('span');
+    tri.className = 'ac-tri';
+    tri.id = `ac-group-tri-${group.id}`;
+    tri.dataset.state = 'off';
+    tri.setAttribute('role', 'button');
+    tri.setAttribute('tabindex', '0');
+    tri.title = 'Off · Mixed · On — click the left half for all-off, the right half for all-on';
+    tri.innerHTML = `<span class="ac-tri-knob"></span>`;
 
-    // Status message
-    const statusEl = document.createElement('span');
-    statusEl.className = 'ac-status ac-ability-status';
-    statusEl.id = `ac-ability-status-${id}`;
-    statusEl.style.display = 'none';
+    const chevron = document.createElement('span');
+    chevron.className = 'ac-row-chevron';
+    chevron.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>`;
 
-    row.appendChild(iconWrap);
-    row.appendChild(label);
-    row.appendChild(statusEl);
-    row.appendChild(toggleWrap);
-    container.appendChild(row);
+    head.appendChild(iconWrap);
+    head.appendChild(label);
+    head.appendChild(tri);
+    head.appendChild(chevron);
 
-    // ── Toggle click handler ──
-    toggle.addEventListener('change', () => {
-      const enabled = toggle.checked;
-      _markAbilityAction(id);   // protect this toggle from a stale in-flight load
-      if (meta.simple) {
-        // Simple ability — toggle directly
-        _toggleAbility(id, enabled, row);
+    // ── Group body — member rows (credential members get a slot to fill) ──
+    const bodyEl = document.createElement('div');
+    bodyEl.className = 'ac-group-body';
+    bodyEl.id = `ac-group-body-${group.id}`;
+    for (const member of group.members) {
+      if (_CREDENTIAL_MEMBERS.has(member)) {
+        const slot = document.createElement('div');
+        slot.id = `ac-group-slot-${member}`;
+        bodyEl.appendChild(slot);
       } else {
-        // Complex ability — need config first
-        if (enabled && !_abilityStates[id]) {
-          // Not yet configured — show warning + expand
-          toggle.checked = false;
-          _showAbilityConfigWarning(id, row);
-          _expandAbilityConfig(id);
-        } else if (enabled && _abilityStates[id]) {
-          // Already configured — enable
-          _toggleAbility(id, true, row);
-        } else {
-          // Disabling
-          _toggleAbility(id, false, row);
-        }
+        bodyEl.appendChild(_buildAbilityRow(member, _ABILITY_META[member]));
+      }
+    }
+
+    groupEl.appendChild(head);
+    groupEl.appendChild(bodyEl);
+    container.appendChild(groupEl);
+
+    // Expand / collapse on head click — but not when the click lands on the tri.
+    head.addEventListener('click', (e) => {
+      if (e.target.closest('.ac-tri')) return;
+      groupEl.classList.toggle('expanded');
+    });
+
+    // 3-position toggle: left half → all off, right half → all on. The middle
+    // "mixed" detent is derived (set by _syncGroupToggle), not clicked into.
+    tri.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const rect = tri.getBoundingClientRect();
+      _setGroupAll(group, (e.clientX - rect.left) > rect.width / 2);
+    });
+    tri.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        _setGroupAll(group, tri.dataset.state !== 'on');
       }
     });
   }
@@ -1012,10 +1121,64 @@ function _initAbilitiesCompact() {
     _qs(`ac-int-${a}-unconfigure`)?.addEventListener('click', () => _disableAbility(a));
   }
 
+  _syncAllGroupToggles();
+
   // Render Lucide icons
   if (typeof lucide !== 'undefined' && lucide.createIcons) {
     lucide.createIcons();
   }
+}
+
+// Flip every (non-credential) member of a group to `goOn`. Credential members
+// (Web Scraper, Browser Cookies) are skipped — they need their own credentials
+// and are managed from their own row.
+function _setGroupAll(group, goOn) {
+  for (const m of group.members) {
+    if (_CREDENTIAL_MEMBERS.has(m)) continue;
+    if (!!_abilityStates[m] === goOn) continue;
+    _markAbilityAction(m);
+    const toggle = _qs(`ac-ability-toggle-${m}`);
+    if (toggle) toggle.checked = goOn;   // optimistic; _toggleAbility reverts on error
+    _toggleAbility(m, goOn, _qs(`ac-ability-row-${m}`));
+  }
+  _syncGroupToggle(group.id);
+}
+
+// Reflect a group's 3-position toggle from its members' states.
+function _syncGroupToggle(groupId) {
+  const group = _ABILITY_GROUPS.find(g => g.id === groupId);
+  const tri = _qs(`ac-group-tri-${groupId}`);
+  if (!group || !tri) return;
+  const togglable = group.members.filter(m => !_CREDENTIAL_MEMBERS.has(m));
+  const onCount = togglable.filter(m => !!_abilityStates[m]).length;
+  tri.dataset.state = onCount === 0 ? 'off'
+    : (onCount === togglable.length ? 'on' : 'mixed');
+}
+
+function _syncAllGroupToggles() {
+  for (const g of _ABILITY_GROUPS) _syncGroupToggle(g.id);
+}
+
+function _syncGroupOfAbility(ability) {
+  const g = _ABILITY_GROUPS.find(gr => gr.members.includes(ability));
+  if (g) _syncGroupToggle(g.id);
+}
+
+// Move the compactified credential cards (Web Scraper, Browser Cookies) into
+// the Web group body so they sit with the other Web rows instead of forming a
+// separate list below. Runs after _compactifyAllIntegrations turns them into
+// `.ac-card-compact` rows and BEFORE _groupIntegrationLists (so they're no
+// longer direct children of the category body and won't be re-grouped).
+function _placeWebCredentialRows() {
+  for (const id of ['scraper', 'browser_session']) {
+    const slot = document.getElementById(`ac-group-slot-${id}`);
+    const card = document.getElementById(`ac-int-${id}-card`);
+    if (slot && card) slot.replaceWith(card);
+  }
+  // The standalone "Non-OAuth web tools" intro is now redundant (its cards moved
+  // into the Web group), so hide it.
+  const intro = document.getElementById('ac-web-tools-intro');
+  if (intro) intro.style.display = 'none';
 }
 
 function _showAbilityConfigWarning(ability, row) {
@@ -1093,6 +1256,7 @@ function _applyAbilityRowStatus(ability, enabled) {
   if (toggle) toggle.checked = !!enabled;
   const row = _qs(`ac-ability-row-${ability}`);
   if (row) row.classList.toggle('ac-ability-enabled', !!enabled);
+  _syncGroupOfAbility(ability);
 }
 
 function _initCollapsible(provider) {
@@ -1350,7 +1514,28 @@ function _compactifyAllIntegrations() {
   for (const c of _CHANNEL_IDS) _compactifyCard(c, 'channel');
   for (const c of _SOON_CHANNEL_IDS) _compactifyCard(c, 'soon');
   _renderComingSoonRows();
+  _placeWebCredentialRows();   // move Web Scraper + Browser Cookies into the Web group
+  _groupIntegrationLists();
   if (typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
+}
+
+// Group the compactified integration cards in each settings section into ONE
+// flush `.ac-list` so the section reads as a single compact option-table (the
+// shared toggle-list look), instead of a stack of separate bordered cards.
+// Idempotent — guarded so repeated settings (re)activations don't re-wrap.
+function _groupIntegrationLists() {
+  document.querySelectorAll('.ac-category-body').forEach(body => {
+    if (body.dataset.acListGrouped) return;
+    const cards = Array.from(body.children).filter(
+      el => el.classList && el.classList.contains('ac-card-compact')
+    );
+    if (!cards.length) return;
+    const list = document.createElement('div');
+    list.className = 'ac-list';
+    body.insertBefore(list, cards[0]);
+    cards.forEach(c => list.appendChild(c));
+    body.dataset.acListGrouped = '1';
+  });
 }
 
 function _syncRowToggle(id) {
@@ -1622,15 +1807,23 @@ function _initIntegrationsSearch(providers) {
     })
     .filter(Boolean);
 
-  // Also include compact ability rows in search
+  // Also include compact ability rows in search (member rows only — never the
+  // group head rows, which always stay visible as section labels).
   const compactContainer = _qs('ac-abilities-compact');
   const compactRows = compactContainer
-    ? [...compactContainer.querySelectorAll('.ac-ability-row')]
+    ? [...compactContainer.querySelectorAll('.ac-ability-row:not(.ac-group-head)')]
+    : [];
+  const groupEls = compactContainer
+    ? [...compactContainer.querySelectorAll('.ac-group')]
     : [];
 
   const apply = () => {
     const q = input.value.trim().toLowerCase();
     let visible = 0;
+
+    // While searching, expand every group so member rows are reachable; collapse
+    // them all when the query is cleared.
+    for (const g of groupEls) g.classList.toggle('expanded', !!q);
 
     // Track which categories have visible items
     const catVisibility = {};
@@ -1673,6 +1866,15 @@ function _initIntegrationsSearch(providers) {
           if (cat) catVisibility[cat.id] = true;
         }
       }
+    }
+
+    // Hide a group entirely when none of its member rows/cards survive the
+    // filter, so a search doesn't leave empty expanded groups behind.
+    for (const g of groupEls) {
+      if (!q) { g.style.display = ''; continue; }
+      const body = g.querySelector('.ac-group-body');
+      const anyVisible = body && [...body.children].some(el => el.style.display !== 'none');
+      g.style.display = anyVisible ? '' : 'none';
     }
 
     // When searching, auto-open categories with matches; when cleared, close all
@@ -1737,6 +1939,8 @@ async function _loadIntegrations() {
     _loadBrowserSessionStatus();
     // Reflect each provider/channel's configured state onto its unified row toggle.
     _syncAllRowToggles();
+    // Reflect ability states onto each group's 3-position toggle.
+    _syncAllGroupToggles();
   } catch (e) {
     for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram', 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer', 'agent_orchestration', 'diagnostics', 'agent_management']) {
       const s = _qs(`ac-int-${p}-status`);
@@ -2533,7 +2737,31 @@ function _initAppSettings() {
   if (saveBtn) saveBtn.addEventListener('click', _saveAppSettings);
   _initBootAnimation();
   _initBootMobileMode();
+  // Startup & Boot settings live in expandable compact rows: the collapsed line
+  // shows the current choice; expanding reveals the dropdown.
+  _wireBootRow('ac-boot-anim-row', 'ac-boot-animation');
+  _wireBootRow('ac-boot-mobile-row', 'ac-boot-mobile-mode');
   _initMainPanelPages();
+}
+
+// Wire one Startup & Boot row: clicking the head expands/collapses it, and the
+// right-hand status shows the currently selected option's label.
+function _wireBootRow(rowId, selectId) {
+  const row = _qs(rowId);
+  if (!row) return;
+  const sel = _qs(selectId);
+  const head = row.querySelector(':scope > .ac-ability-row');
+  const status = row.querySelector('.ac-ability-status');
+  const syncStatus = () => {
+    if (status && sel) status.textContent = sel.options[sel.selectedIndex]?.text || '';
+  };
+  syncStatus();
+  sel?.addEventListener('change', syncStatus);
+  head?.addEventListener('click', (e) => {
+    // Don't toggle when interacting with the control itself.
+    if (e.target.closest('select, input, button, a, label')) return;
+    row.classList.toggle('expanded');
+  });
 }
 
 // ── Main Panel Pages (tab visibility + order) ──────────────────────────────
@@ -2595,7 +2823,9 @@ function _renderMainPanelList() {
     const isLocked = page.locked;
 
     const item = document.createElement('div');
-    item.className = 'ac-main-panel-item' + (isLocked ? ' ac-mp-locked' : '');
+    // Shared compact-row look (`.ac-ability-row` inside the `.ac-list`), plus a
+    // drag handle so the list doubles as a drag-to-reorder list.
+    item.className = 'ac-main-panel-item ac-ability-row' + (isLocked ? ' ac-mp-locked' : '');
     item.draggable = true;
     item.dataset.pageId = id;
     item.dataset.index = index;
@@ -2604,9 +2834,13 @@ function _renderMainPanelList() {
     handle.className = 'ac-mp-drag-handle';
     handle.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="18" x2="16" y2="18"/></svg>';
 
-    const label = document.createElement('span');
-    label.className = 'ac-mp-label';
-    label.innerHTML = `<i data-lucide="${page.icon}" class="lucide-icon" style="width:15px;height:15px;"></i>${_esc(page.label)}`;
+    const iconWrap = document.createElement('span');
+    iconWrap.className = 'ac-ability-icon';
+    iconWrap.innerHTML = `<i data-lucide="${page.icon}" class="lucide-icon" style="width:18px;height:18px;"></i>`;
+
+    const label = document.createElement('div');
+    label.className = 'ac-ability-label';
+    label.innerHTML = `<div class="ac-ability-name">${_esc(page.label)}</div>`;
 
     const toggle = document.createElement('button');
     toggle.className = 'ac-mp-toggle' + (isHidden ? '' : ' active');
@@ -2631,6 +2865,7 @@ function _renderMainPanelList() {
     });
 
     item.appendChild(handle);
+    item.appendChild(iconWrap);
     item.appendChild(label);
     item.appendChild(toggle);
 

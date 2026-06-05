@@ -50,6 +50,9 @@ Any file the **running app writes to** is per-machine runtime data and, as a rul
 |------|-----------|
 | `app/db/local.db` (+ sidecars `-journal`, `-wal`, `-shm`, `.preprompt-bak`) | Runtime SQLite DB + transient write logs — all gitignored; recreated on first run via the seed/migration logic. |
 | `local.db` (root) | Stray runtime SQLite |
+| `app/db/logs.db` (+ `-wal`/`-shm`/`-journal`) | **Dedicated, always-local logs DB** — server diagnostics (`diagnostics`) + tool metrics (`tool_executions`). Own WAL, separate from `local.db`. Per-machine; recreated on first run. See `app/db/logs_store.py`. |
+| `app/db/recordings.db` (+ `-wal`/`-shm`/`-journal`) | Browser render recorder (`render_recordings`) — separate firehose file, off by default. Per-machine; recreated on first run. |
+| `app/db/instance_id.txt` | Per-box identity stamped on every log record (multi-instance disambiguation). Generated once on first run. |
 | `app/auth/users.json` (+ `.bak`) | Password hashes, remember tokens |
 | `app/db_mode.json` | Per-machine DB target switch |
 | `app/db/.fuse_hidden*`, `**/.fuse_hidden*` | FUSE/SSHFS temp leftovers |

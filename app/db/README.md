@@ -51,11 +51,37 @@ The `agent_templates` **config row** (not the prompt slots) is always upserted f
 - `app/db/local.py`: SCHEMA_SQL extended; migrations 025 (column add) + 026 (one-shot data migration from `agent_prompts` admin-base rows → `agent_prompt_templates`).
 - `migrations/018_agent_prompt_templates.sql`: Supabase counterpart (Postgres DDL + same one-shot copy).
 
-## Diagnostics table
+## Dedicated logs store — `logs.db` + `recordings.db` (always local)
 
-The **`diagnostics`** table backs the diagnostic flight-recorder (`app/agent/diagnostics.py`) — a rolling, auto-pruned log of server warnings/errors (with tracebacks), agent-loop pipeline problems, run outcomes, and tool errors, read back by the Admin Tools → Diagnostics page, the `GET /api/v1/diagnostics` endpoint, and the `read_diagnostics` agent tool.
+Operational logs are a high-volume, **per-machine** firehose that nobody reads across instances, so they live in their **own SQLite files** — separate from the main DB (`local.db` *or* remote Postgres) — managed by **`app/db/logs_store.py`** (`get_log_store()`). Two reasons:
 
-- Columns: `id, ts, level, category, source, message, detail (JSON), session_id, turn_id, agent_id, user_id, created_at`. `session_id` / `agent_id` are **plain TEXT (not foreign keys)** so a record outlives the row it referenced and a delete never cascades it away.
-- `LocalBackend` methods: `insert_diagnostics_batch` (INSERT OR IGNORE on id), `query_diagnostics` (filtered, newest-first), `prune_diagnostics` (row + age cap). Base-class defaults are no-ops, so a backend that hasn't ported them degrades to **RAM-only** diagnostics (the in-memory ring still serves the live feed).
-- Defined in `app/db/schema/tables.py` (canonical) + `app/db/local.py` `SCHEMA_SQL` (local auto-migrate) + `migrations/026_diagnostics.sql` (Supabase).
+1. **No writer contention with user data.** SQLite allows one writer per *file*. Keeping the log firehose out of the file that holds `interactions` means a burst of log writes can never stall a user-facing write, and vice-versa. This is the "split WAL" — each file has its own WAL and its own `asyncio` write lock.
+2. **Logs stay local even when the main DB is remote.** You debug one instance at a time; logging belongs on the box that produced it. The store is SQLite-file-based regardless of the main backend.
+
+| File | Tables | Holds |
+|------|--------|-------|
+| **`app/db/logs.db`** | `diagnostics`, `tool_executions` | Server-side flight recorder + structured tool metrics |
+| **`app/db/recordings.db`** | `render_recordings` | Browser-side render recorder (big HTML blobs; off by default) |
+| `app/db/instance_id.txt` | — | A per-box id, created once, stamped on every record |
+
+All three are **gitignored runtime artifacts** (recreated on first run). The optimizer's temp `.db` scratch files are a third, pre-existing local split.
+
+### `diagnostics` table (in `logs.db`)
+
+Backs the flight-recorder (`app/agent/diagnostics.py`) — a rolling, auto-pruned log read back by the Admin Tools → Diagnostics page, `GET /api/v1/diagnostics`, and the `read_diagnostics` agent tool.
+
+- **Categories:** `server` (stdlib logs), `http` (4xx/5xx cause), `loop` (pipeline events), `run` / `recovery` (run lifecycle + self-healing), `tool` (tool errors), **`access`** (every HTTP request), **`ws`** (WebSocket connect/subscribe/disconnect).
+- **Columns:** `id, ts, level, category, source, message, detail (JSON), session_id, turn_id, agent_id, user_id, interaction_id, session_seq, turn_seq, instance_id, created_at`. The **correlation keys** (`interaction_id` / `session_seq` / `turn_seq`) join a log line to the exact `interactions` row by key (not by fuzzy timestamp); `instance_id` names the box. `session_id` / `agent_id` are **plain TEXT (not foreign keys)**.
+- **Capture level:** the stdlib→recorder handler runs at **INFO** by default (`DIAGNOSTICS_CAPTURE_LEVEL`), with a per-logger policy — our `app.*` loggers at INFO+, noisy third-party libs at WARNING+. Records at/above `diagnostics_persist_level` (INFO default) persist to `logs.db`; below stays in the RAM ring + `logs/*.log` text files. Retention defaults: 200k rows / 168h.
+- **Store methods:** `insert_diagnostics_batch`, `query_diagnostics`, `prune_diagnostics`, `clear_diagnostics`.
+
+### `tool_executions` table (in `logs.db`)
+
+Structured per-call metrics (revived from `app/tools/tracker.py`): `tool_name, success, duration_ms, error_type, error_message, input_params, output_preview` + the correlation keys. Filled automatically by the loop tap (pairs each `tool_call` with its `tool_result` and times it) or explicitly via `app.tools.tracker.track_execution(...)`. Sortable/aggregatable by duration & success — unlike the free-text `tool` diagnostics category.
+
+### Correlating logs to interactions
+
+Both stores are local SQLite, so the reader can **`ATTACH`** `logs.db` to the main connection and join `diagnostics`/`tool_executions` to `interactions` on `interaction_id` (or `session_seq`/`turn_seq`). On a single-box device both files share one clock, so timestamp alignment is also reliable — but the keys are the robust join.
+
+> **Note:** the legacy `diagnostics` / `render_recordings` tables still defined in `schema/tables.py` + `local.py` `SCHEMA_SQL` are now **dormant** (the live recorders write to the dedicated store instead). They are left in place to avoid disturbing the Postgres reconciliation path; existing rows simply age out.
 

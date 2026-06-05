@@ -98,30 +98,57 @@ Whenever a surface shows **a category/section heading followed by a vertical lis
 
 ### Canonical implementation — copy this, don't re-invent
 
-The reference lives in **`ui/css/app3.css`** as the `.ac-abilities-compact` block (container) + `.ac-ability-row` (each row), with sub-parts `.ac-ability-icon`, `.ac-ability-label` → `.ac-ability-name` + `.ac-ability-desc`, `.ac-ability-status`, and `.ac-ability-toggle-wrap`. Light-mode overrides (the peach tint) sit in the matching `body.light-mode .ac-ability-*` rules right below. The container that *holds* a list of these (the collapsible section header: chevron + icon + title that opens to reveal the list) is the `.ac-category-group` / `.ac-category-summary` block in the same file — see its boxed "SHARED COLLAPSIBLE SECTION PATTERN" comment. The matching markup contract is documented in `ui/admin-tools/admin-configuration.html` (search **"COLLAPSIBLE SECTION PATTERN"**). All of these use **design-system CSS variables** for colour (no hard-coded hex except the light-mode peach overrides) — keep it that way.
+The whole component lives in **`ui/css/app3.css`** under the boxed comment **"SHARED EXPANDABLE OPTION-ROW LIST"**. Markup contract:
 
-> **Restyle the toggle-list look in `app3.css` only.** Don't fork a per-page or per-panel copy. Every conformant area below reads from this single block so the whole app stays coherent.
+- **`.ac-list`** — the bordered, rounded container (the flush "table"). The container draws the hairline dividers between items (`.ac-list > * + *`), so a bare row and an expandable row line up identically. `.ac-abilities-compact` is the legacy alias of `.ac-list` and shares its rules (the Agent Tools reference still uses it).
+- **`.ac-ability-row`** — one always-visible row line: `.ac-ability-icon` + `.ac-ability-label` (→ `.ac-ability-name` bold + `.ac-ability-desc` muted) + optional `.ac-ability-status` + optional `.ac-ability-toggle-wrap` (the toggle) + optional `.ac-row-chevron` (only when expandable).
+- **`.ac-row`** — wraps a row + its body to make it **expandable**; JS adds `.expanded` to open it. Use `.ac-row-static` for a non-expanding item.
+- **`.ac-ability-body`** — the collapsible region revealed on expand (additional info and/or config fields: OAuth, scopes, tokens…). Hidden until the wrapping `.ac-row` has `.expanded`.
+
+Light-mode overrides (the peach tint) sit in the matching `body.light-mode` rules right below. The collapsible *section header* that holds a whole list (chevron + icon + title) is the separate `.ac-category-group` / `.ac-category-summary` block (see its "SHARED COLLAPSIBLE SECTION PATTERN" comment). Everything uses **design-system CSS variables** for colour (no hard-coded hex except the light-mode peach overrides) — keep it that way.
+
+> **Restyle the toggle-list look in `app3.css` only.** Don't fork a per-page or per-panel copy. Every conformant area below reads from this single block so the whole app stays coherent. The agent card keeps its `.conn-*` class names purely as JS/behaviour hooks (their visual rules are gutted in `agents.css`); the admin integration cards are grouped into one `.ac-list` by `_groupIntegrationLists()` in `app-config.js`.
+
+### It's not just for simple toggle rows — the row is a flexible shell
+
+The compact table is the right home for **any "category → list of options" surface**, not only on/off toggles. The row shell (icon + name + description on the left, with the rest of the row free) accepts whatever control or affordance the option needs. Reach for it whenever options share a category, even when each option does something richer than flip a switch:
+
+- **Toggle rows** — the default (a switch on the right). *Agent Tools, integrations.*
+- **Other controls on the right** — a row's control can be a **radio**, a **dropdown/select**, a **button**, a small **number/text input**, or a **status pill / "Coming soon" badge** instead of a toggle. Same row, different right-hand element.
+- **Expandable rows** — wrap the row in `.ac-row` and give it an `.ac-ability-body`; clicking the row opens it to reveal **more detail and/or the configuration** (OAuth login, scopes, a dropdown, token fields, a longer explanation). Use this when a control or its detail is too big for the collapsed line — put the **control itself in the expanded body** (e.g. a settings dropdown with its hint) and keep the collapsed line to name + one-line summary.
+- **Reorderable rows** — a row can carry a **drag handle** and be `draggable` so the list doubles as a drag-to-reorder list, while still showing each row's control (e.g. a visibility toggle). The flush list reads as one table; drag still works row-to-row. *Main Panel Pages.*
+- **Locked / disabled / system rows** — a row can be non-interactive (locked, "always on", admin-only) and just render the state; keep it in the same list so the set stays visually unified.
+- **Grouped rows (a group header + its members in the SAME list)** — when options fall into named groups, the group itself is an **expandable header row** (`.ac-row.ac-group` → `.ac-group-head` head + `.ac-group-body` members) *inside the one `.ac-list`* — never a nested bordered box. The members are plain `.ac-ability-row`s revealed on expand, sitting on a faintly recessed, indented surface so they read as children without becoming a second table. The group head carries a **3-position toggle** `.ac-tri` (Off · Mixed · On): clicking the left half turns every member off, the right half turns every member on, and the centre "mixed" detent is **derived** (set in code when members are partially on) — you reach it by toggling individual members, not by clicking it. The whole group/tri component lives in `app3.css` alongside the row component. *Agent Tools (Admin → Agent Settings) groups its 13 host abilities into Administrator / Basic / Web; the per-agent Abilities tab mirrors the same grouping — see `_ABILITY_GROUPS` in `app-config.js` and `_AGENT_ABILITY_GROUPS` / `_buildAbilityGroupsGrid` in `agents.js`. Credential-backed members (Web Scraper, Browser Cookies) keep their own config body and are excluded from the tri-toggle's all-on/all-off math.*
+
+**When NOT to use it:** a surface that's a genuine **form** — a set of free text/number fields the user fills in, with no per-option category structure — should stay a form, not be forced into rows. Likewise a panel that's really **one complex configurator** (many interdependent fields, live status, action buttons) is not a list of options. *Example: Remote Access in App Settings stays as its own panel.* Rule of thumb: if you'd naturally describe it as "a list of things, each of which can be turned on / chosen / reordered," it's a compact table; if it's "a single thing with many fields," it isn't.
 
 ### Every area that uses (or should use) this pattern
 
-When the toggle-list design changes, check **all** of these so the change lands everywhere at once. **As of this writing only one area is conformant** — the rest are listed as work still to do.
+When the toggle-list design changes, check **all** of these so the change lands everywhere at once.
 
-- ✅ **Conformant** = already on the shared `.ac-abilities-compact` / `.ac-ability-row` row-list.
-- ❌ **Divergent** = currently individual-cards or a bespoke look; should be migrated onto the row-list.
+- ✅ **Conformant** = on the shared `.ac-list` / `.ac-row` / `.ac-ability-*` component.
+- ⏸️ **Left as-is (by decision)** = not converted on purpose — either it's not a list, or the owner chose to leave it.
+- ❌ **Divergent** = still a bespoke look that *should* be migrated.
 
 | # | Area | Where | Classes / source | State |
 |---|------|-------|------------------|-------|
-| 1 | **Admin → Agent Settings → Agent Tools** | `ui/admin-tools/admin-configuration.html` + `app-config.js` (`_renderAbilitiesFromMeta`) | `.ac-abilities-compact` + `.ac-ability-row` | ✅ **Canonical reference (the only conformant area)** |
-| 2 | **Admin → Agent Settings — all other sections** (Models, Channels, Productivity, Social Media, Marketplaces) | `admin-configuration.html` + `app-config.js` (`_compactifyCard`) | `.ac-category-group` headers → `.ac-int-row` / `.ac-card` (one card per option) | ❌ Divergent — headers OK, but contents are individual cards; convert to the row-list |
-| 3 | **Admin → App Settings** | `admin-configuration.html` + `ui/js/app-config.js` | `.ac-category-group` sections → `.ac-card` blocks | ❌ Divergent — section headers OK; option contents still card-based, audit & convert |
-| 4 | **Admin → Users** | `admin-configuration.html` (Access Mode options) | `.ac-card` + `.ac-um-radio*` (radio rows, not toggles) | ❌ Divergent — bespoke radio rows; bring onto the shared row look (radio variant) |
-| 5 | **Agent card → Configuration tab** | `ui/js/agents.js` + `ui/css/agents.css` | `.agents-field-group` form layout (not a toggle list) | Form fields, not this pattern — only its toggle rows (if any) should match |
-| 6 | **Agent card → Tools tab** | `ui/js/agents.js` + `agents.css` | guardrail/execution checkboxes + per-tool rows | ❌ Divergent — toggle rows should adopt the shared row look |
-| 7 | **Agent card → Abilities tab** | `ui/js/agents.js` (`_renderConnectionsTab` / `_buildConnectionCard` / `_renderAbilitiesBlock`) + `agents.css` | `.conn-section` + `.conn-card` (separate-card-per-option) + `.conn-ability-row` (inline-styled) | ❌ **Divergent — the wrong "card-within-a-card" look** (also uses hard-coded hex). Target for migration onto `.ac-abilities-compact` / `.ac-ability-row`. |
+| 1 | **Admin → Agent Settings → Agent Tools** | `ui/admin-tools/admin-configuration.html` + `app-config.js` (`_initAbilitiesCompact`) | `.ac-abilities-compact` (= `.ac-list`) + `.ac-ability-row` | ✅ Conformant — canonical reference |
+| 2 | **Admin → Agent Settings — integration sections** (Channels, Productivity, Social Media, Marketplaces) | `admin-configuration.html` + `app-config.js` (`_compactifyCard` → `_groupIntegrationLists`) | `.ac-list` wrapping `.ac-card-compact` rows (`.ac-int-row` heads + collapsible bodies) | ✅ Conformant — cards grouped into one flush list |
+| 3 | **Admin → App Settings** (Main Panel Pages, Startup & Boot) | `admin-configuration.html` + `app-config.js` (`_renderMainPanelList`, `_wireBootRow`) | Main Panel: `.ac-list` + `.ac-ability-row` rows w/ drag handle. Boot: `.ac-row` expandable rows, dropdown in `.ac-ability-body`. | ✅ Conformant — **Remote Access intentionally stays its own panel** (a complex configurator, not a list) |
+| 4 | **Admin → Users** | `admin-configuration.html` (Access Mode options) | `.ac-card` + `.ac-um-radio*` | ⏸️ Left as-is by decision (could become a radio-variant list later) |
+| 5 | **Agent card → Configuration tab** | `ui/js/agents.js` + `ui/css/agents.css` | `.agents-field-group` form layout | ⏸️ Form fields, not this pattern |
+| 6 | **Agent card → Tools tab** | `ui/js/agents.js` + `agents.css` | guardrail/execution checkboxes + per-tool rows | ⏸️ Left as-is by decision (per-tool list could adopt the row look later) |
+| 7 | **Agent card → Abilities tab** | `ui/js/agents.js` (`_renderConnectionsTab` / `_buildConnectionCard` / `_renderAbilitiesBlock`) + `agents.css` | `.conn-grid.ac-list` + `.conn-card.ac-row` heads + `.conn-fields.ac-ability-body` | ✅ Conformant — `.conn-*` kept as JS hooks; look comes from the shared component |
 
-**Migration note (agent card, rows 6–7):** these live in `ui/css/agents.css` (the `.conn-*` family, ~lines 1681–1896) and are rendered by `agents.js`. They render each option as its own bordered `.conn-card` and use inline styles + literal hex (`#11112a`, `#7aa2f7`, …), which both breaks the shared look and violates the design-system-variables rule above. To unify, render ability rows inside a single `.ac-abilities-compact` container using `.ac-ability-row` and friends instead of one `.conn-card` per option, and drop the inline hex. When you do this, update this table's State column.
+**The shared component** is `.ac-list` / `.ac-row` / `.ac-ability-*` in `app3.css`. Notes on how each conformant area plugs in:
+- **Agent Tools (1)** — the original simple-toggle reference.
+- **Integration sections (2)** — `_compactifyCard` makes each card a row; `_groupIntegrationLists()` then moves a section's rows into one `.ac-list`.
+- **App Settings (3)** — Main Panel Pages is a reorderable variant (each row carries a drag handle, the list is `draggable`); Startup & Boot is an expandable variant (collapsed line shows the current choice via `.ac-ability-status`, the dropdown sits in the expanded `.ac-ability-body`, wired by `_wireBootRow`).
+- **Abilities tab (7)** — keeps its `.conn-*` names as JS hooks alongside the shared classes; visual `.conn-*` rules gutted in `agents.css`.
 
-**Migration note (admin pages, rows 2–4):** the section *headers* already use the shared `.ac-category-group` look — leave those. The work is the *contents*: each section currently opens to one `.ac-int-row` / `.ac-card` box per option (see `_compactifyCard` in `app-config.js`), which should become a single `.ac-abilities-compact` row-list like the Agent Tools section. Users' Access-Mode is a radio variant of the same row.
+**Optional future work (rows 4, 6 — currently left as-is by decision):**
+- **Users (4):** the Access-Mode radio options could become `.ac-ability-row`s in an `.ac-list` (a radio variant — bold name + description + radio on the right).
+- **Tools tab (6):** the per-tool exposure list could render inside an `.ac-list` using `.ac-ability-row` (the guardrail/execution settings above it are a form and should stay one).
 
 ## Lucide icons & icon buttons — the only correct pattern
 
